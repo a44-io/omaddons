@@ -1,0 +1,324 @@
+---
+source: src/limits.rs
+expression: "(politeness, REGISTRY)"
+---
+[
+  [
+    {
+      "name": "USER_AGENT",
+      "value": {
+        "text": "omaddons/<version>"
+      },
+      "unit": "text",
+      "config_key": null,
+      "notes": "All requests"
+    },
+    {
+      "name": "MAX_CONCURRENT_REQUESTS",
+      "value": {
+        "count": 6
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Global worker pool"
+    },
+    {
+      "name": "MAX_CONCURRENT_PER_HOST",
+      "value": {
+        "count": 3
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Also protects github.com web endpoints' undocumented secondary limits"
+    },
+    {
+      "name": "CONNECT_TIMEOUT",
+      "value": {
+        "millis": 10000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "Connect timeout"
+    },
+    {
+      "name": "API_READ_TIMEOUT",
+      "value": {
+        "millis": 30000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "JSON API calls"
+    },
+    {
+      "name": "DOWNLOAD_TIMEOUT",
+      "value": {
+        "millis": 300000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "Whole archive download"
+    },
+    {
+      "name": "MAX_RETRIES",
+      "value": {
+        "count": 3
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Idempotent GET only; 429, 5xx, timeout or connection reset"
+    },
+    {
+      "name": "BACKOFF_BASE",
+      "value": {
+        "millis": 500
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "Exponential x2, full jitter"
+    },
+    {
+      "name": "BACKOFF_MAX",
+      "value": {
+        "millis": 8000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "Largest backoff step"
+    },
+    {
+      "name": "RETRY_AFTER_CAP",
+      "value": {
+        "millis": 60000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "A longer Retry-After fails with rate_limited and the reset time"
+    },
+    {
+      "name": "SOURCE_RECHECK_MIN_INTERVAL",
+      "value": {
+        "millis": 900000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "outdated reuses the last per-source result inside the window unless --refresh"
+    },
+    {
+      "name": "DEFAULT_CHECK_INTERVAL",
+      "value": {
+        "millis": 21600000
+      },
+      "unit": "ms",
+      "config_key": "default_check_interval",
+      "notes": "Widget background check"
+    },
+    {
+      "name": "WOWI_FILELIST_MIN_AGE",
+      "value": {
+        "millis": 3600000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "Or the server's max-age, whichever is larger"
+    },
+    {
+      "name": "GITHUB_REST_RESERVE",
+      "value": {
+        "count": 5
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "REST-only paths stop at or below this X-RateLimit-Remaining with rate_limited"
+    },
+    {
+      "name": "CURSEFORGE_BATCH_SIZE",
+      "value": {
+        "count": 50
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "POST /v1/mods ids per request (server maximum UNVERIFIED)"
+    },
+    {
+      "name": "WOWI_DETAILS_BATCH_SIZE",
+      "value": {
+        "count": 50
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "filedetails ids per request (server maximum UNVERIFIED)"
+    },
+    {
+      "name": "DISCOVERY_MAX_DEPTH",
+      "value": {
+        "count": 4
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Under each drive_c and under ~/Games"
+    },
+    {
+      "name": "DISCOVERY_SKIP_DIRS",
+      "value": {
+        "list": [
+          "windows",
+          "users",
+          "ProgramData"
+        ]
+      },
+      "unit": "list",
+      "config_key": null,
+      "notes": "Under drive_c, case-insensitive; product.db is read directly as a hint"
+    },
+    {
+      "name": "DISCOVERY_MAX_DIRS",
+      "value": {
+        "count": 50000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Directories visited per scan before stopping with a warning"
+    },
+    {
+      "name": "MAX_REDIRECTS",
+      "value": {
+        "count": 5
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Hops followed per request; every hop is checked against the allowlist"
+    }
+  ],
+  [
+    {
+      "name": "ARCHIVE_MAX_ENTRIES",
+      "value": {
+        "count": 20000
+      },
+      "unit": "count",
+      "config_key": "archive_max_entries",
+      "notes": "Most entries an archive may hold"
+    },
+    {
+      "name": "ARCHIVE_MAX_UNCOMPRESSED",
+      "value": {
+        "bytes": 1073741824
+      },
+      "unit": "bytes",
+      "config_key": "archive_max_uncompressed",
+      "notes": "Most bytes an archive may expand to"
+    },
+    {
+      "name": "ARCHIVE_MAX_RATIO",
+      "value": {
+        "ratio": 200
+      },
+      "unit": "ratio",
+      "config_key": "archive_max_ratio",
+      "notes": "Zip-bomb guard: largest N of an N:1 compression ratio"
+    },
+    {
+      "name": "DOWNLOAD_MAX_BYTES",
+      "value": {
+        "bytes": 536870912
+      },
+      "unit": "bytes",
+      "config_key": "download_max_bytes",
+      "notes": "Largest download accepted"
+    },
+    {
+      "name": "LOCK_ACQUIRE_TIMEOUT",
+      "value": {
+        "millis": 5000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "Then locked (exit 5), or concurrency_lost in the doctor"
+    },
+    {
+      "name": "TX_RETENTION",
+      "value": {
+        "retention": {
+          "min_age_ms": 86400000,
+          "keep_last": 10,
+          "window_ms": 604800000
+        }
+      },
+      "unit": "retention",
+      "config_key": "tx_retention",
+      "notes": "Always at least 24 h; beyond that, 10 transactions within 7 days per target"
+    },
+    {
+      "name": "SNAPSHOT_MAX_BYTES",
+      "value": {
+        "bytes": 2147483648
+      },
+      "unit": "bytes",
+      "config_key": "snapshot_max_bytes",
+      "notes": "Per target, beyond the 24 h protection window"
+    },
+    {
+      "name": "BLOB_CACHE_MAX_BYTES",
+      "value": {
+        "bytes": 1073741824
+      },
+      "unit": "bytes",
+      "config_key": "blob_cache_max_bytes",
+      "notes": "LRU with pins"
+    },
+    {
+      "name": "PLAN_TTL",
+      "value": {
+        "millis": 86400000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "Stored plans"
+    },
+    {
+      "name": "REASON_MAX_CHARS",
+      "value": {
+        "count": 200
+      },
+      "unit": "chars",
+      "config_key": null,
+      "notes": "--reason, in Unicode scalar values"
+    },
+    {
+      "name": "NET_LOG_MAX_BYTES",
+      "value": {
+        "bytes": 10485760
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Rotate once, keep one previous"
+    },
+    {
+      "name": "SAVEDVARIABLES_MAX_BYTES",
+      "value": {
+        "bytes": 67108864
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Lua parser input cap (errors)"
+    },
+    {
+      "name": "TOC_LINE_MAX",
+      "value": {
+        "count": 1024
+      },
+      "unit": "chars",
+      "config_key": null,
+      "notes": "Client rule: only the first 1024 characters of each TOC line are read"
+    },
+    {
+      "name": "QUICK_DETECTOR_BUDGET",
+      "value": {
+        "millis": 5
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "Doctor --quick / health, per detector"
+    }
+  ]
+]
