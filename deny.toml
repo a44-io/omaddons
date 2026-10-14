@@ -1,0 +1,46 @@
+# cargo-deny: run by `argc gate` when Cargo.toml, Cargo.lock or deny.toml changed.
+
+[graph]
+# Linux is the only supported platform (vision §2 non-goals).
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+
+[advisories]
+ignore = []
+
+[licenses]
+# Widen only in response to a concrete `cargo deny check licenses` rejection.
+allow = [
+    "Apache-2.0",
+    "BSD-3-Clause",        # subtle
+    "CDLA-Permissive-2.0", # webpki-roots
+    "ISC",                 # ring, rustls-webpki, untrusted
+    "MIT",
+    "Unicode-3.0",         # unicode-ident
+    "Zlib",                # zlib-rs
+]
+confidence-threshold = 0.93
+exceptions = []
+
+[licenses.private]
+# omaddons itself is `publish = false` and carries no license field.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+    # D9 and the §5.12 crate table: blocking ureq + rustls on ring, no async runtime,
+    # no native TLS, no aws-lc.
+    { crate = "tokio", reason = "D9: blocking I/O with scoped threads, no async runtime" },
+    { crate = "reqwest", reason = "D9: ureq is the only HTTP client" },
+    { crate = "native-tls", reason = "rustls with the ring provider only" },
+    { crate = "openssl-sys", reason = "rustls with the ring provider only" },
+    { crate = "aws-lc-rs", reason = "rustls with the ring provider only" },
+    { crate = "aws-lc-sys", reason = "rustls with the ring provider only" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

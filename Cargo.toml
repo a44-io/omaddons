@@ -1,0 +1,56 @@
+[package]
+name = "omaddons"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "World of Warcraft addon manager for Linux: every client, one journaled transaction engine, a machine-readable CLI"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "omaddons"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }
+etcetera = "0.11.0"
+fs4 = { version = "1.1.0", features = ["sync"] }
+jiff = { version = "0.2.38", features = ["serde"] }
+pelite = "0.10.0"
+reflink-copy = "0.1.30"
+rustix = { version = "1.1.5", features = ["fs"] }
+schemars = "1.2.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+shell-words = "1.1.1"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+toml = "1.1.8"
+toml_edit = "0.25.17"
+ulid = { version = "3.0.0", features = ["serde"] }
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+insta = { version = "1.49.0", features = ["json"] }
+predicates = "3.1.4"
+proptest = "1.12.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
