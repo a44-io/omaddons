@@ -1,0 +1,19 @@
+---
+source: src/model.rs
+expression: sample_target()
+---
+{
+  "key": "01JB8Q2V9W0000000000000000",
+  "id": "retail",
+  "install_root": "/games/battlenet/drive_c/Program Files (x86)/World of Warcraft",
+  "client_dir": "/games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_retail_",
+  "flavor_dir": "_retail_",
+  "product": "wow",
+  "install_kind": "battlenet",
+  "family": "mainline",
+  "kind": "live",
+  "version": "12.1.5.70391",
+  "interface": 120105,
+  "exe_name": "WoW.exe",
+  "label": null
+}

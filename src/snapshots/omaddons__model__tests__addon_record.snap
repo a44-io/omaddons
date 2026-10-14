@@ -1,0 +1,22 @@
+---
+source: src/model.rs
+expression: record
+---
+{
+  "ref": "gh:WeakAuras/WeakAuras2",
+  "name": "WeakAuras",
+  "version": "5.19.10",
+  "version_confidence": "release",
+  "release_id": "5.19.10",
+  "channel": "stable",
+  "pinned": false,
+  "reason": "explicit",
+  "required_by": [],
+  "folders": [
+    "WeakAuras",
+    "WeakAurasOptions"
+  ],
+  "state": "ok",
+  "installed_at": "2026-10-14T21:00:00Z",
+  "tx_id": "01JB8Q2VA00000000000000000"
+}

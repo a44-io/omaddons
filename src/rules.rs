@@ -413,6 +413,14 @@ pub struct ClientRules {
     pub legacy: bool,
 }
 
+/// The conservative `fallback-custom` row. A deserialized `Target` carries it until
+/// `Target::refresh_rules` re-derives the row from the live table.
+impl Default for ClientRules {
+    fn default() -> Self {
+        fallback_custom()
+    }
+}
+
 impl ClientRules {
     /// Whether this row applies to `kind`.
     pub fn applies_to(&self, kind: InstallKind) -> bool {
@@ -562,7 +570,17 @@ impl RulesTable {
     /// The rules of a client: the first row of the version's family whose install kind
     /// and version range match, else the install kind's fallback row.
     pub fn rules_for(&self, version: &ClientVersion, kind: InstallKind) -> &ClientRules {
-        let family = self.family_for(version, kind);
+        self.rules_for_family(self.family_for(version, kind), version, kind)
+    }
+
+    /// Like [`RulesTable::rules_for`] with the family already decided, e.g. by a config
+    /// target override.
+    pub fn rules_for_family(
+        &self,
+        family: Family,
+        version: &ClientVersion,
+        kind: InstallKind,
+    ) -> &ClientRules {
         self.client_rules
             .iter()
             .find(|row| row.family == family && row.applies_to(kind) && row.covers(version))
@@ -1504,6 +1522,34 @@ mod tests {
         );
         assert_eq!(table.family_range(Family::Unknown), None);
         assert_eq!(table.default_id_for_family(Family::Unknown), None);
+        assert_eq!(&ClientRules::default(), table.fallback(InstallKind::Custom));
+    }
+
+    #[test]
+    fn rules_for_family_honors_a_decided_family() {
+        let table = table();
+        let bn = InstallKind::Battlenet;
+        // A declared family picks that family's row: classic rows have no upper bound, so
+        // a 1.60.1 client declared vanilla gets the vanilla row. A version below every row
+        // of the declared family falls back.
+        assert_eq!(
+            table
+                .rules_for_family(Family::Vanilla, &v("1.60.1"), bn)
+                .name,
+            "vanilla"
+        );
+        assert_eq!(
+            table
+                .rules_for_family(Family::Mainline, &v("7.3.5"), bn)
+                .name,
+            "fallback-battlenet"
+        );
+        assert_eq!(
+            table
+                .rules_for_family(Family::Mainline, &v("12.1.5"), bn)
+                .name,
+            "mainline"
+        );
     }
 
     // ---- Products ------------------------------------------------------------------
