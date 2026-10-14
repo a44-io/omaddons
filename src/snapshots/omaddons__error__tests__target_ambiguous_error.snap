@@ -1,0 +1,35 @@
+---
+source: src/error.rs
+expression: error
+---
+{
+  "code": "target_ambiguous",
+  "message": "weakauras is compatible with 2 targets",
+  "fix": "omaddons install weakauras -t retail",
+  "fix_argv": [
+    "omaddons",
+    "install",
+    "weakauras",
+    "-t",
+    "retail"
+  ],
+  "alternatives": [
+    {
+      "display": "omaddons install weakauras -t forever",
+      "argv": [
+        "omaddons",
+        "install",
+        "weakauras",
+        "-t",
+        "forever"
+      ]
+    }
+  ],
+  "retryable": false,
+  "details": {
+    "candidates": [
+      "retail",
+      "forever"
+    ]
+  }
+}

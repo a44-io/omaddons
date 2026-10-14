@@ -1,0 +1,10 @@
+---
+source: src/error.rs
+expression: warning
+---
+{
+  "code": "reload_required",
+  "message": "retail needs a /reload",
+  "fix": "/reload in game",
+  "fix_argv": null
+}
