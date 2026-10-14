@@ -1,0 +1,748 @@
+---
+source: src/rules.rs
+expression: "RulesTable::builtin()"
+---
+{
+  "products": [
+    {
+      "code": "wow",
+      "folder": "_retail_",
+      "exe": "WoW.exe",
+      "kind": "live",
+      "default_id": "retail"
+    },
+    {
+      "code": "wowt",
+      "folder": "_ptr_",
+      "exe": "WoWT.exe",
+      "kind": "test",
+      "default_id": "ptr"
+    },
+    {
+      "code": "wowxptr",
+      "folder": "_xptr_",
+      "exe": "WoWT.exe",
+      "kind": "test",
+      "default_id": "xptr"
+    },
+    {
+      "code": "wow_beta",
+      "folder": "_beta_",
+      "exe": "WoWB.exe",
+      "kind": "test",
+      "default_id": "beta"
+    },
+    {
+      "code": "wow_classic",
+      "folder": "_classic_",
+      "exe": "WoWClassic.exe",
+      "kind": "live",
+      "default_id": "classic"
+    },
+    {
+      "code": "wow_classic_ptr",
+      "folder": "_classic_ptr_",
+      "exe": "WoWClassicT.exe",
+      "kind": "test",
+      "default_id": "classic-ptr"
+    },
+    {
+      "code": "wow_classic_beta",
+      "folder": "_classic_beta_",
+      "exe": "WowB.exe",
+      "kind": "test",
+      "default_id": "classic-beta"
+    },
+    {
+      "code": "wow_classic_era",
+      "folder": "_classic_era_",
+      "exe": "WoWClassic.exe",
+      "kind": "live",
+      "default_id": "era"
+    },
+    {
+      "code": "wow_classic_era_ptr",
+      "folder": "_classic_era_ptr_",
+      "exe": "WowClassicT.exe",
+      "kind": "test",
+      "default_id": "era-ptr"
+    },
+    {
+      "code": "wow_anniversary",
+      "folder": "_anniversary_",
+      "exe": "WoWClassic.exe",
+      "kind": "live",
+      "default_id": "anniversary"
+    },
+    {
+      "code": "wow_classic_titan",
+      "folder": "_classic_titan_",
+      "exe": "WoWClassic.exe",
+      "kind": "live",
+      "default_id": "titan"
+    },
+    {
+      "code": "wowf",
+      "folder": "_forever_",
+      "exe": "Wow.exe",
+      "kind": "live",
+      "default_id": "forever"
+    }
+  ],
+  "version_families": [
+    {
+      "install_kind": "custom",
+      "major": {
+        "min": 1,
+        "max": 1
+      },
+      "minor": {
+        "min": 12,
+        "max": 12
+      },
+      "family": "vanilla-legacy"
+    },
+    {
+      "install_kind": "custom",
+      "major": {
+        "min": 2,
+        "max": 2
+      },
+      "minor": {
+        "min": 4,
+        "max": 4
+      },
+      "family": "tbc-legacy"
+    },
+    {
+      "install_kind": "custom",
+      "major": {
+        "min": 3,
+        "max": 3
+      },
+      "minor": {
+        "min": 3,
+        "max": 3
+      },
+      "family": "wrath-legacy"
+    },
+    {
+      "install_kind": "custom",
+      "major": {
+        "min": 4,
+        "max": 4
+      },
+      "minor": {
+        "min": 3,
+        "max": 3
+      },
+      "family": "cata-legacy"
+    },
+    {
+      "install_kind": "custom",
+      "major": {
+        "min": 5,
+        "max": 5
+      },
+      "minor": {
+        "min": 4,
+        "max": 4
+      },
+      "family": "mists-legacy"
+    },
+    {
+      "install_kind": null,
+      "major": {
+        "min": 1,
+        "max": 1
+      },
+      "minor": {
+        "min": 0,
+        "max": 49
+      },
+      "family": "vanilla"
+    },
+    {
+      "install_kind": null,
+      "major": {
+        "min": 1,
+        "max": 1
+      },
+      "minor": {
+        "min": 50,
+        "max": null
+      },
+      "family": "forever"
+    },
+    {
+      "install_kind": null,
+      "major": {
+        "min": 2,
+        "max": 2
+      },
+      "minor": {
+        "min": 5,
+        "max": 5
+      },
+      "family": "tbc"
+    },
+    {
+      "install_kind": null,
+      "major": {
+        "min": 3,
+        "max": 3
+      },
+      "minor": {
+        "min": 4,
+        "max": 4
+      },
+      "family": "wrath"
+    },
+    {
+      "install_kind": null,
+      "major": {
+        "min": 3,
+        "max": 3
+      },
+      "minor": {
+        "min": 80,
+        "max": 80
+      },
+      "family": "titan"
+    },
+    {
+      "install_kind": null,
+      "major": {
+        "min": 4,
+        "max": 4
+      },
+      "minor": {
+        "min": 4,
+        "max": 4
+      },
+      "family": "cata"
+    },
+    {
+      "install_kind": null,
+      "major": {
+        "min": 5,
+        "max": 5
+      },
+      "minor": {
+        "min": 5,
+        "max": 5
+      },
+      "family": "mists"
+    },
+    {
+      "install_kind": null,
+      "major": {
+        "min": 6,
+        "max": null
+      },
+      "minor": {
+        "min": 0,
+        "max": null
+      },
+      "family": "mainline"
+    }
+  ],
+  "families": [
+    {
+      "family": "vanilla",
+      "interface_range": {
+        "min": 11300,
+        "max": 14999
+      },
+      "default_id": "vanilla"
+    },
+    {
+      "family": "forever",
+      "interface_range": {
+        "min": 15000,
+        "max": 19999
+      },
+      "default_id": "forever"
+    },
+    {
+      "family": "tbc",
+      "interface_range": {
+        "min": 20500,
+        "max": 20599
+      },
+      "default_id": "tbc"
+    },
+    {
+      "family": "wrath",
+      "interface_range": {
+        "min": 30400,
+        "max": 30499
+      },
+      "default_id": "wrath"
+    },
+    {
+      "family": "titan",
+      "interface_range": {
+        "min": 38000,
+        "max": 38099
+      },
+      "default_id": "titan"
+    },
+    {
+      "family": "cata",
+      "interface_range": {
+        "min": 40400,
+        "max": 40499
+      },
+      "default_id": "cata"
+    },
+    {
+      "family": "mists",
+      "interface_range": {
+        "min": 50500,
+        "max": 50599
+      },
+      "default_id": "mists"
+    },
+    {
+      "family": "mainline",
+      "interface_range": {
+        "min": 60000,
+        "max": null
+      },
+      "default_id": "mainline"
+    },
+    {
+      "family": "vanilla-legacy",
+      "interface_range": {
+        "min": 11200,
+        "max": 11299
+      },
+      "default_id": "vanilla"
+    },
+    {
+      "family": "tbc-legacy",
+      "interface_range": {
+        "min": 20400,
+        "max": 20499
+      },
+      "default_id": "tbc"
+    },
+    {
+      "family": "wrath-legacy",
+      "interface_range": {
+        "min": 30300,
+        "max": 30399
+      },
+      "default_id": "wotlk"
+    },
+    {
+      "family": "cata-legacy",
+      "interface_range": {
+        "min": 40300,
+        "max": 40399
+      },
+      "default_id": "cata"
+    },
+    {
+      "family": "mists-legacy",
+      "interface_range": {
+        "min": 50400,
+        "max": 50499
+      },
+      "default_id": "mists"
+    },
+    {
+      "family": "unknown",
+      "interface_range": null,
+      "default_id": null
+    }
+  ],
+  "client_rules": [
+    {
+      "name": "mainline",
+      "family": "mainline",
+      "install_kind": null,
+      "version_min": "12.1.5",
+      "version_max": null,
+      "game": "standard",
+      "game_types": [
+        "standard"
+      ],
+      "multi_toc": true,
+      "comma_interface": true,
+      "game_suffixes": [
+        "Standard"
+      ],
+      "family_suffixes": [
+        "Mainline"
+      ],
+      "legacy_suffixes": [],
+      "directive_conditionals": true,
+      "path_variables": true,
+      "interface_includes_patch": true,
+      "legacy": false
+    },
+    {
+      "name": "mainline-12.0.7",
+      "family": "mainline",
+      "install_kind": null,
+      "version_min": "12.0.7",
+      "version_max": "12.1.4",
+      "game": "standard",
+      "game_types": [
+        "standard"
+      ],
+      "multi_toc": true,
+      "comma_interface": true,
+      "game_suffixes": [],
+      "family_suffixes": [
+        "Mainline"
+      ],
+      "legacy_suffixes": [],
+      "directive_conditionals": true,
+      "path_variables": true,
+      "interface_includes_patch": true,
+      "legacy": false
+    },
+    {
+      "name": "mainline-10.2.7",
+      "family": "mainline",
+      "install_kind": null,
+      "version_min": "10.2.7",
+      "version_max": "12.0.6",
+      "game": "standard",
+      "game_types": [
+        "standard"
+      ],
+      "multi_toc": true,
+      "comma_interface": true,
+      "game_suffixes": [],
+      "family_suffixes": [
+        "Mainline"
+      ],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": true,
+      "interface_includes_patch": true,
+      "legacy": false
+    },
+    {
+      "name": "mainline-9.1",
+      "family": "mainline",
+      "install_kind": null,
+      "version_min": "9.1.0",
+      "version_max": "10.2.6",
+      "game": "standard",
+      "game_types": [
+        "standard"
+      ],
+      "multi_toc": true,
+      "comma_interface": false,
+      "game_suffixes": [],
+      "family_suffixes": [
+        "Mainline"
+      ],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": true,
+      "interface_includes_patch": true,
+      "legacy": false
+    },
+    {
+      "name": "forever",
+      "family": "forever",
+      "install_kind": null,
+      "version_min": "1.50.0",
+      "version_max": null,
+      "game": "camelot",
+      "game_types": [
+        "camelot",
+        "forever"
+      ],
+      "multi_toc": true,
+      "comma_interface": true,
+      "game_suffixes": [
+        "Forever",
+        "Camelot"
+      ],
+      "family_suffixes": [
+        "Mainline"
+      ],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": true,
+      "interface_includes_patch": true,
+      "legacy": false
+    },
+    {
+      "name": "vanilla",
+      "family": "vanilla",
+      "install_kind": null,
+      "version_min": "1.13.0",
+      "version_max": null,
+      "game": "vanilla",
+      "game_types": [
+        "vanilla"
+      ],
+      "multi_toc": true,
+      "comma_interface": true,
+      "game_suffixes": [
+        "Vanilla"
+      ],
+      "family_suffixes": [
+        "Classic"
+      ],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": true,
+      "interface_includes_patch": true,
+      "legacy": false
+    },
+    {
+      "name": "tbc",
+      "family": "tbc",
+      "install_kind": null,
+      "version_min": "2.5.0",
+      "version_max": null,
+      "game": "tbc",
+      "game_types": [
+        "tbc"
+      ],
+      "multi_toc": true,
+      "comma_interface": true,
+      "game_suffixes": [
+        "TBC"
+      ],
+      "family_suffixes": [
+        "Classic"
+      ],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": true,
+      "interface_includes_patch": true,
+      "legacy": false
+    },
+    {
+      "name": "wrath",
+      "family": "wrath",
+      "install_kind": null,
+      "version_min": "3.4.0",
+      "version_max": null,
+      "game": "wrath",
+      "game_types": [
+        "wrath"
+      ],
+      "multi_toc": true,
+      "comma_interface": true,
+      "game_suffixes": [
+        "Wrath"
+      ],
+      "family_suffixes": [
+        "Classic"
+      ],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": true,
+      "interface_includes_patch": true,
+      "legacy": false
+    },
+    {
+      "name": "titan",
+      "family": "titan",
+      "install_kind": null,
+      "version_min": "3.80.0",
+      "version_max": null,
+      "game": "titan",
+      "game_types": [],
+      "multi_toc": true,
+      "comma_interface": true,
+      "game_suffixes": [],
+      "family_suffixes": [
+        "Classic"
+      ],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": true,
+      "interface_includes_patch": true,
+      "legacy": false
+    },
+    {
+      "name": "cata",
+      "family": "cata",
+      "install_kind": null,
+      "version_min": "4.4.0",
+      "version_max": null,
+      "game": "cata",
+      "game_types": [
+        "cata"
+      ],
+      "multi_toc": true,
+      "comma_interface": true,
+      "game_suffixes": [
+        "Cata"
+      ],
+      "family_suffixes": [
+        "Classic"
+      ],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": true,
+      "interface_includes_patch": true,
+      "legacy": false
+    },
+    {
+      "name": "mists",
+      "family": "mists",
+      "install_kind": null,
+      "version_min": "5.5.0",
+      "version_max": null,
+      "game": "mists",
+      "game_types": [
+        "mists"
+      ],
+      "multi_toc": true,
+      "comma_interface": true,
+      "game_suffixes": [
+        "Mists"
+      ],
+      "family_suffixes": [
+        "Classic"
+      ],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": true,
+      "interface_includes_patch": true,
+      "legacy": false
+    },
+    {
+      "name": "vanilla-legacy",
+      "family": "vanilla-legacy",
+      "install_kind": "custom",
+      "version_min": "1.12.0",
+      "version_max": null,
+      "game": "vanilla",
+      "game_types": [],
+      "multi_toc": false,
+      "comma_interface": false,
+      "game_suffixes": [],
+      "family_suffixes": [],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": false,
+      "interface_includes_patch": false,
+      "legacy": true
+    },
+    {
+      "name": "tbc-legacy",
+      "family": "tbc-legacy",
+      "install_kind": "custom",
+      "version_min": "2.4.0",
+      "version_max": null,
+      "game": "tbc",
+      "game_types": [],
+      "multi_toc": false,
+      "comma_interface": false,
+      "game_suffixes": [],
+      "family_suffixes": [],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": false,
+      "interface_includes_patch": false,
+      "legacy": true
+    },
+    {
+      "name": "wrath-legacy",
+      "family": "wrath-legacy",
+      "install_kind": "custom",
+      "version_min": "3.3.0",
+      "version_max": null,
+      "game": "wrath",
+      "game_types": [],
+      "multi_toc": false,
+      "comma_interface": false,
+      "game_suffixes": [],
+      "family_suffixes": [],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": false,
+      "interface_includes_patch": false,
+      "legacy": true
+    },
+    {
+      "name": "cata-legacy",
+      "family": "cata-legacy",
+      "install_kind": "custom",
+      "version_min": "4.3.0",
+      "version_max": null,
+      "game": "cata",
+      "game_types": [],
+      "multi_toc": false,
+      "comma_interface": false,
+      "game_suffixes": [],
+      "family_suffixes": [],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": false,
+      "interface_includes_patch": false,
+      "legacy": true
+    },
+    {
+      "name": "mists-legacy",
+      "family": "mists-legacy",
+      "install_kind": "custom",
+      "version_min": "5.4.0",
+      "version_max": null,
+      "game": "mists",
+      "game_types": [],
+      "multi_toc": false,
+      "comma_interface": false,
+      "game_suffixes": [],
+      "family_suffixes": [],
+      "legacy_suffixes": [],
+      "directive_conditionals": false,
+      "path_variables": false,
+      "interface_includes_patch": false,
+      "legacy": true
+    }
+  ],
+  "fallback_battlenet": {
+    "name": "fallback-battlenet",
+    "family": "unknown",
+    "install_kind": "battlenet",
+    "version_min": "0.0.0",
+    "version_max": null,
+    "game": "unknown",
+    "game_types": [],
+    "multi_toc": true,
+    "comma_interface": true,
+    "game_suffixes": [],
+    "family_suffixes": [
+      "Mainline",
+      "Classic"
+    ],
+    "legacy_suffixes": [],
+    "directive_conditionals": false,
+    "path_variables": true,
+    "interface_includes_patch": true,
+    "legacy": false
+  },
+  "fallback_custom": {
+    "name": "fallback-custom",
+    "family": "unknown",
+    "install_kind": "custom",
+    "version_min": "0.0.0",
+    "version_max": null,
+    "game": "unknown",
+    "game_types": [],
+    "multi_toc": false,
+    "comma_interface": false,
+    "game_suffixes": [],
+    "family_suffixes": [],
+    "legacy_suffixes": [],
+    "directive_conditionals": false,
+    "path_variables": false,
+    "interface_includes_patch": false,
+    "legacy": true
+  }
+}
