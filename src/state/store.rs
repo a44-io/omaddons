@@ -102,8 +102,23 @@ pub trait Versioned: Serialize + DeserializeOwned + JsonSchema {
 }
 
 /// Every persisted format and its current version, for capabilities (M4) and the
-/// wire-name golden. Each `Versioned` impl adds its row here.
-pub const KINDS: &[(&str, SchemaVersion)] = &[];
+/// wire-name golden. Each `Versioned` impl adds its row here (`history` lines carry
+/// their own version, `history::CURRENT`).
+pub const KINDS: &[(&str, SchemaVersion)] = &[
+    (
+        <super::records::TargetRecord as Versioned>::KIND,
+        <super::records::TargetRecord as Versioned>::CURRENT,
+    ),
+    (
+        <super::files_index::FilesIndex as Versioned>::KIND,
+        <super::files_index::FilesIndex as Versioned>::CURRENT,
+    ),
+    (
+        <super::status::StatusFile as Versioned>::KIND,
+        <super::status::StatusFile as Versioned>::CURRENT,
+    ),
+    ("history", super::history::CURRENT),
+];
 
 /// How a loaded file's version compared with this binary's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +213,18 @@ pub fn save<T: Versioned>(
     {
         return Err(too_new::<T>(path, on_disk.version));
     }
+    let json = encode(value)?;
+    let op = Op::WriteFile {
+        content: Content::Bytes(&json),
+        mode: Some(0o644),
+    };
+    mutate(s, path, op)?;
+    Ok(())
+}
+
+/// The bytes `save` writes: pretty JSON with `schema_version` first and a trailing
+/// newline. For derived files that may replace a corrupt predecessor (status.json).
+pub fn encode<T: Versioned>(value: &T) -> Result<Vec<u8>> {
     #[derive(Serialize)]
     struct Document<'a, T> {
         schema_version: SchemaVersion,
@@ -210,12 +237,7 @@ pub fn save<T: Versioned>(
     })
     .map_err(|err| Error::internal(format!("serializing {}: {err}", T::KIND)))?;
     json.push(b'\n');
-    let op = Op::WriteFile {
-        content: Content::Bytes(&json),
-        mode: Some(0o644),
-    };
-    mutate(s, path, op)?;
-    Ok(())
+    Ok(json)
 }
 
 /// The version and the rest of the document.

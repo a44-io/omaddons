@@ -114,7 +114,18 @@ impl TreeDigest {
     pub fn from_entries<P: Into<String>>(
         entries: impl IntoIterator<Item = (P, u64, [u8; 32])>,
     ) -> Self {
-        let mut lines: Vec<(String, u64, [u8; 32])> = entries
+        Self::from_hex_entries(
+            entries
+                .into_iter()
+                .map(|(path, size, sha)| (path, size, hex(&sha))),
+        )
+    }
+
+    /// The same, with the SHA-256s already in lowercase hex (the per-file index form).
+    pub fn from_hex_entries<P: Into<String>, H: AsRef<str>>(
+        entries: impl IntoIterator<Item = (P, u64, H)>,
+    ) -> Self {
+        let mut lines: Vec<(String, u64, H)> = entries
             .into_iter()
             .map(|(path, size, sha)| (path.into(), size, sha))
             .collect();
@@ -125,7 +136,7 @@ impl TreeDigest {
             hasher.update(b"\0");
             hasher.update(size.to_string().as_bytes());
             hasher.update(b"\0");
-            hasher.update(hex(&sha).as_bytes());
+            hasher.update(sha.as_ref().as_bytes());
             hasher.update(b"\n");
         }
         Self(hasher.finalize().into())
@@ -157,6 +168,13 @@ impl TreeDigest {
     }
 }
 
+/// `tree:sha256:<hex>`, the form recorded in `actions.jsonl` and the per-file index.
+impl fmt::Display for TreeDigest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "tree:sha256:{}", hex(&self.0))
+    }
+}
+
 /// The state of a path that an operation changes, recorded before and after it:
 /// `sha256:<hex>` (file content), `tree:sha256:<hex>` (directory), `len:<n>` (an
 /// append), `mode:<octal>` (chmod) or `link:<target>` (symlink).
@@ -173,7 +191,7 @@ impl fmt::Display for StateDigest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::File(sha) => write!(f, "sha256:{}", hex(sha)),
-            Self::Tree(tree) => write!(f, "tree:sha256:{}", hex(&tree.0)),
+            Self::Tree(tree) => tree.fmt(f),
             Self::Len(len) => write!(f, "len:{len}"),
             Self::Mode(mode) => write!(f, "mode:{mode:o}"),
             Self::Link(target) => write!(f, "link:{}", target.display()),
