@@ -52,6 +52,9 @@ pub const SAVEDVARIABLES_MAX_BYTES: u64 = 64 * MIB;
 pub const TOC_LINE_MAX: usize = 1024;
 /// Time budget per doctor `--quick` / `health` detector.
 pub const QUICK_DETECTOR_BUDGET: Duration = Duration::from_millis(5);
+/// Most bytes discovery reads from one client metadata file (`.build.info`,
+/// `.flavor.info`, `Config.wtf`, `realmlist.wtf`, …); the rest is ignored.
+pub const DISCOVERY_FILE_MAX_BYTES: u64 = MIB;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -220,6 +223,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "ms",
         None,
         "Doctor --quick / health, per detector",
+    ),
+    limit(
+        "DISCOVERY_FILE_MAX_BYTES",
+        LimitValue::Bytes(DISCOVERY_FILE_MAX_BYTES),
+        "bytes",
+        None,
+        "Most bytes read from one client metadata file during discovery",
     ),
 ];
 
@@ -390,6 +400,7 @@ mod tests {
         "DOWNLOAD_MAX_BYTES", "LOCK_ACQUIRE_TIMEOUT", "TX_RETENTION", "SNAPSHOT_MAX_BYTES",
         "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "REASON_MAX_CHARS", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
+        "DISCOVERY_FILE_MAX_BYTES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

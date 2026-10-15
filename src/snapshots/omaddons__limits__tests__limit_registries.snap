@@ -319,6 +319,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "ms",
       "config_key": null,
       "notes": "Doctor --quick / health, per detector"
+    },
+    {
+      "name": "DISCOVERY_FILE_MAX_BYTES",
+      "value": {
+        "bytes": 1048576
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Most bytes read from one client metadata file during discovery"
     }
   ]
 ]
