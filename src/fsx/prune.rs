@@ -16,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 use super::lock::{GlobalLock, GlobalLockGuard, InflightLock};
 use super::scope::{ScopeTable, Writer};
 use super::session::WriteSession;
-use super::{Op, RenameMode, ensure_dir_all, failpoint, mutate};
+use super::{FsxError, Op, RenameMode, ensure_dir_all, failpoint, mutate};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::{PlanId, TxId};
 
@@ -133,14 +133,22 @@ pub fn prune(
             .map(OsStr::to_string_lossy)
             .unwrap_or_default();
         let entry = plan.trash.join(format!("{prune_id}-{n}-{name}"));
-        mutate(
+        let into_trash = |mode| Op::Rename { to: &entry, mode };
+        match mutate(
             &mut session,
             &plan.victim,
-            Op::Rename {
-                to: &entry,
-                mode: RenameMode::NoReplace,
-            },
-        )?;
+            into_trash(RenameMode::NoReplace),
+        ) {
+            // Without renameat2 flags (NTFS via ntfs-3g, some FUSE): the entry's name is
+            // unique to this prune, so once it is confirmed absent a plain rename cannot
+            // overwrite anything.
+            Err(FsxError::Unsupported) if fs::symlink_metadata(&entry).is_err() => {
+                mutate(&mut session, &plan.victim, into_trash(RenameMode::Replace))?;
+            }
+            other => {
+                other?;
+            }
+        }
         trashed.push((plan.victim, entry, plan.trash));
     }
     let fail = |err: io::Error| {
@@ -625,6 +633,26 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(1),
             "it waited for its own lock"
         );
+        assert!(!victim.exists());
+    }
+
+    #[test]
+    fn without_renameat2_flags_victims_still_reach_the_trash() {
+        let f = fixture();
+        let tx: TxId = TX.parse().unwrap();
+        let victim = f.paths.cache_tmp(&tx);
+        fs::create_dir_all(victim.join("part")).unwrap();
+        let victims = std::slice::from_ref(&victim);
+        let report = failpoint::with_spec("fsx.renameat2.einval=error", || {
+            prune(
+                &f.scopes,
+                PruneReason::PostCommitCleanup,
+                victims,
+                LockUse::Acquire,
+            )
+        })
+        .unwrap();
+        assert_eq!(report.removed, victims);
         assert!(!victim.exists());
     }
 

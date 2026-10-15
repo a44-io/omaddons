@@ -625,19 +625,29 @@ impl TargetPlanner<'_> {
             file.is_some() || matches!(wanted.r#ref, Ref::File { .. } | Ref::Url { .. });
         let mut tried: Vec<Value> = Vec::new();
         let mut winner = None;
+        let mut unreadable: Option<Error> = None;
         for candidate in candidates {
             match self.try_candidate(&candidate) {
                 Ok(Ok(won)) => {
                     winner = Some(won);
                     break;
                 }
-                Ok(Err(reason)) | Err(reason) => {
+                Ok(Err(reason)) => {
                     tried.push(json!({ "asset": candidate.asset.filename, "reason": reason }));
+                }
+                Err(error) => {
+                    let reason = format!("{}: {}", error.code.wire(), error.message);
+                    tried.push(json!({ "asset": candidate.asset.filename, "reason": reason }));
+                    unreadable.get_or_insert(error);
                 }
             }
         }
         let Some(winner) = winner else {
             if user_supplied {
+                // The user's own archive: why it cannot be read, else it does not load.
+                if let Some(error) = unreadable {
+                    return Err(error);
+                }
                 return Err(Error::new(
                     ErrorCode::WrongFlavor,
                     format!("{} does not load on {} ({:?})", wanted.r#ref, self.target.id, self.target.family),
@@ -938,33 +948,29 @@ impl TargetPlanner<'_> {
 
     /// Downloads, inspects and verifies one candidate: `Ok(Ok(winner))`, or the reason
     /// it was rejected.
-    fn try_candidate(
-        &self,
-        candidate: &Candidate,
-    ) -> std::result::Result<std::result::Result<Winner, String>, String> {
+    /// Downloads, inspects and verifies one candidate: `Ok(Err(reason))` when it does not
+    /// load on this client, `Err` when it cannot even be read (download, archive).
+    fn try_candidate(&self, candidate: &Candidate) -> Result<std::result::Result<Winner, String>> {
         let ctx = self.ctx;
-        let reason = |e: Error| format!("{}: {}", e.code.wire(), e.message);
         let (inspected, blob) = match &candidate.asset.location {
             AssetLocation::Url(url) => {
-                let blob = self
-                    .download(url, candidate.asset.expected_hash.as_ref())
-                    .map_err(reason)?;
-                let inspected = inspect(&blob, &ctx.limits, ctx.table).map_err(reason)?;
+                let blob = self.download(url, candidate.asset.expected_hash.as_ref())?;
+                let inspected = inspect(&blob, &ctx.limits, ctx.table)?;
                 (inspected, Some(blob))
             }
-            AssetLocation::LocalZip(path) => (
-                inspect(path, &ctx.limits, ctx.table).map_err(reason)?,
-                Some(path.clone()),
-            ),
-            AssetLocation::LocalDir(path) => (
-                inspect_dir(path, &ctx.limits, ctx.table).map_err(reason)?,
-                None,
-            ),
+            AssetLocation::LocalZip(path) => {
+                (inspect(path, &ctx.limits, ctx.table)?, Some(path.clone()))
+            }
+            AssetLocation::LocalDir(path) => (inspect_dir(path, &ctx.limits, ctx.table)?, None),
             AssetLocation::GitCheckout { .. } => {
-                return Err("source_disabled: git checkouts arrive with the git sources".to_owned());
+                return Err(Error::new(
+                    ErrorCode::SourceDisabled,
+                    "git checkouts arrive with the git sources",
+                    Suggestion::command(["omaddons", "help", "install"]),
+                ));
             }
         };
-        let verdicts = verify(&inspected, self.target, ctx.table).map_err(reason)?;
+        let verdicts = verify(&inspected, self.target, ctx.table)?;
         if !compatible(&verdicts) {
             let why: Vec<String> = verdicts
                 .iter()

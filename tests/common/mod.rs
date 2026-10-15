@@ -11,6 +11,7 @@
 
 pub mod addons;
 pub mod archives;
+pub mod engine;
 pub mod env;
 pub mod home;
 pub mod http;

@@ -92,18 +92,55 @@ impl Home {
 
     /// Runs `omaddons <args>` verbatim.
     pub fn exec(&self, args: &[String]) -> Run {
-        let mut cmd = self.env.command();
+        self.exec_with(args, &[])
+    }
+
+    /// Runs `omaddons <args>` with extra environment variables (`OMADDONS_FAILPOINTS`).
+    /// A process killed by a signal (a failpoint `abort`) reports code -1.
+    pub fn exec_with(&self, args: &[String], extra: &[(&str, &str)]) -> Run {
+        let output = self.std_command(args, extra).output().unwrap();
+        Run {
+            argv: args.to_vec(),
+            code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8(output.stdout).unwrap(),
+            stderr: String::from_utf8(output.stderr).unwrap(),
+        }
+    }
+
+    /// Starts `omaddons <args> --json` in the background.
+    pub fn spawn(&self, args: &[&str], extra: &[(&str, &str)]) -> std::process::Child {
+        let mut argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        argv.push("--json".to_owned());
+        self.std_command(&argv, extra)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    fn std_command(&self, args: &[String], extra: &[(&str, &str)]) -> std::process::Command {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_omaddons"));
+        self.env.apply_to(&mut cmd);
         cmd.env("OMADDONS_HTTP_FIXTURES", &self.http);
         if let Some(proc) = &self.proc {
             cmd.env("OMADDONS_PROC_ROOT", proc);
         }
-        let output = cmd.args(args).output().unwrap();
-        Run {
-            argv: args.to_vec(),
-            code: output.status.code().unwrap(),
-            stdout: String::from_utf8(output.stdout).unwrap(),
-            stderr: String::from_utf8(output.stderr).unwrap(),
+        for (key, value) in extra {
+            cmd.env(key, value);
         }
+        cmd.args(args);
+        cmd
+    }
+}
+
+/// The finished background run of [`Home::spawn`].
+pub fn wait(child: std::process::Child, argv: &[&str]) -> Run {
+    let output = child.wait_with_output().unwrap();
+    Run {
+        argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8(output.stdout).unwrap(),
+        stderr: String::from_utf8(output.stderr).unwrap(),
     }
 }
 

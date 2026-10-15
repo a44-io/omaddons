@@ -712,6 +712,20 @@ fn build_items(
                 return failed(Some(p.r#ref.clone()), error);
             }
             let change = outcome.and_then(|o| o.changes.iter().find(|c| c.r#ref == p.r#ref));
+            // Planned but not committed: the target's commit failed (or a concurrent run
+            // already made the change, which is unchanged).
+            let was_planned = done
+                .plan
+                .targets
+                .iter()
+                .flat_map(|t| &t.changes)
+                .any(|c| c.r#ref == p.r#ref);
+            if change.is_none()
+                && was_planned
+                && let Some(error) = &target_failure
+            {
+                return failed(Some(p.r#ref.clone()), error);
+            }
             let planned = done
                 .plan
                 .targets
