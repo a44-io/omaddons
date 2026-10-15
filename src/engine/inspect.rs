@@ -1106,10 +1106,10 @@ mod tests {
         );
         assert!(over_ratio(ARCHIVE_RATIO_FLOOR + 1, 1, 200));
         assert!(
-            !over_ratio(20_000_000, 100_000, 200),
+            !over_ratio(40_000_000, 200_000, 200),
             "exactly 200:1 is allowed"
         );
-        assert!(over_ratio(20_000_001, 100_000, 200));
+        assert!(over_ratio(40_000_001, 200_000, 200));
         assert!(
             !over_ratio(u64::MAX, 2, u64::MAX),
             "the product saturates instead of overflowing"

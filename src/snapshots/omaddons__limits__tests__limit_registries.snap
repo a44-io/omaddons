@@ -220,7 +220,7 @@ expression: "(politeness, REGISTRY)"
     {
       "name": "ARCHIVE_RATIO_FLOOR",
       "value": {
-        "bytes": 1048576
+        "bytes": 33554432
       },
       "unit": "bytes",
       "config_key": null,

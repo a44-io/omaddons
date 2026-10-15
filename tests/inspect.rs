@@ -67,7 +67,8 @@ const FOO_TOC: (&str, &[u8]) = ("Foo/Foo.toc", b"## Interface: 120105\n");
 
 #[test]
 fn hostile_entries_are_refused() {
-    let zeros = vec![0u8; 10 << 20];
+    // Past ARCHIVE_RATIO_FLOOR (32 MiB), so the ratio applies.
+    let zeros = vec![0u8; 40 << 20];
     let cases: Vec<(&str, Vec<RawEntry>)> = vec![
         ("traversal", vec![RawEntry::stored("Foo/../../x", b"x")]),
         (
@@ -180,6 +181,20 @@ fn lying_headers_stop_at_the_real_size() {
         );
         assert!(err.message.contains("declares"), "{label}: {}", err.message);
     }
+}
+
+/// Plater v660 ships a mostly transparent 512x512 TGA (1 MiB of pixels and an 18-byte
+/// header) that deflates about 1000:1: a texture, not a bomb.
+#[test]
+fn a_compressible_texture_is_not_a_bomb() {
+    let mut texture = vec![0u8; (1 << 20) + 18];
+    texture[2] = 2;
+    let zip = raw_zip(&[
+        RawEntry::stored(FOO_TOC.0, FOO_TOC.1),
+        RawEntry::deflated("Foo/images/transparent.tga", &texture),
+    ]);
+    let inspected = inspect_bytes(zip);
+    assert!(inspected.is_ok(), "{inspected:?}");
 }
 
 #[test]

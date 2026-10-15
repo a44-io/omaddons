@@ -6,11 +6,12 @@
 
 mod common;
 
-use std::io::Read;
+use std::io::{Read, Write};
 
 use common::env::TestEnv;
 use common::http::paths;
 use common::netlog::{assert_no_github_rest, read_net_log};
+use common::trees::{BattlenetRoot, Prefix};
 use omaddons::model::AssetLocation;
 use omaddons::net::{CacheState, Http, NetConfig, NetLog, Request, stack};
 use omaddons::sources::git::GitSource;
@@ -18,6 +19,7 @@ use omaddons::sources::git_hosts::GitRunner;
 use omaddons::sources::github::GithubSource;
 use omaddons::sources::{Source, Wanted};
 use omaddons::state::paths::Paths;
+use serde_json::Value;
 use support::{latest_tag, live};
 
 const REPO: &str = "https://github.com/WeakAuras/WeakAuras2";
@@ -155,6 +157,70 @@ fn github_source_decodes_live() {
     );
     let again = GithubSource::recent_tags("WeakAuras", "WeakAuras2", http.as_ref()).unwrap();
     assert!(again.revalidated && again.tags == recent.tags);
+}
+
+/// The M1 checkpoint's synthetic Forever target (1.60.x, `wowf`): the five keyless
+/// publishers through the binary. Each installs, verified by the client's TOC rules, or is
+/// refused with `no_compatible_release`; nothing installed is invalid afterwards, and the
+/// stable channel never touches the REST API.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn keyless_installs_into_a_synthetic_forever_target() {
+    let Some((env, _http)) = live() else { return };
+    BattlenetRoot::at(Prefix::new(&env, "battlenet").wow_root())
+        .product("wowf")
+        .build();
+    let run = |args: &[&str]| -> Value {
+        let out = env.command().args(args).arg("--json").output().unwrap();
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let installed = run(&[
+        "install",
+        "weakauras",
+        "dbm",
+        "bigwigs",
+        "plater",
+        "bartender4",
+        "-t",
+        "forever",
+    ]);
+    let items = installed["data"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let summary: Vec<String> = items
+        .iter()
+        .map(|i| {
+            format!(
+                "{}: {} {}",
+                i["request"],
+                i["status"],
+                i["to_version"]
+                    .as_str()
+                    .or(i["error"]["code"].as_str())
+                    .unwrap_or("")
+            )
+        })
+        .collect();
+    let _ = writeln!(std::io::stderr(), "forever: {summary:#?}");
+    assert_eq!(
+        (installed["exit_code"].as_i64(), items.len()),
+        (Some(0), 5),
+        "{installed:#}"
+    );
+    for item in &items {
+        let refused =
+            item["status"] == "failed" && item["error"]["code"] == "no_compatible_release";
+        assert!(item["status"] == "installed" || refused, "{item:#}");
+    }
+    let status = run(&["status"]);
+    let forever = &status["data"]["targets"][0];
+    assert_eq!(
+        (&forever["family"], &forever["folders"]["invalid"]),
+        (&Value::from("forever"), &Value::from(0)),
+        "{status:#}"
+    );
+    assert_no_github_rest(&read_net_log(&paths(&env)));
 }
 
 /// git refs on another host through the git binary: `ls-remote` for the default branch of

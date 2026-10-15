@@ -25,8 +25,10 @@ pub const ARCHIVE_MAX_UNCOMPRESSED: u64 = GIB;
 /// and in total. (config)
 pub const ARCHIVE_MAX_RATIO: u64 = 200;
 /// The ratio applies once an entry, or the whole archive, has expanded past this many
-/// bytes: small repetitive files (10 KB of padding deflates over 300:1) are not bombs.
-pub const ARCHIVE_RATIO_FLOOR: u64 = MIB;
+/// bytes: repetitive files are not bombs (10 KB of padding deflates over 300:1, and a
+/// mostly transparent 512x512 texture about 1000:1). 32 MiB covers a 2048x2048 RGBA
+/// texture; `ARCHIVE_MAX_UNCOMPRESSED` still bounds every archive.
+pub const ARCHIVE_RATIO_FLOOR: u64 = 32 * MIB;
 /// Largest download accepted. (config)
 pub const DOWNLOAD_MAX_BYTES: u64 = 512 * MIB;
 /// How long to wait for the global lock, then `locked` (exit 5), or `concurrency_lost`

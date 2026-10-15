@@ -100,7 +100,8 @@ fn hostile_archives_are_refused_and_nothing_reaches_the_client() {
     let s = Scene::new();
     s.install("gh:o/foo", "v1");
     let foo_toc = ("Foo/Foo.toc", "## Interface: 120105\n".as_bytes());
-    let zeros = vec![0u8; 10 << 20];
+    // Past ARCHIVE_RATIO_FLOOR (32 MiB), so the ratio applies.
+    let zeros = vec![0u8; 40 << 20];
     let cases: Vec<(&str, Vec<RawEntry>)> = vec![
         ("traversal", vec![RawEntry::stored("Foo/../../x", b"x")]),
         ("absolute", vec![RawEntry::stored("/etc/x", b"x")]),
