@@ -21,6 +21,7 @@ pub mod pe;
 pub mod product_db;
 pub mod realmlist;
 pub mod registry;
+pub mod running;
 pub mod scan;
 pub mod target;
 
