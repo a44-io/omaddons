@@ -305,36 +305,6 @@ fn a_closed_stdout_is_not_an_error() {
     assert!(stdout_written());
 }
 
-#[test]
-fn help_is_data() {
-    let mut stdout = Vec::new();
-    let data = BTreeMap::from([("verbs", vec!["install", "update"])]);
-    emit_help(
-        &OutputConfig::machine(),
-        &mut stdout,
-        Instant::now(),
-        &data,
-        "usage: omaddons …\n",
-    );
-    let envelope: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
-    assert_eq!(
-        (
-            envelope["command"].as_str(),
-            envelope["data"]["verbs"][0].as_str()
-        ),
-        (Some("help"), Some("install"))
-    );
-    let mut text = Vec::new();
-    emit_help(
-        &human(),
-        &mut text,
-        Instant::now(),
-        &data,
-        "usage: omaddons …\n",
-    );
-    assert_eq!(String::from_utf8(text).unwrap(), "usage: omaddons …\n");
-}
-
 /// Envelope shapes. `meta` is fixed and the crate version masked, so neither timing nor
 /// a version bump churns the snapshots.
 #[test]

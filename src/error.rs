@@ -68,6 +68,16 @@ impl Exit {
         }
     }
 
+    /// Whether retrying can help: `None` for success, and for `failed`, where
+    /// `error.retryable` decides per error.
+    pub const fn retryable(self) -> Option<bool> {
+        match self {
+            Self::Ok | Self::Failed => None,
+            Self::Locked => Some(true),
+            Self::Usage | Self::NotFound | Self::Refused | Self::CheckFailed => Some(false),
+        }
+    }
+
     pub const fn meaning(self) -> &'static str {
         match self {
             Self::Ok => {

@@ -146,37 +146,6 @@ pub fn emit_to<O: Outcome, W: Write>(
     }
 }
 
-/// Help is data: an envelope with the help as `data` under JSON, the text otherwise.
-pub fn emit_help<D: Serialize>(
-    cfg: &OutputConfig,
-    stdout: &mut dyn Write,
-    started: Instant,
-    data: &D,
-    text: &str,
-) -> Exit {
-    match cfg.output {
-        OutputMode::Json => {
-            let meta = Meta {
-                elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                offline: false,
-            };
-            write_json(
-                stdout,
-                &Envelope::success("help", data, false, &[], &[], meta),
-            );
-        }
-        OutputMode::Human => {
-            STDOUT_WRITTEN.store(true, Ordering::SeqCst);
-            ignore_write_error(
-                stdout
-                    .write_all(text.as_bytes())
-                    .and_then(|()| stdout.flush()),
-            );
-        }
-    }
-    Exit::Ok
-}
-
 /// One compact JSON document and a newline, in one write.
 fn write_json<T: Serialize>(stdout: &mut dyn Write, value: &T) {
     STDOUT_WRITTEN.store(true, Ordering::SeqCst);

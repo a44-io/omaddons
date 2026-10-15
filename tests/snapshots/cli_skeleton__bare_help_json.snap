@@ -1,0 +1,172 @@
+---
+source: tests/cli_skeleton.rs
+expression: envelope
+---
+{
+  "command": "help",
+  "commands": [],
+  "data": {
+    "commands": [
+      {
+        "about": "Show help for omaddons or one command",
+        "aliases": [],
+        "name": "help"
+      }
+    ],
+    "exit_codes": [
+      {
+        "code": 0,
+        "meaning": "Success, including partial success: per-item failures are listed in data, mirrored in warnings, and flagged partial: true",
+        "name": "ok",
+        "retryable": null
+      },
+      {
+        "code": 1,
+        "meaning": "Runtime failure: network, source, archive integrity, I/O, state, internal",
+        "name": "failed",
+        "retryable": null
+      },
+      {
+        "code": 2,
+        "meaning": "Unknown command or flag, bad argument, bad ref syntax",
+        "name": "usage",
+        "retryable": false
+      },
+      {
+        "code": 3,
+        "meaning": "Target, ref, addon, plan or transaction not found, or ambiguous",
+        "name": "not_found",
+        "retryable": false
+      },
+      {
+        "code": 4,
+        "meaning": "Safety refusal: running client, protected folder, ownership or case conflict, unsafe archive, wrong flavor, undo conflict, blocked host",
+        "name": "refused",
+        "retryable": false
+      },
+      {
+        "code": 5,
+        "meaning": "Another omaddons process held the lock past the acquire timeout",
+        "name": "locked",
+        "retryable": true
+      },
+      {
+        "code": 6,
+        "meaning": "An opt-in assertion failed (--check, --strict)",
+        "name": "check_failed",
+        "retryable": false
+      }
+    ],
+    "global_flags": [
+      {
+        "about": "One JSON envelope on stdout",
+        "name": "json",
+        "short": null,
+        "takes_value": false
+      },
+      {
+        "about": "The same as --json",
+        "name": "robot",
+        "short": null,
+        "takes_value": false
+      },
+      {
+        "about": "Output format",
+        "name": "format",
+        "short": null,
+        "takes_value": true
+      },
+      {
+        "about": "The client to act on: id, key, family, product, flavor folder or path",
+        "name": "target",
+        "short": "t",
+        "takes_value": true
+      },
+      {
+        "about": "Show the plan without changing anything (mutating commands)",
+        "name": "dry-run",
+        "short": null,
+        "takes_value": false
+      },
+      {
+        "about": "Who is acting: human, agent or widget [env: OMADDONS_ACTOR]",
+        "name": "actor",
+        "short": null,
+        "takes_value": true
+      },
+      {
+        "about": "Why, recorded verbatim in history (at most 200 characters)",
+        "name": "reason",
+        "short": null,
+        "takes_value": true
+      },
+      {
+        "about": "Fail any network access [env: OMADDONS_OFFLINE=1]",
+        "name": "offline",
+        "short": null,
+        "takes_value": false
+      },
+      {
+        "about": "Allow folder changes while the client runs (never SavedVariables)",
+        "name": "while-running",
+        "short": null,
+        "takes_value": false
+      },
+      {
+        "about": "No ANSI color",
+        "name": "no-color",
+        "short": null,
+        "takes_value": false
+      },
+      {
+        "about": "No progress output",
+        "name": "no-progress",
+        "short": null,
+        "takes_value": false
+      },
+      {
+        "about": "Progress events on stderr",
+        "name": "progress",
+        "short": null,
+        "takes_value": true
+      },
+      {
+        "about": "Only errors on stderr",
+        "name": "quiet",
+        "short": null,
+        "takes_value": false
+      },
+      {
+        "about": "More detail (repeatable)",
+        "name": "verbose",
+        "short": "v",
+        "takes_value": false
+      },
+      {
+        "about": "Show help",
+        "name": "help",
+        "short": "h",
+        "takes_value": false
+      },
+      {
+        "about": "Show the version",
+        "name": "version",
+        "short": "V",
+        "takes_value": false
+      }
+    ],
+    "name": "omaddons",
+    "usage": "omaddons [OPTIONS] <COMMAND>",
+    "version": "<version>"
+  },
+  "exit_code": 0,
+  "meta": {
+    "elapsed_ms": 0,
+    "offline": false
+  },
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

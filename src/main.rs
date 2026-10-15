@@ -1,5 +1,5 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    ExitCode::SUCCESS
+    omaddons::cli::run(std::env::args_os())
 }
