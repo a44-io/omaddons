@@ -8,6 +8,7 @@ use crate::discover::cache::{DiscoveryMode, discover_cached};
 use crate::discover::registry::{Resolved, reconcile, resolve_one};
 use crate::discover::{DiscoveredTarget, DiscoveryInput, ScanLimits};
 use crate::error::{Error, Result, Warning};
+use crate::model::TargetKey;
 use crate::rules::RulesTable;
 use crate::state::config::Config;
 use crate::state::paths::Paths;
@@ -77,6 +78,45 @@ impl World {
             warnings,
             diagnostics: found.diagnostics,
         })
+    }
+
+    /// The id of the target registered as `key`: discovered now, else as the registry
+    /// remembers it, else the key itself.
+    pub fn target_id(&self, key: TargetKey) -> String {
+        self.resolved
+            .targets
+            .iter()
+            .find(|d| d.target.key == Some(key))
+            .map(|d| d.target.id.clone())
+            .or_else(|| {
+                self.registry
+                    .targets
+                    .iter()
+                    .find(|e| e.key == key)
+                    .map(|e| e.id.clone())
+            })
+            .unwrap_or_else(|| key.to_string())
+    }
+
+    /// The key `-t` names for commands that read history: a discovered target's key,
+    /// else a registry entry's (by id or key) whose client is gone. `None` for a
+    /// discovered target that was never registered (it has no history).
+    pub fn history_key(&self, ctx: &Context) -> Result<Option<Option<TargetKey>>> {
+        let Some(selector) = &ctx.target else {
+            return Ok(None);
+        };
+        match resolve_one(selector, &self.resolved.targets, &ctx.argv) {
+            Ok(found) => Ok(Some(found.target.key)),
+            Err(error) => {
+                let key = selector.parse::<TargetKey>().ok();
+                self.registry
+                    .targets
+                    .iter()
+                    .find(|e| Some(e.key) == key || e.id.eq_ignore_ascii_case(selector))
+                    .map(|e| Some(Some(e.key)))
+                    .ok_or(error)
+            }
+        }
     }
 
     /// The targets a read command acts on: the `-t` target, or every target sorted by

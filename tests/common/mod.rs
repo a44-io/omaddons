@@ -12,6 +12,7 @@
 pub mod addons;
 pub mod archives;
 pub mod env;
+pub mod home;
 pub mod http;
 pub mod launchers;
 pub mod netlog;

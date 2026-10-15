@@ -17,22 +17,20 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::json;
 
+use super::engine::Engine;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::{resolve_one, with_target};
-use crate::engine::inspect::ArchiveLimits;
 use crate::engine::plan::{ChangeKind, FolderSummary, RequestedChange};
-use crate::engine::{EngineCtx, TxOutcome, TxOutcomes, TxRequest, TxTarget, run as run_engine};
+use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{
     Channel, FolderName, Ref, ReloadRequired, TargetKey, TxId, TxKind, VersionConfidence,
 };
-use crate::net::{NetConfig, NetLog, stack};
 use crate::output::{Outcome, Style};
 use crate::resolve::catalog::Catalog;
 use crate::rules::TargetKind;
-use crate::sources::SourceRegistry;
 use crate::sources::refs::{CatalogMatch, InstalledMatch, ParsedRef, RefContext, parse_user_ref};
 use crate::state::records::{TargetRecord, load_record};
 
@@ -344,7 +342,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         }
     }
 
-    let engine = Engine::new(ctx, &world)?;
+    let engine = Engine::new(ctx, &world, "install")?;
     let change_for = |p: &ParsedRef, target: &DiscoveredTarget| RequestedChange::Install {
         r#ref: p.r#ref.clone(),
         channel: channel
@@ -486,62 +484,6 @@ fn recorded_channel(
         .values()
         .find(|a| a.r#ref == *r)
         .map(|a| a.channel)
-}
-
-/// The engine wired to this run.
-struct Engine {
-    paths: crate::state::paths::Paths,
-    http: Box<dyn crate::net::Http>,
-    registry: SourceRegistry,
-    table: crate::rules::RulesTable,
-    policy: crate::state::config::RunningPolicy,
-    limits: ArchiveLimits,
-    actor: crate::model::Actor,
-    argv: Vec<String>,
-}
-
-impl Engine {
-    fn new(ctx: &Context, world: &World) -> Result<Self> {
-        let limits = world.config.effective_limits().map_err(|(key, why)| {
-            Error::new(
-                ErrorCode::Usage,
-                format!("config.toml {key}: {why}"),
-                Suggestion::command(["omaddons", "config", "get", &key]),
-            )
-        })?;
-        let net = NetConfig {
-            offline: ctx.offline,
-            git_hosts: world.config.git_hosts.clone(),
-            download_max_bytes: limits.download_max_bytes,
-            ..NetConfig::default()
-        };
-        Ok(Self {
-            http: stack(&net, NetLog::new(&world.paths)?, &world.paths),
-            paths: world.paths.clone(),
-            registry: SourceRegistry::builtin(),
-            table: world.table.clone(),
-            policy: world.config.running_policy.unwrap_or_default(),
-            limits: ArchiveLimits::from(&limits),
-            actor: ctx.actor,
-            argv: ctx.argv.clone(),
-        })
-    }
-
-    fn run(&self, req: &TxRequest) -> Result<TxOutcomes> {
-        let ctx = EngineCtx {
-            paths: &self.paths,
-            http: self.http.as_ref(),
-            registry: &self.registry,
-            table: &self.table,
-            policy: self.policy,
-            limits: self.limits,
-            actor: self.actor,
-            argv: &self.argv,
-            command: "install",
-            running: None,
-        };
-        run_engine(req, &ctx)
-    }
 }
 
 /// `-t`, else the configured default, else the single live target every addon

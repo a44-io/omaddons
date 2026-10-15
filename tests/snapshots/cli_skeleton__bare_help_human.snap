@@ -8,8 +8,10 @@ Usage: omaddons [OPTIONS] <COMMAND>
 
 Commands:
   install  Install or update addons in one target, verified by its own TOC rules
+  undo     Revert the last change (or one by id), SavedVariables included
   list     List the addons in each target's AddOns folder
   targets  List the WoW clients, or add, remove, rename and choose them
+  history  Show what changed, when, by whom and why
   config   Show or change config.toml
   help     Show help for omaddons or one command
 

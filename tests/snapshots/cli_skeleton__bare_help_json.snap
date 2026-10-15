@@ -13,6 +13,11 @@ expression: envelope
         "name": "install"
       },
       {
+        "about": "Revert the last change (or one by id), SavedVariables included",
+        "aliases": [],
+        "name": "undo"
+      },
+      {
         "about": "List the addons in each target's AddOns folder",
         "aliases": [],
         "name": "list"
@@ -21,6 +26,11 @@ expression: envelope
         "about": "List the WoW clients, or add, remove, rename and choose them",
         "aliases": [],
         "name": "targets"
+      },
+      {
+        "about": "Show what changed, when, by whom and why",
+        "aliases": [],
+        "name": "history"
       },
       {
         "about": "Show or change config.toml",

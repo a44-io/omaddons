@@ -2,10 +2,13 @@
 //! rendering happens in `output`.
 
 pub mod config;
+pub mod engine;
 pub mod help;
+pub mod history;
 pub mod install;
 pub mod list;
 pub mod targets;
+pub mod undo;
 pub mod world;
 
 use crate::cli::{Cli, Command, Context};
@@ -18,6 +21,8 @@ use targets::TargetsAction;
 const COMMANDS: &[&str] = &[
     "help",
     "install",
+    "undo",
+    "history",
     "list",
     "targets",
     "targets add",
@@ -44,6 +49,8 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
     match command {
         None | Some(Command::Help { .. }) => "help",
         Some(Command::Install(_)) => "install",
+        Some(Command::Undo(_)) => "undo",
+        Some(Command::History(_)) => "history",
         Some(Command::List(_)) => "list",
         Some(Command::Targets(args)) => args
             .action
@@ -94,6 +101,29 @@ pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
                 reporter.log(
                     output::LogLevel::Debug,
                     &format!("lock released: tx {tx}, lock_held_ms {ms}"),
+                );
+            }
+            output::emit(cfg, &mut reporter, name, started, offline, result)
+        }
+        Some(Command::Undo(args)) => {
+            let result = undo::run(ctx, args);
+            if let Ok(outcome) = &result
+                && let (Some(ms), Some(tx)) =
+                    (outcome.lock_held_ms, output::Outcome::data(outcome).tx)
+            {
+                reporter.log(
+                    output::LogLevel::Debug,
+                    &format!("lock released: tx {tx}, lock_held_ms {ms}"),
+                );
+            }
+            output::emit(cfg, &mut reporter, name, started, offline, result)
+        }
+        Some(Command::History(args)) => {
+            let result = history::run(ctx, args, cli.global.actor.as_deref());
+            if result.as_ref().is_ok_and(|o| o.torn_tail) {
+                reporter.log(
+                    output::LogLevel::Info,
+                    "history.jsonl ends with an incomplete line (an interrupted write); it was skipped",
                 );
             }
             output::emit(cfg, &mut reporter, name, started, offline, result)
