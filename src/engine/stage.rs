@@ -75,7 +75,10 @@ pub fn stage(
     if let Some(parent) = stage_dir.parent() {
         ensure_dir_all(&mut s, parent)?;
     }
-    create_dir(&mut s, &stage_dir)?;
+    // Several addons of one transaction stage into the same dir.
+    if !stage_dir.is_dir() {
+        create_dir(&mut s, &stage_dir)?;
+    }
     same_filesystem(&stage_dir, &client)?;
 
     let mut archive = match blob {

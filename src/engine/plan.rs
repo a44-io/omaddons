@@ -255,18 +255,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
     let mut generations = BTreeMap::new();
     let mut prepared = Vec::with_capacity(req.targets.len());
     for tr in &req.targets {
-        let (record, index) = match tr.target.key {
-            Some(key) => {
-                let record = load_record(ctx.paths, &key)?.value;
-                let index =
-                    store::load::<FilesIndex>(&ctx.paths.files_index(&key))?.map(|l| l.value);
-                (record, index)
-            }
-            None => (
-                TargetRecord::empty(TargetKey::from_ulid(ulid::Ulid::nil())),
-                None,
-            ),
-        };
+        let (record, index) = target_state(ctx.paths, &tr.target)?;
         let generation_key = tr
             .target
             .key
@@ -368,6 +357,76 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
     })
 }
 
+/// A target's record and files index; an unregistered target has an empty record.
+fn target_state(paths: &Paths, target: &Target) -> Result<(TargetRecord, Option<FilesIndex>)> {
+    Ok(match target.key {
+        Some(key) => {
+            let record = load_record(paths, &key)?.value;
+            let index = store::load::<FilesIndex>(&paths.files_index(&key))?.map(|l| l.value);
+            (record, index)
+        }
+        None => (
+            TargetRecord::empty(TargetKey::from_ulid(ulid::Ulid::nil())),
+            None,
+        ),
+    })
+}
+
+/// Re-checks one planned addon under the lock against the target's current record,
+/// files index, inventory and running state (`ctx.running`), without network: the
+/// archive is already inspected and staged. `Ok(None)` when the change is no longer
+/// needed (a concurrent transaction installed the same release, or removed the
+/// addon). A refusal is the caller's `plan_stale`.
+pub fn rejudge(
+    req: &PlanRequest,
+    ctx: &PlanCtx<'_>,
+    target: &Target,
+    work: &AddonWork,
+) -> Result<Option<PlannedAddon>> {
+    let (record, index) = target_state(ctx.paths, target)?;
+    let live = inventory(target, Some(&record), ctx.table, Depth::Classes)?;
+    let planner = TargetPlanner {
+        req,
+        ctx,
+        target,
+        record: &record,
+        index: index.as_ref(),
+        live: &live,
+        created_at: Timestamp::now(),
+    };
+    match (&work.record, &work.inspected) {
+        (Some(template), Some(inspected)) => {
+            let existing = record.addons.values().find(|a| a.r#ref == template.r#ref);
+            if let Some(existing) = existing
+                && existing.release_id == template.release_id
+                && existing
+                    .folders
+                    .iter()
+                    .all(|f| live.folders.iter().any(|e| e.key == f.key()))
+            {
+                return Ok(None);
+            }
+            planner
+                .build_install(
+                    existing,
+                    template.clone(),
+                    inspected.clone(),
+                    work.blob.clone(),
+                    None,
+                    Vec::new(),
+                )
+                .map(Some)
+        }
+        _ if !record
+            .addons
+            .contains_key(&TargetRecord::addon_key(&work.addon)) =>
+        {
+            Ok(None)
+        }
+        _ => planner.remove(&work.addon),
+    }
+}
+
 /// A requested change with its ref resolved against the target's record.
 fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
     match change {
@@ -441,7 +500,7 @@ fn fail(ctx: &PlanCtx<'_>, e: &std::io::Error) -> Error {
 }
 
 /// The transaction kind for a target's changes.
-fn target_kind(changes: &[Change]) -> Option<TxKind> {
+pub fn target_kind(changes: &[Change]) -> Option<TxKind> {
     if changes.is_empty() {
         None
     } else if changes.iter().all(|c| c.kind == ChangeKind::Remove) {
@@ -454,16 +513,17 @@ fn target_kind(changes: &[Change]) -> Option<TxKind> {
 }
 
 /// One addon's planned part.
-struct Planned {
-    change: Change,
-    ops: Vec<PlannedOp>,
-    release: Option<PlannedRelease>,
-    reload_required: ReloadRequired,
-    warnings: Vec<Warning>,
-    work: AddonWork,
+#[derive(Debug, Clone)]
+pub struct PlannedAddon {
+    pub change: Change,
+    pub ops: Vec<PlannedOp>,
+    pub release: Option<PlannedRelease>,
+    pub reload_required: ReloadRequired,
+    pub warnings: Vec<Warning>,
+    pub work: AddonWork,
 }
 
-impl Planned {
+impl PlannedAddon {
     fn merge_into(self, tp: &mut TargetPlan) {
         tp.changes.push(self.change);
         tp.ops.extend(self.ops);
@@ -513,7 +573,7 @@ impl TargetPlanner<'_> {
         wanted: &Wanted,
         file: Option<&std::path::Path>,
         set: Option<Result<ReleaseSet>>,
-    ) -> Result<Option<Planned>> {
+    ) -> Result<Option<PlannedAddon>> {
         let existing = self
             .record
             .addons
@@ -588,12 +648,63 @@ impl TargetPlanner<'_> {
             .map(str::to_owned)
             .or_else(|| existing.map(|e| e.name.clone()))
             .unwrap_or_else(|| addon_name(&wanted.r#ref, &winner.inspected));
-        let new_folders: Vec<FolderName> = winner
-            .inspected
-            .folders
-            .iter()
-            .map(|f| f.name.clone())
-            .collect();
+        let template = AddonRecord {
+            r#ref: wanted.r#ref.clone(),
+            name: addon,
+            version: winner.candidate.version.clone(),
+            version_confidence: VersionConfidence::Release,
+            release_id: Some(winner.candidate.release_id.clone()),
+            channel: wanted.channel,
+            pinned: wanted.version.is_some(),
+            reason: AddonReason::Explicit,
+            required_by: Vec::new(),
+            folders: Vec::new(),
+            state: AddonState::Ok,
+            installed_at: self.created_at,
+            tx_id: self.ctx.tx,
+        };
+        let (url, expected_hash) = match &winner.candidate.asset.location {
+            AssetLocation::Url(url) => (
+                Some(url.clone()),
+                winner
+                    .candidate
+                    .asset
+                    .expected_hash
+                    .as_ref()
+                    .map(|ExpectedHash::Sha256(h)| h.clone()),
+            ),
+            _ => (None, None),
+        };
+        let release = PlannedRelease {
+            release_id: winner.candidate.release_id.clone(),
+            url,
+            expected_hash,
+            blob_sha256: winner.inspected.blob_sha256.clone(),
+        };
+        self.build_install(
+            existing,
+            template,
+            winner.inspected,
+            winner.blob,
+            Some(release),
+            winner.warnings,
+        )
+        .map(Some)
+    }
+
+    /// Folder changes, ownership, policy and swap ops for installing `inspected` as
+    /// `template` (whose folders and dependents are filled in here).
+    fn build_install(
+        &self,
+        existing: Option<&AddonRecord>,
+        mut template: AddonRecord,
+        inspected: Inspected,
+        blob: Option<PathBuf>,
+        release: Option<PlannedRelease>,
+        mut warnings: Vec<Warning>,
+    ) -> Result<PlannedAddon> {
+        let new_folders: Vec<FolderName> =
+            inspected.folders.iter().map(|f| f.name.clone()).collect();
         let dropped: Vec<FolderName> = existing
             .map(|e| {
                 e.folders
@@ -611,83 +722,50 @@ impl TargetPlanner<'_> {
             .chain(dropped.iter().cloned().map(FolderChange::Remove))
             .collect();
         let toc_after = |name: &FolderName| -> BTreeSet<String> {
-            winner
-                .inspected
+            inspected
                 .folders
                 .iter()
                 .find(|f| f.name == *name)
                 .map(|f| f.toc_files().into_iter().collect())
                 .unwrap_or_default()
         };
-        let judged = self.judge(&addon, &changes, toc_after)?;
-        let mut warnings = winner.warnings;
+        let judged = self.judge(&template.name, &changes, toc_after)?;
         warnings.extend(judged.warnings);
-
         let mut summary = FolderSummary::default();
-        let ops = self.ops(&addon, &judged.allowed, &mut summary);
+        let ops = self.ops(&template.name, &judged.allowed, &mut summary);
         let kind = if existing.is_some() {
             ChangeKind::Update
         } else {
             ChangeKind::Install
         };
-        let record = AddonRecord {
-            r#ref: wanted.r#ref.clone(),
-            name: addon.clone(),
-            version: winner.candidate.version.clone(),
-            version_confidence: VersionConfidence::Release,
-            release_id: Some(winner.candidate.release_id.clone()),
-            channel: wanted.channel,
-            pinned: wanted.version.is_some(),
-            reason: AddonReason::Explicit,
-            required_by: existing.map(|e| e.required_by.clone()).unwrap_or_default(),
-            folders: new_folders,
-            state: AddonState::Ok,
-            installed_at: self.created_at,
-            tx_id: self.ctx.tx,
-        };
-        let (url, expected_hash) = match &winner.candidate.asset.location {
-            AssetLocation::Url(url) => (
-                Some(url.clone()),
-                winner
-                    .candidate
-                    .asset
-                    .expected_hash
-                    .as_ref()
-                    .map(|ExpectedHash::Sha256(h)| h.clone()),
-            ),
-            _ => (None, None),
-        };
-        Ok(Some(Planned {
+        template.folders = new_folders;
+        template.required_by = existing.map(|e| e.required_by.clone()).unwrap_or_default();
+        Ok(PlannedAddon {
             change: Change {
-                addon: addon.clone(),
-                r#ref: wanted.r#ref.clone(),
+                addon: template.name.clone(),
+                r#ref: template.r#ref.clone(),
                 kind,
                 from_version: existing.map(|e| e.version.clone()),
-                to_version: Some(winner.candidate.version.clone()),
+                to_version: Some(template.version.clone()),
                 folders: summary,
             },
             ops,
-            release: Some(PlannedRelease {
-                release_id: winner.candidate.release_id.clone(),
-                url,
-                expected_hash,
-                blob_sha256: winner.inspected.blob_sha256.clone(),
-            }),
+            release,
             reload_required: judged.reload_required,
             warnings,
             work: AddonWork {
-                addon,
-                record: Some(record),
-                blob: winner.blob,
+                addon: template.name.clone(),
+                record: Some(template),
+                blob,
                 swap: self.swap_ops(&judged.allowed),
-                inspected: Some(winner.inspected),
+                inspected: Some(inspected),
                 transfers: judged.transfers,
                 degraded: judged.degraded,
             },
-        }))
+        })
     }
 
-    fn remove(&self, addon: &str) -> Result<Option<Planned>> {
+    fn remove(&self, addon: &str) -> Result<Option<PlannedAddon>> {
         let Some(installed) = self.record.addons.get(&TargetRecord::addon_key(addon)) else {
             return Err(not_managed(addon));
         };
@@ -700,7 +778,7 @@ impl TargetPlanner<'_> {
         let judged = self.judge(&installed.name, &changes, |_| BTreeSet::new())?;
         let mut summary = FolderSummary::default();
         let ops = self.ops(&installed.name, &judged.allowed, &mut summary);
-        Ok(Some(Planned {
+        Ok(Some(PlannedAddon {
             change: Change {
                 addon: installed.name.clone(),
                 r#ref: installed.r#ref.clone(),
@@ -971,7 +1049,9 @@ fn file_candidate(file: &std::path::Path, wanted: &Wanted) -> Candidate {
     };
     let version = wanted.version.clone().unwrap_or_else(|| "local".to_owned());
     Candidate {
-        release_id: format!("{}@{version}", wanted.r#ref),
+        // A zip is identified by its content, so the same file is a no-op and another
+        // one an update; a directory has no cheap identity and always reinstalls.
+        release_id: format!("{}@{}", wanted.r#ref, local_identity(file)),
         version,
         channel: wanted.channel,
         asset: crate::model::Asset {
@@ -987,6 +1067,25 @@ fn file_candidate(file: &std::path::Path, wanted: &Wanted) -> Candidate {
             nolib: false,
         },
         rank: crate::model::RankReason::Unannotated,
+    }
+}
+
+/// `sha256:<hex>` of a local zip; a fresh `dir:<ulid>` for a directory or an
+/// unreadable file.
+fn local_identity(file: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    let hashed = std::fs::read(file)
+        .ok()
+        .filter(|_| file.is_file())
+        .map(|bytes| {
+            Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        });
+    match hashed {
+        Some(hex) => format!("sha256:{hex}"),
+        None => format!("dir:{}", ulid::Ulid::generate()),
     }
 }
 

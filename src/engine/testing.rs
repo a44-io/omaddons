@@ -201,3 +201,118 @@ impl Scene {
             .map(str::to_owned)
     }
 }
+
+/// Fails every request: `--file` installs never touch the network.
+pub struct NoNetwork;
+
+impl crate::net::Http for NoNetwork {
+    fn send(&self, req: crate::net::Request) -> crate::error::Result<crate::net::Response> {
+        Err(crate::error::Error::internal(format!(
+            "unexpected request to {}",
+            req.url
+        )))
+    }
+}
+
+/// A retail client for whole transactions: zips on disk installed with `--file`.
+pub struct TxScene {
+    _root: tempfile::TempDir,
+    pub base: PathBuf,
+    pub paths: Paths,
+    pub client: ClientPaths,
+    pub discovered: crate::discover::target::DiscoveredTarget,
+    pub running: std::collections::BTreeSet<PathBuf>,
+}
+
+impl TxScene {
+    pub fn new() -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(root.path()).unwrap();
+        let client_dir = base.join("_retail_");
+        std::fs::create_dir_all(client_dir.join("Interface/AddOns")).unwrap();
+        let mut found = target(&client_dir);
+        found.id = "retail".into();
+        let discovered = crate::discover::target::DiscoveredTarget {
+            target: found,
+            default_id: "retail".into(),
+            qualifier: "battlenet".into(),
+            source: crate::discover::DiscoverySource::Scan,
+        };
+        Self {
+            paths: Paths::with_roots(&base, base.join("c"), base.join("s"), base.join("k")),
+            client: ClientPaths::new(&client_dir),
+            base,
+            _root: root,
+            discovered,
+            running: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Writes a zip of `(path, text)` entries.
+    pub fn zip(&self, name: &str, entries: &[(&str, &str)]) -> PathBuf {
+        use std::io::Write;
+        let path = self.base.join("zips").join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for (entry, text) in entries {
+            zip.start_file(*entry, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(text.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    /// An `--file` install of `zip` as `ref`.
+    pub fn install(&self, r: &str, zip: &Path) -> super::plan::RequestedChange {
+        super::plan::RequestedChange::Install {
+            r#ref: r.parse().unwrap(),
+            channel: crate::model::Channel::Stable,
+            version: None,
+            file: Some(zip.to_path_buf()),
+        }
+    }
+
+    /// Runs `changes` on the target as currently registered.
+    pub fn run(
+        &self,
+        changes: Vec<super::plan::RequestedChange>,
+    ) -> crate::error::Result<super::tx::TxOutcomes> {
+        let mut discovered = self.discovered.clone();
+        discovered.target.key = crate::discover::registry::read_marker(self.client.client_dir());
+        let registry = crate::sources::SourceRegistry::new();
+        let table = RulesTable::builtin();
+        let argv: Vec<String> = ["omaddons", "install", "test"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        let ctx = super::tx::EngineCtx {
+            paths: &self.paths,
+            http: &NoNetwork,
+            registry: &registry,
+            table: &table,
+            policy: crate::state::config::RunningPolicy::Safe,
+            limits: ArchiveLimits::default(),
+            actor: Actor::Agent,
+            argv: &argv,
+            command: "install",
+            running: Some(&self.running),
+        };
+        let req = super::tx::TxRequest {
+            targets: vec![super::tx::TxTarget {
+                discovered,
+                changes,
+            }],
+            force: false,
+            while_running: false,
+            dry_run: false,
+            reason: Some("testing".into()),
+        };
+        super::tx::run(&req, &ctx)
+    }
+
+    /// The AddOns tree's digest.
+    pub fn addons(&self) -> crate::fsx::TreeDigest {
+        crate::fsx::TreeDigest::compute(&self.client.addons()).unwrap()
+    }
+}

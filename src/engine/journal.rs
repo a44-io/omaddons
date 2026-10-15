@@ -38,13 +38,42 @@ use crate::state::store::{self, SchemaVersion};
 pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
 
 /// One journal line.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JournalLine {
     Prepared(Box<Prepared>),
     Step(StepRecord),
     Swapped,
     Committed,
+}
+
+/// By hand: serde's derived internally tagged enums buffer their content in a form
+/// that cannot hold an `i128`, which the files index's `mtime_ns` is. Reading the tag
+/// from a JSON value and deserializing the variant's struct from it has no such limit.
+impl<'de> Deserialize<'de> for JournalLine {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let value = serde_json::Value::deserialize(d)?;
+        let kind = value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| D::Error::missing_field("type"))?
+            .to_owned();
+        match kind.as_str() {
+            "prepared" => serde_json::from_value::<Prepared>(value)
+                .map(|p| Self::Prepared(Box::new(p)))
+                .map_err(D::Error::custom),
+            "step" => serde_json::from_value(value)
+                .map(Self::Step)
+                .map_err(D::Error::custom),
+            "swapped" => Ok(Self::Swapped),
+            "committed" => Ok(Self::Committed),
+            other => Err(D::Error::unknown_variant(
+                other,
+                &["prepared", "step", "swapped", "committed"],
+            )),
+        }
+    }
 }
 
 /// The first line: the transaction and what committing it writes.
@@ -414,54 +443,97 @@ pub fn recover_all(
         if InflightLock::is_live(paths, &tx)? {
             continue;
         }
-        let parsed = read(&path)?;
-        let mut s = WriteSession::untracked(Writer::Mutating, scopes, "recovery");
-        let action = match (&parsed.prepared, parsed.phase) {
-            (None, _) | (_, Phase::Unprepared) => None,
-            (Some(_), Phase::Committed) => None,
-            (Some(prepared), Phase::Swapped) => {
-                roll_forward(&mut s, paths, &path, prepared)?;
-                Some(RecoveryAction::RolledForward)
-            }
-            (Some(_), Phase::Prepared) => {
-                roll_back(&mut s, &parsed.steps)?;
-                Some(RecoveryAction::RolledBack)
-            }
-        };
-        let mut victims = Vec::new();
-        if let Some(prepared) = &parsed.prepared
-            && prepared.commit.stage_dir.exists()
-        {
-            victims.push(prepared.commit.stage_dir.clone());
-        }
-        victims.push(path);
-        if paths.inflight_lock(&tx).exists() {
-            victims.push(paths.inflight_lock(&tx));
-        }
-        fsx::prune(
-            scopes,
-            PruneReason::PostCommitCleanup,
-            &victims,
-            LockUse::Held(lock),
-        )?;
-        if let (Some(action), Some(prepared)) = (action, &parsed.prepared) {
-            let what = match action {
-                RecoveryAction::RolledForward => "completed it (rolled forward)",
-                RecoveryAction::RolledBack => "undid it (rolled back)",
-            };
-            warnings.push(
-                Warning::new(
-                    WarningCode::JournalRecovered,
-                    format!(
-                        "transaction {tx} on target {} was interrupted; recovery {what}",
-                        prepared.target_key
-                    ),
-                )
-                .with_fix(Suggestion::command(["omaddons", "history", "--limit", "5"])),
-            );
-        }
+        warnings.extend(recover_one(lock, paths, scopes, &tx, path)?);
     }
     Ok(warnings)
+}
+
+/// Recovers one transaction by its own writer, in process: an error after `prepared`
+/// rolls back, after `swapped` rolls forward. No liveness check: the caller is the
+/// writer. Leftovers its in-flight lock still protects are pruned at cleanup.
+pub fn recover_tx(
+    lock: &GlobalLockGuard,
+    paths: &Paths,
+    scopes: &ScopeTable,
+    tx: &TxId,
+) -> Result<Option<RecoveryAction>> {
+    let path = paths.journal(tx);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let parsed = read(&path)?;
+    let action = recover_parsed(lock, paths, scopes, tx, &path, &parsed)?;
+    Ok(action)
+}
+
+/// Recovers one journal and reports it.
+fn recover_one(
+    lock: &GlobalLockGuard,
+    paths: &Paths,
+    scopes: &ScopeTable,
+    tx: &TxId,
+    path: PathBuf,
+) -> Result<Option<Warning>> {
+    let parsed = read(&path)?;
+    let action = recover_parsed(lock, paths, scopes, tx, &path, &parsed)?;
+    let (Some(action), Some(prepared)) = (action, &parsed.prepared) else {
+        return Ok(None);
+    };
+    let what = match action {
+        RecoveryAction::RolledForward => "completed it (rolled forward)",
+        RecoveryAction::RolledBack => "undid it (rolled back)",
+    };
+    Ok(Some(
+        Warning::new(
+            WarningCode::JournalRecovered,
+            format!(
+                "transaction {tx} on target {} was interrupted; recovery {what}",
+                prepared.target_key
+            ),
+        )
+        .with_fix(Suggestion::command(["omaddons", "history", "--limit", "5"])),
+    ))
+}
+
+/// Rolls forward or back by phase, then prunes what the transaction left.
+fn recover_parsed(
+    lock: &GlobalLockGuard,
+    paths: &Paths,
+    scopes: &ScopeTable,
+    tx: &TxId,
+    path: &Path,
+    parsed: &Parsed,
+) -> Result<Option<RecoveryAction>> {
+    let mut s = WriteSession::untracked(Writer::Mutating, scopes, "recovery");
+    let action = match (&parsed.prepared, parsed.phase) {
+        (None, _) | (_, Phase::Unprepared) => None,
+        (Some(_), Phase::Committed) => None,
+        (Some(prepared), Phase::Swapped) => {
+            roll_forward(&mut s, paths, path, prepared)?;
+            Some(RecoveryAction::RolledForward)
+        }
+        (Some(_), Phase::Prepared) => {
+            roll_back(&mut s, &parsed.steps)?;
+            Some(RecoveryAction::RolledBack)
+        }
+    };
+    let mut victims = Vec::new();
+    if let Some(prepared) = &parsed.prepared
+        && prepared.commit.stage_dir.exists()
+    {
+        victims.push(prepared.commit.stage_dir.clone());
+    }
+    victims.push(path.to_path_buf());
+    if paths.inflight_lock(tx).exists() {
+        victims.push(paths.inflight_lock(tx));
+    }
+    fsx::prune(
+        scopes,
+        PruneReason::PostCommitCleanup,
+        &victims,
+        LockUse::Held(lock),
+    )?;
+    Ok(action)
 }
 
 /// Writes the payload's state (each part only if not already written), then `committed`.
@@ -586,6 +658,65 @@ fn undo(s: &mut WriteSession<'_>, step: &StepRecord) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_prepared_line_with_a_files_index_round_trips() {
+        use crate::model::{Actor, FolderName};
+        use crate::state::files_index::FileEntry;
+        use crate::state::history::{FolderOp, HistoryOp, TxResult};
+        let tx = TxId::new();
+        let key = TargetKey::new();
+        let entry = FileEntry {
+            path: "Foo.toc".into(),
+            size: 3,
+            mtime_ns: 1_760_000_000_123_456_789,
+            sha256: "ab".repeat(32),
+        };
+        let line = JournalLine::Prepared(Box::new(Prepared {
+            schema_version: CURRENT,
+            tx,
+            target_key: key,
+            client_dir: "/c/_retail_".into(),
+            kind: TxKind::Install,
+            started_at: Timestamp::now(),
+            commit: CommitPayload {
+                record: TargetRecord::empty(key),
+                index: IndexChanges {
+                    upsert: vec![FolderIndex::new("Foo", vec![entry])],
+                    remove: vec!["old".into()],
+                },
+                history: HistoryEntry {
+                    schema_version: history::CURRENT,
+                    tx,
+                    kind: TxKind::Install,
+                    at: Timestamp::now(),
+                    target: key,
+                    actor: Actor::Agent,
+                    reason: Some("why".into()),
+                    argv: vec!["omaddons".into()],
+                    ops: vec![HistoryOp {
+                        op: FolderOp::Add,
+                        folder: FolderName::new("Foo").unwrap(),
+                        addon: "Foo".into(),
+                    }],
+                    result: TxResult::Committed,
+                    reverts: None,
+                },
+                stage_dir: "/c/_retail_/Interface/.omaddons/stage/x".into(),
+            },
+        }));
+        let text = format!("{}\n", serde_json::to_string(&line).unwrap());
+        let parsed = parse(&text).unwrap();
+        assert_eq!(
+            (parsed.phase, parsed.unknown_lines),
+            (Phase::Prepared, 0),
+            "{text}"
+        );
+        assert_eq!(
+            parsed.prepared.map(|p| JournalLine::Prepared(Box::new(p))),
+            Some(line)
+        );
+    }
 
     #[test]
     fn lines_round_trip_and_tag_their_type() {
