@@ -1,0 +1,26 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "config set",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons config 1",
+    "fix_argv": [
+      "omaddons",
+      "config",
+      "1"
+    ],
+    "message": "nosuch.key is not a config key",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

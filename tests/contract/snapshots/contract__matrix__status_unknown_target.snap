@@ -1,0 +1,27 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "status",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "target_not_found",
+    "details": {
+      "selector": "nosuch"
+    },
+    "fix": "omaddons targets",
+    "fix_argv": [
+      "omaddons",
+      "targets"
+    ],
+    "message": "no target matches \"nosuch\"",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

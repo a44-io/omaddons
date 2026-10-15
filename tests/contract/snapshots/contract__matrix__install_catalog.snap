@@ -1,0 +1,56 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "atomic_swap": true,
+    "dry_run": false,
+    "items": [
+      {
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [
+            "WeakAuras"
+          ],
+          "removed": [],
+          "replaced": []
+        },
+        "from_version": null,
+        "name": "WeakAuras",
+        "ref": "gh:WeakAuras/WeakAuras2",
+        "request": "weakauras",
+        "status": "installed",
+        "to_version": "5.19.2",
+        "version_confidence": "release"
+      }
+    ],
+    "kind": "install",
+    "reload_required": "none",
+    "target": {
+      "id": "classic",
+      "key": "<ulid>"
+    },
+    "tx": "<ulid>"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

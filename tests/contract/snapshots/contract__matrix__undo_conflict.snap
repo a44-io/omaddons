@@ -1,0 +1,37 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "undo",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "undo_conflict",
+    "details": {
+      "conflicting": [
+        {
+          "folders": [
+            "Foo"
+          ],
+          "kind": "update",
+          "tx": "<ulid>"
+        }
+      ],
+      "tx": "<ulid>"
+    },
+    "fix": "omaddons undo <ulid>",
+    "fix_argv": [
+      "omaddons",
+      "undo",
+      "<ulid>"
+    ],
+    "message": "1 later transaction(s) changed the folders of <ulid>; the newest is <ulid>",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

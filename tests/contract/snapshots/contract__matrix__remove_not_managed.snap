@@ -1,0 +1,33 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "remove",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_managed",
+    "details": {
+      "items": [
+        {
+          "code": "not_managed",
+          "message": "Nope is not managed by omaddons in retail",
+          "request": "Nope"
+        }
+      ]
+    },
+    "fix": "omaddons list",
+    "fix_argv": [
+      "omaddons",
+      "list"
+    ],
+    "message": "Nope is not managed by omaddons in retail",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

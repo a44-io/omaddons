@@ -1,0 +1,99 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "status",
+  "commands": [],
+  "data": {
+    "cached": false,
+    "journal": {
+      "in_progress": false,
+      "pending": 1
+    },
+    "needs_attention": true,
+    "targets": [
+      {
+        "addons": {
+          "degraded": 0,
+          "total": 0
+        },
+        "attention": [],
+        "default": false,
+        "family": "mists",
+        "folders": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 0,
+          "protected": 0,
+          "unmanaged": 0
+        },
+        "id": "classic",
+        "install_kind": "battlenet",
+        "interface": 50504,
+        "key": null,
+        "kind": "live",
+        "label": "classic (battlenet)",
+        "missing": false,
+        "product": "wow_classic",
+        "registered": false,
+        "running": false,
+        "version": "5.5.4.63854"
+      },
+      {
+        "addons": {
+          "degraded": 0,
+          "total": 1
+        },
+        "attention": [
+          "journal_pending"
+        ],
+        "default": false,
+        "family": "mainline",
+        "folders": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 1,
+          "protected": 0,
+          "unmanaged": 0
+        },
+        "id": "retail",
+        "install_kind": "battlenet",
+        "interface": 120105,
+        "key": "<ulid>",
+        "kind": "live",
+        "label": "retail (battlenet)",
+        "missing": false,
+        "product": "wow",
+        "registered": true,
+        "running": false,
+        "version": "12.1.5.70391"
+      }
+    ]
+  },
+  "error": {
+    "alternatives": [],
+    "code": "check_failed",
+    "details": {},
+    "fix": "run any omaddons command that changes addons (install, remove, undo); it recovers the transaction first",
+    "fix_argv": null,
+    "message": "an interrupted transaction for retail awaits recovery",
+    "retryable": false
+  },
+  "exit_code": 6,
+  "ok": false,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "journal_pending",
+      "fix": "omaddons status",
+      "fix_argv": [
+        "omaddons",
+        "status"
+      ],
+      "message": "transaction <ulid> on target <ulid> did not finish; the next command that changes addons recovers it"
+    }
+  ]
+}

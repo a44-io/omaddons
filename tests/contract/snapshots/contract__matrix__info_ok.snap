@@ -1,0 +1,56 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "info",
+  "commands": [],
+  "data": {
+    "catalog": {
+      "aliases": [
+        "wa",
+        "weakauras2"
+      ],
+      "families": [
+        "vanilla",
+        "tbc",
+        "cata",
+        "mists",
+        "titan"
+      ],
+      "folders": [
+        "WeakAuras",
+        "WeakAurasArchive",
+        "WeakAurasModelPaths",
+        "WeakAurasOptions",
+        "WeakAurasTemplates"
+      ],
+      "name": "WeakAuras",
+      "notes": "5.22.1's release.json lists no mainline build and the zip ships no Mainline TOC"
+    },
+    "installed": [],
+    "latest": {
+      "channel": "stable",
+      "flavors": [
+        "mainline",
+        "mists"
+      ],
+      "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",
+      "targets": [
+        "classic",
+        "retail"
+      ],
+      "version": "5.19.2"
+    },
+    "name": "WeakAuras",
+    "offline": false,
+    "query": "weakauras",
+    "ref": "gh:WeakAuras/WeakAuras2"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

@@ -1,0 +1,52 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "targets",
+  "commands": [],
+  "data": {
+    "default": null,
+    "rescanned": false,
+    "targets": [
+      {
+        "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_classic_",
+        "default": false,
+        "family": "mists",
+        "found_by": "scan",
+        "id": "classic",
+        "install_kind": "battlenet",
+        "interface": 50504,
+        "key": null,
+        "kind": "live",
+        "label": "classic (battlenet)",
+        "missing": false,
+        "product": "wow_classic",
+        "registered": false,
+        "version": "5.5.4.63854"
+      },
+      {
+        "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_retail_",
+        "default": false,
+        "family": "mainline",
+        "found_by": "scan",
+        "id": "retail",
+        "install_kind": "battlenet",
+        "interface": 120105,
+        "key": null,
+        "kind": "live",
+        "label": "retail (battlenet)",
+        "missing": false,
+        "product": "wow",
+        "registered": false,
+        "version": "12.1.5.70391"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

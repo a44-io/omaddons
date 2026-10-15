@@ -1,0 +1,66 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "list",
+  "commands": [],
+  "data": {
+    "targets": [
+      {
+        "addons": [],
+        "addons_dir_missing": false,
+        "counts": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 0,
+          "protected": 0,
+          "unmanaged": 0
+        },
+        "family": "mists",
+        "id": "classic",
+        "key": null,
+        "label": "classic (battlenet)",
+        "protected": null,
+        "unmanaged": null,
+        "version": "5.5.4.63854"
+      },
+      {
+        "addons": [
+          {
+            "channel": "stable",
+            "folders": 1,
+            "missing_folders": [],
+            "name": "Foo",
+            "pinned": false,
+            "ref": "gh:o/foo",
+            "state": "ok",
+            "version": "1",
+            "version_confidence": "toc"
+          }
+        ],
+        "addons_dir_missing": false,
+        "counts": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 1,
+          "protected": 0,
+          "unmanaged": 0
+        },
+        "family": "mainline",
+        "id": "retail",
+        "key": "<ulid>",
+        "label": "retail (battlenet)",
+        "protected": null,
+        "unmanaged": null,
+        "version": "12.1.5.70391"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

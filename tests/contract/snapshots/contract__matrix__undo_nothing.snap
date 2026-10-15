@@ -1,0 +1,25 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "undo",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_found",
+    "details": {},
+    "fix": "omaddons history",
+    "fix_argv": [
+      "omaddons",
+      "history"
+    ],
+    "message": "nothing to undo",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

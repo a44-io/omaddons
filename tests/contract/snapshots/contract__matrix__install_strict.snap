@@ -1,0 +1,93 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "atomic_swap": true,
+    "dry_run": false,
+    "items": [
+      {
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [],
+          "removed": [],
+          "replaced": [
+            "Foo"
+          ]
+        },
+        "from_version": "1",
+        "name": "Foo",
+        "ref": "gh:o/foo",
+        "request": "gh:o/foo",
+        "status": "updated",
+        "to_version": "v1",
+        "version_confidence": "release"
+      },
+      {
+        "channel": null,
+        "error": {
+          "code": "no_compatible_release",
+          "fix": "check that the addon supports this client, or pin another release with --version",
+          "fix_argv": null,
+          "message": "gh:o/bar: no candidate loads on this client (retail on mainline)"
+        },
+        "folders": {
+          "added": [],
+          "removed": [],
+          "replaced": []
+        },
+        "from_version": null,
+        "name": null,
+        "ref": "gh:o/bar",
+        "request": "gh:o/bar",
+        "status": "failed",
+        "to_version": null,
+        "version_confidence": null
+      }
+    ],
+    "kind": "update",
+    "reload_required": "none",
+    "target": {
+      "id": "retail",
+      "key": "<ulid>"
+    },
+    "tx": "<ulid>"
+  },
+  "error": {
+    "alternatives": [],
+    "code": "check_failed",
+    "details": {},
+    "fix": "see data.items[].error for each failed addon",
+    "fix_argv": null,
+    "message": "1 of 2 addons did not install (--strict)",
+    "retryable": false
+  },
+  "exit_code": 6,
+  "ok": false,
+  "partial": true,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "no_compatible_release",
+      "fix": "check that the addon supports this client, or pin another release with --version",
+      "fix_argv": null,
+      "message": "gh:o/bar: no candidate loads on this client (retail on mainline)"
+    }
+  ]
+}

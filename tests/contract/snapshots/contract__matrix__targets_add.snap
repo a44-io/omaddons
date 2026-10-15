@@ -1,0 +1,36 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "targets add",
+  "commands": [],
+  "data": {
+    "changed": true,
+    "dry_run": false,
+    "targets": [
+      {
+        "client_dir": "<root>/elsewhere/wow-335",
+        "default": false,
+        "family": "wrath-legacy",
+        "found_by": "manual",
+        "id": "wotlk",
+        "install_kind": "custom",
+        "interface": 30300,
+        "key": "<ulid>",
+        "kind": "live",
+        "label": "localhost",
+        "missing": false,
+        "product": null,
+        "registered": true,
+        "version": "3.3.5.12340"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

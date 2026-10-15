@@ -1,0 +1,25 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "help",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons help",
+    "fix_argv": [
+      "omaddons",
+      "help"
+    ],
+    "message": "there is no command \"nosuch\"",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

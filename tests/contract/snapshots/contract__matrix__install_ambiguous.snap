@@ -1,0 +1,48 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "install",
+          "gh:o/both",
+          "--file",
+          "<root>/dl/both.zip",
+          "-t",
+          "retail"
+        ],
+        "display": "omaddons install gh:o/both --file <root>/dl/both.zip -t retail"
+      }
+    ],
+    "code": "target_ambiguous",
+    "details": {
+      "candidates": [
+        "classic",
+        "retail"
+      ]
+    },
+    "fix": "omaddons install gh:o/both --file <root>/dl/both.zip -t classic",
+    "fix_argv": [
+      "omaddons",
+      "install",
+      "gh:o/both",
+      "--file",
+      "<root>/dl/both.zip",
+      "-t",
+      "classic"
+    ],
+    "message": "gh:o/both is compatible with 2 targets: classic, retail",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

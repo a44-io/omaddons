@@ -1,0 +1,27 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "history",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons history --since 1d",
+    "fix_argv": [
+      "omaddons",
+      "history",
+      "--since",
+      "1d"
+    ],
+    "message": "--since takes a duration (30m, 12h, 1d, 2w) or an RFC 3339 time, not \"nonsense\"",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

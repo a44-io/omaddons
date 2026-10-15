@@ -1,0 +1,46 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "history",
+  "commands": [],
+  "data": {
+    "entries": [
+      {
+        "actor": "agent",
+        "argv": [
+          "omaddons",
+          "install",
+          "gh:o/foo",
+          "--file",
+          "<root>/dl/foo.zip",
+          "-t",
+          "retail",
+          "--json"
+        ],
+        "at": "<time>",
+        "changes": {
+          "added": 1,
+          "removed": 0,
+          "replaced": 0
+        },
+        "kind": "install",
+        "reason": null,
+        "result": "committed",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      }
+    ],
+    "truncated": false
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

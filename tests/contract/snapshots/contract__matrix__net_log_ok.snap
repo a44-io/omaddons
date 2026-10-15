@@ -1,0 +1,64 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "net-log",
+  "commands": [],
+  "data": {
+    "entries": [
+      {
+        "bytes": 0,
+        "duration_ms": 0,
+        "error": null,
+        "host": "github.com",
+        "method": "GET",
+        "path": "/o/foo/releases/latest",
+        "purpose": "release-latest",
+        "status": 302,
+        "time": "<time>",
+        "via": "http"
+      },
+      {
+        "bytes": 105,
+        "duration_ms": 0,
+        "error": null,
+        "host": "github.com",
+        "method": "GET",
+        "path": "/o/foo/releases/download/v1/release.json",
+        "purpose": "release-json",
+        "status": 200,
+        "time": "<time>",
+        "via": "http"
+      },
+      {
+        "bytes": 157,
+        "duration_ms": 0,
+        "error": null,
+        "host": "github.com",
+        "method": "GET",
+        "path": "/o/foo/releases/download/v1/Foo.zip",
+        "purpose": "asset",
+        "status": 200,
+        "time": "<time>",
+        "via": "http"
+      }
+    ],
+    "since": null,
+    "skipped": 0,
+    "summary": {
+      "by_host": {
+        "github.com": 3
+      },
+      "by_via": {
+        "http": 3
+      }
+    }
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

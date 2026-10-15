@@ -1,0 +1,21 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "config set",
+  "commands": [],
+  "data": {
+    "changed": true,
+    "dry_run": false,
+    "key": "default_channel",
+    "previous": null,
+    "value": "beta"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
