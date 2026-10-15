@@ -580,7 +580,7 @@ fn backup(
         _ => return Ok(None),
     };
     let expected = hash_file(source).map_err(io_err(source))?;
-    create_dir_all_internal(backup_dir).map_err(io_err(backup_dir))?;
+    sys::create_dir_all(backup_dir).map_err(io_err(backup_dir))?;
     let copy = backup_dir.join(seq.to_string());
     sys::clone_file(source, &copy).map_err(io_err(&copy))?;
     let actual = hash_file(&copy).map_err(io_err(&copy))?;
@@ -643,31 +643,9 @@ fn log_action(state: &TxState, record: &ActionRecord) -> Result<(), FsxError> {
     let mut line = serde_json::to_vec(record).map_err(|err| io_err(log)(io::Error::other(err)))?;
     line.push(b'\n');
     if let Some(dir) = log.parent() {
-        create_dir_all_internal(dir).map_err(io_err(dir))?;
+        sys::create_dir_all(dir).map_err(io_err(dir))?;
     }
     sys::append_durable(log, &line).map_err(io_err(log))
-}
-
-/// Creates fsx's own bookkeeping dirs (backups, action logs); callers have checked they
-/// are internal.
-fn create_dir_all_internal(dir: &Path) -> io::Result<()> {
-    let mut missing = Vec::new();
-    let mut current = dir;
-    while fs::symlink_metadata(current).is_err() {
-        missing.push(current);
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => break,
-        }
-    }
-    for dir in missing.into_iter().rev() {
-        match sys::create_dir(dir, None) {
-            // ubs:ignore — an io::ErrorKind, not a secret
-            Err(err) if err.kind() != io::ErrorKind::AlreadyExists => return Err(err),
-            _ => {}
-        }
-    }
-    Ok(())
 }
 
 fn hash_file(path: &Path) -> io::Result<[u8; 32]> {

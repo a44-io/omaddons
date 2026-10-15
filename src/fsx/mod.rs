@@ -3,12 +3,14 @@
 //! reflink primitives, and the lock files.
 
 pub(crate) mod failpoint;
+mod lock;
 mod mutate;
 mod op;
 mod scope;
 mod session;
 pub(crate) mod sys;
 
+pub use lock::{GlobalLock, GlobalLockGuard, HolderInfo, InflightLock, LockState, probe_global};
 pub use mutate::{
     ActionRecord, Expect, FsxError, MutateOpts, TreeDigest, ensure_dir_all, mutate, mutate_with,
     sync_filesystem,

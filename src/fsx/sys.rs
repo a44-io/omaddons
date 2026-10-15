@@ -259,6 +259,29 @@ pub(crate) fn create_dir_with(
     Ok(())
 }
 
+/// Creates `dir` and its missing ancestors one level at a time, tolerating directories
+/// that appear meanwhile. For fsx's own bookkeeping dirs (backups, action logs, lock
+/// dirs) only: callers have checked the location.
+pub(crate) fn create_dir_all(dir: &Path) -> io::Result<()> {
+    let mut missing = Vec::new();
+    let mut current = dir;
+    while fs::symlink_metadata(current).is_err() {
+        missing.push(current);
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => break,
+        }
+    }
+    for dir in missing.into_iter().rev() {
+        match create_dir(dir, None) {
+            // ubs:ignore — an io::ErrorKind, not a secret
+            Err(err) if err.kind() != io::ErrorKind::AlreadyExists => return Err(err),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Makes everything written on the filesystem holding `path` durable (`syncfs(2)`).
 pub(crate) fn sync_filesystem(path: &Path) -> io::Result<()> {
     failpoint::hit("fsx.sync_filesystem.before")?;
