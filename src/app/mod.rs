@@ -5,8 +5,10 @@ pub mod config;
 pub mod engine;
 pub mod help;
 pub mod history;
+pub mod info;
 pub mod install;
 pub mod list;
+pub mod net_log;
 pub mod remove;
 pub mod status;
 pub mod targets;
@@ -27,6 +29,8 @@ const COMMANDS: &[&str] = &[
     "remove",
     "undo",
     "history",
+    "info",
+    "net-log",
     "list",
     "targets",
     "targets add",
@@ -57,6 +61,8 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         Some(Command::Remove(_)) => "remove",
         Some(Command::Undo(_)) => "undo",
         Some(Command::History(_)) => "history",
+        Some(Command::Info(_)) => "info",
+        Some(Command::NetLog(_)) => "net-log",
         Some(Command::List(_)) => "list",
         Some(Command::Targets(args)) => args
             .action
@@ -154,6 +160,22 @@ pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
             }
             output::emit(cfg, &mut reporter, name, started, offline, result)
         }
+        Some(Command::Info(args)) => output::emit(
+            cfg,
+            &mut reporter,
+            name,
+            started,
+            offline,
+            info::run(ctx, args),
+        ),
+        Some(Command::NetLog(args)) => output::emit(
+            cfg,
+            &mut reporter,
+            name,
+            started,
+            offline,
+            net_log::run(ctx, args),
+        ),
         Some(Command::History(args)) => {
             let result = history::run(ctx, args, cli.global.actor.as_deref());
             if result.as_ref().is_ok_and(|o| o.torn_tail) {

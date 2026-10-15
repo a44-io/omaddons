@@ -134,6 +134,10 @@ pub enum Command {
     Undo(crate::app::undo::UndoArgs),
     /// Show what changed, when, by whom and why
     History(crate::app::history::HistoryArgs),
+    /// What an addon is: installed records, catalog entry and newest release
+    Info(crate::app::info::InfoArgs),
+    /// Every network request omaddons made
+    NetLog(crate::app::net_log::NetLogArgs),
     /// List the addons in each target's AddOns folder
     List(crate::app::list::ListArgs),
     /// List the WoW clients, or add, remove, rename and choose them

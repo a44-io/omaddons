@@ -142,7 +142,7 @@ impl NetLog {
     /// Every entry in `net.log.1` then `net.log`, at or after `since`. Lines that do
     /// not parse (a torn last line after a crash) are skipped.
     pub fn read(&self, since: Option<Timestamp>) -> Result<Vec<NetLogEntry>> {
-        read_entries(&[&self.inner.previous, &self.inner.path], since)
+        read_entries(&[&self.inner.previous, &self.inner.path], since).map(|r| r.entries)
     }
 
     pub fn path(&self) -> &Path {
@@ -150,8 +150,23 @@ impl NetLog {
     }
 }
 
-fn read_entries(files: &[&Path], since: Option<Timestamp>) -> Result<Vec<NetLogEntry>> {
-    let mut entries = Vec::new();
+/// What [`read_log`] found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetLogRead {
+    /// Oldest first: the rotated previous file, then the current one.
+    pub entries: Vec<NetLogEntry>,
+    /// Lines that do not parse (a torn last line included).
+    pub skipped: usize,
+}
+
+/// Reads `net.log.1` then `net.log` without opening the log for writing; missing files
+/// are empty and unparseable lines are counted, never fatal.
+pub fn read_log(paths: &Paths, since: Option<Timestamp>) -> Result<NetLogRead> {
+    read_entries(&[&paths.net_log_previous(), &paths.net_log()], since)
+}
+
+fn read_entries(files: &[&Path], since: Option<Timestamp>) -> Result<NetLogRead> {
+    let mut read = NetLogRead::default();
     for file in files {
         let text = match fs::read_to_string(file) {
             Ok(text) => text,
@@ -164,13 +179,17 @@ fn read_entries(files: &[&Path], since: Option<Timestamp>) -> Result<Vec<NetLogE
                 ));
             }
         };
-        entries.extend(
-            text.lines()
-                .filter_map(|line| serde_json::from_str::<NetLogEntry>(line).ok())
-                .filter(|entry| since.is_none_or(|since| entry.time >= since)),
-        );
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str::<NetLogEntry>(line) {
+                Ok(entry) if since.is_none_or(|since| entry.time >= since) => {
+                    read.entries.push(entry);
+                }
+                Ok(_) => {}
+                Err(_) => read.skipped += 1,
+            }
+        }
     }
-    Ok(entries)
+    Ok(read)
 }
 
 /// Now, to the millisecond.

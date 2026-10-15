@@ -38,6 +38,11 @@ expression: envelope
         "name": "targets"
       },
       {
+        "about": "What an addon is: installed records, catalog entry and newest release",
+        "aliases": [],
+        "name": "info"
+      },
+      {
         "about": "Show what changed, when, by whom and why",
         "aliases": [],
         "name": "history"
@@ -51,6 +56,11 @@ expression: envelope
         "about": "Show help for omaddons or one command",
         "aliases": [],
         "name": "help"
+      },
+      {
+        "about": "Every network request omaddons made",
+        "aliases": [],
+        "name": "net-log"
       }
     ],
     "exit_codes": [

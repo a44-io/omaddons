@@ -96,7 +96,7 @@ fn pinned(release: &Release, pin: &str) -> bool {
 
 /// The newest release `channel` admits: by `published_at` when every eligible release
 /// has one, else the first in set order (sources list newest first).
-fn newest(set: &ReleaseSet, channel: Channel) -> Option<&Release> {
+pub fn newest(set: &ReleaseSet, channel: Channel) -> Option<&Release> {
     let eligible: Vec<&Release> = set
         .releases
         .iter()
