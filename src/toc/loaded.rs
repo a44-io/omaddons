@@ -310,14 +310,35 @@ pub fn verdict(
     target_interface: u32,
     table: &RulesTable,
 ) -> io::Result<VerdictReport> {
-    let Some(loaded) = loaded_toc(view, rules)? else {
-        return Ok(VerdictReport {
+    let loaded = loaded_toc(view, rules)?;
+    let folder = view.folder_name().as_str();
+    Ok(judge(
+        folder,
+        loaded.as_ref(),
+        rules,
+        family,
+        target_interface,
+        table,
+    ))
+}
+
+/// [`verdict`] on a TOC already loaded from `folder` (`None`: there is none), for
+/// callers that also keep the TOC.
+pub fn judge(
+    folder: &str,
+    loaded: Option<&LoadedToc>,
+    rules: &ClientRules,
+    family: Family,
+    target_interface: u32,
+    table: &RulesTable,
+) -> VerdictReport {
+    let Some(loaded) = loaded else {
+        return VerdictReport {
             loaded: None,
             verdict: Verdict::NoToc,
             warnings: Vec::new(),
-        });
+        };
     };
-    let folder = view.folder_name().as_str();
     let mut warnings = Vec::new();
     let wrong = |reason| Verdict::WrongFlavor { reason };
     let verdict = 'v: {
@@ -372,11 +393,11 @@ pub fn verdict(
         }
         Verdict::Compatible { out_of_date }
     };
-    Ok(VerdictReport {
+    VerdictReport {
         loaded: Some(loaded.summary()),
         verdict,
         warnings,
-    })
+    }
 }
 
 /// [`verdict`] for a target.

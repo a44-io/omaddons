@@ -1,0 +1,163 @@
+---
+source: tests/inventory.rs
+expression: inv
+---
+{
+  "addons_dir_missing": false,
+  "folders": [
+    {
+      "name": "Blizzard_Console",
+      "key": "blizzard_console",
+      "class": "protected",
+      "owners": [],
+      "case_duplicate": false,
+      "ownership_conflict": false,
+      "unreadable": false,
+      "toc": {
+        "file": "Blizzard_Console.toc",
+        "title": "Console",
+        "version": null,
+        "author": null,
+        "interfaces": [
+          120105
+        ],
+        "x_ids": {}
+      },
+      "verdict": {
+        "loaded": {
+          "file": "Blizzard_Console.toc",
+          "level": "plain",
+          "suffix": null,
+          "case_ambiguous": false,
+          "interface_raw": "120105"
+        },
+        "verdict": {
+          "verdict": "compatible",
+          "out_of_date": false
+        },
+        "warnings": []
+      }
+    },
+    {
+      "name": "Details",
+      "key": "details",
+      "class": "managed",
+      "owners": [
+        "Details"
+      ],
+      "case_duplicate": false,
+      "ownership_conflict": false,
+      "unreadable": false,
+      "toc": {
+        "file": "Details.toc",
+        "title": "Details!",
+        "version": "2.3",
+        "author": null,
+        "interfaces": [
+          120105,
+          50504
+        ],
+        "x_ids": {
+          "X-Curse-Project-ID": "61284"
+        }
+      },
+      "verdict": {
+        "loaded": {
+          "file": "Details.toc",
+          "level": "plain",
+          "suffix": null,
+          "case_ambiguous": false,
+          "interface_raw": "120105, 50504"
+        },
+        "verdict": {
+          "verdict": "compatible",
+          "out_of_date": false
+        },
+        "warnings": []
+      }
+    },
+    {
+      "name": "NoToc",
+      "key": "notoc",
+      "class": "unmanaged",
+      "owners": [],
+      "case_duplicate": false,
+      "ownership_conflict": false,
+      "unreadable": false,
+      "toc": null,
+      "verdict": {
+        "loaded": null,
+        "verdict": {
+          "verdict": "no_toc"
+        },
+        "warnings": []
+      }
+    },
+    {
+      "name": "OldThing",
+      "key": "oldthing",
+      "class": "unmanaged",
+      "owners": [],
+      "case_duplicate": false,
+      "ownership_conflict": false,
+      "unreadable": false,
+      "toc": {
+        "file": "OldThing.toc",
+        "title": "Old",
+        "version": null,
+        "author": null,
+        "interfaces": [
+          110200
+        ],
+        "x_ids": {}
+      },
+      "verdict": {
+        "loaded": {
+          "file": "OldThing.toc",
+          "level": "plain",
+          "suffix": null,
+          "case_ambiguous": false,
+          "interface_raw": "110200"
+        },
+        "verdict": {
+          "verdict": "compatible",
+          "out_of_date": true
+        },
+        "warnings": [
+          {
+            "code": "out_of_date",
+            "message": "OldThing: OldThing.toc targets interface 110200, older than the client's 120105; it loads only with out-of-date addons enabled",
+            "fix": "update the addon, or enable \"Load out of date AddOns\" in the client",
+            "fix_argv": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "WorkingCopy",
+      "key": "workingcopy",
+      "class": "linked",
+      "owners": [],
+      "case_duplicate": false,
+      "ownership_conflict": false,
+      "unreadable": false,
+      "toc": null,
+      "verdict": null,
+      "link_target": "../../../../dev/WorkingCopy"
+    }
+  ],
+  "missing": [
+    {
+      "addon": "Details",
+      "folder": "Details_DataStorage"
+    }
+  ],
+  "counts": {
+    "protected": 1,
+    "managed": 1,
+    "linked": 1,
+    "unmanaged": 2,
+    "invalid": 0
+  },
+  "stray_files": 0
+}
