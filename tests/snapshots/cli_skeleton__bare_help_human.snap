@@ -2,7 +2,7 @@
 source: tests/cli_skeleton.rs
 expression: r.stdout
 ---
-omaddons: manage World of Warcraft addons for every client on this machine.
+World of Warcraft addon manager (CLI + Omarchy plugin)
 
 Usage: omaddons [OPTIONS] <COMMAND>
 

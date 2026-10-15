@@ -27,7 +27,7 @@ use crate::output::{self, OutputConfig, OutputFlags, Reporter, TermEnv};
 #[command(
     name = "omaddons",
     bin_name = "omaddons",
-    about = "Manage World of Warcraft addons for every client on this machine",
+    about = "World of Warcraft addon manager (CLI + Omarchy plugin)",
     color = clap::ColorChoice::Never,
     disable_help_flag = true,
     disable_version_flag = true,

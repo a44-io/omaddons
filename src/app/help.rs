@@ -166,9 +166,7 @@ pub fn bare() -> HelpOutcome {
     let usage = "omaddons [OPTIONS] <COMMAND>".to_owned();
 
     let mut text = String::new();
-    text.push_str(
-        "omaddons: manage World of Warcraft addons for every client on this machine.\n\n",
-    );
+    text.push_str("World of Warcraft addon manager (CLI + Omarchy plugin)\n\n");
     text.push_str(&format!("Usage: {usage}\n\nCommands:\n"));
     let rows: Vec<Vec<String>> = commands
         .iter()
