@@ -701,9 +701,9 @@ fn write_status(paths: &Paths, scopes: &ScopeTable, target: &Target, record: &Ta
     let _ = write_monotonic(&mut s, paths, &StatusFile::build(&records, &meta));
 }
 
-/// Drops the in-flight lock, then prunes what the transaction left: its journal,
-/// stage dir, temp downloads and lock file. Best effort: recovery and retention sweep
-/// anything left.
+/// Prunes what the transaction left (its journal, stage dir, temp downloads and lock
+/// file) under its own in-flight lock, then drops the lock. Best effort: recovery and
+/// retention sweep anything left.
 fn cleanup(
     paths: &Paths,
     scopes: &ScopeTable,
@@ -711,7 +711,6 @@ fn cleanup(
     tx: &TxId,
     stage_dir: Option<&PathBuf>,
 ) {
-    drop(inflight);
     let mut victims = vec![
         paths.journal(tx),
         paths.inflight_lock(tx),
@@ -720,13 +719,16 @@ fn cleanup(
     victims.extend(stage_dir.cloned());
     victims.retain(|v| v.exists());
     if !victims.is_empty() {
+        // Under the transaction's own in-flight lock: cleanup never waits for the
+        // global lock, so planning and --dry-run never take it.
         let _ = fsx::prune(
             scopes,
             PruneReason::PostCommitCleanup,
             &victims,
-            LockUse::Acquire,
+            LockUse::Own(&inflight),
         );
     }
+    drop(inflight);
 }
 
 #[cfg(test)]

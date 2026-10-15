@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use common::archives::zip_text;
 use common::env::TestEnv;
-use common::http::{fixture, fixture_bytes, paths, replay};
+use common::http::{Asset, gh_release, paths, replay};
 use common::netlog::{assert_each_url_once, read_net_log};
 use common::targets::battlenet;
 use common::trees::tree_hash;
@@ -31,7 +31,6 @@ use omaddons::state::config::RunningPolicy;
 use omaddons::state::paths::Paths;
 use omaddons::state::records::TargetRecord;
 use omaddons::state::store;
-use serde_json::json;
 use support::{Env, chosen, folders, install, release, toc};
 
 const BASE: &str = "https://github.com/o/foo";
@@ -153,50 +152,9 @@ mod support {
         }
     }
 
-    /// (file name, release.json flavors with interfaces, zip entries)
-    pub type Asset<'a> = (&'a str, &'a [(&'a str, u32)], Vec<(&'a str, &'a str)>);
-
-    /// Serves release `tag` of gh:o/foo with `assets`; empty flavors leave an asset's
-    /// release.json metadata empty.
+    /// Serves release `tag` of gh:o/foo with `assets`.
     pub fn release(scenario: &Path, tag: &str, assets: &[Asset<'_>]) {
-        fixture(
-            scenario,
-            &format!("latest-{tag}"),
-            &format!("{BASE}/releases/latest"),
-            302,
-            &[("location", &format!("{BASE}/releases/tag/{tag}"))],
-            None,
-        );
-        let entries: Vec<serde_json::Value> = assets
-            .iter()
-            .map(|(file, flavors, _)| {
-                json!({
-                    "filename": file,
-                    "nolib": false,
-                    "metadata": flavors.iter().map(|(f, i)| json!({ "flavor": f, "interface": i })).collect::<Vec<_>>(),
-                })
-            })
-            .collect();
-        let manifest = json!({ "releases": entries }).to_string();
-        fixture(
-            scenario,
-            &format!("manifest-{tag}"),
-            &format!("{BASE}/releases/download/{tag}/release.json"),
-            200,
-            &[],
-            Some(&manifest),
-        );
-        for (file, _, entries) in assets {
-            let zip = zip_text(entries);
-            fixture_bytes(
-                scenario,
-                &format!("asset-{tag}-{file}"),
-                &format!("{BASE}/releases/download/{tag}/{file}"),
-                200,
-                &[],
-                Some(&zip),
-            );
-        }
+        gh_release(scenario, BASE, tag, assets);
     }
 
     /// Install gh:o/foo into `target`.
@@ -208,6 +166,7 @@ mod support {
                 channel: Channel::Stable,
                 version: None,
                 file: None,
+                name: None,
             }],
         }
     }
@@ -532,6 +491,7 @@ fn one_failing_ref_does_not_stop_the_others() {
         channel: Channel::Stable,
         version: None,
         file: None,
+        name: None,
     });
     let plan = env.plan(vec![request], false);
     assert_eq!(plan.failures.len(), 1);
@@ -608,6 +568,7 @@ fn local_and_url_sources_fetch_without_requests() {
                 channel: Channel::Stable,
                 version: None,
                 file: None,
+                name: None,
             }],
         }],
         false,

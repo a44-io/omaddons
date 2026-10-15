@@ -47,7 +47,20 @@ pub fn detect_running(targets: &[Target]) -> BTreeMap<PathBuf, Vec<RunningInfo>>
         return BTreeMap::new();
     };
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    detect_running_in(Path::new("/proc"), uid, targets, home.as_deref())
+    let root = proc_root(
+        std::env::var_os("OMADDONS_PROC_ROOT"),
+        cfg!(debug_assertions),
+    );
+    detect_running_in(&root, uid, targets, home.as_deref())
+}
+
+/// `/proc`; in debug builds `OMADDONS_PROC_ROOT` names a synthetic tree instead, for
+/// end-to-end tests (release builds ignore it, like `OMADDONS_HTTP_FIXTURES`).
+fn proc_root(var: Option<std::ffi::OsString>, debug: bool) -> PathBuf {
+    match var.filter(|v| debug && !v.is_empty()) {
+        Some(root) => PathBuf::from(root),
+        None => PathBuf::from("/proc"),
+    }
 }
 
 /// [`detect_running`] over any proc tree; `home` locates Wine's default prefix.
@@ -245,6 +258,15 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[test]
+    fn the_proc_root_seam_is_debug_only() {
+        let proc = PathBuf::from("/proc");
+        assert_eq!(proc_root(Some("/x".into()), true), PathBuf::from("/x"));
+        assert_eq!(proc_root(Some("/x".into()), false), proc, "release builds");
+        assert_eq!(proc_root(Some("".into()), true), proc);
+        assert_eq!(proc_root(None, true), proc);
+    }
 
     #[test]
     fn name_forms() {

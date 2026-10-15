@@ -8,6 +8,7 @@ use omaddons::net::{Http, NetConfig, NetLog, select_transport, stack_with};
 use omaddons::state::paths::Paths;
 use serde_json::json;
 
+use super::archives::zip_text;
 use super::env::TestEnv;
 
 /// Writes a one-response fixture for a GET of `url` under `scenario/<host>/`.
@@ -55,6 +56,53 @@ pub fn fixture_bytes(
         "responses": [{"status": status, "headers": headers, "body_file": body_file}],
     });
     fs::write(dir.join(format!("{name}.json")), doc.to_string()).unwrap();
+}
+
+/// One release asset: (file name, release.json flavors with interfaces, zip entries).
+pub type Asset<'a> = (&'a str, &'a [(&'a str, u32)], Vec<(&'a str, &'a str)>);
+
+/// Serves release `tag` of the GitHub repository at `base` (`https://github.com/o/r`)
+/// as its latest: the `releases/latest` redirect, a release.json listing `assets` (empty
+/// flavors leave an asset's metadata empty) and each asset as a synthetic zip.
+pub fn gh_release(scenario: &Path, base: &str, tag: &str, assets: &[Asset<'_>]) {
+    let slug = base.rsplit('/').take(2).collect::<Vec<_>>().join("-");
+    fixture(
+        scenario,
+        &format!("latest-{slug}-{tag}"),
+        &format!("{base}/releases/latest"),
+        302,
+        &[("location", &format!("{base}/releases/tag/{tag}"))],
+        None,
+    );
+    let entries: Vec<serde_json::Value> = assets
+        .iter()
+        .map(|(file, flavors, _)| {
+            json!({
+                "filename": file,
+                "nolib": false,
+                "metadata": flavors.iter().map(|(f, i)| json!({ "flavor": f, "interface": i })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let manifest = json!({ "releases": entries }).to_string();
+    fixture(
+        scenario,
+        &format!("manifest-{slug}-{tag}"),
+        &format!("{base}/releases/download/{tag}/release.json"),
+        200,
+        &[],
+        Some(&manifest),
+    );
+    for (file, _, entries) in assets {
+        fixture_bytes(
+            scenario,
+            &format!("asset-{slug}-{tag}-{file}"),
+            &format!("{base}/releases/download/{tag}/{file}"),
+            200,
+            &[],
+            Some(&zip_text(entries)),
+        );
+    }
 }
 
 /// The env's paths.

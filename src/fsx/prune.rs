@@ -13,7 +13,7 @@ use std::fs::{self, File, TryLockError};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use super::lock::{GlobalLock, GlobalLockGuard};
+use super::lock::{GlobalLock, GlobalLockGuard, InflightLock};
 use super::scope::{ScopeTable, Writer};
 use super::session::WriteSession;
 use super::{Op, RenameMode, ensure_dir_all, failpoint, mutate};
@@ -49,6 +49,12 @@ impl PruneReason {
 pub enum LockUse<'a> {
     Acquire,
     Held(&'a GlobalLockGuard),
+    /// No global lock: every victim is named for the transaction whose in-flight lock
+    /// the caller holds, and nothing else touches a live transaction's artifacts
+    /// (recovery and orphan collection wait for a free in-flight lock). Transactions
+    /// clean up this way, so planning and `--dry-run` never take the global lock. Trash
+    /// left by crashed prunes is swept only under the global lock.
+    Own(&'a InflightLock),
 }
 
 /// What a prune did.
@@ -89,15 +95,32 @@ pub fn prune(
         }
     }
 
+    let own = match &lock {
+        LockUse::Own(inflight) => Some(inflight.tx().to_string()),
+        LockUse::Acquire | LockUse::Held(_) => None,
+    };
+    if let Some(tx) = &own
+        && let Some(stranger) = planned.iter().find(|p| !named_for(&p.victim, tx))
+    {
+        return Err(Error::new(
+            ErrorCode::ScopeDenied,
+            format!(
+                "refusing to prune {} under transaction {tx}'s own lock: it is not that transaction's",
+                stranger.victim.display()
+            ),
+            Suggestion::command(["omaddons", "status"]),
+        ));
+    }
     let acquired = match lock {
         LockUse::Acquire => Some(GlobalLock::acquire(scopes.paths(), "prune")?),
-        LockUse::Held(_) => None,
+        LockUse::Held(_) | LockUse::Own(_) => None,
     };
     let prune_id = ulid::Ulid::generate();
     let mut session = WriteSession::untracked(reason.writer(), scopes, "prune");
     let mut trashed = Vec::new();
     for (n, plan) in planned.into_iter().enumerate() {
-        if plan.inflight && held(&plan.victim) {
+        // Under `Own` the caller holds the victim's lock itself.
+        if plan.inflight && own.is_none() && held(&plan.victim) {
             report
                 .skipped
                 .push((plan.victim, "held by a live transaction".to_owned()));
@@ -144,10 +167,23 @@ pub fn prune(
         }
         trash_dirs.insert(trash);
     }
-    for dir in trash_dirs {
-        sweep(&dir);
+    if own.is_none() {
+        for dir in trash_dirs {
+            sweep(&dir);
+        }
     }
     Ok(report)
+}
+
+/// Whether `victim` is named for transaction `tx` (`<tx>`, `<tx>.lock`, `<tx>.jsonl`).
+fn named_for(victim: &Path, tx: &str) -> bool {
+    victim
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| {
+            name.strip_prefix(tx)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        })
 }
 
 /// Checks `victim` against `reason`'s locations; `None` when it is already gone.
@@ -590,6 +626,43 @@ mod tests {
             "it waited for its own lock"
         );
         assert!(!victim.exists());
+    }
+
+    #[test]
+    fn a_transaction_prunes_its_own_artifacts_without_the_global_lock() {
+        let f = fixture();
+        let tx: TxId = TX.parse().unwrap();
+        let other: TxId = "01JB8Q2VA00000000000000001".parse().unwrap();
+        let _someone = GlobalLock::acquire(&f.paths, "someone else").unwrap();
+        let lock = super::super::lock::InflightLock::create(&f.paths, &tx).unwrap();
+        fs::create_dir_all(f.paths.cache_tmp(&tx).join("part")).unwrap();
+        fs::create_dir_all(f.paths.cache_tmp(&other)).unwrap();
+
+        let stranger = [f.paths.cache_tmp(&tx), f.paths.cache_tmp(&other)];
+        let err = prune(
+            &f.scopes,
+            PruneReason::PostCommitCleanup,
+            &stranger,
+            LockUse::Own(&lock),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ScopeDenied);
+        assert!(
+            f.paths.cache_tmp(&tx).exists(),
+            "nothing moves on a refusal"
+        );
+
+        let mine = [f.paths.inflight_lock(&tx), f.paths.cache_tmp(&tx)];
+        let report = prune(
+            &f.scopes,
+            PruneReason::PostCommitCleanup,
+            &mine,
+            LockUse::Own(&lock),
+        )
+        .unwrap();
+        assert_eq!(report.removed.len(), 2, "{report:?}");
+        assert!(!f.paths.inflight_lock(&tx).exists() && !f.paths.cache_tmp(&tx).exists());
+        assert!(f.paths.cache_tmp(&other).exists());
     }
 
     #[test]

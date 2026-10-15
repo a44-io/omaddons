@@ -7,6 +7,7 @@ omaddons: manage World of Warcraft addons for every client on this machine.
 Usage: omaddons [OPTIONS] <COMMAND>
 
 Commands:
+  install  Install or update addons in one target, verified by its own TOC rules
   list     List the addons in each target's AddOns folder
   targets  List the WoW clients, or add, remove, rename and choose them
   config   Show or change config.toml

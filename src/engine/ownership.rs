@@ -174,19 +174,29 @@ pub fn check(
         let others: Vec<&String> = entry.owners.iter().filter(|o| !is_me(o)).collect();
         let mine = entry.owners.iter().any(is_me);
         let respelled = entry.name != name.as_str();
-        let previous = match (mine, others.first(), entry.class) {
-            (true, None, _) => Previous::Same,
-            (_, Some(other), _) => {
+        let previous = match (mine, others.first()) {
+            (true, None) => Previous::Same,
+            // A new spelling of another addon's or an unmanaged folder: the client would
+            // see one folder under two names. `--force` never picks (vision §5.5 step 4).
+            (_, other) if respelled => {
+                let mut extra = json!({ "existing": entry.name });
+                if let (Some(map), Some(owner)) = (extra.as_object_mut(), other) {
+                    map.insert("owner".into(), json!(owner));
+                }
+                refuse(
+                    name.as_str(),
+                    ErrorCode::CaseCollision,
+                    "case_collision",
+                    extra,
+                );
+                continue;
+            }
+            (_, Some(other)) => {
                 if !force {
-                    let (code, reason) = if respelled {
-                        (ErrorCode::CaseCollision, "case_collision")
-                    } else {
-                        (ErrorCode::OwnershipConflict, "owned_by_another")
-                    };
                     refuse(
                         name.as_str(),
-                        code,
-                        reason,
+                        ErrorCode::OwnershipConflict,
+                        "owned_by_another",
                         json!({ "existing": entry.name, "owner": other }),
                     );
                     continue;
@@ -195,17 +205,12 @@ pub fn check(
                     from: (*other).clone(),
                 }
             }
-            (false, None, _) => {
+            (false, None) => {
                 if !force {
-                    let (code, reason) = if respelled {
-                        (ErrorCode::CaseCollision, "case_collision")
-                    } else {
-                        (ErrorCode::UnmanagedFolder, "unmanaged")
-                    };
                     refuse(
                         name.as_str(),
-                        code,
-                        reason,
+                        ErrorCode::UnmanagedFolder,
+                        "unmanaged",
                         json!({ "existing": entry.name }),
                     );
                     continue;
@@ -293,17 +298,15 @@ fn refusal(violations: &[Violation], argv: &[String]) -> Error {
                         top.folder
                     ),
                     Suggestion::command(["omaddons", "remove", owner]),
-                    vec![forced()],
+                    Vec::new(),
                 ),
                 None => (
                     format!(
                         "{} would install beside the unmanaged {existing}; the client sees one folder",
                         top.folder
                     ),
-                    forced(),
-                    vec![Suggestion::text(format!(
-                        "rename or remove {existing} first"
-                    ))],
+                    Suggestion::text(format!("rename or remove {existing} first")),
+                    Vec::new(),
                 ),
             }
         }
@@ -432,9 +435,9 @@ mod tests {
             ("Linked", false, "unmanaged_folder"),
             ("Linked", true, "unmanaged_folder"),
             ("foo", false, "case_collision"),
-            ("foo", true, "ok"),
+            ("foo", true, "case_collision"),
             ("bar", false, "case_collision"),
-            ("bar", true, "ok"),
+            ("bar", true, "case_collision"),
             ("Theirs", false, "ownership_conflict"),
             ("Theirs", true, "ok"),
             ("Loose", false, "unmanaged_folder"),
@@ -466,10 +469,10 @@ mod tests {
             }
         );
         assert_eq!(
-            ok("foo", true),
+            ok("Loose", true),
             AllowedOp::Replace {
-                name: f("foo"),
-                live: f("Foo"),
+                name: f("Loose"),
+                live: f("Loose"),
                 previous: Previous::Unmanaged
             }
         );
@@ -518,9 +521,13 @@ mod tests {
         let err = install("Loose", false).unwrap_err();
         assert_eq!(err.fix.argv(), Some(forced.as_slice()));
 
-        let err = install("foo", false).unwrap_err();
-        assert_eq!(err.fix.argv(), Some(forced.as_slice()));
-        assert_eq!(err.alternatives[0].display(), "rename or remove Foo first");
+        let err = install("foo", true).unwrap_err();
+        assert_eq!(
+            (err.fix.display(), err.fix.argv()),
+            ("rename or remove Foo first", None),
+            "--force never resolves a case collision"
+        );
+        assert!(err.alternatives.is_empty());
         assert!(
             err.message.contains("foo") && err.message.contains("Foo"),
             "{}",
@@ -533,6 +540,7 @@ mod tests {
             ["omaddons", "remove", "Other"],
             "a managed spelling twin: remove its owner"
         );
+        assert!(err.alternatives.is_empty());
 
         let err = install("blizzard_auctionui", true).unwrap_err();
         assert_eq!(

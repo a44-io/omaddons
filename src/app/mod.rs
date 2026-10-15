@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod help;
+pub mod install;
 pub mod list;
 pub mod targets;
 pub mod world;
@@ -16,6 +17,7 @@ use targets::TargetsAction;
 /// own (DEC-1).
 const COMMANDS: &[&str] = &[
     "help",
+    "install",
     "list",
     "targets",
     "targets add",
@@ -41,6 +43,7 @@ pub fn canonical(name: &str) -> &'static str {
 pub fn command_name(command: Option<&Command>) -> &'static str {
     match command {
         None | Some(Command::Help { .. }) => "help",
+        Some(Command::Install(_)) => "install",
         Some(Command::List(_)) => "list",
         Some(Command::Targets(args)) => args
             .action
@@ -80,6 +83,19 @@ pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
         None => output::emit(cfg, &mut reporter, name, started, offline, Ok(help::bare())),
         Some(Command::Help { command }) => {
             let result = help::for_command(command.as_deref(), &ctx.argv);
+            output::emit(cfg, &mut reporter, name, started, offline, result)
+        }
+        Some(Command::Install(args)) => {
+            let result = install::run(ctx, args);
+            if let Ok(outcome) = &result
+                && let (Some(ms), Some(tx)) =
+                    (outcome.lock_held_ms, output::Outcome::data(outcome).tx)
+            {
+                reporter.log(
+                    output::LogLevel::Debug,
+                    &format!("lock released: tx {tx}, lock_held_ms {ms}"),
+                );
+            }
             output::emit(cfg, &mut reporter, name, started, offline, result)
         }
         Some(Command::List(args)) => output::emit(

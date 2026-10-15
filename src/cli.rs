@@ -96,8 +96,8 @@ pub struct GlobalArgs {
     /// Show help
     #[arg(short = 'h', long = "help", global = true)]
     pub help: bool,
-    /// Show the version
-    #[arg(short = 'V', long = "version", global = true)]
+    /// Show the version (before any command: `install --version V` pins a release)
+    #[arg(short = 'V', long = "version")]
     pub version: bool,
 }
 
@@ -124,6 +124,8 @@ pub enum Command {
         /// The command to explain
         command: Option<String>,
     },
+    /// Install or update addons in one target, verified by its own TOC rules
+    Install(crate::app::install::InstallArgs),
     /// List the addons in each target's AddOns folder
     List(crate::app::list::ListArgs),
     /// List the WoW clients, or add, remove, rename and choose them

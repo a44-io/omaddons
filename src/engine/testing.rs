@@ -270,6 +270,7 @@ impl TxScene {
             channel: crate::model::Channel::Stable,
             version: None,
             file: Some(zip.to_path_buf()),
+            name: None,
         }
     }
 

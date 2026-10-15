@@ -74,6 +74,9 @@ pub enum RequestedChange {
         version: Option<String>,
         /// `--file <zip>`: this archive instead of the release's assets.
         file: Option<PathBuf>,
+        /// The name a new addon is recorded under (the catalog's); `None` derives it
+        /// from the archive's folders. An installed addon keeps its own.
+        name: Option<String>,
     },
     Remove {
         addon: String,
@@ -435,8 +438,9 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
             channel,
             version,
             file,
+            name,
         } => Want::Install {
-            name: None,
+            name: name.clone(),
             wanted: Wanted {
                 r#ref: r#ref.clone(),
                 channel: *channel,
@@ -644,9 +648,18 @@ impl TargetPlanner<'_> {
             return Err(self.no_release(wanted, &tried, "no candidate loads on this client"));
         };
 
-        let addon = name
-            .map(str::to_owned)
-            .or_else(|| existing.map(|e| e.name.clone()))
+        // An installed addon keeps its name: it is the record's identity. A hint that
+        // names another ref's addon is ignored (a folder-derived name that clashes
+        // shares a folder too, which ownership refuses).
+        let taken = |n: &str| {
+            self.record
+                .addons
+                .get(&TargetRecord::addon_key(n))
+                .is_some_and(|a| a.r#ref != wanted.r#ref)
+        };
+        let addon = existing
+            .map(|e| e.name.clone())
+            .or_else(|| name.filter(|n| !taken(n)).map(str::to_owned))
             .unwrap_or_else(|| addon_name(&wanted.r#ref, &winner.inspected));
         let template = AddonRecord {
             r#ref: wanted.r#ref.clone(),
@@ -1053,7 +1066,8 @@ fn file_candidate(file: &std::path::Path, wanted: &Wanted) -> Candidate {
     } else {
         AssetLocation::LocalZip(file.to_path_buf())
     };
-    let version = wanted.version.clone().unwrap_or_else(|| "local".to_owned());
+    // Without --version the TOC's ## Version fills it in once the archive is inspected.
+    let version = wanted.version.clone().unwrap_or_default();
     Candidate {
         // A zip is identified by its content, so the same file is a no-op and another
         // one an update; a directory has no cheap identity and always reinstalls.
@@ -1115,7 +1129,8 @@ fn local_identity(file: &std::path::Path) -> String {
 }
 
 /// A new addon's name: the folder named like the repository, else the folder the
-/// others extend (`WeakAuras` for `WeakAurasOptions`), else the first.
+/// others extend (`WeakAuras` for `WeakAurasOptions`), else the one core folder
+/// (`DBM-Core` beside `DBM-GUI`), else the shortest.
 pub fn addon_name(r#ref: &Ref, inspected: &Inspected) -> String {
     let names: Vec<&str> = inspected.folders.iter().map(|f| f.name.as_str()).collect();
     if let Ref::GitHub { repo, .. } = r#ref
@@ -1138,6 +1153,15 @@ pub fn addon_name(r#ref: &Ref, inspected: &Inspected) -> String {
             .then(a.len().cmp(&b.len()))
             .then(a.cmp(b))
     });
+    let core = |n: &&&str| {
+        let n = n.to_ascii_lowercase();
+        n.ends_with("-core") || n.ends_with("_core")
+    };
+    if ranked.first().is_some_and(|top| extended(top) == 0)
+        && let [only] = names.iter().filter(core).collect::<Vec<_>>().as_slice()
+    {
+        return (**only).to_owned();
+    }
     ranked
         .first()
         .map_or_else(|| r#ref.to_string(), |n| (*n).to_owned())
@@ -1181,8 +1205,20 @@ mod tests {
         let dbm = inspected(&["DBM-StatusBarTimers", "DBM-Core", "DBM-GUI"]);
         assert_eq!(
             addon_name(&"gh:DeadlyBossMods/DeadlyBossMods".parse().unwrap(), &dbm),
-            "DBM-GUI",
-            "no folder extends another: the shortest"
+            "DBM-Core",
+            "no folder extends another: the one core folder"
+        );
+        let bw = inspected(&["BigWigs_Core", "BigWigs", "BigWigs_Options"]);
+        assert_eq!(
+            addon_name(&"gh:o/bw".parse().unwrap(), &bw),
+            "BigWigs",
+            "the extended folder beats the core folder"
+        );
+        let plain = inspected(&["Zeta", "Alpha"]);
+        assert_eq!(
+            addon_name(&"gh:o/pack".parse().unwrap(), &plain),
+            "Zeta",
+            "no core folder: the shortest, then by name"
         );
     }
 

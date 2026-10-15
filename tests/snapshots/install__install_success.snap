@@ -1,0 +1,58 @@
+---
+source: tests/install.rs
+expression: "support::stable(&envelope)"
+---
+{
+  "command": "install",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<tx>"
+      ],
+      "command": "omaddons undo <tx>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "atomic_swap": true,
+    "dry_run": false,
+    "items": [
+      {
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [
+            "Foo",
+            "FooOptions"
+          ],
+          "removed": [],
+          "replaced": []
+        },
+        "from_version": null,
+        "name": "Foo",
+        "ref": "gh:o/foo",
+        "request": "gh:o/foo",
+        "status": "installed",
+        "to_version": "v1.0.0",
+        "version_confidence": "release"
+      }
+    ],
+    "kind": "install",
+    "reload_required": "none",
+    "target": {
+      "id": "retail",
+      "key": "<key>"
+    },
+    "tx": "<tx>"
+  },
+  "exit_code": 0,
+  "meta": "<meta>",
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

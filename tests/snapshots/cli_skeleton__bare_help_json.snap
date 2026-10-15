@@ -8,6 +8,11 @@ expression: envelope
   "data": {
     "commands": [
       {
+        "about": "Install or update addons in one target, verified by its own TOC rules",
+        "aliases": [],
+        "name": "install"
+      },
+      {
         "about": "List the addons in each target's AddOns folder",
         "aliases": [],
         "name": "list"
@@ -164,7 +169,7 @@ expression: envelope
         "takes_value": false
       },
       {
-        "about": "Show the version",
+        "about": "Show the version (before any command: `install --version V` pins a release)",
         "name": "version",
         "short": "V",
         "takes_value": false
