@@ -7,7 +7,10 @@
 //! not have (WoWInterface and Tukui arrive in M2, CurseForge and Wago in M5) fail with
 //! `source_disabled` without touching the network (DEC-12).
 
+pub mod atom;
+pub mod github;
 pub mod refs;
+pub mod release_json;
 
 use std::collections::BTreeMap;
 
@@ -15,7 +18,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::error::{Error, ErrorCode, Result, Suggestion};
-use crate::model::{Ref, ReleaseSet};
+use crate::model::{Channel, Ref, ReleaseSet};
 use crate::net::{Http, run_bounded};
 use crate::politeness::MAX_CONCURRENT_REQUESTS;
 
@@ -75,9 +78,29 @@ impl SourceId {
 /// One addon source (vision §5.4).
 pub trait Source: Send + Sync {
     fn id(&self) -> SourceId;
-    /// Network; batched; called once per run with every distinct ref of this source.
-    /// Result `i` belongs to `refs[i]`.
-    fn fetch(&self, refs: &[Ref], http: &dyn Http) -> Vec<Result<ReleaseSet>>;
+    /// Network; batched; called once per run with every distinct wish for this source.
+    /// Result `i` belongs to `wanted[i]`.
+    fn fetch(&self, wanted: &[Wanted], http: &dyn Http) -> Vec<Result<ReleaseSet>>;
+}
+
+/// What a run wants from a ref: its channel, and a pinned version (`--version`, or a
+/// release URL's tag). Equal wishes are fetched once, however many targets share them.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Wanted {
+    pub r#ref: Ref,
+    pub channel: Channel,
+    pub version: Option<String>,
+}
+
+impl Wanted {
+    /// The latest stable release of `r`.
+    pub fn stable(r: Ref) -> Self {
+        Self {
+            r#ref: r,
+            channel: Channel::Stable,
+            version: None,
+        }
+    }
 }
 
 /// The sources of this build.
@@ -89,6 +112,13 @@ pub struct SourceRegistry {
 impl SourceRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Every source this build ships.
+    pub fn builtin() -> Self {
+        let mut registry = Self::new();
+        registry.register(Box::new(github::GithubSource::new()));
+        registry
     }
 
     /// Adds a source, replacing one with the same id.
@@ -117,26 +147,26 @@ pub fn disabled(r: &Ref) -> Error {
 
 /// Fetches every distinct ref once: one `fetch` call per source, sources in parallel.
 pub fn fetch_once(
-    refs: impl IntoIterator<Item = Ref>,
+    wanted: impl IntoIterator<Item = Wanted>,
     registry: &SourceRegistry,
     http: &dyn Http,
-) -> BTreeMap<Ref, Result<ReleaseSet>> {
-    let mut groups: BTreeMap<SourceId, Vec<Ref>> = BTreeMap::new();
-    for r in refs {
-        let group = groups.entry(SourceId::of(&r)).or_default();
-        if !group.contains(&r) {
-            group.push(r);
+) -> BTreeMap<Wanted, Result<ReleaseSet>> {
+    let mut groups: BTreeMap<SourceId, Vec<Wanted>> = BTreeMap::new();
+    for w in wanted {
+        let group = groups.entry(SourceId::of(&w.r#ref)).or_default();
+        if !group.contains(&w) {
+            group.push(w);
         }
     }
     let mut results = BTreeMap::new();
-    let mut work: Vec<(&dyn Source, Vec<Ref>)> = Vec::new();
+    let mut work: Vec<(&dyn Source, Vec<Wanted>)> = Vec::new();
     for (id, group) in groups {
         match registry.get(id) {
             Some(source) => work.push((source, group)),
             None => {
-                for r in group {
-                    let error = disabled(&r);
-                    results.insert(r, Err(error));
+                for w in group {
+                    let error = disabled(&w.r#ref);
+                    results.insert(w, Err(error));
                 }
             }
         }
@@ -147,14 +177,15 @@ pub fn fetch_once(
     });
     for (id, group, sets) in fetched {
         let mut sets = sets.into_iter();
-        for r in group {
+        for w in group {
             let set = sets.next().unwrap_or_else(|| {
                 Err(Error::internal(format!(
-                    "the {} source returned no result for {r}",
-                    id.wire()
+                    "the {} source returned no result for {}",
+                    id.wire(),
+                    w.r#ref
                 )))
             });
-            results.insert(r, set);
+            results.insert(w, set);
         }
     }
     results
@@ -181,8 +212,9 @@ mod tests {
             self.id
         }
 
-        fn fetch(&self, refs: &[Ref], _: &dyn Http) -> Vec<Result<ReleaseSet>> {
-            self.calls.lock().unwrap().push(refs.to_vec());
+        fn fetch(&self, wanted: &[Wanted], _: &dyn Http) -> Vec<Result<ReleaseSet>> {
+            let refs: Vec<Ref> = wanted.iter().map(|w| w.r#ref.clone()).collect();
+            self.calls.lock().unwrap().push(refs.clone());
             if let Some(barrier) = &self.barrier {
                 barrier.wait();
             }
@@ -224,6 +256,10 @@ mod tests {
         s.parse().unwrap()
     }
 
+    fn w(s: &str) -> Wanted {
+        Wanted::stable(r(s))
+    }
+
     #[test]
     fn each_ref_is_fetched_once() {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -243,27 +279,36 @@ mod tests {
             "wowi:5108",
             "cf:1",
         ];
-        let results = fetch_once(wanted.iter().map(|s| r(s)), &registry, &http);
+        let mut wishes: Vec<Wanted> = wanted.iter().map(|s| w(s)).collect();
+        wishes.push(Wanted {
+            channel: crate::model::Channel::Beta,
+            ..w("gh:a/gone")
+        });
+        let results = fetch_once(wishes, &registry, &http);
         assert_eq!(
             calls.lock().unwrap().as_slice(),
-            [vec![r("gh:WeakAuras/WeakAuras2"), r("gh:a/gone")]],
-            "one call, deduplicated"
+            [vec![
+                r("gh:WeakAuras/WeakAuras2"),
+                r("gh:a/gone"),
+                r("gh:a/gone")
+            ]],
+            "one call, deduplicated by ref and channel"
         );
-        assert_eq!(results.len(), 4);
-        assert!(results[&r("gh:weakauras/weakauras2")].is_ok());
+        assert_eq!(results.len(), 5);
+        assert!(results[&w("gh:weakauras/weakauras2")].is_ok());
         assert_eq!(
-            results[&r("gh:a/gone")].as_ref().unwrap_err().code,
+            results[&w("gh:a/gone")].as_ref().unwrap_err().code,
             ErrorCode::NotFound,
             "per-ref failure"
         );
-        let wowi = results[&r("wowi:5108")].as_ref().unwrap_err();
+        let wowi = results[&w("wowi:5108")].as_ref().unwrap_err();
         assert_eq!(
             (wowi.code, wowi.exit().code()),
             (ErrorCode::SourceDisabled, 1)
         );
         assert!(wowi.message.contains("M2"), "{}", wowi.message);
         assert!(
-            results[&r("cf:1")]
+            results[&w("cf:1")]
                 .as_ref()
                 .unwrap_err()
                 .message
@@ -290,7 +335,7 @@ mod tests {
             }));
         }
         let results = fetch_once(
-            [r("gh:a/b"), r("url:https://example.org/x.zip")],
+            [w("gh:a/b"), w("url:https://example.org/x.zip")],
             &registry,
             &NoNetwork::default(),
         );

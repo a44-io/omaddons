@@ -119,7 +119,10 @@ impl Http for RecordTransport {
         let resp = self.inner.send(req.clone())?;
         let status = resp.status;
         let final_url = resp.final_url.clone();
-        let headers: Vec<(String, String)> = resp
+        // The fixture gets stripped headers; the live run keeps the originals, because a
+        // signed redirect without its signature fails upstream.
+        let live_headers = resp.headers.clone();
+        let stored: Vec<(String, String)> = resp
             .headers
             .iter()
             .filter(|(k, _)| !k.eq_ignore_ascii_case("set-cookie"))
@@ -134,10 +137,10 @@ impl Http for RecordTransport {
             })
             .collect();
         let body = resp.bytes()?;
-        self.write(&req, status, headers.clone(), &body)?;
+        self.write(&req, status, stored, &body)?;
         Ok(Response::new(
             status,
-            headers,
+            live_headers,
             final_url,
             Box::new(Cursor::new(body)),
         ))
@@ -188,6 +191,11 @@ mod tests {
         .header("Authorization", "Bearer s3cret");
         let resp = record.send(req).unwrap();
         assert_eq!(resp.status, 302);
+        assert_eq!(
+            resp.location(),
+            Some("https://release-assets.githubusercontent.com/x?X-Amz-Signature=s&id=1"),
+            "the live redirect keeps its signature; only the fixture is stripped"
+        );
         assert_eq!(resp.bytes().unwrap(), b"moved");
 
         let host = scenario.join("github.com");

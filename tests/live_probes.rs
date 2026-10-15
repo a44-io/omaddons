@@ -9,7 +9,11 @@ mod common;
 use std::io::Read;
 
 use common::env::TestEnv;
+use common::http::paths;
+use common::netlog::{assert_no_github_rest, read_net_log};
 use omaddons::net::{CacheState, Http, NetConfig, NetLog, Request, stack};
+use omaddons::sources::github::GithubSource;
+use omaddons::sources::{Source, Wanted};
 use omaddons::state::paths::Paths;
 use support::{latest_tag, live};
 
@@ -116,4 +120,36 @@ fn commits_feed_and_codeload_zip() {
     let mut magic = [0u8; 4];
     zip.into_reader().read_exact(&mut magic).unwrap();
     assert_eq!(&magic, b"PK\x03\x04");
+}
+
+/// source-github-stable: the production decoder on WeakAuras2's live `release.json`,
+/// with zero REST requests.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn github_source_decodes_live() {
+    let Some((env, http)) = live() else { return };
+    let wanted = Wanted::stable("gh:WeakAuras/WeakAuras2".parse().unwrap());
+    let set = GithubSource::new()
+        .fetch(&[wanted], http.as_ref())
+        .pop()
+        .unwrap()
+        .unwrap();
+    let release = &set.releases[0];
+    assert!(!release.assets.is_empty(), "{release:?}");
+    assert!(
+        release.assets.iter().all(|a| !a.flavors.is_empty()),
+        "{release:?}"
+    );
+    assert_no_github_rest(&read_net_log(&paths(&env)));
+
+    let recent = GithubSource::recent_tags("WeakAuras", "WeakAuras2", http.as_ref()).unwrap();
+    assert!(
+        recent
+            .tags
+            .iter()
+            .any(|t| release.release_id.ends_with(&format!("@{}", t.tag))),
+        "{recent:?}"
+    );
+    let again = GithubSource::recent_tags("WeakAuras", "WeakAuras2", http.as_ref()).unwrap();
+    assert!(again.revalidated && again.tags == recent.tags);
 }
