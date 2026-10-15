@@ -216,7 +216,11 @@ pub fn for_command(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, E
         .get_subcommands()
         .map(|c| c.get_name().to_owned())
         .collect();
-    let Some(sub) = root.find_subcommand_mut(name) else {
+    // A nested path such as `targets add` walks one level per word.
+    let found = name
+        .split_whitespace()
+        .try_fold(&mut root, |cmd, part| cmd.find_subcommand_mut(part));
+    let Some(sub) = found else {
         let (fix, alternatives) = crate::cli::suggest(argv, name, &names)
             .unwrap_or_else(|| (Suggestion::command(["omaddons", "help"]), Vec::new()));
         let mut error = Error::new(

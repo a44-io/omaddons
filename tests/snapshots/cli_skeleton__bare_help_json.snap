@@ -13,6 +13,11 @@ expression: envelope
         "name": "list"
       },
       {
+        "about": "List the WoW clients, or add, remove, rename and choose them",
+        "aliases": [],
+        "name": "targets"
+      },
+      {
         "about": "Show help for omaddons or one command",
         "aliases": [],
         "name": "help"

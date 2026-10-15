@@ -126,6 +126,8 @@ pub enum Command {
     },
     /// List the addons in each target's AddOns folder
     List(crate::app::list::ListArgs),
+    /// List the WoW clients, or add, remove, rename and choose them
+    Targets(crate::app::targets::TargetsArgs),
 }
 
 /// What every command receives (DEC-2).
@@ -230,6 +232,14 @@ fn run_with(
     set_panic_state(fallback, "omaddons", started);
     let cli = match Cli::try_parse_from(raw) {
         Ok(cli) => cli,
+        // `-h` on a command with required arguments: help, not a usage error.
+        Err(_) if wants_help(&argv) => {
+            let path = command_path(&argv).join(" ");
+            let name = (!path.is_empty()).then_some(path.as_str());
+            let result = crate::app::help::for_command(name, &argv);
+            let mut reporter = Reporter::stderr(&fallback);
+            return output::emit(&fallback, &mut reporter, "help", started, false, result);
+        }
         Err(err) => {
             let error = usage_error(&err, &argv);
             return render_error(&fallback, command_of(&argv), started, error);
@@ -272,10 +282,11 @@ fn normalize_argv(raw: &[OsString]) -> Vec<String> {
 /// The canonical name of the subcommand the user reached for, for the envelope of a
 /// usage error; `omaddons` when there is none.
 fn command_of(argv: &[String]) -> &'static str {
-    let cmd = Cli::command();
-    first_positional(argv)
-        .and_then(|a| cmd.find_subcommand(a))
-        .map_or("omaddons", |sub| crate::app::canonical(sub.get_name()))
+    let path = command_path(argv);
+    if path.is_empty() {
+        return "omaddons";
+    }
+    crate::app::canonical(&path.join(" "))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -295,23 +306,29 @@ const PRESENTATION_FLAGS: &[(&str, bool)] = &[
 /// (Levenshtein distance ≤ 2), else help.
 pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
     let rendered = err.to_string();
-    let message = rendered
-        .lines()
-        .find(|line| !line.trim().is_empty())
+    let mut lines = rendered.lines().map(str::trim).filter(|l| !l.is_empty());
+    let mut message = lines
+        .next()
         .unwrap_or("invalid arguments")
         .trim_start_matches("error: ")
         .to_owned();
+    // "…were not provided:" names the arguments on the following line(s).
+    if message.ends_with(':') {
+        let detail: Vec<&str> = lines.take_while(|l| !l.starts_with("Usage:")).collect();
+        if !detail.is_empty() {
+            message = format!("{message} {}", detail.join(", "));
+        }
+    }
     let invalid = |kind: ContextKind| match err.get(kind) {
         Some(ContextValue::String(token)) => Some(token.clone()),
         _ => None,
     };
     let cmd = Cli::command();
-    let subcommand = first_positional(argv)
-        .filter(|a| cmd.find_subcommand(a).is_some())
-        .map(str::to_owned);
+    let path = command_path(argv);
+    let subcommand = path.first().cloned();
     let help_fix = || {
         let mut argv = vec!["omaddons".to_owned(), "help".to_owned()];
-        argv.extend(subcommand.clone());
+        argv.extend(path.iter().cloned());
         (Suggestion::command(argv), Vec::new())
     };
     let (fix, alternatives) = match err.kind() {
@@ -385,37 +402,57 @@ pub fn suggest(
     Some((replaced(best), alternatives))
 }
 
-/// The first positional argument after `argv[0]` (the subcommand the user reached
-/// for), skipping the values of flags that take one; nothing after `--`.
-fn first_positional(argv: &[String]) -> Option<&str> {
-    let cmd = Cli::command();
-    let takes_value = |flag: &str| {
-        if flag.contains('=') {
-            return false;
-        }
-        cmd.get_arguments()
-            .filter(|a| a.get_action().takes_values() && !a.is_positional())
-            .any(|a| match flag.strip_prefix("--") {
-                Some(long) => a
-                    .get_long_and_visible_aliases()
-                    .is_some_and(|names| names.contains(&long)),
-                // `-t` or a cluster ending in one, such as `-vt`.
-                None => flag.len() >= 2 && flag.chars().last() == a.get_short(),
-            })
-    };
+/// Whether `flag` (as written) takes the next argument as its value in `cmd`.
+fn takes_value(cmd: &clap::Command, flag: &str) -> bool {
+    if flag.contains('=') {
+        return false;
+    }
+    cmd.get_arguments()
+        .filter(|a| a.get_action().takes_values() && !a.is_positional())
+        .any(|a| match flag.strip_prefix("--") {
+            Some(long) => a
+                .get_long_and_visible_aliases()
+                .is_some_and(|names| names.contains(&long)),
+            // `-t` or a cluster ending in one, such as `-vt`.
+            None => flag.len() >= 2 && flag.chars().last() == a.get_short(),
+        })
+}
+
+/// The subcommand path `argv` names (`["targets", "add"]`): each positional argument
+/// that is a subcommand of the one before, skipping flag values; nothing after `--`.
+pub fn command_path(argv: &[String]) -> Vec<String> {
+    let mut root = Cli::command();
+    root.build();
+    let mut cmd = &root;
+    let mut path = Vec::new();
     let mut args = argv.iter().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--" {
-            return None;
+            break;
         }
-        if !arg.starts_with('-') || arg == "-" {
-            return Some(arg);
+        if arg.starts_with('-') && arg != "-" {
+            if takes_value(cmd, arg) {
+                args.next();
+            }
+            continue;
         }
-        if takes_value(arg) {
-            args.next();
+        match cmd.find_subcommand(arg) {
+            Some(sub) => {
+                path.push(sub.get_name().to_owned());
+                cmd = sub;
+            }
+            None => break,
         }
     }
-    None
+    path
+}
+
+/// `-h` or `--help` appears before any `--`.
+fn wants_help(argv: &[String]) -> bool {
+    argv.iter()
+        .skip(1)
+        .take_while(|a| *a != "--")
+        .any(|a| a == "-h" || a == "--help")
 }
 
 /// `argv` without presentation flags.
@@ -644,21 +681,32 @@ mod tests {
     }
 
     #[test]
-    fn the_subcommand_is_the_first_token_that_is_not_a_flag_value() {
+    fn the_command_path_skips_flag_values() {
         for (args, expected) in [
-            (&["-t", "retail", "help"][..], Some("help")),
-            (&["--flavor", "era", "help"][..], Some("help")),
-            (&["-vt", "retail", "help"][..], Some("help")),
-            (&["--target=retail", "help"][..], Some("help")),
-            (&["--json", "-v", "help"][..], Some("help")),
-            (&["--reason", "help", "x"][..], Some("x")),
-            (&["--", "help"][..], None),
-            (&["--json"][..], None),
+            (&["-t", "retail", "help"][..], &["help"][..]),
+            (&["--flavor", "era", "help"][..], &["help"][..]),
+            (&["-vt", "retail", "help"][..], &["help"][..]),
+            (&["--target=retail", "help"][..], &["help"][..]),
+            (&["--json", "-v", "help"][..], &["help"][..]),
+            (&["--reason", "help", "x"][..], &[][..]),
+            (&["--", "help"][..], &[][..]),
+            (&["--json"][..], &[][..]),
+            (
+                &["targets", "-t", "add", "add", "/x"][..],
+                &["targets", "add"][..],
+            ),
+            (
+                &["targets", "rename", "a", "b"][..],
+                &["targets", "rename"][..],
+            ),
         ] {
-            assert_eq!(first_positional(&argv(args)), expected, "{args:?}");
+            assert_eq!(command_path(&argv(args)), expected, "{args:?}");
         }
         assert_eq!(command_of(&argv(&["-t", "help", "help", "--x"])), "help");
+        assert_eq!(command_of(&argv(&["targets", "add"])), "targets add");
         assert_eq!(command_of(&argv(&["hepl"])), "omaddons");
+        assert!(wants_help(&argv(&["targets", "add", "-h"])));
+        assert!(!wants_help(&argv(&["install", "--", "-h"])));
     }
 
     #[test]

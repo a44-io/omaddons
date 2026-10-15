@@ -7,8 +7,9 @@ omaddons: manage World of Warcraft addons for every client on this machine.
 Usage: omaddons [OPTIONS] <COMMAND>
 
 Commands:
-  list  List the addons in each target's AddOns folder
-  help  Show help for omaddons or one command
+  list     List the addons in each target's AddOns folder
+  targets  List the WoW clients, or add, remove, rename and choose them
+  help     Show help for omaddons or one command
 
 Run `omaddons help <command>` for details; add --json for one JSON envelope on stdout.
 

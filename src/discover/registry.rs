@@ -335,26 +335,18 @@ impl<'l> LockedRegistry<'l> {
         path: &Path,
         name: Option<&str>,
     ) -> Result<(Vec<DiscoveredTarget>, Vec<Warning>)> {
-        let (root, folder) = manual_root(path)?;
-        let qualifier = dir_slug(&root);
-        let source = DiscoverySource::Manual;
-        let (mut found, warnings) = if battlenet::is_battlenet_root(&root) {
-            battlenet::discover_root(&root, table, &Default::default(), &qualifier, &source)
-        } else {
-            let (found, warnings) = custom::discover_custom_root(&root, table, &qualifier, &source);
-            (found.into_iter().collect(), warnings)
-        };
-        if let Some(folder) = &folder {
-            found.retain(|d| d.target.flavor_dir.as_ref() == Some(folder));
-        }
-        if found.is_empty() {
-            return Err(not_a_client(path));
-        }
+        let (mut found, warnings) = manual_targets(table, path)?;
         if let Some(name) = name {
             if found.len() > 1 {
+                let root = found[0].target.install_root.clone();
                 return Err(name_needs_one_target(&root, &found, name));
             }
-            self.check_new_id(name, table)?;
+            let already = found
+                .iter()
+                .all(|d| self.entry_at(&d.target.client_dir).is_some());
+            if !already {
+                self.check_new_id(name, table)?;
+            }
         }
         for d in &mut found {
             let entry = self.register(s, d, Origin::Manual, name)?;
@@ -420,23 +412,13 @@ impl<'l> LockedRegistry<'l> {
         Ok(key)
     }
 
+    /// The registry entry at `client_dir`, if registered.
+    pub fn entry_at(&self, client_dir: &Path) -> Option<&RegistryEntry> {
+        registered_at(&self.loaded.value, client_dir)
+    }
+
     fn check_new_id(&self, new: &str, table: &RulesTable) -> Result<()> {
-        let problem = id_problem(new, table).or_else(|| {
-            self.loaded
-                .value
-                .entry_by_id(new)
-                .map(|_| format!("{new:?} is already a target's id"))
-        });
-        match problem {
-            Some(message) => Err(Error::new(
-                ErrorCode::Usage,
-                message,
-                Suggestion::text(
-                    "choose an id of lowercase letters, digits and @._- that no target, family or product uses",
-                ),
-            )),
-            None => Ok(()),
-        }
+        check_user_id(&self.loaded.value, new, table)
     }
 
     fn save(&mut self, s: &mut WriteSession<'_>) -> Result<()> {
@@ -478,6 +460,10 @@ fn manual_root(path: &Path) -> Result<(PathBuf, Option<String>)> {
         && let Some(client) = dir.parent().and_then(Path::parent)
     {
         dir = client.to_path_buf();
+    } else if names(&dir).as_deref() == Some("interface")
+        && let Some(client) = dir.parent()
+    {
+        dir = client.to_path_buf();
     }
     if battlenet::is_battlenet_root(&dir) {
         return Ok((dir, None));
@@ -498,12 +484,37 @@ fn not_a_client(path: &Path) -> Error {
     Error::new(
         ErrorCode::TargetNotFound,
         format!(
-            "{} is not a WoW client: expected a Battle.net root, a flavor folder, a custom client root or an AddOns path",
+            "{} holds no WoW client: looked for .build.info (a Battle.net root or its flavor folder) and Wow*.exe beside Interface/ (a custom client)",
             path.display()
         ),
         Suggestion::command(["omaddons", "targets"]),
     )
     .details(serde_json::json!({ "path": path }))
+}
+
+/// The targets at `path` (a Battle.net root, a flavor folder, a custom client root, or
+/// an `Interface` or `Interface/AddOns` directory), discovered with source `manual`.
+/// Read-only; `target_not_found` when there is no client.
+pub fn manual_targets(
+    table: &RulesTable,
+    path: &Path,
+) -> Result<(Vec<DiscoveredTarget>, Vec<Warning>)> {
+    let (root, folder) = manual_root(path)?;
+    let qualifier = dir_slug(&root);
+    let source = DiscoverySource::Manual;
+    let (mut found, warnings) = if battlenet::is_battlenet_root(&root) {
+        battlenet::discover_root(&root, table, &Default::default(), &qualifier, &source)
+    } else {
+        let (found, warnings) = custom::discover_custom_root(&root, table, &qualifier, &source);
+        (found.into_iter().collect(), warnings)
+    };
+    if let Some(folder) = &folder {
+        found.retain(|d| d.target.flavor_dir.as_ref() == Some(folder));
+    }
+    if found.is_empty() {
+        return Err(not_a_client(path));
+    }
+    Ok((found, warnings))
 }
 
 fn name_needs_one_target(root: &Path, found: &[DiscoveredTarget], name: &str) -> Error {
@@ -532,13 +543,51 @@ fn name_needs_one_target(root: &Path, found: &[DiscoveredTarget], name: &str) ->
     error
 }
 
-fn unknown_id(id: &str) -> Error {
+/// `target_not_found` for an id no registered target has.
+pub fn unknown_id(id: &str) -> Error {
     Error::new(
         ErrorCode::TargetNotFound,
         format!("no registered target has the id {id:?}"),
         Suggestion::command(["omaddons", "targets"]),
     )
     .details(serde_json::json!({ "selector": id }))
+}
+
+/// The registry entry at `client_dir`, if registered (also through symlinks).
+pub fn registered_at<'a>(registry: &'a Registry, client_dir: &Path) -> Option<&'a RegistryEntry> {
+    registry
+        .targets
+        .iter()
+        .find(|e| same_dir(&e.client_dir, client_dir))
+}
+
+/// A name a user picks (`--name`, `rename`): the id rules, at most 32 characters, no
+/// `@` (reserved for qualified collisions such as `retail@steam`), and not taken;
+/// `usage` (exit 2) otherwise, naming the target that holds a taken id.
+pub fn check_user_id(registry: &Registry, new: &str, table: &RulesTable) -> Result<()> {
+    let fix = Suggestion::text(
+        "choose an id of up to 32 lowercase letters, digits and ._- that no target, family or product uses",
+    );
+    let problem = id_problem(new, table)
+        .or_else(|| (new.len() > 32).then(|| format!("{new:?} is longer than 32 characters")))
+        .or_else(|| {
+            new.contains('@')
+                .then(|| format!("{new:?} contains @, which marks qualified ids"))
+        });
+    if let Some(message) = problem {
+        return Err(Error::new(ErrorCode::Usage, message, fix));
+    }
+    if let Some(holder) = registry.entry_by_id(new) {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            format!("{new:?} is already the id of the target at {}", holder.client_dir.display()),
+            Suggestion::text(format!(
+                "pick another id, or rename that target first: omaddons targets rename {new} <new id>"
+            )),
+        )
+        .details(serde_json::json!({ "holder": holder.key })));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------

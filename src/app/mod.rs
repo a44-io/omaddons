@@ -3,15 +3,25 @@
 
 pub mod help;
 pub mod list;
+pub mod targets;
 pub mod world;
 
 use crate::cli::{Cli, Command, Context};
 use crate::error::Exit;
 use crate::output::{self, Reporter};
+use targets::TargetsAction;
 
 /// The canonical names of the subcommands this build has. Each command bead adds its
 /// own (DEC-1).
-const COMMANDS: &[&str] = &["help", "list"];
+const COMMANDS: &[&str] = &[
+    "help",
+    "list",
+    "targets",
+    "targets add",
+    "targets rm",
+    "targets rename",
+    "targets default",
+];
 
 /// The canonical (static) name for a subcommand name clap reported.
 pub fn canonical(name: &str) -> &'static str {
@@ -27,6 +37,10 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
     match command {
         None | Some(Command::Help { .. }) => "help",
         Some(Command::List(_)) => "list",
+        Some(Command::Targets(args)) => args
+            .action
+            .as_ref()
+            .map_or("targets", TargetsAction::command),
     }
 }
 
@@ -67,5 +81,40 @@ pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
             offline,
             list::run(ctx, *args),
         ),
+        Some(Command::Targets(args)) => {
+            let r = &mut reporter;
+            match &args.action {
+                None => output::emit(
+                    cfg,
+                    r,
+                    name,
+                    started,
+                    offline,
+                    targets::list(ctx, args.rescan),
+                ),
+                Some(TargetsAction::Add { path, name: id }) => output::emit(
+                    cfg,
+                    r,
+                    name,
+                    started,
+                    offline,
+                    targets::add(ctx, path, id.as_deref()),
+                ),
+                Some(TargetsAction::Rm { id }) => {
+                    output::emit(cfg, r, name, started, offline, targets::rm(ctx, id))
+                }
+                Some(TargetsAction::Rename { id, new }) => output::emit(
+                    cfg,
+                    r,
+                    name,
+                    started,
+                    offline,
+                    targets::rename(ctx, id, new),
+                ),
+                Some(TargetsAction::Default { id }) => {
+                    output::emit(cfg, r, name, started, offline, targets::default(ctx, id))
+                }
+            }
+        }
     }
 }
