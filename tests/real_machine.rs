@@ -17,9 +17,16 @@ use std::path::PathBuf;
 use common::trees::tree_hash;
 use serde_json::Value;
 use support::{
-    addons_of, blizzard_hashes, declares, enabled, entries, install_then_undo, note, omaddons,
-    skip_if_running, target, target_where,
+    addons_of, blizzard_hashes, declares, enabled, entries, flavors_of, hashes, install_then_undo,
+    note, omaddons, skip_if_running, target, target_where,
 };
+
+/// The live Classic clients: family, product, interface, version prefix.
+const CLASSIC: &[(&str, &str, u32, &str)] = &[
+    ("vanilla", "wow_classic_era", 11_509, "1.15."),
+    ("tbc", "wow_anniversary", 20_506, "2.5."),
+    ("mists", "wow_classic", 50_504, "5.5."),
+];
 
 #[cfg(test)]
 mod support {
@@ -87,11 +94,32 @@ mod support {
     /// Whether the newest stable release of `name` declares `flavor` in its
     /// release.json, as `info` reports it.
     pub fn declares(name: &str, flavor: &str) -> bool {
+        flavors_of(name).iter().any(|f| f == flavor)
+    }
+
+    /// The flavors the newest stable release of `name` declares in its release.json.
+    pub fn flavors_of(name: &str) -> Vec<String> {
         let (code, info) = omaddons(&["info", name]);
         assert_eq!(code, 0, "{info:#}");
         info["data"]["latest"]["flavors"]
             .as_array()
-            .is_some_and(|f| f.iter().any(|f| f == flavor))
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f.as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// Each dir's tree hash; empty for one that does not exist.
+    pub fn hashes(dirs: &[PathBuf]) -> Vec<String> {
+        dirs.iter()
+            .map(|d| {
+                if d.exists() {
+                    tree_hash(d)
+                } else {
+                    String::new()
+                }
+            })
+            .collect()
     }
 
     /// The entries of `dir`, sorted; empty when it does not exist.
@@ -250,6 +278,62 @@ fn status_reports_every_client() {
             &Value::from(23)
         )
     );
+
+    // The live Classic clients (each booted once on 2026-10-15).
+    for (family, product, interface, prefix) in CLASSIC {
+        let t = target(&status, family);
+        assert_eq!(
+            (&t["product"], &t["interface"], &t["kind"]),
+            (
+                &Value::from(*product),
+                &Value::from(*interface),
+                &Value::from("live")
+            ),
+            "{t:#}"
+        );
+        assert!(
+            t["version"].as_str().unwrap_or("").starts_with(prefix),
+            "{t:#}"
+        );
+        assert_eq!(
+            (&t["attention"], &t["folders"]["invalid"]),
+            (&serde_json::json!([]), &Value::from(0)),
+            "{t:#}"
+        );
+        if t["running"] == true {
+            note(
+                &format!("{family} is running; not asserting it is idle"),
+                &t,
+            );
+        }
+    }
+
+    // Classic Era, Hardcore and Season of Discovery share the Classic Era client.
+    let era = target(&status, "vanilla");
+    let modes: Vec<&str> = era["modes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["name"].as_str())
+        .collect();
+    assert_eq!(
+        modes,
+        ["Classic Era", "Hardcore", "Season of Discovery"],
+        "{era:#}"
+    );
+    for (selector, family) in [
+        ("sod", "vanilla"),
+        ("hardcore", "vanilla"),
+        ("mop", "mists"),
+    ] {
+        let (code, one) = omaddons(&["status", "-t", selector]);
+        assert_eq!(code, 0, "{selector}: {one:#}");
+        assert_eq!(
+            one["data"]["targets"][0]["id"],
+            target(&status, family)["id"],
+            "-t {selector} selects the {family} client"
+        );
+    }
 }
 
 #[test]
@@ -281,6 +365,134 @@ fn keyless_installs_retail() {
     );
 }
 
+/// Every live Classic client (era, anniversary, classic) takes the keyless set: each
+/// addon installs as its publisher declares the client's flavor, DBM and BigWigs skip
+/// their retail-only modules, nothing writes `WTF/`, and undoing one client never
+/// touches another. Nothing is asserted while the machine is changed: every install is
+/// undone first, newest first, and the recorded results are checked afterwards, so a
+/// failed check never leaves addons behind.
+#[test]
+#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
+fn keyless_installs_classic() {
+    if !enabled(true) {
+        return;
+    }
+    let started = jiff::Timestamp::now();
+    let (_, status) = omaddons(&["status"]);
+    let clients: Vec<Value> = CLASSIC.iter().map(|c| target(&status, c.0)).collect();
+    if clients.iter().any(skip_if_running) {
+        return;
+    }
+    let ids: Vec<String> = clients
+        .iter()
+        .map(|t| t["id"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    let addons: Vec<PathBuf> = ids.iter().map(|id| addons_of(id)).collect();
+    let wtf: Vec<PathBuf> = addons
+        .iter()
+        .map(|a| a.parent().and_then(|i| i.parent()).unwrap().join("WTF"))
+        .collect();
+    let (before, wtf_before) = (hashes(&addons), hashes(&wtf));
+    let refs = [
+        "weakauras",
+        "dbm",
+        "bigwigs",
+        "questie",
+        "bartender4",
+        "omnicc",
+    ];
+    let flavors: Vec<(&str, Vec<String>)> = refs.iter().map(|r| (*r, flavors_of(r))).collect();
+
+    // Install into each client, recording without asserting.
+    let mut installs: Vec<(i32, Value, Value, Vec<String>)> = Vec::new();
+    for id in &ids {
+        let mut args = vec!["install"];
+        args.extend(refs);
+        args.extend(["-t", id.as_str()]);
+        let (code, installed) = omaddons(&args);
+        note(&format!("install -t {id}"), &installed);
+        let (_, after) = omaddons(&["status", "-t", id]);
+        installs.push((code, installed, after, hashes(&addons)));
+    }
+    // Undo newest first, hashing every client after each undo.
+    let mut undos: Vec<Option<(i32, Vec<String>)>> = Vec::new();
+    for (_, installed, _, _) in installs.iter().rev() {
+        let Some(tx) = installed["data"]["tx"].as_str() else {
+            undos.push(None);
+            continue;
+        };
+        let (code, undone) = omaddons(&["undo", tx]);
+        note(&format!("undo {tx}"), &undone);
+        undos.push(Some((code, hashes(&addons))));
+    }
+    undos.reverse();
+
+    // Now the checks.
+    for (i, (code, installed, after, _)) in installs.iter().enumerate() {
+        let (id, flavor) = (&ids[i], ["classic", "bcc", "mists"][i]);
+        for (r, declared) in &flavors {
+            assert!(
+                declared.iter().any(|f| f == flavor),
+                "{r} no longer declares the {flavor} flavor, so it cannot install on {id}"
+            );
+        }
+        assert_eq!(*code, 0, "{id}: {installed:#}");
+        let items = installed["data"]["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut managed = 0;
+        for item in &items {
+            let request = item["request"].as_str().unwrap_or_default();
+            assert_eq!(item["status"], "installed", "{request} on {id}: {item:#}");
+            let folders = &item["folders"];
+            managed += folders["added"].as_array().map_or(0, Vec::len);
+            let core = match request {
+                "dbm" => "DBM-Core",
+                "bigwigs" => "BigWigs_Core",
+                _ => continue,
+            };
+            let skipped = folders["skipped"].as_array().cloned().unwrap_or_default();
+            assert!(
+                folders["added"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|f| f == core))
+                    && !skipped.is_empty()
+                    && skipped.iter().all(|s| s["reason"] == "game_type_excluded"),
+                "{request} on {id}: shared folders added, retail-only modules skipped: {folders:#}"
+            );
+        }
+        let counts = &after["data"]["targets"][0]["folders"];
+        assert_eq!(
+            (&counts["managed"], &counts["invalid"]),
+            (&Value::from(managed), &Value::from(0)),
+            "{id} after installing: {after:#}"
+        );
+        // Undoing this client restored it and left the clients installed before it.
+        let (undone, now) = undos[i].clone().expect("every install made a transaction");
+        assert_eq!(undone, 0, "undo on {id}");
+        for k in 0..ids.len() {
+            let expected = if k < i { &installs[k].3[k] } else { &before[k] };
+            assert_eq!(
+                &now[k], expected,
+                "after undoing {id}, {} is as expected",
+                ids[k]
+            );
+        }
+    }
+    assert_eq!(hashes(&addons), before, "every AddOns as before");
+    assert_eq!(hashes(&wtf), wtf_before, "nothing wrote WTF/");
+    let paths = omaddons::state::paths::Paths::from_env().unwrap();
+    let requests = omaddons::net::NetLog::new(&paths)
+        .unwrap()
+        .read(Some(started))
+        .unwrap();
+    assert!(
+        !requests.iter().any(|e| e.host == "api.github.com"),
+        "the stable channel needs no REST"
+    );
+}
+
 /// The real WoW: Forever stress-test client (`wowf`, `_forever_`). Each keyless publisher
 /// installs exactly when its release.json declares `forever`; DBM and BigWigs skip their
 /// retail-only modules (game type `standard`, Forever's is `camelot`); a client never
@@ -295,6 +507,17 @@ fn keyless_installs_forever() {
     let (_, status) = omaddons(&["status"]);
     let forever = target_where(&status, "product", "wowf");
     if skip_if_running(&forever) {
+        return;
+    }
+    // Installing what is already installed is a no-op with nothing to undo, so the test
+    // needs a client whose addons it puts there itself (the stress-test set stays
+    // installed for the owner's sessions; omad-classic-forever-gaps-xud.6).
+    let managed = forever["addons"]["total"].as_u64().unwrap_or(0);
+    if managed > 0 {
+        let _ = writeln!(
+            std::io::stderr(),
+            "skipped: the forever client already manages {managed} addons; remove or undo them and run again"
+        );
         return;
     }
     let id = forever["id"].as_str().unwrap_or("forever").to_owned();
