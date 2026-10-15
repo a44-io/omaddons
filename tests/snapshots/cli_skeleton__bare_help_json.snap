@@ -8,6 +8,11 @@ expression: envelope
   "data": {
     "commands": [
       {
+        "about": "Triage: every client, its addons, running state and what needs attention",
+        "aliases": [],
+        "name": "status"
+      },
+      {
         "about": "Install or update addons in one target, verified by its own TOC rules",
         "aliases": [],
         "name": "install"

@@ -382,26 +382,40 @@ fn read(path: &Path) -> Result<Parsed> {
 // ---------------------------------------------------------------------------------------
 // Reader reporting.
 
+/// An unfinished transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pending {
+    pub tx: TxId,
+    /// The target its `prepared` line names; `None` when it has none or is unreadable.
+    pub target: Option<TargetKey>,
+}
+
+/// Every journal that is not `committed`, oldest first. Writes nothing.
+pub fn pending(paths: &Paths) -> Result<Vec<Pending>> {
+    let mut found = Vec::new();
+    for (tx, path) in journals(paths)? {
+        let target = match read(&path) {
+            Ok(parsed) if matches!(parsed.phase, Phase::Committed) => continue,
+            Ok(parsed) => parsed.prepared.map(|p| p.target_key),
+            Err(_) => None,
+        };
+        found.push(Pending { tx, target });
+    }
+    Ok(found)
+}
+
 /// Unfinished transactions, for read commands: `journal_pending` when the global lock
 /// is free (the next mutating command recovers them), `tx_in_progress` when it is held.
 /// Writes nothing.
 pub fn pending_warnings(paths: &Paths) -> Result<Vec<Warning>> {
-    let mut pending = Vec::new();
-    for (tx, path) in journals(paths)? {
-        let target = match read(&path) {
-            Ok(parsed) if matches!(parsed.phase, Phase::Committed) => continue,
-            Ok(parsed) => parsed.prepared.map(|p| p.target_key.to_string()),
-            Err(_) => None,
-        };
-        pending.push((tx, target));
-    }
+    let pending = pending(paths)?;
     if pending.is_empty() {
         return Ok(Vec::new());
     }
     let held = matches!(probe_global(paths)?, LockState::Held { .. });
     Ok(pending
         .into_iter()
-        .map(|(tx, target)| {
+        .map(|Pending { tx, target }| {
             let on = target.map(|t| format!(" on target {t}")).unwrap_or_default();
             if held {
                 Warning::new(

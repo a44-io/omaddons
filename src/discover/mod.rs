@@ -50,6 +50,9 @@ pub struct DiscoveryInput {
     pub extra_prefixes: Vec<ExtraPrefix>,
     /// Launcher configuration hints (the launcher readers fill these).
     pub launcher_hints: Vec<LauncherHint>,
+    /// Registered targets' roots (install root, id qualifier, how it was found), which
+    /// [`cache::DiscoveryMode::NoScan`] parses directly when there is no cache.
+    pub registered_roots: Vec<(PathBuf, String, DiscoverySource)>,
 }
 
 /// A Wine prefix known from outside the scan.

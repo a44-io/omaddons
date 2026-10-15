@@ -283,8 +283,8 @@ mod tests {
             assert!(help.text.contains(exit.name()), "{}", exit.name());
         }
         assert!(
-            !help.text.contains("omaddons status"),
-            "status does not exist in this build"
+            help.text.contains("Start with `omaddons status`"),
+            "status is where to start"
         );
         assert!(
             help.text.lines().count() < 30,

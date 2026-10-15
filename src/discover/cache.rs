@@ -28,9 +28,12 @@ use crate::state::store::{self, SchemaVersion, VersionStatus, Versioned};
 /// How much of the cache to trust.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscoveryMode {
-    /// No scan: re-stat the cached roots only (`status --cached`). New installs wait for
-    /// a non-cached run. Without a cache this is `Full`.
+    /// No scan: re-stat the cached roots only. New installs wait for a non-cached run.
+    /// Without a cache this is `Full`.
     Cached,
+    /// No scan and no cache write (`status --cached`): the cached roots re-stat'ed, or
+    /// without a cache only the registered roots, parsed directly.
+    NoScan,
     /// Scan for roots, reusing each unchanged root's cached parse.
     Full,
     /// Ignore the cache and parse every root (`targets --rescan`).
@@ -127,12 +130,27 @@ pub fn discover_cached(
     let mut stats = CacheStats::default();
     let cache = match mode {
         DiscoveryMode::Rescan => None,
-        DiscoveryMode::Cached | DiscoveryMode::Full => load_cache(paths),
+        DiscoveryMode::Cached | DiscoveryMode::NoScan | DiscoveryMode::Full => load_cache(paths),
     };
     let mut diagnostics = Vec::new();
     let (requests, mut warnings) = match (mode, &cache) {
-        (DiscoveryMode::Cached, Some(cache)) => (
+        (DiscoveryMode::Cached | DiscoveryMode::NoScan, Some(cache)) => (
             cache.roots.iter().map(CachedRoot::request).collect(),
+            Vec::new(),
+        ),
+        (DiscoveryMode::NoScan, None) => (
+            input
+                .registered_roots
+                .iter()
+                .map(|(path, qualifier, source)| RootRequest {
+                    path: path.clone(),
+                    canonical: std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()),
+                    kind: None,
+                    route: Route::new(qualifier, source.clone()),
+                    hints: BattlenetHints::default(),
+                    hint_files: Vec::new(),
+                })
+                .collect(),
             Vec::new(),
         ),
         _ => {
@@ -207,7 +225,7 @@ pub fn discover_cached(
         (Some(old), Ok(new)) => store::encode(old).ok().as_ref() != Some(&new),
         _ => true,
     };
-    if changed {
+    if changed && mode != DiscoveryMode::NoScan {
         match write_cache(paths, &fresh) {
             Ok(()) => stats.written = true,
             Err(note) => diagnostics.push(format!("discovery cache not written: {note}")),

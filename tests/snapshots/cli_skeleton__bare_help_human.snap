@@ -7,6 +7,7 @@ omaddons: manage World of Warcraft addons for every client on this machine.
 Usage: omaddons [OPTIONS] <COMMAND>
 
 Commands:
+  status   Triage: every client, its addons, running state and what needs attention
   install  Install or update addons in one target, verified by its own TOC rules
   remove   Remove managed addons from one target (undoable)
   undo     Revert the last change (or one by id), SavedVariables included
@@ -16,7 +17,7 @@ Commands:
   config   Show or change config.toml
   help     Show help for omaddons or one command
 
-Run `omaddons help <command>` for details; add --json for one JSON envelope on stdout.
+Start with `omaddons status`. Run `omaddons help <command>` for details; add --json for one JSON envelope on stdout.
 
 Exit codes:
   0  ok            Success, including partial success (partial: true)

@@ -4,11 +4,12 @@
 //! (`state_corrupt`), which is why `help` and `config path` never build a world.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use crate::cli::Context;
-use crate::discover::cache::{DiscoveryMode, discover_cached};
+use crate::discover::cache::{CacheStats, DiscoveryMode, discover_cached};
 use crate::discover::registry::{Resolved, reconcile, resolve_one};
-use crate::discover::{DiscoveredTarget, DiscoveryInput, ScanLimits};
+use crate::discover::{DiscoveredTarget, DiscoveryInput, DiscoverySource, ScanLimits};
 use crate::error::{Error, Result, Warning};
 use crate::model::TargetKey;
 use crate::rules::RulesTable;
@@ -29,6 +30,8 @@ pub struct World {
     pub warnings: Vec<Warning>,
     /// Debug notes from discovery.
     pub diagnostics: Vec<String>,
+    /// Whether discovery scanned, reused the cache, or wrote it.
+    pub discovery: CacheStats,
 }
 
 impl World {
@@ -59,12 +62,27 @@ impl World {
                 .filter(|e| e.origin == Origin::Manual)
                 .map(|e| e.install_root.clone()),
         );
+        let mut registered_roots: Vec<(PathBuf, String, DiscoverySource)> = Vec::new();
+        for e in &registry.targets {
+            if !registered_roots
+                .iter()
+                .any(|(root, ..)| *root == e.install_root)
+            {
+                let source = match e.origin {
+                    Origin::Manual => DiscoverySource::Manual,
+                    Origin::Discovered => DiscoverySource::Scan,
+                };
+                registered_roots.push((e.install_root.clone(), e.qualifier.clone(), source));
+            }
+        }
         let input = DiscoveryInput {
             home: paths.home().to_path_buf(),
             extra_roots,
+            registered_roots,
             ..DiscoveryInput::default()
         };
-        let (found, _) = discover_cached(&input, &table, &paths, ScanLimits::default(), mode);
+        let (found, discovery) =
+            discover_cached(&input, &table, &paths, ScanLimits::default(), mode);
         warnings.extend(found.warnings);
         let mut resolved = reconcile(&registry, &found.targets);
         warnings.extend(resolved.warnings.iter().cloned());
@@ -80,6 +98,7 @@ impl World {
             resolved,
             warnings,
             diagnostics: found.diagnostics,
+            discovery,
         })
     }
 

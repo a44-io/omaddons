@@ -124,6 +124,8 @@ pub enum Command {
         /// The command to explain
         command: Option<String>,
     },
+    /// Triage: every client, its addons, running state and what needs attention
+    Status(crate::app::status::StatusArgs),
     /// Install or update addons in one target, verified by its own TOC rules
     Install(crate::app::install::InstallArgs),
     /// Remove managed addons from one target (undoable)

@@ -8,6 +8,7 @@ pub mod history;
 pub mod install;
 pub mod list;
 pub mod remove;
+pub mod status;
 pub mod targets;
 pub mod undo;
 pub mod world;
@@ -21,6 +22,7 @@ use targets::TargetsAction;
 /// own (DEC-1).
 const COMMANDS: &[&str] = &[
     "help",
+    "status",
     "install",
     "remove",
     "undo",
@@ -50,6 +52,7 @@ pub fn canonical(name: &str) -> &'static str {
 pub fn command_name(command: Option<&Command>) -> &'static str {
     match command {
         None | Some(Command::Help { .. }) => "help",
+        Some(Command::Status(_)) => "status",
         Some(Command::Install(_)) => "install",
         Some(Command::Remove(_)) => "remove",
         Some(Command::Undo(_)) => "undo",
@@ -93,6 +96,23 @@ pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
         None => output::emit(cfg, &mut reporter, name, started, offline, Ok(help::bare())),
         Some(Command::Help { command }) => {
             let result = help::for_command(command.as_deref(), &ctx.argv);
+            output::emit(cfg, &mut reporter, name, started, offline, result)
+        }
+        Some(Command::Status(args)) => {
+            let result = status::run(ctx, *args);
+            if let Ok(outcome) = &result {
+                let d = outcome.discovery;
+                reporter.log(
+                    output::LogLevel::Debug,
+                    &format!(
+                        "discovery: scanned {}, roots reused {}, parsed {}, cache written {}",
+                        if d.scanned { "yes" } else { "no" },
+                        d.reused,
+                        d.parsed,
+                        if d.written { "yes" } else { "no" }
+                    ),
+                );
+            }
             output::emit(cfg, &mut reporter, name, started, offline, result)
         }
         Some(Command::Install(args)) => {
