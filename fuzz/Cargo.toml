@@ -1,0 +1,81 @@
+# The cargo-fuzz crate (vision §5.12): one target per parser of bytes omaddons does not
+# control. Its own workspace, so the main package's build, clippy and tests never compile
+# it. Run through `argc fuzz <target>` (needs cargo-fuzz and a nightly toolchain).
+[package]
+name = "omaddons-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+omaddons = { path = ".." }
+
+[[bin]]
+name = "bpsv"
+path = "fuzz_targets/bpsv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "product_db"
+path = "fuzz_targets/product_db.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lutris"
+path = "fuzz_targets/lutris.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "heroic"
+path = "fuzz_targets/heroic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "steam_vdf"
+path = "fuzz_targets/steam_vdf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bottles"
+path = "fuzz_targets/bottles.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "toc"
+path = "fuzz_targets/toc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ref_parse"
+path = "fuzz_targets/ref_parse.rs"
+test = false
+doc = false
+bench = false

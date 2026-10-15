@@ -1,0 +1,6 @@
+game:
+  exe: /g/World of Warcraft/_retail_/Wow.exe
+  prefix: '~/Games/wow'  # the Wine prefix
+name: wow
+runner: wine
+slug: wow

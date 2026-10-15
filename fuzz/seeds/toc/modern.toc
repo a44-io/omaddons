@@ -1,0 +1,18 @@
+## Interface: 120105, 50504, 11509
+## Interface-Vanilla: 11509
+## Title: Demo Addon
+## Notes: A synthetic multi-flavor addon
+## Author: Example Author
+## Version: 3.2.1
+## SavedVariables: DemoDB, DemoGlobal
+## SavedVariablesPerCharacter: DemoCharDB
+## OptionalDeps: LibStub, Ace3
+## X-Curse-Project-ID: 123456
+## X-WoWI-ID: 7890
+## X-Wago-ID: abcDEF12
+## X-Website: https://example.org/demo
+# The libraries load first.
+libs\LibStub\LibStub.lua
+Locales\[TextLocale].lua
+Core.lua
+Retail.lua [AllowLoadGameType standard]

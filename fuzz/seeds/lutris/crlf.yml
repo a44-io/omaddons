@@ -1,0 +1,6 @@
+game:
+  exe: "drive_c/WoW 335/Wow.exe"
+  prefix: "$HOME/Games/wotlk"
+  working_dir: /g/wotlk
+system:
+  prefix_command: gamemoderun

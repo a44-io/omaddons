@@ -1,0 +1,7 @@
+Arch: win64
+Name: wow
+Path: wow
+Runner: soda-9.0-1
+External_Programs:
+  x:
+    Path: /g/other.exe
