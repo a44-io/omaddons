@@ -21,6 +21,9 @@ pub struct Paths {
     home: PathBuf,
     /// `<config>` itself, for paths of other tools under it (the Omarchy plugin).
     config_home: PathBuf,
+    /// `<data>` (`$XDG_DATA_HOME`), where launchers keep their configs; omaddons
+    /// writes nothing there.
+    data_home: PathBuf,
     config: PathBuf,
     state: PathBuf,
     cache: PathBuf,
@@ -47,19 +50,25 @@ impl Paths {
             xdg("XDG_STATE_HOME", ".local/state"),
             xdg("XDG_CACHE_HOME", ".cache"),
         );
-        Ok(Self::with_roots(home, config, state, cache))
+        let data = xdg("XDG_DATA_HOME", ".local/share");
+        Ok(Self {
+            data_home: data,
+            ..Self::with_roots(home, config, state, cache)
+        })
     }
 
     /// From explicit base directories (`<config>`, `<state>`, `<cache>`, without the
-    /// `omaddons` component).
+    /// `omaddons` component); `<data>` is its default under `home`.
     pub fn with_roots(
         home: impl Into<PathBuf>,
         config: impl AsRef<Path>,
         state: impl AsRef<Path>,
         cache: impl AsRef<Path>,
     ) -> Self {
+        let home = home.into();
         Self {
-            home: home.into(),
+            data_home: home.join(".local/share"),
+            home,
             config_home: config.as_ref().to_path_buf(),
             config: config.as_ref().join(APP),
             state: state.as_ref().join(APP),
@@ -70,6 +79,16 @@ impl Paths {
     /// `<home>`: discovery looks under `Games/`, `.wine/` and the launcher locations.
     pub fn home(&self) -> &Path {
         &self.home
+    }
+
+    /// `<config>` (`$XDG_CONFIG_HOME`).
+    pub fn config_home(&self) -> &Path {
+        &self.config_home
+    }
+
+    /// `<data>` (`$XDG_DATA_HOME`).
+    pub fn data_home(&self) -> &Path {
+        &self.data_home
     }
 
     /// `<config>/omaddons`
@@ -481,6 +500,12 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(set, Paths::with_roots("/h", "/xc", "/xs", "/xk"));
+        assert_eq!(
+            (set.config_home(), set.data_home()),
+            (Path::new("/xc"), Path::new("/h/.local/share"))
+        );
+        let data = Paths::from_lookup(lookup(&[("HOME", "/h"), ("XDG_DATA_HOME", "/xd")])).unwrap();
+        assert_eq!(data.data_home(), Path::new("/xd"));
 
         let defaults = Paths::with_roots("/h", "/h/.config", "/h/.local/state", "/h/.cache");
         let unset = Paths::from_lookup(lookup(&[("HOME", "/h")])).unwrap();

@@ -17,6 +17,7 @@ pub mod cache;
 pub mod config_wtf;
 pub mod custom;
 pub mod dosdevices;
+pub mod launchers;
 pub mod pe;
 pub mod product_db;
 pub mod realmlist;
@@ -48,8 +49,12 @@ pub struct DiscoveryInput {
     pub extra_roots: Vec<PathBuf>,
     /// Prefixes known from elsewhere, e.g. running processes.
     pub extra_prefixes: Vec<ExtraPrefix>,
-    /// Launcher configuration hints (the launcher readers fill these).
+    /// Launcher hints besides the launcher configs, which discovery reads itself.
     pub launcher_hints: Vec<LauncherHint>,
+    /// `$XDG_CONFIG_HOME` and `$XDG_DATA_HOME`, where launchers keep their configs;
+    /// `None` is the XDG default under `home`.
+    pub config_home: Option<PathBuf>,
+    pub data_home: Option<PathBuf>,
     /// Registered targets' roots (install root, id qualifier, how it was found), which
     /// [`cache::DiscoveryMode::NoScan`] parses directly when there is no cache.
     pub registered_roots: Vec<(PathBuf, String, DiscoverySource)>,
@@ -119,8 +124,14 @@ pub(crate) struct Collected {
 
 /// Hints, then the bounded scan: every root to parse, once each.
 pub(crate) fn collect(input: &DiscoveryInput, limits: ScanLimits) -> Collected {
-    let mut diagnostics = Vec::new();
-    let prefixes = collect_prefixes(input, &mut diagnostics);
+    let dirs = launchers::LauncherDirs::new(
+        &input.home,
+        input.config_home.as_deref(),
+        input.data_home.as_deref(),
+    );
+    let (read, mut diagnostics) = launchers::collect_hints(&dirs);
+    let hints: Vec<LauncherHint> = input.launcher_hints.iter().cloned().chain(read).collect();
+    let prefixes = collect_prefixes(input, &hints, &mut diagnostics);
     let mut roots = Candidates::default();
 
     // (a) product.db: install paths named directly, on any drive.
@@ -152,7 +163,7 @@ pub(crate) fn collect(input: &DiscoveryInput, limits: ScanLimits) -> Collected {
     }
 
     // (b) launcher exes: the exe's directory, or its flavor folder's parent.
-    for hint in &input.launcher_hints {
+    for hint in &hints {
         let Some(exe) = &hint.exe else { continue };
         match root_of_exe(exe) {
             Some((path, kind)) => {
@@ -342,13 +353,17 @@ struct Prefix {
     path: PathBuf,
     qualifier: String,
     source: DiscoverySource,
-    /// Found by looking (`<home>/Games/*`, `~/.wine`, Steam), not from a hint.
+    /// Found by looking (`<home>/Games/*`, `~/.wine`), not from a hint.
     scanned: bool,
 }
 
-/// Launcher prefixes, then extra (process) prefixes, then `<home>/Games/*`,
-/// `<home>/.wine` and the default Steam library's `compatdata/*/pfx`; each prefix once.
-fn collect_prefixes(input: &DiscoveryInput, diagnostics: &mut Vec<String>) -> Vec<Prefix> {
+/// Launcher prefixes (Steam's `compatdata/*/pfx` among them), then extra (process)
+/// prefixes, then `<home>/Games/*` and `<home>/.wine`; each prefix once.
+fn collect_prefixes(
+    input: &DiscoveryInput,
+    hints: &[LauncherHint],
+    diagnostics: &mut Vec<String>,
+) -> Vec<Prefix> {
     let mut found: Vec<Prefix> = Vec::new();
     let mut seen = Vec::new();
     let mut add = |path: PathBuf, qualifier: String, source: DiscoverySource, scanned: bool| {
@@ -370,7 +385,7 @@ fn collect_prefixes(input: &DiscoveryInput, diagnostics: &mut Vec<String>) -> Ve
             scanned,
         });
     };
-    for hint in &input.launcher_hints {
+    for hint in hints {
         if let Some(prefix) = &hint.prefix {
             let source = DiscoverySource::Launcher {
                 name: hint.launcher.clone(),
@@ -396,15 +411,6 @@ fn collect_prefixes(input: &DiscoveryInput, diagnostics: &mut Vec<String>) -> Ve
         DiscoverySource::Scan,
         true,
     );
-    let compatdata = input.home.join(".local/share/Steam/steamapps/compatdata");
-    for app in sorted_dirs(&compatdata) {
-        add(
-            app.join("pfx"),
-            "steam".to_owned(),
-            DiscoverySource::Scan,
-            true,
-        );
-    }
     found
 }
 

@@ -79,6 +79,8 @@ impl World {
             home: paths.home().to_path_buf(),
             extra_roots,
             registered_roots,
+            config_home: Some(paths.config_home().to_path_buf()),
+            data_home: Some(paths.data_home().to_path_buf()),
             ..DiscoveryInput::default()
         };
         let (found, discovery) =
