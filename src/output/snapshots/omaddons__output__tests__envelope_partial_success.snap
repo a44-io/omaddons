@@ -1,0 +1,44 @@
+---
+source: src/output/tests.rs
+expression: stable(partial)
+---
+{
+  "ok": true,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "command": "update",
+  "exit_code": 0,
+  "partial": true,
+  "data": {
+    "zeta": 1,
+    "alpha": "a",
+    "map": {
+      "a": 1,
+      "b": 2
+    }
+  },
+  "warnings": [
+    {
+      "code": "reload_required",
+      "message": "retail needs a /reload",
+      "fix": "/reload in game",
+      "fix_argv": null
+    }
+  ],
+  "commands": [
+    {
+      "action": "undo",
+      "command": "omaddons undo 01JB8Q2VA00000000000000000",
+      "argv": [
+        "omaddons",
+        "undo",
+        "01JB8Q2VA00000000000000000"
+      ],
+      "destructive": false
+    }
+  ],
+  "meta": {
+    "elapsed_ms": 0,
+    "offline": false
+  }
+}

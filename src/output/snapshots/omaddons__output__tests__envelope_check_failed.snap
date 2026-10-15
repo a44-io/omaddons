@@ -1,0 +1,39 @@
+---
+source: src/output/tests.rs
+expression: stable(failed)
+---
+{
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "command": "outdated",
+  "exit_code": 6,
+  "partial": false,
+  "data": {
+    "zeta": 1,
+    "alpha": "a",
+    "map": {
+      "a": 1,
+      "b": 2
+    }
+  },
+  "error": {
+    "code": "check_failed",
+    "message": "2 updates are pending",
+    "fix": "omaddons update --all",
+    "fix_argv": [
+      "omaddons",
+      "update",
+      "--all"
+    ],
+    "alternatives": [],
+    "retryable": false,
+    "details": {}
+  },
+  "warnings": [],
+  "commands": [],
+  "meta": {
+    "elapsed_ms": 0,
+    "offline": false
+  }
+}
