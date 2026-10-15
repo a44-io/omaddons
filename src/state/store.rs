@@ -117,6 +117,14 @@ pub const KINDS: &[(&str, SchemaVersion)] = &[
         <super::status::StatusFile as Versioned>::KIND,
         <super::status::StatusFile as Versioned>::CURRENT,
     ),
+    (
+        <super::registry::Registry as Versioned>::KIND,
+        <super::registry::Registry as Versioned>::CURRENT,
+    ),
+    (
+        <super::registry::TargetMarker as Versioned>::KIND,
+        <super::registry::TargetMarker as Versioned>::CURRENT,
+    ),
     ("history", super::history::CURRENT),
 ];
 

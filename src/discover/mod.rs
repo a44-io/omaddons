@@ -19,6 +19,7 @@ pub mod dosdevices;
 pub mod pe;
 pub mod product_db;
 pub mod realmlist;
+pub mod registry;
 pub mod scan;
 pub mod target;
 
@@ -449,7 +450,7 @@ pub(crate) fn slug(name: &str) -> String {
 }
 
 /// [`slug`] of a directory's name.
-fn dir_slug(dir: &Path) -> String {
+pub(crate) fn dir_slug(dir: &Path) -> String {
     slug(
         &dir.file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
