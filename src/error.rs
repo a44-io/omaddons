@@ -376,12 +376,19 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// A typed failure. Serialized through [`ErrorBody`].
 ///
+/// The data is boxed so `Result<T>` stays one pointer wide (clippy's
+/// `result_large_err`); its fields are reached through `Deref`, as in `err.code`.
+///
 /// There is deliberately no `From<std::io::Error>`: every I/O failure goes through
 /// [`Error::io`] with its path and a fix.
 #[derive(Debug, Clone, PartialEq, thiserror::Error, Serialize)]
 #[serde(into = "ErrorBody")]
-#[error("error[{code}]: {message}")]
-pub struct Error {
+#[error("error[{}]: {}", .0.code, .0.message)]
+pub struct Error(Box<ErrorData>);
+
+/// The fields of an [`Error`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ErrorData {
     pub code: ErrorCode,
     pub message: String,
     pub fix: Suggestion,
@@ -389,6 +396,20 @@ pub struct Error {
     pub retryable: bool,
     /// A JSON object; `{}` when there is nothing to add.
     pub details: serde_json::Value,
+}
+
+impl std::ops::Deref for Error {
+    type Target = ErrorData;
+
+    fn deref(&self) -> &ErrorData {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Error {
+    fn deref_mut(&mut self) -> &mut ErrorData {
+        &mut self.0
+    }
 }
 
 /// Who raised `plan_stale`.
@@ -402,14 +423,14 @@ pub enum PlanStaleSource {
 
 impl Error {
     pub fn new(code: ErrorCode, message: impl Into<String>, fix: Suggestion) -> Self {
-        Self {
+        Self(Box::new(ErrorData {
             code,
             message: message.into(),
             fix,
             alternatives: Vec::new(),
             retryable: code.default_retryable(),
             details: serde_json::Value::Object(serde_json::Map::new()),
-        }
+        }))
     }
 
     #[must_use]
@@ -492,6 +513,7 @@ pub struct ErrorBody {
 
 impl From<Error> for ErrorBody {
     fn from(error: Error) -> Self {
+        let error = *error.0;
         Self {
             code: error.code,
             message: error.message,
@@ -867,6 +889,14 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(blank.fix, None);
+    }
+
+    #[test]
+    fn errors_stay_one_pointer_wide() {
+        assert_eq!(std::mem::size_of::<Error>(), std::mem::size_of::<usize>());
+        let mut err = Error::internal("x");
+        err.message.push('y');
+        assert_eq!(err.message, "xy");
     }
 
     #[test]
