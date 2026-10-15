@@ -22,7 +22,7 @@ use super::failpoint;
 use super::op::Op;
 use super::scope::{Access, Refusal};
 use super::session::{SessionKind, TxState, WriteSession};
-use super::sys::{self, Durability, RenameError, RenameMode};
+use super::sys::{self, CloneKind, Durability, RenameError, RenameMode};
 use crate::error::{Error, ErrorCode, Suggestion};
 use crate::model::TxId;
 
@@ -217,6 +217,17 @@ pub struct ActionRecord {
     pub finished_at_ns: u64,
     pub tx: Option<TxId>,
     pub ok: bool,
+    /// How a `CloneFile` copied: a reflink or a byte copy. Not logged.
+    #[serde(skip)]
+    pub clone: Option<CloneKind>,
+}
+
+/// What an executed operation reports back.
+#[derive(Debug, Clone, Copy, Default)]
+struct Executed {
+    /// The written content's SHA-256 (`WriteFile`).
+    sha256: Option<[u8; 32]>,
+    clone: Option<CloneKind>,
 }
 
 /// [`mutate_with`] with default options.
@@ -264,7 +275,7 @@ pub fn mutate_with(
     failpoint::hit("fsx.mutate.checked").map_err(io_err(&target))?;
 
     let SessionKind::Tx(state) = &mut s.kind else {
-        execute(&target, to.as_deref(), op, opts.durability)?;
+        let executed = execute(&target, to.as_deref(), op, opts.durability)?;
         return Ok(ActionRecord {
             seq: 0,
             path: target.to_string_lossy().into_owned(),
@@ -277,6 +288,7 @@ pub fn mutate_with(
             finished_at_ns: now_ns(),
             tx: None,
             ok: true,
+            clone: executed.clone,
         });
     };
     if !s.scopes.is_internal(&state.actions_log) {
@@ -319,8 +331,11 @@ pub fn mutate_with(
     // 6. After-digest. It is audit data only: if it cannot be read, the line still goes
     // out with a null after_hash rather than leaving an executed operation unlogged.
     let after = match &executed {
-        Ok(Some(sha256)) => Some(StateDigest::File(*sha256)),
-        Ok(None) => digest_after(&target, digest_op, tree_after).ok().flatten(),
+        Ok(Executed {
+            sha256: Some(sha256),
+            ..
+        }) => Some(StateDigest::File(*sha256)),
+        Ok(_) => digest_after(&target, digest_op, tree_after).ok().flatten(),
         Err(_) => None,
     };
 
@@ -337,6 +352,7 @@ pub fn mutate_with(
         finished_at_ns: now_ns(),
         tx: Some(state.tx),
         ok: executed.is_ok(),
+        clone: executed.as_ref().ok().and_then(|e| e.clone),
     };
     log_action(state, &record)?;
     executed?;
@@ -611,23 +627,26 @@ fn backup(
     Ok(Some(copy))
 }
 
-/// Runs the operation; returns the written content's SHA-256 for `WriteFile`.
+/// Runs the operation; reports the written content's SHA-256 for `WriteFile` and how
+/// a `CloneFile` copied.
 fn execute(
     target: &Path,
     to: Option<&Path>,
     op: Op<'_>,
     durability: Durability,
-) -> Result<Option<[u8; 32]>, FsxError> {
+) -> Result<Executed, FsxError> {
     let io = io_err(target);
+    let none = |()| Executed::default();
     match op {
         Op::WriteFile { content, mode } => sys::write_atomic(target, content, mode, durability)
-            .map(|written| Some(written.sha256))
+            .map(|written| Executed {
+                sha256: Some(written.sha256),
+                clone: None,
+            })
             .map_err(io),
-        Op::AppendFile { content } => sys::append_durable(target, content)
-            .map(|()| None)
-            .map_err(io),
+        Op::AppendFile { content } => sys::append_durable(target, content).map(none).map_err(io),
         Op::CreateDir => sys::create_dir_with(target, None, durability)
-            .map(|()| None)
+            .map(none)
             .map_err(io),
         Op::Rename { mode, .. } => {
             let Some(to) = to else {
@@ -644,14 +663,19 @@ fn execute(
             for dir in [target.parent(), to.parent()].into_iter().flatten() {
                 sys::fsync_dir(dir).map_err(io_err(dir))?;
             }
-            Ok(None)
+            Ok(Executed::default())
         }
-        Op::CloneFile { from } => sys::clone_file(from, target).map(|_| None).map_err(io),
-        Op::Chmod { mode } => sys::chmod(target, mode).map(|()| None).map_err(io),
+        Op::CloneFile { from } => sys::clone_file(from, target)
+            .map(|kind| Executed {
+                sha256: None,
+                clone: Some(kind),
+            })
+            .map_err(io),
+        Op::Chmod { mode } => sys::chmod(target, mode).map(none).map_err(io),
         Op::SymlinkAtomic {
             target: link_target,
         } => sys::symlink_atomic(link_target, target)
-            .map(|()| None)
+            .map(none)
             .map_err(io),
     }
 }

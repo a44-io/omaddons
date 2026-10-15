@@ -4,3 +4,6 @@
 pub mod inspect;
 pub mod journal;
 pub mod stage;
+pub mod swap;
+#[cfg(test)]
+pub(crate) mod testing;

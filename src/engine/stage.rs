@@ -272,30 +272,10 @@ fn same_filesystem(stage_dir: &Path, client: &ClientPaths) -> Result<()> {
 mod tests {
     use super::*;
     use crate::engine::inspect::{ArchiveLimits, inspect_dir};
+    use crate::engine::testing::target;
     use crate::fsx::{LockUse, PruneReason, TreeDigest, prune};
-    use crate::rules::{ClientRules, ClientVersion, Family, InstallKind, RulesTable, TargetKind};
+    use crate::rules::RulesTable;
     use crate::state::paths::Paths;
-
-    fn target(client_dir: &Path) -> Target {
-        let mut target = Target {
-            key: None,
-            id: "retail".into(),
-            install_root: client_dir.parent().unwrap().to_path_buf(),
-            client_dir: client_dir.to_path_buf(),
-            flavor_dir: Some("_retail_".into()),
-            product: Some("wow".into()),
-            install_kind: InstallKind::Battlenet,
-            family: Family::Mainline,
-            kind: TargetKind::Live,
-            version: "12.1.5.70391".parse::<ClientVersion>().unwrap(),
-            interface: 120_105,
-            exe_name: None,
-            label: None,
-            rules: ClientRules::default(),
-        };
-        target.refresh_rules(&RulesTable::builtin());
-        target
-    }
 
     #[test]
     fn a_failpoint_mid_staging_leaves_addons_untouched() {

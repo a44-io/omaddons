@@ -63,6 +63,15 @@ impl FolderIndex {
             files,
         }
     }
+
+    /// The folder's tree digest, from its entries (what `tree` spells out).
+    pub fn digest(&self) -> TreeDigest {
+        TreeDigest::from_hex_entries(
+            self.files
+                .iter()
+                .map(|f| (f.path.clone(), f.size, f.sha256.as_str())),
+        )
+    }
 }
 
 #[cfg(test)]
