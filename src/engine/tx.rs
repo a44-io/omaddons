@@ -269,7 +269,7 @@ fn unchanged(tp: &TargetPlan, dry_run: bool) -> TxOutcome {
 }
 
 /// The client dirs whose game runs now.
-fn running_now(ctx: &EngineCtx<'_>, targets: &[Target]) -> BTreeSet<PathBuf> {
+pub(super) fn running_now(ctx: &EngineCtx<'_>, targets: &[Target]) -> BTreeSet<PathBuf> {
     match ctx.running {
         Some(running) => running.clone(),
         None => detect_running(targets).into_keys().collect(),
@@ -457,6 +457,7 @@ fn locked(
         ops: history_ops(&works),
         result: TxResult::Committed,
         reverts: None,
+        sv_deferred: false,
     };
     let client = ClientPaths::new(&target.client_dir);
     let prepared = Prepared {
@@ -471,6 +472,7 @@ fn locked(
             index: index_changes.clone(),
             history: history.clone(),
             stage_dir: staged.stage_dir.clone(),
+            sv_restore: None,
         },
     };
     let actions = paths
@@ -553,12 +555,12 @@ fn locked(
     ))
 }
 
-fn millis(guard: &GlobalLockGuard) -> u64 {
+pub(super) fn millis(guard: &GlobalLockGuard) -> u64 {
     u64::try_from(guard.held_for().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// `plan_stale` for a re-plan that conflicts, with the underlying code as the cause.
-fn stale(cause: &Error) -> Error {
+pub(super) fn stale(cause: &Error) -> Error {
     Error::plan_stale(
         PlanStaleSource::Replan,
         format!(
@@ -663,7 +665,12 @@ fn touched_folder(op: &SwapOp) -> FolderName {
 
 /// Rewrites `status.json` (monotonic). Best effort: it is derived data, and a lost
 /// race only delays the widget's doorbell.
-fn write_status(paths: &Paths, scopes: &ScopeTable, target: &Target, record: &TargetRecord) {
+pub(super) fn write_status(
+    paths: &Paths,
+    scopes: &ScopeTable,
+    target: &Target,
+    record: &TargetRecord,
+) {
     let mut records = vec![record.clone()];
     let mut meta: BTreeMap<TargetKey, TargetMeta> = BTreeMap::new();
     if let Ok(Some(existing)) = store::load::<StatusFile>(&paths.status_file()) {
@@ -704,7 +711,7 @@ fn write_status(paths: &Paths, scopes: &ScopeTable, target: &Target, record: &Ta
 /// Prunes what the transaction left (its journal, stage dir, temp downloads and lock
 /// file) under its own in-flight lock, then drops the lock. Best effort: recovery and
 /// retention sweep anything left.
-fn cleanup(
+pub(super) fn cleanup(
     paths: &Paths,
     scopes: &ScopeTable,
     inflight: InflightLock,

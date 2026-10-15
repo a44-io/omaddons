@@ -98,6 +98,10 @@ pub struct CommitPayload {
     pub index: IndexChanges,
     pub history: HistoryEntry,
     pub stage_dir: PathBuf,
+    /// An undo's SavedVariables restore, which runs after the swap; roll-forward
+    /// finishes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sv_restore: Option<super::undo::SvRestore>,
 }
 
 /// Changes to `targets/<key>.files.json`; applying them twice changes nothing more.
@@ -509,7 +513,7 @@ fn recover_parsed(
         (None, _) | (_, Phase::Unprepared) => None,
         (Some(_), Phase::Committed) => None,
         (Some(prepared), Phase::Swapped) => {
-            roll_forward(&mut s, paths, path, prepared)?;
+            roll_forward(&mut s, scopes, paths, path, prepared)?;
             Some(RecoveryAction::RolledForward)
         }
         (Some(_), Phase::Prepared) => {
@@ -539,12 +543,19 @@ fn recover_parsed(
 /// Writes the payload's state (each part only if not already written), then `committed`.
 fn roll_forward(
     s: &mut WriteSession<'_>,
+    scopes: &ScopeTable,
     paths: &Paths,
     journal: &Path,
     prepared: &Prepared,
 ) -> Result<()> {
     let key = prepared.target_key;
     let commit = &prepared.commit;
+    if let Some(sv) = &commit.sv_restore {
+        let mut undo = WriteSession::untracked(Writer::Undo, scopes, "recovery")
+            .with_owned_folders(sv.owned_folders());
+        let client = crate::state::paths::ClientPaths::new(&prepared.client_dir);
+        super::undo::restore_saved_variables(&mut undo, &client, sv, &prepared.tx)?;
+    }
     ensure_dir_all(s, &paths.targets_dir())?;
     let record_path = paths.target_record(&key);
     let current = store::load::<TargetRecord>(&record_path)?;
@@ -701,8 +712,10 @@ mod tests {
                     }],
                     result: TxResult::Committed,
                     reverts: None,
+                    sv_deferred: false,
                 },
                 stage_dir: "/c/_retail_/Interface/.omaddons/stage/x".into(),
+                sv_restore: None,
             },
         }));
         let text = format!("{}\n", serde_json::to_string(&line).unwrap());
@@ -897,8 +910,10 @@ mod tests {
                     }],
                     result: TxResult::Committed,
                     reverts: None,
+                    sv_deferred: false,
                 },
                 stage_dir: stage_dir.clone(),
+                sv_restore: None,
             },
         };
         let steps = [

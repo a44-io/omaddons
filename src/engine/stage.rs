@@ -159,6 +159,107 @@ pub fn stage(
     })
 }
 
+/// Copies folder trees (undo: an earlier transaction's snapshot) into the
+/// transaction's stage dir, reflinked where the filesystem can, with the same index
+/// staging an archive produces. Symlinks inside are recreated, never followed; anything
+/// but files, directories and symlinks is refused.
+pub fn stage_trees(
+    inflight: &InflightLock,
+    scopes: &ScopeTable,
+    target: &Target,
+    sources: &[(FolderName, PathBuf)],
+) -> Result<Staged> {
+    let tx = inflight.tx();
+    let client = ClientPaths::new(&target.client_dir);
+    let stage_dir = client.stage(&tx);
+    let fail =
+        |e: io::Error| Error::io(&stage_dir, &e, Suggestion::command(["omaddons", "status"]));
+    failpoint::hit("engine.stage.begin").map_err(fail)?;
+    let mut s = WriteSession::untracked(Writer::Mutating, scopes, "stage");
+    if let Some(parent) = stage_dir.parent() {
+        ensure_dir_all(&mut s, parent)?;
+    }
+    if !stage_dir.is_dir() {
+        create_dir(&mut s, &stage_dir)?;
+    }
+    same_filesystem(&stage_dir, &client)?;
+    let mut folders = Vec::with_capacity(sources.len());
+    for (name, source) in sources {
+        let folder_dir = stage_dir.join(name.as_str());
+        create_dir(&mut s, &folder_dir)?;
+        let mut entries = Vec::new();
+        copy_tree(&mut s, source, &folder_dir, "", &mut entries)?;
+        folders.push(StagedFolder {
+            name: name.clone(),
+            path: folder_dir,
+            index: FolderIndex::new(name.as_str(), entries),
+        });
+    }
+    fsx::sync_filesystem(&stage_dir)?;
+    failpoint::hit("engine.stage.synced").map_err(fail)?;
+    Ok(Staged {
+        tx,
+        stage_dir,
+        folders,
+    })
+}
+
+/// Copies the tree at `from` into the existing dir `to`, adding each file to `entries`
+/// under its path relative to the folder (`rel`).
+fn copy_tree(
+    s: &mut WriteSession<'_>,
+    from: &Path,
+    to: &Path,
+    rel: &str,
+    entries: &mut Vec<FileEntry>,
+) -> Result<()> {
+    let io = |p: &Path| {
+        let p = p.to_path_buf();
+        move |e: io::Error| Error::io(&p, &e, Suggestion::command(["omaddons", "status"]))
+    };
+    let mut children = std::fs::read_dir(from)
+        .and_then(Iterator::collect::<io::Result<Vec<_>>>)
+        .map_err(io(from))?;
+    children.sort_by_key(std::fs::DirEntry::file_name);
+    for child in children {
+        let name = child.file_name();
+        let (source, dest) = (child.path(), to.join(&name));
+        let path = match rel {
+            "" => name.to_string_lossy().into_owned(),
+            _ => format!("{rel}/{}", name.to_string_lossy()),
+        };
+        let kind = std::fs::symlink_metadata(&source)
+            .map_err(io(&source))?
+            .file_type();
+        if kind.is_dir() {
+            create_dir(s, &dest)?;
+            copy_tree(s, &source, &dest, &path, entries)?;
+        } else if kind.is_file() {
+            mutate_with(s, &dest, Op::CloneFile { from: &source }, deferred())?;
+            let meta = std::fs::symlink_metadata(&dest).map_err(io(&dest))?;
+            entries.push(FileEntry {
+                path,
+                size: meta.len(),
+                mtime_ns: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
+                sha256: super::swap::sha256_file(&dest)?,
+            });
+        } else if kind.is_symlink() {
+            let link = std::fs::read_link(&source).map_err(io(&source))?;
+            mutate(s, &dest, Op::SymlinkAtomic { target: &link })?;
+        } else {
+            return Err(Error::new(
+                ErrorCode::Io,
+                format!(
+                    "{} is not a file, a directory or a symlink, so it cannot be restored",
+                    source.display()
+                ),
+                Suggestion::text("move it out of the snapshot, then retry"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// One directory under the stage dir, deferred and 0755.
 fn create_dir(s: &mut WriteSession<'_>, dir: &Path) -> Result<()> {
     mutate_with(s, dir, Op::CreateDir, deferred())?;

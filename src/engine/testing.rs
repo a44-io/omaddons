@@ -180,8 +180,10 @@ impl Scene {
                     ops: Vec::new(),
                     result: TxResult::Committed,
                     reverts: None,
+                    sv_deferred: false,
                 },
                 stage_dir: self.staged.stage_dir.clone(),
+                sv_restore: None,
             },
         };
         Journal::create(s, &self.paths, lock, prepared).unwrap()
@@ -222,6 +224,12 @@ pub struct TxScene {
     pub client: ClientPaths,
     pub discovered: crate::discover::target::DiscoveredTarget,
     pub running: std::collections::BTreeSet<PathBuf>,
+    /// Who runs the next transaction.
+    pub actor: Actor,
+    /// `--force` on installs.
+    pub force: bool,
+    /// `--while-running`.
+    pub while_running: bool,
 }
 
 impl TxScene {
@@ -245,7 +253,75 @@ impl TxScene {
             _root: root,
             discovered,
             running: std::collections::BTreeSet::new(),
+            actor: Actor::Agent,
+            force: false,
+            while_running: false,
         }
+    }
+
+    /// The target as currently registered (its marker names the key).
+    pub fn current_target(&self) -> crate::discover::target::DiscoveredTarget {
+        let mut discovered = self.discovered.clone();
+        discovered.target.key = crate::discover::registry::read_marker(self.client.client_dir());
+        discovered
+    }
+
+    /// Calls `f` with an engine context for `command` (no network, the scene's running
+    /// set and actor).
+    pub fn with_ctx<R>(&self, command: &str, f: impl FnOnce(&super::tx::EngineCtx<'_>) -> R) -> R {
+        let registry = crate::sources::SourceRegistry::new();
+        let table = RulesTable::builtin();
+        let argv: Vec<String> = ["omaddons", command, "test"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        let ctx = super::tx::EngineCtx {
+            paths: &self.paths,
+            http: &NoNetwork,
+            registry: &registry,
+            table: &table,
+            policy: crate::state::config::RunningPolicy::Safe,
+            limits: ArchiveLimits::default(),
+            actor: self.actor,
+            argv: &argv,
+            command,
+            running: Some(&self.running),
+        };
+        f(&ctx)
+    }
+
+    /// Removes the installed addon `addon`.
+    pub fn remove(&self, addon: &str) -> super::plan::RequestedChange {
+        super::plan::RequestedChange::Remove {
+            addon: addon.to_owned(),
+        }
+    }
+
+    /// Undoes the selected transaction.
+    pub fn undo(
+        &self,
+        selector: super::undo::UndoSelector,
+        sv_policy: super::undo::SvPolicy,
+    ) -> crate::error::Result<super::undo::UndoOutcome> {
+        self.undo_with(selector, sv_policy, false)
+    }
+
+    /// [`TxScene::undo`], optionally as a dry run.
+    pub fn undo_with(
+        &self,
+        selector: super::undo::UndoSelector,
+        sv_policy: super::undo::SvPolicy,
+        dry_run: bool,
+    ) -> crate::error::Result<super::undo::UndoOutcome> {
+        let req = super::undo::UndoRequest {
+            selector,
+            sv_policy,
+            dry_run,
+            while_running: self.while_running,
+            reason: None,
+            targets: vec![self.current_target()],
+        };
+        self.with_ctx("undo", |ctx| super::undo::undo(&req, ctx))
     }
 
     /// Writes a zip of `(path, text)` entries.
@@ -279,37 +355,17 @@ impl TxScene {
         &self,
         changes: Vec<super::plan::RequestedChange>,
     ) -> crate::error::Result<super::tx::TxOutcomes> {
-        let mut discovered = self.discovered.clone();
-        discovered.target.key = crate::discover::registry::read_marker(self.client.client_dir());
-        let registry = crate::sources::SourceRegistry::new();
-        let table = RulesTable::builtin();
-        let argv: Vec<String> = ["omaddons", "install", "test"]
-            .iter()
-            .map(|s| (*s).to_owned())
-            .collect();
-        let ctx = super::tx::EngineCtx {
-            paths: &self.paths,
-            http: &NoNetwork,
-            registry: &registry,
-            table: &table,
-            policy: crate::state::config::RunningPolicy::Safe,
-            limits: ArchiveLimits::default(),
-            actor: Actor::Agent,
-            argv: &argv,
-            command: "install",
-            running: Some(&self.running),
-        };
         let req = super::tx::TxRequest {
             targets: vec![super::tx::TxTarget {
-                discovered,
+                discovered: self.current_target(),
                 changes,
             }],
-            force: false,
-            while_running: false,
+            force: self.force,
+            while_running: self.while_running,
             dry_run: false,
             reason: Some("testing".into()),
         };
-        super::tx::run(&req, &ctx)
+        self.with_ctx("install", |ctx| super::tx::run(&req, ctx))
     }
 
     /// The AddOns tree's digest.

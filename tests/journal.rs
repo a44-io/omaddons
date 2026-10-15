@@ -187,8 +187,10 @@ mod support {
                         ],
                         result: TxResult::Committed,
                         reverts: None,
+                        sv_deferred: false,
                     },
                     stage_dir: self.stage.clone(),
+                    sv_restore: None,
                 },
             }
         }

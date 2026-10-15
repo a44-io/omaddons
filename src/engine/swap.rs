@@ -123,17 +123,26 @@ pub fn snapshot_saved_variables(
         sv_files_snapshotted: 0,
         reflink: true,
     };
+    // Errors never name a file: the paths hold account, realm and character names.
+    let private = |e: Error| {
+        Error::new(
+            e.code,
+            "a SavedVariables file could not be snapshotted",
+            Suggestion::command(["omaddons", "status"]),
+        )
+    };
     for (rel, present) in sv_candidates(&wtf, folders) {
         let sha256 = match &present {
             Some(path) => {
                 let dest = snapshot.join("WTF").join(&rel);
                 if let Some(parent) = dest.parent() {
-                    ensure_dir_all(s, parent)?;
+                    ensure_dir_all(s, parent).map_err(|e| private(e.into()))?;
                 }
-                let record = mutate(s, &dest, Op::CloneFile { from: path })?;
+                let record = mutate(s, &dest, Op::CloneFile { from: path })
+                    .map_err(|e| private(e.into()))?;
                 report.sv_files_snapshotted += 1;
                 report.reflink &= matches!(record.clone, Some(CloneKind::Reflink));
-                Some(sha256_file(path)?)
+                Some(sha256_file(path).map_err(private)?)
             }
             None => None,
         };
@@ -495,7 +504,7 @@ fn fail(path: &Path, e: &std::io::Error) -> Error {
     Error::io(path, e, Suggestion::command(["omaddons", "status"]))
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String> {
     let bytes = std::fs::read(path).map_err(|e| fail(path, &e))?;
     Ok(Sha256::digest(&bytes)
         .iter()

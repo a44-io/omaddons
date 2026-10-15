@@ -38,6 +38,10 @@ pub struct HistoryEntry {
     /// The transaction an undo reverted.
     #[serde(default)]
     pub reverts: Option<TxId>,
+    /// An undo that reverted folders but left SavedVariables for later because the
+    /// client was running; `undo <reverts> --saved-variables restore` finishes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sv_deferred: bool,
 }
 
 /// One folder a transaction touched.
@@ -215,6 +219,7 @@ mod tests {
             }],
             result: TxResult::Committed,
             reverts: None,
+            sv_deferred: false,
         }
     }
 

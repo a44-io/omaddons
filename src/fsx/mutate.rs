@@ -261,8 +261,10 @@ pub fn mutate_with(
         _ => None,
     };
     if opts.durability == Durability::Deferred {
-        let deferrable = matches!(op, Op::WriteFile { .. } | Op::CreateDir)
-            && matches!(s.kind, SessionKind::Untracked { .. })
+        let deferrable = matches!(
+            op,
+            Op::WriteFile { .. } | Op::CreateDir | Op::CloneFile { .. }
+        ) && matches!(s.kind, SessionKind::Untracked { .. })
             && s.scopes.is_stage(&target);
         if !deferrable {
             return Err(FsxError::Precondition(format!(
@@ -616,7 +618,7 @@ fn backup(
     let expected = hash_file(source).map_err(io_err(source))?;
     sys::create_dir_all(backup_dir).map_err(io_err(backup_dir))?;
     let copy = backup_dir.join(seq.to_string());
-    sys::clone_file(source, &copy).map_err(io_err(&copy))?;
+    sys::clone_file(source, &copy, Durability::Immediate).map_err(io_err(&copy))?;
     let actual = hash_file(&copy).map_err(io_err(&copy))?;
     // ubs:ignore — verifying a backup's content hash, not a secret
     if actual != expected {
@@ -665,7 +667,7 @@ fn execute(
             }
             Ok(Executed::default())
         }
-        Op::CloneFile { from } => sys::clone_file(from, target)
+        Op::CloneFile { from } => sys::clone_file(from, target, durability)
             .map(|kind| Executed {
                 sha256: None,
                 clone: Some(kind),
