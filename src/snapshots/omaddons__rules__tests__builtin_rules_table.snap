@@ -615,10 +615,14 @@ expression: "RulesTable::builtin()"
       "version_min": "3.80.0",
       "version_max": null,
       "game": "titan",
-      "game_types": [],
+      "game_types": [
+        "titan"
+      ],
       "multi_toc": true,
       "comma_interface": true,
-      "game_suffixes": [],
+      "game_suffixes": [
+        "Wrath"
+      ],
       "family_suffixes": [
         "Classic"
       ],

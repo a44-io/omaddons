@@ -539,6 +539,45 @@ expect_file = "Foo.toc"
 expect_verdict = "wrong_flavor"
 expect_reason = "game_type_excluded"
 
+# Titan (3.80.x, China) loads `_Wrath` TOCs and its game type is `titan`, as
+# WeakAuras 5.22.1 ships them: `WeakAuras_Wrath.toc` with `## Interface: 38002` and
+# `## AllowLoadGameType: wrath, titan` (publishers' archives, 2026-10-15).
+
+[[case]]
+group = "game_types"
+name = "titan-loads-wrath-toc-for-its-interface"
+target = { product = "wow_classic_titan" }
+files = [["Foo_Vanilla.toc", "## Interface: 11509"], ["Foo_Wrath.toc", "## Interface: 38002\n## AllowLoadGameType: wrath, titan"]]
+expect_file = "Foo_Wrath.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "game_types"
+name = "titan-rejects-wrath-classic-interface"
+target = { product = "wow_classic_titan" }
+files = [["Foo_Wrath.toc", "## Interface: 30405"]]
+expect_file = "Foo_Wrath.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "interface_not_in_family"
+
+[[case]]
+group = "game_types"
+name = "titan-excluded-by-wrath-only-game-type"
+target = { product = "wow_classic_titan" }
+files = [["Foo_Wrath.toc", "## Interface: 38002\n## AllowLoadGameType: wrath"]]
+expect_file = "Foo_Wrath.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "wrath-rejects-titan-interface"
+target = { version = "3.4.3", kind = "battlenet" }
+files = [["Foo_Wrath.toc", "## Interface: 38002\n## AllowLoadGameType: wrath, titan"]]
+expect_file = "Foo_Wrath.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "interface_not_in_family"
+
 [[case]]
 group = "game_types"
 name = "allow-standard-list-on-cata"

@@ -36,7 +36,7 @@ mod support {
         ("vanilla", "1.15.9", InstallKind::Battlenet),
         ("tbc", "2.5.6", InstallKind::Battlenet),
         ("wrath", "3.4.3", InstallKind::Battlenet),
-        // UNVERIFIED: Titan's game suffix; the row lists none, so the sweep asserts that.
+        // Titan loads `_Wrath` TOCs (from publishers' archives, 2026-10-15).
         ("titan", "3.80.2", InstallKind::Battlenet),
         ("cata", "4.4.2", InstallKind::Battlenet),
         ("mists", "5.5.4", InstallKind::Battlenet),

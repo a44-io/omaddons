@@ -463,7 +463,7 @@ fn without_metadata_only_gated_folders_are_skipped() {
 /// nowhere else: it is still refused there.
 #[test]
 fn weakauras_is_still_refused_where_it_is_not_declared() {
-    let home = Home::new(&["wow", "wowf", "wow_classic_era"]);
+    let home = Home::new(&["wow", "wowf", "wow_classic_era", "wow_classic_titan"]);
     let mut files = Vec::new();
     for name in ["WeakAuras", "WeakAurasOptions"] {
         for (suffix, interface) in [
@@ -477,6 +477,11 @@ fn weakauras_is_still_refused_where_it_is_not_declared() {
                 toc(interface, &["init.lua"]),
             ));
         }
+        // Titan's build, as WeakAuras ships it.
+        files.push((
+            format!("{name}/{name}_Wrath.toc"),
+            toc("38002", &["## AllowLoadGameType: wrath, titan", "init.lua"]),
+        ));
         files.push((format!("{name}/init.lua"), "-- init\n".to_owned()));
     }
     let flavors: &[(&str, u32)] = &[
@@ -484,6 +489,7 @@ fn weakauras_is_still_refused_where_it_is_not_declared() {
         ("bcc", 20_506),
         ("cata", 40_402),
         ("mists", 50_504),
+        ("titan", 38_002),
     ];
     release(
         &home.http,
@@ -503,16 +509,18 @@ fn weakauras_is_still_refused_where_it_is_not_declared() {
             r.context()
         );
     }
-    let r = home.run(&["install", "weakauras", "-t", "era"]);
-    let envelope = r.expect(0);
-    let folders = &envelope["data"]["items"][0]["folders"];
-    assert_eq!(
-        strings(&folders["added"]),
-        ["WeakAuras", "WeakAurasOptions"],
-        "{}",
-        r.context()
-    );
-    assert_eq!(folders["skipped"], serde_json::json!([]));
+    for id in ["era", "titan"] {
+        let r = home.run(&["install", "weakauras", "-t", id]);
+        let envelope = r.expect(0);
+        let folders = &envelope["data"]["items"][0]["folders"];
+        assert_eq!(
+            strings(&folders["added"]),
+            ["WeakAuras", "WeakAurasOptions"],
+            "{id}\n{}",
+            r.context()
+        );
+        assert_eq!(folders["skipped"], serde_json::json!([]));
+    }
 }
 
 /// A folder an earlier release installed that the next one gates to retail is removed

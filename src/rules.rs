@@ -1147,9 +1147,9 @@ fn legacy_row(name: &str, family: Family, version_min: ClientVersion, game: &str
 /// multi-TOC (9.1.0). Within the classic families each row covers the whole family,
 /// so it has no `version_max`.
 ///
-/// UNVERIFIED, so table values only: Titan's game type and suffix, the first classic
-/// builds with multi-TOC and comma lists (these rows describe current clients), and the
-/// build that introduced path variables.
+/// UNVERIFIED, so table values only: the first classic builds with multi-TOC and comma
+/// lists (these rows describe current clients), and the build that introduced path
+/// variables. Titan's game type and suffix come from publishers' archives (see its row).
 fn builtin_client_rules() -> Vec<ClientRules> {
     let standard = ["standard"];
     vec![
@@ -1239,13 +1239,17 @@ fn builtin_client_rules() -> Vec<ClientRules> {
             &["Wrath"],
             "Classic",
         ),
+        // Titan loads `_Wrath` TOCs and its game type is `titan`: WeakAuras 5.22.1 ships
+        // `WeakAuras_Wrath.toc` with `## Interface: 38002` (Titan's alone) and
+        // `## AllowLoadGameType: wrath, titan`, and Questie declares `wrath:38002`
+        // (publishers' archives, 2026-10-15).
         modern_row(
             "titan",
             Family::Titan,
             ClientVersion::new(3, 80, 0),
             "titan",
-            &[],
-            &[],
+            &["titan"],
+            &["Wrath"],
             "Classic",
         ),
         modern_row(
