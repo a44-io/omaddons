@@ -9,6 +9,8 @@
 pub mod battlenet;
 pub mod bpsv;
 pub mod config_wtf;
+pub mod dosdevices;
+pub mod product_db;
 pub mod target;
 
 use std::io::Read;
@@ -30,6 +32,20 @@ pub(crate) fn read_text(path: &Path) -> Option<String> {
         .read_to_end(&mut bytes)
         .ok()?;
     Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The bytes of a regular file of at most [`DISCOVERY_FILE_MAX_BYTES`]; `None` when it
+/// is missing, not a file, unreadable or larger (a binary format is not cut short).
+pub(crate) fn read_bytes(path: &Path) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(DISCOVERY_FILE_MAX_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= DISCOVERY_FILE_MAX_BYTES).then_some(bytes)
 }
 
 /// `dir/name`, matched ignoring ASCII case when the exact name is absent: Wine
@@ -80,6 +96,17 @@ mod tests {
         assert_eq!(read_text(&bad).unwrap(), "ok\u{fffd}ok");
         assert_eq!(read_text(&dir.path().join("missing")), None);
         assert_eq!(read_text(dir.path()), None, "a directory is not a file");
+        assert_eq!(
+            read_bytes(&big),
+            None,
+            "binary reads refuse oversized files"
+        );
+        let exact = dir.path().join("exact");
+        fs::write(&exact, vec![1u8; DISCOVERY_FILE_MAX_BYTES as usize]).unwrap();
+        assert_eq!(
+            read_bytes(&exact).map(|b| b.len() as u64),
+            Some(DISCOVERY_FILE_MAX_BYTES)
+        );
     }
 
     #[test]
