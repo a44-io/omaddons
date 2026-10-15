@@ -4,6 +4,7 @@
 pub mod blobs;
 pub mod inspect;
 pub mod journal;
+pub mod ownership;
 pub mod running;
 pub mod stage;
 pub mod swap;
