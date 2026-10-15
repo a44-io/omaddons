@@ -128,6 +128,8 @@ pub enum Command {
     List(crate::app::list::ListArgs),
     /// List the WoW clients, or add, remove, rename and choose them
     Targets(crate::app::targets::TargetsArgs),
+    /// Show or change config.toml
+    Config(crate::app::config::ConfigArgs),
 }
 
 /// What every command receives (DEC-2).

@@ -1,6 +1,7 @@
 //! One module per command. Each command is a function that returns a typed outcome;
 //! rendering happens in `output`.
 
+pub mod config;
 pub mod help;
 pub mod list;
 pub mod targets;
@@ -21,6 +22,10 @@ const COMMANDS: &[&str] = &[
     "targets rm",
     "targets rename",
     "targets default",
+    "config",
+    "config get",
+    "config set",
+    "config path",
 ];
 
 /// The canonical (static) name for a subcommand name clap reported.
@@ -41,6 +46,10 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
             .action
             .as_ref()
             .map_or("targets", TargetsAction::command),
+        Some(Command::Config(args)) => args
+            .action
+            .as_ref()
+            .map_or("config", config::ConfigAction::command),
     }
 }
 
@@ -113,6 +122,22 @@ pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
                 ),
                 Some(TargetsAction::Default { id }) => {
                     output::emit(cfg, r, name, started, offline, targets::default(ctx, id))
+                }
+            }
+        }
+        Some(Command::Config(args)) => {
+            use config::ConfigAction;
+            let r = &mut reporter;
+            match &args.action {
+                None => output::emit(cfg, r, name, started, offline, config::list()),
+                Some(ConfigAction::Get { key }) => {
+                    output::emit(cfg, r, name, started, offline, config::get(key))
+                }
+                Some(ConfigAction::Set { key, value }) => {
+                    output::emit(cfg, r, name, started, offline, config::set(ctx, key, value))
+                }
+                Some(ConfigAction::Path) => {
+                    output::emit(cfg, r, name, started, offline, config::path())
                 }
             }
         }

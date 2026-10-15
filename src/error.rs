@@ -258,6 +258,8 @@ warning_codes! {
     TargetKeyDuplicate          = "target_key_duplicate";
     CatalogOverrideInvalid      = "catalog_override_invalid";
     OwnershipTransferred        = "ownership_transferred";
+    /// A credential file other users can read.
+    CredentialFileMode          = "credential_file_mode";
 }
 
 impl fmt::Display for WarningCode {
@@ -739,7 +741,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 20);
+        assert_eq!(WarningCode::ALL.len(), 21);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

@@ -18,6 +18,11 @@ expression: envelope
         "name": "targets"
       },
       {
+        "about": "Show or change config.toml",
+        "aliases": [],
+        "name": "config"
+      },
+      {
         "about": "Show help for omaddons or one command",
         "aliases": [],
         "name": "help"

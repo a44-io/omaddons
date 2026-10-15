@@ -535,7 +535,11 @@ pub fn default(ctx: &Context, id: &str) -> Result<Done<DefaultData>> {
             Ok((Some(reg.set_default(s, &current)?), current))
         })?
     };
-    let overridden_by_config = config_default_target(&world.paths).is_some_and(|c| c != id);
+    let overridden_by_config = world
+        .config
+        .default_target
+        .as_ref()
+        .is_some_and(|c| *c != id);
     Ok(Done {
         command: "targets default",
         data: DefaultData {
@@ -547,14 +551,6 @@ pub fn default(ctx: &Context, id: &str) -> Result<Done<DefaultData>> {
         warnings: Vec::new(),
         render: render_default,
     })
-}
-
-/// config.toml's `default_target`, read leniently. The config bead replaces this with
-/// the real config loader; an unreadable file means none.
-fn config_default_target(paths: &Paths) -> Option<String> {
-    let text = std::fs::read_to_string(paths.config_file()).ok()?;
-    let config: toml::Table = toml::from_str(&text).ok()?;
-    config.get("default_target")?.as_str().map(str::to_owned)
 }
 
 // ---------------------------------------------------------------------------------------

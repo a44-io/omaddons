@@ -328,6 +328,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "bytes",
       "config_key": null,
       "notes": "Most bytes read from one client metadata file during discovery"
+    },
+    {
+      "name": "CREDENTIAL_COMMAND_TIMEOUT",
+      "value": {
+        "millis": 10000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "A credential command is killed after this long"
     }
   ]
 ]

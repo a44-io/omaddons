@@ -1,0 +1,40 @@
+---
+source: src/state/config.rs
+expression: "set_value(FULL, path, \"targets.era.label\", \"Era\").unwrap()"
+---
+
+# My omaddons setup.
+extra_roots = ["/games/wow"]
+default_target = "retail"
+default_channel = "beta"
+running_policy = "refuse"
+auto_backup = "daily"
+check_interval_hours = 12
+git_hosts = ["codeberg.org"]
+
+[limits]
+archive_max_entries = 30000
+archive_max_uncompressed = "2GiB"
+archive_max_ratio = 150
+download_max_bytes = 104857600
+tx_retention_count = 20
+tx_retention_days = 14
+snapshot_max_bytes = "3GiB"
+blob_cache_max_bytes = "512MiB"
+
+[sources.github]
+enabled = true
+
+[sources.curseforge]
+enabled = false
+credential = { env = "OMADDONS_CURSEFORGE_KEY" }
+
+[targets.retail]
+label = "Main"
+family = "mainline"
+
+[targets.era]
+label = "Era"
+
+[client_rules.mainline]
+multi_toc = true

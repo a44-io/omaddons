@@ -1,32 +1,36 @@
-//! What a command sees of the machine: the state paths, the rules, and every discovered
-//! target with its identity. Read commands build it without the lock; the only write
-//! is the derived discovery cache.
+//! What a command sees of the machine: the state paths, the configuration, the rules,
+//! and every discovered target with its identity. Read commands build it without the
+//! lock; the only write is the derived discovery cache. A broken config.toml fails here
+//! (`state_corrupt`), which is why `help` and `config path` never build a world.
 
 use crate::cli::Context;
 use crate::discover::cache::{DiscoveryMode, discover_cached};
 use crate::discover::registry::{Resolved, reconcile, resolve_one};
 use crate::discover::{DiscoveredTarget, DiscoveryInput, ScanLimits};
-use crate::error::{Result, Warning};
+use crate::error::{Error, Result, Warning};
 use crate::rules::RulesTable;
+use crate::state::config::Config;
 use crate::state::paths::Paths;
 use crate::state::registry::{Origin, Registry, load_registry};
 
 /// The discovered targets, reconciled with the registry.
 pub struct World {
     pub paths: Paths,
+    pub config: Config,
+    /// The builtin rules with config overrides applied.
     pub table: RulesTable,
     pub registry: Registry,
     pub resolved: Resolved,
-    /// Discovery, registry and reconciliation warnings, for the outcome.
+    /// Config, discovery, registry and reconciliation warnings, for the outcome.
     pub warnings: Vec<Warning>,
     /// Debug notes from discovery.
     pub diagnostics: Vec<String>,
 }
 
 impl World {
-    /// Discovers every target under the user's home and the registry's manual roots,
-    /// reusing unchanged roots from the discovery cache, and gives each its registered
-    /// or provisional identity.
+    /// Discovers every target under the user's home, config's `extra_roots` and the
+    /// registry's manual roots, reusing unchanged roots from the discovery cache, and
+    /// gives each its registered or provisional identity and config overrides.
     pub fn load() -> Result<Self> {
         Self::load_with(DiscoveryMode::Full)
     }
@@ -34,27 +38,36 @@ impl World {
     /// [`World::load`] with an explicit cache mode (`status --cached`, `--rescan`).
     pub fn load_with(mode: DiscoveryMode) -> Result<Self> {
         let paths = Paths::from_env()?;
-        let table = RulesTable::builtin();
+        let loaded_config = Config::load(&paths)?;
+        let config = loaded_config.config;
+        let mut warnings = loaded_config.warnings;
+        let table = config
+            .rules_table(&RulesTable::builtin())
+            .map_err(|e| Error::internal(format!("validated rules overrides failed: {e}")))?;
         let loaded = load_registry(&paths)?;
-        let mut warnings: Vec<Warning> =
-            loaded.warning(&paths.registry_file()).into_iter().collect();
+        warnings.extend(loaded.warning(&paths.registry_file()));
         let registry = loaded.value;
-        let input = DiscoveryInput {
-            home: paths.home().to_path_buf(),
-            extra_roots: registry
+        let mut extra_roots = config.extra_roots.clone();
+        extra_roots.extend(
+            registry
                 .targets
                 .iter()
                 .filter(|e| e.origin == Origin::Manual)
-                .map(|e| e.install_root.clone())
-                .collect(),
+                .map(|e| e.install_root.clone()),
+        );
+        let input = DiscoveryInput {
+            home: paths.home().to_path_buf(),
+            extra_roots,
             ..DiscoveryInput::default()
         };
         let (found, _) = discover_cached(&input, &table, &paths, ScanLimits::default(), mode);
         warnings.extend(found.warnings);
-        let resolved = reconcile(&registry, &found.targets);
+        let mut resolved = reconcile(&registry, &found.targets);
         warnings.extend(resolved.warnings.iter().cloned());
+        apply_target_overrides(&mut resolved, &config, &table);
         Ok(Self {
             paths,
+            config,
             table,
             registry,
             resolved,
@@ -72,5 +85,24 @@ impl World {
         let mut all: Vec<&DiscoveredTarget> = self.resolved.targets.iter().collect();
         all.sort_by(|a, b| a.target.id.cmp(&b.target.id));
         Ok(all)
+    }
+}
+
+/// `[targets.<id or key>]`: a label, and a family that also picks the rules row.
+fn apply_target_overrides(resolved: &mut Resolved, config: &Config, table: &RulesTable) {
+    for d in &mut resolved.targets {
+        let key = d.target.key.map(|k| k.to_string());
+        let found = config
+            .targets
+            .get(&d.target.id)
+            .or_else(|| key.as_ref().and_then(|k| config.targets.get(k)));
+        let Some(o) = found else { continue };
+        if let Some(label) = &o.label {
+            d.target.label = Some(label.clone());
+        }
+        if let Some(family) = o.family {
+            d.target.family = family;
+            d.target.refresh_rules(table);
+        }
     }
 }
