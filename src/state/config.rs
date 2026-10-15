@@ -55,9 +55,10 @@ pub struct Config {
 }
 
 /// What `running` does when a client runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunningPolicy {
+    #[default]
     Safe,
     Refuse,
     Allow,

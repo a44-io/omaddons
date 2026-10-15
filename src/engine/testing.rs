@@ -63,7 +63,8 @@ pub struct Scene {
     pub client: ClientPaths,
     pub key: TargetKey,
     pub tx: TxId,
-    pub inflight: InflightLock,
+    /// Held until [`Scene::release_inflight`].
+    pub inflight: Option<InflightLock>,
     pub staged: Staged,
 }
 
@@ -111,7 +112,7 @@ impl Scene {
             client,
             key: TargetKey::new(),
             tx,
-            inflight,
+            inflight: Some(inflight),
             staged,
         }
     }
@@ -136,6 +137,19 @@ impl Scene {
 
     pub fn lock(&self) -> GlobalLockGuard {
         GlobalLock::acquire(&self.paths, "test").unwrap()
+    }
+
+    /// Drops the in-flight lock (the writer "dies") and waits until no process holds
+    /// it: a child that another test forks shares the lock's open file description
+    /// until it execs.
+    pub fn release_inflight(&mut self) {
+        drop(self.inflight.take());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while InflightLock::is_live(&self.paths, &self.tx).unwrap_or(false)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     /// Creates the journal with a minimal payload.

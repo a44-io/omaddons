@@ -3,6 +3,7 @@
 
 pub mod inspect;
 pub mod journal;
+pub mod running;
 pub mod stage;
 pub mod swap;
 #[cfg(test)]

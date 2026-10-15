@@ -735,7 +735,7 @@ mod tests {
 
     #[test]
     fn a_crash_between_exchange_and_snapshot_move_rolls_back() {
-        let scene = Scene::new();
+        let mut scene = Scene::new();
         let before = tree(&scene.client.addons());
         let err = failpoint::with_spec("engine.swap.after_exchange=error", || run(&scene, &ops()))
             .unwrap_err();
@@ -752,9 +752,8 @@ mod tests {
             0,
             "the in-flight lock is still held by the scene"
         );
-        drop(scene.inflight);
-        let scene_paths = scene.paths.clone();
-        let warnings = recover_all(&lock, &scene_paths, &scene.scopes).unwrap();
+        scene.release_inflight();
+        let warnings = recover_all(&lock, &scene.paths, &scene.scopes).unwrap();
         assert_eq!(warnings.len(), 1);
         assert_eq!(
             tree(&scene.client.addons()),

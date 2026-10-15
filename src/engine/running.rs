@@ -1,0 +1,440 @@
+//! The running policy (vision §5.5, D30): what may change while a target's client
+//! runs, and what the player must do afterwards. Pure functions; whether the client
+//! runs is decided live by `discover::running` and passed in.
+//!
+//! A Linux rename never disturbs files the client has open, and modern clients pick up
+//! new folders and TOC changes on `/reload`; deleting or renaming a loaded TOC needs a
+//! restart, and legacy clients (UNVERIFIED) need one for anything. SavedVariables are
+//! never written while the client runs, under any policy or flag (D33): the client
+//! overwrites them on logout.
+//!
+//! - `safe` (default): adds and TOC-preserving replacements are allowed; removing a
+//!   loaded folder, dropping its loaded TOC, and anything on a legacy client are
+//!   refused with `game_running` (exit 4).
+//! - `refuse`: every folder change is refused. `allow`: every folder change is allowed.
+//! - `--while-running` overrides every folder rule, never the SavedVariables rule.
+
+use std::collections::BTreeSet;
+
+use serde_json::json;
+
+use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
+use crate::model::{FolderName, ReloadRequired};
+use crate::rules::ClientRules;
+use crate::state::config::RunningPolicy;
+
+/// A planned change, with what the policy needs to judge it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyOp {
+    AddFolder {
+        folder: FolderName,
+    },
+    ReplaceFolder {
+        folder: FolderName,
+        /// The TOC file the client loads from the live folder now, if any.
+        loaded_toc_before: Option<String>,
+        /// The TOC file names of the new version.
+        toc_names_after: BTreeSet<String>,
+    },
+    RemoveFolder {
+        folder: FolderName,
+        loaded_toc_before: Option<String>,
+    },
+    /// Undo (and later `backup restore`) writing SavedVariables back.
+    RestoreSavedVariables {
+        files: usize,
+    },
+}
+
+impl PolicyOp {
+    /// Whether the op deletes or renames a TOC the client has loaded.
+    fn drops_loaded_toc(&self) -> bool {
+        match self {
+            Self::ReplaceFolder {
+                loaded_toc_before: Some(loaded),
+                toc_names_after,
+                ..
+            } => !toc_names_after
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(loaded)),
+            Self::RemoveFolder {
+                loaded_toc_before: Some(_),
+                ..
+            } => true,
+            _ => false,
+        }
+    }
+
+    fn describe(&self) -> serde_json::Value {
+        match self {
+            Self::AddFolder { folder } => json!({ "op": "add", "folder": folder.as_str() }),
+            Self::ReplaceFolder { folder, .. } => {
+                json!({ "op": "replace", "folder": folder.as_str() })
+            }
+            Self::RemoveFolder { folder, .. } => {
+                json!({ "op": "remove", "folder": folder.as_str() })
+            }
+            Self::RestoreSavedVariables { files } => {
+                json!({ "op": "restore_saved_variables", "files": files })
+            }
+        }
+    }
+}
+
+/// Who is asking: the target's id for messages, and the argv to repeat in fixes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyContext<'a> {
+    pub target_id: &'a str,
+    pub argv: &'a [String],
+}
+
+/// What the player must do once the change is in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyOutcome {
+    pub reload_required: ReloadRequired,
+    /// `reload_required` when it is not `none`.
+    pub warnings: Vec<Warning>,
+}
+
+/// Judges `ops` for one target. `Err(game_running)` when anything is refused.
+pub fn evaluate(
+    ctx: &PolicyContext<'_>,
+    policy: RunningPolicy,
+    running: bool,
+    rules: &ClientRules,
+    ops: &[PolicyOp],
+    while_running: bool,
+) -> Result<PolicyOutcome> {
+    if !running {
+        return Ok(PolicyOutcome {
+            reload_required: ReloadRequired::None,
+            warnings: Vec::new(),
+        });
+    }
+    let target = ctx.target_id;
+    if ops
+        .iter()
+        .any(|op| matches!(op, PolicyOp::RestoreSavedVariables { .. }))
+    {
+        return Err(Error::new(
+            ErrorCode::GameRunning,
+            format!("{target}'s game client is running, and SavedVariables are never written while it runs (it overwrites them on logout)"),
+            Suggestion::text("quit the game client, then rerun"),
+        )
+        .details(json!({
+            "target": target,
+            "reason": "saved_variables",
+            "ops": ops.iter().filter(|op| matches!(op, PolicyOp::RestoreSavedVariables { .. })).map(PolicyOp::describe).collect::<Vec<_>>(),
+        })));
+    }
+
+    let (refused, reason): (Vec<&PolicyOp>, &str) = match (policy, while_running) {
+        (_, true) | (RunningPolicy::Allow, _) => (Vec::new(), ""),
+        (RunningPolicy::Refuse, false) => (ops.iter().collect(), "policy_refuse"),
+        (RunningPolicy::Safe, false) if rules.legacy => (ops.iter().collect(), "legacy_client"),
+        (RunningPolicy::Safe, false) => (
+            ops.iter().filter(|op| op.drops_loaded_toc()).collect(),
+            "loaded_toc",
+        ),
+    };
+    if !refused.is_empty() {
+        let why = match reason {
+            "policy_refuse" => "running_policy is refuse".to_owned(),
+            "legacy_client" => "this client needs a restart to pick up any addon change".to_owned(),
+            _ => format!(
+                "{} would remove or rename a TOC the client has loaded",
+                refused
+                    .iter()
+                    .filter_map(|op| folder(op))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+        let mut retry = ctx.argv.to_vec();
+        retry.push("--while-running".to_owned());
+        return Err(Error::new(
+            ErrorCode::GameRunning,
+            format!("{target}'s game client is running: {why}"),
+            Suggestion::command(retry),
+        )
+        .alternative(Suggestion::text("quit the game client, then rerun"))
+        .details(json!({
+            "target": target,
+            "reason": reason,
+            "ops": refused.iter().map(|op| op.describe()).collect::<Vec<_>>(),
+        })));
+    }
+
+    let reload_required = ops
+        .iter()
+        .map(|op| match op {
+            _ if rules.legacy => ReloadRequired::Restart,
+            op if op.drops_loaded_toc() => ReloadRequired::Restart,
+            PolicyOp::RemoveFolder { .. } => ReloadRequired::None,
+            _ => ReloadRequired::Reload,
+        })
+        .max()
+        .unwrap_or_default();
+    let warnings = match reload_required {
+        ReloadRequired::None => Vec::new(),
+        ReloadRequired::Reload => vec![
+            Warning::new(
+                WarningCode::ReloadRequired,
+                format!("{target}'s game client is running: type /reload to load the changes"),
+            )
+            .with_fix(Suggestion::text("/reload in game")),
+        ],
+        ReloadRequired::Restart => vec![
+            Warning::new(
+                WarningCode::ReloadRequired,
+                format!("{target}'s game client is running: restart it to load the changes"),
+            )
+            .with_fix(Suggestion::text("restart the game client")),
+        ],
+    };
+    Ok(PolicyOutcome {
+        reload_required,
+        warnings,
+    })
+}
+
+fn folder(op: &PolicyOp) -> Option<&str> {
+    match op {
+        PolicyOp::AddFolder { folder }
+        | PolicyOp::ReplaceFolder { folder, .. }
+        | PolicyOp::RemoveFolder { folder, .. } => Some(folder.as_str()),
+        PolicyOp::RestoreSavedVariables { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rules(legacy: bool) -> ClientRules {
+        ClientRules {
+            legacy,
+            ..ClientRules::default()
+        }
+    }
+
+    fn name(n: &str) -> FolderName {
+        FolderName::new(n).unwrap()
+    }
+
+    fn add() -> PolicyOp {
+        PolicyOp::AddFolder {
+            folder: name("New"),
+        }
+    }
+
+    fn replace(kept: bool) -> PolicyOp {
+        let after = if kept { "foo.toc" } else { "Foo.toc" };
+        PolicyOp::ReplaceFolder {
+            folder: name("Foo"),
+            loaded_toc_before: Some(if kept { "Foo.toc" } else { "Foo_Mainline.toc" }.into()),
+            toc_names_after: BTreeSet::from([after.to_owned()]),
+        }
+    }
+
+    fn remove(loaded: bool) -> PolicyOp {
+        PolicyOp::RemoveFolder {
+            folder: name("Old"),
+            loaded_toc_before: loaded.then(|| "Old.toc".to_owned()),
+        }
+    }
+
+    const ARGV: &[&str] = &["omaddons", "remove", "Old", "-t", "retail"];
+
+    fn run(
+        policy: RunningPolicy,
+        running: bool,
+        legacy: bool,
+        ops: &[PolicyOp],
+        while_running: bool,
+    ) -> Result<PolicyOutcome> {
+        let argv: Vec<String> = ARGV.iter().map(|s| (*s).to_owned()).collect();
+        let ctx = PolicyContext {
+            target_id: "retail",
+            argv: &argv,
+        };
+        evaluate(&ctx, policy, running, &rules(legacy), ops, while_running)
+    }
+
+    /// (policy, running, legacy, op, --while-running, `Ok(reload)` or `Err(reason)`)
+    type Row = (
+        RunningPolicy,
+        bool,
+        bool,
+        PolicyOp,
+        bool,
+        std::result::Result<ReloadRequired, String>,
+    );
+
+    /// `Ok(reload)` or `Err(reason)`.
+    fn verdict(result: Result<PolicyOutcome>) -> std::result::Result<ReloadRequired, String> {
+        match result {
+            Ok(outcome) => Ok(outcome.reload_required),
+            Err(e) => {
+                assert_eq!((e.code, e.exit().code()), (ErrorCode::GameRunning, 4));
+                Err(e.details["reason"].as_str().unwrap_or_default().to_owned())
+            }
+        }
+    }
+
+    #[test]
+    fn the_policy_table() {
+        use ReloadRequired::{None as N, Reload as R, Restart as X};
+        use RunningPolicy::{Allow, Refuse, Safe};
+        let refused = |r: &str| Err(r.to_owned());
+        #[rustfmt::skip]
+        let rows: Vec<Row> = vec![
+            // Not running: everything goes, nothing to do in game.
+            (Safe, false, false, remove(true), false, Ok(N)),
+            (Refuse, false, true, add(), false, Ok(N)),
+            (Allow, false, false, replace(false), false, Ok(N)),
+            // Safe, modern client.
+            (Safe, true, false, add(), false, Ok(R)),
+            (Safe, true, false, replace(true), false, Ok(R)),
+            (Safe, true, false, replace(false), false, refused("loaded_toc")),
+            (Safe, true, false, replace(false), true, Ok(X)),
+            (Safe, true, false, remove(true), false, refused("loaded_toc")),
+            (Safe, true, false, remove(true), true, Ok(X)),
+            (Safe, true, false, remove(false), false, Ok(N)),
+            // Safe, legacy client.
+            (Safe, true, true, add(), false, refused("legacy_client")),
+            (Safe, true, true, replace(true), false, refused("legacy_client")),
+            (Safe, true, true, add(), true, Ok(X)),
+            // Refuse.
+            (Refuse, true, false, add(), false, refused("policy_refuse")),
+            (Refuse, true, false, replace(true), true, Ok(R)),
+            // Allow.
+            (Allow, true, false, add(), false, Ok(R)),
+            (Allow, true, false, remove(true), false, Ok(X)),
+            (Allow, true, true, add(), false, Ok(X)),
+        ];
+        for (policy, running, legacy, op, while_running, want) in rows {
+            let label = format!(
+                "{policy:?} running={running} legacy={legacy} {op:?} while_running={while_running}"
+            );
+            assert_eq!(
+                verdict(run(policy, running, legacy, &[op], while_running)),
+                want,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn saved_variables_are_never_written_while_running() {
+        let restore = PolicyOp::RestoreSavedVariables { files: 3 };
+        for policy in [
+            RunningPolicy::Safe,
+            RunningPolicy::Refuse,
+            RunningPolicy::Allow,
+        ] {
+            for while_running in [false, true] {
+                let err = run(
+                    policy,
+                    true,
+                    false,
+                    &[restore.clone(), add()],
+                    while_running,
+                )
+                .unwrap_err();
+                assert_eq!(err.details["reason"], "saved_variables");
+                assert_eq!(
+                    (err.fix.display(), err.fix.argv()),
+                    ("quit the game client, then rerun", None)
+                );
+            }
+        }
+        assert!(run(RunningPolicy::Safe, false, false, &[restore], false).is_ok());
+    }
+
+    #[test]
+    fn a_refusal_offers_while_running_and_quitting() {
+        let err = run(
+            RunningPolicy::Safe,
+            true,
+            false,
+            &[add(), remove(true)],
+            false,
+        )
+        .unwrap_err();
+        let mut want: Vec<String> = ARGV.iter().map(|s| (*s).to_owned()).collect();
+        want.push("--while-running".into());
+        assert_eq!(err.fix.argv(), Some(want.as_slice()));
+        assert_eq!(
+            err.alternatives[0].display(),
+            "quit the game client, then rerun"
+        );
+        assert_eq!(
+            err.details["ops"],
+            json!([{ "op": "remove", "folder": "Old" }]),
+            "only the refused op"
+        );
+        assert!(
+            err.message.contains("retail") && err.message.contains("Old"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn the_strongest_requirement_wins_and_is_warned() {
+        let outcome = run(
+            RunningPolicy::Allow,
+            true,
+            false,
+            &[add(), remove(false), replace(false)],
+            false,
+        )
+        .unwrap();
+        assert_eq!(outcome.reload_required, ReloadRequired::Restart);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            (
+                outcome.warnings[0].code,
+                outcome.warnings[0].fix.as_ref().map(Suggestion::display)
+            ),
+            (WarningCode::ReloadRequired, Some("restart the game client"))
+        );
+        let outcome = run(RunningPolicy::Safe, true, false, &[add()], false).unwrap();
+        assert_eq!(
+            outcome.warnings[0]
+                .fix
+                .as_ref()
+                .map(|f| (f.display(), f.argv())),
+            Some(("/reload in game", None))
+        );
+        assert!(
+            run(RunningPolicy::Safe, true, false, &[], false)
+                .unwrap()
+                .warnings
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn renaming_the_loaded_toc_drops_it() {
+        let rename = PolicyOp::ReplaceFolder {
+            folder: name("Foo"),
+            loaded_toc_before: Some("Foo_Mainline.toc".into()),
+            toc_names_after: BTreeSet::from(["Foo.toc".to_owned()]),
+        };
+        assert!(rename.drops_loaded_toc());
+        let kept_other_case = PolicyOp::ReplaceFolder {
+            folder: name("Foo"),
+            loaded_toc_before: Some("Foo_Mainline.toc".into()),
+            toc_names_after: BTreeSet::from(["foo_mainline.TOC".to_owned(), "Foo.toc".to_owned()]),
+        };
+        assert!(!kept_other_case.drops_loaded_toc());
+        let nothing_loaded = PolicyOp::ReplaceFolder {
+            folder: name("Foo"),
+            loaded_toc_before: None,
+            toc_names_after: BTreeSet::new(),
+        };
+        assert!(!nothing_loaded.drops_loaded_toc());
+    }
+}
