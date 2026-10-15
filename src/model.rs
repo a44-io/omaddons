@@ -936,6 +936,16 @@ pub enum FlavorHint {
     Forever,
     /// "classic" without saying which classic family.
     ClassicAny,
+    /// A legacy client version in the name (`1.12`).
+    VanillaLegacy,
+    /// `2.4.3`.
+    TbcLegacy,
+    /// `3.3.5`, `335`.
+    WrathLegacy,
+    /// `4.3.4`.
+    CataLegacy,
+    /// `5.4.8`.
+    MistsLegacy,
 }
 
 /// A hash a source promises for an asset. SHA-256 only in M1; MD5 (WoWInterface) and

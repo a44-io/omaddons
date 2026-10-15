@@ -164,8 +164,19 @@ fn tier(asset: &Asset, target: &Target) -> Tier {
 }
 
 /// Whether a file-name flavor guess fits `family`; `ClassicAny` fits every modern
-/// classic family. Legacy families and `unknown` match no hint.
+/// classic family, a legacy version hint only its legacy family, and `unknown` no hint.
 fn hint_matches(hint: FlavorHint, family: Family) -> bool {
+    let legacy = match hint {
+        FlavorHint::VanillaLegacy => Some(Family::VanillaLegacy),
+        FlavorHint::TbcLegacy => Some(Family::TbcLegacy),
+        FlavorHint::WrathLegacy => Some(Family::WrathLegacy),
+        FlavorHint::CataLegacy => Some(Family::CataLegacy),
+        FlavorHint::MistsLegacy => Some(Family::MistsLegacy),
+        _ => None,
+    };
+    if let Some(legacy) = legacy {
+        return family == legacy;
+    }
     let Some(flavor) = family.release_flavor() else {
         return false;
     };
@@ -179,6 +190,11 @@ fn hint_matches(hint: FlavorHint, family: Family) -> bool {
         FlavorHint::Titan => "titan",
         FlavorHint::Forever => "forever",
         FlavorHint::ClassicAny => return flavor != "mainline",
+        FlavorHint::VanillaLegacy
+        | FlavorHint::TbcLegacy
+        | FlavorHint::WrathLegacy
+        | FlavorHint::CataLegacy
+        | FlavorHint::MistsLegacy => return false,
     };
     named == flavor
 }

@@ -1,0 +1,119 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://api.github.com/repos/fondlez/GroupBulletinBoard/releases/tags/v1.2.3"
+  },
+  "responses": [
+    {
+      "status": 200,
+      "headers": [
+        [
+          "date",
+          "Thu, 15 Oct 2026 06:28:52 GMT"
+        ],
+        [
+          "content-type",
+          "application/json; charset=utf-8"
+        ],
+        [
+          "cache-control",
+          "public, max-age=60, s-maxage=60"
+        ],
+        [
+          "vary",
+          "Accept,Accept-Encoding, Accept, X-Requested-With"
+        ],
+        [
+          "etag",
+          "W/\"080bcca2d8f0d5b6b9b30bd7d8d4102d0236d08d08692a0efef254952328df6a\""
+        ],
+        [
+          "last-modified",
+          "Mon, 27 Apr 2026 19:56:25 GMT"
+        ],
+        [
+          "x-github-media-type",
+          "github.v3; format=json"
+        ],
+        [
+          "x-github-api-version-selected",
+          "2022-11-28"
+        ],
+        [
+          "access-control-expose-headers",
+          "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning"
+        ],
+        [
+          "access-control-allow-origin",
+          "*"
+        ],
+        [
+          "strict-transport-security",
+          "max-age=31536000; includeSubdomains; preload"
+        ],
+        [
+          "x-frame-options",
+          "deny"
+        ],
+        [
+          "x-content-type-options",
+          "nosniff"
+        ],
+        [
+          "x-xss-protection",
+          "0"
+        ],
+        [
+          "referrer-policy",
+          "origin-when-cross-origin, strict-origin-when-cross-origin"
+        ],
+        [
+          "content-security-policy",
+          "default-src 'none'"
+        ],
+        [
+          "server",
+          "github.com"
+        ],
+        [
+          "accept-ranges",
+          "bytes"
+        ],
+        [
+          "x-ratelimit-limit",
+          "60"
+        ],
+        [
+          "x-ratelimit-remaining",
+          "57"
+        ],
+        [
+          "x-ratelimit-used",
+          "3"
+        ],
+        [
+          "x-ratelimit-resource",
+          "core"
+        ],
+        [
+          "x-ratelimit-reset",
+          "1792047835"
+        ],
+        [
+          "content-length",
+          "3770"
+        ],
+        [
+          "x-github-request-id",
+          "E7BE:25A7E1:186E130:4FF1C2E:6AD072A4"
+        ],
+        [
+          "x-github-edge-region",
+          "iad"
+        ]
+      ],
+      "body_file": "get-repos-fondlez-GroupBulletinBoard-releases-tags-v1.2.3-a0c47a88.body"
+    }
+  ]
+}

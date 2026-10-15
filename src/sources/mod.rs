@@ -11,6 +11,7 @@ pub mod atom;
 pub mod git;
 pub mod git_github;
 pub mod github;
+pub mod github_rest;
 pub mod local;
 pub mod refs;
 pub mod release_json;
@@ -121,7 +122,9 @@ impl SourceRegistry {
     /// Every source this build ships.
     pub fn builtin() -> Self {
         let mut registry = Self::new();
-        registry.register(Box::new(github::GithubSource::new()));
+        registry.register(Box::new(github::GithubSource {
+            rest: Some(Box::new(github_rest::GithubRest::from_env())),
+        }));
         registry.register(Box::new(git::GitSource));
         registry.register(Box::new(local::LocalSource));
         registry.register(Box::new(url::UrlSource::new()));

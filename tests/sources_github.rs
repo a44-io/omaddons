@@ -202,6 +202,16 @@ fn failure_paths_through_the_stack() {
         &[],
         Some("Not Found"),
     );
+    fixture(
+        &dir,
+        "plain-rest",
+        "https://api.github.com/repos/o/plain/releases/tags/v2",
+        200,
+        &[("x-ratelimit-remaining", "59")],
+        Some(
+            r#"{"tag_name": "v2", "assets": [{"name": "Plain-v2.zip", "browser_download_url": "https://github.com/o/plain/releases/download/v2/Plain-v2.zip"}]}"#,
+        ),
+    );
 
     let err = fetch_one(&env, &dir, want("gh:o/none")).unwrap_err();
     assert_eq!(err.code, ErrorCode::NotFound);
@@ -217,18 +227,14 @@ fn failure_paths_through_the_stack() {
         ["omaddons", "install", "gh:o/pre", "--channel", "beta"]
     );
 
-    let err = fetch_one(&env, &dir, want("gh:o/plain")).unwrap_err();
-    assert_eq!(err.code, ErrorCode::NoCompatibleRelease);
-    assert_eq!(err.fix.argv(), None);
-    assert_eq!(
-        err.fix.display(),
-        "download a release zip, then: omaddons install <path>"
-    );
-    assert_eq!(
-        err.alternatives[0].argv().unwrap(),
-        ["omaddons", "install", "git:https://github.com/o/plain"]
-    );
     assert_no_github_rest(&read_net_log(&paths(&env)));
+
+    // Without a release.json, the REST fallback lists the release's zips (the
+    // no-fallback messages are github.rs unit tests).
+    let set = fetch_one(&env, &dir, want("gh:o/plain")).unwrap();
+    assert_eq!(set.releases[0].release_id, "gh:o/plain@v2");
+    assert_eq!(set.releases[0].assets[0].filename, "Plain-v2.zip");
+    assert_eq!(count_host(&read_net_log(&paths(&env)), "api.github.com"), 1);
 }
 
 #[test]

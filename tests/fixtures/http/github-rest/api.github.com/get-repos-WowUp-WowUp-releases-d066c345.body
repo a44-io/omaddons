@@ -1,0 +1,20 @@
+[
+  {"html_url": "https://github.com/WowUp/WowUp/releases/tag/v2.24.1-beta.1", "tag_name": "v2.24.1-beta.1", "name": "v2.24.1-beta.1", "draft": false, "prerelease": true, "created_at": "2026-10-14T04:30:12Z", "published_at": "2026-10-14T05:00:47Z", "body": "",
+   "assets": [
+     {"name": "latest-linux.yml", "content_type": "text/yaml", "size": 386, "browser_download_url": "https://github.com/WowUp/WowUp/releases/download/v2.24.1-beta.1/latest-linux.yml"},
+     {"name": "WowUp-2.24.1-beta.1-arm64-mac.zip", "content_type": "application/zip", "size": 128347440, "digest": "sha256:f72f93bcc67ade85e89b09afd1cc6615fbb1aee337c5d92ceab900bee93dc4ef", "browser_download_url": "https://github.com/WowUp/WowUp/releases/download/v2.24.1-beta.1/WowUp-2.24.1-beta.1-arm64-mac.zip"},
+     {"name": "WowUp-2.24.1-beta.1-arm64-mac.zip.blockmap", "content_type": "application/octet-stream", "size": 135159, "browser_download_url": "https://github.com/WowUp/WowUp/releases/download/v2.24.1-beta.1/WowUp-2.24.1-beta.1-arm64-mac.zip.blockmap"},
+     {"name": "WowUp-2.24.1-beta.1-mac.zip", "content_type": "application/zip", "size": 133148492, "digest": "sha256:6fbf64ae69e778a7006e14c25f91f6aa9ebc6812012ef66e73878c79768196cf", "browser_download_url": "https://github.com/WowUp/WowUp/releases/download/v2.24.1-beta.1/WowUp-2.24.1-beta.1-mac.zip"},
+     {"name": "WowUp-2.24.1-beta.1.AppImage", "content_type": "application/octet-stream", "size": 138873566, "browser_download_url": "https://github.com/WowUp/WowUp/releases/download/v2.24.1-beta.1/WowUp-2.24.1-beta.1.AppImage"}
+   ]},
+  {"html_url": "https://github.com/WowUp/WowUp/releases/tag/v2.24.0", "tag_name": "v2.24.0", "name": "v2.24.0", "draft": false, "prerelease": false, "created_at": "2026-10-10T20:20:03Z", "published_at": "2026-10-10T20:58:43Z", "body": "",
+   "assets": [
+     {"name": "WowUp-2.24.0-arm64-mac.zip", "content_type": "application/zip", "size": 128347651, "digest": "sha256:ae9fdaf769885f7824c87bb3dfedbe1b80f57ac538a764f42b2a7960abe4b236", "browser_download_url": "https://github.com/WowUp/WowUp/releases/download/v2.24.0/WowUp-2.24.0-arm64-mac.zip"},
+     {"name": "WowUp-2.24.0-mac.zip", "content_type": "application/zip", "size": 133148683, "digest": "sha256:77f1900a2b3167d03fee3f5d04cd2d6c703f35143ce6f0da4cfa3c5e41bc20d2", "browser_download_url": "https://github.com/WowUp/WowUp/releases/download/v2.24.0/WowUp-2.24.0-mac.zip"}
+   ]},
+  {"html_url": "https://github.com/WowUp/WowUp/releases/tag/v2.24.0-beta.6", "tag_name": "v2.24.0-beta.6", "name": "v2.24.0-beta.6", "draft": false, "prerelease": true, "created_at": "2026-09-30T15:10:44Z", "published_at": "2026-09-30T15:46:01Z", "body": "",
+   "assets": [
+     {"name": "WowUp-2.24.0-beta.6-arm64-mac.zip", "content_type": "application/zip", "size": 128347236, "digest": "sha256:1b426750bbee1fe2a78e4de77d55c4b5d5cd9cc248cfab157aac83bfe493cd63", "browser_download_url": "https://github.com/WowUp/WowUp/releases/download/v2.24.0-beta.6/WowUp-2.24.0-beta.6-arm64-mac.zip"},
+     {"name": "WowUp-2.24.0-beta.6-mac.zip", "content_type": "application/zip", "size": 133148231, "digest": "sha256:8b7836aa23b27d69dd4f93fac30759fa9da3303264dfe86d0fc8c3281d375bfc", "browser_download_url": "https://github.com/WowUp/WowUp/releases/download/v2.24.0-beta.6/WowUp-2.24.0-beta.6-mac.zip"}
+   ]}
+]

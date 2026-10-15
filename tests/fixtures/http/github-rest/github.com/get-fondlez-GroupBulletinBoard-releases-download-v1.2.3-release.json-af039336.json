@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://github.com/fondlez/GroupBulletinBoard/releases/download/v1.2.3/release.json"
+  },
+  "responses": [
+    {
+      "status": 404,
+      "headers": [
+        [
+          "date",
+          "Thu, 15 Oct 2026 06:28:52 GMT"
+        ],
+        [
+          "content-type",
+          "text/plain; charset=utf-8"
+        ],
+        [
+          "vary",
+          "X-PJAX, X-PJAX-Container, Turbo-Visit, Turbo-Frame, X-Requested-With, X-GitHub-Client-Version, Sec-Fetch-Site,Accept-Encoding, Accept, X-Requested-With"
+        ],
+        [
+          "cache-control",
+          "no-cache"
+        ],
+        [
+          "strict-transport-security",
+          "max-age=31536000; includeSubdomains; preload"
+        ],
+        [
+          "x-frame-options",
+          "deny"
+        ],
+        [
+          "x-content-type-options",
+          "nosniff"
+        ],
+        [
+          "x-xss-protection",
+          "0"
+        ],
+        [
+          "referrer-policy",
+          "no-referrer-when-downgrade"
+        ],
+        [
+          "content-security-policy",
+          "default-src 'none'; base-uri 'self'; connect-src 'self'; form-action 'self'; img-src 'self' data:; script-src 'self'; style-src 'unsafe-inline'"
+        ],
+        [
+          "server",
+          "github.com"
+        ],
+        [
+          "content-length",
+          "9"
+        ],
+        [
+          "x-github-request-id",
+          "8DF8:2B1B6E:155B95C:1B63E2A:6AD072A3"
+        ],
+        [
+          "x-github-edge-region",
+          "iad"
+        ]
+      ],
+      "body_file": "get-fondlez-GroupBulletinBoard-releases-download-v1.2.3-release.json-af039336.body"
+    }
+  ]
+}
