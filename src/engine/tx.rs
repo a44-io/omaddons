@@ -75,6 +75,7 @@ pub const FAILPOINTS: &[&str] = &[
     "engine.committed",
     "engine.unlocked",
     "engine.cleanup.done",
+    "engine.retention",
     "engine.recover.step",
 ];
 
@@ -104,6 +105,8 @@ pub struct EngineCtx<'a> {
     pub table: &'a RulesTable,
     pub policy: RunningPolicy,
     pub limits: ArchiveLimits,
+    /// What retention keeps after each commit.
+    pub retention: super::retention::RetentionLimits,
     pub actor: Actor,
     pub argv: &'a [String],
     /// The command, recorded as the lock holder.
@@ -314,7 +317,55 @@ fn commit_target(
         )
     };
     failpoint::hit("engine.cleanup.done").map_err(fail)?;
-    result
+    let (mut outcome, recovered) = result?;
+    if let (Some(key), Some(_)) = (outcome.key, outcome.tx) {
+        outcome
+            .warnings
+            .extend(retain(ctx, scopes, key, &target.client_dir));
+    }
+    Ok((outcome, recovered))
+}
+
+/// Retention after a commit (vision §5.5), best effort: its warnings join the outcome
+/// and a failure becomes `retention_failed`, never a failed command.
+pub(super) fn retain(
+    ctx: &EngineCtx<'_>,
+    scopes: &ScopeTable,
+    key: TargetKey,
+    client_dir: &std::path::Path,
+) -> Vec<Warning> {
+    let run = || -> Result<Vec<Warning>> {
+        failpoint::hit("engine.retention").map_err(|e| {
+            Error::io(
+                ctx.paths.state_dir(),
+                &e,
+                Suggestion::command(["omaddons", "status"]),
+            )
+        })?;
+        let pins = super::retention::pinned_blobs(ctx.paths)?;
+        let report = super::retention::run(
+            ctx.paths,
+            scopes,
+            key,
+            &ClientPaths::new(client_dir),
+            &ctx.retention,
+            Timestamp::now(),
+            &pins,
+        )?;
+        Ok(report.warnings)
+    };
+    run().unwrap_or_else(|error| {
+        vec![
+            Warning::new(
+                crate::error::WarningCode::RetentionFailed,
+                format!(
+                    "pruning old snapshots after the commit failed: {}",
+                    error.message
+                ),
+            )
+            .with_fix(Suggestion::command(["omaddons", "status"])),
+        ]
+    })
 }
 
 /// Stages every addon with an archive into the transaction's stage dir.
@@ -892,6 +943,8 @@ mod tests {
             "engine.committed",
             "engine.unlocked",
             "engine.cleanup.done",
+            // Retention runs after the commit; its failure is a warning, never an error.
+            "engine.retention",
         ];
         for name in FAILPOINTS {
             if matches!(*name, "engine.plan.downloaded" | "engine.recover.step") {

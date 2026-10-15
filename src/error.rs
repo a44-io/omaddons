@@ -243,6 +243,8 @@ warning_codes! {
     ReloadRequired              = "reload_required";
     SavedVariablesDeferred      = "saved_variables_deferred";
     SnapshotCapExceeded         = "snapshot_cap_exceeded";
+    /// Retention after a commit failed; the transaction itself stands.
+    RetentionFailed             = "retention_failed";
     OutOfDate                   = "out_of_date";
     MissingDependency           = "missing_dependency";
     TocCommaOnLegacy            = "toc_comma_on_legacy";
@@ -741,7 +743,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 21);
+        assert_eq!(WarningCode::ALL.len(), 22);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

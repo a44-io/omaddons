@@ -282,6 +282,7 @@ impl TxScene {
             table: &table,
             policy: crate::state::config::RunningPolicy::Safe,
             limits: ArchiveLimits::default(),
+            retention: super::retention::RetentionLimits::default(),
             actor: self.actor,
             argv: &argv,
             command,

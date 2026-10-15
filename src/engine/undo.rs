@@ -183,7 +183,12 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     };
     let result = commit(ctx, req, &scopes, discovered, reverted.tx, &tx, &staged);
     cleanup(ctx.paths, &scopes, inflight, &tx, Some(&staged.stage_dir));
-    result
+    let mut done = result?;
+    if let (Some(key), Some(_)) = (done.outcome.key, done.outcome.tx) {
+        let retained = super::tx::retain(ctx, &scopes, key, &target.client_dir);
+        done.outcome.warnings.extend(retained);
+    }
+    Ok(done)
 }
 
 /// The commit window, under the global lock: recover, plan again against the state

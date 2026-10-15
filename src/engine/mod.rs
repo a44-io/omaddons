@@ -6,6 +6,7 @@ pub mod inspect;
 pub mod journal;
 pub mod ownership;
 pub mod plan;
+pub mod retention;
 pub mod running;
 pub mod stage;
 pub mod swap;

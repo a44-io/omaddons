@@ -540,6 +540,10 @@ pub struct AddonRecord {
     #[schemars(with = "String")]
     pub installed_at: Timestamp,
     pub tx_id: TxId,
+    /// The blob-cache archive this release was installed from, which retention keeps;
+    /// absent for local archives and directories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_sha256: Option<String>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1407,6 +1411,7 @@ mod tests {
             state: AddonState::Ok,
             installed_at: "2026-10-14T21:00:00Z".parse().unwrap(),
             tx_id: "01JB8Q2VA00000000000000000".parse().unwrap(),
+            blob_sha256: None,
         }
     }
 

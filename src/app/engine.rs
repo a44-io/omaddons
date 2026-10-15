@@ -6,6 +6,7 @@
 use super::world::World;
 use crate::cli::Context;
 use crate::engine::inspect::ArchiveLimits;
+use crate::engine::retention::RetentionLimits;
 use crate::engine::{EngineCtx, TxOutcomes, TxRequest, UndoOutcome, UndoRequest};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::Actor;
@@ -23,6 +24,7 @@ pub struct Engine {
     table: RulesTable,
     policy: RunningPolicy,
     limits: ArchiveLimits,
+    retention: RetentionLimits,
     actor: Actor,
     argv: Vec<String>,
     /// The command, recorded as the lock holder.
@@ -52,6 +54,7 @@ impl Engine {
             table: world.table.clone(),
             policy: world.config.running_policy.unwrap_or_default(),
             limits: ArchiveLimits::from(&limits),
+            retention: RetentionLimits::from(&limits),
             actor: ctx.actor,
             argv: ctx.argv.clone(),
             command,
@@ -66,6 +69,7 @@ impl Engine {
             table: &self.table,
             policy: self.policy,
             limits: self.limits,
+            retention: self.retention,
             actor: self.actor,
             argv: &self.argv,
             command: self.command,

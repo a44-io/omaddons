@@ -685,6 +685,13 @@ impl TargetPlanner<'_> {
             state: AddonState::Ok,
             installed_at: self.created_at,
             tx_id: self.ctx.tx,
+            // Content-addressed: a cached blob's file name is its SHA-256.
+            blob_sha256: winner
+                .blob
+                .as_ref()
+                .filter(|b| b.starts_with(self.ctx.paths.blobs_dir()))
+                .and_then(|b| b.file_name())
+                .map(|n| n.to_string_lossy().into_owned()),
         };
         let (url, expected_hash) = match &winner.candidate.asset.location {
             AssetLocation::Url(url) => (

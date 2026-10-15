@@ -143,6 +143,7 @@ mod support {
                         state: AddonState::Ok,
                         installed_at: "2026-10-01T00:00:00Z".parse().unwrap(),
                         tx_id: TxId::new(),
+                        blob_sha256: None,
                     },
                 );
             }
