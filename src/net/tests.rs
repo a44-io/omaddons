@@ -394,3 +394,41 @@ fn live_github_request() {
     assert_eq!((line.host.as_str(), line.status), ("github.com", Some(200)));
     assert!(Path::new(log.path()).exists());
 }
+
+#[test]
+fn transport_selection_truth_table() {
+    let env = |fixtures: Option<&'static str>, record: Option<&'static str>| {
+        move |name: &str| match name {
+            "OMADDONS_HTTP_FIXTURES" => fixtures.map(str::to_owned),
+            "OMADDONS_RECORD" => record.map(str::to_owned),
+            _ => None,
+        }
+    };
+    let cases = [
+        (None, None, true, TransportChoice::Real),
+        (Some("/f"), None, true, TransportChoice::Replay("/f".into())),
+        (
+            Some("/f"),
+            Some("0"),
+            true,
+            TransportChoice::Replay("/f".into()),
+        ),
+        (
+            Some("/f"),
+            Some("1"),
+            true,
+            TransportChoice::Record("/f".into()),
+        ),
+        (None, Some("1"), true, TransportChoice::Real),
+        (Some(""), None, true, TransportChoice::Real),
+        (Some("/f"), None, false, TransportChoice::Real),
+        (Some("/f"), Some("1"), false, TransportChoice::Real),
+    ];
+    for (fixtures, record, debug, expected) in cases {
+        assert_eq!(
+            choose_transport(&env(fixtures, record), debug),
+            expected,
+            "{fixtures:?} {record:?} {debug}"
+        );
+    }
+}

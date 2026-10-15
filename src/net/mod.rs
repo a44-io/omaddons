@@ -11,6 +11,8 @@ mod guard;
 pub mod limit;
 pub mod log;
 pub mod pool;
+pub mod record;
+pub mod replay;
 pub mod retry;
 #[cfg(test)]
 mod tests;
@@ -267,9 +269,62 @@ impl NetConfig {
 }
 
 /// The production stack, outermost first:
-/// `Limited<Retrying<Validating<Redirecting<Guarded<UreqTransport>>>>>`.
+/// `Limited<Retrying<Validating<Redirecting<Guarded<transport>>>>>`, over the transport
+/// [`select_transport`] picks from the environment.
 pub fn stack(config: &NetConfig, log: NetLog, paths: &Paths) -> Box<dyn Http> {
-    stack_with(config, log, paths, Box::new(UreqTransport::new()))
+    let env = |name: &str| std::env::var(name).ok();
+    let transport = select_transport(&env, cfg!(debug_assertions), paths);
+    stack_with(config, log, paths, transport)
+}
+
+/// The bottom transport a run uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportChoice {
+    Real,
+    /// `OMADDONS_HTTP_FIXTURES=<dir>` (debug builds only).
+    Replay(std::path::PathBuf),
+    /// `OMADDONS_HTTP_FIXTURES=<dir>` with `OMADDONS_RECORD=1` (debug builds only).
+    Record(std::path::PathBuf),
+}
+
+/// Which transport the environment asks for; release builds always get the real one.
+pub fn choose_transport(env: &dyn Fn(&str) -> Option<String>, debug: bool) -> TransportChoice {
+    match env("OMADDONS_HTTP_FIXTURES").filter(|d| debug && !d.is_empty()) {
+        Some(dir) if env("OMADDONS_RECORD").as_deref() == Some("1") => {
+            TransportChoice::Record(dir.into())
+        }
+        Some(dir) => TransportChoice::Replay(dir.into()),
+        None => TransportChoice::Real,
+    }
+}
+
+/// Builds the chosen transport. A fixture directory that cannot be loaded gives a
+/// transport that fails every request with the load error.
+pub fn select_transport(
+    env: &dyn Fn(&str) -> Option<String>,
+    debug: bool,
+    paths: &Paths,
+) -> Box<dyn Http> {
+    let built = match choose_transport(env, debug) {
+        TransportChoice::Real => return Box::new(UreqTransport::new()),
+        TransportChoice::Replay(dir) => {
+            replay::ReplayTransport::load(&dir).map(|t| Box::new(t) as Box<dyn Http>)
+        }
+        TransportChoice::Record(dir) => {
+            record::RecordTransport::new(&dir, Box::new(UreqTransport::new()), paths)
+                .map(|t| Box::new(t) as Box<dyn Http>)
+        }
+    };
+    built.unwrap_or_else(|err| Box::new(Failing(err)))
+}
+
+/// Fails every request with one error.
+struct Failing(Error);
+
+impl Http for Failing {
+    fn send(&self, _: Request) -> Result<Response> {
+        Err(self.0.clone())
+    }
 }
 
 /// The same stack over another transport (fixture replay and record mode, tests).

@@ -12,6 +12,7 @@
 pub mod addons;
 pub mod env;
 pub mod launchers;
+pub mod netlog;
 pub mod pe;
 pub mod procfs;
 pub mod product_db;
