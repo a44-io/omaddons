@@ -54,7 +54,8 @@ pub struct GlobalArgs {
     /// Output format
     #[arg(long, global = true, value_name = "FORMAT", value_parser = ["json", "human"])]
     pub format: Option<String>,
-    /// The client to act on: id, key, family, product, flavor folder or path
+    /// The client to act on: id, key, game mode (sod and hardcore select the Classic Era
+    /// client), family, product, flavor folder or path
     #[arg(
         short = 't',
         long = "target",

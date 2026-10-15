@@ -140,7 +140,7 @@ impl World {
         let Some(selector) = &ctx.target else {
             return Ok(None);
         };
-        match resolve_one(selector, &self.resolved.targets, &ctx.argv) {
+        match resolve_one(selector, &self.resolved.targets, &self.table, &ctx.argv) {
             Ok(found) => Ok(Some(found.target.key)),
             Err(error) => {
                 let key = selector.parse::<TargetKey>().ok();
@@ -158,7 +158,8 @@ impl World {
     /// id.
     pub fn select(&self, ctx: &Context) -> Result<Vec<&DiscoveredTarget>> {
         if let Some(selector) = &ctx.target {
-            return resolve_one(selector, &self.resolved.targets, &ctx.argv).map(|t| vec![t]);
+            return resolve_one(selector, &self.resolved.targets, &self.table, &ctx.argv)
+                .map(|t| vec![t]);
         }
         let mut all: Vec<&DiscoveredTarget> = self.resolved.targets.iter().collect();
         all.sort_by(|a, b| a.target.id.cmp(&b.target.id));

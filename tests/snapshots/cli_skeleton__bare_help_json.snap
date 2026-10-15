@@ -127,7 +127,7 @@ expression: envelope
         "takes_value": true
       },
       {
-        "about": "The client to act on: id, key, family, product, flavor folder or path",
+        "about": "The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder or path",
         "name": "target",
         "short": "t",
         "takes_value": true

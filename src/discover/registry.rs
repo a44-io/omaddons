@@ -23,7 +23,7 @@ use super::{
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{Content, GlobalLockGuard, Op, WriteSession, ensure_dir_all, mutate};
 use crate::model::TargetKey;
-use crate::rules::{Family, RulesTable};
+use crate::rules::{Family, Product, RulesTable};
 use crate::state::paths::Paths;
 use crate::state::registry::{
     Origin, Registry, RegistryEntry, TargetMarker, load_registry, save_registry,
@@ -612,11 +612,13 @@ pub fn check_user_id(registry: &Registry, new: &str, table: &RulesTable) -> Resu
 // Selectors.
 
 /// The targets `selector` names. Precedence, first match wins: key, id, product code,
-/// flavor folder, family, then a path (install root, client dir or AddOns path).
-/// `target_not_found` when nothing matches.
+/// flavor folder, game mode (`table`'s mode ids and aliases: `sod` selects the Classic
+/// Era client), family, then a path (install root, client dir or AddOns path).
+/// `target_not_found` when nothing matches, naming the missing client for a known mode.
 pub fn resolve<'a>(
     selector: &str,
     targets: &'a [DiscoveredTarget],
+    table: &RulesTable,
 ) -> Result<Vec<&'a DiscoveredTarget>> {
     let pick = |test: &dyn Fn(&DiscoveredTarget) -> bool| -> Vec<&'a DiscoveredTarget> {
         targets.iter().filter(|d| test(d)).collect()
@@ -624,7 +626,14 @@ pub fn resolve<'a>(
     let key = selector.parse::<TargetKey>().ok();
     let family = Family::from_name(selector);
     let path = std::fs::canonicalize(selector).ok();
-    let steps: [&dyn Fn(&DiscoveredTarget) -> bool; 6] = [
+    let modes = table.products_with_mode(selector);
+    let hosts_mode = |d: &DiscoveredTarget| {
+        d.target
+            .product
+            .as_deref()
+            .is_some_and(|p| modes.iter().any(|(m, _)| m.code.eq_ignore_ascii_case(p)))
+    };
+    let steps: [&dyn Fn(&DiscoveredTarget) -> bool; 7] = [
         &|d| key.is_some() && d.target.key == key,
         &|d| d.target.id.eq_ignore_ascii_case(selector),
         &|d| {
@@ -639,6 +648,8 @@ pub fn resolve<'a>(
                 .as_deref()
                 .is_some_and(|f| f.eq_ignore_ascii_case(selector))
         },
+        // A game mode selects the client that runs it (`sod` → Classic Era).
+        &|d| hosts_mode(d),
         &|d| family.is_some_and(|f| d.target.family == f),
         &|d| path.as_ref().is_some_and(|p| path_names(p, d)),
     ];
@@ -646,14 +657,39 @@ pub fn resolve<'a>(
         .iter()
         .map(|step| pick(*step))
         .find(|found| !found.is_empty())
-        .ok_or_else(|| {
-            Error::new(
+        .ok_or_else(|| match modes.first() {
+            // A known mode whose client is not on this machine.
+            Some((product, mode)) => Error::new(
+                ErrorCode::TargetNotFound,
+                format!(
+                    "{} runs in the {} client ({}), which was not found on this machine",
+                    mode.name,
+                    host_name(product),
+                    product.folder
+                ),
+                Suggestion::command(["omaddons", "targets", "--rescan"]),
+            )
+            .details(serde_json::json!({
+                "selector": selector,
+                "mode": mode.id,
+                "product": product.code,
+            })),
+            None => Error::new(
                 ErrorCode::TargetNotFound,
                 format!("no target matches {selector:?}"),
                 Suggestion::command(["omaddons", "targets"]),
             )
-            .details(serde_json::json!({ "selector": selector }))
+            .details(serde_json::json!({ "selector": selector })),
         })
+}
+
+/// A client as players name it: its first mode (`Classic Era` for the client that also
+/// runs Hardcore and Season of Discovery), else its product code.
+fn host_name(product: &Product) -> &str {
+    product
+        .modes
+        .first()
+        .map_or(product.code.as_str(), |m| m.name.as_str())
 }
 
 /// Whether the canonical `path` is the target's install root, client dir or AddOns dir.
@@ -675,9 +711,10 @@ fn path_names(path: &Path, d: &DiscoveredTarget) -> bool {
 pub fn resolve_one<'a>(
     selector: &str,
     targets: &'a [DiscoveredTarget],
+    table: &RulesTable,
     argv: &[String],
 ) -> Result<&'a DiscoveredTarget> {
-    let found = resolve(selector, targets)?;
+    let found = resolve(selector, targets, table)?;
     let [first, rest @ ..] = found.as_slice() else {
         return Err(Error::internal("resolve returned no targets"));
     };
@@ -890,8 +927,9 @@ mod tests {
             discovered("wotlk", Family::WrathLegacy, None, None, "/g/a"),
             discovered("wotlk@b", Family::WrathLegacy, None, None, "/g/b"),
         ];
+        let table = RulesTable::builtin();
         let ids = |selector: &str| -> Vec<String> {
-            resolve(selector, &targets).map_or_else(
+            resolve(selector, &targets, &table).map_or_else(
                 |e| vec![e.code.wire().to_owned()],
                 |found| found.iter().map(|d| d.target.id.clone()).collect(),
             )
@@ -907,11 +945,63 @@ mod tests {
         let key = TargetKey::new();
         keyed[2].target.key = Some(key);
         assert_eq!(
-            resolve(&key.to_string().to_lowercase(), &keyed).unwrap()[0]
+            resolve(&key.to_string().to_lowercase(), &keyed, &table).unwrap()[0]
                 .target
                 .id,
             "wotlk"
         );
+    }
+
+    #[test]
+    fn game_modes_select_the_client_that_runs_them() {
+        let table = RulesTable::builtin();
+        let era = |id: &str, root: &str| {
+            discovered(
+                id,
+                Family::Vanilla,
+                Some("wow_classic_era"),
+                Some("_classic_era_"),
+                root,
+            )
+        };
+        let classic = discovered(
+            "classic",
+            Family::Mists,
+            Some("wow_classic"),
+            Some("_classic_"),
+            "/g/wow",
+        );
+        let targets = vec![era("era", "/g/wow"), classic.clone()];
+        let ids = |selector: &str, targets: &[DiscoveredTarget]| -> Vec<String> {
+            resolve(selector, targets, &table).map_or_else(
+                |e| vec![e.code.wire().to_owned()],
+                |found| found.iter().map(|d| d.target.id.clone()).collect(),
+            )
+        };
+        for selector in ["sod", "SoD", "season-of-discovery", "hardcore", "hc"] {
+            assert_eq!(ids(selector, &targets), ["era"], "{selector}");
+        }
+        assert_eq!(ids("mop", &targets), ["classic"]);
+
+        // Two Classic Era installs both run the mode.
+        let two = vec![era("era", "/g/wow"), era("era@steam", "/g/steam")];
+        assert_eq!(ids("sod", &two), ["era", "era@steam"]);
+        let err =
+            resolve_one("sod", &two, &table, &argv(&["install", "x", "-t", "sod"])).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TargetAmbiguous);
+
+        // A target registered under a mode's name keeps it.
+        let named = vec![era("era", "/g/wow"), era("sod", "/g/other")];
+        assert_eq!(ids("sod", &named), ["sod"]);
+
+        // A known mode whose client is not here names that client.
+        let err = resolve("sod", std::slice::from_ref(&classic), &table).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TargetNotFound);
+        assert_eq!(
+            err.message,
+            "Season of Discovery runs in the Classic Era client (_classic_era_), which was not found on this machine"
+        );
+        assert_eq!(err.fix.argv().unwrap(), argv(&["targets", "--rescan"]));
     }
 
     #[test]
@@ -920,9 +1010,11 @@ mod tests {
             discovered("wotlk", Family::WrathLegacy, None, None, "/g/a"),
             discovered("wotlk@b", Family::WrathLegacy, None, None, "/g/b"),
         ];
+        let table = RulesTable::builtin();
         let err = resolve_one(
             "wrath-legacy",
             &targets,
+            &table,
             &argv(&["install", "x", "-t", "wrath-legacy", "--json"]),
         )
         .unwrap_err();
@@ -944,7 +1036,10 @@ mod tests {
             serde_json::json!(["wotlk", "wotlk@b"])
         );
         assert_eq!(
-            resolve_one("wotlk@b", &targets, &[]).unwrap().target.id,
+            resolve_one("wotlk@b", &targets, &table, &[])
+                .unwrap()
+                .target
+                .id,
             "wotlk@b"
         );
 

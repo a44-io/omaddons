@@ -197,7 +197,12 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
     })?;
     let r = parsed.r#ref.clone();
     let targets: Vec<&DiscoveredTarget> = match &ctx.target {
-        Some(selector) => vec![resolve_one(selector, &world.resolved.targets, &ctx.argv)?],
+        Some(selector) => vec![resolve_one(
+            selector,
+            &world.resolved.targets,
+            &world.table,
+            &ctx.argv,
+        )?],
         None => world.resolved.targets.iter().collect(),
     };
 

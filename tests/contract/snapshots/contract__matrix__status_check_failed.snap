@@ -35,6 +35,12 @@ expression: s.stable(&c.envelope)
         "kind": "live",
         "label": "classic (battlenet)",
         "missing": false,
+        "modes": [
+          {
+            "id": "mists-classic",
+            "name": "Mists of Pandaria Classic"
+          }
+        ],
         "product": "wow_classic",
         "registered": false,
         "running": false,
@@ -64,6 +70,12 @@ expression: s.stable(&c.envelope)
         "kind": "live",
         "label": "retail (battlenet)",
         "missing": false,
+        "modes": [
+          {
+            "id": "retail",
+            "name": "Retail"
+          }
+        ],
         "product": "wow",
         "registered": true,
         "running": false,

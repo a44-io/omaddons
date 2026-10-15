@@ -164,7 +164,12 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
     let world = World::load()?;
     let records = world.records()?;
     let targets: Vec<&DiscoveredTarget> = match &ctx.target {
-        Some(selector) => vec![resolve_one(selector, &world.resolved.targets, &ctx.argv)?],
+        Some(selector) => vec![resolve_one(
+            selector,
+            &world.resolved.targets,
+            &world.table,
+            &ctx.argv,
+        )?],
         None => world
             .resolved
             .targets

@@ -9,84 +9,145 @@ expression: "RulesTable::builtin()"
       "folder": "_retail_",
       "exe": "WoW.exe",
       "kind": "live",
-      "default_id": "retail"
+      "default_id": "retail",
+      "modes": [
+        {
+          "id": "retail",
+          "name": "Retail",
+          "aliases": []
+        }
+      ]
     },
     {
       "code": "wowt",
       "folder": "_ptr_",
       "exe": "WoWT.exe",
       "kind": "test",
-      "default_id": "ptr"
+      "default_id": "ptr",
+      "modes": []
     },
     {
       "code": "wowxptr",
       "folder": "_xptr_",
       "exe": "WoWT.exe",
       "kind": "test",
-      "default_id": "xptr"
+      "default_id": "xptr",
+      "modes": []
     },
     {
       "code": "wow_beta",
       "folder": "_beta_",
       "exe": "WoWB.exe",
       "kind": "test",
-      "default_id": "beta"
+      "default_id": "beta",
+      "modes": []
     },
     {
       "code": "wow_classic",
       "folder": "_classic_",
       "exe": "WoWClassic.exe",
       "kind": "live",
-      "default_id": "classic"
+      "default_id": "classic",
+      "modes": [
+        {
+          "id": "mists-classic",
+          "name": "Mists of Pandaria Classic",
+          "aliases": [
+            "mop",
+            "mop-classic"
+          ]
+        }
+      ]
     },
     {
       "code": "wow_classic_ptr",
       "folder": "_classic_ptr_",
       "exe": "WoWClassicT.exe",
       "kind": "test",
-      "default_id": "classic-ptr"
+      "default_id": "classic-ptr",
+      "modes": []
     },
     {
       "code": "wow_classic_beta",
       "folder": "_classic_beta_",
       "exe": "WowB.exe",
       "kind": "test",
-      "default_id": "classic-beta"
+      "default_id": "classic-beta",
+      "modes": []
     },
     {
       "code": "wow_classic_era",
       "folder": "_classic_era_",
       "exe": "WoWClassic.exe",
       "kind": "live",
-      "default_id": "era"
+      "default_id": "era",
+      "modes": [
+        {
+          "id": "classic-era",
+          "name": "Classic Era",
+          "aliases": []
+        },
+        {
+          "id": "hardcore",
+          "name": "Hardcore",
+          "aliases": [
+            "hc"
+          ]
+        },
+        {
+          "id": "sod",
+          "name": "Season of Discovery",
+          "aliases": [
+            "season-of-discovery"
+          ]
+        }
+      ]
     },
     {
       "code": "wow_classic_era_ptr",
       "folder": "_classic_era_ptr_",
       "exe": "WowClassicT.exe",
       "kind": "test",
-      "default_id": "era-ptr"
+      "default_id": "era-ptr",
+      "modes": []
     },
     {
       "code": "wow_anniversary",
       "folder": "_anniversary_",
       "exe": "WoWClassic.exe",
       "kind": "live",
-      "default_id": "anniversary"
+      "default_id": "anniversary",
+      "modes": [
+        {
+          "id": "tbc-anniversary",
+          "name": "Burning Crusade Anniversary",
+          "aliases": [
+            "bc-anniversary"
+          ]
+        }
+      ]
     },
     {
       "code": "wow_classic_titan",
       "folder": "_classic_titan_",
       "exe": "WoWClassic.exe",
       "kind": "live",
-      "default_id": "titan"
+      "default_id": "titan",
+      "modes": []
     },
     {
       "code": "wowf",
       "folder": "_forever_",
       "exe": "Wow.exe",
       "kind": "live",
-      "default_id": "forever"
+      "default_id": "forever",
+      "modes": [
+        {
+          "id": "forever",
+          "name": "WoW: Forever",
+          "aliases": []
+        }
+      ]
     }
   ],
   "version_families": [

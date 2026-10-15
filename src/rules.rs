@@ -350,6 +350,39 @@ pub struct Product {
     pub kind: TargetKind,
     /// Unqualified human target id, e.g. `era`.
     pub default_id: String,
+    /// The game modes the client runs. Several modes can share one client and so one
+    /// AddOns folder (Classic Era, Hardcore and Season of Discovery all run in
+    /// `wow_classic_era`). Empty for test products.
+    #[serde(default)]
+    pub modes: Vec<GameMode>,
+}
+
+/// A game mode as players name it; `-t <id or alias>` selects the client that runs it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GameMode {
+    /// Lowercase, e.g. `sod`.
+    pub id: String,
+    /// As players read it, e.g. `Season of Discovery`.
+    pub name: String,
+    /// Other lowercase names, e.g. `season-of-discovery`.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+/// A game mode as output shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ModeName {
+    pub id: String,
+    pub name: String,
+}
+
+impl GameMode {
+    /// Whether `selector` is this mode's id or one of its aliases, ignoring ASCII case.
+    pub fn named(&self, selector: &str) -> bool {
+        std::iter::once(&self.id)
+            .chain(&self.aliases)
+            .any(|n| n.eq_ignore_ascii_case(selector))
+    }
 }
 
 /// One row of the version → family table. Rows are tried in order; the first match wins.
@@ -551,6 +584,35 @@ impl RulesTable {
             .find(|p| p.folder.eq_ignore_ascii_case(folder))
     }
 
+    /// The game modes the client of `product` runs, for output; none for an unknown or
+    /// absent product.
+    pub fn mode_names(&self, product: Option<&str>) -> Vec<ModeName> {
+        product
+            .and_then(|code| self.product_by_code(code))
+            .map(|p| {
+                p.modes
+                    .iter()
+                    .map(|m| ModeName {
+                        id: m.id.clone(),
+                        name: m.name.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The products whose client runs a game mode named `selector` (id or alias,
+    /// ignoring ASCII case), each with that mode. A mode named like its own product's
+    /// default target id (`retail`, `forever`) only labels the client: the id selects
+    /// the target, and a target renamed away from it does not keep answering to it.
+    pub fn products_with_mode(&self, selector: &str) -> Vec<(&Product, &GameMode)> {
+        self.products
+            .iter()
+            .filter(|p| !p.default_id.eq_ignore_ascii_case(selector))
+            .filter_map(|p| p.modes.iter().find(|m| m.named(selector)).map(|m| (p, m)))
+            .collect()
+    }
+
     /// Every product that ships `exe`, ignoring ASCII case. Several products share one
     /// exe name (`WoWClassic.exe`, `WoWT.exe`), so this is not a single lookup.
     pub fn products_by_exe<'a>(&'a self, exe: &'a str) -> impl Iterator<Item = &'a Product> {
@@ -638,6 +700,52 @@ impl RulesTable {
             .find(|row| row.name == name)
     }
 
+    /// Game-mode names select targets, so each is a lowercase id-like name used once,
+    /// and none shadows a name `-t` already resolves: a product code, a default target
+    /// id or a family name. A mode may share only its own product's default id
+    /// (`retail`, `forever`), where it is a display name.
+    fn validate_modes(&self) -> Result<(), RulesError> {
+        let mut reserved: Vec<String> = Vec::new();
+        for product in &self.products {
+            reserved.push(product.code.to_ascii_lowercase());
+            reserved.push(product.default_id.to_ascii_lowercase());
+        }
+        for row in &self.families {
+            reserved.push(row.family.as_str().to_owned());
+            reserved.extend(row.default_id.as_ref().map(|id| id.to_ascii_lowercase()));
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for product in &self.products {
+            for mode in &product.modes {
+                let names = std::iter::once(&mode.id).chain(&mode.aliases);
+                for (i, name) in names.enumerate() {
+                    let taken = |why: &str| RulesError::ModeNameTaken {
+                        name: name.clone(),
+                        product: product.code.clone(),
+                        why: why.to_owned(),
+                    };
+                    let id_like = !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+                    if !id_like {
+                        return Err(taken("is not lowercase letters, digits and dashes"));
+                    }
+                    if seen.contains(&name.as_str()) {
+                        return Err(taken("names another mode too"));
+                    }
+                    seen.push(name);
+                    // The mode id may be its own product's default id; an alias may not.
+                    let own_id = i == 0 && name.eq_ignore_ascii_case(&product.default_id);
+                    if !own_id && reserved.contains(name) {
+                        return Err(taken("is already a product code, target id or family name"));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> Result<(), RulesError> {
         for (i, product) in self.products.iter().enumerate() {
             for (field, value) in [
@@ -666,6 +774,7 @@ impl RulesTable {
                 });
             }
         }
+        self.validate_modes()?;
         for (i, rule) in self.version_families.iter().enumerate() {
             for (part, range) in [("major", rule.major), ("minor", rule.minor)] {
                 if range.is_inverted() {
@@ -836,6 +945,12 @@ pub enum RulesError {
     },
     #[error("product {code:?}: {field} is empty")]
     EmptyProductField { code: String, field: &'static str },
+    #[error("product {product:?}: game mode name {name:?} {why}")]
+    ModeNameTaken {
+        name: String,
+        product: String,
+        why: String,
+    },
     #[error("{what}: range {range} is inverted")]
     InvertedRange { what: String, range: String },
     #[error("family unknown cannot have an interface range")]
@@ -864,6 +979,22 @@ const PRODUCTS: &[(&str, &str, &str, TargetKind, &str)] = &[
     ("wowf",                "_forever_",         "Wow.exe",         TargetKind::Live, "forever"),
 ];
 
+/// product code, mode id, name, aliases. Verified 2026-10-15: `.build.info` lists one
+/// product per client, and Classic Era, Hardcore and Season of Discovery each wrote a
+/// realm folder under `_classic_era_` (one client, one AddOns folder). Blizzard moves
+/// modes between clients (Anniversary realms ran in the Classic Era client until TBC
+/// Anniversary moved to `_anniversary_`), so this is data with a date.
+#[rustfmt::skip]
+const MODES: &[(&str, &str, &str, &[&str])] = &[
+    ("wow",             "retail",          "Retail",                      &[]),
+    ("wow_classic",     "mists-classic",   "Mists of Pandaria Classic",   &["mop", "mop-classic"]),
+    ("wow_classic_era", "classic-era",     "Classic Era",                 &[]),
+    ("wow_classic_era", "hardcore",        "Hardcore",                    &["hc"]),
+    ("wow_classic_era", "sod",             "Season of Discovery",         &["season-of-discovery"]),
+    ("wow_anniversary", "tbc-anniversary", "Burning Crusade Anniversary", &["bc-anniversary"]),
+    ("wowf",            "forever",         "WoW: Forever",                &[]),
+];
+
 fn builtin_products() -> Vec<Product> {
     PRODUCTS
         .iter()
@@ -873,6 +1004,15 @@ fn builtin_products() -> Vec<Product> {
             exe: exe.to_owned(),
             kind,
             default_id: default_id.to_owned(),
+            modes: MODES
+                .iter()
+                .filter(|m| m.0 == code)
+                .map(|&(_, id, name, aliases)| GameMode {
+                    id: id.to_owned(),
+                    name: name.to_owned(),
+                    aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
+                })
+                .collect(),
         })
         .collect()
 }
@@ -1795,6 +1935,7 @@ mod tests {
                 exe: "WowForever.exe".to_owned(),
                 kind: TargetKind::Live,
                 default_id: "forever".to_owned(),
+                modes: Vec::new(),
             }],
             client_rules: BTreeMap::from([(
                 "fallback-custom".to_owned(),
@@ -1819,6 +1960,93 @@ mod tests {
     }
 
     #[test]
+    fn game_modes_name_their_client() {
+        let table = table();
+        let hosts = |s: &str| -> Vec<(String, String)> {
+            table
+                .products_with_mode(s)
+                .into_iter()
+                .map(|(p, m)| (p.code.clone(), m.id.clone()))
+                .collect()
+        };
+        let one = |code: &str, id: &str| vec![(code.to_owned(), id.to_owned())];
+        for (selector, id) in [
+            ("sod", "sod"),
+            ("SoD", "sod"),
+            ("season-of-discovery", "sod"),
+            ("hardcore", "hardcore"),
+            ("HC", "hardcore"),
+            ("classic-era", "classic-era"),
+        ] {
+            assert_eq!(hosts(selector), one("wow_classic_era", id), "{selector}");
+        }
+        assert_eq!(hosts("mop"), one("wow_classic", "mists-classic"));
+        assert_eq!(hosts("mop-classic"), one("wow_classic", "mists-classic"));
+        assert_eq!(
+            hosts("bc-anniversary"),
+            one("wow_anniversary", "tbc-anniversary")
+        );
+        for taken in [
+            "mists",
+            "tbc",
+            "era",
+            "classic",
+            "vanilla",
+            "wow_classic_era",
+        ] {
+            assert!(hosts(taken).is_empty(), "{taken} resolves before modes do");
+        }
+        for label in ["retail", "Forever"] {
+            assert!(hosts(label).is_empty(), "{label} is a display-only mode");
+        }
+        // Live products name their modes, test products none. Titan (China) is left
+        // out until its mode names are verified.
+        for p in table.products() {
+            let expected = p.kind == TargetKind::Live && p.code != "wow_classic_titan";
+            assert_eq!(!p.modes.is_empty(), expected, "{}", p.code);
+        }
+        assert_eq!(table.validate_modes(), Ok(()));
+
+        let with_mode = |code: &str, id: &str, aliases: &[&str]| RulesOverrides {
+            products: vec![Product {
+                code: code.to_owned(),
+                folder: format!("_{code}_"),
+                exe: "Wow.exe".to_owned(),
+                kind: TargetKind::Live,
+                default_id: code.to_owned(),
+                modes: vec![GameMode {
+                    id: id.to_owned(),
+                    name: "X".to_owned(),
+                    aliases: strings(aliases),
+                }],
+            }],
+            ..RulesOverrides::default()
+        };
+        for (overrides, name) in [
+            (with_mode("wowz", "zone", &["mists"]), "mists"),
+            (with_mode("wowz", "era", &[]), "era"),
+            (with_mode("wowz", "wotlk", &[]), "wotlk"),
+            (with_mode("wowz", "wow_beta", &[]), "wow_beta"),
+            (with_mode("wowz", "zone", &["sod"]), "sod"),
+            (with_mode("wowz", "Zone", &[]), "Zone"),
+            (with_mode("wowz", "wowz", &["wowz"]), "wowz"),
+        ] {
+            let err = table.clone().with_overrides(&overrides).unwrap_err();
+            assert!(
+                matches!(&err, RulesError::ModeNameTaken { name: n, .. } if n == name),
+                "{name}: {err}"
+            );
+        }
+        assert!(
+            table
+                .clone()
+                .with_overrides(&with_mode("wowz", "wowz", &["z-mode"]))
+                .is_ok(),
+            "a mode may share its own product's default id"
+        );
+    }
+
+    #[test]
     fn invalid_overrides_are_rejected() {
         let patch = |name: &str, o: ClientRulesOverride| RulesOverrides {
             client_rules: BTreeMap::from([(name.to_owned(), o)]),
@@ -1834,6 +2062,7 @@ mod tests {
             exe: "Wow.exe".to_owned(),
             kind: TargetKind::Live,
             default_id: code.to_owned(),
+            modes: Vec::new(),
         };
         let cases: Vec<(RulesOverrides, RulesError)> = vec![
             (

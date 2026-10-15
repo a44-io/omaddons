@@ -23,7 +23,7 @@ use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::fsx::{GlobalLock, ScopeTable, WriteSession, Writer};
 use crate::model::TargetKey;
 use crate::output::{Outcome, Style, table};
-use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind};
+use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
 use crate::state::paths::Paths;
 use crate::state::records::load_record;
 use crate::state::registry::{Origin, Registry, RegistryEntry, load_registry};
@@ -94,6 +94,9 @@ pub struct TargetInfo {
     pub kind: TargetKind,
     pub install_kind: InstallKind,
     pub product: Option<String>,
+    /// The game modes the client runs, which share its AddOns folder; `-t` takes their
+    /// ids.
+    pub modes: Vec<ModeName>,
     pub version: ClientVersion,
     pub interface: u32,
     pub label: Option<String>,
@@ -214,14 +217,14 @@ pub fn list(ctx: &Context, rescan: bool) -> Result<Done<TargetsData>> {
         .resolved
         .targets
         .iter()
-        .map(|d| info(d, &world.registry, verbose))
+        .map(|d| info(d, &world.registry, &world.table, verbose))
         .collect();
     targets.extend(
         world
             .resolved
             .missing
             .iter()
-            .map(|e| missing_info(e, default, verbose)),
+            .map(|e| missing_info(e, default, &world.table, verbose)),
     );
     targets.sort_by(|a, b| a.id.cmp(&b.id));
     let default = targets.iter().find(|t| t.default).map(|t| t.id.clone());
@@ -251,7 +254,12 @@ fn found_by(d: &DiscoveredTarget, registry: &Registry) -> String {
     }
 }
 
-fn info(d: &DiscoveredTarget, registry: &Registry, verbose: bool) -> TargetInfo {
+fn info(
+    d: &DiscoveredTarget,
+    registry: &Registry,
+    table: &RulesTable,
+    verbose: bool,
+) -> TargetInfo {
     let t = &d.target;
     TargetInfo {
         id: t.id.clone(),
@@ -263,6 +271,7 @@ fn info(d: &DiscoveredTarget, registry: &Registry, verbose: bool) -> TargetInfo 
         kind: t.kind,
         install_kind: t.install_kind,
         product: t.product.clone(),
+        modes: table.mode_names(t.product.as_deref()),
         version: t.version,
         interface: t.interface,
         label: t.label.clone(),
@@ -279,7 +288,12 @@ fn info(d: &DiscoveredTarget, registry: &Registry, verbose: bool) -> TargetInfo 
     }
 }
 
-fn missing_info(e: &RegistryEntry, default: Option<TargetKey>, verbose: bool) -> TargetInfo {
+fn missing_info(
+    e: &RegistryEntry,
+    default: Option<TargetKey>,
+    table: &RulesTable,
+    verbose: bool,
+) -> TargetInfo {
     TargetInfo {
         id: e.id.clone(),
         key: Some(e.key),
@@ -294,6 +308,7 @@ fn missing_info(e: &RegistryEntry, default: Option<TargetKey>, verbose: bool) ->
             InstallKind::Custom
         },
         product: e.product.clone(),
+        modes: table.mode_names(e.product.as_deref()),
         version: ClientVersion::new(0, 0, 0),
         interface: 0,
         label: None,
@@ -361,7 +376,10 @@ pub fn add(ctx: &Context, path: &Path, name: Option<&str>) -> Result<Done<AddDat
     let render = render_add as fn(&AddData, &mut dyn Write, &Style) -> std::io::Result<()>;
     if ctx.dry_run {
         let shown = reconcile(&registry, &found).targets;
-        let targets = shown.iter().map(|d| info(d, &registry, false)).collect();
+        let targets = shown
+            .iter()
+            .map(|d| info(d, &registry, table, false))
+            .collect();
         return Ok(Done {
             command: "targets add",
             data: AddData {
@@ -378,7 +396,10 @@ pub fn add(ctx: &Context, path: &Path, name: Option<&str>) -> Result<Done<AddDat
         let (added, _) = reg.add_manual(s, table, &path, name)?;
         Ok((added, reg.registry().clone()))
     })?;
-    let targets = added.iter().map(|d| info(d, &after, false)).collect();
+    let targets = added
+        .iter()
+        .map(|d| info(d, &after, table, false))
+        .collect();
     Ok(Done {
         command: "targets add",
         data: AddData {
@@ -586,7 +607,7 @@ fn rows(targets: &[TargetInfo], style: &Style) -> Vec<Vec<String>> {
             vec![
                 format!("{} {}", if t.default { "*" } else { " " }, t.id),
                 key,
-                wire(&t.family),
+                super::status::modes_or_family(&t.modes, t.family),
                 t.version.to_string(),
                 wire(&t.kind),
                 notes.join("  "),

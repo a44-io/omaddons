@@ -107,9 +107,13 @@ fn reconciling_a_fresh_discovery_is_read_only_and_deterministic() {
     );
     assert_eq!(world.targets(), first, "identical across runs");
     assert!(first.warnings.is_empty() && first.missing.is_empty());
-    assert_eq!(resolve("retail", &first.targets).unwrap().len(), 1);
+    let table = RulesTable::builtin();
+    assert_eq!(resolve("retail", &first.targets, &table).unwrap().len(), 1);
     assert_eq!(
-        resolve_one("wotlk", &first.targets, &[]).unwrap().target.id,
+        resolve_one("wotlk", &first.targets, &table, &[])
+            .unwrap()
+            .target
+            .id,
         "wotlk"
     );
     assert_eq!(
@@ -366,11 +370,14 @@ fn every_selector_form() {
     let wotlk = first.iter().find(|t| t.target.id == "wotlk").unwrap();
     let key = world.register(wotlk);
     let targets = world.targets().targets;
-    let one = |selector: &str| resolve_one(selector, &targets, &[]).map(|d| d.target.id.clone());
+    let table = RulesTable::builtin();
+    let one =
+        |selector: &str| resolve_one(selector, &targets, &table, &[]).map(|d| d.target.id.clone());
     assert_eq!(one(&key.to_string()).unwrap(), "wotlk", "key");
     assert_eq!(one("era").unwrap(), "era", "id");
     assert_eq!(one("wow_classic_era").unwrap(), "era", "product code");
     assert_eq!(one("_classic_era_").unwrap(), "era", "flavor folder");
+    assert_eq!(one("sod").unwrap(), "era", "game mode");
     assert_eq!(one("wrath-legacy").unwrap(), "wotlk", "family");
     assert_eq!(
         one(&bnet.display().to_string()).unwrap(),

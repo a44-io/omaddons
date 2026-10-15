@@ -30,7 +30,7 @@ use crate::model::{
 };
 use crate::output::{Outcome, Style};
 use crate::resolve::catalog::Catalog;
-use crate::rules::TargetKind;
+use crate::rules::{RulesTable, TargetKind};
 use crate::sources::refs::{CatalogMatch, InstalledMatch, ParsedRef, RefContext, parse_user_ref};
 use crate::state::records::{TargetRecord, load_record};
 
@@ -89,6 +89,19 @@ pub struct TargetRef {
     pub id: String,
     /// `null` only under `--dry-run` on an unregistered target.
     pub key: Option<TargetKey>,
+    /// Present when `-t` named a game mode of the client (`-t sod`) rather than the
+    /// target: the addons go to the client, which every mode in it shares.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ModeNote>,
+}
+
+/// A game mode `-t` named, and the client's other modes, which share its addons.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ModeNote {
+    pub id: String,
+    pub name: String,
+    /// The other modes' names, e.g. `["Classic Era", "Hardcore"]`.
+    pub shared_with: Vec<String>,
 }
 
 /// One requested addon.
@@ -201,6 +214,14 @@ impl Outcome for InstallOutcome {
     fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
         let d = &self.data;
         let id = &d.target.id;
+        if let Some(mode) = d.target.mode.as_ref().filter(|m| !m.shared_with.is_empty()) {
+            writeln!(
+                w,
+                "{id}: {} runs in this client and shares its addons with {}",
+                mode.name,
+                and_list(&mode.shared_with)
+            )?;
+        }
         if d.creates_addons_dir {
             let verb = if d.dry_run { "would create" } else { "created" };
             writeln!(
@@ -451,6 +472,10 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             target: TargetRef {
                 id: outcome.map_or_else(|| target.target.id.clone(), |o| o.target.clone()),
                 key: outcome.and_then(|o| o.key).or(target.target.key),
+                mode: ctx
+                    .target
+                    .as_deref()
+                    .and_then(|s| mode_note(s, target, &world.table)),
             },
             tx,
             kind: outcome.and_then(|o| o.kind),
@@ -537,10 +562,10 @@ fn choose_target<'w>(
 ) -> Result<&'w DiscoveredTarget> {
     let targets = &world.resolved.targets;
     if let Some(selector) = &ctx.target {
-        return resolve_one(selector, targets, &ctx.argv);
+        return resolve_one(selector, targets, &world.table, &ctx.argv);
     }
     if let Some(selector) = &world.config.default_target {
-        return resolve_one(selector, targets, &ctx.argv);
+        return resolve_one(selector, targets, &world.table, &ctx.argv);
     }
     if let Some(key) = world.registry.default
         && let Some(found) = targets.iter().find(|d| d.target.key == Some(key))
@@ -817,6 +842,34 @@ fn build_items(
         .collect()
 }
 
+/// `a`, `a and b`, `a, b and c`.
+fn and_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+/// The mode `selector` names in `target`'s client, unless it names the target itself.
+fn mode_note(selector: &str, target: &DiscoveredTarget, table: &RulesTable) -> Option<ModeNote> {
+    if target.target.id.eq_ignore_ascii_case(selector) {
+        return None;
+    }
+    let product = table.product_by_code(target.target.product.as_deref()?)?;
+    let mode = product.modes.iter().find(|m| m.named(selector))?;
+    Some(ModeNote {
+        id: mode.id.clone(),
+        name: mode.name.clone(),
+        shared_with: product
+            .modes
+            .iter()
+            .filter(|m| m.id != mode.id)
+            .map(|m| m.name.clone())
+            .collect(),
+    })
+}
+
 /// Folder lists sorted by key.
 fn sorted(folders: &FolderSummary) -> FolderSummary {
     let sort = |list: &Vec<FolderName>| {
@@ -902,6 +955,7 @@ mod tests {
                 target: TargetRef {
                     id: "retail".into(),
                     key: None,
+                    mode: None,
                 },
                 tx,
                 kind: None,

@@ -26,7 +26,7 @@ use crate::fsx::{LockState, probe_global};
 use crate::inventory::{Counts, Depth, inventory};
 use crate::model::{AddonState, Target, TargetKey};
 use crate::output::{Outcome, Style, table};
-use crate::rules::{ClientVersion, Family, InstallKind, TargetKind};
+use crate::rules::{ClientVersion, Family, InstallKind, ModeName, TargetKind};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::registry::RegistryEntry;
 use crate::state::store::VersionStatus;
@@ -64,6 +64,9 @@ pub struct StatusTarget {
     pub kind: TargetKind,
     pub install_kind: InstallKind,
     pub product: Option<String>,
+    /// The game modes the client runs, which share its AddOns folder (Classic Era,
+    /// Hardcore and Season of Discovery); `-t` takes their ids.
+    pub modes: Vec<ModeName>,
     pub version: ClientVersion,
     pub interface: u32,
     pub label: Option<String>,
@@ -188,7 +191,7 @@ impl Outcome for StatusOutcome {
                 }
                 vec![
                     t.id.clone(),
-                    family_name(t.family),
+                    modes_or_family(&t.modes, t.family),
                     t.version.to_string(),
                     wire(t.kind),
                     state,
@@ -212,7 +215,12 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     let mut warnings = world.warnings.clone();
 
     let selected: Vec<&DiscoveredTarget> = match &ctx.target {
-        Some(selector) => vec![resolve_one(selector, &world.resolved.targets, &ctx.argv)?],
+        Some(selector) => vec![resolve_one(
+            selector,
+            &world.resolved.targets,
+            &world.table,
+            &ctx.argv,
+        )?],
         None => world.resolved.targets.iter().collect(),
     };
     let missing: Vec<&RegistryEntry> = match &ctx.target {
@@ -267,6 +275,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             kind: t.kind,
             install_kind: t.install_kind,
             product: t.product.clone(),
+            modes: world.table.mode_names(t.product.as_deref()),
             version: t.version,
             interface: t.interface,
             label: t.label.clone(),
@@ -300,6 +309,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
                 InstallKind::Custom
             },
             product: e.product.clone(),
+            modes: world.table.mode_names(e.product.as_deref()),
             version: ClientVersion::new(0, 0, 0),
             interface: 0,
             label: None,
@@ -410,6 +420,12 @@ fn wire<T: Serialize>(value: T) -> String {
         .unwrap_or_default()
 }
 
-fn family_name(family: Family) -> String {
+/// What a client is, as a column: the names of its game modes when it runs several
+/// (`Classic Era · Hardcore · Season of Discovery`), else its family.
+pub(super) fn modes_or_family(modes: &[ModeName], family: Family) -> String {
+    if modes.len() > 1 {
+        let names: Vec<&str> = modes.iter().map(|m| m.name.as_str()).collect();
+        return names.join(" · ");
+    }
     wire(family)
 }
