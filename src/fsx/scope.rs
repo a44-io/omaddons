@@ -361,6 +361,14 @@ impl ScopeTable {
         }
         if path == self.net_log || path == self.net_log_previous {
             found.push(Candidate::new(Scope::NetLog, Position::Below, Side::Home));
+        } else if self.net_log.starts_with(path) && !self.home.starts_with(path) {
+            // Every writer may log a request, so every writer may create the directories
+            // net.log lives in (`<state>/omaddons` and missing XDG bases).
+            found.push(Candidate::new(
+                Scope::NetLog,
+                Position::Ancestor,
+                Side::Home,
+            ));
         }
         let home_rows = [
             (Scope::Omarchy, Some(&self.omarchy_plugin)),
@@ -637,14 +645,10 @@ mod tests {
                 "games/wow/_retail_/Interface/.omaddons",
                 vec![W::Mutating, W::Undo, W::Backup, W::BackupRestore, W::Doctor],
             ),
-            (
-                "home/.local/state/omaddons",
-                vec![W::Mutating, W::Undo, W::Backup, W::BackupRestore, W::Doctor],
-            ),
-            (
-                "home/.local/state",
-                vec![W::Mutating, W::Undo, W::Backup, W::BackupRestore, W::Doctor],
-            ),
+            // net.log's directories are creatable by every writer, since any command
+            // may log a request.
+            ("home/.local/state/omaddons", ALL.to_vec()),
+            ("home/.local/state", ALL.to_vec()),
             ("home/.cache", ALL.to_vec()),
         ] {
             assert_eq!(allowed(path, Access::CreateDir, &none), writers, "{path}");

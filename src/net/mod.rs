@@ -1,2 +1,284 @@
 //! The network layer: the `Http` trait with real, replay and record implementations,
 //! the per-hop host allowlist, `net.log`, validators, retry and backoff.
+//!
+//! Every request goes through one stack (D9, D13, G5): `Redirecting<Guarded<transport>>`,
+//! built by [`stack`]. The guard checks the allowlist on every hop, honors `--offline`,
+//! caps body sizes and logs every request that reaches the transport.
+
+pub mod allowlist;
+mod client;
+mod guard;
+pub mod log;
+#[cfg(test)]
+mod tests;
+
+use std::io::Read;
+
+pub use allowlist::Allowlist;
+pub use client::UreqTransport;
+pub use guard::{Guarded, Redirecting};
+pub use log::{GitLogEntry, NetLog, NetLogEntry, Via};
+
+use crate::error::{Error, ErrorCode, Result, Suggestion};
+
+/// Sends one request. Implemented by the transports and by every layer around them.
+pub trait Http: Send + Sync {
+    fn send(&self, req: Request) -> Result<Response>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    Get,
+    Head,
+}
+
+impl Method {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Head => "HEAD",
+        }
+    }
+}
+
+/// Which whole-call timeout applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeoutKind {
+    /// `API_READ_TIMEOUT`, for JSON and feeds.
+    Api,
+    /// `DOWNLOAD_TIMEOUT`, for archives.
+    Download,
+}
+
+/// Whether redirects are followed or returned to the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedirectMode {
+    Follow,
+    /// The 3xx comes back as is, e.g. to read a tag from `releases/latest`'s `Location`.
+    Manual,
+}
+
+/// One HTTP request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    pub method: Method,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    /// A short label for `net.log`, e.g. `release-json` or `asset`.
+    pub purpose: &'static str,
+    pub timeout: TimeoutKind,
+    pub redirect: RedirectMode,
+    /// Whether to use HTTP validators (net-resilience).
+    pub validators: bool,
+    /// The redirect hop this request is (0 for the first).
+    pub(crate) hop: usize,
+}
+
+impl Request {
+    /// A GET with the API timeout, following redirects.
+    pub fn get(url: impl Into<String>, purpose: &'static str) -> Self {
+        Self {
+            method: Method::Get,
+            url: url.into(),
+            headers: Vec::new(),
+            purpose,
+            timeout: TimeoutKind::Api,
+            redirect: RedirectMode::Follow,
+            validators: false,
+            hop: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((name.into(), value.into()));
+        self
+    }
+
+    /// Uses the download timeout.
+    #[must_use]
+    pub fn download(mut self) -> Self {
+        self.timeout = TimeoutKind::Download;
+        self
+    }
+
+    /// Returns redirects to the caller instead of following them.
+    #[must_use]
+    pub fn manual_redirects(mut self) -> Self {
+        self.redirect = RedirectMode::Manual;
+        self
+    }
+}
+
+/// One HTTP response. The body streams; read it with [`Response::bytes`] or
+/// [`Response::into_reader`]. Its `net.log` line is written when the body ends or the
+/// response is dropped.
+pub struct Response {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    /// The URL this response came from.
+    pub final_url: String,
+    body: Box<dyn Read + Send>,
+}
+
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("status", &self.status)
+            .field("headers", &self.headers)
+            .field("final_url", &redact(&self.final_url))
+            .finish_non_exhaustive()
+    }
+}
+
+impl Response {
+    pub fn new(
+        status: u16,
+        headers: Vec<(String, String)>,
+        final_url: String,
+        body: Box<dyn Read + Send>,
+    ) -> Self {
+        Self {
+            status,
+            headers,
+            final_url,
+            body,
+        }
+    }
+
+    /// A header value, matched case-insensitively.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    pub fn location(&self) -> Option<&str> {
+        self.header("location")
+    }
+
+    /// The response itself on 2xx; otherwise `http_status` (retryable for 5xx).
+    pub fn error_for_status(self, context: &str) -> Result<Self> {
+        if (200..300).contains(&self.status) {
+            return Ok(self);
+        }
+        Err(Error::http_status(
+            self.status,
+            format!(
+                "{context}: HTTP {} from {}",
+                self.status,
+                redact(&self.final_url)
+            ),
+            Suggestion::text("retry later; if it persists, check the source"),
+        ))
+    }
+
+    /// The body as a stream (downloads). Read errors from the size cap map through
+    /// [`body_error`].
+    pub fn into_reader(self) -> Box<dyn Read + Send> {
+        self.body
+    }
+
+    /// The whole body (API calls).
+    pub fn bytes(self) -> Result<Vec<u8>> {
+        let mut body = Vec::new();
+        let mut reader = self.body;
+        reader.read_to_end(&mut body).map_err(body_error)?;
+        Ok(body)
+    }
+
+    pub(crate) fn take_body(&mut self) -> Box<dyn Read + Send> {
+        std::mem::replace(&mut self.body, Box::new(std::io::empty()))
+    }
+
+    pub(crate) fn set_body(&mut self, body: Box<dyn Read + Send>) {
+        self.body = body;
+    }
+}
+
+/// Maps a body read error: the size cap becomes `archive_too_large`, a failure to write
+/// the request's `net.log` line keeps its own error, anything else is `network`.
+pub fn body_error(err: std::io::Error) -> Error {
+    let inner = err.get_ref();
+    if let Some(cap) = inner.and_then(|e| e.downcast_ref::<guard::SizeCapExceeded>()) {
+        return guard::too_large(cap.max_bytes);
+    }
+    if let Some(logged) = inner.and_then(|e| e.downcast_ref::<Error>()) {
+        return logged.clone();
+    }
+    Error::new(
+        ErrorCode::Network,
+        format!("reading the response failed: {err}"),
+        Suggestion::text("check the network connection, then retry"),
+    )
+}
+
+/// What the command layer decides about networking for one run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetConfig {
+    /// `--offline` or `OMADDONS_OFFLINE=1`.
+    pub offline: bool,
+    pub curseforge: bool,
+    pub wago: bool,
+    /// Extra hosts for git subprocesses, from config.
+    pub git_hosts: Vec<String>,
+    /// `EffectiveLimits::download_max_bytes`.
+    pub download_max_bytes: u64,
+}
+
+impl Default for NetConfig {
+    fn default() -> Self {
+        Self {
+            offline: false,
+            curseforge: false,
+            wago: false,
+            git_hosts: Vec::new(),
+            download_max_bytes: crate::limits::DOWNLOAD_MAX_BYTES,
+        }
+    }
+}
+
+impl NetConfig {
+    pub fn allowlist(&self) -> Allowlist {
+        Allowlist::new(self.curseforge, self.wago, &self.git_hosts)
+    }
+}
+
+/// The production stack: `Redirecting<Guarded<UreqTransport>>`.
+pub fn stack(config: &NetConfig, log: NetLog) -> Box<dyn Http> {
+    stack_with(config, log, Box::new(UreqTransport::new()))
+}
+
+/// The same stack over another transport (fixture replay and record mode, tests).
+pub fn stack_with(config: &NetConfig, log: NetLog, transport: Box<dyn Http>) -> Box<dyn Http> {
+    let guarded = Guarded::new(
+        transport,
+        config.allowlist(),
+        log,
+        config.offline,
+        config.download_max_bytes,
+    );
+    Box::new(Redirecting::new(guarded))
+}
+
+/// `scheme://host/path` of a URL, without userinfo, query or fragment, for messages.
+pub(crate) fn redact(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let rest = match rest.split_once('/') {
+        Some((authority, path)) => format!("{}/{path}", strip_userinfo(authority)),
+        None => strip_userinfo(rest).to_owned(),
+    };
+    if scheme.is_empty() {
+        rest
+    } else {
+        format!("{scheme}://{rest}")
+    }
+}
+
+fn strip_userinfo(authority: &str) -> &str {
+    authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
+}
