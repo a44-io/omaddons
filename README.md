@@ -128,6 +128,8 @@ OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 \
   cargo test --test real_machine -- --ignored --test-threads=1  # this machine's clients; every change is undone
 ```
 
+The live probes include `catalog_matches_declared_flavors`: every catalog addon must install on each client its publisher declares, and only there. It prints the addon × client matrix; a publisher whose release.json disagrees with its own TOCs is listed in the probe with a date.
+
 Fuzzing needs `cargo-fuzz` and a nightly toolchain at least as new as the crate's `rust-version` (`--toolchain` picks one).
 
 ## Layout
