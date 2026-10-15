@@ -65,6 +65,9 @@ impl World {
         let mut resolved = reconcile(&registry, &found.targets);
         warnings.extend(resolved.warnings.iter().cloned());
         apply_target_overrides(&mut resolved, &config, &table);
+        // Unfinished transactions, reported without recovering (D23). A mutating
+        // command recovers them under the lock and reports `journal_recovered` instead.
+        warnings.extend(crate::engine::journal::pending_warnings(&paths)?);
         Ok(Self {
             paths,
             config,

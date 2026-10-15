@@ -342,6 +342,36 @@ fn list_writes_nothing() {
 }
 
 #[test]
+/// A leftover journal is reported, never recovered, by a read command.
+fn a_pending_journal_is_reported_not_recovered() {
+    let env = TestEnv::new();
+    retail(&env);
+    let tx = omaddons::model::TxId::new();
+    let journal = support::paths(&env).journal(&tx);
+    fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    fs::write(&journal, "{\"type\":\"swapped\"}\n").unwrap();
+    let before = tree_hash(&env.state());
+    let (code, envelope) = list(&env, &[]);
+    assert_eq!(code, 0);
+    let warnings = envelope["warnings"].as_array().unwrap();
+    let pending = warnings.iter().find(|w| w["code"] == "journal_pending");
+    assert!(pending.is_some(), "{warnings:?}");
+    let pending = pending.unwrap();
+    assert!(
+        pending["message"]
+            .as_str()
+            .unwrap()
+            .contains(&tx.to_string())
+    );
+    assert_eq!(
+        pending["fix_argv"],
+        serde_json::json!(["omaddons", "status"])
+    );
+    assert!(journal.exists(), "readers never recover");
+    assert_eq!(tree_hash(&env.state()), before);
+}
+
+#[test]
 fn an_unknown_target_is_not_found() {
     let env = TestEnv::new();
     retail(&env);
