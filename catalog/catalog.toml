@@ -1,0 +1,142 @@
+# The built-in addon catalog (vision §5.4), embedded in the binary.
+#
+# Every value here was verified, not remembered (2026-10-14):
+# - the GitHub release.json publishers: the repository's releases/latest tag, its
+#   release.json, and the addon roots of the actual release zip;
+# - the legacy entries: the TOC's "## Interface" line in the repository.
+# `families` lists where an entry is known to work (from release.json flavors, or the
+# legacy Interface); TOC verification still decides every install.
+#
+# Override or extend it in <config>/omaddons/catalog.d/*.toml (same format;
+# `remove = true` drops a built-in entry by name).
+
+schema_version = "1.0"
+
+# ---- GitHub release.json publishers ---------------------------------------------------
+
+[[addon]]
+name = "WeakAuras"
+aliases = ["wa", "weakauras2"]
+ref = "gh:WeakAuras/WeakAuras2"
+families = ["vanilla", "tbc", "cata", "mists", "titan"]
+folders = ["WeakAuras", "WeakAurasArchive", "WeakAurasModelPaths", "WeakAurasOptions", "WeakAurasTemplates"]
+notes = "5.22.1's release.json lists no mainline build and the zip ships no Mainline TOC"
+
+[[addon]]
+name = "DBM"
+aliases = ["deadlybossmods", "dbm-core"]
+ref = "gh:DeadlyBossMods/DeadlyBossMods"
+families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
+folders = ["DBM-Core", "DBM-GUI", "DBM-StatusBarTimers", "DBM-Brawlers", "DBM-Lairs-Midnight", "DBM-Midnight", "DBM-Raids-Midnight", "DBM-VPVEM"]
+
+[[addon]]
+name = "BigWigs"
+aliases = ["bw"]
+ref = "gh:BigWigsMods/BigWigs"
+families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
+folders = ["BigWigs", "BigWigs_Core", "BigWigs_Options", "BigWigs_Plugins", "BigWigs_MarchOnQuelDanas", "BigWigs_MidnightLairs", "BigWigs_MidnightWorld", "BigWigs_Sporefall", "BigWigs_TheDreamrift", "BigWigs_TheUnbindingOfKithix", "BigWigs_TheVenomousAbyss", "BigWigs_TheVoidspire"]
+
+[[addon]]
+name = "LittleWigs"
+ref = "gh:BigWigsMods/LittleWigs"
+families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists"]
+folders = ["LittleWigs", "LittleWigs_Classic", "LittleWigs_BurningCrusade", "LittleWigs_WrathOfTheLichKing", "LittleWigs_Cataclysm", "LittleWigs_MistsOfPandaria", "LittleWigs_WarlordsOfDraenor", "LittleWigs_Legion", "LittleWigs_BattleForAzeroth", "LittleWigs_Shadowlands", "LittleWigs_Dragonflight", "LittleWigs_TheWarWithin"]
+
+[[addon]]
+name = "Plater"
+aliases = ["plater-nameplates"]
+ref = "gh:Tercioo/Plater-Nameplates"
+families = ["mainline", "vanilla", "tbc", "titan", "mists", "forever"]
+folders = ["Plater"]
+
+[[addon]]
+name = "Bartender4"
+aliases = ["bartender", "bt4"]
+ref = "gh:Nevcairiel/Bartender4"
+families = ["mainline", "vanilla", "tbc", "mists", "forever"]
+folders = ["Bartender4"]
+
+[[addon]]
+name = "Questie"
+ref = "gh:Questie/Questie"
+families = ["vanilla", "tbc", "wrath", "mists", "forever"]
+folders = ["Questie", "QuestieDB"]
+notes = "release.json entries carry no name or version; the tag is the version"
+
+[[addon]]
+name = "OmniCC"
+ref = "gh:tullamods/OmniCC"
+families = ["mainline", "vanilla", "tbc", "titan", "mists"]
+folders = ["OmniCC", "OmniCC_Config"]
+
+[[addon]]
+name = "Dominos"
+ref = "gh:tullamods/Dominos"
+families = ["mainline", "vanilla", "tbc", "mists", "forever"]
+folders = ["Dominos", "Dominos_Cast", "Dominos_Config", "Dominos_Progress", "Dominos_Roll", "Masque_Dominos"]
+
+[[addon]]
+name = "Masque"
+ref = "gh:SFX-WoW/Masque"
+families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists"]
+folders = ["Masque"]
+
+[[addon]]
+name = "RaiderIO"
+aliases = ["raider.io", "rio"]
+ref = "gh:RaiderIO/raiderio-addon"
+families = ["mainline"]
+folders = ["RaiderIO", "RaiderIO_DB_US_M", "RaiderIO_DB_US_R", "RaiderIO_DB_US_F", "RaiderIO_DB_EU_M", "RaiderIO_DB_EU_R", "RaiderIO_DB_EU_F", "RaiderIO_DB_KR_M", "RaiderIO_DB_KR_R", "RaiderIO_DB_KR_F", "RaiderIO_DB_TW_M", "RaiderIO_DB_TW_R", "RaiderIO_DB_TW_F", "RaiderIO_DB_CN_M", "RaiderIO_DB_CN_R", "RaiderIO_DB_CN_F"]
+
+[[addon]]
+name = "MythicDungeonTools"
+aliases = ["mdt"]
+ref = "gh:Nnoggie/MythicDungeonTools"
+families = ["mainline"]
+folders = ["MythicDungeonTools", "MythicDungeonTools_UI"]
+
+[[addon]]
+name = "AllTheThings"
+aliases = ["att"]
+ref = "gh:ATTWoWAddon/AllTheThings"
+families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
+folders = ["AllTheThings"]
+
+# ---- Legacy clients: the repository is the addon ---------------------------------------
+
+[[addon]]
+name = "pfUI"
+ref = "git:https://github.com/shagu/pfUI#master"
+families = ["vanilla-legacy"]
+folders = ["pfUI"]
+notes = "1.12.1: pfUI.toc carries Interface 11200; the repository is archived upstream"
+
+[[addon]]
+name = "PlateBuffer"
+ref = "git:https://github.com/nullfoxh/PlateBuffer#master"
+families = ["tbc-legacy"]
+folders = ["PlateBuffer"]
+notes = "2.4.3: PlateBuffer.toc carries Interface 20400"
+
+[[addon]]
+name = "GroupBulletinBoard"
+aliases = ["gbb"]
+ref = "git:https://github.com/fondlez/GroupBulletinBoard#main"
+families = ["wrath-legacy"]
+folders = ["GroupBulletinBoard"]
+notes = "3.3.5a: GroupBulletinBoard.toc carries Interface 30300"
+
+[[addon]]
+name = "MikScrollingBattleText"
+aliases = ["msbt"]
+ref = "git:https://github.com/fondlez/MikScrollingBattleText-Cata#main"
+families = ["cata-legacy"]
+folders = ["MikScrollingBattleText", "MSBTOptions"]
+notes = "4.3.4: both TOCs carry Interface 40300"
+
+[[addon]]
+name = "InFlight"
+ref = "git:https://github.com/fondlez/InFlight-Taxi-Timer#main"
+families = ["mists-legacy"]
+folders = ["InFlight", "InFlight_Load"]
+notes = "5.4.8: both TOCs carry Interface 50400"

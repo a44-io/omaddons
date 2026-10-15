@@ -1,0 +1,86 @@
+{
+    "releases": [
+        {
+            "filename": "Questie-v12.1.0+v1.0.6.zip",
+            "nolib": false,
+            "metadata": [
+                {
+                    "flavor": "classic",
+                    "interface": 11508
+                },
+                {
+                    "flavor": "classic",
+                    "interface": 11509
+                },
+                {
+                    "flavor": "bcc",
+                    "interface": 20506
+                },
+                {
+                    "flavor": "wrath",
+                    "interface": 38002
+                },
+                {
+                    "flavor": "mists",
+                    "interface": 50503
+                },
+                {
+                    "flavor": "mists",
+                    "interface": 50504
+                },
+                {
+                    "flavor": "forever",
+                    "interface": 16001
+                }
+            ]
+        }
+    ],
+    "questie": {
+        "repository": "https://github.com/Questie/Questie",
+        "version": "12.1.0",
+        "producerCommit": "91fb7e2a457e74fe05f02570e7e45f93794d9305",
+        "changelog": [
+            {
+                "category": "feature",
+                "text": "Added \"Known Professions\" to the Professions Trainers menu",
+                "commit": "eb9d054757c1cc64e7caa9121da526b450013913",
+                "author": "contributor",
+                "coAuthors": []
+            }
+        ]
+    },
+    "questiedb": {
+        "repository": "https://github.com/Questie/QuestieDB",
+        "producerCommit": "36ca1ca86f6c1838de479c7c7452eb0a57d5c135",
+        "version": "1.0.6",
+        "contractVersion": 4,
+        "minSupportedContract": 1,
+        "builtAt": "2023-11-14T22:13:20Z",
+        "nolib": false,
+        "artifacts": [
+            {
+                "flavor": "Vanilla",
+                "file": "QuestieDB-Vanilla.zip",
+                "sha256": "7bbed71d6387e2865e94cc821366cc05fbd7474f32f8640f682f6bc720b0f504",
+                "bytes": 6485590,
+                "rawBytes": 13020581
+            },
+            {
+                "flavor": "All",
+                "file": "QuestieDB-all.zip",
+                "sha256": "63b52f2ddd70b182b2921867e9eefdbc65b67378dd49b1fe89127ff253b93d79",
+                "bytes": 90482917,
+                "rawBytes": 200453097
+            }
+        ],
+        "changelog": [
+            {
+                "category": "db",
+                "text": "[Forever] refresh base data from October 10 snapshot",
+                "commit": "2700bb230f4ac2b20aeaaad1cbea305655c7a1a1",
+                "author": "contributor",
+                "coAuthors": []
+            }
+        ]
+    }
+}
