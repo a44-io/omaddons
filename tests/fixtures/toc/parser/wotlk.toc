@@ -1,0 +1,6 @@
+## Interface: 30300
+## Title: Legacy Demo
+## Dependencies: Blizzard_CombatLog
+## LoadOnDemand: 1
+## SavedVariables: LegacyDemoDB
+LegacyDemo.xml

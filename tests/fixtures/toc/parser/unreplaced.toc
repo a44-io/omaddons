@@ -1,0 +1,8 @@
+## Interface: 120105
+## Title: Packaged Demo
+## Version: @project-version@
+## X-Part-Of: DemoSuite
+## X-Tukui-ProjectID: 42
+## X-Tukui-ProjectFolders: Packaged, PackagedOptions
+## X-AddonProvider: wago
+Packaged.lua
