@@ -8,7 +8,9 @@
 //! is a human alias: the first target to register keeps the bare default id
 //! (`retail`), later ones are qualified (`retail@steam`), and registered ids never
 //! change except through `rename`. Read commands never write: unregistered targets get
-//! `key: null` and a deterministic provisional id.
+//! `key: null` and a deterministic provisional id, given in discovery's route order
+//! (`product.db`, launcher configs, processes, extra roots, the scan; then by path), so
+//! the first-discovered target previews the bare id.
 
 use std::path::{Path, PathBuf};
 
@@ -99,23 +101,26 @@ pub fn reconcile(registry: &Registry, discovered: &[DiscoveredTarget]) -> Resolv
     }
 
     let mut taken: Vec<String> = registry.targets.iter().map(|e| e.id.clone()).collect();
-    let mut targets = Vec::with_capacity(discovered.len());
-    for (d, entry) in discovered.iter().zip(&assigned) {
-        let mut d = d.clone();
-        match entry {
-            Some(entry) => {
-                d.target.key = Some(entry.key);
-                d.target.id = entry.id.clone();
-            }
-            None => {
-                d.target.key = None;
-                d.target.id = free_id(&d.default_id, &d.qualifier, |id| {
-                    taken.iter().any(|t| t == id)
-                });
-                taken.push(d.target.id.clone());
-            }
+    let mut targets = discovered.to_vec();
+    for (d, entry) in targets.iter_mut().zip(&assigned) {
+        if let Some(entry) = entry {
+            d.target.key = Some(entry.key);
+            d.target.id = entry.id.clone();
         }
-        targets.push(d);
+    }
+    // Provisional ids in route order, so the first-discovered target gets the bare id;
+    // the sort is stable, so one route's targets keep discovery's path order.
+    let mut provisional: Vec<usize> = (0..targets.len())
+        .filter(|&i| assigned[i].is_none())
+        .collect();
+    provisional.sort_by_key(|&i| route_rank(&targets[i].source));
+    for i in provisional {
+        let d = &mut targets[i];
+        d.target.key = None;
+        d.target.id = free_id(&d.default_id, &d.qualifier, |id| {
+            taken.iter().any(|t| t == id)
+        });
+        taken.push(d.target.id.clone());
     }
 
     let warnings = duplicates
@@ -145,6 +150,19 @@ pub fn reconcile(registry: &Registry, discovered: &[DiscoveredTarget]) -> Resolv
         targets,
         warnings,
         missing,
+    }
+}
+
+/// Discovery's route order (vision §5.2): `product.db`, launcher configs, running
+/// processes, extra roots, then the scan.
+const fn route_rank(source: &DiscoverySource) -> u8 {
+    match source {
+        DiscoverySource::ProductDb => 0,
+        DiscoverySource::Launcher { .. } => 1,
+        DiscoverySource::Process => 2,
+        DiscoverySource::ExtraRoot => 3,
+        DiscoverySource::Scan => 4,
+        DiscoverySource::Manual => 5,
     }
 }
 
@@ -791,6 +809,45 @@ mod tests {
         assert_eq!(free_id("My Server!", "x", taken(&[])), "my-server-");
         assert_eq!(free_id("--", "x", taken(&[])), "client");
         assert_eq!(free_id("new_ptr", "battlenet", taken(&[])), "new_ptr");
+    }
+
+    #[test]
+    fn provisional_ids_follow_route_order_then_path_order() {
+        let with = |root: &str, qualifier: &str, source: DiscoverySource| {
+            let mut d = discovered(
+                "retail",
+                Family::Mainline,
+                Some("wow"),
+                Some("_retail_"),
+                root,
+            );
+            d.qualifier = qualifier.to_owned();
+            d.source = source;
+            d
+        };
+        let steam = DiscoverySource::Launcher {
+            name: "steam".to_owned(),
+        };
+        // Path order puts Steam first; the product.db route still comes first.
+        let found = [
+            with("/h/.local/share/Steam/pfx/wow", "steam", steam.clone()),
+            with(
+                "/h/Games/battlenet/wow",
+                "battlenet",
+                DiscoverySource::ProductDb,
+            ),
+            with("/h/Games/other/wow", "other", DiscoverySource::Scan),
+            with("/h/Games/third/wow", "third", DiscoverySource::Scan),
+        ];
+        let ids: Vec<String> = reconcile(&Registry::default(), &found)
+            .targets
+            .into_iter()
+            .map(|d| d.target.id)
+            .collect();
+        assert_eq!(
+            ids,
+            ["retail@steam", "retail", "retail@other", "retail@third"]
+        );
     }
 
     #[test]
