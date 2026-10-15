@@ -2,21 +2,18 @@
 //! `Op` enum, `mutate()`, `prune()`, the write-scope table, the deny-list, renameat2 and
 //! reflink primitives, and the lock files.
 
-// Until `mutate()` (fsx-mutate bead) calls them, only tests use the primitives. Once
-// everything is used, the expectation fails and this attribute must go.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the primitives are wired up by the fsx-mutate bead"
-    )
-)]
 pub(crate) mod failpoint;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the primitives are wired up by the fsx-mutate bead"
-    )
-)]
+mod mutate;
+mod op;
+mod scope;
+mod session;
 pub(crate) mod sys;
+
+pub use mutate::{
+    ActionRecord, Expect, FsxError, MutateOpts, TreeDigest, ensure_dir_all, mutate, mutate_with,
+    sync_filesystem,
+};
+pub use op::Op;
+pub use scope::{Access, OwnedFolders, Refusal, Scope, ScopeMatch, ScopeTable, Side, Writer};
+pub use session::{SnapshotRoots, WriteSession};
+pub use sys::{CloneKind, Content, Durability, RenameMode, WriteResult};

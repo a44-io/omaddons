@@ -24,26 +24,26 @@ pub(crate) const TEMP_PREFIX: &str = ".omaddons-";
 /// The default mode of written files; credentials pass 0600.
 const DEFAULT_FILE_MODE: u32 = 0o644;
 
-/// What [`write_atomic`] writes.
+/// The content of an atomic file write (`Op::WriteFile`).
 pub enum Content<'a> {
     Bytes(&'a [u8]),
     /// Streamed into the temp file and hashed on the way (DEC-11).
     Reader(&'a mut dyn Read),
 }
 
-/// The SHA-256 and length of what [`write_atomic`] wrote.
+/// The SHA-256 and length of what an atomic file write wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WriteResult {
     pub sha256: [u8; 32],
     pub len: u64,
 }
 
-/// How [`rename_with`] treats an existing target.
+/// How a rename (`Op::Rename`) treats an existing target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenameMode {
     /// Replace the target, like `rename(2)`.
     Replace,
-    /// Fail with [`RenameError::TargetExists`] if the target exists.
+    /// Fail if the target exists.
     NoReplace,
     /// Atomically swap the two paths; both must exist.
     Exchange,
@@ -75,7 +75,7 @@ impl From<RenameError> for io::Error {
     }
 }
 
-/// How [`clone_file`] copied.
+/// How a file clone (`Op::CloneFile`) copied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloneKind {
     /// `FICLONE`: instant and space-sharing.
@@ -84,13 +84,26 @@ pub enum CloneKind {
     ByteCopy,
 }
 
+/// Whether a write is made durable before it returns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Durability {
+    /// fsync the file and its directory.
+    #[default]
+    Immediate,
+    /// Skip the fsyncs but keep temp + rename atomicity; the caller makes the whole
+    /// filesystem durable later with one `syncfs` (staging only).
+    Deferred,
+}
+
 /// Replaces `path` atomically: a unique temp file in the same directory, the content,
-/// `mode` (default 0644), fsync, rename, then fsync of the directory. On any error the
-/// destination is untouched and the temp file is removed.
+/// `mode` (default 0644), fsync, rename, then fsync of the directory (the two fsyncs
+/// are skipped under [`Durability::Deferred`]). On any error the destination is
+/// untouched and the temp file is removed.
 pub(crate) fn write_atomic(
     path: &Path,
     content: Content<'_>,
     mode: Option<u32>,
+    durability: Durability,
 ) -> io::Result<WriteResult> {
     failpoint::hit("fsx.write_atomic.before")?;
     let parent = parent_dir(path)?;
@@ -107,10 +120,14 @@ pub(crate) fn write_atomic(
     let result = writer.finish();
     temp.as_file()
         .set_permissions(Permissions::from_mode(mode.unwrap_or(DEFAULT_FILE_MODE)))?;
-    temp.as_file().sync_all()?;
+    if durability == Durability::Immediate {
+        temp.as_file().sync_all()?;
+    }
     failpoint::hit("fsx.write_atomic.after")?;
     temp.persist(path).map_err(|err| err.error)?;
-    fsync_dir(parent)?;
+    if durability == Durability::Immediate {
+        fsync_dir(parent)?;
+    }
     Ok(result)
 }
 
@@ -222,12 +239,30 @@ pub(crate) fn fsync_dir(dir: &Path) -> io::Result<()> {
 
 /// Creates one directory level, failing if it exists, with `mode` when given.
 pub(crate) fn create_dir(path: &Path, mode: Option<u32>) -> io::Result<()> {
+    create_dir_with(path, mode, Durability::Immediate)
+}
+
+/// [`create_dir`], with the parent fsync skipped under [`Durability::Deferred`].
+pub(crate) fn create_dir_with(
+    path: &Path,
+    mode: Option<u32>,
+    durability: Durability,
+) -> io::Result<()> {
     failpoint::hit("fsx.create_dir.before")?;
     fs::create_dir(path)?;
     if let Some(mode) = mode {
         fs::set_permissions(path, Permissions::from_mode(mode))?;
     }
-    fsync_dir(parent_dir(path)?)
+    if durability == Durability::Immediate {
+        fsync_dir(parent_dir(path)?)?;
+    }
+    Ok(())
+}
+
+/// Makes everything written on the filesystem holding `path` durable (`syncfs(2)`).
+pub(crate) fn sync_filesystem(path: &Path) -> io::Result<()> {
+    failpoint::hit("fsx.sync_filesystem.before")?;
+    rustix::fs::syncfs(File::open(path)?).map_err(io::Error::from)
 }
 
 /// Sets the mode of `path`, refusing to follow a symlink.
@@ -379,7 +414,9 @@ mod tests {
         for (dir, kind) in dirs() {
             for mode in [None, Some(0o600)] {
                 let path = dir.path().join("file");
-                let result = write_atomic(&path, Content::Bytes(b"hello"), mode).unwrap();
+                let result =
+                    write_atomic(&path, Content::Bytes(b"hello"), mode, Durability::Immediate)
+                        .unwrap();
                 assert_eq!(fs::read(&path).unwrap(), b"hello", "{kind:?}");
                 assert_eq!(mode_of(&path), mode.unwrap_or(0o644), "{kind:?}");
                 assert_eq!(
@@ -400,7 +437,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("blob");
         let mut reader = io::Cursor::new(data.clone());
-        let result = write_atomic(&path, Content::Reader(&mut reader), None).unwrap();
+        let result = write_atomic(
+            &path,
+            Content::Reader(&mut reader),
+            None,
+            Durability::Immediate,
+        )
+        .unwrap();
         assert_eq!(result.len, 1 << 20);
         assert_eq!(result.sha256, sha256(&fs::read(&path).unwrap()));
         assert_eq!(result.sha256, sha256(&data));
@@ -412,7 +455,8 @@ mod tests {
         let path = dir.path().join("file");
         fs::write(&path, b"old").unwrap();
         failpoint::with_spec("fsx.write_atomic.after=error", || {
-            let err = write_atomic(&path, Content::Bytes(b"new"), None).unwrap_err();
+            let err = write_atomic(&path, Content::Bytes(b"new"), None, Durability::Immediate)
+                .unwrap_err();
             assert_eq!(err.to_string(), "failpoint fsx.write_atomic.after");
         });
         assert_eq!(fs::read(&path).unwrap(), b"old");
@@ -445,7 +489,7 @@ mod tests {
     #[ignore = "child process for write_atomic_abort_before_rename_keeps_the_old_content"]
     fn child_write_atomic() {
         if let Some(path) = child_path() {
-            let _ = write_atomic(&path, Content::Bytes(b"new"), None);
+            let _ = write_atomic(&path, Content::Bytes(b"new"), None, Durability::Immediate);
         }
     }
 
@@ -462,7 +506,7 @@ mod tests {
                 let (path, barrier) = (Arc::clone(&path), Arc::clone(&barrier));
                 std::thread::spawn(move || {
                     barrier.wait();
-                    write_atomic(&path, Content::Bytes(&content), None)
+                    write_atomic(&path, Content::Bytes(&content), None, Durability::Immediate)
                 })
             })
             .collect();

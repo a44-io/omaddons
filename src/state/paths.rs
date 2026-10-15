@@ -19,6 +19,8 @@ const APP: &str = "omaddons";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
     home: PathBuf,
+    /// `<config>` itself, for paths of other tools under it (the Omarchy plugin).
+    config_home: PathBuf,
     config: PathBuf,
     state: PathBuf,
     cache: PathBuf,
@@ -38,16 +40,14 @@ impl Paths {
             )
         })?;
         let xdg = |name: &str, default: &str| {
-            absolute(lookup(name))
-                .unwrap_or_else(|| home.join(default))
-                .join(APP)
+            absolute(lookup(name)).unwrap_or_else(|| home.join(default))
         };
-        Ok(Self {
-            config: xdg("XDG_CONFIG_HOME", ".config"),
-            state: xdg("XDG_STATE_HOME", ".local/state"),
-            cache: xdg("XDG_CACHE_HOME", ".cache"),
-            home,
-        })
+        let (config, state, cache) = (
+            xdg("XDG_CONFIG_HOME", ".config"),
+            xdg("XDG_STATE_HOME", ".local/state"),
+            xdg("XDG_CACHE_HOME", ".cache"),
+        );
+        Ok(Self::with_roots(home, config, state, cache))
     }
 
     /// From explicit base directories (`<config>`, `<state>`, `<cache>`, without the
@@ -60,6 +60,7 @@ impl Paths {
     ) -> Self {
         Self {
             home: home.into(),
+            config_home: config.as_ref().to_path_buf(),
             config: config.as_ref().join(APP),
             state: state.as_ref().join(APP),
             cache: cache.as_ref().join(APP),
@@ -112,6 +113,23 @@ impl Paths {
     /// Catalog overrides (`*.toml`).
     pub fn catalog_d(&self) -> PathBuf {
         self.config.join("catalog.d")
+    }
+
+    // ---- Other tools' locations ------------------------------------------------------
+
+    /// The installed Omarchy widget (M3): `<config>/omarchy/plugins/omaddons`.
+    pub fn omarchy_plugin_dir(&self) -> PathBuf {
+        self.config_home.join("omarchy/plugins/omaddons")
+    }
+
+    /// The widget's hidden staging sibling, invisible to the plugin registry.
+    pub fn omarchy_plugin_stage(&self) -> PathBuf {
+        self.config_home.join("omarchy/plugins/.omaddons.stage")
+    }
+
+    /// The default agent skill location (M4): `<home>/.claude/skills/omaddons`.
+    pub fn skill_dir(&self) -> PathBuf {
+        self.home.join(".claude/skills/omaddons")
     }
 
     // ---- <state>/omaddons --------------------------------------------------------------
@@ -371,6 +389,12 @@ mod tests {
             ),
             (p.addons_toml(), "/c/omaddons/addons.toml".into()),
             (p.catalog_d(), "/c/omaddons/catalog.d".into()),
+            (p.omarchy_plugin_dir(), "/c/omarchy/plugins/omaddons".into()),
+            (
+                p.omarchy_plugin_stage(),
+                "/c/omarchy/plugins/.omaddons.stage".into(),
+            ),
+            (p.skill_dir(), "/h/.claude/skills/omaddons".into()),
             (p.registry_file(), "/s/omaddons/registry.json".into()),
             (p.targets_dir(), "/s/omaddons/targets".into()),
             (
