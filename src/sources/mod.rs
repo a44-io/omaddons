@@ -9,8 +9,10 @@
 
 pub mod atom;
 pub mod github;
+pub mod local;
 pub mod refs;
 pub mod release_json;
+pub mod url;
 
 use std::collections::BTreeMap;
 
@@ -118,6 +120,8 @@ impl SourceRegistry {
     pub fn builtin() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(github::GithubSource::new()));
+        registry.register(Box::new(local::LocalSource));
+        registry.register(Box::new(url::UrlSource::new()));
         registry
     }
 

@@ -740,6 +740,12 @@ impl TargetPlanner<'_> {
         };
         template.folders = new_folders;
         template.required_by = existing.map(|e| e.required_by.clone()).unwrap_or_default();
+        if template.version.is_empty() {
+            // file: and url: releases carry no version: the TOC's ## Version is it.
+            template.version = toc_version(&inspected, &template.name, &self.target.rules)
+                .unwrap_or_else(|| "unknown".to_owned());
+            template.version_confidence = VersionConfidence::Toc;
+        }
         Ok(PlannedAddon {
             change: Change {
                 addon: template.name.clone(),
@@ -1068,6 +1074,25 @@ fn file_candidate(file: &std::path::Path, wanted: &Wanted) -> Candidate {
         },
         rank: crate::model::RankReason::Unannotated,
     }
+}
+
+/// The `## Version` of the addon's own folder (named like it, else the first), as the
+/// client would load its TOC.
+fn toc_version(
+    inspected: &Inspected,
+    addon: &str,
+    rules: &crate::rules::ClientRules,
+) -> Option<String> {
+    let folder = inspected
+        .folders
+        .iter()
+        .find(|f| f.name.as_str().eq_ignore_ascii_case(addon))
+        .or_else(|| inspected.folders.first())?;
+    loaded_toc(&folder.view(), rules)
+        .ok()
+        .flatten()
+        .and_then(|loaded| loaded.toc.version)
+        .filter(|v| !v.trim().is_empty())
 }
 
 /// `sha256:<hex>` of a local zip; a fresh `dir:<ulid>` for a directory or an

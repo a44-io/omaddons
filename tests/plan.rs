@@ -573,3 +573,54 @@ fn the_dry_run_shape() {
     plan.created_at = "2026-10-14T00:00:00Z".parse().unwrap();
     insta::assert_json_snapshot!("plan_dry_run", plan);
 }
+
+#[test]
+fn local_and_url_sources_fetch_without_requests() {
+    let env = Env::new();
+    let zip = env.env.root().join("Addon.zip");
+    fs::write(&zip, zip_text(&[("Addon/Addon.toc", &toc("120105"))])).unwrap();
+    let dir = env.env.root().join("MyAddon");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("MyAddon.toc"),
+        "## Interface: 120105\n## Version: 2.5.1\n",
+    )
+    .unwrap();
+    let wanted: Vec<omaddons::sources::Wanted> = [
+        format!("file:{}", zip.display()),
+        format!("file:{}", dir.display()),
+        "url:https://github.com/o/r/releases/download/v1/X.zip".to_owned(),
+    ]
+    .iter()
+    .map(|r| omaddons::sources::Wanted::stable(r.parse().unwrap()))
+    .collect();
+    let http = env.http();
+    let sets = omaddons::sources::fetch_once(wanted, &SourceRegistry::builtin(), http.as_ref());
+    assert_eq!(sets.len(), 3);
+    assert!(sets.values().all(Result::is_ok), "{sets:?}");
+    assert!(read_net_log(&env.paths).is_empty(), "no request");
+
+    let plan = env.plan(
+        vec![TargetRequest {
+            target: env.retail.clone(),
+            changes: vec![RequestedChange::Install {
+                r#ref: format!("file:{}", dir.display()).parse().unwrap(),
+                channel: Channel::Stable,
+                version: None,
+                file: None,
+            }],
+        }],
+        false,
+    );
+    assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+    let record = plan.targets[0].work[0].record.as_ref().unwrap();
+    assert_eq!(
+        (
+            record.version.as_str(),
+            record.version_confidence,
+            record.name.as_str()
+        ),
+        ("2.5.1", VersionConfidence::Toc, "MyAddon"),
+        "the TOC gives a local addon its version"
+    );
+}
