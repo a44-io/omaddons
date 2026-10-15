@@ -126,6 +126,8 @@ pub enum Command {
     },
     /// Install or update addons in one target, verified by its own TOC rules
     Install(crate::app::install::InstallArgs),
+    /// Remove managed addons from one target (undoable)
+    Remove(crate::app::remove::RemoveArgs),
     /// Revert the last change (or one by id), SavedVariables included
     Undo(crate::app::undo::UndoArgs),
     /// Show what changed, when, by whom and why

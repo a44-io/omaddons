@@ -3,6 +3,8 @@
 //! lock; the only write is the derived discovery cache. A broken config.toml fails here
 //! (`state_corrupt`), which is why `help` and `config path` never build a world.
 
+use std::collections::BTreeMap;
+
 use crate::cli::Context;
 use crate::discover::cache::{DiscoveryMode, discover_cached};
 use crate::discover::registry::{Resolved, reconcile, resolve_one};
@@ -12,6 +14,7 @@ use crate::model::TargetKey;
 use crate::rules::RulesTable;
 use crate::state::config::Config;
 use crate::state::paths::Paths;
+use crate::state::records::{TargetRecord, load_record};
 use crate::state::registry::{Origin, Registry, load_registry};
 
 /// The discovered targets, reconciled with the registry.
@@ -78,6 +81,17 @@ impl World {
             warnings,
             diagnostics: found.diagnostics,
         })
+    }
+
+    /// The record of every registered discovered target, by target id.
+    pub fn records(&self) -> Result<BTreeMap<String, TargetRecord>> {
+        let mut records = BTreeMap::new();
+        for d in &self.resolved.targets {
+            if let Some(key) = d.target.key {
+                records.insert(d.target.id.clone(), load_record(&self.paths, &key)?.value);
+            }
+        }
+        Ok(records)
     }
 
     /// The id of the target registered as `key`: discovered now, else as the registry

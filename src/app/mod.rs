@@ -7,6 +7,7 @@ pub mod help;
 pub mod history;
 pub mod install;
 pub mod list;
+pub mod remove;
 pub mod targets;
 pub mod undo;
 pub mod world;
@@ -21,6 +22,7 @@ use targets::TargetsAction;
 const COMMANDS: &[&str] = &[
     "help",
     "install",
+    "remove",
     "undo",
     "history",
     "list",
@@ -49,6 +51,7 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
     match command {
         None | Some(Command::Help { .. }) => "help",
         Some(Command::Install(_)) => "install",
+        Some(Command::Remove(_)) => "remove",
         Some(Command::Undo(_)) => "undo",
         Some(Command::History(_)) => "history",
         Some(Command::List(_)) => "list",
@@ -94,6 +97,19 @@ pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
         }
         Some(Command::Install(args)) => {
             let result = install::run(ctx, args);
+            if let Ok(outcome) = &result
+                && let (Some(ms), Some(tx)) =
+                    (outcome.lock_held_ms, output::Outcome::data(outcome).tx)
+            {
+                reporter.log(
+                    output::LogLevel::Debug,
+                    &format!("lock released: tx {tx}, lock_held_ms {ms}"),
+                );
+            }
+            output::emit(cfg, &mut reporter, name, started, offline, result)
+        }
+        Some(Command::Remove(args)) => {
+            let result = remove::run(ctx, args);
             if let Ok(outcome) = &result
                 && let (Some(ms), Some(tx)) =
                     (outcome.lock_held_ms, output::Outcome::data(outcome).tx)

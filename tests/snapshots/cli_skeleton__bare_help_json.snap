@@ -13,6 +13,11 @@ expression: envelope
         "name": "install"
       },
       {
+        "about": "Remove managed addons from one target (undoable)",
+        "aliases": [],
+        "name": "remove"
+      },
+      {
         "about": "Revert the last change (or one by id), SavedVariables included",
         "aliases": [],
         "name": "undo"

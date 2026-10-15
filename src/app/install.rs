@@ -273,7 +273,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
     let mut warnings = world.warnings.clone();
     let (catalog, catalog_warnings) = Catalog::load(&world.paths);
     warnings.extend(catalog_warnings);
-    let records = registered_records(&world)?;
+    let records = world.records()?;
 
     // Parse every positional; parse failures are failed items.
     let installed = |name: &str| -> Vec<InstalledMatch> {
@@ -459,17 +459,6 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         strict: args.strict,
         lock_held_ms: outcome.and_then(|o| o.lock_held_ms),
     })
-}
-
-/// Records of every registered target, by target id.
-fn registered_records(world: &World) -> Result<BTreeMap<String, TargetRecord>> {
-    let mut records = BTreeMap::new();
-    for d in &world.resolved.targets {
-        if let Some(key) = d.target.key {
-            records.insert(d.target.id.clone(), load_record(&world.paths, &key)?.value);
-        }
-    }
-    Ok(records)
 }
 
 /// The channel an addon was installed with on `target`.
@@ -778,7 +767,7 @@ fn sorted(folders: &FolderSummary) -> FolderSummary {
 }
 
 /// Every item failed: the first item's error, with every item's error in details.
-fn all_failed(errors: &[(String, Error)]) -> Error {
+pub(super) fn all_failed(errors: &[(String, Error)]) -> Error {
     let Some((_, first)) = errors.first() else {
         return Error::internal("install without items");
     };
