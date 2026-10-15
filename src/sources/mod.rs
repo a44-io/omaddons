@@ -10,6 +10,7 @@
 pub mod atom;
 pub mod git;
 pub mod git_github;
+pub mod git_hosts;
 pub mod github;
 pub mod github_rest;
 pub mod local;
@@ -112,6 +113,9 @@ impl Wanted {
 #[derive(Default)]
 pub struct SourceRegistry {
     sources: BTreeMap<SourceId, Box<dyn Source>>,
+    /// The git runner, when the command layer provides one: the git source resolves
+    /// non-GitHub hosts with it and the engine checks them out with it.
+    git: Option<std::sync::Arc<git_hosts::GitRunner>>,
 }
 
 impl SourceRegistry {
@@ -125,10 +129,26 @@ impl SourceRegistry {
         registry.register(Box::new(github::GithubSource {
             rest: Some(Box::new(github_rest::GithubRest::from_env())),
         }));
-        registry.register(Box::new(git::GitSource));
+        registry.register(Box::new(git::GitSource::default()));
         registry.register(Box::new(local::LocalSource));
         registry.register(Box::new(url::UrlSource::new()));
         registry
+    }
+
+    /// With `runner` for `git:` refs to configured non-GitHub hosts.
+    #[must_use]
+    pub fn with_git(mut self, runner: git_hosts::GitRunner) -> Self {
+        let runner = std::sync::Arc::new(runner);
+        self.register(Box::new(git::GitSource {
+            runner: Some(runner.clone()),
+        }));
+        self.git = Some(runner);
+        self
+    }
+
+    /// The git runner, if this run has one.
+    pub fn git(&self) -> Option<&git_hosts::GitRunner> {
+        self.git.as_deref()
     }
 
     /// Adds a source, replacing one with the same id.

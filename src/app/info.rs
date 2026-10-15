@@ -25,6 +25,7 @@ use crate::output::{Outcome, Style};
 use crate::resolve::catalog::Catalog;
 use crate::resolve::select::{newest, select};
 use crate::rules::Family;
+use crate::sources::git_hosts::GitRunner;
 use crate::sources::{SourceRegistry, Wanted, fetch_once};
 
 /// `info`'s own arguments.
@@ -283,9 +284,11 @@ fn fetch(world: &World, ctx: &Context, r: &Ref) -> Result<ReleaseSet> {
         git_hosts: world.config.git_hosts.clone(),
         ..NetConfig::default()
     };
-    let http = stack(&net, NetLog::new(&world.paths)?, &world.paths);
+    let log = NetLog::new(&world.paths)?;
+    let http = stack(&net, log.clone(), &world.paths);
+    let registry = SourceRegistry::builtin().with_git(GitRunner::new(&net, log));
     let wanted = Wanted::stable(r.clone());
-    fetch_once([wanted.clone()], &SourceRegistry::builtin(), http.as_ref())
+    fetch_once([wanted.clone()], &registry, http.as_ref())
         .remove(&wanted)
         .unwrap_or_else(|| Err(Error::internal("the fetch returned nothing for the ref")))
 }

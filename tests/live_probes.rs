@@ -11,8 +11,10 @@ use std::io::Read;
 use common::env::TestEnv;
 use common::http::paths;
 use common::netlog::{assert_no_github_rest, read_net_log};
+use omaddons::model::AssetLocation;
 use omaddons::net::{CacheState, Http, NetConfig, NetLog, Request, stack};
 use omaddons::sources::git::GitSource;
+use omaddons::sources::git_hosts::GitRunner;
 use omaddons::sources::github::GithubSource;
 use omaddons::sources::{Source, Wanted};
 use omaddons::state::paths::Paths;
@@ -155,6 +157,42 @@ fn github_source_decodes_live() {
     assert!(again.revalidated && again.tags == recent.tags);
 }
 
+/// git refs on another host through the git binary: `ls-remote` for the default branch of
+/// tullamods/Dominos on Codeberg, then a shallow checkout, each logged `via: git`.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn git_hosts_resolve_and_check_out_live() {
+    let Some((env, _http)) = live() else { return };
+    let paths = Paths::with_roots(env.home(), env.config(), env.state(), env.cache());
+    let net = NetConfig {
+        git_hosts: vec!["codeberg.org".to_owned()],
+        ..NetConfig::default()
+    };
+    let git = GitRunner::new(&net, NetLog::new(&paths).unwrap());
+    let url = "https://codeberg.org/tullamods/Dominos";
+    let set = git
+        .fetch(&Wanted::stable(format!("git:{url}").parse().unwrap()))
+        .unwrap();
+    let location = &set.releases[0].assets[0].location;
+    let checkout = match location {
+        AssetLocation::GitCheckout { rev, sha, .. } => Some((rev.clone(), sha.clone())),
+        _ => None,
+    };
+    assert!(checkout.is_some(), "{location:?}");
+    let (rev, sha) = checkout.unwrap();
+    let dest = env.root().join("checkout");
+    std::fs::create_dir_all(&dest).unwrap();
+    git.materialize(url, &rev, &sha, &dest).unwrap();
+    assert!(dest.join("Dominos").is_dir() || dest.join("Dominos.toc").is_file());
+    let log = read_net_log(&paths);
+    let purposes: Vec<&str> = log
+        .iter()
+        .filter(|e| e.host == "codeberg.org" && e.method == "GIT")
+        .map(|e| e.purpose.as_str())
+        .collect();
+    assert_eq!(purposes, ["ls-remote", "clone", "rev-parse"], "{log:#?}");
+}
+
 /// git refs for GitHub repositories: the default branch through `commits.atom`, a tag
 /// through its own commits feed, both pinned to a commit on codeload; zero REST.
 #[test]
@@ -166,7 +204,7 @@ fn git_source_decodes_live() {
         "git:https://github.com/fondlez/GroupBulletinBoard#v1.2.3",
     ]
     .map(|r| Wanted::stable(r.parse().unwrap()));
-    for set in GitSource.fetch(&wanted, http.as_ref()) {
+    for set in GitSource::default().fetch(&wanted, http.as_ref()) {
         let release = set.unwrap().releases.remove(0);
         let (_, sha) = release.release_id.rsplit_once('@').unwrap();
         assert!(

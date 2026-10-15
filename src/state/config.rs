@@ -436,6 +436,14 @@ impl Config {
                 "must be from 0 to 48",
             ));
         }
+        if let Some(bad) = config.git_hosts.iter().find(|h| !is_host_name(h)) {
+            return Err(invalid(
+                path,
+                text,
+                "git_hosts",
+                &format!("{bad:?} is not a bare host name (no scheme, port or path)"),
+            ));
+        }
         config
             .effective_limits()
             .map_err(|(key, message)| invalid(path, text, &key, &message))?;
@@ -551,6 +559,19 @@ fn check(key: &str, unknown: &mut Vec<String>) {
     if spec_for(key).is_none() {
         unknown.push(key.to_owned());
     }
+}
+
+/// A DNS host name: dot-separated labels of ASCII letters, digits and inner hyphens.
+pub fn is_host_name(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
 }
 
 fn edit_fix(path: &Path) -> Suggestion {
@@ -981,6 +1002,39 @@ multi_toc = true
                 .iter()
                 .any(|m| m.contains("did you mean sources.github.enabled?"))
         );
+    }
+
+    #[test]
+    fn git_hosts_are_bare_host_names() {
+        let path = Path::new("/c/omaddons/config.toml");
+        for good in [
+            "codeberg.org",
+            "git.example.co.uk",
+            "gitea-1.lan",
+            "Codeberg.org",
+        ] {
+            assert!(is_host_name(good), "{good}");
+        }
+        for bad in [
+            "",
+            "https://codeberg.org",
+            "codeberg.org/o",
+            "codeberg.org:443",
+            "-x.org",
+            "a..b",
+            "a b",
+            "user@host",
+        ] {
+            assert!(!is_host_name(bad), "{bad}");
+        }
+        let set = set_value("", path, "git_hosts", "[\"codeberg.org\"]").unwrap();
+        assert_eq!(
+            Config::parse(&set, path).unwrap().0.git_hosts,
+            ["codeberg.org"]
+        );
+        let err = set_value("", path, "git_hosts", "[\"https://codeberg.org\"]").unwrap_err();
+        assert_eq!(err.code, ErrorCode::Usage);
+        assert!(err.message.contains("bare host name"), "{}", err.message);
     }
 
     #[test]

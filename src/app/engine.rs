@@ -13,6 +13,7 @@ use crate::model::Actor;
 use crate::net::{Http, NetConfig, NetLog, stack};
 use crate::rules::RulesTable;
 use crate::sources::SourceRegistry;
+use crate::sources::git_hosts::GitRunner;
 use crate::state::config::RunningPolicy;
 use crate::state::paths::Paths;
 
@@ -47,10 +48,11 @@ impl Engine {
             download_max_bytes: limits.download_max_bytes,
             ..NetConfig::default()
         };
+        let log = NetLog::new(&world.paths)?;
         Ok(Self {
-            http: stack(&net, NetLog::new(&world.paths)?, &world.paths),
+            http: stack(&net, log.clone(), &world.paths),
             paths: world.paths.clone(),
-            registry: SourceRegistry::builtin(),
+            registry: SourceRegistry::builtin().with_git(GitRunner::new(&net, log)),
             table: world.table.clone(),
             policy: world.config.running_policy.unwrap_or_default(),
             limits: ArchiveLimits::from(&limits),

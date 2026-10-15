@@ -27,7 +27,7 @@ use super::ownership::{self, AllowedOp, FolderChange, Transfer};
 use super::running::{self, PolicyContext, PolicyOp};
 use super::swap::SwapOp;
 use crate::error::{Error, ErrorBody, ErrorCode, Result, Suggestion, Warning};
-use crate::fsx::{ScopeTable, TreeDigest, failpoint};
+use crate::fsx::{ScopeTable, TreeDigest, WriteSession, Writer, ensure_dir_all, failpoint};
 use crate::inventory::{Depth, Inventory, inventory};
 use crate::model::{
     Actor, AddonReason, AddonRecord, AddonState, AssetLocation, Candidate, Channel, ExpectedHash,
@@ -973,12 +973,9 @@ impl TargetPlanner<'_> {
                 (inspect(path, &ctx.limits, ctx.table)?, Some(path.clone()))
             }
             AssetLocation::LocalDir(path) => (inspect_dir(path, &ctx.limits, ctx.table)?, None),
-            AssetLocation::GitCheckout { .. } => {
-                return Err(Error::new(
-                    ErrorCode::SourceDisabled,
-                    "git checkouts arrive with the git sources",
-                    Suggestion::command(["omaddons", "help", "install"]),
-                ));
+            AssetLocation::GitCheckout { url, rev, sha } => {
+                let dir = self.checkout(&candidate.asset.filename, url, rev, sha)?;
+                (inspect_dir(&dir, &ctx.limits, ctx.table)?, None)
             }
         };
         let verdicts = verify(&inspected, self.target, ctx.table)?;
@@ -1011,6 +1008,30 @@ impl TargetPlanner<'_> {
 
     /// The blob for `url`: the cached one when the expected hash is known and present,
     /// else a download (retried once on a hash mismatch).
+    /// A git checkout of `sha` in a fresh directory under the transaction's temp dir,
+    /// created here through fsx and removed with it after the transaction. The directory
+    /// is named like the asset (`<repo>-<sha>`) so a repository-root addon is named by
+    /// its TOC.
+    fn checkout(&self, name: &str, url: &str, rev: &str, sha: &str) -> Result<PathBuf> {
+        let ctx = self.ctx;
+        let Some(git) = ctx.registry.git() else {
+            return Err(Error::new(
+                ErrorCode::SourceDisabled,
+                format!("{url} needs a git checkout, which this command does not run"),
+                Suggestion::command(["omaddons", "help", "install"]),
+            ));
+        };
+        let base = ctx.paths.cache_tmp(&ctx.tx).join("git");
+        let dir = (0u32..)
+            .map(|n| base.join(n.to_string()).join(name))
+            .find(|d| !d.exists())
+            .unwrap_or_else(|| base.join(name));
+        let mut s = WriteSession::untracked(Writer::Derived, ctx.scopes, "git");
+        ensure_dir_all(&mut s, &dir)?;
+        git.materialize(url, rev, sha, &dir)?;
+        Ok(dir)
+    }
+
     fn download(&self, url: &str, expected: Option<&ExpectedHash>) -> Result<PathBuf> {
         let ctx = self.ctx;
         if let Some(ExpectedHash::Sha256(sha)) = expected

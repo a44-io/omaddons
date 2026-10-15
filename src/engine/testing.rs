@@ -230,6 +230,8 @@ pub struct TxScene {
     pub force: bool,
     /// `--while-running`.
     pub while_running: bool,
+    /// Gives the registry a git runner that may read `file://` repositories.
+    pub with_git: bool,
 }
 
 impl TxScene {
@@ -256,6 +258,7 @@ impl TxScene {
             actor: Actor::Agent,
             force: false,
             while_running: false,
+            with_git: false,
         }
     }
 
@@ -269,7 +272,10 @@ impl TxScene {
     /// Calls `f` with an engine context for `command` (no network, the scene's running
     /// set and actor).
     pub fn with_ctx<R>(&self, command: &str, f: impl FnOnce(&super::tx::EngineCtx<'_>) -> R) -> R {
-        let registry = crate::sources::SourceRegistry::new();
+        let mut registry = crate::sources::SourceRegistry::new();
+        if self.with_git {
+            registry = registry.with_git(crate::sources::git_hosts::GitRunner::for_tests());
+        }
         let table = RulesTable::builtin();
         let argv: Vec<String> = ["omaddons", command, "test"]
             .iter()
