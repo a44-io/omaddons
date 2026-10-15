@@ -58,7 +58,7 @@ fn harness(config: NetConfig, responses: Vec<Canned>) -> Harness {
         responses: Mutex::new(responses.into()),
         seen: std::sync::Arc::clone(&seen),
     };
-    let http = stack_with(&config, log.clone(), Box::new(script));
+    let http = core_stack_with(&config, log.clone(), Box::new(script));
     Harness {
         _dir: dir,
         paths,
@@ -384,7 +384,7 @@ fn live_github_request() {
         home.join(".cache"),
     );
     let log = NetLog::new(&paths).unwrap();
-    let http = stack(&NetConfig::default(), log.clone());
+    let http = stack(&NetConfig::default(), log.clone(), &paths);
     let response = http
         .send(Request::get("https://github.com/", "live-probe"))
         .unwrap();

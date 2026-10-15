@@ -8,18 +8,27 @@
 pub mod allowlist;
 mod client;
 mod guard;
+pub mod limit;
 pub mod log;
+pub mod pool;
+pub mod retry;
 #[cfg(test)]
 mod tests;
+pub mod validators;
 
 use std::io::Read;
 
 pub use allowlist::Allowlist;
 pub use client::UreqTransport;
 pub use guard::{Guarded, Redirecting};
+pub use limit::Limited;
 pub use log::{GitLogEntry, NetLog, NetLogEntry, Via};
+pub use pool::run_bounded;
+pub use retry::Retrying;
+pub use validators::Validating;
 
 use crate::error::{Error, ErrorCode, Result, Suggestion};
+use crate::state::paths::Paths;
 
 /// Sends one request. Implemented by the transports and by every layer around them.
 pub trait Http: Send + Sync {
@@ -110,6 +119,16 @@ impl Request {
     }
 }
 
+/// Where a response's body came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CacheState {
+    /// Over the network.
+    #[default]
+    Network,
+    /// The validator cache, after the server answered 304 Not Modified.
+    Revalidated,
+}
+
 /// One HTTP response. The body streams; read it with [`Response::bytes`] or
 /// [`Response::into_reader`]. Its `net.log` line is written when the body ends or the
 /// response is dropped.
@@ -118,6 +137,7 @@ pub struct Response {
     pub headers: Vec<(String, String)>,
     /// The URL this response came from.
     pub final_url: String,
+    pub cache: CacheState,
     body: Box<dyn Read + Send>,
 }
 
@@ -142,6 +162,7 @@ impl Response {
             status,
             headers,
             final_url,
+            cache: CacheState::Network,
             body,
         }
     }
@@ -245,13 +266,26 @@ impl NetConfig {
     }
 }
 
-/// The production stack: `Redirecting<Guarded<UreqTransport>>`.
-pub fn stack(config: &NetConfig, log: NetLog) -> Box<dyn Http> {
-    stack_with(config, log, Box::new(UreqTransport::new()))
+/// The production stack, outermost first:
+/// `Limited<Retrying<Validating<Redirecting<Guarded<UreqTransport>>>>>`.
+pub fn stack(config: &NetConfig, log: NetLog, paths: &Paths) -> Box<dyn Http> {
+    stack_with(config, log, paths, Box::new(UreqTransport::new()))
 }
 
 /// The same stack over another transport (fixture replay and record mode, tests).
-pub fn stack_with(config: &NetConfig, log: NetLog, transport: Box<dyn Http>) -> Box<dyn Http> {
+pub fn stack_with(
+    config: &NetConfig,
+    log: NetLog,
+    paths: &Paths,
+    transport: Box<dyn Http>,
+) -> Box<dyn Http> {
+    let validating = Validating::new(core_stack_with(config, log, transport), paths);
+    let retrying = Retrying::new(Box::new(validating));
+    Box::new(Limited::new(Box::new(retrying)))
+}
+
+/// The core without the resilience layers: `Redirecting<Guarded<transport>>`.
+pub fn core_stack_with(config: &NetConfig, log: NetLog, transport: Box<dyn Http>) -> Box<dyn Http> {
     let guarded = Guarded::new(
         transport,
         config.allowlist(),
