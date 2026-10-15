@@ -700,3 +700,42 @@ fn verbose_adds_the_client_dir_and_asset_url() {
         format!("{}/releases/download/v1.0.0/Foo.zip", support::FOO)
     );
 }
+
+/// A target whose AddOns cannot be read fails every item with the reason; nothing is
+/// reported unchanged.
+#[test]
+fn an_unreadable_addons_folder_fails_every_item() {
+    let home = Home::new(&["wow"]);
+    foo_release(&home.http, "v1.0.0", mainline(), "120105");
+    let bar = toc("120105", &["## Title: Bar"]);
+    let assets: [Asset<'_>; 1] = [("Bar.zip", mainline(), vec![("Bar/Bar.toc", bar.as_str())])];
+    gh_release(&home.http, support::BAR, "v1", &assets);
+    let addons = home.addons("_retail_");
+    fs::remove_dir_all(&addons).unwrap();
+    fs::write(&addons, "not a folder").unwrap();
+
+    let r = home.run(&["install", "gh:o/foo", "-t", "retail"]);
+    let envelope = r.expect(1);
+    assert_eq!(
+        (&envelope["ok"], &envelope["error"]["code"]),
+        (&Value::Bool(false), &Value::from("io")),
+        "{}",
+        r.context()
+    );
+
+    let r = home.run(&["install", "gh:o/foo", "gh:o/bar", "-t", "retail"]);
+    let envelope = r.expect(1);
+    let listed: Vec<(&str, &str)> = envelope["error"]["details"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["request"].as_str().unwrap(), i["code"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        listed,
+        [("gh:o/foo", "io"), ("gh:o/bar", "io")],
+        "{}",
+        r.context()
+    );
+    assert_eq!(fs::read_to_string(&addons).unwrap(), "not a folder");
+}

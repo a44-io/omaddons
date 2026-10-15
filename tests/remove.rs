@@ -251,6 +251,24 @@ fn partial_and_all_failing() {
     );
 }
 
+/// A target whose AddOns cannot be read fails the removal with the reason.
+#[test]
+fn an_unreadable_addons_folder_fails_the_removal() {
+    let home = Home::new(&["wow"]);
+    install(&home, "retail", "Foo", &["Foo"]);
+    let addons = home.addons("_retail_");
+    fs::rename(&addons, home.client("_retail_").join("AddOns.moved")).unwrap();
+    fs::write(&addons, "not a folder").unwrap();
+    let r = home.run(&["remove", "Foo", "-t", "retail"]);
+    let envelope = r.expect(1);
+    assert_eq!(
+        (&envelope["error"]["code"], &envelope["data"]),
+        (&Value::from("io"), &Value::Null),
+        "{}",
+        r.context()
+    );
+}
+
 #[test]
 fn a_running_client_and_dry_runs() {
     let mut home = Home::new(&["wow"]);

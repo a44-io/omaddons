@@ -311,7 +311,22 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         let live = match inventory(target, Some(&record), ctx.table, Depth::Classes) {
             Ok(live) => live,
             Err(error) => {
-                failures.push(failure(None, None, target, error));
+                // Every change on the target fails with it, each under its own ref and
+                // addon, so the command reports each item failed rather than unchanged.
+                for w in wants {
+                    let (r, addon, error) = match w {
+                        Want::Failed {
+                            r#ref,
+                            addon,
+                            error,
+                        } => (r#ref, addon, error),
+                        Want::Install { name, wanted, .. } => {
+                            (Some(wanted.r#ref), name, error.clone())
+                        }
+                        Want::Remove { addon } => (None, Some(addon), error.clone()),
+                    };
+                    failures.push(failure(r, addon, target, error));
+                }
                 targets.push(tp);
                 continue;
             }
