@@ -659,6 +659,11 @@ impl TargetPlanner<'_> {
                 )
                 .details(json!({ "ref": wanted.r#ref.to_string(), "target": self.target.id, "tried": tried })));
             }
+            // A release that does not exist at all (a git rev naming nothing) is not a
+            // question of flavor.
+            if let Some(error) = unreadable.filter(|e| e.code == ErrorCode::NotFound) {
+                return Err(error);
+            }
             return Err(self.no_release(wanted, &tried, "no candidate loads on this client"));
         };
 
@@ -965,7 +970,9 @@ impl TargetPlanner<'_> {
         let ctx = self.ctx;
         let (inspected, blob) = match &candidate.asset.location {
             AssetLocation::Url(url) => {
-                let blob = self.download(url, candidate.asset.expected_hash.as_ref())?;
+                let blob = self
+                    .download(url, candidate.asset.expected_hash.as_ref())
+                    .map_err(|e| missing_git_rev(e, candidate, url))?;
                 let inspected = inspect(&blob, &ctx.limits, ctx.table)?;
                 (inspected, Some(blob))
             }
@@ -1088,6 +1095,38 @@ fn reason_text(reason: EmptyReason) -> &'static str {
         EmptyReason::NoAssets => "the release has no installable archive",
         EmptyReason::PinnedVersionNotFound => "no such release",
     }
+}
+
+/// A git ref fetched as a tag by name (its commits feed did not serve the rev) whose
+/// codeload archive is a 404: the rev names nothing there, or the repository is private.
+/// Any other download error is returned as it is.
+fn missing_git_rev(err: Error, candidate: &Candidate, url: &str) -> Error {
+    let by_name = url
+        .strip_prefix("https://codeload.github.com/")
+        .and_then(|rest| rest.split_once("/zip/refs/tags/"));
+    let Some((_, tag)) = by_name else {
+        return err;
+    };
+    if err.code != ErrorCode::HttpStatus
+        || err.details["status"] != 404
+        || !candidate.release_id.starts_with("git:")
+    {
+        return err;
+    }
+    let repo = candidate
+        .release_id
+        .trim_start_matches("git:")
+        .rsplit_once('@')
+        .map_or("", |(repo, _)| repo);
+    let rev = crate::sources::github::percent_unescape(tag);
+    Error::new(
+        ErrorCode::NotFound,
+        format!(
+            "{repo} has no branch, tag or commit named {rev}, or it is private (private repositories are not supported)"
+        ),
+        Suggestion::text("check the name after #, or give a commit sha"),
+    )
+    .details(json!({ "repository": repo, "rev": rev }))
 }
 
 fn family_name(target: &Target) -> String {

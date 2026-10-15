@@ -319,3 +319,50 @@ fn a_legacy_addon_installs_into_a_335_client_from_its_repository() {
     ]);
     assert_eq!(r.expect(2)["error"]["code"], "usage", "{}", r.context());
 }
+
+/// A rev that names nothing (its feed is a 404, then so is the archive by tag name) says
+/// so, while a plain URL to the same archive keeps the bare download error.
+#[test]
+fn a_rev_that_names_nothing_is_not_found() {
+    let home = Home::new(&["wow"]);
+    fixture(
+        &home.http,
+        "feed",
+        "https://github.com/o/r/commits/nope.atom",
+        404,
+        &[],
+        None,
+    );
+    fixture(
+        &home.http,
+        "zip",
+        "https://codeload.github.com/o/r/zip/refs/tags/nope",
+        404,
+        &[],
+        Some("404: Not Found"),
+    );
+    let r = home.run(&["install", "git:https://github.com/o/r#nope", "-t", "retail"]);
+    let envelope = r.expect(3);
+    let error = &envelope["error"];
+    assert_eq!(error["code"], "not_found", "{}", r.context());
+    let message = error["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("nope")
+            && message.contains("https://github.com/o/r")
+            && message.contains("private"),
+        "{message}"
+    );
+
+    let r = home.run(&[
+        "install",
+        "url:https://codeload.github.com/o/r/zip/refs/tags/nope",
+        "-t",
+        "retail",
+    ]);
+    assert_eq!(
+        r.expect(1)["error"]["code"],
+        "http_status",
+        "{}",
+        r.context()
+    );
+}
