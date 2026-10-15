@@ -11,10 +11,8 @@ use std::os::unix::fs::symlink;
 use common::addons::toc;
 use common::archives::{RawEntry, raw_zip, zip_of, zip_text};
 use common::env::TestEnv;
-use common::trees::{BattlenetRoot, CustomRoot, product, tree_hash};
-use omaddons::discover::DiscoverySource;
-use omaddons::discover::battlenet::{BattlenetHints, discover_root};
-use omaddons::discover::custom::discover_custom_root;
+use common::targets::{battlenet, legacy_335};
+use common::trees::tree_hash;
 use omaddons::engine::inspect::{
     ArchiveLimits, Inspected, compatible, inspect, inspect_dir, inspect_zip, verify,
 };
@@ -24,7 +22,7 @@ use omaddons::rules::RulesTable;
 use omaddons::toc::{Verdict, WrongFlavorReason};
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
-use support::{battlenet, folders, inspect_bytes, inspect_with, legacy_335, refused, verdicts};
+use support::{folders, inspect_bytes, inspect_with, refused, verdicts};
 
 #[cfg(test)]
 mod support {
@@ -51,41 +49,6 @@ mod support {
             .iter()
             .map(|f| format!("{}={}", f.archive_prefix, f.name.as_str()))
             .collect()
-    }
-
-    /// The Battle.net target of product `code`.
-    pub fn battlenet(env: &TestEnv, code: &str) -> Target {
-        let root = BattlenetRoot::at(env.root().join(code))
-            .product(code)
-            .build();
-        let (targets, _) = discover_root(
-            &root,
-            &RulesTable::builtin(),
-            &BattlenetHints::default(),
-            "battlenet",
-            &DiscoverySource::Scan,
-        );
-        let folder = product(code).folder;
-        let found = targets
-            .into_iter()
-            .find(|t| t.target.flavor_dir.as_deref() == Some(folder));
-        assert!(found.is_some(), "no {code} target");
-        found.unwrap().target
-    }
-
-    /// A 3.3.5a custom client.
-    pub fn legacy_335(env: &TestEnv) -> Target {
-        let root = CustomRoot::at(env.root().join("wotlk"))
-            .version(3, 3, 5, 12_340)
-            .build();
-        let (found, warnings) = discover_custom_root(
-            &root,
-            &RulesTable::builtin(),
-            "custom",
-            &DiscoverySource::Scan,
-        );
-        assert!(found.is_some(), "{warnings:?}");
-        found.unwrap().target
     }
 
     /// Each folder's verdict on `target`, and whether the archive is compatible.

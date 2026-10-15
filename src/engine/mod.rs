@@ -2,3 +2,4 @@
 //! swap, commit, recovery, undo, retention and the running policy.
 
 pub mod inspect;
+pub mod stage;

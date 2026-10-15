@@ -24,6 +24,40 @@ pub(crate) const TEMP_PREFIX: &str = ".omaddons-";
 /// The default mode of written files; credentials pass 0600.
 const DEFAULT_FILE_MODE: u32 = 0o644;
 
+/// How many durability calls this thread has made, for tests that assert staging's
+/// one-`syncfs`, no-`fsync` contract.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SyncCounts {
+    /// `fsync` of files and directories.
+    pub fsync: u64,
+    pub syncfs: u64,
+}
+
+thread_local! {
+    static SYNC_COUNTS: std::cell::Cell<SyncCounts> = const {
+        std::cell::Cell::new(SyncCounts { fsync: 0, syncfs: 0 })
+    };
+}
+
+/// This thread's durability calls so far.
+pub fn sync_counts() -> SyncCounts {
+    SYNC_COUNTS.with(std::cell::Cell::get)
+}
+
+fn count(update: impl FnOnce(&mut SyncCounts)) {
+    SYNC_COUNTS.with(|cell| {
+        let mut counts = cell.get();
+        update(&mut counts);
+        cell.set(counts);
+    });
+}
+
+/// `fsync(2)`, counted.
+fn fsync(file: &File) -> io::Result<()> {
+    count(|c| c.fsync += 1);
+    file.sync_all()
+}
+
 /// The content of an atomic file write (`Op::WriteFile`).
 pub enum Content<'a> {
     Bytes(&'a [u8]),
@@ -121,7 +155,7 @@ pub(crate) fn write_atomic(
     temp.as_file()
         .set_permissions(Permissions::from_mode(mode.unwrap_or(DEFAULT_FILE_MODE)))?;
     if durability == Durability::Immediate {
-        temp.as_file().sync_all()?;
+        fsync(temp.as_file())?;
     }
     failpoint::hit("fsx.write_atomic.after")?;
     temp.persist(path).map_err(|err| err.error)?;
@@ -138,7 +172,7 @@ pub(crate) fn append_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let existed = fs::symlink_metadata(path).is_ok();
     let mut file = OpenOptions::new().append(true).create(true).open(path)?;
     file.write_all(bytes)?;
-    file.sync_all()?;
+    fsync(&file)?;
     if !existed {
         fsync_dir(parent_dir(path)?)?;
     }
@@ -182,7 +216,7 @@ pub(crate) fn clone_file(from: &Path, to: &Path) -> io::Result<CloneKind> {
     if !failpoint::enabled("fsx.reflink.unsupported") {
         match reflink_copy::reflink(from, to) {
             Ok(()) => {
-                File::open(to)?.sync_all()?;
+                fsync(&File::open(to)?)?;
                 fsync_dir(parent)?;
                 return Ok(CloneKind::Reflink);
             }
@@ -200,7 +234,7 @@ pub(crate) fn clone_file(from: &Path, to: &Path) -> io::Result<CloneKind> {
         .tempfile_in(parent)?;
     io::copy(&mut source, temp.as_file_mut())?;
     temp.as_file().set_permissions(meta.permissions())?;
-    temp.as_file().sync_all()?;
+    fsync(temp.as_file())?;
     failpoint::hit("fsx.clone_file.after")?;
     temp.persist_noclobber(to).map_err(|err| err.error)?;
     fsync_dir(parent)?;
@@ -234,7 +268,7 @@ pub(crate) fn symlink_atomic(target: &Path, link: &Path) -> io::Result<()> {
 /// Makes renames and creations inside `dir` durable.
 pub(crate) fn fsync_dir(dir: &Path) -> io::Result<()> {
     failpoint::hit("fsx.fsync_dir.before")?;
-    File::open(dir)?.sync_all()
+    fsync(&File::open(dir)?)
 }
 
 /// Creates one directory level, failing if it exists, with `mode` when given.
@@ -285,6 +319,7 @@ pub(crate) fn create_dir_all(dir: &Path) -> io::Result<()> {
 /// Makes everything written on the filesystem holding `path` durable (`syncfs(2)`).
 pub(crate) fn sync_filesystem(path: &Path) -> io::Result<()> {
     failpoint::hit("fsx.sync_filesystem.before")?;
+    count(|c| c.syncfs += 1);
     rustix::fs::syncfs(File::open(path)?).map_err(io::Error::from)
 }
 

@@ -20,4 +20,4 @@ pub use op::Op;
 pub use prune::{LockUse, PruneReason, PruneReport, prune};
 pub use scope::{Access, OwnedFolders, Refusal, Scope, ScopeMatch, ScopeTable, Side, Writer};
 pub use session::{SnapshotRoots, WriteSession};
-pub use sys::{CloneKind, Content, Durability, RenameMode, WriteResult};
+pub use sys::{CloneKind, Content, Durability, RenameMode, SyncCounts, WriteResult, sync_counts};

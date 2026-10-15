@@ -18,4 +18,5 @@ pub mod netlog;
 pub mod pe;
 pub mod procfs;
 pub mod product_db;
+pub mod targets;
 pub mod trees;
