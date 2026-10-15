@@ -19,6 +19,25 @@ pub fn fixture(
     headers: &[(&str, &str)],
     body: Option<&str>,
 ) {
+    fixture_bytes(
+        scenario,
+        name,
+        url,
+        status,
+        headers,
+        body.map(str::as_bytes),
+    );
+}
+
+/// [`fixture`] with a binary body (a zip served as a release asset).
+pub fn fixture_bytes(
+    scenario: &Path,
+    name: &str,
+    url: &str,
+    status: u16,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
+) {
     let host = url
         .split("://")
         .nth(1)

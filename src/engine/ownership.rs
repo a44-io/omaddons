@@ -169,8 +169,10 @@ pub fn check(
             outcome.allowed.push(AllowedOp::Remove { live: live_name });
             continue;
         }
-        let others: Vec<&String> = entry.owners.iter().filter(|o| **o != me).collect();
-        let mine = entry.owners.contains(&me);
+        // Owners are addon names as recorded; identity is the record key.
+        let is_me = |owner: &String| TargetRecord::addon_key(owner) == me;
+        let others: Vec<&String> = entry.owners.iter().filter(|o| !is_me(o)).collect();
+        let mine = entry.owners.iter().any(is_me);
         let respelled = entry.name != name.as_str();
         let previous = match (mine, others.first(), entry.class) {
             (true, None, _) => Previous::Same,
@@ -215,10 +217,11 @@ pub fn check(
             outcome.transfers.push(Transfer {
                 folder: live_name.clone(),
                 from: from.clone(),
-                to: me.clone(),
+                to: installing.to_owned(),
             });
-            if !outcome.degraded.contains(from) {
-                outcome.degraded.push(from.clone());
+            let from_key = TargetRecord::addon_key(from);
+            if !outcome.degraded.contains(&from_key) {
+                outcome.degraded.push(from_key);
             }
             outcome.warnings.push(
                 Warning::new(
@@ -386,16 +389,17 @@ mod tests {
         }
     }
 
+    /// Owners as the inventory lists them: addon names, not keys.
     fn live() -> Inventory {
         inventory(vec![
             entry("Blizzard_AuctionUI", FolderClass::Protected, &[]),
-            entry("Mine", FolderClass::Managed, &["me"]),
-            entry("Theirs", FolderClass::Managed, &["other"]),
+            entry("Mine", FolderClass::Managed, &["Me"]),
+            entry("Theirs", FolderClass::Managed, &["Other"]),
             entry("Loose", FolderClass::Unmanaged, &[]),
             entry("Linked", FolderClass::Linked, &[]),
             entry("Foo", FolderClass::Unmanaged, &[]),
-            entry("Bar", FolderClass::Managed, &["other"]),
-            entry("Own", FolderClass::Managed, &["me"]),
+            entry("Bar", FolderClass::Managed, &["Other"]),
+            entry("Own", FolderClass::Managed, &["Me"]),
         ])
     }
 
@@ -475,7 +479,7 @@ mod tests {
                 name: f("Theirs"),
                 live: f("Theirs"),
                 previous: Previous::Transferred {
-                    from: "other".into()
+                    from: "Other".into()
                 }
             }
         );
@@ -488,11 +492,11 @@ mod tests {
             outcome.transfers,
             [Transfer {
                 folder: FolderName::new("Theirs").unwrap(),
-                from: "other".into(),
-                to: "me".into()
+                from: "Other".into(),
+                to: "Me".into()
             }]
         );
-        assert_eq!(outcome.degraded, ["other"]);
+        assert_eq!(outcome.degraded, ["other"], "record keys");
         assert_eq!(outcome.warnings[0].code, WarningCode::OwnershipTransferred);
     }
 
@@ -507,9 +511,9 @@ mod tests {
         assert_eq!(err.fix.argv(), Some(forced.as_slice()));
         assert_eq!(
             err.alternatives[0].argv().unwrap(),
-            ["omaddons", "remove", "other"]
+            ["omaddons", "remove", "Other"]
         );
-        assert_eq!(err.details["folders"][0]["owner"], "other");
+        assert_eq!(err.details["folders"][0]["owner"], "Other");
 
         let err = install("Loose", false).unwrap_err();
         assert_eq!(err.fix.argv(), Some(forced.as_slice()));
@@ -526,7 +530,7 @@ mod tests {
         let err = install("bar", false).unwrap_err();
         assert_eq!(
             err.fix.argv().unwrap(),
-            ["omaddons", "remove", "other"],
+            ["omaddons", "remove", "Other"],
             "a managed spelling twin: remove its owner"
         );
 

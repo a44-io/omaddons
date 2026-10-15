@@ -113,6 +113,11 @@ impl InspectedFolder {
     pub fn view(&self) -> ArchiveFolderView<'_> {
         ArchiveFolderView(self)
     }
+
+    /// The TOC files directly inside the folder.
+    pub fn toc_files(&self) -> Vec<String> {
+        self.tocs.keys().cloned().collect()
+    }
 }
 
 /// [`FolderView`] over an inspected folder; TOC bytes were captured during inspection.

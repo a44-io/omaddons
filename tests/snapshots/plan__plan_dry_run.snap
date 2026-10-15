@@ -1,0 +1,61 @@
+---
+source: tests/plan.rs
+expression: plan
+---
+{
+  "schema_version": "1.0",
+  "plan_id": null,
+  "created_at": "2026-10-14T00:00:00Z",
+  "expires_at": null,
+  "argv": [
+    "omaddons",
+    "install",
+    "gh:o/foo"
+  ],
+  "actor": "agent",
+  "dry_run": true,
+  "generations": {
+    "retail": 0
+  },
+  "targets": [
+    {
+      "target": "retail",
+      "key": null,
+      "kind": "install",
+      "changes": [
+        {
+          "addon": "Foo",
+          "ref": "gh:o/foo",
+          "kind": "install",
+          "from_version": null,
+          "to_version": "v1",
+          "folders": {
+            "added": [
+              "Foo"
+            ],
+            "replaced": [],
+            "removed": []
+          }
+        }
+      ],
+      "ops": [
+        {
+          "op": "add",
+          "folder": "Foo",
+          "addon": "Foo"
+        }
+      ],
+      "releases": [
+        {
+          "release_id": "gh:o/foo@v1",
+          "url": "https://github.com/o/foo/releases/download/v1/Foo.zip",
+          "expected_hash": null,
+          "blob_sha256": "1ba20207ad65e8d5f21a11fa4e9ea67395754c65b985effd2afc340735df4940"
+        }
+      ],
+      "reload_required": "none",
+      "warnings": []
+    }
+  ],
+  "failures": []
+}
