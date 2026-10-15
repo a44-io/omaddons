@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
+  <id>tag:github.com,2008:/fondlez/InFlight-Taxi-Timer/commits/main</id>
+  <link type="text/html" rel="alternate" href="https://github.com/fondlez/InFlight-Taxi-Timer/commits/main"/>
+  <link type="application/atom+xml" rel="self" href="https://github.com/fondlez/InFlight-Taxi-Timer/commits/main.atom"/>
+  <title>Recent Commits to InFlight-Taxi-Timer:main</title>
+  <updated>2025-01-15T23:31:39Z</updated>
+  <entry>
+    <id>tag:github.com,2008:Grit::Commit/087d88c50ff1c5996933b00c25d7fffa7eaa28b0</id>
+    <link type="text/html" rel="alternate" href="https://github.com/fondlez/InFlight-Taxi-Timer/commit/087d88c50ff1c5996933b00c25d7fffa7eaa28b0"/>
+    <title>
+        Add a changelog
+    </title>
+    <updated>2025-01-15T23:31:39Z</updated>
+    <author>
+      <name>contributor</name>
+    </author>
+    <content type="html">
+      &lt;pre style=&#39;white-space:pre-wrap;width:81ex&#39;&gt;Add a changelog&lt;/pre&gt;
+    </content>
+  </entry>
+</feed>

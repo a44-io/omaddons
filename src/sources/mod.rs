@@ -8,6 +8,8 @@
 //! `source_disabled` without touching the network (DEC-12).
 
 pub mod atom;
+pub mod git;
+pub mod git_github;
 pub mod github;
 pub mod local;
 pub mod refs;
@@ -120,6 +122,7 @@ impl SourceRegistry {
     pub fn builtin() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(github::GithubSource::new()));
+        registry.register(Box::new(git::GitSource));
         registry.register(Box::new(local::LocalSource));
         registry.register(Box::new(url::UrlSource::new()));
         registry

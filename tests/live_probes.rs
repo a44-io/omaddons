@@ -12,6 +12,7 @@ use common::env::TestEnv;
 use common::http::paths;
 use common::netlog::{assert_no_github_rest, read_net_log};
 use omaddons::net::{CacheState, Http, NetConfig, NetLog, Request, stack};
+use omaddons::sources::git::GitSource;
 use omaddons::sources::github::GithubSource;
 use omaddons::sources::{Source, Wanted};
 use omaddons::state::paths::Paths;
@@ -152,4 +153,39 @@ fn github_source_decodes_live() {
     );
     let again = GithubSource::recent_tags("WeakAuras", "WeakAuras2", http.as_ref()).unwrap();
     assert!(again.revalidated && again.tags == recent.tags);
+}
+
+/// git refs for GitHub repositories: the default branch through `commits.atom`, a tag
+/// through its own commits feed, both pinned to a commit on codeload; zero REST.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn git_source_decodes_live() {
+    let Some((env, http)) = live() else { return };
+    let wanted = [
+        "git:https://github.com/shagu/pfUI",
+        "git:https://github.com/fondlez/GroupBulletinBoard#v1.2.3",
+    ]
+    .map(|r| Wanted::stable(r.parse().unwrap()));
+    for set in GitSource.fetch(&wanted, http.as_ref()) {
+        let release = set.unwrap().releases.remove(0);
+        let (_, sha) = release.release_id.rsplit_once('@').unwrap();
+        assert!(
+            sha.len() == 40 && release.version == sha[..7],
+            "{release:?}"
+        );
+        assert_eq!(
+            release.assets[0].location,
+            omaddons::model::AssetLocation::Url(format!(
+                "{}/zip/{sha}",
+                release
+                    .release_id
+                    .trim_start_matches("git:https://github.com")
+                    .split('@')
+                    .next()
+                    .map(|path| format!("https://codeload.github.com{path}"))
+                    .unwrap()
+            )),
+        );
+    }
+    assert_no_github_rest(&read_net_log(&paths(&env)));
 }

@@ -298,6 +298,14 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
                     p.r#ref
                 )));
             }
+            if let (Some(v), Ref::Git { rev: Some(rev), .. }) = (&args.version, &p.r#ref)
+                && v != rev
+            {
+                return Err(usage(&format!(
+                    "--version {v} disagrees with the rev {rev} that {} names",
+                    item.request
+                )));
+            }
             if let (Some(v), Some(hint)) = (&args.version, &p.version_hint)
                 && v.trim_start_matches('v') != hint.trim_start_matches('v')
             {

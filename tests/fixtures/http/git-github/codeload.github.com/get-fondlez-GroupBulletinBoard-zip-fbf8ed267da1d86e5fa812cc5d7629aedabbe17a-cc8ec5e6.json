@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://codeload.github.com/fondlez/GroupBulletinBoard/zip/fbf8ed267da1d86e5fa812cc5d7629aedabbe17a"
+  },
+  "responses": [
+    {
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "https://render.githubusercontent.com"
+        ],
+        [
+          "content-disposition",
+          "attachment; filename=GroupBulletinBoard-fbf8ed267da1d86e5fa812cc5d7629aedabbe17a.zip"
+        ],
+        [
+          "content-length",
+          "280584"
+        ],
+        [
+          "content-security-policy",
+          "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+        ],
+        [
+          "content-type",
+          "application/zip"
+        ],
+        [
+          "cross-origin-resource-policy",
+          "cross-origin"
+        ],
+        [
+          "etag",
+          "\"e0c06f252ed54c9503aa42102a4fec93d76c198cdb52d6c7d7fc6e02f9e9c874\""
+        ],
+        [
+          "strict-transport-security",
+          "max-age=31536000"
+        ],
+        [
+          "vary",
+          "Authorization,Accept-Encoding"
+        ],
+        [
+          "x-content-type-options",
+          "nosniff"
+        ],
+        [
+          "x-frame-options",
+          "deny"
+        ],
+        [
+          "x-xss-protection",
+          "1; mode=block"
+        ],
+        [
+          "date",
+          "Thu, 15 Oct 2026 05:49:07 GMT"
+        ],
+        [
+          "x-github-request-id",
+          "AFE6:3DDA06:40D6CD:4EBFBB:6AD06953"
+        ],
+        [
+          "x-github-edge-region",
+          "iad"
+        ]
+      ],
+      "body_file": "get-fondlez-GroupBulletinBoard-zip-fbf8ed267da1d86e5fa812cc5d7629aedabbe17a-cc8ec5e6.body"
+    }
+  ]
+}

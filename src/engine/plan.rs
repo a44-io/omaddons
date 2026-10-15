@@ -587,8 +587,12 @@ impl TargetPlanner<'_> {
             (Some(file), _) => vec![file_candidate(file, wanted)],
             (None, Some(set)) => {
                 let set = set?;
-                let selection =
-                    select(&set, self.target, wanted.channel, wanted.version.as_deref());
+                // A git source already resolved `--version` as the rev it fetched.
+                let pin = match wanted.r#ref {
+                    Ref::Git { .. } => None,
+                    _ => wanted.version.as_deref(),
+                };
+                let selection = select(&set, self.target, wanted.channel, pin);
                 match selection.empty_reason {
                     Some(EmptyReason::PinnedVersionNotFound) => {
                         return Err(Error::new(

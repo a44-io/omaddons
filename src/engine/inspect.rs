@@ -813,7 +813,8 @@ fn toc_bases<'a>(stem: &'a str, suffixes: &[&str]) -> Vec<&'a str> {
     bases
 }
 
-/// `Foo` for `Foo-main`, `Foo-master`, `Foo-1.2.3` or `Foo-v1.2`, leftmost cut first.
+/// `Foo` for `Foo-main`, `Foo-master`, `Foo-1.2.3`, `Foo-v1.2` or `Foo-<commit sha>`
+/// (codeload archives of a commit), leftmost cut first.
 fn wrapped_names(dir: &str) -> Vec<&str> {
     dir.match_indices('-')
         .filter_map(|(i, _)| {
@@ -825,7 +826,8 @@ fn wrapped_names(dir: &str) -> Vec<&str> {
                 _ => false,
             };
             let branch = rest.eq_ignore_ascii_case("main") || rest.eq_ignore_ascii_case("master");
-            (!name.is_empty() && (version || branch)).then_some(name)
+            let commit = rest.len() == 40 && rest.chars().all(|c| c.is_ascii_hexdigit());
+            (!name.is_empty() && (version || branch || commit)).then_some(name)
         })
         .collect()
 }
@@ -965,6 +967,10 @@ mod tests {
                 &["Foo-1.2.3/Foo=Foo"],
             ),
             (&["Foo-v1.2/Foo-Classic.toc"], &["Foo-v1.2=Foo"]),
+            (
+                &["Foo-fbf8ed267da1d86e5fa812cc5d7629aedabbe17a/Foo.toc"],
+                &["Foo-fbf8ed267da1d86e5fa812cc5d7629aedabbe17a=Foo"],
+            ),
             (&["outer/inner-main/X/X.toc"], &["outer/inner-main/X=X"]),
             (
                 &[
@@ -1057,6 +1063,9 @@ mod tests {
         assert_eq!(wrapped_names("Foo-Bar-1.2-beta"), ["Foo-Bar"]);
         assert_eq!(wrapped_names("Foo-MAIN"), ["Foo"]);
         assert!(wrapped_names("-main").is_empty() && wrapped_names("Foo-vx").is_empty());
+        // A commit sha only in full: `Foo-cafe` is a name, not a wrapper.
+        assert_eq!(wrapped_names(&format!("Foo-{}", "c".repeat(40))), ["Foo"]);
+        assert!(wrapped_names("Foo-cafe").is_empty());
     }
 
     #[test]
