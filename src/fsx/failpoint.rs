@@ -7,6 +7,9 @@
 //! Unknown names and malformed entries are ignored. Release builds never read the
 //! variable: [`hit`] is a no-op there.
 
+// The spec parser and the actions exist only for debug builds.
+#![cfg_attr(not(debug_assertions), allow(dead_code))]
+
 use std::collections::BTreeMap;
 use std::io;
 

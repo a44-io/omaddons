@@ -207,6 +207,11 @@ fn what_is_not_a_custom_root() {
         !is_custom_root(&battlenet),
         "a .build.info root is never custom"
     );
+    assert!(
+        !is_custom_root(&battlenet.join("_retail_")),
+        "a flavor folder has an exe and Interface/ but is never custom"
+    );
+    assert!(discover(&battlenet.join("_retail_")).0.is_none());
 }
 
 #[test]

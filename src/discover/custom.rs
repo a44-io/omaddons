@@ -12,9 +12,13 @@ use crate::model::Target;
 use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind, interface_for};
 
 /// Whether `dir` is a custom client root: no `.build.info`, a client exe and an
-/// `Interface/` directory (names ignore ASCII case).
+/// `Interface/` directory (names ignore ASCII case), and not a Battle.net flavor folder,
+/// which looks the same but whose parent holds `.build.info`.
 pub fn is_custom_root(dir: &Path) -> bool {
     find_child(dir, ".build.info").is_none()
+        && !dir
+            .parent()
+            .is_some_and(super::battlenet::is_battlenet_root)
         && client_exe(dir).is_some()
         && find_child(dir, "Interface").is_some_and(|p| p.is_dir())
 }
@@ -133,22 +137,12 @@ pub fn discover_custom_root(
     (Some(discovered), warnings)
 }
 
-/// An id from the root's directory name: lowercase, anything outside `[a-z0-9-]`
-/// becomes `-`.
+/// An id from the root's directory name ([`super::slug`]); `custom` for `/`.
 fn id_from_dir(root: &Path) -> String {
-    let name = root
-        .file_name()
-        .map_or_else(|| "custom".to_owned(), |n| n.to_string_lossy().into_owned());
-    name.chars()
-        .map(|c| {
-            let c = c.to_ascii_lowercase();
-            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
+    root.file_name().map_or_else(
+        || "custom".to_owned(),
+        |n| super::slug(&n.to_string_lossy()),
+    )
 }
 
 #[cfg(test)]
