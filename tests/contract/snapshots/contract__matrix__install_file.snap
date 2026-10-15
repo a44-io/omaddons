@@ -28,7 +28,8 @@ expression: s.stable(&c.envelope)
             "Foo"
           ],
           "removed": [],
-          "replaced": []
+          "replaced": [],
+          "skipped": []
         },
         "from_version": null,
         "name": "Foo",

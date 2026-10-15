@@ -22,7 +22,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::blobs::{BlobCache, Storage};
-use super::inspect::{ArchiveLimits, Inspected, compatible, inspect, inspect_dir, verify};
+use super::inspect::{
+    ArchiveLimits, Inspected, SkippedFolder, accepts, inspect, inspect_dir, partition, verify,
+};
 use super::ownership::{self, AllowedOp, FolderChange, Transfer};
 use super::running::{self, PolicyContext, PolicyOp};
 use super::swap::SwapOp;
@@ -31,7 +33,7 @@ use crate::fsx::{ScopeTable, TreeDigest, WriteSession, Writer, ensure_dir_all, f
 use crate::inventory::{Depth, Inventory, inventory};
 use crate::model::{
     Actor, AddonReason, AddonRecord, AddonState, AssetLocation, Candidate, Channel, ExpectedHash,
-    FolderName, Ref, ReleaseSet, ReloadRequired, Target, TargetKey, TxId, TxKind,
+    FolderName, RankReason, Ref, ReleaseSet, ReloadRequired, Target, TargetKey, TxId, TxKind,
     VersionConfidence,
 };
 use crate::net::{Http, Request};
@@ -43,7 +45,7 @@ use crate::state::files_index::FilesIndex;
 use crate::state::paths::Paths;
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::store;
-use crate::toc::{DiskFolder, loaded_toc};
+use crate::toc::{DiskFolder, Verdict, loaded_toc};
 
 /// The plan format's version.
 pub const SCHEMA_VERSION: &str = "1.0";
@@ -179,6 +181,8 @@ pub struct FolderSummary {
     pub added: Vec<FolderName>,
     pub replaced: Vec<FolderName>,
     pub removed: Vec<FolderName>,
+    /// Folders of the archive this client does not load: never written or recorded.
+    pub skipped: Vec<SkippedFolder>,
 }
 
 /// One folder operation.
@@ -227,7 +231,10 @@ pub struct AddonWork {
     pub record: Option<AddonRecord>,
     /// The zip staging reads; `None` for directory inputs (their files name sources).
     pub blob: Option<PathBuf>,
+    /// The folders that install: the archive's folders this client loads.
     pub inspected: Option<Inspected>,
+    /// The archive's folders this client does not load.
+    pub skipped: Vec<SkippedFolder>,
     pub swap: Vec<SwapOp>,
     pub transfers: Vec<Transfer>,
     /// Addon keys that become degraded.
@@ -413,7 +420,10 @@ pub fn rejudge(
                 .build_install(
                     existing,
                     template.clone(),
-                    inspected.clone(),
+                    Loadable {
+                        inspected: inspected.clone(),
+                        skipped: work.skipped.clone(),
+                    },
                     work.blob.clone(),
                     None,
                     Vec::new(),
@@ -565,9 +575,18 @@ struct Judged {
 /// A candidate that verified.
 struct Winner {
     candidate: Candidate,
-    inspected: Inspected,
+    loadable: Loadable,
+    /// The name a new addon takes from the archive.
+    name: String,
     blob: Option<PathBuf>,
     warnings: Vec<Warning>,
+}
+
+/// An inspected archive cut down to the folders the target's client loads, and the
+/// folders left out.
+struct Loadable {
+    inspected: Inspected,
+    skipped: Vec<SkippedFolder>,
 }
 
 impl TargetPlanner<'_> {
@@ -631,7 +650,7 @@ impl TargetPlanner<'_> {
         let mut winner = None;
         let mut unreadable: Option<Error> = None;
         for candidate in candidates {
-            match self.try_candidate(&candidate) {
+            match self.try_candidate(&wanted.r#ref, &candidate) {
                 Ok(Ok(won)) => {
                     winner = Some(won);
                     break;
@@ -679,7 +698,7 @@ impl TargetPlanner<'_> {
         let addon = existing
             .map(|e| e.name.clone())
             .or_else(|| name.filter(|n| !taken(n)).map(str::to_owned))
-            .unwrap_or_else(|| addon_name(&wanted.r#ref, &winner.inspected));
+            .unwrap_or_else(|| winner.name.clone());
         let template = AddonRecord {
             r#ref: wanted.r#ref.clone(),
             name: addon,
@@ -718,12 +737,12 @@ impl TargetPlanner<'_> {
             release_id: winner.candidate.release_id.clone(),
             url,
             expected_hash,
-            blob_sha256: winner.inspected.blob_sha256.clone(),
+            blob_sha256: winner.loadable.inspected.blob_sha256.clone(),
         };
         self.build_install(
             existing,
             template,
-            winner.inspected,
+            winner.loadable,
             winner.blob,
             Some(release),
             winner.warnings,
@@ -731,17 +750,20 @@ impl TargetPlanner<'_> {
         .map(Some)
     }
 
-    /// Folder changes, ownership, policy and swap ops for installing `inspected` as
-    /// `template` (whose folders and dependents are filled in here).
+    /// Folder changes, ownership, policy and swap ops for installing the loadable
+    /// folders as `template` (whose folders and dependents are filled in here). A folder
+    /// an earlier release installed that this one no longer has, or that this client
+    /// no longer loads, is removed.
     fn build_install(
         &self,
         existing: Option<&AddonRecord>,
         mut template: AddonRecord,
-        inspected: Inspected,
+        loadable: Loadable,
         blob: Option<PathBuf>,
         release: Option<PlannedRelease>,
         mut warnings: Vec<Warning>,
     ) -> Result<PlannedAddon> {
+        let Loadable { inspected, skipped } = loadable;
         let new_folders: Vec<FolderName> =
             inspected.folders.iter().map(|f| f.name.clone()).collect();
         let dropped: Vec<FolderName> = existing
@@ -770,7 +792,10 @@ impl TargetPlanner<'_> {
         };
         let judged = self.judge(&template.name, &changes, toc_after)?;
         warnings.extend(judged.warnings);
-        let mut summary = FolderSummary::default();
+        let mut summary = FolderSummary {
+            skipped: skipped.clone(),
+            ..FolderSummary::default()
+        };
         let ops = self.ops(&template.name, &judged.allowed, &mut summary);
         let kind = if existing.is_some() {
             ChangeKind::Update
@@ -804,6 +829,7 @@ impl TargetPlanner<'_> {
                 blob,
                 swap: self.swap_ops(&judged.allowed),
                 inspected: Some(inspected),
+                skipped,
                 transfers: judged.transfers,
                 degraded: judged.degraded,
             },
@@ -841,6 +867,7 @@ impl TargetPlanner<'_> {
                 record: None,
                 blob: None,
                 inspected: None,
+                skipped: Vec::new(),
                 swap: self.swap_ops(&judged.allowed),
                 transfers: judged.transfers,
                 degraded: judged.degraded,
@@ -962,11 +989,14 @@ impl TargetPlanner<'_> {
             .collect()
     }
 
-    /// Downloads, inspects and verifies one candidate: `Ok(Ok(winner))`, or the reason
-    /// it was rejected.
-    /// Downloads, inspects and verifies one candidate: `Ok(Err(reason))` when it does not
-    /// load on this client, `Err` when it cannot even be read (download, archive).
-    fn try_candidate(&self, candidate: &Candidate) -> Result<std::result::Result<Winner, String>> {
+    /// Downloads, inspects and verifies one candidate of `r#ref`: `Ok(Err(reason))` when
+    /// it does not load on this client, `Err` when it cannot even be read (download,
+    /// archive). A winner keeps only the folders this client loads (see [`accepts`]).
+    fn try_candidate(
+        &self,
+        r#ref: &Ref,
+        candidate: &Candidate,
+    ) -> Result<std::result::Result<Winner, String>> {
         let ctx = self.ctx;
         let (inspected, blob) = match &candidate.asset.location {
             AssetLocation::Url(url) => {
@@ -986,35 +1016,59 @@ impl TargetPlanner<'_> {
             }
         };
         let verdicts = verify(&inspected, self.target, ctx.table)?;
-        if !compatible(&verdicts) {
+        let split = partition(&verdicts);
+        let all: Vec<FolderName> = inspected.folders.iter().map(|f| f.name.clone()).collect();
+        let primary = primary_folder(r#ref, &all);
+        // The publisher's release.json names this client for this very file.
+        let declared = matches!(
+            candidate.rank,
+            RankReason::MetadataInterface | RankReason::MetadataFlavor
+        );
+        if !primary.is_some_and(|p| accepts(&split, declared, p)) {
             let why: Vec<String> = verdicts
                 .iter()
                 .map(|v| {
+                    // ubs:ignore — comparing folder names, not secrets
+                    let verdict = match split.skip.iter().find(|s| s.name == v.folder) {
+                        Some(skipped) => serde_json::to_value(Verdict::WrongFlavor {
+                            reason: skipped.reason.clone(),
+                        }),
+                        None => serde_json::to_value(&v.report.verdict),
+                    };
                     format!(
                         "{}: {}",
                         v.folder.as_str(),
-                        serde_json::to_value(&v.report.verdict)
-                            .map(|j| j.to_string())
-                            .unwrap_or_default()
+                        verdict.map(|j| j.to_string()).unwrap_or_default()
                     )
                 })
                 .collect();
             return Ok(Err(format!("wrong_flavor: {}", why.join("; "))));
         }
+        let mut inspected = inspected;
+        inspected
+            .folders
+            .retain(|f| split.install.contains(&f.name));
+        // Named as on every client, unless that folder is one this client skips.
+        let name = primary
+            .filter(|p| split.install.contains(p))
+            .map_or_else(|| addon_name(r#ref, &inspected), |p| p.as_str().to_owned());
         let warnings = verdicts
             .into_iter()
+            .filter(|v| split.install.contains(&v.folder))
             .flat_map(|v| v.report.warnings)
             .collect();
         Ok(Ok(Winner {
             candidate: candidate.clone(),
-            inspected,
+            loadable: Loadable {
+                inspected,
+                skipped: split.skip,
+            },
+            name,
             blob,
             warnings,
         }))
     }
 
-    /// The blob for `url`: the cached one when the expected hash is known and present,
-    /// else a download (retried once on a hash mismatch).
     /// A git checkout of `sha` in a fresh directory under the transaction's temp dir,
     /// created here through fsx and removed with it after the transaction. The directory
     /// is named like the asset (`<repo>-<sha>`) so a repository-root addon is named by
@@ -1039,6 +1093,8 @@ impl TargetPlanner<'_> {
         Ok(dir)
     }
 
+    /// The blob for `url`: the cached one when the expected hash is known and present,
+    /// else a download (retried once on a hash mismatch).
     fn download(&self, url: &str, expected: Option<&ExpectedHash>) -> Result<PathBuf> {
         let ctx = self.ctx;
         if let Some(ExpectedHash::Sha256(sha)) = expected
@@ -1205,43 +1261,50 @@ fn local_identity(file: &std::path::Path) -> String {
     }
 }
 
-/// A new addon's name: the folder named like the repository, else the folder the
-/// others extend (`WeakAuras` for `WeakAurasOptions`), else the one core folder
-/// (`DBM-Core` beside `DBM-GUI`), else the shortest.
+/// A new addon's name: its [`primary_folder`], else the ref.
 pub fn addon_name(r#ref: &Ref, inspected: &Inspected) -> String {
-    let names: Vec<&str> = inspected.folders.iter().map(|f| f.name.as_str()).collect();
+    let folders: Vec<FolderName> = inspected.folders.iter().map(|f| f.name.clone()).collect();
+    primary_folder(r#ref, &folders).map_or_else(|| r#ref.to_string(), |f| f.as_str().to_owned())
+}
+
+/// The folder an archive is the addon of: the folder named like the repository, else
+/// the folder the others extend (`WeakAuras` for `WeakAurasOptions`), else the one core
+/// folder (`DBM-Core` beside `DBM-GUI`), else the shortest.
+pub fn primary_folder<'a>(r#ref: &Ref, folders: &'a [FolderName]) -> Option<&'a FolderName> {
     if let Ref::GitHub { repo, .. } = r#ref
-        && let Some(same) = names.iter().find(|n| n.eq_ignore_ascii_case(repo))
-    {
-        return (*same).to_owned();
-    }
-    let extended = |n: &str| {
-        names
+        && let Some(same) = folders
             .iter()
+            .find(|f| f.as_str().eq_ignore_ascii_case(repo))
+    {
+        return Some(same);
+    }
+    let extended = |n: &FolderName| {
+        let n = n.as_str();
+        folders
+            .iter()
+            .map(FolderName::as_str)
             .filter(|o| {
                 o.len() > n.len() && o.to_ascii_lowercase().starts_with(&n.to_ascii_lowercase())
             })
             .count()
     };
-    let mut ranked = names.clone();
+    let mut ranked: Vec<&FolderName> = folders.iter().collect();
     ranked.sort_by(|a, b| {
         extended(b)
             .cmp(&extended(a))
-            .then(a.len().cmp(&b.len()))
-            .then(a.cmp(b))
+            .then(a.as_str().len().cmp(&b.as_str().len()))
+            .then(a.as_str().cmp(b.as_str()))
     });
-    let core = |n: &&&str| {
-        let n = n.to_ascii_lowercase();
+    let core = |n: &&FolderName| {
+        let n = n.as_str().to_ascii_lowercase();
         n.ends_with("-core") || n.ends_with("_core")
     };
     if ranked.first().is_some_and(|top| extended(top) == 0)
-        && let [only] = names.iter().filter(core).collect::<Vec<_>>().as_slice()
+        && let [only] = folders.iter().filter(core).collect::<Vec<_>>().as_slice()
     {
-        return (**only).to_owned();
+        return Some(only);
     }
-    ranked
-        .first()
-        .map_or_else(|| r#ref.to_string(), |n| (*n).to_owned())
+    ranked.first().copied()
 }
 
 #[cfg(test)]

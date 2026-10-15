@@ -14,10 +14,11 @@ use common::env::TestEnv;
 use common::targets::{battlenet, legacy_335};
 use common::trees::tree_hash;
 use omaddons::engine::inspect::{
-    ArchiveLimits, Inspected, compatible, inspect, inspect_dir, inspect_zip, verify,
+    ArchiveLimits, Inspected, accepts, inspect, inspect_dir, inspect_zip, partition, verify,
 };
+use omaddons::engine::plan::primary_folder;
 use omaddons::error::{Error, ErrorCode};
-use omaddons::model::Target;
+use omaddons::model::{FolderName, Target};
 use omaddons::rules::RulesTable;
 use omaddons::toc::{Verdict, WrongFlavorReason};
 use proptest::prelude::*;
@@ -51,10 +52,13 @@ mod support {
             .collect()
     }
 
-    /// Each folder's verdict on `target`, and whether the archive is compatible.
+    /// Each folder's verdict on `target`, and whether the target installs the archive
+    /// without metadata declaring it.
     pub fn verdicts(inspected: &Inspected, target: &Target) -> (Vec<(String, Verdict)>, bool) {
         let verdicts = verify(inspected, target, &RulesTable::builtin()).unwrap();
-        let ok = compatible(&verdicts);
+        let names: Vec<FolderName> = verdicts.iter().map(|v| v.folder.clone()).collect();
+        let primary = primary_folder(&"gh:o/r".parse().unwrap(), &names).unwrap();
+        let ok = accepts(&partition(&verdicts), false, primary);
         let list = verdicts
             .into_iter()
             .map(|v| (v.folder.as_str().to_owned(), v.report.verdict))
@@ -527,7 +531,8 @@ fn verify_applies_the_targets_load_rules() {
     assert!(verdicts(&wrath, &wotlk).1);
     assert!(!verdicts(&wrath, &retail).1);
 
-    // Out of date still installs; one wrong-flavor folder sinks the archive.
+    // Out of date still installs. Without metadata, a folder that only lists another
+    // client's interface sinks the archive; one its own TOC gates away is skipped.
     let old = inspect_bytes(zip_text(&[("Foo/Foo.toc", &toc("120000", &[]))])).unwrap();
     let (list, ok) = verdicts(&old, &retail);
     assert!(
@@ -540,6 +545,23 @@ fn verify_applies_the_targets_load_rules() {
     ]))
     .unwrap();
     assert!(!verdicts(&mixed, &retail).1);
+    let gated = inspect_bytes(zip_text(&[
+        ("A/A.toc", &toc("11509, 120105", &[])),
+        (
+            "B/B.toc",
+            &toc("11509, 120105", &["## AllowLoadGameType: standard"]),
+        ),
+    ]))
+    .unwrap();
+    let (list, ok) = verdicts(&gated, &era);
+    assert!(
+        ok && list[1].1
+            == Verdict::WrongFlavor {
+                reason: WrongFlavorReason::GameTypeExcluded
+            },
+        "{list:?}"
+    );
+    assert!(verdicts(&gated, &retail).1);
 }
 
 proptest! {

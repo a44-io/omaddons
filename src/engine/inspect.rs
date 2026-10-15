@@ -33,7 +33,7 @@ use crate::limits::{
 use crate::model::{FolderName, Target};
 use crate::rules::RulesTable;
 use crate::toc::{
-    FolderView, Verdict, VerdictReport, WrongFlavorReason, read_bounded, verify_target,
+    FolderView, Verdict, VerdictReport, WrongFlavorReason, judge, loaded_toc, read_bounded,
 };
 
 /// The archive limits in force.
@@ -840,6 +840,10 @@ fn wrapped_names(dir: &str) -> Vec<&str> {
 pub struct FolderVerdict {
     pub folder: FolderName,
     pub report: VerdictReport,
+    /// The required dependencies of the TOC the client loads (`Dependencies`,
+    /// `RequiredDeps`, `Dep*`).
+    #[serde(skip)]
+    pub dependencies: Vec<FolderName>,
 }
 
 /// Each folder judged by the target client's TOC load rules.
@@ -852,8 +856,16 @@ pub fn verify(
         .folders
         .iter()
         .map(|folder| {
-            let mut report = verify_target(&folder.view(), target, table)
+            let loaded = loaded_toc(&folder.view(), &target.rules)
                 .map_err(|e| Error::internal(format!("verifying {}: {e}", folder.name.as_str())))?;
+            let mut report = judge(
+                folder.name.as_str(),
+                loaded.as_ref(),
+                &target.rules,
+                target.family,
+                target.interface,
+                table,
+            );
             // A root has a TOC by construction; when the client loads none of them, the
             // folder is for other clients.
             if report.verdict == Verdict::NoToc {
@@ -864,19 +876,91 @@ pub fn verify(
             Ok(FolderVerdict {
                 folder: folder.name.clone(),
                 report,
+                dependencies: loaded
+                    .map(|l| l.toc.dependency_folders())
+                    .unwrap_or_default(),
             })
         })
         .collect()
 }
 
-/// Installable on the target: some folder loads, and none is for another flavor.
-pub fn compatible(verdicts: &[FolderVerdict]) -> bool {
-    verdicts
-        .iter()
-        .any(|v| matches!(v.report.verdict, Verdict::Compatible { .. }))
-        && !verdicts
+/// A folder of an archive that the target's client would not load, left out of the
+/// install.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct SkippedFolder {
+    pub name: FolderName,
+    #[serde(flatten)]
+    pub reason: WrongFlavorReason,
+}
+
+/// An archive's folders split by whether the target's client loads them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Partition {
+    /// In archive order.
+    pub install: Vec<FolderName>,
+    pub skip: Vec<SkippedFolder>,
+}
+
+/// Splits the verdicts: folders the client loads install, the others are skipped, and
+/// so is every loading folder that requires a skipped folder of the same archive
+/// (transitively), because the client would not load it either. Dependencies outside
+/// the archive are not judged here.
+pub fn partition(verdicts: &[FolderVerdict]) -> Partition {
+    let mut skip: Vec<SkippedFolder> = Vec::new();
+    let mut install: Vec<&FolderVerdict> = Vec::new();
+    for v in verdicts {
+        match &v.report.verdict {
+            Verdict::Compatible { .. } => install.push(v),
+            Verdict::WrongFlavor { reason } => skip.push(SkippedFolder {
+                name: v.folder.clone(),
+                reason: reason.clone(),
+            }),
+            Verdict::NoToc => skip.push(SkippedFolder {
+                name: v.folder.clone(),
+                reason: WrongFlavorReason::NoLoadableToc,
+            }),
+        }
+    }
+    // FolderName equality is the case-folded key, as the client resolves names.
+    while let Some((at, folder)) = install.iter().enumerate().find_map(|(at, v)| {
+        v.dependencies
             .iter()
-            .any(|v| matches!(v.report.verdict, Verdict::WrongFlavor { .. }))
+            .find_map(|dep| skip.iter().find(|s| s.name == *dep))
+            .map(|s| (at, s.name.clone()))
+    }) {
+        let blocked = install.remove(at);
+        skip.push(SkippedFolder {
+            name: blocked.folder.clone(),
+            reason: WrongFlavorReason::DependencySkipped { folder },
+        });
+    }
+    Partition {
+        install: install.into_iter().map(|v| v.folder.clone()).collect(),
+        skip,
+    }
+}
+
+/// Whether the target installs an archive split as `partition`. Some folder must load.
+/// When the publisher's metadata declares this client (`declared`), the archive is
+/// meant for it and the folders it does not load are simply skipped. Without that
+/// promise the addon's own folder (`primary`) must load, and every skipped folder must
+/// be gated away by its own TOCs (`AllowLoadGameType`/`ExcludeLoadGameType`, or TOCs
+/// only for other clients) or require such a folder: a folder that merely lists other
+/// clients' interfaces marks a build for another client, which is refused whole.
+pub fn accepts(partition: &Partition, declared: bool, primary: &FolderName) -> bool {
+    if partition.install.is_empty() {
+        return false;
+    }
+    declared
+        || (partition.install.contains(primary)
+            && partition.skip.iter().all(|s| {
+                matches!(
+                    s.reason,
+                    WrongFlavorReason::GameTypeExcluded
+                        | WrongFlavorReason::NoLoadableToc
+                        | WrongFlavorReason::DependencySkipped { .. }
+                )
+            }))
 }
 
 #[cfg(test)]
@@ -985,6 +1069,21 @@ mod tests {
             (
                 &["Foo/Foo.toc", "Foo/Libs/LibStub/LibStub.toc"],
                 &["Foo=Foo"],
+            ),
+            (
+                &[
+                    "DBM-Core/DBM-Core.toc",
+                    "DBM-Core/Libs/LibStub/LibStub.toc",
+                    "DBM-Core/Libs/LibDropDownMenu/LibDropDownMenu.toc",
+                    "DBM-Core/Libs/LibCustomGlow-1.0/LibCustomGlow-1.0.toc",
+                    "DBM-GUI/DBM-GUI.toc",
+                    "DBM-Midnight/DBM-Midnight.toc",
+                ],
+                &[
+                    "DBM-Core=DBM-Core",
+                    "DBM-GUI=DBM-GUI",
+                    "DBM-Midnight=DBM-Midnight",
+                ],
             ),
             (&["foo/FOO.TOC"], &["foo=foo"]),
             (&["Foo-Bar/Foo-Bar.toc"], &["Foo-Bar=Foo-Bar"]),
@@ -1116,7 +1215,213 @@ mod tests {
         );
     }
 
+    fn name(n: &str) -> FolderName {
+        FolderName::new(n).unwrap()
+    }
+
+    fn folder_verdict(folder: &str, verdict: Verdict, deps: &[&str]) -> FolderVerdict {
+        FolderVerdict {
+            folder: name(folder),
+            report: VerdictReport {
+                loaded: None,
+                verdict,
+                warnings: Vec::new(),
+            },
+            dependencies: deps.iter().map(|d| name(d)).collect(),
+        }
+    }
+
+    fn loads(folder: &str, deps: &[&str]) -> FolderVerdict {
+        folder_verdict(folder, Verdict::Compatible { out_of_date: false }, deps)
+    }
+
+    fn wrong(folder: &str, reason: WrongFlavorReason) -> FolderVerdict {
+        folder_verdict(folder, Verdict::WrongFlavor { reason }, &[])
+    }
+
+    fn not_in_family() -> WrongFlavorReason {
+        WrongFlavorReason::InterfaceNotInFamily {
+            interfaces: vec![120_105],
+            family: crate::rules::Family::Vanilla,
+        }
+    }
+
+    /// (installed, skipped as `name=reason`), and whether the target installs it with
+    /// and without metadata declaring it.
+    fn split(verdicts: &[FolderVerdict], primary: &str) -> (Vec<String>, Vec<String>, bool, bool) {
+        let p = partition(verdicts);
+        let install = p.install.iter().map(|f| f.as_str().to_owned()).collect();
+        let skip = p
+            .skip
+            .iter()
+            .map(|s| {
+                let reason = serde_json::to_value(&s.reason).unwrap();
+                match &s.reason {
+                    WrongFlavorReason::DependencySkipped { folder } => {
+                        format!("{}=dependency_skipped:{}", s.name.as_str(), folder.as_str())
+                    }
+                    _ => format!("{}={}", s.name.as_str(), reason["reason"].as_str().unwrap()),
+                }
+            })
+            .collect();
+        let primary = name(primary);
+        (
+            install,
+            skip,
+            accepts(&p, true, &primary),
+            accepts(&p, false, &primary),
+        )
+    }
+
+    #[test]
+    fn partitions() {
+        let gated = || WrongFlavorReason::GameTypeExcluded;
+        let none: Vec<String> = Vec::new();
+
+        // Every folder loads: all install, with or without metadata.
+        let all = [loads("Foo", &[]), loads("FooOptions", &["Foo"])];
+        assert_eq!(
+            split(&all, "Foo"),
+            (
+                vec!["Foo".into(), "FooOptions".into()],
+                none.clone(),
+                true,
+                true
+            )
+        );
+
+        // DBM on era: shared folders load, retail-only modules are gated by game type.
+        let dbm = [
+            loads("DBM-Core", &[]),
+            loads("DBM-GUI", &["DBM-Core"]),
+            wrong("DBM-Midnight", gated()),
+            wrong("DBM-Brawlers", gated()),
+        ];
+        assert_eq!(
+            split(&dbm, "DBM-Core"),
+            (
+                vec!["DBM-Core".into(), "DBM-GUI".into()],
+                vec![
+                    "DBM-Midnight=game_type_excluded".into(),
+                    "DBM-Brawlers=game_type_excluded".into()
+                ],
+                true,
+                true
+            )
+        );
+
+        // A folder for other clients only (TOCs with other suffixes) is a gate too.
+        let suffixed = [
+            loads("Foo", &[]),
+            wrong("Foo_Retail", WrongFlavorReason::NoLoadableToc),
+        ];
+        assert!(split(&suffixed, "Foo").3);
+
+        // A folder that merely lists other interfaces: skipped only on the publisher's
+        // word; without it the archive is a build for another client.
+        let listed = [loads("Foo", &[]), wrong("FooRetail", not_in_family())];
+        let (install, skip, declared, undeclared) = split(&listed, "Foo");
+        assert_eq!(
+            (install, skip, declared, undeclared),
+            (
+                vec!["Foo".into()],
+                vec!["FooRetail=interface_not_in_family".into()],
+                true,
+                false
+            )
+        );
+        for reason in [
+            WrongFlavorReason::NoInterface,
+            WrongFlavorReason::TargetInterfaceUnknown,
+        ] {
+            let other = [loads("Foo", &[]), wrong("Bar", reason)];
+            assert!(!split(&other, "Foo").3);
+        }
+
+        // Only a bundled library loads: the addon itself does not.
+        let library = [wrong("Foo", not_in_family()), loads("LibFoo", &[])];
+        let (_, _, declared, undeclared) = split(&library, "Foo");
+        assert!(declared && !undeclared);
+        let gated_primary = [wrong("Foo", gated()), loads("LibFoo", &[])];
+        assert!(!split(&gated_primary, "Foo").3);
+
+        // Requiring a skipped folder skips the folder, transitively and ignoring case;
+        // a dependency outside the archive is not judged here.
+        let chain = [
+            loads("A", &["b"]),
+            loads("B", &["C"]),
+            wrong("C", gated()),
+            loads("D", &["Elsewhere"]),
+        ];
+        assert_eq!(
+            split(&chain, "D"),
+            (
+                vec!["D".into()],
+                vec![
+                    "C=game_type_excluded".into(),
+                    "B=dependency_skipped:C".into(),
+                    "A=dependency_skipped:B".into()
+                ],
+                true,
+                true
+            )
+        );
+
+        // Nothing loads: refused even when declared.
+        let nothing = [
+            wrong("Foo", gated()),
+            folder_verdict("Bar", Verdict::NoToc, &[]),
+        ];
+        assert_eq!(
+            split(&nothing, "Foo"),
+            (
+                none,
+                vec![
+                    "Foo=game_type_excluded".into(),
+                    "Bar=no_loadable_toc".into()
+                ],
+                false,
+                false
+            )
+        );
+    }
+
     proptest! {
+        /// Every folder lands in exactly one side, and no installed folder requires a
+        /// skipped one.
+        #[test]
+        fn partitions_cover_the_archive(
+            folders in proptest::collection::vec(
+                (any::<u8>(), proptest::collection::vec(0usize..8, 0..3)),
+                0..8,
+            ),
+        ) {
+            let verdicts: Vec<FolderVerdict> = folders
+                .iter()
+                .enumerate()
+                .map(|(i, (kind, deps))| {
+                    let deps: Vec<String> = deps.iter().map(|d| format!("f{d}")).collect();
+                    let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+                    let verdict = match kind % 3 {
+                        0 => Verdict::WrongFlavor { reason: WrongFlavorReason::GameTypeExcluded },
+                        1 => Verdict::NoToc,
+                        _ => Verdict::Compatible { out_of_date: false },
+                    };
+                    folder_verdict(&format!("F{i}"), verdict, &deps)
+                })
+                .collect();
+            let p = partition(&verdicts);
+            let mut seen: Vec<&FolderName> =
+                p.install.iter().chain(p.skip.iter().map(|s| &s.name)).collect();
+            seen.sort_by(|a, b| a.key().cmp(b.key()));
+            let mut all: Vec<&FolderName> = verdicts.iter().map(|v| &v.folder).collect();
+            all.sort_by(|a, b| a.key().cmp(b.key()));
+            prop_assert_eq!(seen, all);
+            for v in verdicts.iter().filter(|v| p.install.contains(&v.folder)) {
+                prop_assert!(v.dependencies.iter().all(|d| !p.skip.iter().any(|s| s.name == *d)));
+            }
+        }
+
         #[test]
         fn random_entry_lists_never_panic(names in proptest::collection::vec("[a-zA-Z0-9._/\\\\:-]{1,24}", 0..16)) {
             let table = RulesTable::builtin();

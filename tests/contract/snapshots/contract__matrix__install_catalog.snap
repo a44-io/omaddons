@@ -28,7 +28,8 @@ expression: s.stable(&c.envelope)
             "WeakAuras"
           ],
           "removed": [],
-          "replaced": []
+          "replaced": [],
+          "skipped": []
         },
         "from_version": null,
         "name": "WeakAuras",

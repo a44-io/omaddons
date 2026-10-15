@@ -218,6 +218,26 @@ impl Outcome for InstallOutcome {
                         "{id}: {verb} {name} {} ({folders} folders)",
                         item.to_version.as_deref().unwrap_or("?")
                     )?;
+                    let skipped: Vec<&str> = item
+                        .folders
+                        .skipped
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect();
+                    if !skipped.is_empty() {
+                        let verb = if d.dry_run { "would skip" } else { "skipped" };
+                        let noun = if skipped.len() == 1 {
+                            "folder"
+                        } else {
+                            "folders"
+                        };
+                        writeln!(
+                            w,
+                            "  {verb} {} {noun} this client does not load: {}",
+                            skipped.len(),
+                            skipped.join(", ")
+                        )?;
+                    }
                 }
                 ItemStatus::Unchanged => {
                     writeln!(
@@ -793,10 +813,13 @@ fn sorted(folders: &FolderSummary) -> FolderSummary {
         list.sort_by(|a, b| a.key().cmp(b.key()));
         list
     };
+    let mut skipped = folders.skipped.clone();
+    skipped.sort_by(|a, b| a.name.key().cmp(b.name.key()));
     FolderSummary {
         added: sort(&folders.added),
         replaced: sort(&folders.replaced),
         removed: sort(&folders.removed),
+        skipped,
     }
 }
 
@@ -827,6 +850,8 @@ fn usage(message: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::inspect::SkippedFolder;
+    use crate::toc::WrongFlavorReason;
 
     fn item(request: &str, status: ItemStatus, version: Option<&str>) -> InstallItem {
         let failed = status == ItemStatus::Failed;
@@ -980,6 +1005,30 @@ mod tests {
     }
 
     #[test]
+    fn skipped_folders_get_one_line_per_addon() {
+        let skip = |n: &str| SkippedFolder {
+            name: FolderName::new(n).unwrap(),
+            reason: WrongFlavorReason::GameTypeExcluded,
+        };
+        let mut dbm = item("DBM-Core", ItemStatus::Installed, Some("12.1.14"));
+        dbm.folders.skipped = vec![skip("DBM-Brawlers"), skip("DBM-Midnight")];
+        let mut one = item("Foo", ItemStatus::Installed, Some("1.0"));
+        one.folders.skipped = vec![skip("Foo_Retail")];
+        assert_eq!(
+            human(&outcome(vec![dbm.clone(), one], None, false, false)),
+            "retail: installed DBM-Core 12.1.14 (1 folders)\n  \
+             skipped 2 folders this client does not load: DBM-Brawlers, DBM-Midnight\n\
+             retail: installed Foo 1.0 (1 folders)\n  \
+             skipped 1 folder this client does not load: Foo_Retail\n\
+             /reload in game\n"
+        );
+        assert!(
+            human(&outcome(vec![dbm], None, true, false))
+                .contains("  would skip 2 folders this client does not load:")
+        );
+    }
+
+    #[test]
     fn only_selection_and_verification_depend_on_the_client() {
         assert!(client_specific(ErrorCode::NoCompatibleRelease));
         assert!(client_specific(ErrorCode::WrongFlavor));
@@ -995,12 +1044,18 @@ mod tests {
     #[test]
     fn folders_are_sorted_by_key() {
         let f = |n: &str| FolderName::new(n).unwrap();
+        let skip = |n: &str| SkippedFolder {
+            name: f(n),
+            reason: WrongFlavorReason::GameTypeExcluded,
+        };
         let s = sorted(&FolderSummary {
             added: vec![f("b"), f("A"), f("c")],
             replaced: Vec::new(),
             removed: vec![f("Z"), f("y")],
+            skipped: vec![skip("m"), skip("K")],
         });
         assert_eq!(s.added, [f("A"), f("b"), f("c")]);
         assert_eq!(s.removed, [f("y"), f("Z")]);
+        assert_eq!(s.skipped, [skip("K"), skip("m")]);
     }
 }

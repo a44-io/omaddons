@@ -223,6 +223,107 @@ fn keyless_installs_into_a_synthetic_forever_target() {
     assert_no_github_rest(&read_net_log(&paths(&env)));
 }
 
+/// DBM and BigWigs ship one zip for every client, with retail-only boss modules gated by
+/// `AllowLoadGameType: standard`. On each synthetic Classic client and Forever the
+/// current releases install their shared folders (DBM-Core among them) and skip only
+/// gated folders; retail skips none. Nothing installed is unmanaged or invalid, and
+/// undo empties AddOns.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn boss_mods_install_their_shared_folders_on_classic_and_forever() {
+    let Some((env, _http)) = live() else { return };
+    let products = [
+        ("wow_classic_era", "era"),
+        ("wow_anniversary", "anniversary"),
+        ("wow_classic", "classic"),
+        ("wowf", "forever"),
+        ("wow", "retail"),
+    ];
+    let mut root = BattlenetRoot::at(Prefix::new(&env, "battlenet").wow_root());
+    for (code, _) in products {
+        root = root.product(code);
+    }
+    root.build();
+    let run = |args: &[&str]| -> Value {
+        let out = env.command().args(args).arg("--json").output().unwrap();
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let names = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|n| n.as_str().unwrap_or_default().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for (_, id) in products {
+        let installed = run(&["install", "dbm", "bigwigs", "-t", id]);
+        assert_eq!(
+            installed["exit_code"].as_i64(),
+            Some(0),
+            "{id}: {installed:#}"
+        );
+        for (item, core) in installed["data"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(["DBM-Core", "BigWigs_Core"])
+        {
+            let folders = &item["folders"];
+            let added = names(&folders["added"]);
+            let skipped: Vec<(String, String)> = folders["skipped"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| {
+                    (
+                        s["name"].as_str().unwrap_or_default().to_owned(),
+                        s["reason"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect();
+            let _ = writeln!(
+                std::io::stderr(),
+                "{id}: {} {} added {added:?} skipped {skipped:?}",
+                item["name"],
+                item["to_version"]
+            );
+            assert_eq!(item["status"], "installed", "{id}: {item:#}");
+            assert!(added.iter().any(|a| a == core), "{id}: {item:#}");
+            assert_eq!(
+                skipped.is_empty(),
+                id == "retail",
+                "{id}: only retail loads the retail modules: {item:#}"
+            );
+            assert!(
+                skipped
+                    .iter()
+                    .all(|(_, reason)| reason == "game_type_excluded"),
+                "{id}: {item:#}"
+            );
+        }
+        let status = run(&["status"]);
+        let target = status["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .unwrap();
+        assert_eq!(
+            (
+                &target["folders"]["unmanaged"],
+                &target["folders"]["invalid"]
+            ),
+            (&Value::from(0), &Value::from(0)),
+            "{id}: {status:#}"
+        );
+        let undone = run(&["undo"]);
+        assert_eq!(undone["exit_code"].as_i64(), Some(0), "{id}: {undone:#}");
+    }
+    assert_no_github_rest(&read_net_log(&paths(&env)));
+}
+
 /// git refs on another host through the git binary: `ls-remote` for the default branch of
 /// tullamods/Dominos on Codeberg, then a shallow checkout, each logged `via: git`.
 #[test]

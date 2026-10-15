@@ -34,7 +34,8 @@ expression: plan
               "Foo"
             ],
             "replaced": [],
-            "removed": []
+            "removed": [],
+            "skipped": []
           }
         }
       ],

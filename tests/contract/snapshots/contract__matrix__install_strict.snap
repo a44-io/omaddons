@@ -28,7 +28,8 @@ expression: s.stable(&c.envelope)
           "removed": [],
           "replaced": [
             "Foo"
-          ]
+          ],
+          "skipped": []
         },
         "from_version": "1",
         "name": "Foo",
@@ -49,7 +50,8 @@ expression: s.stable(&c.envelope)
         "folders": {
           "added": [],
           "removed": [],
-          "replaced": []
+          "replaced": [],
+          "skipped": []
         },
         "from_version": null,
         "name": null,

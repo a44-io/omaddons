@@ -29,7 +29,8 @@ expression: "support::stable(&envelope)"
             "FooOptions"
           ],
           "removed": [],
-          "replaced": []
+          "replaced": [],
+          "skipped": []
         },
         "from_version": null,
         "name": "Foo",

@@ -491,6 +491,81 @@ files = [["Foo_Forever.toc", "## Interface: 16001\n## AllowLoadGameType: camelot
 expect_file = "Foo_Forever.toc"
 expect_verdict = "compatible"
 
+# A boss-mod module (DBM-Midnight, BigWigs_TheVoidspire) shipped in a multi-client zip:
+# an Interface list naming every client, gated to retail by AllowLoadGameType. Only
+# retail's game type is standard, so every other family skips the folder.
+
+[[case]]
+group = "game_types"
+name = "allow-standard-list-on-retail"
+target = { product = "wow" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 20506, 30403, 38002, 40402, 50504, 120100, 120105\n## AllowLoadGameType: standard"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "game_types"
+name = "allow-standard-list-on-era"
+target = { product = "wow_classic_era" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 20506, 30403, 38002, 40402, 50504, 120100, 120105\n## AllowLoadGameType: standard"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "allow-standard-list-on-anniversary"
+target = { product = "wow_anniversary" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 20506, 30403, 38002, 40402, 50504, 120100, 120105\n## AllowLoadGameType: standard"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "allow-standard-list-on-wrath"
+target = { version = "3.4.3", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 20506, 30403, 38002, 40402, 50504, 120100, 120105\n## AllowLoadGameType: standard"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "allow-standard-list-on-titan"
+target = { product = "wow_classic_titan" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 20506, 30403, 38002, 40402, 50504, 120100, 120105\n## AllowLoadGameType: standard"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "allow-standard-list-on-cata"
+target = { version = "4.4.2", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 20506, 30403, 38002, 40402, 50504, 120100, 120105\n## AllowLoadGameType: standard"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "allow-standard-list-on-mists"
+target = { product = "wow_classic" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 20506, 30403, 38002, 40402, 50504, 120100, 120105\n## AllowLoadGameType: standard"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "allow-standard-list-on-forever"
+target = { product = "wowf" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 20506, 30403, 38002, 40402, 50504, 120100, 120105\n## AllowLoadGameType: standard"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
 [[case]]
 group = "game_types"
 name = "legacy-ignores-allow"

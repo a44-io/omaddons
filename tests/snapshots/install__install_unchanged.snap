@@ -15,7 +15,8 @@ expression: "support::stable(&envelope)"
         "folders": {
           "added": [],
           "removed": [],
-          "replaced": []
+          "replaced": [],
+          "skipped": []
         },
         "from_version": "v1.0.0",
         "name": "Foo",

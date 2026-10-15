@@ -295,6 +295,9 @@ pub enum WrongFlavorReason {
     /// An addon folder whose TOCs are all for other clients (archive verification; on
     /// disk such a folder is `no_toc`).
     NoLoadableToc,
+    /// It requires `folder`, a folder of the same archive the client does not load
+    /// (archive verification only).
+    DependencySkipped { folder: FolderName },
 }
 
 /// The verdict on one folder, with the TOC it rests on.
