@@ -2,3 +2,4 @@
 //! index, history, plans and `status.json`.
 
 pub mod paths;
+pub mod store;
