@@ -10,6 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod addons;
+pub mod archives;
 pub mod env;
 pub mod http;
 pub mod launchers;

@@ -24,6 +24,9 @@ pub const ARCHIVE_MAX_UNCOMPRESSED: u64 = GIB;
 /// Zip-bomb guard: the N of the largest allowed N:1 compression ratio, checked per entry
 /// and in total. (config)
 pub const ARCHIVE_MAX_RATIO: u64 = 200;
+/// The ratio applies once an entry, or the whole archive, has expanded past this many
+/// bytes: small repetitive files (10 KB of padding deflates over 300:1) are not bombs.
+pub const ARCHIVE_RATIO_FLOOR: u64 = MIB;
 /// Largest download accepted. (config)
 pub const DOWNLOAD_MAX_BYTES: u64 = 512 * MIB;
 /// How long to wait for the global lock, then `locked` (exit 5), or `concurrency_lost`
@@ -144,6 +147,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "ratio",
         Some("archive_max_ratio"),
         "Zip-bomb guard: largest N of an N:1 compression ratio",
+    ),
+    limit(
+        "ARCHIVE_RATIO_FLOOR",
+        LimitValue::Bytes(ARCHIVE_RATIO_FLOOR),
+        "bytes",
+        None,
+        "Expansion below which the compression ratio is not checked",
     ),
     limit(
         "DOWNLOAD_MAX_BYTES",
@@ -406,7 +416,7 @@ mod tests {
     #[rustfmt::skip]
     const LIMIT_NAMES: &[&str] = &[
         "ARCHIVE_MAX_ENTRIES", "ARCHIVE_MAX_UNCOMPRESSED", "ARCHIVE_MAX_RATIO",
-        "DOWNLOAD_MAX_BYTES", "LOCK_ACQUIRE_TIMEOUT", "TX_RETENTION", "SNAPSHOT_MAX_BYTES",
+        "ARCHIVE_RATIO_FLOOR", "DOWNLOAD_MAX_BYTES", "LOCK_ACQUIRE_TIMEOUT", "TX_RETENTION", "SNAPSHOT_MAX_BYTES",
         "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "REASON_MAX_CHARS", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT",

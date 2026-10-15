@@ -292,6 +292,9 @@ pub enum WrongFlavorReason {
     },
     /// The client's own interface is unknown (0), so nothing can be proven compatible.
     TargetInterfaceUnknown,
+    /// An addon folder whose TOCs are all for other clients (archive verification; on
+    /// disk such a folder is `no_toc`).
+    NoLoadableToc,
 }
 
 /// The verdict on one folder, with the TOC it rests on.

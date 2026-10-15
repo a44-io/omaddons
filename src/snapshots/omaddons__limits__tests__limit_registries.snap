@@ -218,6 +218,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Zip-bomb guard: largest N of an N:1 compression ratio"
     },
     {
+      "name": "ARCHIVE_RATIO_FLOOR",
+      "value": {
+        "bytes": 1048576
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Expansion below which the compression ratio is not checked"
+    },
+    {
       "name": "DOWNLOAD_MAX_BYTES",
       "value": {
         "bytes": 536870912
