@@ -1,6 +1,7 @@
 //! The cross-process crash matrix (vision §7, M1 checkpoints): every engine failpoint
 //! as a real crash (`abort`: no unwinding, the kernel releases the flocks), for a new
-//! install, an update that drops a folder, and a removal. After each crash every folder
+//! install, a first install into a client never launched (no `Interface/`), an update
+//! that drops a folder, and a removal. After each crash every folder
 //! is wholly old or wholly new; a reader reports the unfinished transaction and changes
 //! nothing; the next command that takes the lock recovers it (`journal_recovered`),
 //! after which all folders sit on one side, consistent with the record generation and
@@ -22,6 +23,8 @@ mod support {
     #[derive(Debug, Clone, Copy)]
     pub enum Op {
         Install,
+        /// An install into a client never launched: no `Interface/` at all.
+        FirstInstall,
         Update,
         Remove,
     }
@@ -29,7 +32,7 @@ mod support {
     impl Op {
         pub fn kind(self) -> &'static str {
             match self {
-                Self::Install => "install",
+                Self::Install | Self::FirstInstall => "install",
                 Self::Update => "update",
                 Self::Remove => "remove",
             }
@@ -39,6 +42,10 @@ mod support {
         pub fn prepare(self, s: &Scene) -> Vec<String> {
             match self {
                 Self::Install => s.install_args("gh:o/foo", "v1"),
+                Self::FirstInstall => {
+                    fs::remove_dir_all(s.home.client("_retail_").join("Interface")).unwrap();
+                    s.install_args("gh:o/foo", "v1")
+                }
                 Self::Update => {
                     s.install("gh:o/foo", "v1");
                     s.install_args("gh:o/foo", "v2")
@@ -146,6 +153,19 @@ mod support {
                 "{}",
                 context("journals left after recovery")
             );
+            // AddOns holds whole addon folders only: nothing staged or half-moved.
+            let mut stray: Vec<String> = fs::read_dir(s.addons())
+                .map(|l| {
+                    l.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            stray.retain(|n| !["Foo", "FooOld", "Bar"].contains(&n.as_str()));
+            assert!(
+                stray.is_empty(),
+                "{}",
+                context(&format!("stray AddOns entries {stray:?}"))
+            );
 
             // All folders on one side, consistent with state.
             let now = s.folders();
@@ -198,6 +218,11 @@ fn crash_matrix_install() {
 }
 
 #[test]
+fn crash_matrix_first_install() {
+    matrix(Op::FirstInstall);
+}
+
+#[test]
 fn crash_matrix_update() {
     matrix(Op::Update);
 }
@@ -210,9 +235,14 @@ fn crash_matrix_remove() {
 #[test]
 fn the_reference_runs_change_what_they_should() {
     let install = expected_new(Op::Install);
+    let first = expected_new(Op::FirstInstall);
     let update = expected_new(Op::Update);
     let remove = expected_new(Op::Remove);
     assert!(install["Foo"].is_some() && install["FooOld"].is_some());
+    assert_eq!(
+        first, install,
+        "a first install creates AddOns and installs"
+    );
     assert!(
         update["Foo"].is_some() && update["FooOld"].is_none(),
         "the update drops a folder"

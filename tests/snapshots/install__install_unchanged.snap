@@ -7,6 +7,7 @@ expression: "support::stable(&envelope)"
   "commands": [],
   "data": {
     "atomic_swap": null,
+    "creates_addons_dir": false,
     "dry_run": false,
     "items": [
       {

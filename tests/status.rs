@@ -247,6 +247,7 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
         client_dir: m.home.client("_retail_"),
         kind: TxKind::Install,
         started_at: Timestamp::now(),
+        creates_dirs: Vec::new(),
         commit: CommitPayload {
             record: TargetRecord::empty(key),
             index: IndexChanges::default(),
@@ -263,6 +264,7 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
                 result: TxResult::Committed,
                 reverts: None,
                 sv_deferred: false,
+                created_addons_dir: false,
             },
             stage_dir: m
                 .home

@@ -26,7 +26,7 @@ use super::journal::{
 };
 use super::plan::{
     self, AddonWork, Change, Plan, PlanCtx, PlanFailure, PlanRequest, RequestedChange, TargetPlan,
-    TargetRequest, rejudge, target_kind,
+    TargetRequest, one_addons_dir, rejudge, target_kind,
 };
 use super::stage::{Staged, stage};
 use super::swap::{SwapOp, snapshot_saved_variables, snapshot_state, swap};
@@ -65,6 +65,7 @@ pub const FAILPOINTS: &[&str] = &[
     "engine.registered",
     "engine.revalidated",
     "engine.journal.prepared",
+    "engine.addons_dir.created",
     "engine.snapshot.sv",
     "engine.snapshot.state",
     "engine.swap.before_rename",
@@ -127,6 +128,9 @@ pub struct TxOutcome {
     pub atomic_swap: bool,
     pub reload_required: ReloadRequired,
     pub warnings: Vec<Warning>,
+    /// The transaction creates (under `--dry-run`: would create) the client's
+    /// `Interface/AddOns`, which a client makes on its first launch.
+    pub creates_addons_dir: bool,
     /// Global-lock hold time, for the `-v` log event.
     #[serde(skip)]
     pub lock_held_ms: Option<u64>,
@@ -267,6 +271,7 @@ fn unchanged(tp: &TargetPlan, dry_run: bool) -> TxOutcome {
             ReloadRequired::None
         },
         warnings: tp.warnings.clone(),
+        creates_addons_dir: dry_run && tp.creates_addons_dir,
         lock_held_ms: None,
     }
 }
@@ -486,6 +491,7 @@ fn locked(
                 atomic_swap: true,
                 reload_required: ReloadRequired::None,
                 warnings,
+                creates_addons_dir: false,
                 lock_held_ms: Some(millis(&guard)),
             },
             recovered,
@@ -496,6 +502,16 @@ fn locked(
     let record = next_record(&current.value, &works, tx, now);
     let swap_ops: Vec<SwapOp> = works.iter().flat_map(|w| w.swap.clone()).collect();
     let index_changes = index_changes(&swap_ops, staged);
+    // A client that has never been launched has no AddOns folder yet. The transaction
+    // creates it once `prepared` records that it will; a case variant already there
+    // (`interface/addons`) is used instead.
+    let client = ClientPaths::new(&target.client_dir);
+    one_addons_dir(&client)?;
+    let addons = client.addons();
+    let creates_addons_dir = std::fs::symlink_metadata(&addons).is_err()
+        && swap_ops
+            .iter()
+            .any(|op| !matches!(op, SwapOp::Remove { .. }));
     let history = HistoryEntry {
         schema_version: history::CURRENT,
         tx: *tx,
@@ -509,8 +525,8 @@ fn locked(
         result: TxResult::Committed,
         reverts: None,
         sv_deferred: false,
+        created_addons_dir: creates_addons_dir,
     };
-    let client = ClientPaths::new(&target.client_dir);
     let prepared = Prepared {
         schema_version: journal::CURRENT,
         tx: *tx,
@@ -518,6 +534,11 @@ fn locked(
         client_dir: target.client_dir.clone(),
         kind,
         started_at: now,
+        creates_dirs: if creates_addons_dir {
+            vec![addons.clone()]
+        } else {
+            Vec::new()
+        },
         commit: CommitPayload {
             record: record.clone(),
             index: index_changes.clone(),
@@ -541,6 +562,10 @@ fn locked(
 
     let committed = (|| -> Result<(bool, Vec<Warning>)> {
         failpoint::hit("engine.journal.prepared").map_err(fail)?;
+        if creates_addons_dir {
+            ensure_dir_all(&mut s, &addons)?;
+            failpoint::hit("engine.addons_dir.created").map_err(fail)?;
+        }
         let touched: Vec<FolderName> = swap_ops.iter().map(touched_folder).collect();
         snapshot_saved_variables(&mut s, tx, &client, &touched)?;
         snapshot_state(&mut s, paths, tx, &key)?;
@@ -600,6 +625,7 @@ fn locked(
             atomic_swap,
             reload_required,
             warnings,
+            creates_addons_dir,
             lock_held_ms: Some(held),
         },
         recovered,
@@ -947,7 +973,12 @@ mod tests {
             "engine.retention",
         ];
         for name in FAILPOINTS {
-            if matches!(*name, "engine.plan.downloaded" | "engine.recover.step") {
+            // Not on an update's path; the first-install crash matrix covers the
+            // AddOns folder's creation.
+            if matches!(
+                *name,
+                "engine.plan.downloaded" | "engine.recover.step" | "engine.addons_dir.created"
+            ) {
                 continue;
             }
             let scene = with_v1();

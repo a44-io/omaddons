@@ -42,7 +42,7 @@ use crate::rules::RulesTable;
 use crate::sources::{SourceRegistry, Wanted, fetch_once};
 use crate::state::config::RunningPolicy;
 use crate::state::files_index::FilesIndex;
-use crate::state::paths::Paths;
+use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::store;
 use crate::toc::{DiskFolder, Verdict, loaded_toc};
@@ -147,6 +147,9 @@ pub struct TargetPlan {
     pub releases: Vec<PlannedRelease>,
     pub reload_required: ReloadRequired,
     pub warnings: Vec<Warning>,
+    /// The client has no `Interface/AddOns` yet (it creates one on its first launch),
+    /// so the transaction creates it.
+    pub creates_addons_dir: bool,
     /// The record generation planned against.
     #[serde(skip)]
     pub generation: u64,
@@ -301,6 +304,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             releases: Vec::new(),
             reload_required: ReloadRequired::None,
             warnings: Vec::new(),
+            creates_addons_dir: false,
             generation: record.generation,
             work: Vec::new(),
         };
@@ -350,6 +354,8 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             }
         }
         tp.kind = target_kind(&tp.changes);
+        tp.creates_addons_dir =
+            live.addons_dir_missing && tp.work.iter().any(|w| w.inspected.is_some());
         targets.push(tp);
     }
     failpoint::hit("engine.plan.done").map_err(|e| fail(ctx, &e))?;
@@ -597,6 +603,7 @@ impl TargetPlanner<'_> {
         file: Option<&std::path::Path>,
         set: Option<Result<ReleaseSet>>,
     ) -> Result<Option<PlannedAddon>> {
+        one_addons_dir(&ClientPaths::new(&self.target.client_dir))?;
         let existing = self
             .record
             .addons
@@ -884,8 +891,9 @@ impl TargetPlanner<'_> {
     ) -> Result<Judged> {
         let ctx = self.ctx;
         let owned = ownership::check(changes, self.live, addon, self.req.force, ctx.argv)?;
+        let addons_dir = self.target.addons_dir();
         let loaded = |live: &FolderName| {
-            DiskFolder::new(self.target.addons_dir().join(live.as_str()))
+            DiskFolder::new(addons_dir.join(live.as_str()))
                 .ok()
                 .and_then(|view| loaded_toc(&view, &self.target.rules).ok().flatten())
                 .map(|l| l.file)
@@ -1143,6 +1151,28 @@ impl TargetPlanner<'_> {
             json!({ "ref": wanted.r#ref.to_string(), "target": self.target.id, "tried": tried }),
         )
     }
+}
+
+/// Refuses a client with two spellings of `Interface` or of `Interface/AddOns` that
+/// differ only in case: Wine resolves names ignoring case, so the game reads one of
+/// them and an addon installed into the other may never load.
+pub(super) fn one_addons_dir(client: &ClientPaths) -> Result<()> {
+    let variants = client.addons_case_variants();
+    if variants.len() < 2 {
+        return Ok(());
+    }
+    let listed: Vec<String> = variants.iter().map(|p| p.display().to_string()).collect();
+    Err(Error::new(
+        ErrorCode::CaseCollision,
+        format!(
+            "{} differ only in case; the game reads only one of them, so omaddons installs into neither",
+            listed.join(" and ")
+        ),
+        Suggestion::text(
+            "move everything into one Interface/AddOns folder and delete the other spelling, then retry",
+        ),
+    )
+    .details(json!({ "paths": listed })))
 }
 
 fn reason_text(reason: EmptyReason) -> &'static str {

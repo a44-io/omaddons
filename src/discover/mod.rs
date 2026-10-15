@@ -572,8 +572,16 @@ pub(crate) fn find_child(dir: &Path, name: &str) -> Option<PathBuf> {
     if exact.symlink_metadata().is_ok() {
         return Some(exact);
     }
-    let mut matches: Vec<PathBuf> = std::fs::read_dir(dir)
-        .ok()?
+    find_children(dir, name).into_iter().next()
+}
+
+/// Every entry of `dir` named `name` ignoring ASCII case, sorted; Wine would read only
+/// one of several.
+pub(crate) fn find_children(dir: &Path, name: &str) -> Vec<PathBuf> {
+    let Ok(listing) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut matches: Vec<PathBuf> = listing
         .filter_map(Result::ok)
         .filter(|entry| {
             entry
@@ -584,7 +592,7 @@ pub(crate) fn find_child(dir: &Path, name: &str) -> Option<PathBuf> {
         .map(|entry| entry.path())
         .collect();
     matches.sort();
-    matches.into_iter().next()
+    matches
 }
 
 /// `dir` joined with each component of `rel`, each matched by [`find_child`].

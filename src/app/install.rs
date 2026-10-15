@@ -75,6 +75,9 @@ pub struct InstallData {
     pub reload_required: ReloadRequired,
     /// `null` when no swap happened.
     pub atomic_swap: Option<bool>,
+    /// The client has no `Interface/AddOns` yet (it creates one on its first launch), so
+    /// this install creates it (under `--dry-run`: would create it).
+    pub creates_addons_dir: bool,
     /// `-v` only: the target's client dir.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_dir: Option<PathBuf>,
@@ -198,6 +201,13 @@ impl Outcome for InstallOutcome {
     fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
         let d = &self.data;
         let id = &d.target.id;
+        if d.creates_addons_dir {
+            let verb = if d.dry_run { "would create" } else { "created" };
+            writeln!(
+                w,
+                "{id}: {verb} Interface/AddOns (this client has not been launched yet)"
+            )?;
+        }
         for item in &d.items {
             let name = item.name.as_deref().unwrap_or(&item.request);
             let folders = item.folders.added.len() + item.folders.replaced.len();
@@ -447,6 +457,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             items: built,
             reload_required: outcome.map_or(ReloadRequired::None, |o| o.reload_required),
             atomic_swap: swapped.then(|| outcome.is_none_or(|o| o.atomic_swap)),
+            creates_addons_dir: outcome.is_some_and(|o| o.creates_addons_dir),
             client_dir: verbose.then(|| target.target.client_dir.clone()),
         },
         warnings: unique,
@@ -897,6 +908,7 @@ mod tests {
                 items,
                 reload_required: ReloadRequired::Reload,
                 atomic_swap: None,
+                creates_addons_dir: false,
                 client_dir: None,
             },
             warnings: Vec::new(),
@@ -1026,6 +1038,26 @@ mod tests {
             human(&outcome(vec![dbm], None, true, false))
                 .contains("  would skip 2 folders this client does not load:")
         );
+    }
+
+    #[test]
+    fn creating_the_addons_folder_is_said_first() {
+        for (dry_run, verb) in [(true, "would create"), (false, "created")] {
+            let mut o = outcome(
+                vec![item("Foo", ItemStatus::Installed, Some("1.0"))],
+                None,
+                dry_run,
+                false,
+            );
+            o.data.creates_addons_dir = true;
+            let text = human(&o);
+            assert!(
+                text.starts_with(&format!(
+                    "retail: {verb} Interface/AddOns (this client has not been launched yet)\n"
+                )),
+                "{text}"
+            );
+        }
     }
 
     #[test]

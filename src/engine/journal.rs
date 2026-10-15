@@ -86,6 +86,12 @@ pub struct Prepared {
     pub kind: TxKind,
     #[schemars(with = "String")]
     pub started_at: Timestamp,
+    /// Directories the transaction creates before its first rename: the
+    /// `Interface/AddOns` of a client that has never been launched. Recovery leaves
+    /// them, empty or not of its doing: the client creates the same folder on its first
+    /// launch, and an empty one is inert.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub creates_dirs: Vec<PathBuf>,
     pub commit: CommitPayload,
 }
 
@@ -704,6 +710,7 @@ mod tests {
             client_dir: "/c/_retail_".into(),
             kind: TxKind::Install,
             started_at: Timestamp::now(),
+            creates_dirs: vec!["/c/_retail_/Interface/AddOns".into()],
             commit: CommitPayload {
                 record: TargetRecord::empty(key),
                 index: IndexChanges {
@@ -727,6 +734,7 @@ mod tests {
                     result: TxResult::Committed,
                     reverts: None,
                     sv_deferred: false,
+                    created_addons_dir: true,
                 },
                 stage_dir: "/c/_retail_/Interface/.omaddons/stage/x".into(),
                 sv_restore: None,
@@ -901,6 +909,7 @@ mod tests {
             client_dir: client.clone(),
             kind: TxKind::Install,
             started_at: Timestamp::now(),
+            creates_dirs: Vec::new(),
             commit: CommitPayload {
                 record: TargetRecord {
                     key,
@@ -925,6 +934,7 @@ mod tests {
                     result: TxResult::Committed,
                     reverts: None,
                     sv_deferred: false,
+                    created_addons_dir: false,
                 },
                 stage_dir: stage_dir.clone(),
                 sv_restore: None,

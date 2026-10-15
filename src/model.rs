@@ -507,9 +507,10 @@ pub struct Target {
 }
 
 impl Target {
-    /// `<client dir>/Interface/AddOns`. Produced here, never created here.
+    /// `<client dir>/Interface/AddOns`, spelled as on disk
+    /// ([`crate::state::paths::ClientPaths::addons`]). Produced here, never created here.
     pub fn addons_dir(&self) -> PathBuf {
-        self.client_dir.join("Interface").join("AddOns")
+        crate::state::paths::ClientPaths::new(&self.client_dir).addons()
     }
 
     /// Re-derives `rules` from `table` for this target's family, version and install

@@ -42,6 +42,10 @@ pub struct HistoryEntry {
     /// client was running; `undo <reverts> --saved-variables restore` finishes it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sv_deferred: bool,
+    /// The transaction created the client's `Interface/AddOns` (a client that had
+    /// never been launched); undo leaves it in place.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub created_addons_dir: bool,
 }
 
 /// One folder a transaction touched.
@@ -220,6 +224,7 @@ mod tests {
             result: TxResult::Committed,
             reverts: None,
             sv_deferred: false,
+            created_addons_dir: false,
         }
     }
 

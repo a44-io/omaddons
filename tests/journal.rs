@@ -146,6 +146,7 @@ mod support {
                 client_dir: self.target.client_dir.clone(),
                 kind: TxKind::Install,
                 started_at: Timestamp::now(),
+                creates_dirs: Vec::new(),
                 commit: CommitPayload {
                     record: TargetRecord {
                         key: self.key,
@@ -188,6 +189,7 @@ mod support {
                         result: TxResult::Committed,
                         reverts: None,
                         sv_deferred: false,
+                        created_addons_dir: false,
                     },
                     stage_dir: self.stage.clone(),
                     sv_restore: None,

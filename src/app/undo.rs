@@ -387,6 +387,7 @@ mod tests {
             result: TxResult::Committed,
             reverts: None,
             sv_deferred: false,
+            created_addons_dir: false,
         }
     }
 

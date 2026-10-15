@@ -55,7 +55,8 @@ expression: plan
         }
       ],
       "reload_required": "none",
-      "warnings": []
+      "warnings": [],
+      "creates_addons_dir": false
     }
   ],
   "failures": []

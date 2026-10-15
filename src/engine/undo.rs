@@ -238,6 +238,7 @@ fn commit(
         result: TxResult::Committed,
         reverts: Some(reverts),
         sv_deferred: planned.sv.counts.deferred > 0,
+        created_addons_dir: false,
     };
     let sv_restore = (!planned.sv.restore.is_empty()).then(|| SvRestore {
         from: reverts,
@@ -250,6 +251,7 @@ fn commit(
         client_dir: target.client_dir.clone(),
         kind: TxKind::Undo,
         started_at: now,
+        creates_dirs: Vec::new(),
         commit: CommitPayload {
             record: planned.record.clone(),
             index: planned.index.clone(),
@@ -375,6 +377,7 @@ impl Planned {
                 atomic_swap,
                 reload_required: self.reload_required,
                 warnings,
+                creates_addons_dir: false,
                 lock_held_ms,
             },
             sv: self.sv.counts,

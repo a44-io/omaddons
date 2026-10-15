@@ -161,6 +161,7 @@ impl Scene {
             client_dir: self.client.client_dir().to_path_buf(),
             kind: TxKind::Install,
             started_at: Timestamp::now(),
+            creates_dirs: Vec::new(),
             commit: CommitPayload {
                 record: TargetRecord {
                     key: self.key,
@@ -181,6 +182,7 @@ impl Scene {
                     result: TxResult::Committed,
                     reverts: None,
                     sv_deferred: false,
+                    created_addons_dir: false,
                 },
                 stage_dir: self.staged.stage_dir.clone(),
                 sv_restore: None,

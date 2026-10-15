@@ -1,5 +1,7 @@
 //! Where every file lives (vision §5.6), computed and never created: creation goes
-//! through fsx. Nothing here touches the filesystem; the only input is the environment.
+//! through fsx. Nothing here writes. [`Paths`] reads only the environment;
+//! [`ClientPaths`] also looks up how a client spells `Interface` and `AddOns` on disk,
+//! ignoring case as the client does.
 //!
 //! Every path derives from `HOME` and `XDG_{CONFIG,STATE,CACHE}_HOME` (DEC-6). The XDG
 //! rules match etcetera's XDG base strategy: a variable is used only when it holds an
@@ -10,6 +12,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use crate::discover::{find_child, find_children};
 use crate::error::{Error, Result};
 use crate::model::{PlanId, TargetKey, TxId};
 
@@ -308,14 +311,34 @@ impl ClientPaths {
         &self.client_dir
     }
 
-    /// `<client dir>/Interface`
+    /// `<client dir>/Interface`, spelled as on disk: Wine resolves names ignoring case,
+    /// so an existing `interface/` is the client's `Interface/` (the marker does the
+    /// same). `Interface` when there is none yet.
     pub fn interface(&self) -> PathBuf {
-        self.client_dir.join("Interface")
+        find_child(&self.client_dir, "Interface")
+            .unwrap_or_else(|| self.client_dir.join("Interface"))
     }
 
-    /// `<client dir>/Interface/AddOns`
+    /// `<client dir>/Interface/AddOns`, each part spelled as on disk. A client creates
+    /// it on its first launch, so it may not exist yet.
     pub fn addons(&self) -> PathBuf {
-        self.interface().join("AddOns")
+        let interface = self.interface();
+        find_child(&interface, "AddOns").unwrap_or_else(|| interface.join("AddOns"))
+    }
+
+    /// Two or more spellings of `Interface`, or else of `Interface/AddOns`, that differ
+    /// only in case (`Interface/AddOns` beside `interface/addons`); empty when there is
+    /// at most one. The game reads only one of them.
+    pub fn addons_case_variants(&self) -> Vec<PathBuf> {
+        let interfaces = find_children(&self.client_dir, "Interface");
+        if interfaces.len() > 1 {
+            return interfaces;
+        }
+        let addons = find_children(&self.interface(), "AddOns");
+        if addons.len() > 1 {
+            return addons;
+        }
+        Vec::new()
     }
 
     /// `<client dir>/Interface/.omaddons`
@@ -488,6 +511,37 @@ mod tests {
                 assert_eq!(actual, Path::new(&expected));
             }
         }
+    }
+
+    #[test]
+    fn client_paths_follow_the_spelling_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let c = ClientPaths::new(root);
+        assert_eq!(c.addons(), root.join("Interface/AddOns"), "nothing yet");
+        assert!(c.addons_case_variants().is_empty());
+
+        std::fs::create_dir_all(root.join("interface/addons")).unwrap();
+        assert_eq!(c.interface(), root.join("interface"));
+        assert_eq!(c.addons(), root.join("interface/addons"));
+        assert_eq!(c.marker(), root.join("interface/.omaddons/target.json"));
+        assert!(c.addons_case_variants().is_empty(), "one spelling is fine");
+
+        std::fs::create_dir_all(root.join("interface/AddOns")).unwrap();
+        assert_eq!(
+            c.addons_case_variants(),
+            [root.join("interface/AddOns"), root.join("interface/addons")]
+        );
+        std::fs::create_dir_all(root.join("Interface")).unwrap();
+        assert_eq!(
+            c.interface(),
+            root.join("Interface"),
+            "the exact name first"
+        );
+        assert_eq!(
+            c.addons_case_variants(),
+            [root.join("Interface"), root.join("interface")]
+        );
     }
 
     #[test]

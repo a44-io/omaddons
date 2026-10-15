@@ -71,8 +71,9 @@ A failure carries `error` with a `code`, a `message`, a `fix` and, when the fix 
 ## Safety
 
 - **Transactions.** Every change to a client runs under a journal: folders are staged, then swapped in atomically, so an interrupted run leaves each folder wholly old or wholly new, and the next run finishes or rolls it back.
+- **Clients never launched.** A client creates `Interface/AddOns` on its first launch. Until then, the first install creates it inside its transaction and says so (`creates_addons_dir`); undo leaves the empty folder.
 - **Undo.** Each transaction snapshots what it replaces. `undo` restores folders byte for byte, and restores the client's SavedVariables only if they changed since; while the game runs, that restore waits.
-- **Protected folders.** `Blizzard_*` folders are never written, and an addon folder whose name differs only in case from an existing one is refused.
+- **Protected folders.** `Blizzard_*` folders are never written, and an addon folder whose name differs only in case from an existing one is refused. An existing `interface/addons` is used as the client's AddOns folder; two spellings that differ only in case are refused, because the game reads only one of them.
 - **Hostile archives.** Path traversal, symlinks, duplicate or case-colliding entries, and archives past the entry, size or compression-ratio limits are refused before anything is written.
 - **Running clients.** By default (`running_policy = "safe"`) a running client can still receive updates that replace or add folders, and the result says `/reload` is needed. Removing or renaming a folder the game has loaded is refused until it exits, and SavedVariables restores wait for it. On legacy clients (1.12.1 to 5.4.8) `safe` refuses every change while the game runs. `refuse` blocks every change to a running client; `allow` blocks none.
 - **Retention.** Snapshots are kept for at least a day and pruned after that by age, count and size; the download cache is bounded.

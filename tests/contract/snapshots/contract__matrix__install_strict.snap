@@ -18,6 +18,7 @@ expression: s.stable(&c.envelope)
   ],
   "data": {
     "atomic_swap": true,
+    "creates_addons_dir": false,
     "dry_run": false,
     "items": [
       {

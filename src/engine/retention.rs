@@ -406,6 +406,7 @@ mod tests {
                 result: TxResult::Committed,
                 reverts: None,
                 sv_deferred: false,
+                created_addons_dir: false,
             };
             let mut s = WriteSession::untracked(Writer::Mutating, &self.scopes, "test");
             history::append(&mut s, &self.paths, &entry).unwrap();
