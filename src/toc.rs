@@ -5,10 +5,18 @@
 //! (vision §4.2, §4.3). It runs on archives from the internet, so it is infallible and
 //! never panics: anything odd becomes a [`TocIssue`]. Like the client, it reads only the
 //! first [`TOC_LINE_MAX`] bytes of each line. `## Key: Value` lines are directives,
-//! other `#` lines comments, and every other line a file reference. Nothing here
-//! evaluates conditionals or depends on the client's rules.
+//! other `#` lines comments, and every other line a file reference. The parser
+//! evaluates no conditionals and does not depend on the client's rules; [`loaded_toc`]
+//! and [`verdict`] apply them.
+
+mod loaded;
 
 use std::collections::BTreeMap;
+
+pub use loaded::{
+    DiskFolder, FolderView, LoadedToc, LoadedTocSummary, TocLevel, Verdict, VerdictReport,
+    WrongFlavorReason, effective_interfaces, loaded_toc, read_bounded, verdict, verify_target,
+};
 
 use schemars::JsonSchema;
 use serde::Serialize;
