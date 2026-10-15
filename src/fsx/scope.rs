@@ -194,6 +194,8 @@ impl Candidate {
 /// The write-scope table: canonical roots plus the registered client dirs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeTable {
+    /// The (non-canonical) paths the table was built from, for the lock and trash dirs.
+    paths: Paths,
     home: PathBuf,
     config: PathBuf,
     state: PathBuf,
@@ -215,6 +217,7 @@ impl ScopeTable {
     pub fn new(paths: &Paths, client_dirs: &[PathBuf], skill_dir: Option<&Path>) -> Result<Self> {
         let state = canonical(paths.state_dir())?;
         let mut table = Self {
+            paths: paths.clone(),
             home: canonical(paths.home())?,
             config: canonical(paths.config_dir())?,
             lock_file: state.join("lock"),
@@ -257,9 +260,24 @@ impl ScopeTable {
         Ok(())
     }
 
+    /// The paths the table was built from.
+    pub fn paths(&self) -> &Paths {
+        &self.paths
+    }
+
     /// `<state>/omaddons`, canonical.
     pub fn state_dir(&self) -> &Path {
         &self.state
+    }
+
+    /// `<cache>/omaddons`, canonical.
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache
+    }
+
+    /// The registered client dirs, canonical.
+    pub fn client_dirs(&self) -> &[PathBuf] {
+        &self.client_dirs
     }
 
     /// Whether `path` is somewhere fsx may keep its own bookkeeping (backups, action

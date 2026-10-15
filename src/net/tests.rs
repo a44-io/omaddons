@@ -1,4 +1,6 @@
 //! The stack over a scripted transport: no network.
+// Test-only file (the single-writer scanner skips files marked like this).
+#![cfg(test)]
 
 use std::collections::VecDeque;
 use std::io::Cursor;
