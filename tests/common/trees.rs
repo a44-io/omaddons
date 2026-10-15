@@ -471,6 +471,26 @@ pub fn tree_hash(dir: &Path) -> String {
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Every path under `dir` with its kind, length and modification time, sorted: a cheap
+/// "nothing was written" check for real installs, where hashing gigabytes would take
+/// minutes. Symlinks are not followed.
+pub fn tree_stat(dir: &Path) -> Vec<(PathBuf, bool, u64, std::time::SystemTime)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in fs::read_dir(&at).unwrap() {
+            let path = entry.unwrap().path();
+            let meta = fs::symlink_metadata(&path).unwrap();
+            if meta.is_dir() {
+                stack.push(path.clone());
+            }
+            out.push((path, meta.is_dir(), meta.len(), meta.modified().unwrap()));
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Every path under `dir`, relative and sorted, for failure messages.
 pub fn listing(dir: &Path) -> String {
     let mut paths = Vec::new();

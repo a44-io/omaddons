@@ -26,7 +26,8 @@ pub(crate) fn parse_cvar(text: &str, name: &str) -> Option<String> {
         .next_back()
 }
 
-fn set_line(line: &str, name: &str) -> Option<String> {
+/// The value of one `SET <name> <value>` line, or `None` for any other line.
+pub(crate) fn set_line(line: &str, name: &str) -> Option<String> {
     let line = line.trim();
     let (set, rest) = line.split_once(char::is_whitespace)?;
     if !set.eq_ignore_ascii_case("SET") {

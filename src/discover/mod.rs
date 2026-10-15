@@ -9,8 +9,11 @@
 pub mod battlenet;
 pub mod bpsv;
 pub mod config_wtf;
+pub mod custom;
 pub mod dosdevices;
+pub mod pe;
 pub mod product_db;
+pub mod realmlist;
 pub mod target;
 
 use std::io::Read;
@@ -23,10 +26,7 @@ use crate::limits::DISCOVERY_FILE_MAX_BYTES;
 /// The first [`DISCOVERY_FILE_MAX_BYTES`] of a regular file as lossy UTF-8; `None` when
 /// it is missing, not a file or unreadable.
 pub(crate) fn read_text(path: &Path) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
-    if !file.metadata().ok()?.is_file() {
-        return None;
-    }
+    let file = open_regular(path)?;
     let mut bytes = Vec::new();
     file.take(DISCOVERY_FILE_MAX_BYTES)
         .read_to_end(&mut bytes)
@@ -37,15 +37,22 @@ pub(crate) fn read_text(path: &Path) -> Option<String> {
 /// The bytes of a regular file of at most [`DISCOVERY_FILE_MAX_BYTES`]; `None` when it
 /// is missing, not a file, unreadable or larger (a binary format is not cut short).
 pub(crate) fn read_bytes(path: &Path) -> Option<Vec<u8>> {
-    let file = std::fs::File::open(path).ok()?;
-    if !file.metadata().ok()?.is_file() {
-        return None;
-    }
+    let file = open_regular(path)?;
     let mut bytes = Vec::new();
     file.take(DISCOVERY_FILE_MAX_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)
         .ok()?;
     (bytes.len() as u64 <= DISCOVERY_FILE_MAX_BYTES).then_some(bytes)
+}
+
+/// Opens `path` only if it is a regular file (after following symlinks): opening a FIFO
+/// planted under a client name would block discovery until a writer appears.
+pub(crate) fn open_regular(path: &Path) -> Option<std::fs::File> {
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    file.metadata().ok()?.is_file().then_some(file)
 }
 
 /// `dir/name`, matched ignoring ASCII case when the exact name is absent: Wine
@@ -101,6 +108,15 @@ mod tests {
             None,
             "binary reads refuse oversized files"
         );
+        let fifo = dir.path().join("fifo");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success());
+        if made {
+            assert_eq!(read_text(&fifo), None, "a FIFO is never opened");
+            assert_eq!(read_bytes(&fifo), None);
+        }
         let exact = dir.path().join("exact");
         fs::write(&exact, vec![1u8; DISCOVERY_FILE_MAX_BYTES as usize]).unwrap();
         assert_eq!(

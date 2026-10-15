@@ -25,6 +25,12 @@ pub fn pe_stub_product_only(major: u16, minor: u16, patch: u16, build: u16) -> V
     image([0; 4], [major, minor, patch, build])
 }
 
+/// A PE with distinct file and product versions, like a real 3.3.5a `Wow.exe`
+/// (file 3.3.5.12340, product 3.3.0.0).
+pub fn pe_stub_with(file: [u16; 4], product: [u16; 4]) -> Vec<u8> {
+    image(file, product)
+}
+
 /// The `(file, product)` versions `pelite` reads from a PE, each as
 /// `[major, minor, patch, build]`; panics when it cannot.
 pub fn pe_versions(bytes: &[u8]) -> ([u16; 4], [u16; 4]) {
