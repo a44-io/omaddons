@@ -2,6 +2,8 @@
 //! rendering happens in `output`.
 
 pub mod help;
+pub mod list;
+pub mod world;
 
 use crate::cli::{Cli, Command, Context};
 use crate::error::Exit;
@@ -9,7 +11,7 @@ use crate::output::{self, Reporter};
 
 /// The canonical names of the subcommands this build has. Each command bead adds its
 /// own (DEC-1).
-const COMMANDS: &[&str] = &["help"];
+const COMMANDS: &[&str] = &["help", "list"];
 
 /// The canonical (static) name for a subcommand name clap reported.
 pub fn canonical(name: &str) -> &'static str {
@@ -24,6 +26,7 @@ pub fn canonical(name: &str) -> &'static str {
 pub fn command_name(command: Option<&Command>) -> &'static str {
     match command {
         None | Some(Command::Help { .. }) => "help",
+        Some(Command::List(_)) => "list",
     }
 }
 
@@ -49,9 +52,20 @@ pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
         };
         return output::emit(cfg, &mut reporter, "help", ctx.started, ctx.offline, result);
     }
-    let result = match &cli.command {
-        None => Ok(help::bare()),
-        Some(Command::Help { command }) => help::for_command(command.as_deref(), &ctx.argv),
-    };
-    output::emit(cfg, &mut reporter, name, ctx.started, ctx.offline, result)
+    let (started, offline) = (ctx.started, ctx.offline);
+    match &cli.command {
+        None => output::emit(cfg, &mut reporter, name, started, offline, Ok(help::bare())),
+        Some(Command::Help { command }) => {
+            let result = help::for_command(command.as_deref(), &ctx.argv);
+            output::emit(cfg, &mut reporter, name, started, offline, result)
+        }
+        Some(Command::List(args)) => output::emit(
+            cfg,
+            &mut reporter,
+            name,
+            started,
+            offline,
+            list::run(ctx, *args),
+        ),
+    }
 }

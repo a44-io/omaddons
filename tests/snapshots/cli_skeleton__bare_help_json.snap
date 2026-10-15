@@ -8,6 +8,11 @@ expression: envelope
   "data": {
     "commands": [
       {
+        "about": "List the addons in each target's AddOns folder",
+        "aliases": [],
+        "name": "list"
+      },
+      {
         "about": "Show help for omaddons or one command",
         "aliases": [],
         "name": "help"

@@ -108,7 +108,11 @@ fn bare_omaddons_prints_help_and_exits_0() {
     let r = run(&[]);
     assert_eq!(r.code, 0, "{}", r.context());
     assert!(r.stdout.contains("Usage: omaddons"), "{}", r.context());
-    assert!(r.stdout.contains("Commands:\n  help"), "{}", r.context());
+    assert!(
+        r.stdout.contains("Commands:\n  list") && r.stdout.contains("\n  help "),
+        "common verbs first\n{}",
+        r.context()
+    );
     for name in [
         "ok",
         "failed",

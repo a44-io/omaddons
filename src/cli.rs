@@ -124,6 +124,8 @@ pub enum Command {
         /// The command to explain
         command: Option<String>,
     },
+    /// List the addons in each target's AddOns folder
+    List(crate::app::list::ListArgs),
 }
 
 /// What every command receives (DEC-2).
