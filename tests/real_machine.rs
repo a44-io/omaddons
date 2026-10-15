@@ -17,7 +17,8 @@ use std::path::PathBuf;
 use common::trees::tree_hash;
 use serde_json::Value;
 use support::{
-    addons_of, blizzard_hashes, enabled, install_then_undo, note, omaddons, skip_if_running, target,
+    addons_of, blizzard_hashes, declares, enabled, entries, install_then_undo, note, omaddons,
+    skip_if_running, target, target_where,
 };
 
 #[cfg(test)]
@@ -67,12 +68,42 @@ mod support {
 
     /// The status entry of the target whose family is `family`.
     pub fn target(status: &Value, family: &str) -> Value {
+        target_where(status, "family", family)
+    }
+
+    /// The status entry of the first target whose `key` is `value`.
+    pub fn target_where(status: &Value, key: &str, value: &str) -> Value {
         let found = status["data"]["targets"]
             .as_array()
-            .and_then(|ts| ts.iter().find(|t| t["family"] == family))
+            .and_then(|ts| ts.iter().find(|t| t[key] == value))
             .cloned();
-        assert!(found.is_some(), "no {family} target in {status:#}");
+        assert!(
+            found.is_some(),
+            "no target with {key} {value} in {status:#}"
+        );
         found.unwrap()
+    }
+
+    /// Whether the newest stable release of `name` declares `flavor` in its
+    /// release.json, as `info` reports it.
+    pub fn declares(name: &str, flavor: &str) -> bool {
+        let (code, info) = omaddons(&["info", name]);
+        assert_eq!(code, 0, "{info:#}");
+        info["data"]["latest"]["flavors"]
+            .as_array()
+            .is_some_and(|f| f.iter().any(|f| f == flavor))
+    }
+
+    /// The entries of `dir`, sorted; empty when it does not exist.
+    pub fn entries(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .map(|l| {
+                l.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
     }
 
     /// The AddOns directory of target `id`, from `targets`.
@@ -155,13 +186,41 @@ mod support {
 
 #[test]
 #[ignore = "real machine: OMADDONS_REAL_MACHINE=1"]
-fn status_reports_retail_and_335() {
+fn status_reports_every_client() {
     if !enabled(false) {
         return;
     }
     let (code, status) = omaddons(&["status"]);
     note("status", &status);
     assert_eq!(code, 0, "{status:#}");
+
+    // The WoW: Forever stress-test client (installed 2026-10-15).
+    let forever = target_where(&status, "product", "wowf");
+    assert_eq!(
+        (&forever["family"], &forever["interface"], &forever["kind"]),
+        (
+            &Value::from("forever"),
+            &Value::from(16_001),
+            &Value::from("live")
+        ),
+        "{forever:#}"
+    );
+    assert!(
+        forever["version"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("1.60."),
+        "{forever:#}"
+    );
+    let id = forever["id"].as_str().unwrap_or("forever").to_owned();
+    let (code, list) = omaddons(&["list", "-t", &id]);
+    assert_eq!(code, 0, "{list:#}");
+    assert_eq!(
+        list["data"]["targets"][0]["addons_dir_missing"],
+        !addons_of(&id).is_dir(),
+        "list reports the AddOns folder as it is on disk: {list:#}"
+    );
+
     let retail = target(&status, "mainline");
     assert_eq!(
         (&retail["id"], &retail["product"], &retail["kind"]),
@@ -220,6 +279,93 @@ fn keyless_installs_retail() {
         retail["key"].is_string(),
         "registered on first mutation: {retail:#}"
     );
+}
+
+/// The real WoW: Forever stress-test client (`wowf`, `_forever_`). Each keyless publisher
+/// installs exactly when its release.json declares `forever`; DBM and BigWigs skip their
+/// retail-only modules (game type `standard`, Forever's is `camelot`); a client never
+/// launched gets its AddOns folder inside the transaction. Everything is undone: AddOns
+/// ends as found, except that a folder this test created stays, empty.
+#[test]
+#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
+fn keyless_installs_forever() {
+    if !enabled(true) {
+        return;
+    }
+    let (_, status) = omaddons(&["status"]);
+    let forever = target_where(&status, "product", "wowf");
+    if skip_if_running(&forever) {
+        return;
+    }
+    let id = forever["id"].as_str().unwrap_or("forever").to_owned();
+    let addons = addons_of(&id);
+    let had_addons = addons.is_dir();
+    let before = had_addons.then(|| tree_hash(&addons));
+    note(
+        "forever before",
+        &serde_json::json!({ "addons_dir_exists": had_addons, "version": forever["version"] }),
+    );
+
+    let refs = ["plater", "bartender4", "dbm", "bigwigs", "questie"];
+    let declared: Vec<&str> = refs
+        .iter()
+        .copied()
+        .filter(|r| declares(r, "forever"))
+        .collect();
+    let undeclared: Vec<&str> = refs
+        .iter()
+        .copied()
+        .filter(|r| !declared.contains(r))
+        .collect();
+    note("declares forever", &serde_json::json!(declared));
+    let installed = install_then_undo(&id, &refs, &undeclared);
+    assert_eq!(
+        installed["data"]["creates_addons_dir"], !had_addons,
+        "the AddOns folder is created exactly when it was missing: {installed:#}"
+    );
+    for item in installed["data"]["items"].as_array().into_iter().flatten() {
+        let request = item["request"].as_str().unwrap_or_default();
+        let ok = item["status"] == "installed";
+        assert_eq!(
+            ok,
+            declared.contains(&request),
+            "{request}: installs exactly when its release.json declares forever: {item:#}"
+        );
+        if ok && ["dbm", "bigwigs"].contains(&request) {
+            let skipped = item["folders"]["skipped"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                !skipped.is_empty() && skipped.iter().all(|s| s["reason"] == "game_type_excluded"),
+                "{request}: retail-only modules skipped by game type: {item:#}"
+            );
+        }
+    }
+
+    // WeakAuras installs only once its release.json declares forever.
+    let weakauras = declares("weakauras", "forever");
+    let (code, wa) = omaddons(&["install", "weakauras", "-t", &id]);
+    note(&format!("weakauras (declares forever: {weakauras})"), &wa);
+    if let Some(tx) = wa["data"]["tx"].as_str() {
+        let (undone, _) = omaddons(&["undo", tx]);
+        assert_eq!(undone, 0);
+    }
+    if weakauras {
+        assert_eq!(code, 0, "{wa:#}");
+        assert_eq!(wa["data"]["items"][0]["status"], "installed", "{wa:#}");
+    } else {
+        assert_eq!(wa["error"]["code"], "no_compatible_release", "{wa:#}");
+    }
+
+    match before {
+        Some(hash) => assert_eq!(tree_hash(&addons), hash, "forever AddOns as before"),
+        None => assert_eq!(
+            entries(&addons),
+            Vec::<String>::new(),
+            "the created AddOns folder stays, empty"
+        ),
+    }
 }
 
 #[test]
