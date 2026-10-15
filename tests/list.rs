@@ -317,19 +317,28 @@ fn verbose_lists_folders_and_paths() {
 }
 
 #[test]
+/// Only the derived discovery cache may be written (any command may refresh it); state,
+/// config and client dirs are untouched.
 fn list_writes_nothing() {
     let env = TestEnv::new();
     retail(&env);
-    let before = tree_hash(env.root());
+    let hashes = || {
+        (
+            tree_hash(&env.home()),
+            tree_hash(&env.state()),
+            tree_hash(&env.config()),
+        )
+    };
+    let before = hashes();
     for args in [&[][..], &["--unmanaged", "--protected"][..], &["-v"][..]] {
         assert_eq!(list(&env, args).0, 0);
     }
-    assert_eq!(
-        tree_hash(env.root()),
-        before,
-        "state, cache and client dirs unchanged"
-    );
+    assert_eq!(hashes(), before, "state, config and client dirs unchanged");
     assert!(!Path::new(&env.state().join("omaddons/net.log")).exists());
+    assert!(
+        env.cache().join("omaddons/discovery.json").is_file(),
+        "the cache is derived data"
+    );
 }
 
 #[test]

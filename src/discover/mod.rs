@@ -13,6 +13,7 @@
 
 pub mod battlenet;
 pub mod bpsv;
+pub mod cache;
 pub mod config_wtf;
 pub mod custom;
 pub mod dosdevices;
@@ -87,12 +88,40 @@ pub fn discover(input: &DiscoveryInput, table: &RulesTable) -> Discovery {
 
 /// [`discover`] with explicit scan limits.
 pub fn discover_with(input: &DiscoveryInput, table: &RulesTable, limits: ScanLimits) -> Discovery {
+    let Collected {
+        roots,
+        mut warnings,
+        mut diagnostics,
+    } = collect(input, limits);
+    let mut targets = Vec::new();
+    for root in &roots {
+        match parse_root(root, table) {
+            Ok((found, w)) => {
+                targets.extend(found);
+                warnings.extend(w);
+            }
+            Err(note) => diagnostics.push(note),
+        }
+    }
+    finish(targets, warnings, diagnostics)
+}
+
+/// The roots to parse, in route order, with the scan's truncation warning.
+pub(crate) struct Collected {
+    pub roots: Vec<RootRequest>,
+    pub warnings: Vec<Warning>,
+    pub diagnostics: Vec<String>,
+}
+
+/// Hints, then the bounded scan: every root to parse, once each.
+pub(crate) fn collect(input: &DiscoveryInput, limits: ScanLimits) -> Collected {
     let mut diagnostics = Vec::new();
     let prefixes = collect_prefixes(input, &mut diagnostics);
     let mut roots = Candidates::default();
 
     // (a) product.db: install paths named directly, on any drive.
     for prefix in &prefixes {
+        let db = product_db::product_db_path(&prefix.path);
         for entry in product_db::read_product_db(&prefix.path) {
             let Some(path) = dosdevices::map_windows_path(&prefix.path, &entry.install_path) else {
                 diagnostics.push(format!(
@@ -114,7 +143,7 @@ pub fn discover_with(input: &DiscoveryInput, table: &RulesTable, limits: ScanLim
                     .insert(product.clone(), version.clone());
             }
             let route = Route::new(&prefix.qualifier, DiscoverySource::ProductDb);
-            roots.add(path, None, route, hints, &mut diagnostics);
+            roots.add(path, None, route, hints, Some(db.clone()), &mut diagnostics);
         }
     }
 
@@ -132,6 +161,7 @@ pub fn discover_with(input: &DiscoveryInput, table: &RulesTable, limits: ScanLim
                     Some(kind),
                     route,
                     BattlenetHints::default(),
+                    None,
                     &mut diagnostics,
                 );
             }
@@ -153,6 +183,7 @@ pub fn discover_with(input: &DiscoveryInput, table: &RulesTable, limits: ScanLim
                 Some(kind),
                 route.clone(),
                 BattlenetHints::default(),
+                None,
                 &mut diagnostics,
             );
         }
@@ -165,6 +196,7 @@ pub fn discover_with(input: &DiscoveryInput, table: &RulesTable, limits: ScanLim
                 Some(kind),
                 route,
                 BattlenetHints::default(),
+                None,
                 &mut diagnostics,
             );
         }
@@ -177,6 +209,7 @@ pub fn discover_with(input: &DiscoveryInput, table: &RulesTable, limits: ScanLim
                 Some(kind),
                 route.clone(),
                 BattlenetHints::default(),
+                None,
                 &mut diagnostics,
             );
         }
@@ -190,38 +223,13 @@ pub fn discover_with(input: &DiscoveryInput, table: &RulesTable, limits: ScanLim
                 Some(kind),
                 route,
                 BattlenetHints::default(),
+                None,
                 &mut diagnostics,
             );
         }
     }
 
-    let mut targets = Vec::new();
     let mut warnings = Vec::new();
-    for root in roots.0 {
-        let kind = root.kind.or_else(|| {
-            if battlenet::is_battlenet_root(&root.path) {
-                Some(RootKind::Battlenet)
-            } else if custom::is_custom_root(&root.path) {
-                Some(RootKind::Custom)
-            } else {
-                None
-            }
-        });
-        let (q, s) = (&root.route.qualifier, &root.route.source);
-        match kind {
-            Some(RootKind::Battlenet) => {
-                let (found, w) = battlenet::discover_root(&root.path, table, &root.hints, q, s);
-                targets.extend(found);
-                warnings.extend(w);
-            }
-            Some(RootKind::Custom) => {
-                let (found, w) = custom::discover_custom_root(&root.path, table, q, s);
-                targets.extend(found);
-                warnings.extend(w);
-            }
-            None => diagnostics.push(format!("{} is not a WoW root", root.path.display())),
-        }
-    }
     if let Some(base) = &scanner.truncated {
         warnings.push(
             Warning::new(
@@ -238,7 +246,55 @@ pub fn discover_with(input: &DiscoveryInput, table: &RulesTable, limits: ScanLim
         );
     }
     diagnostics.append(&mut scanner.diagnostics);
+    Collected {
+        roots: roots.0,
+        warnings,
+        diagnostics,
+    }
+}
 
+/// The root's kind: as found, else by looking.
+pub(crate) fn root_kind(root: &RootRequest) -> Option<RootKind> {
+    root.kind.or_else(|| {
+        if battlenet::is_battlenet_root(&root.path) {
+            Some(RootKind::Battlenet)
+        } else if custom::is_custom_root(&root.path) {
+            Some(RootKind::Custom)
+        } else {
+            None
+        }
+    })
+}
+
+/// The targets and warnings of one root; a diagnostic when it is not a WoW root.
+pub(crate) fn parse_root(
+    root: &RootRequest,
+    table: &RulesTable,
+) -> Result<(Vec<DiscoveredTarget>, Vec<Warning>), String> {
+    let (q, s) = (&root.route.qualifier, &root.route.source);
+    match root_kind(root) {
+        Some(RootKind::Battlenet) => Ok(battlenet::discover_root(
+            &root.path,
+            table,
+            &root.hints,
+            q,
+            s,
+        )),
+        Some(RootKind::Custom) => {
+            let (found, w) = custom::discover_custom_root(&root.path, table, q, s);
+            Ok((found.into_iter().collect(), w))
+        }
+        None => Err(format!("{} is not a WoW root", root.path.display())),
+    }
+}
+
+/// Sorts targets by install root then flavor folder, and warnings by code then
+/// message, so the same filesystem always gives the same output.
+pub(crate) fn finish(
+    mut targets: Vec<DiscoveredTarget>,
+    mut warnings: Vec<Warning>,
+    diagnostics: Vec<String>,
+) -> Discovery {
     targets.sort_by(|a, b| {
         let key = |t: &DiscoveredTarget| {
             (
@@ -262,14 +318,14 @@ pub fn discover_with(input: &DiscoveryInput, table: &RulesTable, limits: ScanLim
 
 /// How a root was reached: what the registry appends on an id collision, and the
 /// source recorded with the target.
-#[derive(Debug, Clone)]
-struct Route {
-    qualifier: String,
-    source: DiscoverySource,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Route {
+    pub qualifier: String,
+    pub source: DiscoverySource,
 }
 
 impl Route {
-    fn new(qualifier: &str, source: DiscoverySource) -> Self {
+    pub(crate) fn new(qualifier: &str, source: DiscoverySource) -> Self {
         Self {
             qualifier: qualifier.to_owned(),
             source,
@@ -377,19 +433,22 @@ fn root_of_exe(exe: &Path) -> Option<(PathBuf, RootKind)> {
     custom::is_custom_root(dir).then(|| (dir.to_path_buf(), RootKind::Custom))
 }
 
-/// One root to discover, reached first through `route`.
-struct Candidate {
-    path: PathBuf,
-    canonical: PathBuf,
-    kind: Option<RootKind>,
-    route: Route,
-    hints: BattlenetHints,
+/// One root to parse, reached first through `route`.
+#[derive(Debug, Clone)]
+pub(crate) struct RootRequest {
+    pub path: PathBuf,
+    pub canonical: PathBuf,
+    pub kind: Option<RootKind>,
+    pub route: Route,
+    pub hints: BattlenetHints,
+    /// The `product.db` files the hints came from.
+    pub hint_files: Vec<PathBuf>,
 }
 
 /// Roots in route order, each kept once by canonical path. Hints from later routes
 /// still merge in (one product.db lists every product of a root separately).
 #[derive(Default)]
-struct Candidates(Vec<Candidate>);
+struct Candidates(Vec<RootRequest>);
 
 impl Candidates {
     fn add(
@@ -398,6 +457,7 @@ impl Candidates {
         kind: Option<RootKind>,
         route: Route,
         hints: BattlenetHints,
+        hint_file: Option<PathBuf>,
         diagnostics: &mut Vec<String>,
     ) {
         let canonical = match std::fs::canonicalize(&path) {
@@ -422,15 +482,21 @@ impl Candidates {
                     .entry(product)
                     .or_insert(version);
             }
+            if let Some(file) = hint_file
+                && !existing.hint_files.contains(&file)
+            {
+                existing.hint_files.push(file);
+            }
             existing.kind = existing.kind.or(kind);
             return;
         }
-        self.0.push(Candidate {
+        self.0.push(RootRequest {
             path,
             canonical,
             kind,
             route,
             hints,
+            hint_files: hint_file.into_iter().collect(),
         });
     }
 }

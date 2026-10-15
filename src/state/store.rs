@@ -125,6 +125,10 @@ pub const KINDS: &[(&str, SchemaVersion)] = &[
         <super::registry::TargetMarker as Versioned>::KIND,
         <super::registry::TargetMarker as Versioned>::CURRENT,
     ),
+    (
+        <crate::discover::cache::DiscoveryCache as Versioned>::KIND,
+        <crate::discover::cache::DiscoveryCache as Versioned>::CURRENT,
+    ),
     ("history", super::history::CURRENT),
 ];
 

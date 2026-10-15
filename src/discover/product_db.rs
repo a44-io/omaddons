@@ -31,13 +31,17 @@ pub struct ProductDbEntry {
 /// The WoW installs of `<prefix>/drive_c/ProgramData/Battle.net/Agent/product.db`;
 /// empty when it is missing, too large or unreadable.
 pub fn read_product_db(prefix: &Path) -> Vec<ProductDbEntry> {
-    let path = prefix
+    read_bytes(&product_db_path(prefix)).map_or_else(Vec::new, |bytes| parse_product_db(&bytes))
+}
+
+/// `<prefix>/drive_c/ProgramData/Battle.net/Agent/product.db`.
+pub fn product_db_path(prefix: &Path) -> std::path::PathBuf {
+    prefix
         .join("drive_c")
         .join("ProgramData")
         .join("Battle.net")
         .join("Agent")
-        .join("product.db");
-    read_bytes(&path).map_or_else(Vec::new, |bytes| parse_product_db(&bytes))
+        .join("product.db")
 }
 
 /// The WoW installs in a `product.db`, in file order. Never fails: a malformed file

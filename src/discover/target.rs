@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::Target;
 
-/// A client found by discovery, before registration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+/// A client found by discovery, before registration. When deserialized (the discovery
+/// cache), `target.rules` is a placeholder until `target.refresh_rules(&table)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DiscoveredTarget {
     /// `key: None`; `id` is the default id suggestion.
     pub target: Target,

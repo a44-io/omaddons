@@ -1,9 +1,11 @@
 //! What a command sees of the machine: the state paths, the rules, and every discovered
-//! target with its identity. Read commands build it without the lock and never write.
+//! target with its identity. Read commands build it without the lock; the only write
+//! is the derived discovery cache.
 
 use crate::cli::Context;
+use crate::discover::cache::{DiscoveryMode, discover_cached};
 use crate::discover::registry::{Resolved, reconcile, resolve_one};
-use crate::discover::{DiscoveredTarget, DiscoveryInput, discover};
+use crate::discover::{DiscoveredTarget, DiscoveryInput, ScanLimits};
 use crate::error::{Result, Warning};
 use crate::rules::RulesTable;
 use crate::state::paths::Paths;
@@ -23,8 +25,14 @@ pub struct World {
 
 impl World {
     /// Discovers every target under the user's home and the registry's manual roots,
-    /// and gives each its registered or provisional identity.
+    /// reusing unchanged roots from the discovery cache, and gives each its registered
+    /// or provisional identity.
     pub fn load() -> Result<Self> {
+        Self::load_with(DiscoveryMode::Full)
+    }
+
+    /// [`World::load`] with an explicit cache mode (`status --cached`, `--rescan`).
+    pub fn load_with(mode: DiscoveryMode) -> Result<Self> {
         let paths = Paths::from_env()?;
         let table = RulesTable::builtin();
         let loaded = load_registry(&paths)?;
@@ -41,7 +49,7 @@ impl World {
                 .collect(),
             ..DiscoveryInput::default()
         };
-        let found = discover(&input, &table);
+        let (found, _) = discover_cached(&input, &table, &paths, ScanLimits::default(), mode);
         warnings.extend(found.warnings);
         let resolved = reconcile(&registry, &found.targets);
         warnings.extend(resolved.warnings.iter().cloned());

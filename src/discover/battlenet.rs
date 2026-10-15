@@ -16,7 +16,9 @@ use crate::model::Target;
 use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind, interface_for};
 
 /// What `product.db` knows about a root, passed in by the scan; empty without hints.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct BattlenetHints {
     /// Flavor folder (e.g. `_forever_`) → product code.
     pub product_by_folder: BTreeMap<String, String>,

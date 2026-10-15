@@ -32,8 +32,11 @@ impl Default for ScanLimits {
 }
 
 /// What a directory is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RootKind {
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum RootKind {
     Battlenet,
     Custom,
 }
