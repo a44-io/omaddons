@@ -25,8 +25,8 @@ use super::journal::{
     self, CommitPayload, IndexChanges, Journal, Prepared, RecoveryAction, recover_all, recover_tx,
 };
 use super::plan::{
-    self, AddonWork, Change, Plan, PlanCtx, PlanFailure, PlanRequest, RequestedChange, TargetPlan,
-    TargetRequest, one_addons_dir, rejudge, target_kind,
+    self, AddonWork, Change, Plan, PlanCtx, PlanFailure, PlanRequest, Planned, RequestedChange,
+    TargetPlan, TargetRequest, one_addons_dir, push_new, rejudge, target_kind,
 };
 use super::stage::{Staged, stage};
 use super::swap::{SwapOp, snapshot_saved_variables, snapshot_state, swap};
@@ -134,6 +134,9 @@ pub struct TxOutcome {
     /// Global-lock hold time, for the `-v` log event.
     #[serde(skip)]
     pub lock_held_ms: Option<u64>,
+    /// `-v` notes on addons left unchanged (see [`TargetPlan::notes`]).
+    #[serde(skip)]
+    pub notes: Vec<String>,
 }
 
 /// Everything a run produced.
@@ -273,6 +276,7 @@ fn unchanged(tp: &TargetPlan, dry_run: bool) -> TxOutcome {
         warnings: tp.warnings.clone(),
         creates_addons_dir: dry_run && tp.creates_addons_dir,
         lock_held_ms: None,
+        notes: tp.notes.clone(),
     }
 }
 
@@ -458,20 +462,27 @@ fn locked(
     let mut works = Vec::new();
     let mut changes = Vec::new();
     let mut reload_required = ReloadRequired::None;
-    let mut warnings = Vec::new();
+    // The addons planning left unchanged keep their warnings and notes; the work is
+    // judged again.
+    let mut warnings = tp.unchanged_warnings.clone();
+    let mut notes = tp.notes.clone();
     for planned in &tp.work {
         match rejudge(plan_req, &plan_ctx, &target, planned) {
-            Ok(Some(p)) => {
+            Ok(Planned::Change(p)) => {
+                let p = *p;
                 reload_required = reload_required.max(p.reload_required);
-                for w in p.warnings {
-                    if !warnings.contains(&w) {
-                        warnings.push(w);
-                    }
-                }
+                push_new(&mut warnings, p.warnings);
                 changes.push(p.change);
                 works.push(p.work);
             }
-            Ok(None) => {}
+            // A pinned no-op is not a refusal: never plan_stale.
+            Ok(Planned::Unchanged {
+                warnings: dropped,
+                notes: noted,
+            }) => {
+                push_new(&mut warnings, dropped);
+                notes.extend(noted);
+            }
             Err(error) if changed => return Err(stale(&error)),
             Err(error) => return Err(error),
         }
@@ -493,6 +504,7 @@ fn locked(
                 warnings,
                 creates_addons_dir: false,
                 lock_held_ms: Some(millis(&guard)),
+                notes,
             },
             recovered,
         ));
@@ -627,6 +639,7 @@ fn locked(
             warnings,
             creates_addons_dir,
             lock_held_ms: Some(held),
+            notes,
         },
         recovered,
     ))

@@ -980,9 +980,13 @@ mod tests {
                 rev: Some("dev".into()),
             },
             channel: Channel::Stable,
+            channel_explicit: false,
             version: None,
             file: None,
             name: None,
+            pin: crate::engine::plan::PinIntent::Keep,
+            reason: crate::model::AddonReason::Explicit,
+            reinstall: false,
         };
         let done = scene.run(vec![change]).unwrap();
         assert!(done.failures.is_empty(), "{:?}", done.failures);

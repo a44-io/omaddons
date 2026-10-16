@@ -8,6 +8,7 @@ mod common;
 use std::fs;
 use std::time::{Duration, Instant};
 
+use common::archives::zip_text;
 use common::engine::{Scene, warning_codes};
 use common::home::{Run, wait};
 use serde_json::Value;
@@ -214,6 +215,72 @@ fn two_installs_of_different_addons_at_once() {
     let stage = s.home.client("_retail_").join("Interface/.omaddons/stage");
     let leftovers = fs::read_dir(&stage).map(|l| l.count()).unwrap_or(0);
     assert_eq!(leftovers, 0, "each stage dir was its own and is gone");
+}
+
+#[test]
+fn a_pin_that_commits_while_an_update_plans_wins() {
+    let s = Scene::new();
+    s.install("gh:o/foo", "v1");
+    fs::write(
+        s.dl.join("v3.zip"),
+        zip_text(&[
+            ("Foo/Foo.toc", "## Interface: 120105\n## Version: 3\n"),
+            ("Foo/core.lua", "-- v3\n"),
+        ]),
+    )
+    .unwrap();
+    let inflight = s.home.state().join("inflight");
+    let planning = || fs::read_dir(&inflight).is_ok_and(|mut d| d.next().is_some());
+    assert!(!planning(), "nothing in flight yet");
+
+    // A updates without a version and pauses once it has planned against v1.
+    let v2 = s.zip("v2");
+    let argv_a = [
+        "install",
+        "gh:o/foo",
+        "--file",
+        &v2,
+        "-t",
+        "retail",
+        "--offline",
+    ];
+    let a = s.home.spawn(
+        &argv_a,
+        &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:2000")],
+    );
+    poll("A to start planning", planning);
+    std::thread::sleep(Duration::from_millis(500));
+    // B pins v3 meanwhile, to completion.
+    let mut argv_b = s.install_args("gh:o/foo", "v3");
+    argv_b.extend(["--version".to_owned(), "3".to_owned()]);
+    let b = s.run(&argv_b, "").expect(0);
+    assert_eq!(b["data"]["items"][0]["status"], "updated", "{b}");
+
+    let a = wait(a, &argv_a);
+    let ea = a.expect(0);
+    assert_eq!(
+        (&ea["data"]["tx"], &ea["data"]["items"][0]["status"]),
+        (&Value::Null, &Value::from("unchanged")),
+        "{}",
+        a.context()
+    );
+    assert!(
+        warning_codes(&ea).iter().any(|c| c == "addon_pinned"),
+        "{}",
+        a.context()
+    );
+    let core = fs::read_to_string(s.addons().join("Foo/core.lua")).unwrap();
+    assert_eq!(core, "-- v3\n", "the pinned release stays");
+    let list = s
+        .run(&["list".to_owned(), "--json".to_owned()], "")
+        .expect(0);
+    let foo = &list["data"]["targets"][0]["addons"][0];
+    assert_eq!(
+        (&foo["name"], &foo["version"], &foo["pinned"]),
+        (&Value::from("Foo"), &Value::from("3"), &Value::Bool(true)),
+        "{list}"
+    );
+    assert_eq!(s.history(), ["install", "update"], "two commits, none by A");
 }
 
 #[test]

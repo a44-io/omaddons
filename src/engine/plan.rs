@@ -28,7 +28,7 @@ use super::inspect::{
 use super::ownership::{self, AllowedOp, FolderChange, Transfer};
 use super::running::{self, PolicyContext, PolicyOp};
 use super::swap::SwapOp;
-use crate::error::{Error, ErrorBody, ErrorCode, Result, Suggestion, Warning};
+use crate::error::{Error, ErrorBody, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{ScopeTable, TreeDigest, WriteSession, Writer, ensure_dir_all, failpoint};
 use crate::inventory::{Depth, Inventory, inventory};
 use crate::model::{
@@ -71,7 +71,12 @@ pub struct TargetRequest {
 pub enum RequestedChange {
     Install {
         r#ref: Ref,
+        /// Resolved by the app: `--channel`, else the recorded channel, else
+        /// `default_channel`, else stable.
         channel: Channel,
+        /// `--channel` (or a desired-state entry) chose `channel`, not the record or a
+        /// default.
+        channel_explicit: bool,
         /// `--version`, or a release URL's tag.
         version: Option<String>,
         /// `--file <zip>`: this archive instead of the release's assets.
@@ -79,14 +84,199 @@ pub enum RequestedChange {
         /// The name a new addon is recorded under (the catalog's); `None` derives it
         /// from the archive's folders. An installed addon keeps its own.
         name: Option<String>,
+        /// What happens to an installed addon's pin.
+        pin: PinIntent,
+        /// `Explicit` for a user's request (it promotes a dependency); `update` and
+        /// `pin --version` pass the recorded reason.
+        reason: AddonReason,
+        /// Install the chosen release even when it is the installed one. A pinned addon
+        /// is reinstalled at its pinned release.
+        reinstall: bool,
     },
     Remove {
         addon: String,
     },
-    /// Update in M1: install the newest compatible release of an installed addon.
-    Reinstall {
+    /// The newest compatible release of an installed addon, keeping its pin, channel
+    /// and reason: a pinned addon stays where it is (`addon_pinned`).
+    Update {
         addon: String,
     },
+}
+
+/// What a change does to an installed addon's pin. A pin intent never moves the
+/// release by itself: only a version, or a newer release under `Keep`, does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PinIntent {
+    /// The recorded pin stays; a new addon is unpinned.
+    #[default]
+    Keep,
+    Pin,
+    Unpin,
+}
+
+/// The intent of an install, kept on its work so that [`carry_over`] runs again under
+/// the lock against the record as it is then: a pin committed between planning and the
+/// lock survives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallIntent {
+    pub channel: Channel,
+    pub channel_explicit: bool,
+    pub version: Option<String>,
+    pub pin: PinIntent,
+    pub reason: AddonReason,
+    pub reinstall: bool,
+    /// Requesters the planner itself adds: the dependency resolver's requester on its
+    /// own installs. Empty for user requests.
+    pub required_by_add: BTreeSet<String>,
+    pub required_by_remove: BTreeSet<String>,
+}
+
+impl InstallIntent {
+    /// The intent of a user's request.
+    fn requested(
+        channel: Channel,
+        channel_explicit: bool,
+        version: Option<String>,
+        pin: PinIntent,
+        reason: AddonReason,
+        reinstall: bool,
+    ) -> Self {
+        Self {
+            channel,
+            channel_explicit,
+            version,
+            pin,
+            reason,
+            reinstall,
+            required_by_add: BTreeSet::new(),
+            required_by_remove: BTreeSet::new(),
+        }
+    }
+
+    /// The dependency resolver's own install: reason `dependency` with its requester. A
+    /// user request never names a requester, so an `update` of a dependency, which
+    /// passes the recorded reason, is still a user request.
+    pub fn from_resolver(&self) -> bool {
+        self.reason == AddonReason::Dependency && !self.required_by_add.is_empty()
+    }
+
+    /// Leaves the pinned `existing` where it is: no version moves it, and nothing asks
+    /// for a reinstall.
+    pub fn pinned_noop(&self, existing: &AddonRecord) -> bool {
+        existing.pinned && self.pin == PinIntent::Keep && self.version.is_none() && !self.reinstall
+    }
+
+    /// Never selects another release for an installed addon: a pin intent without a
+    /// version, or the resolver (an installed dependency already satisfies it).
+    pub fn keeps_release(&self) -> bool {
+        (self.pin != PinIntent::Keep && self.version.is_none()) || self.from_resolver()
+    }
+}
+
+/// The record an install leaves (M2-D29, M2-D33): the release from `chosen` (ref,
+/// version, `release_id`, blob, folders), the rest carried over from `existing` as the
+/// intent says.
+///
+/// | Field | New addon | Installed, user request | Installed, resolver |
+/// |---|---|---|---|
+/// | `pinned` | `Pin` | `Pin` true, `Unpin` false, `Keep` as recorded | as recorded |
+/// | `channel` | as passed | as passed | as recorded |
+/// | `reason` | as passed | as passed | as recorded |
+/// | `required_by` | additions | recorded ∪ additions − removals | recorded ∪ additions − removals |
+/// | `name` | `chosen`'s | as recorded | as recorded |
+///
+/// `required_by` comes out sorted and de-duplicated, and `state` is `ok`.
+pub fn carry_over(
+    existing: Option<&AddonRecord>,
+    intent: &InstallIntent,
+    chosen: &AddonRecord,
+) -> AddonRecord {
+    let mut record = chosen.clone();
+    record.state = AddonState::Ok;
+    let mut required_by: BTreeSet<String> = existing
+        .map(|e| e.required_by.iter().cloned().collect())
+        .unwrap_or_default();
+    required_by.extend(intent.required_by_add.iter().cloned());
+    required_by.retain(|n| !intent.required_by_remove.contains(n));
+    record.required_by = required_by.into_iter().collect();
+    match existing {
+        None => {
+            record.pinned = intent.pin == PinIntent::Pin;
+            record.channel = intent.channel;
+            record.reason = intent.reason;
+        }
+        Some(existing) => {
+            record.name.clone_from(&existing.name);
+            if intent.from_resolver() {
+                record.pinned = existing.pinned;
+                record.channel = existing.channel;
+                record.reason = existing.reason;
+            } else {
+                record.pinned = match intent.pin {
+                    PinIntent::Keep => existing.pinned,
+                    PinIntent::Pin => true,
+                    PinIntent::Unpin => false,
+                };
+                record.channel = intent.channel;
+                record.reason = intent.reason;
+            }
+        }
+    }
+    record
+}
+
+/// A record field a request can change without changing the release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordField {
+    Pinned,
+    Channel,
+    Reason,
+}
+
+impl RecordField {
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::Pinned => "pinned",
+            Self::Channel => "channel",
+            Self::Reason => "reason",
+        }
+    }
+}
+
+/// The fields `carried` changes in `existing`, in field order: what a request that
+/// chose the installed release would still record (records-only work, A4.3).
+pub fn record_differences(existing: &AddonRecord, carried: &AddonRecord) -> Vec<RecordField> {
+    let mut fields = Vec::new();
+    if existing.pinned != carried.pinned {
+        fields.push(RecordField::Pinned);
+    }
+    if existing.channel != carried.channel {
+        fields.push(RecordField::Channel);
+    }
+    if existing.reason != carried.reason {
+        fields.push(RecordField::Reason);
+    }
+    fields
+}
+
+/// `addon_pinned`: a pinned addon was left where it is. Its fix shows the pin and the
+/// newest release (`unpin` arrives with the pin commands).
+pub fn addon_pinned(existing: &AddonRecord, target: &str) -> Warning {
+    Warning::new(
+        WarningCode::AddonPinned,
+        format!(
+            "{} is pinned at {} on {target}; nothing was installed. Pass --version to move it",
+            existing.name, existing.version
+        ),
+    )
+    .with_fix(Suggestion::command([
+        "omaddons",
+        "info",
+        existing.name.as_str(),
+        "-t",
+        target,
+    ]))
 }
 
 /// What planning reads.
@@ -156,6 +346,14 @@ pub struct TargetPlan {
     /// What the commit stages, swaps and records.
     #[serde(skip)]
     pub work: Vec<AddonWork>,
+    /// The warnings of addons planning left unchanged (`addon_pinned`), also in
+    /// `warnings`: the commit re-plans only `work`, so it carries these over.
+    #[serde(skip)]
+    pub unchanged_warnings: Vec<Warning>,
+    /// `-v` notes on addons left unchanged, such as record fields a request would
+    /// change although its release is current.
+    #[serde(skip)]
+    pub notes: Vec<String>,
 }
 
 /// One addon changing.
@@ -242,15 +440,19 @@ pub struct AddonWork {
     pub transfers: Vec<Transfer>,
     /// Addon keys that become degraded.
     pub degraded: Vec<String>,
+    /// The install's intent, which the commit applies again to the current record;
+    /// `None` for removes.
+    pub intent: Option<InstallIntent>,
 }
 
 /// A change after its ref is known, before fetching.
 enum Want {
     Install {
-        /// The installed addon's name, for a reinstall.
+        /// The installed addon's name, for an update.
         name: Option<String>,
         wanted: Wanted,
         file: Option<PathBuf>,
+        intent: InstallIntent,
     },
     Remove {
         addon: String,
@@ -280,11 +482,14 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
 
     let to_fetch: Vec<Wanted> = prepared
         .iter()
-        .flat_map(|(_, _, _, wants)| wants)
-        .filter_map(|w| match w {
+        .flat_map(|(_, record, _, wants)| wants.iter().map(move |w| (record, w)))
+        .filter_map(|(record, w)| match w {
             Want::Install {
-                wanted, file: None, ..
-            } => Some(wanted.clone()),
+                wanted,
+                file: None,
+                intent,
+                ..
+            } if !keeps_installed(record, &wanted.r#ref, intent) => Some(wanted.clone()),
             _ => None,
         })
         .collect();
@@ -307,6 +512,8 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             creates_addons_dir: false,
             generation: record.generation,
             work: Vec::new(),
+            unchanged_warnings: Vec::new(),
+            notes: Vec::new(),
         };
         let live = match inventory(target, Some(&record), ctx.table, Depth::Classes) {
             Ok(live) => live,
@@ -347,24 +554,28 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                     addon,
                     error,
                 } => (r#ref, addon, Err(error)),
-                Want::Install { name, wanted, file } => {
+                Want::Install {
+                    name,
+                    wanted,
+                    file,
+                    intent,
+                } => {
+                    // A pinned addon, or one whose release is kept, was not fetched.
                     let set = match &file {
                         Some(_) => None,
-                        None => Some(fetched.get(&wanted).cloned().unwrap_or_else(|| {
-                            Err(Error::internal(format!("{} was not fetched", wanted.r#ref)))
-                        })),
+                        None => fetched.get(&wanted).cloned(),
                     };
-                    let result = planner.install(name.as_deref(), &wanted, file.as_deref(), set);
+                    let result =
+                        planner.install(name.as_deref(), &wanted, file.as_deref(), set, &intent);
                     (Some(wanted.r#ref.clone()), name, result)
                 }
                 Want::Remove { addon } => {
-                    let result = planner.remove(&addon);
+                    let result = planner.remove(&addon).map(Planned::change);
                     (None, Some(addon), result)
                 }
             };
             match result {
-                Ok(Some(planned)) => planned.merge_into(&mut tp),
-                Ok(None) => {}
+                Ok(planned) => planned.merge_into(&mut tp),
                 Err(error) => failures.push(failure(r, addon, target, error)),
             }
         }
@@ -405,15 +616,17 @@ fn target_state(paths: &Paths, target: &Target) -> Result<(TargetRecord, Option<
 
 /// Re-checks one planned addon under the lock against the target's current record,
 /// files index, inventory and running state (`ctx.running`), without network: the
-/// archive is already inspected and staged. `Ok(None)` when the change is no longer
-/// needed (a concurrent transaction installed the same release, or removed the
-/// addon). A refusal is the caller's `plan_stale`.
+/// archive is already inspected and staged. The install's intent is applied again to
+/// the current record ([`carry_over`]). [`Planned::Unchanged`] when the change is no
+/// longer needed: a concurrent transaction installed the same release, removed the
+/// addon, or pinned it (with `addon_pinned`, never `plan_stale`). A refusal is the
+/// caller's `plan_stale`.
 pub fn rejudge(
     req: &PlanRequest,
     ctx: &PlanCtx<'_>,
     target: &Target,
     work: &AddonWork,
-) -> Result<Option<PlannedAddon>> {
+) -> Result<Planned> {
     let (record, index) = target_state(ctx.paths, target)?;
     let live = inventory(target, Some(&record), ctx.table, Depth::Classes)?;
     let planner = TargetPlanner {
@@ -427,20 +640,28 @@ pub fn rejudge(
     };
     match (&work.record, &work.inspected) {
         (Some(template), Some(inspected)) => {
+            let Some(intent) = &work.intent else {
+                return Err(Error::internal(format!(
+                    "{} was planned without its intent",
+                    work.addon
+                )));
+            };
             let existing = record.addons.values().find(|a| a.r#ref == template.r#ref);
-            if let Some(existing) = existing
-                && existing.release_id == template.release_id
-                && existing
-                    .folders
-                    .iter()
-                    .all(|f| live.folders.iter().any(|e| e.key == f.key()))
-            {
-                return Ok(None);
+            if let Some(existing) = existing {
+                if intent.pinned_noop(existing) {
+                    return Ok(Planned::pinned(existing, &target.id));
+                }
+                if intent.keeps_release()
+                    || (existing.release_id == template.release_id && planner.all_present(existing))
+                {
+                    return Ok(planner.current(existing, intent));
+                }
             }
             planner
                 .build_install(
                     existing,
                     template.clone(),
+                    intent,
                     Loadable {
                         inspected: inspected.clone(),
                         skipped: work.skipped.clone(),
@@ -449,15 +670,15 @@ pub fn rejudge(
                     None,
                     Vec::new(),
                 )
-                .map(Some)
+                .map(Planned::change)
         }
         _ if !record
             .addons
             .contains_key(&TargetRecord::addon_key(&work.addon)) =>
         {
-            Ok(None)
+            Ok(Planned::nothing())
         }
-        _ => planner.remove(&work.addon),
+        _ => planner.remove(&work.addon).map(Planned::change),
     }
 }
 
@@ -467,9 +688,13 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
         RequestedChange::Install {
             r#ref,
             channel,
+            channel_explicit,
             version,
             file,
             name,
+            pin,
+            reason,
+            reinstall,
         } => Want::Install {
             name: name.clone(),
             wanted: Wanted {
@@ -478,20 +703,37 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                 version: version.clone(),
             },
             file: file.clone(),
+            intent: InstallIntent::requested(
+                *channel,
+                *channel_explicit,
+                version.clone(),
+                *pin,
+                *reason,
+                *reinstall,
+            ),
         },
         RequestedChange::Remove { addon } => Want::Remove {
             addon: addon.clone(),
         },
-        RequestedChange::Reinstall { addon } => {
+        RequestedChange::Update { addon } => {
             match record.addons.get(&TargetRecord::addon_key(addon)) {
+                // No version: a pinned addon is the pinned no-op.
                 Some(installed) => Want::Install {
                     name: Some(installed.name.clone()),
                     wanted: Wanted {
                         r#ref: installed.r#ref.clone(),
                         channel: installed.channel,
-                        version: installed.pinned.then(|| installed.version.clone()),
+                        version: None,
                     },
                     file: None,
+                    intent: InstallIntent::requested(
+                        installed.channel,
+                        false,
+                        None,
+                        PinIntent::Keep,
+                        installed.reason,
+                        false,
+                    ),
                 },
                 None => Want::Failed {
                     r#ref: None,
@@ -501,6 +743,16 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
             }
         }
     }
+}
+
+/// Whether `intent` leaves the installed addon of `r#ref` where it is (pinned, or its
+/// release kept), so its releases need no fetching.
+fn keeps_installed(record: &TargetRecord, r#ref: &Ref, intent: &InstallIntent) -> bool {
+    record
+        .addons
+        .values()
+        .find(|a| a.r#ref == *r#ref)
+        .is_some_and(|e| intent.pinned_noop(e) || intent.keeps_release())
 }
 
 fn not_managed(addon: &str) -> Error {
@@ -558,18 +810,66 @@ pub struct PlannedAddon {
     pub work: AddonWork,
 }
 
-impl PlannedAddon {
+/// One addon's result, from planning or from [`rejudge`].
+#[derive(Debug, Clone)]
+pub enum Planned {
+    Change(Box<PlannedAddon>),
+    /// Nothing to commit: the release is current (`notes` names record fields the
+    /// request would still change, for `-v`, until records-only work records them),
+    /// the addon is gone, or it is pinned (`addon_pinned` in `warnings`). Not a refusal.
+    Unchanged {
+        warnings: Vec<Warning>,
+        notes: Vec<String>,
+    },
+}
+
+impl Planned {
+    fn change(planned: PlannedAddon) -> Self {
+        Self::Change(Box::new(planned))
+    }
+
+    /// Unchanged, with nothing to say.
+    pub fn nothing() -> Self {
+        Self::Unchanged {
+            warnings: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    /// The pinned no-op on `target`.
+    fn pinned(existing: &AddonRecord, target: &str) -> Self {
+        Self::Unchanged {
+            warnings: vec![addon_pinned(existing, target)],
+            notes: Vec::new(),
+        }
+    }
+
     fn merge_into(self, tp: &mut TargetPlan) {
-        tp.changes.push(self.change);
-        tp.ops.extend(self.ops);
-        tp.releases.extend(self.release);
-        tp.reload_required = tp.reload_required.max(self.reload_required);
-        for warning in self.warnings {
-            if !tp.warnings.contains(&warning) {
-                tp.warnings.push(warning);
+        match self {
+            Self::Change(planned) => {
+                let planned = *planned;
+                tp.changes.push(planned.change);
+                tp.ops.extend(planned.ops);
+                tp.releases.extend(planned.release);
+                tp.reload_required = tp.reload_required.max(planned.reload_required);
+                push_new(&mut tp.warnings, planned.warnings);
+                tp.work.push(planned.work);
+            }
+            Self::Unchanged { warnings, notes } => {
+                push_new(&mut tp.warnings, warnings.clone());
+                push_new(&mut tp.unchanged_warnings, warnings);
+                tp.notes.extend(notes);
             }
         }
-        tp.work.push(self.work);
+    }
+}
+
+/// Appends the warnings `list` does not have yet.
+pub fn push_new(list: &mut Vec<Warning>, warnings: Vec<Warning>) {
+    for warning in warnings {
+        if !list.contains(&warning) {
+            list.push(warning);
+        }
     }
 }
 
@@ -617,13 +917,23 @@ impl TargetPlanner<'_> {
         wanted: &Wanted,
         file: Option<&std::path::Path>,
         set: Option<Result<ReleaseSet>>,
-    ) -> Result<Option<PlannedAddon>> {
+        intent: &InstallIntent,
+    ) -> Result<Planned> {
         one_addons_dir(&ClientPaths::new(&self.target.client_dir))?;
         let existing = self
             .record
             .addons
             .values()
             .find(|a| a.r#ref == wanted.r#ref);
+        // Before any candidate is looked at: these never move an installed release.
+        if let Some(existing) = existing {
+            if intent.pinned_noop(existing) {
+                return Ok(Planned::pinned(existing, &self.target.id));
+            }
+            if intent.keeps_release() {
+                return Ok(self.current(existing, intent));
+            }
+        }
         let candidates = match (file, set) {
             (Some(file), _) => vec![file_candidate(file, wanted)],
             (None, Some(set)) => {
@@ -654,16 +964,15 @@ impl TargetPlanner<'_> {
                     None => selection.candidates,
                 }
             }
-            (None, None) => return Err(Error::internal("an install without a release set")),
+            (None, None) => {
+                return Err(Error::internal(format!("{} was not fetched", wanted.r#ref)));
+            }
         };
         if let (Some(existing), Some(first)) = (existing, candidates.first())
             && existing.release_id.as_deref() == Some(first.release_id.as_str())
-            && existing
-                .folders
-                .iter()
-                .all(|f| self.live.folders.iter().any(|e| e.key == f.key()))
+            && self.all_present(existing)
         {
-            return Ok(None);
+            return Ok(self.current(existing, intent));
         }
 
         let user_supplied =
@@ -721,15 +1030,16 @@ impl TargetPlanner<'_> {
             .map(|e| e.name.clone())
             .or_else(|| name.filter(|n| !taken(n)).map(str::to_owned))
             .unwrap_or_else(|| winner.name.clone());
+        // The release; `carry_over` decides the rest of the record.
         let template = AddonRecord {
             r#ref: wanted.r#ref.clone(),
             name: addon,
             version: winner.candidate.version.clone(),
             version_confidence: VersionConfidence::Release,
             release_id: Some(winner.candidate.release_id.clone()),
-            channel: wanted.channel,
-            pinned: wanted.version.is_some(),
-            reason: AddonReason::Explicit,
+            channel: intent.channel,
+            pinned: false,
+            reason: intent.reason,
             required_by: Vec::new(),
             folders: Vec::new(),
             state: AddonState::Ok,
@@ -764,27 +1074,70 @@ impl TargetPlanner<'_> {
         self.build_install(
             existing,
             template,
+            intent,
             winner.loadable,
             winner.blob,
             Some(release),
             winner.warnings,
         )
-        .map(Some)
+        .map(Planned::change)
+    }
+
+    /// Every folder `existing` records is in AddOns.
+    fn all_present(&self, existing: &AddonRecord) -> bool {
+        existing
+            .folders
+            .iter()
+            .all(|f| self.live.folders.iter().any(|e| e.key == f.key()))
+    }
+
+    /// An installed addon that keeps its release: unchanged, with a `-v` note when some
+    /// of its folders are missing, or when the request would still change record
+    /// fields (records-only work records them, A4.3).
+    fn current(&self, existing: &AddonRecord, intent: &InstallIntent) -> Planned {
+        let (target, name) = (&self.target.id, &existing.name);
+        let mut notes = Vec::new();
+        if !self.all_present(existing) {
+            notes.push(format!(
+                "{target}: {name} unchanged: this request keeps its release, and some of its folders are missing"
+            ));
+        }
+        let fields = record_differences(existing, &carry_over(Some(existing), intent, existing));
+        if !fields.is_empty() {
+            let fields: Vec<&str> = fields.iter().map(|f| f.wire()).collect();
+            notes.push(format!(
+                "{target}: {name} unchanged: its release is installed, and the request would also change its record's {}, which needs a records-only change (not supported yet)",
+                fields.join(", ")
+            ));
+        }
+        Planned::Unchanged {
+            warnings: Vec::new(),
+            notes,
+        }
     }
 
     /// Folder changes, ownership, policy and swap ops for installing the loadable
-    /// folders as `template` (whose folders and dependents are filled in here). A folder
-    /// an earlier release installed that this one no longer has, or that this client
-    /// no longer loads, is removed.
+    /// folders as the release `template`, whose record fields [`carry_over`] decides
+    /// from `existing` and `intent` and whose folders are filled in here. A folder an
+    /// earlier release installed that this one no longer has, or that this client no
+    /// longer loads, is removed.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the plan-time path and rejudge share it with different sources for each part"
+    )]
     fn build_install(
         &self,
         existing: Option<&AddonRecord>,
-        mut template: AddonRecord,
+        template: AddonRecord,
+        intent: &InstallIntent,
         loadable: Loadable,
         blob: Option<PathBuf>,
         release: Option<PlannedRelease>,
         mut warnings: Vec<Warning>,
     ) -> Result<PlannedAddon> {
+        // Against whatever `existing` holds now: the snapshot at plan time, the current
+        // record under the lock.
+        let mut template = carry_over(existing, intent, &template);
         let Loadable { inspected, skipped } = loadable;
         let new_folders: Vec<FolderName> =
             inspected.folders.iter().map(|f| f.name.clone()).collect();
@@ -825,7 +1178,6 @@ impl TargetPlanner<'_> {
             ChangeKind::Install
         };
         template.folders = new_folders;
-        template.required_by = existing.map(|e| e.required_by.clone()).unwrap_or_default();
         if template.version.is_empty() {
             // file: and url: releases carry no version: the TOC's ## Version is it.
             template.version = toc_version(&inspected, &template.name, &self.target.rules)
@@ -854,11 +1206,12 @@ impl TargetPlanner<'_> {
                 skipped,
                 transfers: judged.transfers,
                 degraded: judged.degraded,
+                intent: Some(intent.clone()),
             },
         })
     }
 
-    fn remove(&self, addon: &str) -> Result<Option<PlannedAddon>> {
+    fn remove(&self, addon: &str) -> Result<PlannedAddon> {
         let Some(installed) = self.record.addons.get(&TargetRecord::addon_key(addon)) else {
             return Err(not_managed(addon));
         };
@@ -871,7 +1224,7 @@ impl TargetPlanner<'_> {
         let judged = self.judge(&installed.name, &changes, |_| BTreeSet::new())?;
         let mut summary = FolderSummary::default();
         let ops = self.ops(&installed.name, &judged.allowed, &mut summary);
-        Ok(Some(PlannedAddon {
+        Ok(PlannedAddon {
             change: Change {
                 addon: installed.name.clone(),
                 r#ref: installed.r#ref.clone(),
@@ -893,8 +1246,9 @@ impl TargetPlanner<'_> {
                 swap: self.swap_ops(&judged.allowed),
                 transfers: judged.transfers,
                 degraded: judged.degraded,
+                intent: None,
             },
-        }))
+        })
     }
 
     /// Ownership, then the running policy.
@@ -1404,6 +1758,353 @@ mod tests {
             addon_name(&"gh:o/pack".parse().unwrap(), &plain),
             "Zeta",
             "no core folder: the shortest, then by name"
+        );
+    }
+
+    fn names(list: &[&str]) -> BTreeSet<String> {
+        list.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    /// An installed record of gh:o/foo at `release`.
+    fn installed(
+        release: &str,
+        pinned: bool,
+        channel: Channel,
+        reason: AddonReason,
+    ) -> AddonRecord {
+        AddonRecord {
+            r#ref: "gh:o/foo".parse().unwrap(),
+            name: "Foo".into(),
+            version: release.into(),
+            version_confidence: VersionConfidence::Release,
+            release_id: Some(format!("gh:o/foo@{release}")),
+            channel,
+            pinned,
+            reason,
+            required_by: vec!["Zed".into(), "Bar".into()],
+            folders: vec![FolderName::new("Foo").unwrap()],
+            state: AddonState::Degraded,
+            installed_at: "2026-10-01T00:00:00Z".parse().unwrap(),
+            tx_id: TxId::new(),
+            blob_sha256: Some("aa".into()),
+        }
+    }
+
+    /// The release a request chose: what the planner's template holds.
+    fn chosen() -> AddonRecord {
+        let mut chosen = installed("2.0", false, Channel::Stable, AddonReason::Explicit);
+        chosen.name = "FooFromArchive".into();
+        chosen.required_by = Vec::new();
+        chosen.state = AddonState::Ok;
+        chosen.blob_sha256 = Some("bb".into());
+        chosen
+    }
+
+    fn user(pin: PinIntent, channel: Channel, reason: AddonReason) -> InstallIntent {
+        InstallIntent::requested(channel, false, None, pin, reason, false)
+    }
+
+    fn resolver(requester: &str) -> InstallIntent {
+        let mut intent = user(PinIntent::Keep, Channel::Stable, AddonReason::Dependency);
+        intent.required_by_add = names(&[requester]);
+        intent
+    }
+
+    #[test]
+    fn carry_over_new_addons_take_the_intent() {
+        let chosen = chosen();
+        for (pin, pinned) in [
+            (PinIntent::Keep, false),
+            (PinIntent::Pin, true),
+            (PinIntent::Unpin, false),
+        ] {
+            let r = carry_over(
+                None,
+                &user(pin, Channel::Beta, AddonReason::Explicit),
+                &chosen,
+            );
+            assert_eq!(r.pinned, pinned, "{pin:?}");
+            assert_eq!(
+                (r.channel, r.reason),
+                (Channel::Beta, AddonReason::Explicit)
+            );
+            assert_eq!(
+                r.name, "FooFromArchive",
+                "a new addon takes the chosen name"
+            );
+            assert!(r.required_by.is_empty());
+        }
+        let r = carry_over(None, &resolver("Bar"), &chosen);
+        assert_eq!(
+            (r.pinned, r.channel, r.reason, r.required_by.clone()),
+            (
+                false,
+                Channel::Stable,
+                AddonReason::Dependency,
+                vec!["Bar".to_owned()]
+            ),
+            "a new dependency is required by its requester"
+        );
+        // The release always comes from the chosen one.
+        assert_eq!(
+            (
+                r.version.as_str(),
+                r.release_id.as_deref(),
+                r.blob_sha256.as_deref(),
+                r.state
+            ),
+            ("2.0", Some("gh:o/foo@2.0"), Some("bb"), AddonState::Ok)
+        );
+    }
+
+    #[test]
+    fn carry_over_user_requests_on_installed_addons() {
+        let chosen = chosen();
+        for existing_pinned in [false, true] {
+            let existing = installed(
+                "1.0",
+                existing_pinned,
+                Channel::Alpha,
+                AddonReason::Dependency,
+            );
+            for (pin, pinned) in [
+                (PinIntent::Keep, existing_pinned),
+                (PinIntent::Pin, true),
+                (PinIntent::Unpin, false),
+            ] {
+                let intent = user(pin, Channel::Beta, AddonReason::Explicit);
+                let r = carry_over(Some(&existing), &intent, &chosen);
+                assert_eq!(r.pinned, pinned, "{existing_pinned} {pin:?}");
+                assert_eq!(r.channel, Channel::Beta, "as passed");
+                assert_eq!(r.reason, AddonReason::Explicit, "install promotes");
+                assert_eq!(r.name, "Foo", "the record keeps its name");
+                assert_eq!(r.required_by, ["Bar", "Zed"], "sorted");
+                assert_eq!(
+                    (r.version.as_str(), r.blob_sha256.as_deref(), r.state),
+                    ("2.0", Some("bb"), AddonState::Ok)
+                );
+            }
+        }
+        // An update passes the recorded reason, which stays.
+        let existing = installed("1.0", false, Channel::Alpha, AddonReason::Dependency);
+        let update = user(PinIntent::Keep, Channel::Alpha, AddonReason::Dependency);
+        assert!(!update.from_resolver(), "an update is a user request");
+        let r = carry_over(Some(&existing), &update, &chosen);
+        assert_eq!(
+            (r.reason, r.channel),
+            (AddonReason::Dependency, Channel::Alpha)
+        );
+    }
+
+    #[test]
+    fn carry_over_the_resolver_keeps_the_record() {
+        let existing = installed("1.0", true, Channel::Beta, AddonReason::Explicit);
+        let r = carry_over(Some(&existing), &resolver("Bar"), &chosen());
+        assert_eq!(
+            (r.pinned, r.channel, r.reason, r.name.as_str()),
+            (true, Channel::Beta, AddonReason::Explicit, "Foo"),
+            "every field as recorded"
+        );
+        assert_eq!(
+            r.required_by,
+            ["Bar", "Zed"],
+            "already listed: no duplicate"
+        );
+        let r = carry_over(Some(&existing), &resolver("Alpha"), &chosen());
+        assert_eq!(r.required_by, ["Alpha", "Bar", "Zed"]);
+    }
+
+    #[test]
+    fn carry_over_required_by_adds_removes_and_deduplicates() {
+        let mut existing = installed("1.0", false, Channel::Stable, AddonReason::Dependency);
+        existing.required_by = vec!["Zed".into(), "Bar".into(), "Zed".into()];
+        let mut intent = user(PinIntent::Keep, Channel::Stable, AddonReason::Dependency);
+        let r = carry_over(Some(&existing), &intent, &chosen());
+        assert_eq!(
+            r.required_by,
+            ["Bar", "Zed"],
+            "survives an update, sorted and unique"
+        );
+        intent.required_by_add = names(&["Mid", "Bar"]);
+        intent.required_by_remove = names(&["Zed", "Nobody"]);
+        let r = carry_over(Some(&existing), &intent, &chosen());
+        assert_eq!(
+            r.required_by,
+            ["Bar", "Mid"],
+            "existing ∪ additions − removals"
+        );
+    }
+
+    #[test]
+    fn pin_intents_alone_keep_the_release_and_reinstall_skips_the_pinned_no_op() {
+        let pinned = installed("1.0", true, Channel::Stable, AddonReason::Explicit);
+        let unpinned = installed("1.0", false, Channel::Stable, AddonReason::Explicit);
+        let keep = user(PinIntent::Keep, Channel::Stable, AddonReason::Explicit);
+        assert!(keep.pinned_noop(&pinned) && !keep.pinned_noop(&unpinned));
+        assert!(!keep.keeps_release(), "Keep looks for a newer release");
+
+        let mut versioned = keep.clone();
+        versioned.version = Some("2.0".into());
+        assert!(
+            !versioned.pinned_noop(&pinned),
+            "a version moves a pinned addon"
+        );
+        let mut reinstall = keep.clone();
+        reinstall.reinstall = true;
+        assert!(
+            !reinstall.pinned_noop(&pinned),
+            "a reinstall repairs a pinned addon"
+        );
+
+        for pin in [PinIntent::Pin, PinIntent::Unpin] {
+            let mut intent = user(pin, Channel::Stable, AddonReason::Explicit);
+            assert!(
+                intent.keeps_release(),
+                "{pin:?} alone never moves the release"
+            );
+            assert!(!intent.pinned_noop(&pinned));
+            intent.version = Some("2.0".into());
+            assert!(!intent.keeps_release(), "{pin:?} with a version does");
+        }
+        assert!(
+            resolver("Bar").keeps_release(),
+            "an installed dependency satisfies"
+        );
+    }
+
+    #[test]
+    fn record_differences_name_each_changed_field() {
+        let existing = installed("1.0", false, Channel::Stable, AddonReason::Dependency);
+        let carried = |pin, channel, reason| {
+            carry_over(Some(&existing), &user(pin, channel, reason), &existing)
+        };
+        let same = carried(PinIntent::Keep, Channel::Stable, AddonReason::Dependency);
+        assert!(record_differences(&existing, &same).is_empty());
+        for (record, field) in [
+            (
+                carried(PinIntent::Pin, Channel::Stable, AddonReason::Dependency),
+                RecordField::Pinned,
+            ),
+            (
+                carried(PinIntent::Keep, Channel::Beta, AddonReason::Dependency),
+                RecordField::Channel,
+            ),
+            (
+                carried(PinIntent::Keep, Channel::Stable, AddonReason::Explicit),
+                RecordField::Reason,
+            ),
+        ] {
+            assert_eq!(record_differences(&existing, &record), [field]);
+        }
+        let all = carried(PinIntent::Pin, Channel::Alpha, AddonReason::Explicit);
+        assert_eq!(
+            record_differences(&existing, &all),
+            [
+                RecordField::Pinned,
+                RecordField::Channel,
+                RecordField::Reason
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(RecordField::Pinned).unwrap(),
+            RecordField::Pinned.wire()
+        );
+    }
+
+    #[test]
+    fn the_pinned_warning_names_the_release_and_a_runnable_fix() {
+        let pinned = installed("1.0", true, Channel::Stable, AddonReason::Explicit);
+        let warning = addon_pinned(&pinned, "retail");
+        assert_eq!(warning.code, WarningCode::AddonPinned);
+        assert_eq!(
+            warning.message,
+            "Foo is pinned at 1.0 on retail; nothing was installed. Pass --version to move it"
+        );
+        assert_eq!(
+            warning.fix.as_ref().and_then(|f| f.argv()),
+            Some(&["omaddons", "info", "Foo", "-t", "retail"].map(String::from)[..])
+        );
+    }
+
+    /// Planning `changes` on `scene`'s target, as the commit's re-judging sees it.
+    fn with_plan<R>(
+        scene: &crate::engine::testing::TxScene,
+        changes: Vec<RequestedChange>,
+        f: impl FnOnce(&PlanRequest, &PlanCtx<'_>, &Plan) -> R,
+    ) -> R {
+        let target = scene.current_target().target;
+        let scopes =
+            ScopeTable::new(&scene.paths, std::slice::from_ref(&target.client_dir), None).unwrap();
+        let blobs = BlobCache::new(&scene.paths);
+        let registry = SourceRegistry::new();
+        let table = RulesTable::builtin();
+        let argv = ["omaddons".to_owned(), "install".to_owned()];
+        let ctx = PlanCtx {
+            paths: &scene.paths,
+            scopes: &scopes,
+            http: &crate::engine::testing::NoNetwork,
+            registry: &registry,
+            blobs: &blobs,
+            table: &table,
+            tx: TxId::new(),
+            running: &scene.running,
+            policy: RunningPolicy::Safe,
+            limits: ArchiveLimits::default(),
+            actor: Actor::Agent,
+            argv: &argv,
+        };
+        let req = PlanRequest {
+            targets: vec![TargetRequest { target, changes }],
+            force: false,
+            while_running: false,
+            dry_run: false,
+        };
+        let plan = plan(&req, &ctx).unwrap();
+        f(&req, &ctx, &plan)
+    }
+
+    #[test]
+    fn a_pin_committed_after_planning_drops_the_update_under_the_lock() {
+        let scene = crate::engine::testing::TxScene::new();
+        let foo = |n: &str| {
+            [(
+                "Foo/Foo.toc",
+                format!("## Interface: 120105\n## Version: {n}\n"),
+            )]
+        };
+        let zip = |n: &str| {
+            let entries = foo(n);
+            let refs: Vec<(&str, &str)> = entries.iter().map(|(p, t)| (*p, t.as_str())).collect();
+            scene.zip(&format!("v{n}.zip"), &refs)
+        };
+        let (v1, v2, v3) = (zip("1"), zip("2"), zip("3"));
+        let done = scene.run(vec![scene.install("gh:o/foo", &v1)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+
+        with_plan(
+            &scene,
+            vec![scene.install("gh:o/foo", &v2)],
+            |req, ctx, plan| {
+                let work = &plan.targets[0].work[0];
+                assert_eq!(work.intent.as_ref().map(|i| i.pin), Some(PinIntent::Keep));
+                // Meanwhile: pinned at 3.
+                let pinned = scene
+                    .run(vec![scene.install_pinned("gh:o/foo", &v3, "3")])
+                    .unwrap();
+                assert!(pinned.failures.is_empty(), "{:?}", pinned.failures);
+                let target = scene.current_target().target;
+                let rejudged = rejudge(req, ctx, &target, work).unwrap();
+                assert!(
+                    matches!(rejudged, Planned::Unchanged { .. }),
+                    "the update survived the pin: {rejudged:?}"
+                );
+                if let Planned::Unchanged { warnings, notes } = rejudged {
+                    let codes: Vec<WarningCode> = warnings.iter().map(|w| w.code).collect();
+                    assert_eq!(codes, [WarningCode::AddonPinned]);
+                    assert!(warnings[0].message.contains("pinned at 3"), "{warnings:?}");
+                    assert!(notes.is_empty());
+                }
+            },
         );
     }
 

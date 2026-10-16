@@ -17,7 +17,7 @@ use common::trees::tree_hash;
 use omaddons::engine::blobs::BlobCache;
 use omaddons::engine::inspect::ArchiveLimits;
 use omaddons::engine::plan::{
-    ChangeKind, OpKind, Plan, PlanCtx, PlanRequest, RequestedChange, TargetRequest, plan,
+    ChangeKind, OpKind, PinIntent, Plan, PlanCtx, PlanRequest, RequestedChange, TargetRequest, plan,
 };
 use omaddons::fsx::{InflightLock, ScopeTable, WriteSession, Writer};
 use omaddons::model::{
@@ -31,7 +31,9 @@ use omaddons::state::config::RunningPolicy;
 use omaddons::state::paths::Paths;
 use omaddons::state::records::TargetRecord;
 use omaddons::state::store;
-use support::{Env, chosen, folders, install, release, toc};
+use support::{
+    Env, chosen, folders, foo_v1_with_v2_out, install, release, toc, update_foo, user_install,
+};
 
 const BASE: &str = "https://github.com/o/foo";
 
@@ -119,33 +121,42 @@ mod support {
 
         /// Registers `target` with a record holding `addons` at generation 3.
         pub fn register(&self, target: &mut Target, addons: &[(&str, &str, &[&str])]) {
+            self.register_with(target, addons, |_| {});
+        }
+
+        /// [`Env::register`], with `edit` applied to each addon's record.
+        pub fn register_with(
+            &self,
+            target: &mut Target,
+            addons: &[(&str, &str, &[&str])],
+            edit: impl Fn(&mut AddonRecord),
+        ) {
             let key = TargetKey::new();
             target.key = Some(key);
             let mut record = TargetRecord::empty(key);
             record.generation = 3;
             for (name, release, folders) in addons {
-                record.addons.insert(
-                    TargetRecord::addon_key(name),
-                    AddonRecord {
-                        r#ref: "gh:o/foo".parse().unwrap(),
-                        name: (*name).into(),
-                        version: release.trim_start_matches('v').into(),
-                        version_confidence: VersionConfidence::Release,
-                        release_id: Some(format!("gh:o/foo@{release}")),
-                        channel: Channel::Stable,
-                        pinned: false,
-                        reason: AddonReason::Explicit,
-                        required_by: Vec::new(),
-                        folders: folders
-                            .iter()
-                            .map(|f| FolderName::new(f).unwrap())
-                            .collect(),
-                        state: AddonState::Ok,
-                        installed_at: "2026-10-01T00:00:00Z".parse().unwrap(),
-                        tx_id: TxId::new(),
-                        blob_sha256: None,
-                    },
-                );
+                let mut addon = AddonRecord {
+                    r#ref: "gh:o/foo".parse().unwrap(),
+                    name: (*name).into(),
+                    version: release.trim_start_matches('v').into(),
+                    version_confidence: VersionConfidence::Release,
+                    release_id: Some(format!("gh:o/foo@{release}")),
+                    channel: Channel::Stable,
+                    pinned: false,
+                    reason: AddonReason::Explicit,
+                    required_by: Vec::new(),
+                    folders: folders
+                        .iter()
+                        .map(|f| FolderName::new(f).unwrap())
+                        .collect(),
+                    state: AddonState::Ok,
+                    installed_at: "2026-10-01T00:00:00Z".parse().unwrap(),
+                    tx_id: TxId::new(),
+                    blob_sha256: None,
+                };
+                edit(&mut addon);
+                record.addons.insert(TargetRecord::addon_key(name), addon);
             }
             fs::create_dir_all(self.paths.targets_dir()).unwrap();
             let mut s = WriteSession::untracked(Writer::Mutating, &self.scopes, "test");
@@ -162,14 +173,55 @@ mod support {
     pub fn install(target: &Target) -> TargetRequest {
         TargetRequest {
             target: target.clone(),
-            changes: vec![RequestedChange::Install {
-                r#ref: "gh:o/foo".parse().unwrap(),
-                channel: Channel::Stable,
-                version: None,
-                file: None,
-                name: None,
+            changes: vec![user_install("gh:o/foo")],
+        }
+    }
+
+    /// A user's plain install of `r`: stable, no version, the pin kept.
+    pub fn user_install(r: &str) -> RequestedChange {
+        RequestedChange::Install {
+            r#ref: r.parse().unwrap(),
+            channel: Channel::Stable,
+            channel_explicit: false,
+            version: None,
+            file: None,
+            name: None,
+            pin: PinIntent::Keep,
+            reason: AddonReason::Explicit,
+            reinstall: false,
+        }
+    }
+
+    /// Update the installed Foo on `target`.
+    pub fn update_foo(target: &Target) -> TargetRequest {
+        TargetRequest {
+            target: target.clone(),
+            changes: vec![RequestedChange::Update {
+                addon: "foo".into(),
             }],
         }
+    }
+
+    /// Foo installed at v1 on retail (its folder on disk), its record edited by `edit`,
+    /// and v2 the newest release.
+    pub fn foo_v1_with_v2_out(edit: impl Fn(&mut AddonRecord)) -> (Env, Target) {
+        let env = Env::new();
+        let retail_toc = toc("120105");
+        let mut retail = env.retail.clone();
+        let addons = retail.addons_dir();
+        fs::create_dir_all(addons.join("Foo")).unwrap();
+        fs::write(addons.join("Foo/Foo.toc"), &retail_toc).unwrap();
+        env.register_with(&mut retail, &[("Foo", "v1", &["Foo"])], edit);
+        release(
+            &env.scenario,
+            "v2",
+            &[(
+                "Foo.zip",
+                &[("mainline", 120_105)],
+                vec![("Foo/Foo.toc", &retail_toc)],
+            )],
+        );
+        (env, retail)
     }
 
     pub fn toc(interface: &str) -> String {
@@ -487,13 +539,7 @@ fn one_failing_ref_does_not_stop_the_others() {
         )],
     );
     let mut request = install(&env.retail);
-    request.changes.push(RequestedChange::Install {
-        r#ref: "wowi:5108".parse().unwrap(),
-        channel: Channel::Stable,
-        version: None,
-        file: None,
-        name: None,
-    });
+    request.changes.push(user_install("wowi:5108"));
     let plan = env.plan(vec![request], false);
     assert_eq!(plan.failures.len(), 1);
     assert_eq!(plan.failures[0].error.code.wire(), "source_disabled");
@@ -564,13 +610,7 @@ fn local_and_url_sources_fetch_without_requests() {
     let plan = env.plan(
         vec![TargetRequest {
             target: env.retail.clone(),
-            changes: vec![RequestedChange::Install {
-                r#ref: format!("file:{}", dir.display()).parse().unwrap(),
-                channel: Channel::Stable,
-                version: None,
-                file: None,
-                name: None,
-            }],
+            changes: vec![user_install(&format!("file:{}", dir.display()))],
         }],
         false,
     );
@@ -585,4 +625,99 @@ fn local_and_url_sources_fetch_without_requests() {
         ("2.5.1", VersionConfidence::Toc, "MyAddon"),
         "the TOC gives a local addon its version"
     );
+}
+
+#[test]
+fn an_update_keeps_a_dependency_and_its_requirers() {
+    let (env, retail) = foo_v1_with_v2_out(|r| {
+        r.reason = AddonReason::Dependency;
+        r.required_by = vec!["Zed".into(), "Bar".into(), "Zed".into()];
+    });
+    let plan = env.plan(vec![update_foo(&retail)], false);
+    assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+    let t = &plan.targets[0];
+    assert_eq!(
+        (t.changes[0].kind, t.changes[0].to_version.as_deref()),
+        (ChangeKind::Update, Some("v2"))
+    );
+    let record = t.work[0].record.as_ref().unwrap();
+    assert_eq!(
+        (record.reason, record.pinned, record.channel),
+        (AddonReason::Dependency, false, Channel::Stable),
+        "an update passes the recorded reason, so a dependency stays one"
+    );
+    assert_eq!(
+        record.required_by,
+        ["Bar", "Zed"],
+        "sorted and de-duplicated"
+    );
+
+    // An explicit install of the same dependency promotes it.
+    let (env, retail) = foo_v1_with_v2_out(|r| r.reason = AddonReason::Dependency);
+    let plan = env.plan(vec![install(&retail)], false);
+    let record = plan.targets[0].work[0].record.as_ref().unwrap();
+    assert_eq!(record.reason, AddonReason::Explicit);
+}
+
+#[test]
+fn an_update_of_a_pinned_addon_is_a_no_op_without_a_fetch() {
+    let (env, retail) = foo_v1_with_v2_out(|r| r.pinned = true);
+    for request in [update_foo(&retail), install(&retail)] {
+        let plan = env.plan(vec![request], false);
+        assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+        let t = &plan.targets[0];
+        assert!(t.work.is_empty() && t.changes.is_empty() && !plan.has_ops());
+        let codes: Vec<&str> = t.warnings.iter().map(|w| w.code.wire()).collect();
+        assert_eq!(codes, ["addon_pinned"]);
+        assert_eq!(
+            t.unchanged_warnings, t.warnings,
+            "kept for the commit window"
+        );
+    }
+    assert!(
+        read_net_log(&env.paths).is_empty(),
+        "a pinned addon's releases are not fetched"
+    );
+
+    // --version moves it, still pinned.
+    let mut versioned = install(&retail);
+    if let RequestedChange::Install { version, pin, .. } = &mut versioned.changes[0] {
+        *version = Some("v2".into());
+        *pin = PinIntent::Pin;
+    }
+    let plan = env.plan(vec![versioned], false);
+    assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+    let record = plan.targets[0].work[0].record.as_ref().unwrap();
+    assert_eq!((record.version.as_str(), record.pinned), ("v2", true));
+}
+
+#[test]
+fn a_record_only_difference_is_unchanged_with_a_note() {
+    let (env, retail) = foo_v1_with_v2_out(|r| {
+        r.reason = AddonReason::Dependency;
+        r.release_id = Some("gh:o/foo@v2".into());
+        r.version = "v2".into();
+    });
+    let plan = env.plan(vec![install(&retail)], false);
+    assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+    let t = &plan.targets[0];
+    assert!(
+        t.work.is_empty() && t.warnings.is_empty(),
+        "{:?}",
+        t.warnings
+    );
+    assert_eq!(t.notes.len(), 1, "{:?}", t.notes);
+    assert!(
+        t.notes[0].contains("Foo unchanged") && t.notes[0].contains("record's reason"),
+        "{}",
+        t.notes[0]
+    );
+
+    // The same request with nothing to change has nothing to say.
+    let (env, retail) = foo_v1_with_v2_out(|r| {
+        r.release_id = Some("gh:o/foo@v2".into());
+        r.version = "v2".into();
+    });
+    let plan = env.plan(vec![install(&retail)], false);
+    assert!(plan.targets[0].notes.is_empty() && plan.targets[0].work.is_empty());
 }

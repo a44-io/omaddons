@@ -137,7 +137,7 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
-To update an addon today, run `install` again: it installs the newest release the channel allows and replaces the old one in one transaction. The exception is a `url:` ref, whose release is the URL itself: a re-run never re-downloads it.
+To update an addon today, run `install` again: it installs the newest release the channel allows and replaces the old one in one transaction. There are two exceptions. A `url:` ref's release is the URL itself, so a re-run never re-downloads it. An addon installed with `--version` is pinned, so a re-run without `--version` leaves it where it is (warning `addon_pinned`).
 
 ---
 
@@ -477,7 +477,9 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 
 **Channels.** `--channel stable|beta|alpha`. The default is the addon's recorded channel, then `default_channel`, then `stable`. On GitHub, `alpha` behaves like `beta`, and the newest 20 releases are considered.
 
-**Pinning.** `--version V` installs exactly that release: a tag for `gh:` refs, or a rev for `git:` refs. On the `release.json` path, `1.2.3` also tries `v1.2.3`. It is refused for `url:` and `file:` refs.
+**Pinning.** `--version V` installs exactly that release and pins it: a tag for `gh:` refs, or a rev for `git:` refs. On the `release.json` path, `1.2.3` also tries `v1.2.3`. It is refused for `url:` and `file:` refs. A pasted release link pins its tag the same way. Installing a pinned addon again without `--version` changes nothing and warns `addon_pinned`, without fetching its releases, even when a newer release exists. `--version W` moves it to `W`, still pinned. A pin that another omaddons process commits while an install is planning also holds: the install re-checks it under the lock.
+
+**What an update keeps.** Re-installing an installed addon keeps its pin and its recorded channel unless `--channel` names another. An addon installed only because another one needs it (`reason: dependency`, from milestone 2) becomes `explicit` when you install it by name.
 
 **A browser download.** `--file ZIP` installs an archive you downloaded as the release of one ref, so it is recorded against that addon.
 
@@ -567,12 +569,12 @@ omaddons status -v --json     # adds client_dir, install_root and exe_name
 
 ### `install <REF>...`
 
-Install or update addons in one target. Each ref is fetched once and verified against the target's TOC rules before anything is written, and all addons for a target go into one transaction. Re-running `install` on an installed addon updates it to the newest release its channel allows (except for `url:` refs, which are never re-checked).
+Install or update addons in one target. Each ref is fetched once and verified against the target's TOC rules before anything is written, and all addons for a target go into one transaction. Re-running `install` on an installed addon updates it to the newest release its channel allows. `url:` refs are never re-checked, and pinned addons stay where they are (`addon_pinned`; see [Pinning](#sources-and-refs)).
 
 | Flag | Meaning |
 |---|---|
 | `--channel stable\|beta\|alpha` | Release channel (default: recorded, then `default_channel`, then stable) |
-| `--version <V>` | Exactly this release: a tag for `gh:`, a rev for `git:` |
+| `--version <V>` | Exactly this release, pinned: a tag for `gh:`, a rev for `git:` |
 | `--file <ZIP>` | Use this downloaded archive as the release of the one given ref |
 | `--force` | Take over a folder another addon owns, or replace an unmanaged folder (both undoable) |
 | `--strict` | Exit 6 when only some of the addons install |
@@ -813,7 +815,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 </details>
 
 <details>
-<summary><strong>Every warning code (22)</strong></summary>
+<summary><strong>Every warning code (23)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -839,6 +841,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `catalog_override_invalid` | a `catalog.d` file was skipped |
 | `ownership_transferred` | `--force` moved a folder from one addon to another |
 | `credential_file_mode` | reserved for credential files other users can read (no command reads credentials yet) |
+| `addon_pinned` | a pinned addon was left at its release; the fix shows it with `info`, and `--version` moves it |
 
 </details>
 
@@ -856,7 +859,7 @@ Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` l
 
 ### Stability
 
-The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the contract can still change. From that tag on, it is frozen. The contract suite (`tests/contract/`) runs a matrix of success and failure cases across the commands. It checks key order, `ok`/`exit_code` agreement and registered codes, and that every `fix_argv` and `commands[].argv` round-trips through shell quoting to its display string. 23 snapshots pin representative envelopes.
+The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the contract can still change. From that tag on, it is frozen. The contract suite (`tests/contract/`) runs a matrix of success and failure cases across the commands. It checks key order, `ok`/`exit_code` agreement and registered codes, and that every `fix_argv` and `commands[].argv` round-trips through shell quoting to its display string. 24 snapshots pin representative envelopes.
 
 ---
 
@@ -1354,7 +1357,7 @@ At the time of writing there are 760 tests: 464 unit tests in `src/`, 295 integr
 
 | Suite | What it covers |
 |---|---|
-| `tests/contract/` | A matrix of success and failure envelopes across the commands: key order, exit codes, registered codes, fix argv round-trips (23 snapshots) |
+| `tests/contract/` | A matrix of success and failure envelopes across the commands: key order, exit codes, registered codes, fix argv round-trips (24 snapshots) |
 | `tests/engine_crash.rs` | All 24 engine failpoints armed as real `abort`s in a child process |
 | `tests/engine_concurrency.rs` | Parallel runs, duplicate installs, lock hold time under 50 ms |
 | `tests/discover_*.rs` | The discovery matrix, launchers, scanning, custom clients, the cache |
@@ -1398,7 +1401,7 @@ Yes, by default. Updates that keep the loaded TOC land and tell you to `/reload`
 
 ### How do I update my addons?
 
-Today, run `omaddons install <name> -t <target>` again; it installs the newest release in one undoable transaction. `url:` refs are the exception: their release is the URL, so install a new URL instead. `outdated` and a bulk `update` arrive in milestone 2.
+Today, run `omaddons install <name> -t <target>` again; it installs the newest release in one undoable transaction. `url:` refs are one exception: their release is the URL, so install a new URL instead. Pinned addons (installed with `--version`) are the other: they stay put until you install another `--version`. `outdated` and a bulk `update` arrive in milestone 2.
 
 ### Does it work with Turtle WoW, Warmane or other private servers?
 
@@ -1457,7 +1460,7 @@ Rules
   - --dry-run first for anything destructive; --force only after reading the refusal.
   - Never write into Interface/AddOns yourself; every change must go through omaddons to stay undoable.
   - --offline for read-only work; net-log shows every request that reached the network.
-  - Re-running install updates an addon (not url: refs); there is no update command before milestone 2.
+  - Re-running install updates an addon (not url: refs, not pinned ones: addon_pinned); there is no update command before milestone 2.
   - Only install falls back to a default target; pass -t everywhere else when more than one client matches.
 
 State   ~/.config/omaddons/config.toml · ~/.local/state/omaddons/ · ~/.cache/omaddons/

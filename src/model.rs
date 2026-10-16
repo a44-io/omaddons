@@ -523,18 +523,27 @@ impl Target {
 }
 
 /// One managed addon on one target (vision §5.1). The per-file index lives in
-/// `targets/<key>.files.json`, not here.
+/// `targets/<key>.files.json`, not here. Every install carries `pinned`, `channel`,
+/// `reason` and `required_by` over from the previous record by one set of rules
+/// (`engine::plan::carry_over`), again under the lock.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AddonRecord {
     pub r#ref: Ref,
+    /// The record's identity: an installed addon keeps its name on every update.
     pub name: String,
     pub version: String,
     pub version_confidence: VersionConfidence,
     pub release_id: Option<String>,
+    /// The channel its releases come from: kept unless a request names another.
     pub channel: Channel,
+    /// Set by an install with a version and kept by every install without one. A
+    /// pinned addon stays at its release: installing or updating it without a version
+    /// changes nothing (`addon_pinned`).
     pub pinned: bool,
+    /// `explicit` when a user asked for it, `dependency` when only the resolver did.
+    /// A user's install promotes a dependency; an update keeps the reason.
     pub reason: AddonReason,
-    /// Names of the addons that require this one.
+    /// Names of the addons that require this one, sorted and de-duplicated.
     pub required_by: Vec<String>,
     pub folders: Vec<FolderName>,
     pub state: AddonState,

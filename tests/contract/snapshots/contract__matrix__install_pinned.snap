@@ -1,0 +1,58 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "data": {
+    "atomic_swap": null,
+    "creates_addons_dir": false,
+    "dry_run": false,
+    "items": [
+      {
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [],
+          "removed": [],
+          "replaced": [],
+          "skipped": []
+        },
+        "from_version": "1.0",
+        "name": "Foo",
+        "ref": "gh:o/foo",
+        "request": "gh:o/foo",
+        "status": "unchanged",
+        "to_version": "1.0",
+        "version_confidence": "release"
+      }
+    ],
+    "kind": null,
+    "reload_required": "none",
+    "target": {
+      "id": "retail",
+      "key": "<ulid>"
+    },
+    "tx": null
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "addon_pinned",
+      "fix": "omaddons info Foo -t retail",
+      "fix_argv": [
+        "omaddons",
+        "info",
+        "Foo",
+        "-t",
+        "retail"
+      ],
+      "message": "Foo is pinned at 1.0 on retail; nothing was installed. Pass --version to move it"
+    }
+  ]
+}

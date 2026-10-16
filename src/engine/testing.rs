@@ -206,6 +206,30 @@ impl Scene {
     }
 }
 
+/// A user's install of `r` (from `file`, if given); a `version` pins it, as
+/// `install --version` does.
+pub fn install_change(
+    r: &str,
+    file: Option<&Path>,
+    version: Option<&str>,
+) -> super::plan::RequestedChange {
+    super::plan::RequestedChange::Install {
+        r#ref: r.parse().unwrap(),
+        channel: crate::model::Channel::Stable,
+        channel_explicit: false,
+        version: version.map(str::to_owned),
+        file: file.map(Path::to_path_buf),
+        name: None,
+        pin: if version.is_some() {
+            super::plan::PinIntent::Pin
+        } else {
+            super::plan::PinIntent::Keep
+        },
+        reason: crate::model::AddonReason::Explicit,
+        reinstall: false,
+    }
+}
+
 /// Fails every request: `--file` installs never touch the network.
 pub struct NoNetwork;
 
@@ -350,13 +374,17 @@ impl TxScene {
 
     /// An `--file` install of `zip` as `ref`.
     pub fn install(&self, r: &str, zip: &Path) -> super::plan::RequestedChange {
-        super::plan::RequestedChange::Install {
-            r#ref: r.parse().unwrap(),
-            channel: crate::model::Channel::Stable,
-            version: None,
-            file: Some(zip.to_path_buf()),
-            name: None,
-        }
+        install_change(r, Some(zip), None)
+    }
+
+    /// An `--file` install of `zip` as `ref` at `version`, which pins it.
+    pub fn install_pinned(
+        &self,
+        r: &str,
+        zip: &Path,
+        version: &str,
+    ) -> super::plan::RequestedChange {
+        install_change(r, Some(zip), Some(version))
     }
 
     /// Runs `changes` on the target as currently registered.

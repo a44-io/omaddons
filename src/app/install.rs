@@ -22,11 +22,12 @@ use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::{resolve_one, with_target};
-use crate::engine::plan::{ChangeKind, FolderSummary, RequestedChange};
+use crate::engine::plan::{ChangeKind, FolderSummary, PinIntent, RequestedChange};
 use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{
-    Channel, FolderName, Ref, ReloadRequired, TargetKey, TxId, TxKind, VersionConfidence,
+    AddonReason, Channel, FolderName, Ref, ReloadRequired, TargetKey, TxId, TxKind,
+    VersionConfidence,
 };
 use crate::output::{Outcome, Style};
 use crate::resolve::catalog::Catalog;
@@ -162,6 +163,8 @@ pub struct InstallOutcome {
     strict: bool,
     /// The global lock's hold time, for the `-v` log line.
     pub lock_held_ms: Option<u64>,
+    /// Why addons were left unchanged, for `-v` log lines.
+    pub notes: Vec<String>,
 }
 
 impl InstallOutcome {
@@ -369,20 +372,33 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
     }
 
     let engine = Engine::new(ctx, &world, "install")?;
-    let change_for = |p: &ParsedRef, target: &DiscoveredTarget| RequestedChange::Install {
-        r#ref: p.r#ref.clone(),
-        channel: channel
-            .or_else(|| recorded_channel(&records, target, &p.r#ref))
-            .or(world.config.default_channel)
-            .unwrap_or_default(),
-        version: args.version.clone().or_else(|| p.version_hint.clone()),
-        file: file.clone(),
-        // A catalog ref is recorded under the catalog's name, however it was named.
-        name: catalog
-            .entries()
-            .iter()
-            .find(|e| e.r#ref == p.r#ref)
-            .map(|e| e.name.clone()),
+    let change_for = |p: &ParsedRef, target: &DiscoveredTarget| {
+        let version = args.version.clone().or_else(|| p.version_hint.clone());
+        RequestedChange::Install {
+            r#ref: p.r#ref.clone(),
+            channel: channel
+                .or_else(|| recorded_channel(&records, target, &p.r#ref))
+                .or(world.config.default_channel)
+                .unwrap_or_default(),
+            channel_explicit: channel.is_some(),
+            // A version (or a release link's tag) pins; otherwise a pin stays (M2-D29).
+            pin: if version.is_some() {
+                PinIntent::Pin
+            } else {
+                PinIntent::Keep
+            },
+            version,
+            file: file.clone(),
+            // A catalog ref is recorded under the catalog's name, however it was named.
+            name: catalog
+                .entries()
+                .iter()
+                .find(|e| e.r#ref == p.r#ref)
+                .map(|e| e.name.clone()),
+            // Asking for an addon by name makes it explicit, promoting a dependency.
+            reason: AddonReason::Explicit,
+            reinstall: false,
+        }
     };
     let parsed: Vec<&ParsedRef> = items
         .iter()
@@ -489,6 +505,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         commands,
         strict: args.strict,
         lock_held_ms: outcome.and_then(|o| o.lock_held_ms),
+        notes: outcome.map(|o| o.notes.clone()).unwrap_or_default(),
     })
 }
 
@@ -969,6 +986,7 @@ mod tests {
             commands: Vec::new(),
             strict,
             lock_held_ms: None,
+            notes: Vec::new(),
         }
     }
 

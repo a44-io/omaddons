@@ -123,14 +123,18 @@ pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
         }
         Some(Command::Install(args)) => {
             let result = install::run(ctx, args);
-            if let Ok(outcome) = &result
-                && let (Some(ms), Some(tx)) =
+            if let Ok(outcome) = &result {
+                for note in &outcome.notes {
+                    reporter.log(output::LogLevel::Debug, note);
+                }
+                if let (Some(ms), Some(tx)) =
                     (outcome.lock_held_ms, output::Outcome::data(outcome).tx)
-            {
-                reporter.log(
-                    output::LogLevel::Debug,
-                    &format!("lock released: tx {tx}, lock_held_ms {ms}"),
-                );
+                {
+                    reporter.log(
+                        output::LogLevel::Debug,
+                        &format!("lock released: tx {tx}, lock_held_ms {ms}"),
+                    );
+                }
             }
             output::emit(cfg, &mut reporter, name, started, offline, result)
         }

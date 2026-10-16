@@ -379,6 +379,7 @@ impl Planned {
                 warnings,
                 creates_addons_dir: false,
                 lock_held_ms,
+                notes: Vec::new(),
             },
             sv: self.sv.counts,
         }

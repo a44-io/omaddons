@@ -95,6 +95,44 @@ mod support {
             .map(|a| a.as_str().unwrap().to_owned())
             .collect()
     }
+
+    /// The only target record's file.
+    pub fn record_file(home: &Home) -> std::path::PathBuf {
+        fs::read_dir(home.state().join("targets"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                let name = p.file_name().unwrap().to_string_lossy();
+                name.ends_with(".json") && !name.ends_with(".files.json")
+            })
+            .unwrap()
+    }
+
+    /// The record of addon `key` (its lowercase name).
+    pub fn addon_record(home: &Home, key: &str) -> Value {
+        let record: Value = serde_json::from_slice(&fs::read(record_file(home)).unwrap()).unwrap();
+        record["addons"][key].clone()
+    }
+
+    /// The stderr NDJSON events of `r`.
+    pub fn events(r: &Run) -> Vec<Value> {
+        r.stderr
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    /// A zip of gh:o/foo at `version` in `dir`.
+    pub fn foo_zip(dir: &Path, version: &str) -> String {
+        let text = toc("120105", &[&format!("## Version: {version}")]);
+        let path = dir.join(format!("Foo-{version}.zip"));
+        fs::write(
+            &path,
+            zip_text(&[("Foo/Foo.toc", &text), ("Foo/core.lua", version)]),
+        )
+        .unwrap();
+        path.display().to_string()
+    }
 }
 
 #[test]
@@ -738,4 +776,213 @@ fn an_unreadable_addons_folder_fails_every_item() {
         r.context()
     );
     assert_eq!(fs::read_to_string(&addons).unwrap(), "not a folder");
+}
+
+#[test]
+fn a_pinned_addon_stays_until_a_version_moves_it() {
+    let mut home = Home::new(&["wow"]);
+    foo_release(&home.http, "v1.0.0", mainline(), "120105");
+    let r = home.run(&["install", "gh:o/foo", "--version", "v1.0.0", "-t", "retail"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        items(&envelope)[0]["status"],
+        "installed",
+        "{}",
+        r.context()
+    );
+    assert_eq!(support::addon_record(&home, "foo")["pinned"], true);
+
+    // A newer release: a plain install of the pinned addon changes nothing.
+    let next = home.scenario("http-v2");
+    foo_release(&next, "v2.0.0", mainline(), "120105");
+    let tree = tree_hash(&home.client("_retail_"));
+    let record = fs::read(support::record_file(&home)).unwrap();
+    let requests = || {
+        fs::read_to_string(home.state().join("net.log"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let before = requests();
+    let r = home.run(&["install", "Foo", "-t", "retail"]);
+    let envelope = r.expect(0);
+    let item = &items(&envelope)[0];
+    assert_eq!(
+        (
+            &envelope["data"]["tx"],
+            &item["status"],
+            &item["to_version"]
+        ),
+        (
+            &Value::Null,
+            &Value::from("unchanged"),
+            &Value::from("v1.0.0")
+        ),
+        "{}",
+        r.context()
+    );
+    let warning = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["code"] == "addon_pinned");
+    assert!(warning.is_some(), "no addon_pinned\n{}", r.context());
+    let warning = warning.unwrap().clone();
+    assert_eq!(
+        warning["message"],
+        "Foo is pinned at v1.0.0 on retail; nothing was installed. Pass --version to move it"
+    );
+    let fix = argv_of(&warning["fix_argv"]);
+    assert_eq!(fix, ["omaddons", "info", "Foo", "-t", "retail"]);
+    let mirrored = support::events(&r)
+        .into_iter()
+        .find(|e| e["event"] == "warning" && e["code"] == "addon_pinned");
+    assert_eq!(
+        mirrored.map(|e| e["fix_argv"].clone()),
+        Some(warning["fix_argv"].clone()),
+        "mirrored on stderr with its argv\n{}",
+        r.context()
+    );
+    assert_eq!(tree_hash(&home.client("_retail_")), tree, "files untouched");
+    assert_eq!(
+        fs::read(support::record_file(&home)).unwrap(),
+        record,
+        "record untouched"
+    );
+    assert!(before > 0, "the first install was logged");
+    assert_eq!(
+        requests(),
+        before,
+        "a pinned addon's releases are not fetched"
+    );
+    let r = home.exec(&[fix[1..].to_vec(), vec!["--json".to_owned()]].concat());
+    r.expect(0);
+
+    // --version moves it, and it stays pinned.
+    let r = home.run(&["install", "Foo", "--version", "v2.0.0", "-t", "retail"]);
+    let envelope = r.expect(0);
+    let item = &items(&envelope)[0];
+    assert_eq!(
+        (&item["status"], &item["from_version"], &item["to_version"]),
+        (
+            &Value::from("updated"),
+            &Value::from("v1.0.0"),
+            &Value::from("v2.0.0")
+        ),
+        "{}",
+        r.context()
+    );
+    let record = support::addon_record(&home, "foo");
+    assert_eq!(
+        (&record["pinned"], &record["version"]),
+        (&Value::Bool(true), &Value::from("v2.0.0"))
+    );
+    let core = fs::read_to_string(home.addons("_retail_").join("Foo/core.lua")).unwrap();
+    assert_eq!(core, "v2.0.0");
+}
+
+#[test]
+fn the_recorded_channel_survives_an_update() {
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let (v1, v2) = (support::foo_zip(&dl, "1.0"), support::foo_zip(&dl, "2.0"));
+    let install = |zip: &str, extra: &[&str]| {
+        let mut args = vec![
+            "install",
+            "gh:o/foo",
+            "--file",
+            zip,
+            "-t",
+            "retail",
+            "--offline",
+        ];
+        args.extend_from_slice(extra);
+        home.run(&args)
+    };
+    let r = install(&v1, &["--channel", "beta"]);
+    assert_eq!(items(&r.expect(0))[0]["channel"], "beta", "{}", r.context());
+    let r = install(&v2, &[]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        (
+            &items(&envelope)[0]["status"],
+            &items(&envelope)[0]["channel"]
+        ),
+        (&Value::from("updated"), &Value::from("beta")),
+        "{}",
+        r.context()
+    );
+    let record = support::addon_record(&home, "foo");
+    assert_eq!(
+        (&record["channel"], &record["pinned"], &record["version"]),
+        (
+            &Value::from("beta"),
+            &Value::Bool(false),
+            &Value::from("2.0")
+        )
+    );
+}
+
+#[test]
+fn installing_a_dependency_by_name_makes_it_explicit() {
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let (v1, v2) = (support::foo_zip(&dl, "1.0"), support::foo_zip(&dl, "2.0"));
+    let install = |zip: &str| {
+        home.exec(
+            &[
+                "install",
+                "gh:o/foo",
+                "--file",
+                zip,
+                "-t",
+                "retail",
+                "--offline",
+                "--json",
+                "-v",
+            ]
+            .map(String::from),
+        )
+    };
+    install(&v1).expect(0);
+    // Foo became a dependency of Bar (as the resolver will record it).
+    let file = support::record_file(&home);
+    let mut record: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    record["addons"]["foo"]["reason"] = "dependency".into();
+    record["addons"]["foo"]["required_by"] = serde_json::json!(["Bar"]);
+    fs::write(&file, record.to_string()).unwrap();
+
+    // The same release: only the record would change, which is not recorded yet.
+    let r = install(&v1);
+    let envelope = r.expect(0);
+    assert_eq!(
+        (&envelope["data"]["tx"], &items(&envelope)[0]["status"]),
+        (&Value::Null, &Value::from("unchanged")),
+        "{}",
+        r.context()
+    );
+    let noted = support::events(&r).iter().any(|e| {
+        e["event"] == "log"
+            && e["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("Foo unchanged") && m.contains("record's reason"))
+    });
+    assert!(noted, "a -v note names the field\n{}", r.context());
+    assert_eq!(support::addon_record(&home, "foo")["reason"], "dependency");
+
+    // A newer release: installed, promoted, still required by Bar.
+    let r = install(&v2);
+    assert_eq!(
+        items(&r.expect(0))[0]["status"],
+        "updated",
+        "{}",
+        r.context()
+    );
+    let record = support::addon_record(&home, "foo");
+    assert_eq!(
+        (&record["reason"], &record["required_by"]),
+        (&Value::from("explicit"), &serde_json::json!(["Bar"]))
+    );
 }

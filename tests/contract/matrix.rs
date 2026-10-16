@@ -112,6 +112,44 @@ fn install() {
 }
 
 #[test]
+fn install_of_a_pinned_addon() {
+    let s = Scene::new();
+    let (foo, foo2) = (s.zip("foo"), s.zip("foo2"));
+    let pin = [
+        "install",
+        "gh:o/foo",
+        "--file",
+        &foo,
+        "--version",
+        "1.0",
+        "-t",
+        "retail",
+    ];
+    s.json(&pin, 0);
+    let c = s.json(&["install", "gh:o/foo", "--file", &foo2, "-t", "retail"], 0);
+    let warning = c.envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["code"] == "addon_pinned")
+        .cloned();
+    assert!(warning.is_some(), "{}", c.run.context());
+    let mirrored = c
+        .run
+        .stderr
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|e| e["event"] == "warning" && e["code"] == "addon_pinned");
+    assert_eq!(
+        mirrored.map(|e| e["fix_argv"].clone()),
+        warning.map(|w| w["fix_argv"].clone()),
+        "mirrored on stderr with the same argv\n{}",
+        c.run.context()
+    );
+    insta::assert_json_snapshot!("install_pinned", s.stable(&c.envelope));
+}
+
+#[test]
 fn remove() {
     let s = Scene::new();
     s.install_foo();
