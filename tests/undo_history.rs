@@ -535,6 +535,7 @@ mod runs {
                                 reinstall: false,
                             }],
                             default_kind: TxKind::Install,
+                            dependency_locks: std::collections::BTreeMap::new(),
                         })
                         .collect(),
                     force: false,
@@ -543,6 +544,7 @@ mod runs {
                     reason: None,
                     kind: Some(TxKind::Update),
                     run,
+                    no_deps: false,
                 };
                 let http = replay(&self.home.env, &self.home.http);
                 let sources = SourceRegistry::builtin();
@@ -562,6 +564,8 @@ mod runs {
                     running: Some(&nothing_runs),
                     cache: None,
                     progress: &ProgressSink::none(),
+                    catalog: None,
+                    default_channel: Channel::Stable,
                 };
                 let done = omaddons::engine::run(&req, &ctx).unwrap();
                 let committed = done.outcomes.iter().filter(|o| o.tx.is_some()).count();

@@ -9,10 +9,11 @@ use crate::engine::inspect::ArchiveLimits;
 use crate::engine::retention::RetentionLimits;
 use crate::engine::{EngineCtx, TxOutcomes, TxRequest, UndoOutcome, UndoRequest};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
-use crate::model::Actor;
+use crate::model::{Actor, Channel};
 use crate::net::{Http, NetConfig, NetLog, stack};
 use crate::output::ProgressSink;
 use crate::resolve::cache::{Freshness, ReleaseCache};
+use crate::resolve::catalog::Catalog;
 use crate::rules::RulesTable;
 use crate::sources::SourceRegistry;
 use crate::sources::git_hosts::GitRunner;
@@ -34,6 +35,10 @@ pub struct Engine {
     command: &'static str,
     /// The command's progress, which its engine runs report into.
     progress: ProgressSink,
+    /// Where dependencies resolve.
+    catalog: Catalog,
+    /// The channel dependencies install from.
+    default_channel: Channel,
 }
 
 impl Engine {
@@ -65,6 +70,9 @@ impl Engine {
             argv: ctx.argv.clone(),
             command,
             progress: ctx.progress.clone(),
+            // A broken override is the command's own catalog warning, if it loads one.
+            catalog: Catalog::load(&world.paths).0,
+            default_channel: world.config.default_channel.unwrap_or_default(),
         })
     }
 
@@ -83,6 +91,8 @@ impl Engine {
             running: None,
             cache,
             progress: &self.progress,
+            catalog: Some(&self.catalog),
+            default_channel: self.default_channel,
         }
     }
 

@@ -100,6 +100,7 @@ mod support {
                 .map(|s| (*s).to_owned())
                 .collect();
             let cache = ReleaseCache::transient(http.as_ref(), &registry);
+            let catalog = omaddons::resolve::catalog::Catalog::default();
             let ctx = PlanCtx {
                 paths: &self.paths,
                 scopes: &self.scopes,
@@ -115,6 +116,8 @@ mod support {
                 limits: ArchiveLimits::default(),
                 actor: Actor::Agent,
                 argv: &argv,
+                catalog: &catalog,
+                default_channel: Channel::Stable,
             };
             let req = PlanRequest {
                 targets,
@@ -122,6 +125,7 @@ mod support {
                 while_running: false,
                 dry_run: true,
                 kind: None,
+                no_deps: false,
             };
             plan(&req, &ctx).unwrap()
         }
@@ -191,6 +195,7 @@ mod support {
             target: target.clone(),
             changes,
             default_kind,
+            dependency_locks: std::collections::BTreeMap::new(),
         }
     }
 

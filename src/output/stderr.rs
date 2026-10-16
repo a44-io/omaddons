@@ -125,6 +125,20 @@ impl ProgressSink {
         let current = count.current;
         lock(&inner.reporter).progress(phase.wire(), item, Some(current), Some(total));
     }
+
+    /// `more` items join `phase` after its total was given (a dependency round): the
+    /// total grows by them, or starts at them when no event came yet.
+    pub fn grow(&self, phase: Phase, more: u64) {
+        let Some(inner) = &self.inner else {
+            return;
+        };
+        if more == 0 {
+            return;
+        }
+        let mut phases = inner.phases.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = phases.entry(phase).or_default();
+        count.total = Some(count.total.map_or(more, |t| t.saturating_add(more)));
+    }
 }
 
 /// A `log` event's level.

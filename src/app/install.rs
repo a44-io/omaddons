@@ -25,7 +25,7 @@ use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::{resolve_one, with_target};
 use crate::engine::edit::EditField;
-use crate::engine::plan::{ChangeKind, FolderSummary, PinIntent, RequestedChange};
+use crate::engine::plan::{ChangeKind, FolderSummary, PinIntent, PlanFailure, RequestedChange};
 use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{
@@ -56,7 +56,7 @@ pub struct InstallArgs {
     /// Install this downloaded archive as the release of the one given ref
     #[arg(long, value_name = "ZIP")]
     pub file: Option<PathBuf>,
-    /// Accepted; dependencies arrive in a later release
+    /// Install only the named addons, not the ones their TOCs require
     #[arg(long)]
     pub no_deps: bool,
     /// Take over a folder another addon owns, or replace an unmanaged folder
@@ -127,6 +127,8 @@ pub struct InstallOutcome {
     warnings: Vec<Warning>,
     commands: Vec<CommandHint>,
     strict: bool,
+    /// Dependencies that resolved but did not install (each one a warning).
+    failed_dependencies: usize,
     /// The global lock's hold time, for the `-v` log line.
     pub lock_held_ms: Option<u64>,
     /// Why addons were left unchanged, for `-v` log lines.
@@ -140,6 +142,7 @@ impl InstallOutcome {
             .iter()
             .filter(|i| i.status == ItemStatus::Failed)
             .count()
+            + self.failed_dependencies
     }
 }
 
@@ -173,9 +176,13 @@ impl Outcome for InstallOutcome {
                 format!(
                     "{} of {} addons did not install (--strict)",
                     self.failed(),
-                    self.data.items.len()
+                    self.data.items.len() + self.failed_dependencies
                 ),
-                Suggestion::text("see data.items[].error for each failed addon"),
+                Suggestion::text(if self.failed_dependencies == 0 {
+                    "see data.items[].error for each failed addon"
+                } else {
+                    "see data.items[].error for each failed addon, and the warnings for dependencies"
+                }),
             )
         })
     }
@@ -449,6 +456,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             discovered: target.clone(),
             changes: parsed.iter().map(|p| change_for(p, target)).collect(),
             default_kind: TxKind::Install,
+            dependency_locks: BTreeMap::new(),
         }],
         force: args.force,
         while_running: ctx.while_running,
@@ -456,6 +464,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         reason: ctx.reason.clone(),
         kind: None,
         run: RunId::new(),
+        no_deps: args.no_deps,
     };
     let done = engine.run(&req, Some(&cache));
     // The command's last engine run: remember what it fetched, even when it failed.
@@ -495,6 +504,34 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         warnings.push(warning);
     }
     let built: Vec<InstallItem> = built.into_iter().map(|(item, _)| item).collect();
+    // A dependency that resolved but did not install: the run is partial (M2-D9).
+    let failed_dependencies: Vec<&PlanFailure> = done
+        .failures
+        .iter()
+        .filter(|f| f.error.details.get("required_by").is_some())
+        .collect();
+    for f in &failed_dependencies {
+        let Some(cause) = &f.cause else {
+            continue;
+        };
+        let by: Vec<&str> = f.error.details["required_by"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let dependency = f
+            .r#ref
+            .as_ref()
+            .map_or_else(|| "a dependency".to_owned(), ToString::to_string);
+        let mut warning = Warning::item(cause);
+        warning.message = format!(
+            "{dependency}, required by {}, did not install: {}",
+            by.join(", "),
+            cause.message
+        );
+        warnings.push(warning);
+    }
     if let Some(o) = outcome {
         warnings.extend(o.warnings.iter().cloned());
     }
@@ -507,7 +544,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
     }
 
     let tx = outcome.and_then(|o| o.tx);
-    let commands = tx
+    let mut commands: Vec<CommandHint> = tx
         .map(|tx| {
             vec![CommandHint::new(
                 "undo",
@@ -516,6 +553,21 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             )]
         })
         .unwrap_or_default();
+    // A required folder present but unmanaged: nothing installed for it; a look.
+    let unmanaged = done
+        .plan
+        .targets
+        .iter()
+        .flat_map(|t| t.dependencies.values())
+        .any(|r| !r.unmanaged.is_empty());
+    if unmanaged {
+        let id = outcome.map_or_else(|| target.target.id.clone(), |o| o.target.clone());
+        commands.push(CommandHint::new(
+            "list_unmanaged",
+            ["omaddons", "list", "-t", id.as_str(), "--unmanaged"],
+            false,
+        ));
+    }
     let swapped = tx.is_some();
     Ok(InstallOutcome {
         data: InstallData {
@@ -539,6 +591,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         warnings: unique,
         commands,
         strict: args.strict,
+        failed_dependencies: failed_dependencies.len(),
         lock_held_ms: outcome.and_then(|o| o.lock_held_ms),
         notes: outcome
             .map(|o| o.notes.clone())
@@ -655,6 +708,7 @@ fn choose_target<'w>(
                 discovered: (*d).clone(),
                 changes: parsed.iter().map(|p| change_for(p, d)).collect(),
                 default_kind: TxKind::Install,
+                dependency_locks: BTreeMap::new(),
             })
             .collect(),
         force: false,
@@ -664,6 +718,8 @@ fn choose_target<'w>(
         kind: None,
         // A dry run commits nothing, so its run id is never recorded.
         run: RunId::new(),
+        // The requested refs alone choose the target.
+        no_deps: true,
     };
     // The same cache as the real run: each ref is fetched once across both.
     let probed = engine.run(&probe, Some(cache))?;
@@ -1068,6 +1124,7 @@ mod tests {
             warnings: Vec::new(),
             commands: Vec::new(),
             strict,
+            failed_dependencies: 0,
             lock_held_ms: None,
             notes: Vec::new(),
         }

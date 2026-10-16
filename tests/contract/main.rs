@@ -60,6 +60,13 @@ mod support {
         "update the addon, or enable",
         "the AddOns filesystem does not support atomic renames",
         "use an archive built for this client",
+        // missing_dependency
+        "no keyless source ships",
+        "install the one you use",
+        "install it yourself",
+        "install without --no-deps",
+        "install a project that ships",
+        "install the addon that ships",
     ];
 
     /// The top-level keys of a JSON object, in document order.

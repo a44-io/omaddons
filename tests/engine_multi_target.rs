@@ -104,6 +104,8 @@ mod support {
                 running: Some(&self.nothing_runs),
                 cache: None,
                 progress: &self.progress,
+                catalog: None,
+                default_channel: Channel::Stable,
             }
         }
 
@@ -127,6 +129,7 @@ mod support {
                             reinstall: false,
                         }],
                         default_kind: TxKind::Install,
+                        dependency_locks: std::collections::BTreeMap::new(),
                     })
                     .collect(),
                 force: false,
@@ -135,6 +138,7 @@ mod support {
                 reason: None,
                 kind: None,
                 run,
+                no_deps: false,
             };
             omaddons::engine::run(&req, &self.ctx()).unwrap()
         }

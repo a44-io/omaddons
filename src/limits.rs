@@ -74,6 +74,11 @@ pub const MEMO_KNOWN_RELEASES: usize = 10;
 /// A WoWInterface project unchanged for longer is never chosen on its own to satisfy a
 /// dependency (`wowi_abandoned`); `search` calls it abandoned.
 pub const DEPENDENCY_SOURCE_MAX_AGE: Duration = Duration::from_secs(730 * 24 * 60 * 60);
+/// Most dependency rounds one install plans per target (a chain longer than this stops
+/// with `missing_dependency`, reason `limit_reached`).
+pub const DEPENDENCY_MAX_DEPTH: usize = 4;
+/// Most dependencies one transaction installs per target.
+pub const DEPENDENCY_MAX_ADDONS: usize = 32;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -292,6 +297,20 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "A WoWInterface project unchanged this long is not chosen on its own for a dependency",
     ),
+    limit(
+        "DEPENDENCY_MAX_DEPTH",
+        LimitValue::Count(DEPENDENCY_MAX_DEPTH as u64),
+        "count",
+        None,
+        "Dependency rounds per install and target; a longer chain stops with a warning",
+    ),
+    limit(
+        "DEPENDENCY_MAX_ADDONS",
+        LimitValue::Count(DEPENDENCY_MAX_ADDONS as u64),
+        "count",
+        None,
+        "Dependencies one transaction installs per target",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -462,7 +481,8 @@ mod tests {
         "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",
-        "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE",
+        "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "DEPENDENCY_MAX_DEPTH",
+        "DEPENDENCY_MAX_ADDONS",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

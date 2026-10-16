@@ -35,7 +35,8 @@ use super::running::{self, PolicyContext, PolicyOp};
 use super::swap::SwapOp;
 use crate::error::{Error, ErrorBody, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{ScopeTable, TreeDigest, WriteSession, Writer, ensure_dir_all, failpoint};
-use crate::inventory::{Depth, Inventory, inventory};
+use crate::inventory::{Depth, FolderClass, Inventory, inventory};
+use crate::limits::{DEPENDENCY_MAX_ADDONS, DEPENDENCY_MAX_DEPTH};
 use crate::model::{
     Actor, AddonReason, AddonRecord, AddonState, AssetLocation, Candidate, Channel, ExpectedHash,
     FolderName, RankReason, Ref, ReleaseSet, ReloadRequired, Target, TargetKey, TxId, TxKind,
@@ -44,6 +45,11 @@ use crate::model::{
 use crate::net::{Http, Request};
 use crate::output::{Phase, ProgressSink};
 use crate::resolve::cache::{Origin, ReleaseCache};
+use crate::resolve::catalog::Catalog;
+use crate::resolve::deps::{
+    AmbiguityReason, DepLookups, DepResolution, DepView, MissingReason, Satisfier, ViewFolder,
+    is_satisfied, needed_folders, resolve,
+};
 use crate::resolve::select::{EmptyReason, select};
 use crate::rules::RulesTable;
 use crate::sources::{SourceRegistry, Wanted};
@@ -67,6 +73,9 @@ pub struct PlanRequest {
     pub dry_run: bool,
     /// The transaction kind, whatever the changes are (`adopt`, `pin`, `sync`).
     pub kind: Option<TxKind>,
+    /// `--no-deps`: install only what was asked for; what the TOCs require is still
+    /// checked and warned about.
+    pub no_deps: bool,
 }
 
 /// The changes for one target.
@@ -76,6 +85,9 @@ pub struct TargetRequest {
     pub changes: Vec<RequestedChange>,
     /// What the command means when only records change (see [`target_kind`]).
     pub default_kind: TxKind,
+    /// Versions to fetch for dependencies that resolve to these refs (by identity);
+    /// a lock never pins.
+    pub dependency_locks: BTreeMap<Ref, String>,
 }
 
 /// One requested change.
@@ -321,6 +333,12 @@ pub struct PlanCtx<'a> {
     pub limits: ArchiveLimits,
     pub actor: Actor,
     pub argv: &'a [String],
+    /// Where dependencies resolve (with the Tukui and WoWInterface indexes once they
+    /// exist).
+    pub catalog: &'a Catalog,
+    /// The channel dependencies install from (config `default_channel`, else stable;
+    /// never the requester's, M2-D33).
+    pub default_channel: Channel,
 }
 
 /// The plan: what `--dry-run` returns and the commit executes.
@@ -387,6 +405,61 @@ pub struct TargetPlan {
     /// The command's kind when only records change (see [`target_kind`]).
     #[serde(skip)]
     pub default_kind: TxKind,
+    /// What each requester's dependencies came to, by requester name.
+    #[serde(skip)]
+    pub dependencies: BTreeMap<String, DepReport>,
+}
+
+/// What one addon's required dependencies came to on a target.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DepReport {
+    /// Installed with it: (the folder it required, the dependency's addon).
+    pub installs: Vec<(FolderName, String)>,
+    /// Present but unmanaged: nothing installed, a hint to look.
+    pub unmanaged: Vec<FolderName>,
+    /// Not installed, and why (with up to three candidates).
+    pub unresolved: Vec<Unresolved>,
+    /// Resolved, but the dependency failed to plan: (folder, its ref).
+    pub failed: Vec<(FolderName, Ref)>,
+}
+
+/// A required folder nothing was installed for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Unresolved {
+    pub folder: FolderName,
+    pub reason: UnresolvedReason,
+    pub candidates: Vec<Ref>,
+}
+
+/// Why a required folder was not installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UnresolvedReason {
+    NoSource,
+    ManagedFolderMissing,
+    SeveralCatalogEntries,
+    WowiAmbiguous,
+    WowiAbandoned,
+    UnknownCondition,
+    /// The candidate's build is out of date for this client.
+    OutOfDate,
+    /// Past `DEPENDENCY_MAX_DEPTH` or `DEPENDENCY_MAX_ADDONS`.
+    LimitReached,
+    /// `--no-deps`.
+    NotRequested,
+    /// The resolved project's archive does not ship the folder for this client.
+    NotShipped,
+}
+
+/// What an install's folders require and how they verified, for the dependency rounds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DepFacts {
+    /// The required dependencies of its needed folders (the primary and the folders of
+    /// its own archive it requires, transitively), each once, in folder order. Optional
+    /// dependencies are never here.
+    pub requires: Vec<FolderName>,
+    /// Installed folders that verified out of date on this client.
+    pub out_of_date: BTreeSet<FolderName>,
 }
 
 /// One addon changing.
@@ -509,6 +582,8 @@ pub struct FolderWork {
     /// Folders this addon stopped shipping that another work of the transaction took
     /// over (a handover): their removal is that work's replacement.
     pub handed_over: Vec<FolderName>,
+    /// What the installed folders require (empty for removes).
+    pub deps: DepFacts,
 }
 
 /// A change to the record alone.
@@ -672,6 +747,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             unchanged_warnings: Vec::new(),
             notes: Vec::new(),
             default_kind: tr.default_kind,
+            dependencies: BTreeMap::new(),
         };
         let live = match inventory(target, Some(&record), ctx.table, Depth::Classes) {
             Ok(live) => live,
@@ -800,6 +876,8 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             }
         }
         settle_handovers(&mut tp.work, &mut tp.changes, Some(&mut tp.ops));
+        planner.dependency_rounds(&mut tp, &mut failures, &tr.dependency_locks);
+        settle_handovers(&mut tp.work, &mut tp.changes, Some(&mut tp.ops));
         tp.kind = target_kind(&tp.changes, req.kind, tp.default_kind);
         tp.creates_addons_dir =
             live.addons_dir_missing && tp.work.iter().any(|w| w.inspected().is_some());
@@ -822,6 +900,566 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         failures,
         facts,
     })
+}
+
+/// The target as dependency checks see it while planning: what this transaction's
+/// works claim, then AddOns as it is.
+struct PlanView<'a> {
+    view: &'a WorkingView,
+    live: &'a Inventory,
+}
+
+impl DepView for PlanView<'_> {
+    fn folder(&self, dep: &FolderName) -> Option<ViewFolder> {
+        if let Some(addon) = self.view.owner_of(dep) {
+            return Some(ViewFolder::Planned {
+                addon: addon.to_owned(),
+            });
+        }
+        // Its owner's work in this transaction stops shipping it.
+        if self.view.released_by(dep).is_some() {
+            return None;
+        }
+        let entry = self.live.folders.iter().find(|e| e.key == dep.key())?;
+        Some(ViewFolder::Present {
+            class: entry.class,
+            owner: entry.owners.first().cloned(),
+        })
+    }
+}
+
+/// The limits' names, as `limit_reached` warnings say them.
+const MAX_DEPTH: &str = "DEPENDENCY_MAX_DEPTH";
+const MAX_ADDONS: &str = "DEPENDENCY_MAX_ADDONS";
+
+/// `missing_dependency`: `requester` needs `folder`, and nothing was installed for it.
+/// `detail` is the owner for `managed_folder_missing` and the limit's name for
+/// `limit_reached`.
+fn missing_dependency(
+    target: &Target,
+    requester: &str,
+    unresolved: &Unresolved,
+    detail: Option<&str>,
+) -> Warning {
+    let folder = unresolved.folder.as_str();
+    let id = target.id.as_str();
+    let top = unresolved.candidates.first();
+    let install_top = |r: &Ref| {
+        Suggestion::command([
+            "omaddons".to_owned(),
+            "install".to_owned(),
+            r.to_string(),
+            "-t".to_owned(),
+            id.to_owned(),
+        ])
+    };
+    let listed: Vec<String> = unresolved
+        .candidates
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let (why, fix) = match unresolved.reason {
+        UnresolvedReason::NoSource => (
+            "no keyless source ships it".to_owned(),
+            Suggestion::text(format!(
+                "no keyless source ships {folder}; it may only be on CurseForge or Wago, which arrive in M5"
+            )),
+        ),
+        UnresolvedReason::ManagedFolderMissing => (
+            format!(
+                "it is missing from {}'s folders",
+                detail.unwrap_or("an installed addon")
+            ),
+            Suggestion::command(["omaddons", "list", "-t", id, "-v"]),
+        ),
+        UnresolvedReason::SeveralCatalogEntries | UnresolvedReason::WowiAmbiguous => (
+            format!("several projects ship it ({})", listed.join(", ")),
+            top.map_or_else(|| Suggestion::text("install the one you use"), install_top),
+        ),
+        UnresolvedReason::WowiAbandoned => (
+            format!(
+                "the project that ships it ({}) has not changed in two years",
+                listed.join(", ")
+            ),
+            top.map_or_else(|| Suggestion::text("install the one you use"), install_top),
+        ),
+        UnresolvedReason::OutOfDate => (
+            format!(
+                "its build ({}) is out of date for this client",
+                listed.join(", ")
+            ),
+            top.map_or_else(|| Suggestion::text("install the one you use"), install_top),
+        ),
+        UnresolvedReason::LimitReached => (
+            if detail == Some(MAX_ADDONS) {
+                format!(
+                    "it is past {MAX_ADDONS} ({DEPENDENCY_MAX_ADDONS} dependency installs per target)"
+                )
+            } else {
+                format!("it is past {MAX_DEPTH} ({DEPENDENCY_MAX_DEPTH} dependency rounds)")
+            },
+            top.map_or_else(|| Suggestion::text("install it yourself"), install_top),
+        ),
+        UnresolvedReason::NotRequested => (
+            "--no-deps installs only what was named".to_owned(),
+            Suggestion::text(format!(
+                "install without --no-deps, or install the addon that ships {folder}"
+            )),
+        ),
+        UnresolvedReason::NotShipped => (
+            format!("{} does not ship it for this client", listed.join(", ")),
+            Suggestion::text(format!(
+                "install a project that ships {folder} for this client"
+            )),
+        ),
+        UnresolvedReason::UnknownCondition => (
+            "its TOC requires it under a condition omaddons does not read".to_owned(),
+            Suggestion::text(format!(
+                "install the addon that ships {folder} if this client needs it"
+            )),
+        ),
+    };
+    Warning::new(
+        WarningCode::MissingDependency,
+        format!("{requester} on {id} requires {folder}, which was not installed: {why}"),
+    )
+    .with_fix(fix)
+}
+
+/// The resolver's reasons, as the report says them.
+impl From<AmbiguityReason> for UnresolvedReason {
+    fn from(reason: AmbiguityReason) -> Self {
+        match reason {
+            AmbiguityReason::SeveralCatalogEntries => Self::SeveralCatalogEntries,
+            AmbiguityReason::WowiAmbiguous => Self::WowiAmbiguous,
+            AmbiguityReason::WowiAbandoned => Self::WowiAbandoned,
+        }
+    }
+}
+
+impl From<MissingReason> for UnresolvedReason {
+    fn from(reason: MissingReason) -> Self {
+        match reason {
+            MissingReason::NoSource => Self::NoSource,
+            MissingReason::ManagedFolderMissing => Self::ManagedFolderMissing,
+        }
+    }
+}
+
+/// One dependency a round plans: its ref, the name it resolved under, the folder it
+/// provides and who requires it.
+struct RoundDep {
+    r#ref: Ref,
+    name: Option<String>,
+    folder: FolderName,
+    requesters: BTreeSet<String>,
+}
+
+/// What a ref the rounds met came to, for a later requester resolving to it.
+#[derive(Debug, Clone, Copy)]
+enum Settled {
+    /// Planned, by a request or a round: a folder it does not provide is not shipped.
+    Planned,
+    /// Failed to plan: the failure names the requesters that asked first.
+    Failed,
+    /// Not installed, for this reason (and the limit's name, for `limit_reached`).
+    Skipped(UnresolvedReason, Option<&'static str>),
+}
+
+/// The dependency rounds' running state on one target.
+struct Rounds<'l> {
+    lookups: DepLookups<'l>,
+    locks: &'l BTreeMap<Ref, String>,
+    /// Requesters whose dependencies are collected, by addon key.
+    collected: BTreeSet<String>,
+    /// Every ref met, by identity.
+    settled: BTreeMap<String, Settled>,
+    /// The next round's refs, by identity.
+    wanted: BTreeMap<String, RoundDep>,
+    /// Dependency installs planned so far.
+    installed: usize,
+}
+
+impl TargetPlanner<'_> {
+    /// Dependency rounds (M2-D7..D9): each planned install's needed folders' required
+    /// dependencies are satisfied (the client's, its own archive's, a present or planned
+    /// folder; a managed or planned owner gains the requester), else resolved and
+    /// planned as `dependency` installs from the default channel, one fetch per round,
+    /// until nothing new is wanted or a limit is reached. What resolves to nothing is a
+    /// `missing_dependency` warning; a dependency that fails to plan is a failure with
+    /// `details.required_by`, and the requester still installs.
+    fn dependency_rounds(
+        &self,
+        tp: &mut TargetPlan,
+        failures: &mut Vec<PlanFailure>,
+        locks: &BTreeMap<Ref, String>,
+    ) {
+        let planned = tp
+            .work
+            .iter()
+            .filter_map(AddonWork::record)
+            .map(|r| (r.r#ref.identity(), Settled::Planned));
+        let failed = failures
+            .iter()
+            .filter(|f| f.target == self.target.id)
+            .filter_map(|f| f.r#ref.as_ref())
+            .map(|r| (r.identity(), Settled::Failed));
+        let mut rounds = Rounds {
+            lookups: DepLookups {
+                managed: self.record,
+                catalog: self.ctx.catalog,
+                tukui: None,
+                wowi: None,
+                now: Timestamp::now(),
+            },
+            locks,
+            collected: BTreeSet::new(),
+            settled: failed.chain(planned).collect(),
+            wanted: BTreeMap::new(),
+            installed: 0,
+        };
+        for round in 1.. {
+            self.collect_round(tp, failures, &mut rounds);
+            let mut now: Vec<RoundDep> = std::mem::take(&mut rounds.wanted).into_values().collect();
+            let (room, limit) = if round > DEPENDENCY_MAX_DEPTH {
+                (0, MAX_DEPTH)
+            } else {
+                let room = DEPENDENCY_MAX_ADDONS.saturating_sub(rounds.installed);
+                (room, MAX_ADDONS)
+            };
+            for over in now.split_off(room.min(now.len())) {
+                let reason = UnresolvedReason::LimitReached;
+                let skipped = Settled::Skipped(reason, Some(limit));
+                rounds.settled.insert(over.r#ref.identity(), skipped);
+                self.skip(tp, &over, reason, Some(limit));
+            }
+            if now.is_empty() {
+                break;
+            }
+            self.plan_round(tp, failures, &mut rounds, now);
+        }
+    }
+
+    /// Collects the required dependencies of every planned install not collected yet:
+    /// the satisfied ones record their requester or a note, the rest resolve into
+    /// `rounds.wanted` (or a warning).
+    fn collect_round(
+        &self,
+        tp: &mut TargetPlan,
+        failures: &mut Vec<PlanFailure>,
+        rounds: &mut Rounds<'_>,
+    ) {
+        let pending: Vec<(String, Vec<FolderName>, Vec<FolderName>)> = tp
+            .work
+            .iter()
+            .filter_map(|w| {
+                let WorkMode::Folders(f) = &w.mode else {
+                    return None;
+                };
+                let inspected = f.inspected.as_ref()?;
+                let archive = inspected.folders.iter().map(|x| x.name.clone()).collect();
+                let key = TargetRecord::addon_key(&w.addon);
+                (!rounds.collected.contains(&key))
+                    .then(|| (w.addon.clone(), archive, f.deps.requires.clone()))
+            })
+            .collect();
+        for (requester, archive, requires) in pending {
+            rounds.collected.insert(TargetRecord::addon_key(&requester));
+            for dep in requires {
+                self.collect_one(tp, failures, rounds, &requester, &archive, dep);
+            }
+        }
+    }
+
+    /// One required folder `dep` of `requester`, whose own archive is `archive`.
+    fn collect_one(
+        &self,
+        tp: &mut TargetPlan,
+        failures: &mut Vec<PlanFailure>,
+        rounds: &mut Rounds<'_>,
+        requester: &str,
+        archive: &[FolderName],
+        dep: FolderName,
+    ) {
+        let satisfied = {
+            let view = self.view.borrow();
+            let plan_view = PlanView {
+                view: &view,
+                live: self.live,
+            };
+            is_satisfied(&dep, archive, &plan_view)
+        };
+        let unresolved = |reason, candidates| Unresolved {
+            folder: dep.clone(),
+            reason,
+            candidates,
+        };
+        match satisfied {
+            Some(Satisfier::Managed(owner) | Satisfier::Planned(owner)) => {
+                // ubs:ignore — comparing addon keys, not secrets
+                if TargetRecord::addon_key(&owner) != TargetRecord::addon_key(requester) {
+                    self.require(tp, failures, &owner, requester);
+                }
+            }
+            Some(Satisfier::Present(FolderClass::Unmanaged)) => {
+                let report = tp.dependencies.entry(requester.to_owned()).or_default();
+                if !report.unmanaged.contains(&dep) {
+                    report.unmanaged.push(dep);
+                }
+            }
+            Some(_) => {}
+            None if self.req.no_deps => {
+                let u = unresolved(UnresolvedReason::NotRequested, Vec::new());
+                self.unresolved(tp, requester, u, None);
+            }
+            None => match resolve(&dep, self.target, &rounds.lookups) {
+                DepResolution::Resolved { r#ref, name, .. } => {
+                    let id = r#ref.identity();
+                    if let Some(wanted) = rounds.wanted.get_mut(&id) {
+                        wanted.requesters.insert(requester.to_owned());
+                        return;
+                    }
+                    match rounds.settled.get(&id) {
+                        // Planned already, yet the folder is not there.
+                        Some(Settled::Planned) => {
+                            let u = unresolved(UnresolvedReason::NotShipped, vec![r#ref]);
+                            self.unresolved(tp, requester, u, None);
+                        }
+                        Some(Settled::Skipped(reason, detail)) => {
+                            let u = unresolved(*reason, vec![r#ref]);
+                            self.unresolved(tp, requester, u, *detail);
+                        }
+                        Some(Settled::Failed) => {
+                            let report = tp.dependencies.entry(requester.to_owned()).or_default();
+                            report.failed.push((dep, r#ref));
+                        }
+                        None => {
+                            let wanted = RoundDep {
+                                r#ref,
+                                name,
+                                folder: dep.clone(),
+                                requesters: BTreeSet::from([requester.to_owned()]),
+                            };
+                            rounds.wanted.insert(id, wanted);
+                        }
+                    }
+                }
+                DepResolution::Ambiguous { candidates, reason } => {
+                    let top = candidates.iter().take(3).map(|c| c.r#ref.clone()).collect();
+                    let u = unresolved(reason.into(), top);
+                    self.unresolved(tp, requester, u, None);
+                }
+                DepResolution::Missing { reason, owner } => {
+                    let u = unresolved(reason.into(), Vec::new());
+                    self.unresolved(tp, requester, u, owner.as_deref());
+                }
+            },
+        }
+    }
+
+    /// Plans one round's dependencies after one fetch for all of them.
+    fn plan_round(
+        &self,
+        tp: &mut TargetPlan,
+        failures: &mut Vec<PlanFailure>,
+        rounds: &mut Rounds<'_>,
+        now: Vec<RoundDep>,
+    ) {
+        let ctx = self.ctx;
+        let lock = |r: &Ref| {
+            rounds
+                .locks
+                .iter()
+                .find(|(k, _)| k.identity() == r.identity())
+                .map(|(_, v)| v.clone())
+        };
+        let wants: Vec<Wanted> = now
+            .iter()
+            .map(|d| Wanted {
+                r#ref: d.r#ref.clone(),
+                channel: ctx.default_channel,
+                version: lock(&d.r#ref),
+            })
+            .collect();
+        let answers = ctx.cache.get(&wants);
+        // The round's fetches, downloads and verifications join the run's progress.
+        let fetched: Vec<&Wanted> = answers
+            .iter()
+            .filter(|(_, f)| f.origin == Origin::Fetched)
+            .map(|(w, _)| w)
+            .collect();
+        let total = fetched.len() as u64;
+        ctx.progress.grow(Phase::Fetch, total);
+        for w in &fetched {
+            ctx.progress
+                .event(Phase::Fetch, total, &w.r#ref.to_string());
+        }
+        ctx.progress.grow(Phase::Download, now.len() as u64);
+        ctx.progress.grow(Phase::Verify, now.len() as u64);
+        for (dep, w) in now.into_iter().zip(wants) {
+            let id = dep.r#ref.identity();
+            let set = answers.get(&w).map(|f| f.set.clone());
+            match self.plan_dependency(&dep, &w, set) {
+                Ok(Ok(planned)) => {
+                    claim_work(&mut self.view.borrow_mut(), &planned.work);
+                    rounds.installed += 1;
+                    for requester in &dep.requesters {
+                        let report = tp.dependencies.entry(requester.clone()).or_default();
+                        report
+                            .installs
+                            .push((dep.folder.clone(), planned.work.addon.clone()));
+                    }
+                    rounds.settled.insert(id, Settled::Planned);
+                    if let Err(error) = Planned::Change(planned).merge_into(tp, &self.target.id) {
+                        self.dependency_failed(tp, failures, &dep, error);
+                    }
+                }
+                Ok(Err(reason)) => {
+                    rounds.settled.insert(id, Settled::Skipped(reason, None));
+                    self.skip(tp, &dep, reason, None);
+                }
+                Err(error) => {
+                    rounds.settled.insert(id, Settled::Failed);
+                    self.dependency_failed(tp, failures, &dep, error);
+                }
+            }
+        }
+    }
+
+    /// Plans one dependency install from the default channel (judged without
+    /// `--force`), or says why it is not installed: its folder verified out of date
+    /// for this client (the guard), or its archive does not ship the folder here.
+    fn plan_dependency(
+        &self,
+        dep: &RoundDep,
+        wanted: &Wanted,
+        set: Option<Result<ReleaseSet>>,
+    ) -> Result<std::result::Result<Box<PlannedAddon>, UnresolvedReason>> {
+        let intent = InstallIntent {
+            required_by_add: dep.requesters.clone(),
+            ..InstallIntent::requested(
+                self.ctx.default_channel,
+                false,
+                wanted.version.clone(),
+                PinIntent::Keep,
+                AddonReason::Dependency,
+                false,
+            )
+        };
+        let build = match self.prepare_install(dep.name.as_deref(), wanted, None, set, &intent)? {
+            Prepared::Build(build) => build,
+            // Installed and kept as it is, yet the folder is not there.
+            Prepared::Done(_) => return Ok(Err(UnresolvedReason::NotShipped)),
+        };
+        if build.deps.out_of_date.contains(&dep.folder) {
+            return Ok(Err(UnresolvedReason::OutOfDate));
+        }
+        if !build
+            .loadable
+            .inspected
+            .folders
+            .iter()
+            .any(|f| f.name == dep.folder)
+        {
+            return Ok(Err(UnresolvedReason::NotShipped));
+        }
+        if let Some(existing) = &build.existing {
+            let mut view = self.view.borrow_mut();
+            for folder in build.released() {
+                view.release(&folder, &existing.name);
+            }
+        }
+        self.build(*build).map(Box::new).map(Ok)
+    }
+
+    /// `dep` is not installed, for `reason`: each of its requesters is told.
+    fn skip(
+        &self,
+        tp: &mut TargetPlan,
+        dep: &RoundDep,
+        reason: UnresolvedReason,
+        detail: Option<&str>,
+    ) {
+        for requester in &dep.requesters {
+            let unresolved = Unresolved {
+                folder: dep.folder.clone(),
+                reason,
+                candidates: vec![dep.r#ref.clone()],
+            };
+            self.unresolved(tp, requester, unresolved, detail);
+        }
+    }
+
+    /// `owner`'s record gains `requester` in `required_by` (folded into its work when
+    /// it has one; nothing when it already lists it).
+    fn require(
+        &self,
+        tp: &mut TargetPlan,
+        failures: &mut Vec<PlanFailure>,
+        owner: &str,
+        requester: &str,
+    ) {
+        let edit = RecordEdit::AddRequiredBy(requester.to_owned());
+        let planned = self.edit(owner, &edit, &tp.work);
+        if let Err(error) = planned.and_then(|p| p.merge_into(tp, &self.target.id)) {
+            // Under the owner's ref: a failure without one is the target's.
+            let key = TargetRecord::addon_key(owner);
+            let r#ref = tp
+                .work
+                .iter()
+                .filter_map(AddonWork::record)
+                .chain(self.record.addons.values())
+                .find(|r| TargetRecord::addon_key(&r.name) == key)
+                .map(|r| r.r#ref.clone());
+            failures.push(failure(r#ref, Some(owner.to_owned()), self.target, error));
+        }
+    }
+
+    /// Records `unresolved` for `requester` and warns.
+    fn unresolved(
+        &self,
+        tp: &mut TargetPlan,
+        requester: &str,
+        unresolved: Unresolved,
+        detail: Option<&str>,
+    ) {
+        // Tied to no work, so the commit keeps it as it keeps an unchanged addon's.
+        let warning = missing_dependency(self.target, requester, &unresolved, detail);
+        push_new(&mut tp.warnings, vec![warning.clone()]);
+        push_new(&mut tp.unchanged_warnings, vec![warning]);
+        let report = tp.dependencies.entry(requester.to_owned()).or_default();
+        if !report.unresolved.contains(&unresolved) {
+            report.unresolved.push(unresolved);
+        }
+    }
+
+    /// A resolved dependency that could not be planned: a failure under its ref, naming
+    /// who requires it.
+    fn dependency_failed(
+        &self,
+        tp: &mut TargetPlan,
+        failures: &mut Vec<PlanFailure>,
+        dep: &RoundDep,
+        error: Error,
+    ) {
+        let requesters: Vec<&String> = dep.requesters.iter().collect();
+        let mut details = error.details.clone();
+        match details.as_object_mut() {
+            Some(map) => {
+                map.insert("required_by".into(), json!(requesters));
+            }
+            None => details = json!({ "required_by": requesters }),
+        }
+        let error = error.details(details);
+        for requester in &dep.requesters {
+            tp.dependencies
+                .entry(requester.clone())
+                .or_default()
+                .failed
+                .push((dep.folder.clone(), dep.r#ref.clone()));
+        }
+        failures.push(failure(Some(dep.r#ref.clone()), None, self.target, error));
+    }
 }
 
 /// One request of a target after the first planning pass.
@@ -1021,21 +1659,23 @@ pub fn rejudge(
                     return planner.current(existing, intent);
                 }
             }
-            planner
-                .build_install(
-                    existing,
-                    template.clone(),
-                    intent,
-                    &folders.edits,
-                    Loadable {
-                        inspected: inspected.clone(),
-                        skipped: folders.skipped.clone(),
-                    },
-                    folders.blob.clone(),
-                    None,
-                    Vec::new(),
-                )
-                .map(Planned::change)
+            let mut rebuilt = planner.build_install(
+                existing,
+                template.clone(),
+                intent,
+                &folders.edits,
+                Loadable {
+                    inspected: inspected.clone(),
+                    skipped: folders.skipped.clone(),
+                },
+                folders.blob.clone(),
+                None,
+                Vec::new(),
+            )?;
+            if let WorkMode::Folders(f) = &mut rebuilt.work.mode {
+                f.deps = folders.deps.clone();
+            }
+            Ok(Planned::change(rebuilt))
         }
         _ if !record
             .addons
@@ -1460,6 +2100,7 @@ struct Winner {
     name: String,
     blob: Option<PathBuf>,
     warnings: Vec<Warning>,
+    deps: DepFacts,
 }
 
 /// An inspected archive cut down to the folders the target's client loads, and the
@@ -1485,6 +2126,7 @@ struct PendingBuild {
     blob: Option<PathBuf>,
     release: Option<PlannedRelease>,
     warnings: Vec<Warning>,
+    deps: DepFacts,
 }
 
 impl PendingBuild {
@@ -1679,12 +2321,13 @@ impl TargetPlanner<'_> {
             blob: winner.blob,
             release: Some(release),
             warnings: winner.warnings,
+            deps: winner.deps,
         })))
     }
 
     /// The second pass of an install: ownership and policy against the working view.
     fn build(&self, b: PendingBuild) -> Result<PlannedAddon> {
-        self.build_install(
+        let mut planned = self.build_install(
             b.existing.as_ref(),
             b.template,
             &b.intent,
@@ -1693,7 +2336,11 @@ impl TargetPlanner<'_> {
             b.blob,
             b.release,
             b.warnings,
-        )
+        )?;
+        if let WorkMode::Folders(f) = &mut planned.work.mode {
+            f.deps = b.deps;
+        }
+        Ok(planned)
     }
 
     /// `folder` has an entry in AddOns.
@@ -1911,6 +2558,7 @@ impl TargetPlanner<'_> {
                     intent: Some(intent.clone()),
                     edits: edits.to_vec(),
                     handed_over: Vec::new(),
+                    deps: DepFacts::default(),
                 })),
             },
         })
@@ -1971,6 +2619,7 @@ impl TargetPlanner<'_> {
                     intent: None,
                     edits: Vec::new(),
                     handed_over: Vec::new(),
+                    deps: DepFacts::default(),
                 })),
             },
         })
@@ -2190,6 +2839,33 @@ impl TargetPlanner<'_> {
         let name = primary
             .filter(|p| split.install.contains(p))
             .map_or_else(|| addon_name(r#ref, &inspected), |p| p.as_str().to_owned());
+        // What the needed folders require, for the dependency rounds (M2-D7).
+        let installed: Vec<FolderVerdict> = verdicts
+            .iter()
+            .filter(|v| split.install.contains(&v.folder))
+            .cloned()
+            .collect();
+        let needed = match primary.filter(|p| split.install.contains(p)) {
+            Some(primary) => needed_folders(primary, &installed),
+            // No primary: every folder installed is the addon.
+            None => installed.iter().map(|v| v.folder.clone()).collect(),
+        };
+        let mut requires: Vec<FolderName> = Vec::new();
+        for v in installed.iter().filter(|v| needed.contains(&v.folder)) {
+            for dep in &v.dependencies {
+                if !requires.contains(dep) {
+                    requires.push(dep.clone());
+                }
+            }
+        }
+        let deps = DepFacts {
+            requires,
+            out_of_date: installed
+                .iter()
+                .filter(|v| matches!(v.report.verdict, Verdict::Compatible { out_of_date: true }))
+                .map(|v| v.folder.clone())
+                .collect(),
+        };
         let warnings = verdicts
             .into_iter()
             .filter(|v| split.install.contains(&v.folder))
@@ -2204,6 +2880,7 @@ impl TargetPlanner<'_> {
             name,
             blob,
             warnings,
+            deps,
         }))
     }
 
@@ -2931,6 +3608,7 @@ mod tests {
         let table = RulesTable::builtin();
         let argv = ["omaddons".to_owned(), "install".to_owned()];
         let cache = ReleaseCache::transient(&crate::engine::testing::NoNetwork, &registry);
+        let catalog = Catalog::default();
         let ctx = PlanCtx {
             paths: &scene.paths,
             scopes: &scopes,
@@ -2946,17 +3624,21 @@ mod tests {
             limits: ArchiveLimits::default(),
             actor: Actor::Agent,
             argv: &argv,
+            catalog: &catalog,
+            default_channel: Channel::Stable,
         };
         let req = PlanRequest {
             targets: vec![TargetRequest {
                 target,
                 changes,
                 default_kind: TxKind::Install,
+                dependency_locks: BTreeMap::new(),
             }],
             force: false,
             while_running: false,
             dry_run: false,
             kind: None,
+            no_deps: false,
         };
         let plan = plan(&req, &ctx).unwrap();
         f(&req, &ctx, &plan)

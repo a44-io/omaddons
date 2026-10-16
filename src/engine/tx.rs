@@ -41,11 +41,13 @@ use crate::fsx::{
     SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint,
 };
 use crate::model::{
-    Actor, AddonState, FolderName, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind,
+    Actor, AddonState, Channel, FolderName, Ref, ReloadRequired, RunId, Target, TargetKey, TxId,
+    TxKind,
 };
 use crate::net::Http;
 use crate::output::{Phase, ProgressSink};
 use crate::resolve::cache::ReleaseCache;
+use crate::resolve::catalog::Catalog;
 use crate::rules::RulesTable;
 use crate::sources::SourceRegistry;
 use crate::state::config::RunningPolicy;
@@ -97,6 +99,8 @@ pub struct TxRequest {
     pub kind: Option<TxKind>,
     /// The command invocation, recorded on every transaction this request commits.
     pub run: RunId,
+    /// `--no-deps`: what the TOCs require is checked and warned about, not installed.
+    pub no_deps: bool,
 }
 
 /// One target and its changes; unregistered targets are registered at commit.
@@ -107,6 +111,8 @@ pub struct TxTarget {
     /// What the command means when only records change: install for install, remove
     /// for remove, update for update.
     pub default_kind: TxKind,
+    /// Versions to fetch for dependencies resolving to these refs (`sync`'s locks).
+    pub dependency_locks: BTreeMap<Ref, String>,
 }
 
 /// What the engine reads.
@@ -130,6 +136,10 @@ pub struct EngineCtx<'a> {
     pub cache: Option<&'a ReleaseCache<'a>>,
     /// Where the run's progress goes.
     pub progress: &'a ProgressSink,
+    /// Where dependencies resolve; `None` resolves none from the catalog.
+    pub catalog: Option<&'a Catalog>,
+    /// The channel dependencies install from.
+    pub default_channel: Channel,
 }
 
 /// One target's result: the `data` core of install, remove and undo.
@@ -191,13 +201,16 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
                 target: t.discovered.target.clone(),
                 changes: t.changes.clone(),
                 default_kind: t.default_kind,
+                dependency_locks: t.dependency_locks.clone(),
             })
             .collect(),
         force: req.force,
         while_running: req.while_running,
         dry_run: req.dry_run,
         kind: req.kind,
+        no_deps: req.no_deps,
     };
+    let no_catalog = Catalog::default();
     let transient;
     let cache = match ctx.cache {
         Some(cache) => cache,
@@ -221,6 +234,8 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         limits: ctx.limits,
         actor: ctx.actor,
         argv: ctx.argv,
+        catalog: ctx.catalog.unwrap_or(&no_catalog),
+        default_channel: ctx.default_channel,
     };
     let planned = plan::plan(&plan_req, &plan_ctx);
     let plan = match planned {
@@ -486,8 +501,10 @@ fn locked(
     // ubs:ignore — comparing record generations, not secrets
     let changed = current.value.generation != tp.generation;
     let running = running_now(ctx, std::slice::from_ref(&target));
-    // Re-judging is offline: it never fetches, so it needs no memo.
+    // Re-judging is offline: it never fetches or resolves, so it needs no memo and no
+    // catalog.
     let offline = ReleaseCache::transient(ctx.http, ctx.registry);
+    let no_catalog = Catalog::default();
     let plan_ctx = PlanCtx {
         paths,
         scopes,
@@ -503,6 +520,8 @@ fn locked(
         limits: ctx.limits,
         actor: ctx.actor,
         argv: ctx.argv,
+        catalog: &no_catalog,
+        default_channel: ctx.default_channel,
     };
     let mut works = Vec::new();
     let mut changes = Vec::new();
@@ -515,7 +534,18 @@ fn locked(
     // releases first, then each claim (M2-D6).
     let state = TargetState::now(&plan_ctx, &target)?;
     let mut view = released_view(&tp.work);
+    // The addons whose works still commit: a dependency (or a `required_by` edit) whose
+    // every requester was planned and dropped out goes too.
+    let planned_addons: BTreeSet<String> = tp
+        .work
+        .iter()
+        .map(|w| TargetRecord::addon_key(&w.addon))
+        .collect();
+    let mut kept: BTreeSet<String> = BTreeSet::new();
     for planned in &tp.work {
+        if requesters_dropped(&requesters_of(planned), &planned_addons, &kept) {
+            continue;
+        }
         match rejudge(
             plan_req,
             &plan_ctx,
@@ -528,6 +558,7 @@ fn locked(
             Ok(Planned::Change(p)) => {
                 let p = *p;
                 claim(&mut view, &p.work);
+                kept.insert(TargetRecord::addon_key(&p.work.addon));
                 reload_required = reload_required.max(p.reload_required);
                 push_new(&mut warnings, p.warnings);
                 changes.push(p.change);
@@ -724,6 +755,46 @@ pub(super) fn stale(cause: &Error) -> Error {
         Suggestion::text("run the command again; it re-plans against the current state"),
     )
     .details(serde_json::json!({ "cause": cause.code.wire(), "cause_message": cause.message }))
+}
+
+/// Who a work is for, when another work asked for it: a dependency install's
+/// requesters, or the requesters a `required_by`-only edit adds. Empty otherwise.
+fn requesters_of(work: &AddonWork) -> Vec<String> {
+    match &work.mode {
+        WorkMode::Folders(f) => f
+            .intent
+            .as_ref()
+            .filter(|i| i.from_resolver())
+            .map(|i| i.required_by_add.iter().cloned().collect())
+            .unwrap_or_default(),
+        WorkMode::Records(r) => {
+            let names: Option<Vec<String>> = r
+                .edits
+                .iter()
+                .map(|e| match e {
+                    RecordEdit::AddRequiredBy(by) => Some(by.clone()),
+                    _ => None,
+                })
+                .collect();
+            names.unwrap_or_default()
+        }
+    }
+}
+
+/// Whether a work asked for by `requesters` goes under the lock: every one of them was
+/// planned in this transaction (`planned`, by addon key) and none still commits
+/// (`kept`). A work no one asked for, or asked for by an addon outside the transaction,
+/// stays.
+fn requesters_dropped(
+    requesters: &[String],
+    planned: &BTreeSet<String>,
+    kept: &BTreeSet<String>,
+) -> bool {
+    !requesters.is_empty()
+        && requesters.iter().all(|r| {
+            let key = TargetRecord::addon_key(r);
+            planned.contains(&key) && !kept.contains(&key)
+        })
 }
 
 /// The record after `works`: changed addons in, removed ones out, transferred folders
@@ -980,6 +1051,40 @@ mod tests {
         ("Foo/Foo.toc", "## Interface: 120105\n## Notes: v2\n"),
         ("Foo/new.lua", "--"),
     ];
+
+    #[test]
+    fn a_dependency_goes_only_when_every_requester_in_the_transaction_dropped_out() {
+        let keys = |names: &[&str]| -> BTreeSet<String> {
+            names.iter().map(|n| TargetRecord::addon_key(n)).collect()
+        };
+        let by =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| (*n).to_owned()).collect() };
+        let planned = keys(&["LittleWigs", "Other", "BigWigs"]);
+        // Asked for by no one (a user's request): stays.
+        assert!(!requesters_dropped(&[], &planned, &BTreeSet::new()));
+        // Its requester still commits (keys fold case): stays.
+        assert!(!requesters_dropped(
+            &by(&["littlewigs"]),
+            &planned,
+            &keys(&["LittleWigs"])
+        ));
+        // Its only requester dropped out: goes.
+        assert!(requesters_dropped(
+            &by(&["LittleWigs"]),
+            &planned,
+            &BTreeSet::new()
+        ));
+        // One of two still commits: stays; both gone: goes.
+        let two = by(&["LittleWigs", "Other"]);
+        assert!(!requesters_dropped(&two, &planned, &keys(&["Other"])));
+        assert!(requesters_dropped(&two, &planned, &BTreeSet::new()));
+        // A requester outside the transaction (an installed addon): stays.
+        assert!(!requesters_dropped(
+            &by(&["Installed"]),
+            &planned,
+            &BTreeSet::new()
+        ));
+    }
 
     /// A scene with v1 of gh:o/foo committed.
     fn with_v1() -> TxScene {

@@ -233,6 +233,7 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
                 })
                 .collect(),
             default_kind: TxKind::Remove,
+            dependency_locks: std::collections::BTreeMap::new(),
         }],
         force: false,
         while_running: ctx.while_running,
@@ -240,6 +241,7 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         reason: ctx.reason.clone(),
         kind: None,
         run: RunId::new(),
+        no_deps: false,
     };
     // A remove fetches nothing.
     let done = Engine::new(ctx, &world, "remove")?.run(&req, None)?;

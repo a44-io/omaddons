@@ -253,6 +253,7 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
                         } else {
                             TxKind::Install
                         },
+                        dependency_locks: BTreeMap::new(),
                     })
                 })
                 .collect(),
@@ -262,6 +263,7 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
             reason: ctx.reason.clone(),
             kind: records_only.then_some(TxKind::Pin),
             run,
+            no_deps: false,
         };
         let done = engine.run(&req, Some(&cache));
         let remembered = cache.remember(done.as_ref().map_or(&[][..], |d| &d.plan.facts));

@@ -360,6 +360,8 @@ impl TxScene {
             running: Some(&self.running),
             cache: None,
             progress: &crate::output::ProgressSink::none(),
+            catalog: None,
+            default_channel: crate::model::Channel::Stable,
         };
         f(&ctx)
     }
@@ -449,6 +451,7 @@ impl TxScene {
                 discovered: self.current_target(),
                 changes,
                 default_kind,
+                dependency_locks: std::collections::BTreeMap::new(),
             }],
             force: self.force,
             while_running: self.while_running,
@@ -456,6 +459,7 @@ impl TxScene {
             reason: Some("testing".into()),
             kind,
             run: crate::model::RunId::new(),
+            no_deps: false,
         };
         self.with_ctx("install", |ctx| super::tx::run(&req, ctx))
     }

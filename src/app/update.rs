@@ -309,6 +309,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
                         discovered: (*d).clone(),
                         changes: changes.remove(&d.target.id)?,
                         default_kind: TxKind::Update,
+                        dependency_locks: BTreeMap::new(),
                     })
                 })
                 .collect(),
@@ -318,6 +319,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
             reason: ctx.reason.clone(),
             kind: None,
             run,
+            no_deps: false,
         };
         match engine.run(&req, Some(&cache)) {
             Ok(done) => Some(done),

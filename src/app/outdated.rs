@@ -712,6 +712,7 @@ fn verify(
                     discovered: (*d).clone(),
                     changes,
                     default_kind: TxKind::Update,
+                    dependency_locks: BTreeMap::new(),
                 })
             })
             .collect(),
@@ -723,6 +724,8 @@ fn verify(
         kind: None,
         // A dry run commits nothing, so its run id is never recorded.
         run: RunId::new(),
+        // Verifying the updates themselves: their dependencies download at update time.
+        no_deps: true,
     };
     let mut verified = Verified::default();
     if req.targets.is_empty() {

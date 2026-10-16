@@ -382,6 +382,24 @@ expression: "(politeness, REGISTRY)"
       "unit": "ms",
       "config_key": null,
       "notes": "A WoWInterface project unchanged this long is not chosen on its own for a dependency"
+    },
+    {
+      "name": "DEPENDENCY_MAX_DEPTH",
+      "value": {
+        "count": 4
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Dependency rounds per install and target; a longer chain stops with a warning"
+    },
+    {
+      "name": "DEPENDENCY_MAX_ADDONS",
+      "value": {
+        "count": 32
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Dependencies one transaction installs per target"
     }
   ]
 ]
