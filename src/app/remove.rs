@@ -24,7 +24,7 @@ use crate::engine::plan::RequestedChange;
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::inventory::{Depth, FolderClass, inventory};
-use crate::model::{AddonRecord, FolderName, Ref, ReloadRequired, TxId, TxKind};
+use crate::model::{AddonRecord, FolderName, Ref, ReloadRequired, RunId, TxId, TxKind};
 use crate::output::{Outcome, Style};
 use crate::state::records::TargetRecord;
 
@@ -238,6 +238,7 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         dry_run: ctx.dry_run,
         reason: ctx.reason.clone(),
         kind: None,
+        run: RunId::new(),
     };
     // A remove fetches nothing.
     let done = Engine::new(ctx, &world, "remove")?.run(&req, None)?;

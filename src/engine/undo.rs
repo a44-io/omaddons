@@ -45,7 +45,7 @@ use crate::fsx::{
     GlobalLock, InflightLock, Op, OwnedFolders, RenameMode, ScopeTable, SnapshotRoots,
     WriteSession, Writer, ensure_dir_all, failpoint, mutate,
 };
-use crate::model::{Actor, FolderName, ReloadRequired, Target, TxId, TxKind};
+use crate::model::{Actor, FolderName, ReloadRequired, RunId, Target, TxId, TxKind};
 use crate::state::files_index::FilesIndex;
 use crate::state::history::{self, FolderOp, HistoryEntry, HistoryFilter, HistoryOp, TxResult};
 use crate::state::paths::{ClientPaths, Paths};
@@ -87,6 +87,8 @@ pub struct UndoRequest {
     pub reason: Option<String>,
     /// Every resolved target; the reverted transaction's own is acted on.
     pub targets: Vec<DiscoveredTarget>,
+    /// The undo command's invocation, shared by the undo transactions of one run.
+    pub run: RunId,
 }
 
 /// SavedVariables files of the reverted transaction, by what the undo does with them.
@@ -240,6 +242,7 @@ fn commit(
         reverts: Some(reverts),
         sv_deferred: planned.sv.counts.deferred > 0,
         created_addons_dir: false,
+        run: Some(req.run),
     };
     let sv_restore = (!planned.sv.restore.is_empty()).then(|| SvRestore {
         from: reverts,

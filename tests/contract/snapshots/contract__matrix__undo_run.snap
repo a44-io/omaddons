@@ -1,0 +1,78 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "undo",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "atomic_swap": true,
+    "dry_run": false,
+    "folders": {
+      "removed": [
+        "Foo"
+      ],
+      "restored": []
+    },
+    "reload_required": "none",
+    "reverted": {
+      "actor": "agent",
+      "argv": [
+        "omaddons",
+        "install",
+        "gh:o/foo",
+        "--file",
+        "<root>/dl/foo.zip",
+        "-t",
+        "retail",
+        "--json"
+      ],
+      "at": "<time>",
+      "kind": "install",
+      "target": {
+        "id": "retail",
+        "key": "<ulid>"
+      },
+      "tx": "<ulid>"
+    },
+    "reverted_run": "<ulid>",
+    "run": "<ulid>",
+    "saved_variables": {
+      "deferred": 0,
+      "kept": 0,
+      "policy": "auto",
+      "restored": 0,
+      "unchanged": 0
+    },
+    "transactions": [
+      {
+        "error": null,
+        "reverted": "<ulid>",
+        "status": "undone",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      }
+    ],
+    "tx": "<ulid>"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

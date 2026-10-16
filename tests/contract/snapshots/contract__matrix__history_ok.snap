@@ -29,6 +29,7 @@ expression: s.stable(&c.envelope)
         "kind": "install",
         "reason": null,
         "result": "committed",
+        "run": "<ulid>",
         "target": {
           "id": "retail",
           "key": "<ulid>"

@@ -208,6 +208,26 @@ fn history() {
 }
 
 #[test]
+fn runs() {
+    let s = Scene::new();
+    s.install_foo();
+    let c = s.json(&["history"], 0);
+    let run = c.envelope["data"]["entries"][0]["run"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let c = s.json(&["history", "--run", &run], 0);
+    assert_eq!(c.envelope["data"]["entries"].as_array().unwrap().len(), 1);
+    let c = s.json(&["history", "--run", "01ZZZZZZZZ"], 3);
+    insta::assert_json_snapshot!("history_unknown_run", s.stable(&c.envelope));
+    let c = s.json(&["undo", "--run", "01ZZZZZZZZ"], 3);
+    assert_eq!(c.envelope["error"]["code"], "not_found");
+    let c = s.json(&["undo", "--run", &run], 0);
+    assert_eq!(c.envelope["data"]["reverted_run"], run.as_str());
+    insta::assert_json_snapshot!("undo_run", s.stable(&c.envelope));
+}
+
+#[test]
 fn config() {
     let s = Scene::new();
     s.json(&["config", "get", "default_channel"], 0);

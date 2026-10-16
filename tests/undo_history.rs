@@ -437,3 +437,333 @@ fn history_filters_orders_and_truncates() {
     );
     s.assert_private();
 }
+
+/// Runs: one command invocation's transactions across targets, undone together. The
+/// three-target run is committed in-process through the engine (one `TxRequest.run`), as
+/// `update` will; everything after it goes through the binary.
+mod runs {
+    use serde_json::Value;
+
+    use runs_support::{Clients, ids, txs};
+
+    #[cfg(test)]
+    mod runs_support {
+        use std::collections::BTreeSet;
+        use std::fs;
+        use std::path::PathBuf;
+
+        use omaddons::discover::DiscoverySource;
+        use omaddons::discover::battlenet::{BattlenetHints, discover_root};
+        use omaddons::discover::registry::reconcile;
+        use omaddons::engine::inspect::ArchiveLimits;
+        use omaddons::engine::plan::{PinIntent, RequestedChange};
+        use omaddons::engine::retention::RetentionLimits;
+        use omaddons::engine::{EngineCtx, TxRequest, TxTarget};
+        use omaddons::model::{Actor, AddonReason, Channel, RunId, TxKind};
+        use omaddons::output::ProgressSink;
+        use omaddons::rules::RulesTable;
+        use omaddons::sources::SourceRegistry;
+        use omaddons::state::config::RunningPolicy;
+        use omaddons::state::registry::load_registry;
+        use serde_json::Value;
+
+        use super::super::common::archives::zip_text;
+        use super::super::common::home::Home;
+        use super::super::common::http::{paths, replay};
+
+        /// Foo, loadable on every client of [`Clients`].
+        const FOO: &[(&str, &str)] = &[("Foo/Foo.toc", "## Interface: 11509, 50504, 120105\n")];
+        const FOO2: &[(&str, &str)] = &[(
+            "Foo/Foo.toc",
+            "## Interface: 11509, 50504, 120105\n## Version: 2\n",
+        )];
+
+        /// Retail, classic and era clients, with Foo's archives on disk.
+        pub struct Clients {
+            pub home: Home,
+            dl: PathBuf,
+        }
+
+        impl Clients {
+            pub fn new() -> Self {
+                let home = Home::new(&["wow", "wow_classic", "wow_classic_era"]);
+                let dl = home.env.root().join("dl");
+                fs::create_dir_all(&dl).unwrap();
+                fs::write(dl.join("foo.zip"), zip_text(FOO)).unwrap();
+                fs::write(dl.join("foo2.zip"), zip_text(FOO2)).unwrap();
+                fs::write(
+                    dl.join("bar.zip"),
+                    zip_text(&[("Bar/Bar.toc", "## Interface: 120105\n")]),
+                )
+                .unwrap();
+                Self { home, dl }
+            }
+
+            pub fn zip(&self, name: &str) -> String {
+                self.dl.join(format!("{name}.zip")).display().to_string()
+            }
+
+            /// Installs Foo on all three clients as one run by `actor`, in-process.
+            pub fn run_everywhere(&self, actor: Actor) -> RunId {
+                let paths = paths(&self.home.env);
+                let table = RulesTable::builtin();
+                let (found, _) = discover_root(
+                    &self.home.root,
+                    &table,
+                    &BattlenetHints::default(),
+                    "battlenet",
+                    &DiscoverySource::Scan,
+                );
+                let registry = load_registry(&paths).unwrap().value;
+                let resolved = reconcile(&registry, &found);
+                let run = RunId::new();
+                let req = TxRequest {
+                    targets: resolved
+                        .targets
+                        .iter()
+                        .map(|d| TxTarget {
+                            discovered: d.clone(),
+                            changes: vec![RequestedChange::Install {
+                                r#ref: "gh:o/foo".parse().unwrap(),
+                                channel: Channel::Stable,
+                                channel_explicit: false,
+                                version: None,
+                                file: Some(self.dl.join("foo.zip")),
+                                name: None,
+                                pin: PinIntent::Keep,
+                                reason: AddonReason::Explicit,
+                                reinstall: false,
+                            }],
+                            default_kind: TxKind::Install,
+                        })
+                        .collect(),
+                    force: false,
+                    while_running: false,
+                    dry_run: false,
+                    reason: None,
+                    kind: Some(TxKind::Update),
+                    run,
+                };
+                let http = replay(&self.home.env, &self.home.http);
+                let sources = SourceRegistry::builtin();
+                let argv: Vec<String> = vec!["omaddons".into(), "update".into()];
+                let nothing_runs = BTreeSet::new();
+                let ctx = EngineCtx {
+                    paths: &paths,
+                    http: http.as_ref(),
+                    registry: &sources,
+                    table: &table,
+                    policy: RunningPolicy::default(),
+                    limits: ArchiveLimits::default(),
+                    retention: RetentionLimits::default(),
+                    actor,
+                    argv: &argv,
+                    command: "update",
+                    running: Some(&nothing_runs),
+                    cache: None,
+                    progress: &ProgressSink::none(),
+                };
+                let done = omaddons::engine::run(&req, &ctx).unwrap();
+                let committed = done.outcomes.iter().filter(|o| o.tx.is_some()).count();
+                assert_eq!(committed, 3, "{:?}", done.failures);
+                run
+            }
+
+            /// Whether `folder` is in each client's AddOns, retail, classic, era.
+            pub fn present(&self, folder: &str) -> [bool; 3] {
+                ["_retail_", "_classic_", "_classic_era_"]
+                    .map(|c| self.home.addons(c).join(folder).is_dir())
+            }
+
+            /// History lines (newest first) as JSON.
+            pub fn history(&self, extra: &[&str]) -> Vec<Value> {
+                let mut args = vec!["history"];
+                args.extend_from_slice(extra);
+                let envelope = self.home.run(&args).expect(0);
+                envelope["data"]["entries"].as_array().unwrap().clone()
+            }
+        }
+
+        /// Each line's `tx`.
+        pub fn txs(lines: &[Value]) -> Vec<String> {
+            lines
+                .iter()
+                .map(|l| l["tx"].as_str().unwrap().to_owned())
+                .collect()
+        }
+
+        /// Each entry's `key` (`reverted`, `tx`, ...) of `undo`'s `transactions`.
+        pub fn ids(envelope: &Value, key: &str) -> Vec<String> {
+            envelope["data"]["transactions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t[key].as_str().unwrap_or("-").to_owned())
+                .collect()
+        }
+    }
+
+    #[test]
+    fn bare_undo_reverts_the_whole_run_and_again_reverts_the_undo() {
+        let c = Clients::new();
+        let run = c.run_everywhere(omaddons::model::Actor::Agent).to_string();
+        assert_eq!(c.present("Foo"), [true; 3]);
+        let lines = c.history(&["--run", &run]);
+        assert_eq!(lines.len(), 3);
+        // ubs:ignore — a run id is a public ULID identifier, not a secret
+        assert!(lines.iter().all(|l| l["run"] == run.as_str()));
+
+        let r = c.home.run(&["undo"]);
+        let undo = r.expect(0);
+        assert_eq!(c.present("Foo"), [false; 3], "{}", r.context());
+        assert_eq!(undo["data"]["reverted_run"], run.as_str());
+        assert_eq!(
+            ids(&undo, "reverted"),
+            txs(&lines),
+            "every transaction of the run, newest first"
+        );
+        assert_eq!(ids(&undo, "status"), ["undone"; 3]);
+        assert_eq!(undo["partial"], false);
+        let undo_run = undo["data"]["run"].as_str().unwrap().to_owned();
+        assert_ne!(undo_run, run);
+        // M1's fields describe the first transaction undone.
+        assert_eq!(undo["data"]["reverted"]["tx"], lines[0]["tx"]);
+        assert_eq!(
+            undo["data"]["tx"].as_str(),
+            Some(ids(&undo, "tx")[0].as_str())
+        );
+        let hints: Vec<&Value> = undo["commands"].as_array().unwrap().iter().collect();
+        assert_eq!(hints.len(), 4);
+        assert_eq!(
+            (&hints[0]["action"], &hints[0]["argv"]),
+            (
+                &Value::from("undo_run"),
+                &serde_json::json!(["omaddons", "undo", "--run", undo_run])
+            )
+        );
+        let undo_lines = c.history(&["--run", &undo_run]);
+        assert_eq!(undo_lines.len(), 3);
+        // ubs:ignore — comparing a transaction kind, not a secret
+        assert!(undo_lines.iter().all(|l| l["kind"] == "undo"));
+
+        // The undo is a run too: undoing it brings Foo back everywhere.
+        let again = c.home.run(&["undo"]).expect(0);
+        assert_eq!(again["data"]["reverted_run"], undo_run.as_str());
+        assert_eq!(ids(&again, "status"), ["undone"; 3]);
+        assert_eq!(c.present("Foo"), [true; 3]);
+
+        // Human output: one block per transaction, then the run's undo hint.
+        let r = c.home.exec(&["undo".to_owned(), "--dry-run".to_owned()]);
+        assert_eq!(r.code, 0, "{}", r.context());
+        assert_eq!(r.stdout.matches("would revert").count(), 3, "{}", r.stdout);
+    }
+
+    #[test]
+    fn undo_t_reverts_only_that_targets_transaction() {
+        let c = Clients::new();
+        c.run_everywhere(omaddons::model::Actor::Agent);
+        let r = c.home.run(&["undo", "-t", "retail"]);
+        let undo = r.expect(0);
+        assert_eq!(c.present("Foo"), [false, true, true], "{}", r.context());
+        assert_eq!(ids(&undo, "status"), ["undone"]);
+        assert_eq!(undo["data"]["reverted_run"], Value::Null);
+        assert_eq!(undo["commands"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_run_with_a_later_change_on_one_target_is_undone_partially() {
+        let c = Clients::new();
+        let run = c.run_everywhere(omaddons::model::Actor::Agent).to_string();
+        let foo2 = c.zip("foo2");
+        c.home
+            .run(&["install", "gh:o/foo", "--file", &foo2, "-t", "classic"])
+            .expect(0);
+
+        let r = c.home.run(&["undo", "--run", &run[..16]]);
+        let undo = r.expect(0);
+        assert_eq!(undo["partial"], true, "{}", r.context());
+        assert_eq!(c.present("Foo"), [false, true, false]);
+        let failed: Vec<&Value> = undo["data"]["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            // ubs:ignore — comparing a status name, not a secret
+            .filter(|t| t["status"] == "failed")
+            .collect();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0]["target"]["id"], "classic");
+        assert_eq!(failed[0]["error"]["code"], "undo_conflict");
+        assert_eq!(failed[0]["tx"], Value::Null);
+        let codes: Vec<&str> = undo["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|w| w["code"].as_str())
+            .collect();
+        assert!(codes.contains(&"undo_conflict"), "{codes:?}");
+
+        // Nothing left to undo in that run: every transaction fails, so the command does.
+        let r = c.home.run(&["undo", "--run", &run]);
+        let failed = r.expect(4);
+        assert_eq!(failed["error"]["code"], "undo_conflict", "{}", r.context());
+    }
+
+    #[test]
+    fn last_by_reverts_only_that_actors_latest_run() {
+        let c = Clients::new();
+        c.run_everywhere(omaddons::model::Actor::Agent);
+        let bar = c.zip("bar");
+        let install = ["install", "gh:o/bar", "--file", &bar, "-t", "retail"];
+        c.home
+            .run(&[&install[..], &["--actor", "human"]].concat())
+            .expect(0);
+        let undo = c.home.run(&["undo", "--last-by", "agent"]).expect(0);
+        assert_eq!(ids(&undo, "status"), ["undone"; 3]);
+        assert_eq!(c.present("Foo"), [false; 3]);
+        assert_eq!(
+            c.present("Bar"),
+            [true, false, false],
+            "the human's install stays"
+        );
+    }
+
+    #[test]
+    fn history_filters_by_run_and_by_actor() {
+        let c = Clients::new();
+        let run = c.run_everywhere(omaddons::model::Actor::Agent).to_string();
+        let bar = c.zip("bar");
+        let install = ["install", "gh:o/bar", "--file", &bar, "-t", "retail"];
+        c.home
+            .run(&[&install[..], &["--actor", "human"]].concat())
+            .expect(0);
+        let all = c.history(&[]);
+        assert_eq!(all.len(), 4);
+        assert!(all.iter().all(|l| l["run"].is_string()));
+        let by_agent = c.history(&["--by", "agent"]);
+        assert_eq!(by_agent.len(), 3);
+        // ubs:ignore — comparing an actor name, not a secret
+        assert!(by_agent.iter().all(|l| l["actor"] == "agent"));
+        // A prefix (8 characters cover about a second of ULID time; 16 are unique here).
+        assert_eq!(c.history(&["--run", &run[..16]]).len(), 3);
+        assert_eq!(c.history(&["--by", "agent", "--actor", "agent"]).len(), 3);
+
+        let r = c
+            .home
+            .run(&["history", "--by", "agent", "--actor", "human"]);
+        let usage = r.expect(2);
+        assert_eq!(
+            usage["error"]["fix_argv"],
+            serde_json::json!(["omaddons", "history", "--by", "agent", "--json"]),
+            "{}",
+            r.context()
+        );
+        let unknown = c.home.run(&["history", "--run", "01ZZZZZZZZ"]).expect(3);
+        assert_eq!(unknown["error"]["code"], "not_found");
+        let human = c.home.exec(&["history".to_owned()]);
+        assert!(
+            human.stdout.contains(&format!("{}…", &run[..10])),
+            "{}",
+            human.stdout
+        );
+    }
+}

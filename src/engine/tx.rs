@@ -39,7 +39,7 @@ use crate::fsx::{
     SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint,
 };
 use crate::model::{
-    Actor, AddonState, FolderName, ReloadRequired, Target, TargetKey, TxId, TxKind,
+    Actor, AddonState, FolderName, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind,
 };
 use crate::net::Http;
 use crate::output::{Phase, ProgressSink};
@@ -93,6 +93,8 @@ pub struct TxRequest {
     pub reason: Option<String>,
     /// The transaction kind, whatever the changes are (`adopt`, `pin`, `sync`).
     pub kind: Option<TxKind>,
+    /// The command invocation, recorded on every transaction this request commits.
+    pub run: RunId,
 }
 
 /// One target and its changes; unregistered targets are registered at commit.
@@ -583,6 +585,7 @@ fn locked(
         reverts: None,
         sv_deferred: false,
         created_addons_dir: creates_addons_dir,
+        run: Some(req.run),
     };
     let prepared = Prepared {
         schema_version: journal::CURRENT,

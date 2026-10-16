@@ -289,6 +289,12 @@ ulid_id!(
     PlanId,
     "plan id"
 );
+ulid_id!(
+    /// One command invocation's transactions (one per target it changed): what bare
+    /// `undo` reverts together (M2-D38).
+    RunId,
+    "run id"
+);
 
 // ---------------------------------------------------------------------------------------
 // Small enums.

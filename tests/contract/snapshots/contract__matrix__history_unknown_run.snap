@@ -1,0 +1,25 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "history",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_found",
+    "details": {},
+    "fix": "omaddons history",
+    "fix_argv": [
+      "omaddons",
+      "history"
+    ],
+    "message": "there is no run 01ZZZZZZZZ in the history",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

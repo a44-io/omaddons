@@ -1,9 +1,10 @@
-//! `omaddons history [-t T] [--limit N] [--actor A] [--since D]`: the transaction log,
-//! newest first, with who did what and why. Read-only: no lock, no writes.
+//! `omaddons history [-t T] [--limit N] [--by A] [--run R] [--since D]`: the transaction
+//! log, newest first, with who did what and why, and the run (command invocation) each
+//! transaction belongs to. Read-only: no lock, no writes.
 //!
-//! `--actor` is the global attribution flag read as a filter (it takes the same three
-//! values); `OMADDONS_ACTOR` never filters. A torn last line is skipped and reported as
-//! one stderr log event.
+//! `--by` filters by actor. The global `--actor` flag, read as the same filter, keeps
+//! working (M1); `OMADDONS_ACTOR` never filters. A torn last line is skipped and
+//! reported as one stderr log event.
 
 use std::io::Write;
 
@@ -14,7 +15,7 @@ use serde::Serialize;
 use super::world::World;
 use crate::cli::Context;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
-use crate::model::{Actor, TargetKey, TxId, TxKind};
+use crate::model::{Actor, RunId, TargetKey, TxId, TxKind};
 use crate::output::{Outcome, Style, table};
 use crate::state::history::{self, FolderOp, HistoryEntry, HistoryFilter, HistoryOp, TxResult};
 
@@ -30,6 +31,12 @@ pub struct HistoryArgs {
     /// Only entries since a duration ago (30m, 12h, 1d, 2w) or an RFC 3339 time
     #[arg(long, value_name = "WHEN")]
     pub since: Option<String>,
+    /// Only this run's transactions: its id or a unique prefix of 8+ characters
+    #[arg(long, value_name = "RUN")]
+    pub run: Option<String>,
+    /// Only transactions by this actor: human, agent or widget
+    #[arg(long, value_name = "ACTOR")]
+    pub by: Option<String>,
 }
 
 /// `history`'s data.
@@ -45,6 +52,8 @@ pub struct HistoryData {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct HistoryLine {
     pub tx: TxId,
+    /// The command invocation it belongs to; `null` for transactions from before M2.
+    pub run: Option<RunId>,
     pub kind: TxKind,
     #[schemars(with = "String")]
     pub at: Timestamp,
@@ -143,6 +152,8 @@ impl Outcome for HistoryOutcome {
                     .unwrap_or_else(|| ChangeCounts::of(e.ops.as_deref().unwrap_or_default()));
                 vec![
                     short_tx(&e.tx),
+                    e.run
+                        .map_or_else(|| "-".to_owned(), |r| short_id(&r.to_string())),
                     local_time(e.at),
                     e.actor.as_str().to_owned(),
                     kind_name(e.kind),
@@ -184,6 +195,33 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
             })
         })
         .transpose()?;
+    let by = args
+        .by
+        .as_deref()
+        .map(|a| {
+            a.parse::<Actor>().map_err(|_| {
+                Error::new(
+                    ErrorCode::Usage,
+                    format!("--by is human, agent or widget, not {a:?}"),
+                    Suggestion::command(["omaddons", "history", "--by", "agent"]),
+                )
+            })
+        })
+        .transpose()?;
+    let actor = match (by, actor) {
+        (Some(by), Some(actor)) if by != actor => {
+            return Err(Error::new(
+                ErrorCode::Usage,
+                format!(
+                    "--by {} and --actor {} ask for different actors",
+                    by.as_str(),
+                    actor.as_str()
+                ),
+                Suggestion::command(without_flag(&ctx.argv, "--actor")),
+            ));
+        }
+        (by, actor) => by.or(actor),
+    };
     let since = args
         .since
         .as_deref()
@@ -200,6 +238,13 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
         })
         .transpose()?;
     let world = World::load()?;
+    let run = match &args.run {
+        Some(prefix) => {
+            let all = history::read(&world.paths, &HistoryFilter::default())?.entries;
+            Some(resolve_run(&all, prefix)?)
+        }
+        None => None,
+    };
     let target = world.history_key(ctx)?;
     let read = match target {
         // A target that was never registered has no history.
@@ -210,6 +255,7 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
                 target: Some(key),
                 actor,
                 since,
+                run,
                 ..HistoryFilter::default()
             },
         )?,
@@ -218,6 +264,7 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
             &HistoryFilter {
                 actor,
                 since,
+                run,
                 ..HistoryFilter::default()
             },
         )?,
@@ -241,6 +288,7 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
 fn line(world: &World, e: &HistoryEntry, verbose: bool) -> HistoryLine {
     HistoryLine {
         tx: e.tx,
+        run: e.run,
         kind: e.kind,
         at: e.at,
         target: TargetRef {
@@ -279,8 +327,66 @@ pub fn parse_since(s: &str, now: Timestamp) -> Option<Timestamp> {
 
 /// The first ten characters of a transaction id: enough to undo by prefix.
 pub fn short_tx(tx: &TxId) -> String {
-    let full = tx.to_string();
-    format!("{}…", full.get(..10).unwrap_or(&full))
+    short_id(&tx.to_string())
+}
+
+/// The first ten characters of an id, then `…`.
+pub fn short_id(full: &str) -> String {
+    format!("{}…", full.get(..10).unwrap_or(full))
+}
+
+/// The run whose id is `prefix` or starts with it (8+ characters, any case), among the
+/// runs of `entries`.
+pub fn resolve_run(entries: &[HistoryEntry], prefix: &str) -> Result<RunId> {
+    let wanted = prefix.to_ascii_uppercase();
+    if wanted.len() < MIN_PREFIX {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            format!("a run id prefix needs at least {MIN_PREFIX} characters, not {prefix:?}"),
+            Suggestion::command(["omaddons", "history"]),
+        ));
+    }
+    let mut matching: Vec<RunId> = entries
+        .iter()
+        .filter_map(|e| e.run)
+        .filter(|r| r.to_string().starts_with(&wanted))
+        .collect();
+    matching.sort_by_key(|r| r.ulid());
+    matching.dedup();
+    match matching.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(Error::new(
+            ErrorCode::NotFound,
+            format!("there is no run {prefix} in the history"),
+            Suggestion::command(["omaddons", "history"]),
+        )),
+        many => {
+            let candidates: Vec<String> = many.iter().map(ToString::to_string).collect();
+            Err(Error::new(
+                ErrorCode::NotFound,
+                format!("{prefix} matches {} runs; give more of the id", many.len()),
+                Suggestion::command(["omaddons", "history"]),
+            )
+            .details(serde_json::json!({ "candidates": candidates })))
+        }
+    }
+}
+
+/// The shortest id prefix `undo` and `history` accept.
+pub const MIN_PREFIX: usize = 8;
+
+/// `argv` without `flag` and its value (`--actor agent`, `--actor=agent`).
+fn without_flag(argv: &[String], flag: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut args = argv.iter();
+    while let Some(arg) = args.next() {
+        if arg == flag {
+            args.next();
+        } else if !arg.starts_with(&format!("{flag}=")) {
+            out.push(arg.clone());
+        }
+    }
+    out
 }
 
 /// `2026-10-20 14:02` in the local time zone.

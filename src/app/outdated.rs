@@ -33,7 +33,7 @@ use crate::engine::{TxRequest, TxTarget};
 use crate::error::{
     CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning, WarningCode,
 };
-use crate::model::{Channel, Ref, Target, TxKind};
+use crate::model::{Channel, Ref, RunId, Target, TxKind};
 use crate::output::{Outcome, Phase, Style};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::{Fetched, Freshness, Origin, ReleaseCache};
@@ -719,6 +719,8 @@ fn verify(
         dry_run: true,
         reason: None,
         kind: None,
+        // A dry run commits nothing, so its run id is never recorded.
+        run: RunId::new(),
     };
     let mut verified = Verified::default();
     if req.targets.is_empty() {

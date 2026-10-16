@@ -27,7 +27,7 @@ use crate::engine::plan::{ChangeKind, FolderSummary, PinIntent, RequestedChange}
 use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{
-    AddonReason, Channel, FolderName, Ref, ReloadRequired, TargetKey, TxId, TxKind,
+    AddonReason, Channel, FolderName, Ref, ReloadRequired, RunId, TargetKey, TxId, TxKind,
     VersionConfidence,
 };
 use crate::output::{Outcome, Style};
@@ -495,6 +495,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         dry_run: ctx.dry_run,
         reason: ctx.reason.clone(),
         kind: None,
+        run: RunId::new(),
     };
     let done = engine.run(&req, Some(&cache));
     // The command's last engine run: remember what it fetched, even when it failed.
@@ -701,6 +702,8 @@ fn choose_target<'w>(
         dry_run: true,
         reason: None,
         kind: None,
+        // A dry run commits nothing, so its run id is never recorded.
+        run: RunId::new(),
     };
     // The same cache as the real run: each ref is fetched once across both.
     let probed = engine.run(&probe, Some(cache))?;

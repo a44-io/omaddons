@@ -183,6 +183,7 @@ impl Scene {
                     reverts: None,
                     sv_deferred: false,
                     created_addons_dir: false,
+                    run: None,
                 },
                 stage_dir: self.staged.stage_dir.clone(),
                 sv_restore: None,
@@ -393,6 +394,7 @@ impl TxScene {
             while_running: self.while_running,
             reason: None,
             targets: vec![self.current_target()],
+            run: crate::model::RunId::new(),
         };
         self.with_ctx("undo", |ctx| super::undo::undo(&req, ctx))
     }
@@ -453,6 +455,7 @@ impl TxScene {
             dry_run: false,
             reason: Some("testing".into()),
             kind,
+            run: crate::model::RunId::new(),
         };
         self.with_ctx("install", |ctx| super::tx::run(&req, ctx))
     }

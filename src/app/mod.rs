@@ -237,7 +237,9 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         Some(Command::Undo(args)) => {
             let result = undo::run(ctx, args);
             if let Ok(outcome) = &result {
-                out.lock_released(outcome.lock_held_ms, output::Outcome::data(outcome).tx);
+                for (tx, ms) in &outcome.locks {
+                    out.lock_released(Some(*ms), Some(*tx));
+                }
             }
             out.emit(result)
         }

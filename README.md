@@ -609,20 +609,28 @@ An addon whose folders were all deleted by hand is forgotten: its record and ind
 
 ### `undo [TX]`
 
-Revert a transaction as a new transaction, SavedVariables included.
+Revert what a command did, as new transactions, SavedVariables included.
+
+A command that changes several clients commits one transaction per client, and all of them share a run id. Bare `undo` reverts the most recent run, every one of its transactions, newest first. After a single-client command that is one transaction, as before. Those undo transactions share a run of their own, so a second `undo` reverts them all again.
 
 | Flag / argument | Meaning |
 |---|---|
-| `TX` | A transaction id or a unique prefix of 8+ characters (default: the most recent, narrowed by `-t`) |
-| `--last-by human\|agent\|widget` | This actor's most recent transaction (an undo counts too) |
+| `TX` | One transaction: an id or a unique prefix of 8+ characters |
+| `--run RUN` | Every transaction of one run (`history` shows run ids); with `-t`, only its transaction on that client |
+| `-t TARGET` | The most recent transaction on that client only |
+| `--last-by human\|agent\|widget` | This actor's most recent run (an undo counts too) |
 | `--saved-variables auto\|restore\|keep` | `auto` (default) restores what changed and defers that restore while the game runs. `restore` refuses while the game runs. `keep` never touches SavedVariables |
 
 ```bash
 omaddons undo
 omaddons undo 01M51F4QY5KB
+omaddons undo --run 01M51F4R2ZQX
+omaddons undo -t retail
 omaddons undo --last-by agent
 omaddons undo 01M51F4QY5KB --saved-variables restore   # finish a deferred restore after quitting
 ```
+
+When one transaction of a run cannot be undone (`undo_conflict`, say), the others still are. The result is then `partial`, and `transactions[]` in the JSON data holds one result per transaction. The fields before it describe the first transaction undone, as they always did. When every transaction fails, `undo` fails with the first error.
 
 Undoing the newest change never conflicts with a later transaction. Undoing an older one is refused with `undo_conflict` if a later transaction touched the same folders, and the fix names the newer one to undo first. `undo_conflict` also covers a transaction already undone, and a folder it removed that was put back by hand.
 
@@ -633,11 +641,12 @@ What changed, when, by whom and why, newest first.
 ```bash
 omaddons history
 omaddons history --limit 50 --since 2w
-omaddons history --actor agent --since 12h
+omaddons history --by agent --since 12h
+omaddons history --run 01M51F4R2ZQX        # one run's transactions (a prefix of 8+ characters works)
 omaddons history -t retail -v --json       # each folder operation (ops) instead of counts
 ```
 
-`--since` takes `30m`, `12h`, `1d`, `2w` or an RFC 3339 time.
+`--since` takes `30m`, `12h`, `1d`, `2w` or an RFC 3339 time. The global `--actor` still filters too; given with a different `--by`, it is a usage error. Every line shows its run (`run` in JSON, `null` for transactions from before milestone 2, each of which is a run by itself).
 
 Each line counts the folders added (`+`), replaced (`~`) and removed (`-`). A transaction that changed records without moving a folder, such as forgetting an addon whose folders were gone, also shows `=N` for the folders it recorded (`changes.recorded` in JSON).
 
@@ -945,6 +954,7 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
 ### Undo
 
 - An undo is its own transaction (kind `undo`, `reverts: <tx>`), so it can be undone too.
+- Every history line carries the run (command invocation) it belongs to. Bare `undo` reverts a whole run, one undo transaction per client in its own lock window. Runs are attribution, not atomicity: each client's transaction commits and undoes on its own.
 - Folders come back byte for byte from `<client>/Interface/.omaddons/snapshots/<tx>/AddOns/`; tests compare tree digests. Each addon's record and files index are restored, while other addons' later changes stand.
 - **SavedVariables.** Only the touched addons' own files (`WTF/…/SavedVariables/<Folder>.lua` and `.lua.bak`, account-wide and per character) are snapshotted, with a SHA-256 manifest. On undo, a file that is unchanged since is left alone, a changed one is restored, and one the new version created is moved aside. With `--saved-variables auto` and the game running, folders revert (if the running policy allows), and the SavedVariables restore is deferred. You get a `saved_variables_deferred` warning carrying the command to run after quitting: `omaddons undo <tx> --saved-variables restore`.
 - **Conflicts.** `undo_conflict` (exit 4) when a later transaction touched the same folders (undo the newest first), when the transaction was already undone, or when a folder it removed has been put back by hand. A snapshot pruned by retention gives `not_found`.

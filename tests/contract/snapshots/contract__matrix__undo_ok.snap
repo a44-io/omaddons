@@ -46,6 +46,8 @@ expression: s.stable(&c.envelope)
       },
       "tx": "<ulid>"
     },
+    "reverted_run": "<ulid>",
+    "run": "<ulid>",
     "saved_variables": {
       "deferred": 0,
       "kept": 0,
@@ -53,6 +55,18 @@ expression: s.stable(&c.envelope)
       "restored": 0,
       "unchanged": 0
     },
+    "transactions": [
+      {
+        "error": null,
+        "reverted": "<ulid>",
+        "status": "undone",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      }
+    ],
     "tx": "<ulid>"
   },
   "exit_code": 0,

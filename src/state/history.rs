@@ -14,7 +14,7 @@ use super::store::SchemaVersion;
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::fsx::{Op, WriteSession, mutate};
 use crate::limits::REASON_MAX_CHARS;
-use crate::model::{Actor, FolderName, TargetKey, TxId, TxKind};
+use crate::model::{Actor, FolderName, RunId, TargetKey, TxId, TxKind};
 
 /// The version of the line format.
 pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
@@ -46,6 +46,25 @@ pub struct HistoryEntry {
     /// never been launched); undo leaves it in place.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub created_addons_dir: bool,
+    /// The command invocation that committed it, shared by its transactions on other
+    /// targets; absent on lines written before M2, each of which is a run by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunId>,
+}
+
+impl HistoryEntry {
+    /// The run this transaction belongs to: its own `run`, or the transaction alone.
+    pub fn run_key(&self) -> RunKey {
+        self.run.map_or(RunKey::Single(self.tx), RunKey::Run)
+    }
+}
+
+/// What groups transactions into one run: a run id, or, for a line written before M2,
+/// the transaction itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RunKey {
+    Run(RunId),
+    Single(TxId),
 }
 
 /// One folder a transaction touched.
@@ -100,6 +119,8 @@ pub struct HistoryFilter {
     pub actor: Option<Actor>,
     pub kind: Option<TxKind>,
     pub since: Option<Timestamp>,
+    /// One run's lines only.
+    pub run: Option<RunId>,
     /// The most recent N.
     pub limit: Option<usize>,
 }
@@ -110,6 +131,7 @@ impl HistoryFilter {
             && self.actor.is_none_or(|a| a == entry.actor)
             && self.kind.is_none_or(|k| k == entry.kind)
             && self.since.is_none_or(|since| entry.at >= since)
+            && self.run.is_none_or(|run| entry.run == Some(run))
     }
 }
 
@@ -225,7 +247,34 @@ mod tests {
             reverts: None,
             sv_deferred: false,
             created_addons_dir: false,
+            run: None,
         }
+    }
+
+    #[test]
+    fn runs_round_trip_and_filter() {
+        let mut e = entry(1, Actor::Agent, TxKind::Update, "2026-10-14T21:00:00Z");
+        assert!(
+            !serde_json::to_string(&e).unwrap().contains("run"),
+            "omitted when absent"
+        );
+        assert_eq!(e.run_key(), RunKey::Single(e.tx));
+        let run = RunId::new();
+        e.run = Some(run);
+        let line = serde_json::to_string(&e).unwrap();
+        assert!(line.ends_with(&format!(r#","run":"{run}"}}"#)), "{line}");
+        let back: HistoryEntry = serde_json::from_str(&line).unwrap();
+        assert_eq!((back.run, back.run_key()), (Some(run), RunKey::Run(run)));
+
+        let f = fixture();
+        let other = entry(2, Actor::Human, TxKind::Install, "2026-10-14T22:00:00Z");
+        append_all(&f, &[e.clone(), other]);
+        let filter = HistoryFilter {
+            run: Some(run),
+            ..HistoryFilter::default()
+        };
+        let read = read(&f.paths, &filter).unwrap();
+        assert_eq!(read.entries, [e]);
     }
 
     fn append_all(f: &Fixture, entries: &[HistoryEntry]) {
