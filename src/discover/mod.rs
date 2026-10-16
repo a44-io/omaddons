@@ -25,6 +25,7 @@ pub mod realmlist;
 pub mod registry;
 pub mod running;
 pub mod scan;
+pub mod shared;
 pub mod target;
 
 use std::io::Read;

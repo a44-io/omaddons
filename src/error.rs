@@ -290,6 +290,9 @@ warning_codes! {
     /// A newly installed addon's other folder (a bridge or plugin) works with an addon
     /// that is not installed; nothing is installed for it.
     BridgeDependency            = "bridge_dependency";
+    /// Two or more targets share one AddOns directory (a symlink): each keeps its own
+    /// records, so each sees the other's addons as unmanaged.
+    TargetAddonsShared          = "target_addons_shared";
 }
 
 impl fmt::Display for WarningCode {
@@ -771,7 +774,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 34);
+        assert_eq!(WarningCode::ALL.len(), 35);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

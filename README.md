@@ -1302,6 +1302,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `still_required` | a removed addon is required by addons that stay, which will not load without it; the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that undo restores it |
 | `orphaned_dependency` | a remove or update left dependencies required by nothing; the fix is one `omaddons remove <names…> -t <id>` naming them all |
 | `bridge_dependency` | a newly installed addon's other folder (a bridge or plugin) works with an addon that is not installed; nothing is installed for it, and the fix installs it (`omaddons install <name or ref> -t <id>`), or searches for it (`omaddons search <folder>`) when no keyless source ships it. Only on the addon's first install |
+| `target_addons_shared` | `status`: two or more clients share one AddOns directory (an `Interface/AddOns` symlinked between them). Each keeps its own records, so each sees the others' addons as unmanaged; the fix is advice: manage those addons from one client and do not adopt them on the others, or stop sharing the directory |
 
 </details>
 
@@ -1775,7 +1776,7 @@ Journals are recovered by the next command that commits a change, not by read co
 - The download cache reuses an asset whose SHA-256 is known: from the source (GitHub REST assets carry a digest) or remembered from an earlier download of that release's asset in the release memo. A release's assets are taken to be immutable, so a publisher re-uploading different bytes under the same tag and file name is not noticed while the old blob is cached (unless the source declares a different size or hash). Within one command, the same asset is still downloaded once per target that tries it. An unchanged release is never downloaded.
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
 - Private GitHub repositories and HTTP proxies are not supported.
-- Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) are not detected: each client's records are its own, so the other sees the shared folders as unmanaged, and `adopt` there would manage them twice.
+- Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) are detected but not managed together: `status` warns `target_addons_shared`, yet each client's records stay its own, so the other sees the shared folders as unmanaged, and `adopt` there would manage them twice.
 - The legacy running behavior and several upstream file layouts (product.db, Steam and Bottles Flatpak paths) are marked UNVERIFIED in the code.
 
 ### Known issues

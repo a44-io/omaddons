@@ -372,6 +372,46 @@ fn a_deleted_client_is_missing() {
     assert_eq!(envelope["error"]["fix_argv"], serde_json::json!(rm));
 }
 
+/// The `target_addons_shared` warnings of a `status` envelope.
+fn shared_warnings(envelope: &Value) -> Vec<String> {
+    envelope["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|w| w["code"] == "target_addons_shared")
+        .map(|w| w["message"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+#[test]
+fn clients_sharing_one_addons_directory_are_warned_once() {
+    let home = Home::new(&["wow", "wow_classic_era", "wow_anniversary"]);
+    let era = home.addons("_classic_era_");
+    let anniversary = home.addons("_anniversary_");
+    fs::create_dir_all(&era).unwrap();
+    if anniversary.exists() {
+        fs::remove_dir_all(&anniversary).unwrap();
+    }
+    fs::create_dir_all(anniversary.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&era, &anniversary).unwrap();
+
+    let r = home.run(&["status"]);
+    let shared = shared_warnings(&r.expect(0));
+    assert_eq!(shared.len(), 1, "{}", r.context());
+    let names = ["era and anniversary", "anniversary and era"];
+    assert!(
+        names.iter().any(|n| shared[0].contains(n)) && !shared[0].contains("retail"),
+        "{}",
+        shared[0]
+    );
+    // Narrowed to a client that shares nothing: no warning.
+    let r = home.run(&["status", "-t", "retail"]);
+    assert!(shared_warnings(&r.expect(0)).is_empty(), "{}", r.context());
+    // Narrowed to one of the two: the warning, which concerns it.
+    let r = home.run(&["status", "-t", "anniversary"]);
+    assert_eq!(shared_warnings(&r.expect(0)).len(), 1, "{}", r.context());
+}
+
 /// Pending updates and adoptable folders (M2), from the release memo and the catalog,
 /// never from the network.
 #[cfg(test)]

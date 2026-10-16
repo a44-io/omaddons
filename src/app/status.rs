@@ -23,9 +23,10 @@ use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::cache::{CacheStats, DiscoveryMode};
 use crate::discover::running::detect_running;
+use crate::discover::shared::{SharedAddons, shared_addons};
 use crate::drift::{AddonDrift, DriftMode, DriftState};
 use crate::engine::journal;
-use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
+use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{LockState, probe_global};
 use crate::inventory::{Counts, Depth, FolderClass, Inventory, inventory};
 use crate::model::{AddonRecord, AddonState, Channel, FolderName, Ref, Target, TargetKey};
@@ -343,6 +344,27 @@ fn drift_line(target: &str, addon: &AddonDrift, verbose: bool) -> String {
 }
 
 /// Runs `status`.
+/// `target_addons_shared` for one group of targets sharing an AddOns directory.
+fn shared_warning(group: &SharedAddons) -> Warning {
+    let names = match group.targets.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => group.targets.join(""),
+    };
+    let first = group.targets.first().map_or("", String::as_str);
+    Warning::new(
+        WarningCode::TargetAddonsShared,
+        format!(
+            "{names} share one AddOns directory ({}): each keeps its own records, so each \
+             sees the others' addons as unmanaged",
+            group.path.display()
+        ),
+    )
+    .with_fix(Suggestion::text(format!(
+        "manage these addons from one client (-t {first}) and do not adopt them on the \
+         others, or stop sharing the directory"
+    )))
+}
+
 pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     let mode = if args.cached {
         DiscoveryMode::NoScan
@@ -381,6 +403,18 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         DriftMode::Stat
     };
     let mut drift_lines = Vec::new();
+
+    // Targets sharing one AddOns directory, every group with a selected target in it.
+    let discovered = world.resolved.targets.iter().map(|d| &d.target);
+    for group in shared_addons(discovered) {
+        if group
+            .targets
+            .iter()
+            .any(|id| found.iter().any(|t| t.id == *id))
+        {
+            warnings.push(shared_warning(&group));
+        }
+    }
 
     let mut targets = Vec::new();
     for d in &selected {
