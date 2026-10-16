@@ -40,8 +40,8 @@ use crate::inventory::{Depth, FolderClass, Inventory, inventory};
 use crate::limits::{DEPENDENCY_MAX_ADDONS, DEPENDENCY_MAX_DEPTH};
 use crate::model::{
     Actor, AddonReason, AddonRecord, AddonState, AssetLocation, Candidate, Channel, ExpectedHash,
-    FolderName, RankReason, Ref, ReleaseSet, ReloadRequired, Target, TargetKey, TxId, TxKind,
-    VersionConfidence,
+    FolderName, MutableFolderName, RankReason, Ref, ReleaseSet, ReloadRequired, Target, TargetKey,
+    TxId, TxKind, VersionConfidence,
 };
 use crate::net::Http;
 use crate::output::{Phase, ProgressSink};
@@ -1977,7 +1977,9 @@ enum Step {
 fn claim_work(view: &mut WorkingView, work: &AddonWork) {
     for op in work.swap() {
         match op {
-            SwapOp::Add { name } | SwapOp::Replace { name, .. } => view.claim(name, &work.addon),
+            SwapOp::Add { name } | SwapOp::Replace { name, .. } => {
+                view.claim(name.as_folder(), &work.addon);
+            }
             SwapOp::Remove { .. } => {}
         }
     }
@@ -1988,7 +1990,7 @@ fn release_work(view: &mut WorkingView, work: &AddonWork) {
     if let WorkMode::Folders(f) = &work.mode {
         for op in &f.swap {
             if let SwapOp::Remove { live, .. } = op {
-                view.release(live, &work.addon);
+                view.release(live.as_folder(), &work.addon);
             }
         }
         for folder in &f.handed_over {
@@ -2012,7 +2014,7 @@ pub fn settle_handovers(
         .map(|t| (t.folder.clone(), TargetRecord::addon_key(&t.from)))
         .collect();
     for (folder, from) in handovers {
-        let gone = |live: &FolderName| live.key() == folder.key();
+        let gone = |key: &str| key == folder.key();
         for w in works
             .iter_mut()
             .filter(|w| TargetRecord::addon_key(&w.addon) == from)
@@ -2020,7 +2022,7 @@ pub fn settle_handovers(
             if let WorkMode::Folders(f) = &mut w.mode {
                 let before = f.swap.len();
                 f.swap
-                    .retain(|op| !matches!(op, SwapOp::Remove { live, .. } if gone(live)));
+                    .retain(|op| !matches!(op, SwapOp::Remove { live, .. } if gone(live.key())));
                 if f.swap.len() != before && !f.handed_over.contains(&folder) {
                     f.handed_over.push(folder.clone());
                 }
@@ -2029,7 +2031,7 @@ pub fn settle_handovers(
         if let Some(ops) = ops.as_deref_mut() {
             ops.retain(|o| {
                 !(o.op == OpKind::Remove
-                    && gone(&o.folder)
+                    && gone(o.folder.key())
                     && TargetRecord::addon_key(&o.addon) == from)
             });
         }
@@ -2037,7 +2039,7 @@ pub fn settle_handovers(
             .iter_mut()
             .filter(|c| TargetRecord::addon_key(&c.addon) == from)
         {
-            c.folders.removed.retain(|f| !gone(f));
+            c.folders.removed.retain(|f| !gone(f.key()));
         }
     }
 }
@@ -3232,7 +3234,7 @@ impl TargetPlanner<'_> {
             };
             let walked = crate::drift::check_folder(
                 &addons,
-                live,
+                live.as_folder(),
                 Some(entry),
                 index.recorded_at_ns(entry),
                 crate::drift::DriftMode::Stat,
@@ -3242,7 +3244,7 @@ impl TargetPlanner<'_> {
                 continue;
             }
             changes.count += d.changed;
-            changes.folders.push(live.clone());
+            changes.folders.push(live.as_folder().clone());
             changes.paths.extend(
                 d.modified
                     .iter()
@@ -3598,7 +3600,7 @@ impl TargetPlanner<'_> {
             adopt,
         )?;
         let addons_dir = self.target.addons_dir();
-        let loaded = |live: &FolderName| {
+        let loaded = |live: &MutableFolderName| {
             DiskFolder::new(addons_dir.join(live.as_str()))
                 .ok()
                 .and_then(|view| loaded_toc(&view, &self.target.rules).ok().flatten())
@@ -3609,15 +3611,15 @@ impl TargetPlanner<'_> {
             .iter()
             .map(|op| match op {
                 AllowedOp::Add { name } => PolicyOp::AddFolder {
-                    folder: name.clone(),
+                    folder: name.as_folder().clone(),
                 },
                 AllowedOp::Replace { name, live, .. } => PolicyOp::ReplaceFolder {
-                    folder: live.clone(),
+                    folder: live.as_folder().clone(),
                     loaded_toc_before: loaded(live),
-                    toc_names_after: toc_after(name),
+                    toc_names_after: toc_after(name.as_folder()),
                 },
                 AllowedOp::Remove { live } => PolicyOp::RemoveFolder {
-                    folder: live.clone(),
+                    folder: live.as_folder().clone(),
                     loaded_toc_before: loaded(live),
                 },
             })
@@ -3657,16 +3659,16 @@ impl TargetPlanner<'_> {
             .map(|op| {
                 let (kind, folder) = match op {
                     AllowedOp::Add { name } => {
-                        summary.added.push(name.clone());
-                        (OpKind::Add, name.clone())
+                        summary.added.push(name.as_folder().clone());
+                        (OpKind::Add, name.as_folder().clone())
                     }
                     AllowedOp::Replace { live, .. } => {
-                        summary.replaced.push(live.clone());
-                        (OpKind::Replace, live.clone())
+                        summary.replaced.push(live.as_folder().clone());
+                        (OpKind::Replace, live.as_folder().clone())
                     }
                     AllowedOp::Remove { live } => {
-                        summary.removed.push(live.clone());
-                        (OpKind::Remove, live.clone())
+                        summary.removed.push(live.as_folder().clone());
+                        (OpKind::Remove, live.as_folder().clone())
                     }
                 };
                 PlannedOp {
@@ -3680,7 +3682,7 @@ impl TargetPlanner<'_> {
 
     /// The swap's view of the allowed ops, with old digests from the files index.
     fn swap_ops(&self, allowed: &[AllowedOp]) -> Vec<SwapOp> {
-        let old = |live: &FolderName| -> Option<TreeDigest> {
+        let old = |live: &MutableFolderName| -> Option<TreeDigest> {
             self.index?
                 .folders
                 .get(live.key())

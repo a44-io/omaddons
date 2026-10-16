@@ -31,23 +31,24 @@ use crate::fsx::{
     CloneKind, FsxError, MutateOpts, Op, RenameMode, TreeDigest, WriteSession, ensure_dir_all,
     failpoint, mutate, mutate_with,
 };
-use crate::model::{FolderName, TargetKey, TxId};
+use crate::model::{FolderName, MutableFolderName, TargetKey, TxId};
 use crate::state::paths::{ClientPaths, Paths};
 
-/// What happens to one AddOns folder.
+/// What happens to one AddOns folder. Every name is a [`MutableFolderName`]: a
+/// `blizzard_*` folder cannot reach the swap (D14).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwapOp {
     /// A staged folder that is not live yet.
-    Add { name: FolderName },
+    Add { name: MutableFolderName },
     /// A staged folder replacing the live one, whose on-disk spelling is kept.
     Replace {
-        name: FolderName,
-        live: FolderName,
+        name: MutableFolderName,
+        live: MutableFolderName,
         /// The live folder's digest from the files index; computed when `None`.
         old_tree: Option<TreeDigest>,
     },
     Remove {
-        live: FolderName,
+        live: MutableFolderName,
         old_tree: Option<TreeDigest>,
     },
 }
@@ -265,7 +266,8 @@ pub fn swap(
     let mut counts = SwapCounts::default();
 
     // 1. Everything new goes live.
-    let mut exchanged: Vec<(&FolderName, &FolderName, Option<TreeDigest>)> = Vec::new();
+    let mut exchanged: Vec<(&MutableFolderName, &MutableFolderName, Option<TreeDigest>)> =
+        Vec::new();
     for op in &ops {
         match op {
             SwapOp::Add { name } => {
@@ -462,17 +464,17 @@ impl Run<'_> {
 }
 
 /// The staged path and digest of `name`.
-fn staged_folder(staged: &Staged, name: &FolderName) -> Result<(PathBuf, TreeDigest)> {
+fn staged_folder(staged: &Staged, name: &MutableFolderName) -> Result<(PathBuf, TreeDigest)> {
     staged
         .folders
         .iter()
-        .find(|f| f.name == *name)
+        .find(|f| f.name == *name.as_folder())
         .map(|f| (f.path.clone(), f.index.digest()))
         .ok_or_else(|| Error::internal(format!("{} was not staged", name.as_str())))
 }
 
 /// `plan_stale` unless AddOns has no entry named `name` in any case.
-fn absent(addons: &Path, name: &FolderName) -> Result<()> {
+fn absent(addons: &Path, name: &MutableFolderName) -> Result<()> {
     let taken = std::fs::read_dir(addons)
         .map(|listing| {
             listing.filter_map(std::result::Result::ok).any(|e| {
@@ -545,8 +547,8 @@ mod tests {
     use crate::error::ErrorCode;
     use crate::state::files_index::FolderIndex;
 
-    fn name(n: &str) -> FolderName {
-        FolderName::new(n).unwrap()
+    fn name(n: &str) -> MutableFolderName {
+        FolderName::new(n).unwrap().into_mutable().unwrap()
     }
 
     /// Replace Foo, add Bar, remove Gone.
@@ -777,7 +779,7 @@ mod tests {
     fn saved_variables_snapshot_counts_only() {
         let scene = Scene::new();
         let mut s = scene.session();
-        let folders = [name("Foo"), name("Gone"), name("Bar")];
+        let folders = [name("Foo"), name("Gone"), name("Bar")].map(MutableFolderName::into_folder);
         let report = failpoint::with_spec("fsx.reflink.unsupported", || {
             snapshot_saved_variables(&mut s, &scene.tx, &scene.client, &folders)
         })

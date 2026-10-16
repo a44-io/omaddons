@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::inventory::{FolderClass, FolderEntry, Inventory};
-use crate::model::{FolderName, Ref};
+use crate::model::{FolderName, MutableFolderName, Ref};
 use crate::state::records::TargetRecord;
 
 /// A planned change to one AddOns folder, before ownership is checked.
@@ -48,15 +48,15 @@ pub enum FolderChange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AllowedOp {
     Add {
-        name: FolderName,
+        name: MutableFolderName,
     },
     Replace {
-        name: FolderName,
-        live: FolderName,
+        name: MutableFolderName,
+        live: MutableFolderName,
         previous: Previous,
     },
     Remove {
-        live: FolderName,
+        live: MutableFolderName,
     },
 }
 
@@ -229,16 +229,17 @@ pub fn check_in(
     };
 
     for change in changes {
-        let (FolderChange::Install(name) | FolderChange::Remove(name)) = change;
-        if name.is_protected() {
+        let (FolderChange::Install(folder) | FolderChange::Remove(folder)) = change;
+        // Rule 1, and the only way a name becomes mutable: past here none is protected.
+        let Ok(name) = folder.clone().into_mutable() else {
             refuse(
-                name.as_str(),
+                folder.as_str(),
                 ErrorCode::ProtectedFolder,
                 "protected",
                 json!({}),
             );
             continue;
-        }
+        };
         let live: Vec<&FolderEntry> = inventory
             .folders
             .iter()
@@ -263,12 +264,16 @@ pub fn check_in(
             continue;
         }
         let Some(entry) = live.first() else {
-            if let FolderChange::Install(name) = change {
+            if let FolderChange::Install(_) = change {
                 outcome.allowed.push(AllowedOp::Add { name: name.clone() });
             }
             continue;
         };
-        let Ok(live_name) = FolderName::new(&entry.name) else {
+        // The live spelling of the same key: not protected either.
+        let Some(live_name) = FolderName::new(&entry.name)
+            .ok()
+            .and_then(|f| f.into_mutable().ok())
+        else {
             continue;
         };
         if let FolderChange::Remove(_) = change {
@@ -281,14 +286,14 @@ pub fn check_in(
         let mine = entry.owners.iter().any(is_me);
         let respelled = entry.name != name.as_str();
         // Its owner's own work in this transaction stops shipping it: handed over.
-        let handed = view.released_by(name).filter(|by| {
+        let handed = view.released_by(name.as_folder()).filter(|by| {
             others
                 .iter()
                 .any(|o| TargetRecord::addon_key(o) == TargetRecord::addon_key(by))
         });
         if let (Some(from), false) = (handed, respelled) {
             outcome.transfers.push(Transfer {
-                folder: live_name.clone(),
+                folder: live_name.as_folder().clone(),
                 from: from.to_owned(),
                 to: installing.to_owned(),
                 handover: true,
@@ -348,7 +353,7 @@ pub fn check_in(
         };
         if let Previous::Transferred { from } = &previous {
             outcome.transfers.push(Transfer {
-                folder: live_name.clone(),
+                folder: live_name.as_folder().clone(),
                 from: from.clone(),
                 to: installing.to_owned(),
                 handover: false,
@@ -597,7 +602,7 @@ mod tests {
     #[test]
     fn allowed_ops_carry_the_live_spelling_and_who_had_it() {
         let ok = |name, force| install(name, force).unwrap().allowed.remove(0);
-        let f = |n: &str| FolderName::new(n).unwrap();
+        let f = |n: &str| FolderName::new(n).unwrap().into_mutable().unwrap();
         assert_eq!(ok("Brand", false), AllowedOp::Add { name: f("Brand") });
         assert_eq!(
             ok("mine", false),
@@ -758,7 +763,7 @@ mod tests {
         assert_eq!(
             outcome.allowed,
             [AllowedOp::Remove {
-                live: FolderName::new("Own").unwrap()
+                live: FolderName::new("Own").unwrap().into_mutable().unwrap()
             }],
             "a missing folder is the planner's record-only change"
         );

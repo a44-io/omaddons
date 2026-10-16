@@ -693,6 +693,21 @@ impl FolderPlan {
                 .and_then(|view| loaded_toc(&view, &target.rules).ok().flatten())
                 .map(|l| l.file)
         };
+        // History never records a client folder (the ownership check refused it); an
+        // entry naming one is refused before anything moves (D14).
+        let mutable = |f: &FolderName| {
+            f.clone().into_mutable().map_err(|f| {
+                Error::new(
+                    ErrorCode::ProtectedFolder,
+                    format!(
+                        "{} names the client's own folder {}; undo never changes it",
+                        reverted.tx,
+                        f.as_str()
+                    ),
+                    Suggestion::command(["omaddons", "history"]),
+                )
+            })
+        };
         // In-place `required_by` edits move no folder and touch nothing: `restored_state`
         // reverses them on the record.
         for op in reverted.ops.iter().filter(|o| o.edit.is_none()) {
@@ -709,7 +724,7 @@ impl FolderPlan {
                 (FolderOp::Add, None) | (FolderOp::Record, _) => (None, None, FolderOp::Record),
                 (FolderOp::Add, Some(live)) => (
                     Some(SwapOp::Remove {
-                        live: live.clone(),
+                        live: mutable(&live)?,
                         old_tree: None,
                     }),
                     Some(PolicyOp::RemoveFolder {
@@ -720,8 +735,8 @@ impl FolderPlan {
                 ),
                 (FolderOp::Replace, Some(live)) => (
                     Some(SwapOp::Replace {
-                        name: folder.clone(),
-                        live: live.clone(),
+                        name: mutable(folder)?,
+                        live: mutable(&live)?,
                         old_tree: None,
                     }),
                     Some(PolicyOp::ReplaceFolder {
@@ -733,7 +748,7 @@ impl FolderPlan {
                 ),
                 (FolderOp::Replace | FolderOp::Remove, None) => (
                     Some(SwapOp::Add {
-                        name: folder.clone(),
+                        name: mutable(folder)?,
                     }),
                     Some(PolicyOp::AddFolder {
                         folder: folder.clone(),
@@ -771,9 +786,13 @@ impl FolderPlan {
                 }
             };
             match &swap {
-                Some(SwapOp::Add { name }) => summary.added.push(name.clone()),
-                Some(SwapOp::Replace { live, .. }) => summary.replaced.push(live.clone()),
-                Some(SwapOp::Remove { live, .. }) => summary.removed.push(live.clone()),
+                Some(SwapOp::Add { name }) => summary.added.push(name.as_folder().clone()),
+                Some(SwapOp::Replace { live, .. }) => {
+                    summary.replaced.push(live.as_folder().clone());
+                }
+                Some(SwapOp::Remove { live, .. }) => {
+                    summary.removed.push(live.as_folder().clone());
+                }
                 None => summary.recorded.push(folder.clone()),
             }
             plan.swap.extend(swap);

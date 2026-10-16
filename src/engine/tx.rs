@@ -41,8 +41,8 @@ use crate::fsx::{
     SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint,
 };
 use crate::model::{
-    Actor, AddonState, Channel, FolderName, Ref, ReloadRequired, RunId, Target, TargetKey, TxId,
-    TxKind,
+    Actor, AddonState, Channel, FolderName, MutableFolderName, Ref, ReloadRequired, RunId, Target,
+    TargetKey, TxId, TxKind,
 };
 use crate::net::Http;
 use crate::output::{Phase, ProgressSink};
@@ -976,11 +976,11 @@ fn records_index_changes(works: &[AddonWork], changes: &mut IndexChanges) {
 /// `stamp_ns`; removed folders out.
 pub(super) fn index_changes(ops: &[SwapOp], staged: &Staged, stamp_ns: i128) -> IndexChanges {
     let mut changes = IndexChanges::default();
-    let staged_index = |name: &FolderName| {
+    let staged_index = |name: &MutableFolderName| {
         staged
             .folders
             .iter()
-            .find(|f| f.name == *name)
+            .find(|f| f.name == *name.as_folder())
             .map(|f| f.index.clone())
     };
     for op in ops {
@@ -1021,9 +1021,9 @@ fn history_ops(works: &[AddonWork]) -> Vec<HistoryOp> {
                     .map(|folder| op(FolderOp::Record, folder)),
             ),
             WorkMode::Folders(f) => ops.extend(f.swap.iter().map(|swap| match swap {
-                SwapOp::Add { name } => op(FolderOp::Add, name),
-                SwapOp::Replace { live, .. } => op(FolderOp::Replace, live),
-                SwapOp::Remove { live, .. } => op(FolderOp::Remove, live),
+                SwapOp::Add { name } => op(FolderOp::Add, name.as_folder()),
+                SwapOp::Replace { live, .. } => op(FolderOp::Replace, live.as_folder()),
+                SwapOp::Remove { live, .. } => op(FolderOp::Remove, live.as_folder()),
             })),
             WorkMode::Records(r) => {
                 let mut folders: Vec<&FolderName> = Vec::new();
@@ -1074,8 +1074,8 @@ fn history_ops(works: &[AddonWork]) -> Vec<HistoryOp> {
 
 fn touched_folder(op: &SwapOp) -> FolderName {
     match op {
-        SwapOp::Add { name } => name.clone(),
-        SwapOp::Replace { live, .. } | SwapOp::Remove { live, .. } => live.clone(),
+        SwapOp::Add { name } => name.as_folder().clone(),
+        SwapOp::Replace { live, .. } | SwapOp::Remove { live, .. } => live.as_folder().clone(),
     }
 }
 
