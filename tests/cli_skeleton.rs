@@ -61,6 +61,14 @@ mod support {
             .env("XDG_STATE_HOME", home.join("state"))
             .env("XDG_CACHE_HOME", home.join("cache"))
             .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+        // Coverage runs: the instrumented binary writes its profile where
+        // cargo-llvm-cov collects it, not into the crate root.
+        for (key, value) in std::env::vars_os() {
+            let name = key.to_string_lossy();
+            if name == "LLVM_PROFILE_FILE" || name.starts_with("CARGO_LLVM_COV") {
+                cmd.env(&key, value);
+            }
+        }
         cmd
     }
 
