@@ -383,6 +383,7 @@ mod updates {
     use super::common::addons::{addon_folder, toc};
     use super::common::home::Home;
     use super::common::http::Asset;
+    use super::common::trees::tree_hash;
 
     /// Retail and Mists Classic; Foo and Bar v1 installed on retail while v2 of each
     /// is out, the memo aged (past the 6 h check interval).
@@ -577,10 +578,27 @@ mod updates {
             (&json!(1), &json!(3)),
             "{envelope}"
         );
-        // Recommendations in order: check, then the look at unmanaged folders.
+        // Recommendations in order: adopt (instead of a look at unmanaged folders), then
+        // the check.
         let order = actions(&envelope);
-        assert_eq!(order, ["check_updates", "list_unmanaged"], "{envelope}");
+        assert_eq!(order, ["adopt", "check_updates"], "{envelope}");
+        let adopt = &envelope["commands"][0]["argv"];
+        assert_eq!(adopt, &json!(["omaddons", "adopt", "-t", "retail"]));
         assert_eq!(target(&envelope, "classic")["adoptable"], 0);
+        // The hint runs: a report, which changes nothing.
+        let tree = tree_hash(&addons);
+        let r = home.run(&["adopt", "-t", "retail"]);
+        r.expect(0);
+        assert_eq!(tree_hash(&addons), tree, "{}", r.context());
+
+        // Unknown folders alone: no adopt, the plain look.
+        fs::remove_dir_all(addons.join("WeakAuras")).unwrap();
+        let envelope = cached(&home);
+        assert_eq!(
+            actions(&envelope),
+            ["check_updates", "list_unmanaged"],
+            "{envelope}"
+        );
     }
 
     #[test]

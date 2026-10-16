@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::inventory::{FolderClass, FolderEntry, Inventory};
-use crate::model::FolderName;
+use crate::model::{FolderName, Ref};
 use crate::state::records::TargetRecord;
 
 /// A planned change to one AddOns folder, before ownership is checked.
@@ -145,14 +145,24 @@ fn rank(code: ErrorCode, reason: &str) -> u8 {
     }
 }
 
+/// Where an addon new to its target comes from, so that an unmanaged folder it ships is
+/// adopted under that ref instead of overwritten.
+#[derive(Debug, Clone, Copy)]
+pub struct AdoptFix<'a> {
+    pub target: &'a str,
+    pub r#ref: &'a Ref,
+}
+
 /// Judges `changes` for the addon `installing` against `inventory` alone. `argv` is the
-/// command line, repeated with `--force` in fixes.
+/// command line, repeated with `--force` in fixes. `adopt` is set for an addon with no
+/// record on the target: an unmanaged folder's fix adopts it.
 pub fn check(
     changes: &[FolderChange],
     inventory: &Inventory,
     installing: &str,
     force: bool,
     argv: &[String],
+    adopt: Option<AdoptFix<'_>>,
 ) -> Result<OwnershipOutcome> {
     check_in(
         changes,
@@ -161,6 +171,7 @@ pub fn check(
         force,
         argv,
         &WorkingView::default(),
+        adopt,
     )
 }
 
@@ -172,6 +183,7 @@ pub fn check_in(
     force: bool,
     argv: &[String],
     view: &WorkingView,
+    adopt: Option<AdoptFix<'_>>,
 ) -> Result<OwnershipOutcome> {
     let me = TargetRecord::addon_key(installing);
     // Another work of this transaction installs it: the two releases disagree, and
@@ -367,11 +379,11 @@ pub fn check_in(
         return Ok(outcome);
     }
     violations.sort_by_key(|v| std::cmp::Reverse(rank(v.code, v.reason)));
-    Err(refusal(&violations, argv))
+    Err(refusal(&violations, argv, adopt))
 }
 
 /// The one error for every violation, with the most serious one's code and fix.
-fn refusal(violations: &[Violation], argv: &[String]) -> Error {
+fn refusal(violations: &[Violation], argv: &[String], adopt: Option<AdoptFix<'_>>) -> Error {
     let Some(top) = violations.first() else {
         return Error::internal("an ownership refusal without violations");
     };
@@ -435,11 +447,27 @@ fn refusal(violations: &[Violation], argv: &[String]) -> Error {
                 vec![Suggestion::command(["omaddons", "remove", owner])],
             )
         }
-        _ => (
-            format!("{} is not managed by omaddons", top.folder),
-            unmanaged_fix(argv),
-            Vec::new(),
-        ),
+        // An addon new here adopts the folder under its ref, the retry overwrites it; one
+        // already recorded can only overwrite (a second record of one ref).
+        _ => {
+            let message = format!("{} is not managed by omaddons", top.folder);
+            match adopt {
+                Some(adopt) => {
+                    let existing = top.extra["existing"].as_str().unwrap_or(&top.folder);
+                    let fix = Suggestion::command([
+                        "omaddons".to_owned(),
+                        "adopt".to_owned(),
+                        existing.to_owned(),
+                        "--ref".to_owned(),
+                        adopt.r#ref.to_string(),
+                        "-t".to_owned(),
+                        adopt.target.to_owned(),
+                    ]);
+                    (message, fix, vec![forced()])
+                }
+                None => (message, forced(), Vec::new()),
+            }
+        }
     };
     let folders: Vec<Value> = violations
         .iter()
@@ -470,13 +498,6 @@ fn refusal(violations: &[Violation], argv: &[String]) -> Error {
         error = error.alternative(alternative);
     }
     error
-}
-
-/// The fix for an unmanaged folder: rerun with `--force` until `adopt` exists (M2).
-fn unmanaged_fix(argv: &[String]) -> Suggestion {
-    let mut retry = argv.to_vec();
-    retry.push("--force".to_owned());
-    Suggestion::command(retry)
 }
 
 #[cfg(test)]
@@ -531,7 +552,7 @@ mod tests {
 
     fn install(name: &str, force: bool) -> Result<OwnershipOutcome> {
         let change = FolderChange::Install(FolderName::new(name).unwrap());
-        check(&[change], &live(), "Me", force, &argv())
+        check(&[change], &live(), "Me", force, &argv(), None)
     }
 
     fn code(result: &Result<OwnershipOutcome>) -> &'static str {
@@ -685,7 +706,7 @@ mod tests {
                 .iter()
                 .map(|n| FolderChange::Install(FolderName::new(n).unwrap()))
                 .collect();
-        let err = check(&changes, &live(), "me", false, &argv()).unwrap_err();
+        let err = check(&changes, &live(), "me", false, &argv(), None).unwrap_err();
         assert_eq!(err.code, ErrorCode::ProtectedFolder);
         let codes: Vec<&str> = err.details["folders"]
             .as_array()
@@ -705,7 +726,7 @@ mod tests {
             "ranked; Brand is fine"
         );
         let without_protected = &changes[..4];
-        let err = check(without_protected, &live(), "me", false, &argv()).unwrap_err();
+        let err = check(without_protected, &live(), "me", false, &argv(), None).unwrap_err();
         assert_eq!(
             (err.code, err.details["folders"][0]["reason"].as_str()),
             (ErrorCode::UnmanagedFolder, Some("linked"))
@@ -718,7 +739,7 @@ mod tests {
             FolderChange::Remove(FolderName::new("own").unwrap()),
             FolderChange::Remove(FolderName::new("Gone").unwrap()),
         ];
-        let outcome = check(&removals, &live(), "me", false, &argv()).unwrap();
+        let outcome = check(&removals, &live(), "me", false, &argv(), None).unwrap();
         assert_eq!(
             outcome.allowed,
             [AllowedOp::Remove {
@@ -730,7 +751,7 @@ mod tests {
             FolderName::new("Blizzard_AuctionUI").unwrap(),
         )];
         assert_eq!(
-            check(&protected, &live(), "me", true, &argv())
+            check(&protected, &live(), "me", true, &argv(), None)
                 .unwrap_err()
                 .code,
             ErrorCode::ProtectedFolder
@@ -746,6 +767,7 @@ mod tests {
             "me",
             true,
             &argv(),
+            None,
         )
         .unwrap_err();
         assert_eq!(
@@ -755,6 +777,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_addon_new_to_the_target_adopts_an_unmanaged_folder_and_nothing_else() {
+        let r: Ref = "gh:o/me".parse().unwrap();
+        let adopt = Some(AdoptFix {
+            target: "retail",
+            r#ref: &r,
+        });
+        let judge = |name: &str, adopt| {
+            let change = FolderChange::Install(FolderName::new(name).unwrap());
+            check(&[change], &live(), "Me", false, &argv(), adopt).unwrap_err()
+        };
+        let forced: Vec<String> = argv().into_iter().chain(["--force".to_owned()]).collect();
+
+        // New here: adopt it under the ref, or overwrite it.
+        let err = judge("Loose", adopt);
+        assert_eq!(
+            (err.code, err.fix.argv().unwrap()),
+            (
+                ErrorCode::UnmanagedFolder,
+                &[
+                    "omaddons", "adopt", "Loose", "--ref", "gh:o/me", "-t", "retail"
+                ]
+                .map(String::from)[..]
+            )
+        );
+        assert_eq!(err.alternatives.len(), 1);
+        assert_eq!(err.alternatives[0].argv(), Some(forced.as_slice()));
+        // Recorded already (an update): overwriting is the only way.
+        let err = judge("Loose", None);
+        assert_eq!(err.fix.argv(), Some(forced.as_slice()));
+        assert!(err.alternatives.is_empty());
+        // Never for a symlink, a protected folder or another addon's folder.
+        assert_eq!(judge("Linked", adopt).fix.argv(), None);
+        assert_eq!(judge("Blizzard_AuctionUI", adopt).fix.argv(), None);
+        assert_eq!(judge("Theirs", adopt).fix.argv(), Some(forced.as_slice()));
+    }
+
     fn install_in(
         name: &str,
         as_addon: &str,
@@ -762,7 +821,7 @@ mod tests {
         view: &WorkingView,
     ) -> Result<OwnershipOutcome> {
         let change = FolderChange::Install(FolderName::new(name).unwrap());
-        check_in(&[change], &live(), as_addon, force, &argv(), view)
+        check_in(&[change], &live(), as_addon, force, &argv(), view, None)
     }
 
     #[test]

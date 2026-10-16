@@ -3243,7 +3243,8 @@ impl TargetPlanner<'_> {
                 .map(|f| f.toc_files().into_iter().collect())
                 .unwrap_or_default()
         };
-        let judged = self.judge(&template.name, &changes, toc_after)?;
+        let new_ref = existing.is_none().then_some(&template.r#ref);
+        let judged = self.judge(&template.name, &changes, toc_after, new_ref)?;
         warnings.extend(judged.warnings);
         let mut summary = FolderSummary {
             skipped: skipped.clone(),
@@ -3321,7 +3322,7 @@ impl TargetPlanner<'_> {
             .cloned()
             .map(FolderChange::Remove)
             .collect();
-        let judged = self.judge(&installed.name, &changes, |_| BTreeSet::new())?;
+        let judged = self.judge(&installed.name, &changes, |_| BTreeSet::new(), None)?;
         let mut summary = FolderSummary::default();
         let ops = self.ops(&installed.name, &judged.allowed, &mut summary);
         Ok(PlannedAddon {
@@ -3359,13 +3360,20 @@ impl TargetPlanner<'_> {
     }
 
     /// Ownership, then the running policy.
+    /// `new_ref` is the ref of an addon with no record on the target: an unmanaged folder
+    /// it ships is adopted under it rather than overwritten.
     fn judge(
         &self,
         addon: &str,
         changes: &[FolderChange],
         toc_after: impl Fn(&FolderName) -> BTreeSet<String>,
+        new_ref: Option<&Ref>,
     ) -> Result<Judged> {
         let ctx = self.ctx;
+        let adopt = new_ref.map(|r| ownership::AdoptFix {
+            target: &self.target.id,
+            r#ref: r,
+        });
         let owned = ownership::check_in(
             changes,
             self.live,
@@ -3373,6 +3381,7 @@ impl TargetPlanner<'_> {
             self.req.force,
             ctx.argv,
             &self.view.borrow(),
+            adopt,
         )?;
         let addons_dir = self.target.addons_dir();
         let loaded = |live: &FolderName| {

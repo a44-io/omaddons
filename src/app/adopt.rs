@@ -16,6 +16,7 @@
 //! target: records and index entries, never a folder.
 
 mod apply;
+pub(crate) mod hints;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;

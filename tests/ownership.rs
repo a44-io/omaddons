@@ -12,9 +12,10 @@ use common::trees::{CustomRoot, tree_hash};
 use omaddons::discover::DiscoverySource;
 use omaddons::discover::custom::discover_custom_root;
 use omaddons::engine::inspect::{ArchiveLimits, inspect_zip};
-use omaddons::engine::ownership::{FolderChange, check};
+use omaddons::engine::ownership::{AdoptFix, FolderChange, check};
 use omaddons::error::ErrorCode;
 use omaddons::inventory::{Depth, inventory};
+use omaddons::model::Ref;
 use omaddons::rules::RulesTable;
 
 #[test]
@@ -49,8 +50,14 @@ fn blizzard_folders_are_never_planned_for_mutation() {
         .iter()
         .map(|s| (*s).to_owned())
         .collect();
-    for force in [false, true] {
-        let err = check(&changes, &live, "pack", force, &argv).unwrap_err();
+    // Never adopted either, for an addon new to the client.
+    let r: Ref = "gh:o/pack".parse().unwrap();
+    let adopt = AdoptFix {
+        target: "custom",
+        r#ref: &r,
+    };
+    for (force, adopt) in [(false, None), (true, None), (false, Some(adopt))] {
+        let err = check(&changes, &live, "pack", force, &argv, adopt).unwrap_err();
         assert_eq!(
             (err.code, err.exit().code()),
             (ErrorCode::ProtectedFolder, 4),
@@ -58,6 +65,7 @@ fn blizzard_folders_are_never_planned_for_mutation() {
         );
         assert_eq!(err.details["folders"][0]["folder"], "blizzard_auctionui");
         assert_eq!(err.fix.argv(), None, "no override exists");
+        assert!(err.alternatives.is_empty());
     }
     assert_eq!(tree_hash(&addons), before, "nothing written");
 }

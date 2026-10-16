@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+use super::adopt::hints::{adopt_fixes, adopting};
 use super::engine::Engine;
 use super::outcome::{ItemRequest, ItemResult, ItemStatus, TargetRef, TargetsData, TargetsOutcome};
 use super::world::{World, names_addon};
@@ -148,11 +149,13 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
         .collect();
     if found.is_empty() {
         let checked: Vec<&str> = targets.iter().map(|d| d.target.id.as_str()).collect();
-        return Err(Error::new(
+        let error = Error::new(
             ErrorCode::NotManaged,
             format!("{addon} is not installed on {}", checked.join(", ")),
             Suggestion::command(["omaddons", "install", addon]),
-        ));
+        );
+        let fixes = adopt_fixes(&world, &records, &targets, addon);
+        return Err(adopting(error, fixes));
     }
     if let Mode::Pin {
         version: Some(_), ..

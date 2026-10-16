@@ -13,6 +13,7 @@ use std::io::Write;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::adopt::hints::{adopt_fixes, adopting};
 use super::engine::Engine;
 use super::history::TargetRef;
 use super::install::all_failed;
@@ -380,7 +381,7 @@ fn not_managed(
         [] => world.resolved.targets.iter().collect(),
         some => some.to_vec(),
     };
-    for d in looked {
+    for d in looked.iter().copied() {
         let record = records.get(&d.target.id);
         let Ok(inv) = inventory(&d.target, record, &world.table, Depth::Classes) else {
             continue;
@@ -409,11 +410,18 @@ fn not_managed(
             ),
             FolderClass::Managed => continue,
         };
-        return Error::new(ErrorCode::NotManaged, message, fix).details(serde_json::json!({
+        let error = Error::new(ErrorCode::NotManaged, message, fix).details(serde_json::json!({
             "target": d.target.id,
             "folder": entry.name,
             "class": entry.class,
         }));
+        // An unmanaged folder is adopted, then removable; an invalid one is only listed.
+        return match entry.class {
+            FolderClass::Unmanaged => {
+                adopting(error, adopt_fixes(world, records, &looked, request))
+            }
+            _ => error,
+        };
     }
     Error::new(
         ErrorCode::NotManaged,

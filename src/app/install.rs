@@ -30,7 +30,8 @@ use crate::engine::plan::{ChangeKind, FolderSummary, PinIntent, PlanFailure, Req
 use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{
-    AddonReason, AddonRecord, Channel, Ref, ReloadRequired, RunId, TxId, TxKind, VersionConfidence,
+    AddonReason, AddonRecord, Channel, FolderName, Ref, ReloadRequired, RunId, TxId, TxKind,
+    VersionConfidence,
 };
 use crate::output::{Outcome, Style};
 use crate::resolve::cache::{Freshness, ReleaseCache};
@@ -604,20 +605,24 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             )]
         })
         .unwrap_or_default();
-    // A required folder present but unmanaged: nothing installed for it; a look.
-    let unmanaged = done
+    // Required folders present but unmanaged: nothing installed for them; one adopt
+    // brings them all under management as they are.
+    let mut unmanaged: Vec<&FolderName> = done
         .plan
         .targets
         .iter()
         .flat_map(|t| t.dependencies.values())
-        .any(|r| !r.unmanaged.is_empty());
-    if unmanaged {
+        .flat_map(|r| &r.unmanaged)
+        .collect();
+    unmanaged.sort_by(|a, b| a.key().cmp(b.key()));
+    unmanaged.dedup();
+    if !unmanaged.is_empty() {
         let id = outcome.map_or_else(|| target.target.id.clone(), |o| o.target.clone());
-        commands.push(CommandHint::new(
-            "list_unmanaged",
-            ["omaddons", "list", "-t", id.as_str(), "--unmanaged"],
-            false,
-        ));
+        let argv = ["omaddons", "adopt"]
+            .into_iter()
+            .chain(unmanaged.iter().map(|f| f.as_str()))
+            .chain(["-t", id.as_str()]);
+        commands.push(CommandHint::new("adopt", argv, false));
     }
     let swapped = tx.is_some();
     Ok(InstallOutcome {

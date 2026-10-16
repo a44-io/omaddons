@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 
+use super::adopt::hints::{adopt_fixes, adopting};
 use super::engine::Engine;
 use super::outcome::{
     ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef, TargetResult,
@@ -358,10 +359,13 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
     if let Some(first) = targets.first() {
         for name in &unknown {
             let checked: Vec<&str> = targets.iter().map(|d| d.target.id.as_str()).collect();
-            let error = Error::new(
-                ErrorCode::NotManaged,
-                format!("{name} is not installed on {}", checked.join(", ")),
-                Suggestion::command(["omaddons", "install", name.as_str()]),
+            let error = adopting(
+                Error::new(
+                    ErrorCode::NotManaged,
+                    format!("{name} is not installed on {}", checked.join(", ")),
+                    Suggestion::command(["omaddons", "install", name.as_str()]),
+                ),
+                adopt_fixes(&world, &records, &targets, name),
             );
             data.push_item(
                 TargetRef {
@@ -422,7 +426,8 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
         .filter_map(|o| Some((o.tx?, o.lock_held_ms?)))
         .collect();
     let data = data.listing(verbose);
-    let commands = data.undo_commands();
+    let mut commands = data.undo_commands();
+    commands.extend(super::status::adopt_hints(&world, &targets, &records));
     let mut unique: Vec<Warning> = Vec::new();
     for w in warnings {
         if !unique.contains(&w) {

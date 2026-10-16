@@ -66,6 +66,8 @@ mod support {
         "the replaced files are kept in the transaction snapshot",
         // still_required under --dry-run
         "nothing is removed under --dry-run",
+        // an addon gone upstream: the new ref is the user's to find
+        "if it moved, re-point it",
         // missing_dependency
         "no keyless source ships",
         "install the one you use",

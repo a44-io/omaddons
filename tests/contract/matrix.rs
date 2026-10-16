@@ -269,6 +269,51 @@ fn info() {
     insta::assert_json_snapshot!("info_not_found", s.stable(&c.envelope));
 }
 
+/// Other commands' fixes for an unmanaged folder adopt it, and each runs.
+#[test]
+fn adopt_fixes() {
+    let s = Scene::new();
+    let addons = s.home.addons("_retail_");
+    std::fs::create_dir_all(addons.join("Foo")).unwrap();
+    std::fs::write(
+        addons.join("Foo/Foo.toc"),
+        "## Interface: 120105\n## Version: 1\n",
+    )
+    .unwrap();
+    let catalog = s.home.env.config().join("omaddons/catalog.d");
+    std::fs::create_dir_all(&catalog).unwrap();
+    std::fs::write(
+        catalog.join("50-foo.toml"),
+        "schema_version = \"1.0\"\n\n[[addon]]\nname = \"Foo\"\nref = \"gh:o/foo\"\nfolders = [\"Foo\"]\n",
+    )
+    .unwrap();
+    let zip = s.zip("foo");
+    let c = s.json(&["install", "gh:o/foo", "--file", &zip, "-t", "retail"], 4);
+    insta::assert_json_snapshot!("install_unmanaged", s.stable(&c.envelope));
+    let adopt = [
+        "omaddons", "adopt", "Foo", "--ref", "gh:o/foo", "-t", "retail",
+    ];
+    for args in [&["pin", "Foo"][..], &["remove", "Foo", "-t", "retail"]] {
+        let c = s.json(args, 3);
+        assert_eq!(
+            (
+                &c.envelope["error"]["code"],
+                support::strings(&c.envelope["error"]["fix_argv"])
+            ),
+            (
+                &serde_json::json!("not_managed"),
+                adopt.map(str::to_owned).to_vec()
+            ),
+            "{args:?}"
+        );
+    }
+    let c = s.json(&adopt[1..], 0);
+    assert_eq!(
+        c.envelope["data"]["targets"][0]["items"][0]["status"],
+        "adopted"
+    );
+}
+
 #[test]
 fn install() {
     let s = Scene::new();

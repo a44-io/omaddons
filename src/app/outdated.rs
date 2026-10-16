@@ -498,7 +498,8 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
             items,
         });
     }
-    let commands = hints(&out_targets);
+    let mut commands = hints(&out_targets);
+    commands.extend(super::status::adopt_hints(&world, &targets, &records));
     Ok(OutdatedOutcome {
         data: OutdatedData {
             checked_at,

@@ -270,7 +270,7 @@ fn installing_littlewigs_installs_bigwigs_with_it_and_undo_removes_both() {
 }
 
 #[test]
-fn a_present_unmanaged_dependency_installs_nothing_and_hints_a_look() {
+fn a_present_unmanaged_dependency_installs_nothing_and_hints_adopting_it() {
     let home = wigs();
     let addons = home.addons("_retail_");
     addon_folder(
@@ -288,14 +288,23 @@ fn a_present_unmanaged_dependency_installs_nothing_and_hints_a_look() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|c| c["action"] == "list_unmanaged");
-    assert!(hint.is_some(), "no list_unmanaged hint\n{}", r.context());
-    let hint = hint.unwrap();
+        .find(|c| c["action"] == "adopt")
+        .cloned()
+        .unwrap_or(Value::Null);
     assert_eq!(
         hint["argv"],
-        json!(["omaddons", "list", "-t", "retail", "--unmanaged"])
+        json!(["omaddons", "adopt", "BigWigs", "-t", "retail"]),
+        "{}",
+        r.context()
     );
     assert!(warnings_with(&envelope, "missing_dependency").is_empty());
+
+    // The hint runs: BigWigs is managed, as it is.
+    let tree = tree_hash(&addons.join("BigWigs"));
+    let r = home.run(&["adopt", "BigWigs", "-t", "retail"]);
+    r.expect(0);
+    assert!(record_of(&home, "BigWigs").is_some(), "{}", r.context());
+    assert_eq!(tree_hash(&addons.join("BigWigs")), tree);
 }
 
 #[test]

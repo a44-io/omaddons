@@ -190,7 +190,22 @@ pub fn evaluate(
                 "-t",
                 target.id.as_str(),
             ]);
-            let error = Error::new(error.code, error.message.clone(), fix);
+            let mut error = Error::new(error.code, error.message.clone(), fix);
+            // Gone from where it was: it may have moved, and adopting its folder under
+            // the new ref re-points it (the ref is the user's to find).
+            if matches!(error.code, crate::error::ErrorCode::NotFound)
+                && let Some(primary) = crate::engine::plan::primary_folder(
+                    &record.r#ref,
+                    &record.folders,
+                    Some(&record.name),
+                )
+            {
+                error = error.alternative(Suggestion::text(format!(
+                    "if it moved, re-point it: omaddons adopt {} --ref <new ref> -t {}",
+                    primary.as_str(),
+                    target.id
+                )));
+            }
             return UpdateStatus::Failed {
                 error: ErrorBody::from(error),
             };
@@ -800,6 +815,19 @@ mod tests {
                 &serde_json::json!("failed"),
                 &serde_json::json!("not_found"),
                 &serde_json::json!(["omaddons", "remove", "Foo", "-t", "retail"])
+            )
+        );
+        // It may have moved: adopting its folder under the new ref re-points it.
+        assert_eq!(
+            (
+                &json["error"]["alternatives"][0]["display"],
+                &json["error"]["alternatives"][0]["argv"]
+            ),
+            (
+                &serde_json::json!(
+                    "if it moved, re-point it: omaddons adopt Foo --ref <new ref> -t retail"
+                ),
+                &serde_json::Value::Null
             )
         );
     }

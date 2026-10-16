@@ -8,7 +8,7 @@
 //! full `omaddons status`. Running state is live either way. `--check` turns any
 //! attention into exit 6 (`check_failed`) with the data still there.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -651,7 +651,48 @@ fn is_stale(checked_at: Option<Timestamp>, now: Timestamp, interval: Duration) -
 
 /// The unmanaged folders a catalog entry names whose ref has no record on the target:
 /// leftovers of addons managed here, and unknown folders, never count.
-fn adoptable(inv: &Inventory, record: Option<&TargetRecord>, catalog: &Catalog) -> usize {
+/// The `adopt` recommendation for one target: the report of what its unmanaged folders
+/// are, which changes nothing.
+pub(crate) fn adopt_hint(target: &str) -> CommandHint {
+    CommandHint::new("adopt", ["omaddons", "adopt", "-t", target], false)
+}
+
+/// `outdated`'s and `update`'s `adopt` hints: one per target of `targets` that manages
+/// nothing yet and has an [`adoptable`] folder. Offline, one class-depth inventory per
+/// such target, the catalog loaded only when one has an unmanaged folder.
+pub(crate) fn adopt_hints(
+    world: &World,
+    targets: &[&DiscoveredTarget],
+    records: &BTreeMap<String, TargetRecord>,
+) -> Vec<CommandHint> {
+    let mut catalog: Option<Catalog> = None;
+    let mut hints = Vec::new();
+    for d in targets {
+        let record = records.get(&d.target.id);
+        if record.is_some_and(|r| !r.addons.is_empty()) {
+            continue;
+        }
+        let Ok(inv) = inventory(&d.target, record, &world.table, Depth::Classes) else {
+            continue;
+        };
+        if inv.counts.unmanaged == 0 {
+            continue;
+        }
+        let catalog = catalog.get_or_insert_with(|| Catalog::load(&world.paths).0);
+        if adoptable(&inv, record, catalog) > 0 {
+            hints.push(adopt_hint(&d.target.id));
+        }
+    }
+    hints
+}
+
+/// The unmanaged folders of `inv` that a catalog entry not installed here names: offline,
+/// no TOC read, a managed addon's leftovers excluded.
+pub(crate) fn adoptable(
+    inv: &Inventory,
+    record: Option<&TargetRecord>,
+    catalog: &Catalog,
+) -> usize {
     let installed = |r: &Ref| {
         record.is_some_and(|rec| {
             rec.addons
@@ -705,6 +746,11 @@ fn recommendations(
         )),
         _ => commands.push(CommandHint::new("update", ["omaddons", "update"], false)),
     }
+    // A catalog addon found unmanaged: the adopt report says what it is. Unknown-only
+    // folders keep the plain look below.
+    for t in targets.iter().filter(|t| t.adoptable > 0) {
+        commands.push(adopt_hint(&t.id));
+    }
     if check_due {
         commands.push(CommandHint::new(
             "check_updates",
@@ -720,7 +766,10 @@ fn recommendations(
         commands.push(CommandHint::new("remove_orphans", argv, true));
     }
     commands.extend(fixes);
-    for t in targets.iter().filter(|t| t.folders.unmanaged > 0) {
+    for t in targets
+        .iter()
+        .filter(|t| t.folders.unmanaged > 0 && t.adoptable == 0)
+    {
         commands.push(CommandHint::new(
             "list_unmanaged",
             ["omaddons", "list", "-t", t.id.as_str(), "--unmanaged"],

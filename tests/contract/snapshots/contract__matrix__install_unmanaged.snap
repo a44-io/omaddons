@@ -1,0 +1,61 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "install",
+          "gh:o/foo",
+          "--file",
+          "<root>/dl/foo.zip",
+          "-t",
+          "retail",
+          "--json",
+          "--force"
+        ],
+        "display": "omaddons install gh:o/foo --file <root>/dl/foo.zip -t retail --json --force"
+      }
+    ],
+    "code": "unmanaged_folder",
+    "details": {
+      "folders": [
+        {
+          "code": "unmanaged_folder",
+          "existing": "Foo",
+          "folder": "Foo",
+          "reason": "unmanaged"
+        }
+      ],
+      "items": [
+        {
+          "code": "unmanaged_folder",
+          "message": "Foo is not managed by omaddons",
+          "request": "gh:o/foo"
+        }
+      ]
+    },
+    "fix": "omaddons adopt Foo --ref gh:o/foo -t retail",
+    "fix_argv": [
+      "omaddons",
+      "adopt",
+      "Foo",
+      "--ref",
+      "gh:o/foo",
+      "-t",
+      "retail"
+    ],
+    "message": "Foo is not managed by omaddons",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

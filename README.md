@@ -324,9 +324,10 @@ $ omaddons install ./EraOnly.zip -t retail
 error[wrong_flavor]: file:~/Downloads/./EraOnly.zip does not load on retail (Mainline)
 fix: use an archive built for this client
 
-$ omaddons install ./OldThing -t retail
+$ omaddons install gh:o/oldthing -t retail
 error[unmanaged_folder]: OldThing is not managed by omaddons
-fix: omaddons install ./OldThing -t retail --force
+fix: omaddons adopt OldThing --ref gh:o/oldthing -t retail
+  or: omaddons install gh:o/oldthing -t retail --force
 
 $ omaddons install ./Bar-2.1.0.zip
 error[target_ambiguous]: ./Bar-2.1.0.zip is compatible with 2 targets: era, retail
@@ -589,10 +590,13 @@ Pending updates never count as attention: `status --check` stays a health check,
 
 - `omaddons install <addon> -t <id> --reinstall`, for each modified or missing addon (at most 5);
 - `omaddons update`, or `-t <id>` when only one client has updates;
+- `omaddons adopt -t <id>`, for each client with `adoptable` folders;
 - `omaddons outdated`, when a client was never checked or its check is stale;
 - `omaddons remove <orphans…> -t <id>` (`remove_orphans`, destructive), for each client with orphans;
 - the attention fixes;
-- a look at unmanaged folders.
+- a look at unmanaged folders, on a client with unmanaged folders none of which is `adoptable`.
+
+`outdated` and `update` also recommend `omaddons adopt -t <id>` for a client that manages nothing yet but has `adoptable` folders.
 
 ### `install <REF>...`
 
@@ -627,7 +631,7 @@ Each item's `status` is `installed`, `updated`, `unchanged` or `failed`, or, whe
 **Dependencies.** What an addon's TOC requires (`## Dependencies`, `## RequiredDeps`) installs in the same transaction when a keyless source ships it (today the catalog, including your `catalog.d` entries), from `default_channel` (never the requesting addon's channel). It is recorded as `reason: dependency` with `required_by`, and `undo` removes it with its requester. `## OptionalDeps` never installs anything. Some required folders install nothing:
 
 - `Blizzard_*` folders and folders of the same archive.
-- A folder that is already present. A managed owner gains the requester in `required_by`. For an unmanaged one, `commands` offers `omaddons list -t <id> --unmanaged`.
+- A folder that is already present. A managed owner gains the requester in `required_by`. For unmanaged ones, `commands` offers `omaddons adopt <folders…> -t <id>` (action `adopt`).
 
 `missing_dependency` warns, and the run stays a success, when a required folder:
 
@@ -893,7 +897,7 @@ The listing shows only what needs a decision; `-v` lists everything, and the sum
 | `pinned` | Installed with `--version`, and a newer release exists (`latest`) |
 | `blocked` | The newest release is known not to load on this client (`blocked_reason`) |
 | `ahead` | The installed release is newer than the newest one on its channel |
-| `failed` | The source cannot answer for it (a deleted repository: fix `omaddons remove <name> -t <id>`, or a fetch error) |
+| `failed` | The source cannot answer for it (a deleted repository: fix `omaddons remove <name> -t <id>`, and if it moved, the alternative `omaddons adopt <folder> --ref <new ref> -t <id>` re-points it; or a fetch error) |
 | `current`, `static`, `unchecked` | Shown with `-v` only (`unchecked_reason`: `never_checked`, `offline`, `source_disabled`, `no_eligible_release`) |
 
 When a fetch fails, a remembered answer is used and the warning says so; with nothing remembered, the item is `failed`. Either way the run is `partial`. `--verify` downloads only the updates not yet verified, in a dry run that takes no lock, and remembers the verdicts: a candidate that does not load becomes `blocked` from then on. `outdated` writes only the release memo, the download cache and `net.log`.
@@ -1086,13 +1090,13 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `target_ambiguous` | 3 | no | several targets fit; one alternative per candidate |
 | `ref_ambiguous` | 3 | no | a name matches several addons or a local path |
 | `not_found` | 3 | no | unknown name, path, tag, transaction or pruned snapshot; nothing to undo |
-| `not_managed` | 3 | no | `remove` of an unmanaged, linked or `Blizzard_*` folder, or a name no managed addon answers to |
+| `not_managed` | 3 | no | `remove` of an unmanaged, linked or `Blizzard_*` folder, or a name no managed addon answers to. When the name is an unmanaged folder (`update`, `pin`, `unpin`, `remove`), the fix adopts it: `omaddons adopt <folder> [--ref <catalog ref>] -t <id>`, other clients holding it as alternatives |
 | `plan_not_found` | 3 | no | reserved for stored plans (M4) |
 | `no_compatible_release` | 3 | no | no candidate loads on the client; `details.tried` lists them |
 | `game_running` | 4 | no | the running policy refuses (fix appends `--while-running`), or `undo --saved-variables restore` while the client runs |
 | `protected_folder` | 4 | no | the archive contains a `Blizzard_*` folder |
 | `ownership_conflict` | 4 | no | another addon owns the folder; fix appends `--force` |
-| `unmanaged_folder` | 4 | no | an unmanaged folder exists; fix appends `--force` |
+| `unmanaged_folder` | 4 | no | an unmanaged folder exists; for an addon new to the client the fix adopts it (`omaddons adopt <folder> --ref <ref> -t <id>`) with the `--force` retry as alternative, otherwise the fix appends `--force` |
 | `case_collision` | 4 | no | a folder name differs only in case from an existing one |
 | `wrong_flavor` | 4 | no | a `url:`, `file:` or `--file` archive does not load on the client |
 | `unsafe_archive` | 4 | no | traversal, absolute paths, symlinks, devices, duplicate or case-colliding entries, the compression-ratio limit |
@@ -1227,7 +1231,7 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
 | A name that differs only in case from an existing folder | `case_collision`, even with `--force`. Wine folds case, so the game would see only one. An addon's own folder may change case on update |
 | Two AddOns folders that differ only in case (`AddOns` and `addons`) | Refused. An existing lowercase `interface/addons` alone is used as the AddOns folder |
 | Another managed addon's folder | `ownership_conflict`; `--force` transfers it and marks the old owner degraded |
-| An unmanaged folder | `unmanaged_folder`; `--force` replaces it, and the snapshot keeps the original for undo |
+| An unmanaged folder | `unmanaged_folder`, whose fix adopts it under the ref being installed (`omaddons adopt <folder> --ref <ref> -t <id>`); `--force`, the alternative, replaces it, and the snapshot keeps the original for undo. An update of an addon already managed has only the `--force` fix |
 
 Ownership comes only from omaddons' own records. Other managers' metadata is not read; [`adopt`](#adopt) identifies their folders and records them as they are.
 
@@ -1546,7 +1550,13 @@ Quit the game and run the command again. For folder changes you can also add `--
 
 ### `unmanaged_folder` or `ownership_conflict`
 
-A folder with that name already exists and omaddons does not own it, or another managed addon does. Replacing it is undoable:
+A folder with that name already exists and omaddons does not own it, or another managed addon does. A folder you put there yourself can be adopted as it is, under the ref you were installing (the fix says so), and the next `update` updates it:
+
+```bash
+omaddons adopt <folder> --ref <ref> -t retail
+```
+
+Replacing it instead is undoable:
 
 ```bash
 omaddons install <ref> -t retail --force

@@ -552,13 +552,21 @@ fn refusals_exit_4_and_force_resolves_only_ownership_and_unmanaged() {
         envelope
     };
 
-    // unmanaged_folder, then --force replaces it.
+    // unmanaged_folder: adopt it (see below), or --force replaces it.
     let envelope = refused(
         &home.run(&["install", "gh:o/foo", "-t", "retail"]),
         "unmanaged_folder",
     );
     assert_eq!(
-        argv_of(&envelope["error"]["fix_argv"]).last().unwrap(),
+        argv_of(&envelope["error"]["fix_argv"]),
+        [
+            "omaddons", "adopt", "Foo", "--ref", "gh:o/foo", "-t", "retail"
+        ]
+    );
+    assert_eq!(
+        argv_of(&envelope["error"]["alternatives"][0]["argv"])
+            .last()
+            .unwrap(),
         "--force"
     );
     assert!(addons.join("Foo/mine.lua").exists());
@@ -644,6 +652,34 @@ fn refusals_exit_4_and_force_resolves_only_ownership_and_unmanaged() {
     assert_eq!(
         argv_of(&envelope["error"]["fix_argv"]).last().unwrap(),
         "--while-running"
+    );
+}
+
+#[test]
+fn installing_over_an_unmanaged_folder_offers_adopt_which_records_it_as_it_is() {
+    let home = Home::new(&["wow"]);
+    let addons = home.addons("_retail_");
+    let retail_toc = toc("120105", &[]);
+    addon_folder(
+        &addons,
+        "Foo",
+        &[("Foo.toc", &retail_toc)],
+        &[("mine.lua", b"x")],
+    );
+    foo_release(&home.http, "v1.0.0", mainline(), "120105");
+    let tree = tree_hash(&addons);
+    let r = home.run(&["install", "gh:o/foo", "-t", "retail"]);
+    let fix = argv_of(&r.expect(4)["error"]["fix_argv"]);
+    let r = home.exec(&[&fix[1..], &["--json".to_owned()]].concat());
+    r.expect(0);
+    assert_eq!(tree_hash(&addons), tree, "adopted as it is");
+    let record = common::state::record(&home, "retail");
+    let foo = record.addons.values().find(|a| a.name == "Foo");
+    assert_eq!(
+        foo.map(|a| a.r#ref.to_string()).as_deref(),
+        Some("gh:o/foo"),
+        "{}",
+        r.context()
     );
 }
 
