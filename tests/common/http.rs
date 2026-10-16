@@ -82,6 +82,15 @@ impl Resp {
     }
 }
 
+/// `bytes` gzipped, for a fixture served with `content-encoding: gzip` (the network
+/// layer decodes it, as it does a real one).
+pub fn gzip_bytes(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
 /// A multi-response fixture for a GET of `url`: served in order, the last repeating.
 /// Replay restarts every sequence in each process, so a sequence never spans two CLI
 /// runs; scenarios spanning commands switch fixture sets with `Home::scenario`.

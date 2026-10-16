@@ -74,6 +74,9 @@ pub const MEMO_KNOWN_RELEASES: usize = 10;
 /// A WoWInterface project unchanged for longer is never chosen on its own to satisfy a
 /// dependency (`wowi_abandoned`); `search` calls it abandoned.
 pub const DEPENDENCY_SOURCE_MAX_AGE: Duration = Duration::from_secs(730 * 24 * 60 * 60);
+/// The largest decoded API response (JSON, feeds): a decompression-bomb guard. Archives
+/// have `DOWNLOAD_MAX_BYTES`.
+pub const API_RESPONSE_MAX_BYTES: u64 = 64 * MIB;
 /// Most dependency rounds one install plans per target (a chain longer than this stops
 /// with `missing_dependency`, reason `limit_reached`).
 pub const DEPENDENCY_MAX_DEPTH: usize = 4;
@@ -298,6 +301,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "A WoWInterface project unchanged this long is not chosen on its own for a dependency",
     ),
     limit(
+        "API_RESPONSE_MAX_BYTES",
+        LimitValue::Bytes(API_RESPONSE_MAX_BYTES),
+        "bytes",
+        None,
+        "Largest decoded API response: a decompression-bomb guard",
+    ),
+    limit(
         "DEPENDENCY_MAX_DEPTH",
         LimitValue::Count(DEPENDENCY_MAX_DEPTH as u64),
         "count",
@@ -481,7 +491,8 @@ mod tests {
         "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",
-        "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "DEPENDENCY_MAX_DEPTH",
+        "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "API_RESPONSE_MAX_BYTES",
+        "DEPENDENCY_MAX_DEPTH",
         "DEPENDENCY_MAX_ADDONS",
     ];
 

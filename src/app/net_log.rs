@@ -165,6 +165,7 @@ mod tests {
             path: "/".into(),
             status: Some(200),
             bytes: Some(1),
+            wire_bytes: None,
             duration_ms: 1,
             purpose: "test".into(),
             via,

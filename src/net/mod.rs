@@ -1,12 +1,15 @@
 //! The network layer: the `Http` trait with real, replay and record implementations,
 //! the per-hop host allowlist, `net.log`, validators, retry and backoff.
 //!
-//! Every request goes through one stack (D9, D13, G5): `Redirecting<Guarded<transport>>`,
-//! built by [`stack`]. The guard checks the allowlist on every hop, honors `--offline`,
-//! caps body sizes and logs every request that reaches the transport.
+//! Every request goes through one stack (D9, D13, G5), built by [`stack`], outermost
+//! first: `Limited<Retrying<Validating<Redirecting<Guarded<Decoding<transport>>>>>>`.
+//! The guard checks the allowlist on every hop, honors `--offline`, caps body sizes
+//! (decoded bytes, per request kind) and logs every request that reaches the transport;
+//! `Decoding` asks API requests for gzip and decodes it (M2-D14).
 
 pub mod allowlist;
 mod client;
+pub mod decode;
 mod guard;
 pub mod limit;
 pub mod log;
@@ -19,6 +22,8 @@ mod tests;
 pub mod validators;
 
 use std::io::Read;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 pub use allowlist::Allowlist;
 pub use client::UreqTransport;
@@ -141,6 +146,9 @@ pub struct Response {
     pub final_url: String,
     pub cache: CacheState,
     body: Box<dyn Read + Send>,
+    /// Compressed bytes read off the wire, when [`decode::Decoding`] decodes the body
+    /// (`net.log`'s `wire_bytes`).
+    pub(crate) wire_bytes: Option<Arc<AtomicU64>>,
 }
 
 impl std::fmt::Debug for Response {
@@ -166,6 +174,7 @@ impl Response {
             final_url,
             cache: CacheState::Network,
             body,
+            wire_bytes: None,
         }
     }
 
@@ -225,7 +234,7 @@ impl Response {
 pub fn body_error(err: std::io::Error) -> Error {
     let inner = err.get_ref();
     if let Some(cap) = inner.and_then(|e| e.downcast_ref::<guard::SizeCapExceeded>()) {
-        return guard::too_large(cap.max_bytes);
+        return guard::too_large(cap.max_bytes, cap.api_host.as_deref());
     }
     if let Some(logged) = inner.and_then(|e| e.downcast_ref::<Error>()) {
         return logged.clone();
@@ -269,8 +278,8 @@ impl NetConfig {
 }
 
 /// The production stack, outermost first:
-/// `Limited<Retrying<Validating<Redirecting<Guarded<transport>>>>>`, over the transport
-/// [`select_transport`] picks from the environment.
+/// `Limited<Retrying<Validating<Redirecting<Guarded<Decoding<transport>>>>>>`, over the
+/// transport [`select_transport`] picks from the environment.
 pub fn stack(config: &NetConfig, log: NetLog, paths: &Paths) -> Box<dyn Http> {
     let env = |name: &str| std::env::var(name).ok();
     let transport = select_transport(&env, cfg!(debug_assertions), paths);
@@ -339,14 +348,15 @@ pub fn stack_with(
     Box::new(Limited::new(Box::new(retrying)))
 }
 
-/// The core without the resilience layers: `Redirecting<Guarded<transport>>`.
+/// The core without the resilience layers: `Redirecting<Guarded<Decoding<transport>>>`.
 pub fn core_stack_with(config: &NetConfig, log: NetLog, transport: Box<dyn Http>) -> Box<dyn Http> {
     let guarded = Guarded::new(
-        transport,
+        Box::new(decode::Decoding::new(transport)),
         config.allowlist(),
         log,
         config.offline,
         config.download_max_bytes,
+        crate::limits::API_RESPONSE_MAX_BYTES,
     );
     Box::new(Redirecting::new(guarded))
 }

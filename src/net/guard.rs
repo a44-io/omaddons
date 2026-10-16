@@ -7,11 +7,13 @@
 //!   reaches the transport (on error, or when the body is read to the end or dropped).
 
 use std::io::{self, Read};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use super::allowlist::Allowlist;
 use super::log::{NetLog, NetLogEntry, Via, now};
-use super::{Http, Method, RedirectMode, Request, Response};
+use super::{Http, Method, RedirectMode, Request, Response, TimeoutKind};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::politeness::MAX_REDIRECTS;
 
@@ -59,13 +61,16 @@ fn host_blocked(url: &str, hop: usize, why: &str) -> Error {
     .details(serde_json::json!({ "url": super::redact(url), "hop": hop }))
 }
 
-/// Enforces the allowlist, offline mode and the size cap, and logs.
+/// Enforces the allowlist, offline mode and the size caps, and logs.
 pub struct Guarded {
     inner: Box<dyn Http>,
     allowlist: Allowlist,
     log: NetLog,
     offline: bool,
+    /// Downloads (`download_max_bytes`).
     max_bytes: u64,
+    /// API responses, decoded (`API_RESPONSE_MAX_BYTES`).
+    api_max_bytes: u64,
 }
 
 impl Guarded {
@@ -75,6 +80,7 @@ impl Guarded {
         log: NetLog,
         offline: bool,
         max_bytes: u64,
+        api_max_bytes: u64,
     ) -> Self {
         Self {
             inner,
@@ -82,6 +88,7 @@ impl Guarded {
             log,
             offline,
             max_bytes,
+            api_max_bytes,
         }
     }
 }
@@ -103,6 +110,11 @@ impl Http for Guarded {
                 &format!("{} is not on the allowlist", target.host),
             ));
         }
+        // Archives against the download limit; everything else against the API one.
+        let (max_bytes, api_host) = match req.timeout {
+            TimeoutKind::Download => (self.max_bytes, None),
+            TimeoutKind::Api => (self.api_max_bytes, Some(target.host.clone())),
+        };
         let pending = PendingLine {
             log: self.log.clone(),
             entry: NetLogEntry {
@@ -112,6 +124,7 @@ impl Http for Guarded {
                 path: target.path,
                 status: None,
                 bytes: None,
+                wire_bytes: None,
                 duration_ms: 0,
                 purpose: req.purpose.to_owned(),
                 via: Via::Http,
@@ -126,11 +139,12 @@ impl Http for Guarded {
                 return Err(err);
             }
         };
+        // The wire length: decoded bytes are at least as many, so this refusal is safe.
         let announced = response
             .header("content-length")
             .and_then(|len| len.trim().parse::<u64>().ok());
-        if announced.is_some_and(|len| len > self.max_bytes) {
-            let err = too_large(self.max_bytes);
+        if announced.is_some_and(|len| len > max_bytes) {
+            let err = too_large(max_bytes, api_host.as_deref());
             pending.write(Some(response.status), Some(0), Some(err.code))?;
             return Err(err);
         }
@@ -138,7 +152,9 @@ impl Http for Guarded {
         response.set_body(Box::new(LoggingReader {
             inner: body,
             bytes: 0,
-            max_bytes: self.max_bytes,
+            max_bytes,
+            api_host,
+            wire: response.wire_bytes.clone(),
             status: response.status,
             pending: Some(pending),
         }));
@@ -169,12 +185,17 @@ impl PendingLine {
     }
 }
 
-/// Counts body bytes, enforces the size cap, and writes the request's `net.log` line
-/// at the end of the body, on a read error, or when dropped unread.
+/// Counts body bytes (decoded, when the body was compressed), enforces the size cap,
+/// and writes the request's `net.log` line at the end of the body, on a read error, or
+/// when dropped unread.
 struct LoggingReader {
     inner: Box<dyn Read + Send>,
     bytes: u64,
     max_bytes: u64,
+    /// The host, when `max_bytes` is the API response limit.
+    api_host: Option<String>,
+    /// The compressed bytes read, when the body is decoded below.
+    wire: Option<Arc<AtomicU64>>,
     status: u16,
     pending: Option<PendingLine>,
 }
@@ -183,9 +204,15 @@ impl LoggingReader {
     fn finish(&mut self, error: Option<ErrorCode>) -> io::Result<()> {
         match self.pending.take() {
             // The crate error rides inside the io::Error; `body_error` unwraps it.
-            Some(line) => line
-                .write(Some(self.status), Some(self.bytes), error)
-                .map_err(io::Error::other),
+            Some(mut line) => {
+                line.entry.wire_bytes = self
+                    .wire
+                    .as_ref()
+                    .map(|w| w.load(Ordering::Relaxed))
+                    .filter(|wire| *wire != self.bytes);
+                line.write(Some(self.status), Some(self.bytes), error)
+                    .map_err(io::Error::other)
+            }
             None => Ok(()),
         }
     }
@@ -205,6 +232,7 @@ impl Read for LoggingReader {
             self.finish(Some(ErrorCode::ArchiveTooLarge))?;
             return Err(io::Error::other(SizeCapExceeded {
                 max_bytes: self.max_bytes,
+                api_host: self.api_host.clone(),
             }));
         }
         if n == 0 {
@@ -223,18 +251,41 @@ impl Drop for LoggingReader {
 
 /// The streaming size cap tripped.
 #[derive(Debug, thiserror::Error)]
-#[error("the response is larger than the {max_bytes}-byte download limit")]
+#[error("the response is larger than the {max_bytes}-byte limit")]
 pub(crate) struct SizeCapExceeded {
     pub(crate) max_bytes: u64,
+    /// The host, when the cap was the API response limit.
+    pub(crate) api_host: Option<String>,
 }
 
-pub(crate) fn too_large(max_bytes: u64) -> Error {
-    Error::new(
-        ErrorCode::ArchiveTooLarge,
-        format!("the response is larger than the {max_bytes}-byte download limit"),
-        Suggestion::text("raise download_max_bytes under [limits] in config.toml"),
-    )
-    .details(serde_json::json!({ "max_bytes": max_bytes }))
+/// `archive_too_large` for a response past `max_bytes`: the download limit, which
+/// config can raise, or (with `api_host`) the API response limit, which it cannot.
+pub(crate) fn too_large(max_bytes: u64, api_host: Option<&str>) -> Error {
+    let (message, fix) = match api_host {
+        None => (
+            format!("the response is larger than the {max_bytes}-byte download limit"),
+            "raise download_max_bytes under [limits] in config.toml",
+        ),
+        Some(host) => (
+            format!(
+                "the response from {host} is larger than the {} API response limit",
+                size(max_bytes)
+            ),
+            "retry later; the source sent an unexpectedly large response",
+        ),
+    };
+    Error::new(ErrorCode::ArchiveTooLarge, message, Suggestion::text(fix))
+        .details(serde_json::json!({ "max_bytes": max_bytes }))
+}
+
+/// `64 MiB` for whole mebibytes, else bytes.
+fn size(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    if bytes >= MIB && bytes.is_multiple_of(MIB) {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{bytes}-byte")
+    }
 }
 
 /// Follows redirects hop by hop through the guard.

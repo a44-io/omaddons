@@ -43,6 +43,16 @@ struct Harness {
 }
 
 fn harness(config: NetConfig, responses: Vec<Canned>) -> Harness {
+    harness_capped(config, None, responses)
+}
+
+/// [`harness`] with the API response cap at `api_max_bytes` instead of
+/// `API_RESPONSE_MAX_BYTES` (the stack is then built here, as `core_stack_with` does).
+fn harness_capped(
+    config: NetConfig,
+    api_max_bytes: Option<u64>,
+    responses: Vec<Canned>,
+) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     // The tempdir is the (existing) home; fsx never creates home itself.
     let home = dir.path().to_path_buf();
@@ -58,7 +68,17 @@ fn harness(config: NetConfig, responses: Vec<Canned>) -> Harness {
         responses: Mutex::new(responses.into()),
         seen: std::sync::Arc::clone(&seen),
     };
-    let http = core_stack_with(&config, log.clone(), Box::new(script));
+    let http = match api_max_bytes {
+        None => core_stack_with(&config, log.clone(), Box::new(script)),
+        Some(cap) => Box::new(Redirecting::new(Guarded::new(
+            Box::new(decode::Decoding::new(Box::new(script))),
+            config.allowlist(),
+            log.clone(),
+            config.offline,
+            config.download_max_bytes,
+            cap,
+        ))),
+    };
     Harness {
         _dir: dir,
         paths,
@@ -203,12 +223,13 @@ fn the_size_cap_applies_to_announced_and_streamed_bodies() {
     let h = harness(config.clone(), vec![announced]);
     let err = h
         .http
-        .send(Request::get("https://github.com/big.zip", "asset"))
+        .send(Request::get("https://github.com/big.zip", "asset").download())
         .unwrap_err();
     assert_eq!(
         (err.code, err.exit().code()),
         (ErrorCode::ArchiveTooLarge, 4)
     );
+    assert!(err.message.contains("download limit"), "{}", err.message);
     let line = h.log.read(None).unwrap().pop().unwrap();
     assert_eq!(
         (line.status, line.error.as_deref()),
@@ -218,12 +239,128 @@ fn the_size_cap_applies_to_announced_and_streamed_bodies() {
     let h = harness(config, vec![ok(&[0; 100])]);
     let response = h
         .http
-        .send(Request::get("https://github.com/big.zip", "asset"))
+        .send(Request::get("https://github.com/big.zip", "asset").download())
         .unwrap();
     let err = response.bytes().unwrap_err();
     assert_eq!(err.code, ErrorCode::ArchiveTooLarge);
     let line = h.log.read(None).unwrap().pop().unwrap();
     assert_eq!(line.error.as_deref(), Some("archive_too_large"));
+}
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+fn gzipped(body: &[u8]) -> Canned {
+    Ok((
+        200,
+        vec![("Content-Encoding".into(), "gzip".into())],
+        gzip(body),
+    ))
+}
+
+#[test]
+fn api_responses_and_downloads_each_have_their_own_cap() {
+    let config = NetConfig {
+        download_max_bytes: 1_000,
+        ..NetConfig::default()
+    };
+    // An API response past the API cap: its own wording, no config fix.
+    let h = harness_capped(config.clone(), Some(10), vec![ok(&[b'x'; 100])]);
+    let response = h
+        .http
+        .send(Request::get("https://api.github.com/x", "api"))
+        .unwrap();
+    let err = response.bytes().unwrap_err();
+    assert_eq!(err.code, ErrorCode::ArchiveTooLarge);
+    assert!(
+        err.message
+            .contains("from api.github.com is larger than the 10-byte API response limit"),
+        "{}",
+        err.message
+    );
+    assert!(
+        err.fix.display().starts_with("retry later"),
+        "{}",
+        err.fix.display()
+    );
+    assert_eq!(err.details["max_bytes"], 10);
+    // A download of the same size is under its own cap.
+    let h = harness_capped(config, Some(10), vec![ok(&[b'x'; 100])]);
+    let response = h
+        .http
+        .send(Request::get("https://github.com/x.zip", "asset").download())
+        .unwrap();
+    assert_eq!(response.bytes().unwrap().len(), 100);
+}
+
+#[test]
+fn a_gzip_bomb_stops_at_the_api_cap() {
+    let bomb = vec![0u8; 8 * 1024 * 1024];
+    let h = harness_capped(NetConfig::default(), Some(64 * 1024), vec![gzipped(&bomb)]);
+    let response = h
+        .http
+        .send(Request::get(
+            "https://api.mmoui.com/v3/game/WOW/filelist.json",
+            "api",
+        ))
+        .unwrap();
+    let err = response.bytes().unwrap_err();
+    assert_eq!(err.code, ErrorCode::ArchiveTooLarge);
+    assert!(
+        err.message.contains("API response limit"),
+        "{}",
+        err.message
+    );
+    let line = h.log.read(None).unwrap().pop().unwrap();
+    assert_eq!(line.error.as_deref(), Some("archive_too_large"));
+    // Reading stopped at the cap, not at the end of the bomb.
+    assert!(line.bytes.unwrap() <= 64 * 1024 + 64 * 1024, "{line:?}");
+}
+
+#[test]
+fn gzip_api_responses_decode_and_log_their_wire_size() {
+    let json = br#"{"UIDir":["BugSack"],"UIMD5":"683278e9d6e1cbc1514c3066d3d347b2"}"#.repeat(50);
+    let h = harness(NetConfig::default(), vec![gzipped(&json), ok(b"plain")]);
+    let url = "https://api.mmoui.com/v3/game/WOW/filelist.json";
+    let response = h.http.send(Request::get(url, "api")).unwrap();
+    assert_eq!(response.header("content-encoding"), None);
+    assert_eq!(response.bytes().unwrap(), json);
+    let plain = h.http.send(Request::get(url, "api")).unwrap();
+    assert_eq!(plain.bytes().unwrap(), b"plain");
+    let lines = h.log.read(None).unwrap();
+    assert_eq!(
+        (lines[0].bytes, lines[0].wire_bytes),
+        (Some(json.len() as u64), Some(gzip(&json).len() as u64))
+    );
+    assert_eq!((lines[1].bytes, lines[1].wire_bytes), (Some(5), None));
+    // The API requests asked for gzip.
+    let seen = h.seen.lock().unwrap();
+    assert!(seen.iter().all(|r| {
+        r.headers
+            .iter()
+            .any(|(k, v)| k == "Accept-Encoding" && v == "gzip")
+    }));
+}
+
+#[test]
+fn downloads_never_ask_for_gzip() {
+    let h = harness(NetConfig::default(), vec![ok(b"zip")]);
+    let response = h
+        .http
+        .send(Request::get("https://github.com/x.zip", "asset").download())
+        .unwrap();
+    assert_eq!(response.bytes().unwrap(), b"zip");
+    let seen = h.seen.lock().unwrap();
+    assert!(
+        seen[0]
+            .headers
+            .iter()
+            .all(|(k, _)| !k.eq_ignore_ascii_case("accept-encoding"))
+    );
 }
 
 #[test]

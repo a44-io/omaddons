@@ -38,8 +38,13 @@ pub struct NetLogEntry {
     pub path: String,
     /// The HTTP status, or a git subprocess's exit code; null when nothing came back.
     pub status: Option<u16>,
-    /// Body bytes actually read.
+    /// Body bytes actually read, decoded when the body was compressed. Traffic sums
+    /// should use `wire_bytes` when present.
     pub bytes: Option<u64>,
+    /// Compressed bytes off the wire, only when they differ from `bytes` (a gzip API
+    /// response).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_bytes: Option<u64>,
     pub duration_ms: u64,
     pub purpose: String,
     pub via: Via,
@@ -132,6 +137,7 @@ impl NetLog {
             path: entry.path,
             status: entry.exit_code.and_then(|code| u16::try_from(code).ok()),
             bytes: None,
+            wire_bytes: None,
             duration_ms: entry.duration_ms,
             purpose: entry.purpose.to_owned(),
             via: Via::Git,
@@ -230,6 +236,7 @@ mod tests {
             path: path.into(),
             status: Some(200),
             bytes: Some(12),
+            wire_bytes: None,
             duration_ms: 34,
             purpose: "release-json".into(),
             via: Via::Http,

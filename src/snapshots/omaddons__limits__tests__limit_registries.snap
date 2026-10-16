@@ -384,6 +384,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "A WoWInterface project unchanged this long is not chosen on its own for a dependency"
     },
     {
+      "name": "API_RESPONSE_MAX_BYTES",
+      "value": {
+        "bytes": 67108864
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Largest decoded API response: a decompression-bomb guard"
+    },
+    {
       "name": "DEPENDENCY_MAX_DEPTH",
       "value": {
         "count": 4

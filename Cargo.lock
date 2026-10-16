@@ -700,6 +700,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "etcetera",
+ "flate2",
  "insta",
  "jiff",
  "md-5",
