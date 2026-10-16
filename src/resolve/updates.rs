@@ -386,6 +386,15 @@ pub fn statuses(
     rows
 }
 
+/// What an update of `record` must not go below (`Update.installed_primary_interface`):
+/// the installed primary interface of a record versioned by its TOC, else `None`.
+pub fn update_floor(target: &Target, record: &AddonRecord, table: &RulesTable) -> Option<u32> {
+    match record.version_confidence {
+        VersionConfidence::Toc => installed_primary_interface(target, record, table),
+        VersionConfidence::Release => None,
+    }
+}
+
 /// The in-family interface of `record`'s installed primary folder, read from the TOC
 /// the client loads, as the planner computes it for a candidate. The module's only I/O.
 pub fn installed_primary_interface(

@@ -1,0 +1,10 @@
+---
+source: tests/update.rs
+expression: human.stdout
+---
+classic: would be updated 1 addon
+  Foo  v1 → v2
+era: nothing to update
+retail: would be updated 2 addons
+  Bar  v1 → v2
+  Foo  v1 → v2

@@ -75,6 +75,28 @@ fn list() {
 }
 
 #[test]
+fn update() {
+    let s = Scene::new();
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    let both = "## Interface: 120105, 50504\n## Version: 4\n";
+    let wa: [common::http::Asset<'_>; 1] = [(
+        "WeakAuras.zip",
+        &[("mainline", 120_105), ("mists", 50_504)],
+        vec![("WeakAuras/WeakAuras.toc", both)],
+    )];
+    let base = "https://github.com/WeakAuras/WeakAuras2";
+    common::http::gh_release_v(&s.home.http, base, "5.20.0", &wa);
+    common::http::gh_latest(&s.home.http, base, "5.20.0");
+    let c = s.json(&["update", "--refresh"], 0);
+    assert_eq!(c.envelope["data"]["summary"]["changed"], 1);
+    insta::assert_json_snapshot!("update_ok", s.stable(&c.envelope));
+    let c = s.json(&["update", "--channel", "beta"], 2);
+    insta::assert_json_snapshot!("update_channel_without_names", s.stable(&c.envelope));
+    let c = s.json(&["upgrade", "nosuch"], 3);
+    assert_eq!(c.envelope["error"]["code"], "not_managed");
+}
+
+#[test]
 fn outdated() {
     let s = Scene::new();
     s.install_foo();

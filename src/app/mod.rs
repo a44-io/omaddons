@@ -15,6 +15,7 @@ pub mod remove;
 pub mod status;
 pub mod targets;
 pub mod undo;
+pub mod update;
 pub mod world;
 
 use schemars::JsonSchema;
@@ -74,6 +75,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("history", Group::Look),
     entry("net-log", Group::Look),
     entry("install", Group::Change),
+    entry("update", Group::Change),
     entry("remove", Group::Change),
     entry("undo", Group::Change),
     entry("targets", Group::Setup),
@@ -112,6 +114,7 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         None | Some(Command::Help { .. }) => "help",
         Some(Command::Status(_)) => "status",
         Some(Command::Install(_)) => "install",
+        Some(Command::Update(_)) => "update",
         Some(Command::Remove(_)) => "remove",
         Some(Command::Undo(_)) => "undo",
         Some(Command::History(_)) => "history",
@@ -225,6 +228,18 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
                     out.log(output::LogLevel::Debug, note);
                 }
                 out.lock_released(outcome.lock_held_ms, output::Outcome::data(outcome).tx);
+            }
+            out.emit(result)
+        }
+        Some(Command::Update(args)) => {
+            let result = update::run(ctx, args);
+            if let Ok(outcome) = &result {
+                for note in &outcome.notes {
+                    out.log(output::LogLevel::Debug, note);
+                }
+                for (tx, ms) in &outcome.locks {
+                    out.lock_released(Some(*ms), Some(*tx));
+                }
             }
             out.emit(result)
         }

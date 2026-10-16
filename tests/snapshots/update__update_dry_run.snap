@@ -1,0 +1,132 @@
+---
+source: tests/update.rs
+expression: stable(&bare)
+---
+{
+  "command": "update",
+  "commands": [],
+  "data": {
+    "dry_run": true,
+    "run": null,
+    "summary": {
+      "changed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "targets": 3,
+      "unchanged": 4
+    },
+    "targets": [
+      {
+        "atomic_swap": null,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "error": null,
+            "folders": {
+              "added": [],
+              "recorded": [],
+              "removed": [],
+              "replaced": [
+                "Foo"
+              ],
+              "skipped": []
+            },
+            "from_version": "v1",
+            "name": "Foo",
+            "ref": "gh:o/foo",
+            "request": "Foo",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "updated",
+            "to_version": "v2"
+          }
+        ],
+        "kind": "update",
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "classic",
+          "key": "<key:classic>"
+        },
+        "tx": null
+      },
+      {
+        "atomic_swap": null,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [],
+        "kind": null,
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "era",
+          "key": "<key:era>"
+        },
+        "tx": null
+      },
+      {
+        "atomic_swap": null,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "error": null,
+            "folders": {
+              "added": [],
+              "recorded": [],
+              "removed": [],
+              "replaced": [
+                "Bar"
+              ],
+              "skipped": []
+            },
+            "from_version": "v1",
+            "name": "Bar",
+            "ref": "gh:o/bar",
+            "request": "Bar",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "updated",
+            "to_version": "v2"
+          },
+          {
+            "error": null,
+            "folders": {
+              "added": [],
+              "recorded": [],
+              "removed": [],
+              "replaced": [
+                "Foo"
+              ],
+              "skipped": []
+            },
+            "from_version": "v1",
+            "name": "Foo",
+            "ref": "gh:o/foo",
+            "request": "Foo",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "updated",
+            "to_version": "v2"
+          }
+        ],
+        "kind": "update",
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "retail",
+          "key": "<key:retail>"
+        },
+        "tx": null
+      }
+    ]
+  },
+  "exit_code": 0,
+  "meta": "<meta>",
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

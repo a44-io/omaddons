@@ -242,21 +242,14 @@ fn lists_updates_across_three_clients_from_one_fetch_per_ref() {
     common::netlog::assert_each_url_once(&log.entries);
     assert_no_github_rest(&log.entries);
 
-    // One install per client with updates.
+    // Several clients have updates: one bare `update`.
     let hints: Vec<&str> = envelope["commands"]
         .as_array()
         .unwrap()
         .iter()
         .map(|c| c["command"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        hints,
-        [
-            "omaddons install gh:o/bar gh:o/foo -t classic",
-            "omaddons install gh:o/bar gh:o/foo -t era",
-            "omaddons install gh:o/bar gh:o/foo -t retail",
-        ]
-    );
+    assert_eq!(hints, ["omaddons update"]);
     insta::assert_json_snapshot!("outdated_three_clients", stable(&envelope));
     // Snapshots sort keys; the wire keeps the documented order.
     for keys in [
@@ -666,7 +659,7 @@ fn one_client_with_updates_names_it() {
     assert_eq!(hints.len(), 1);
     assert_eq!(
         hints[0]["argv"],
-        json!(["omaddons", "install", "gh:o/qux", "-t", "retail"])
+        json!(["omaddons", "update", "-t", "retail"])
     );
     assert_eq!(hints[0]["action"], "update");
     // The hint works: after it, nothing is out of date.

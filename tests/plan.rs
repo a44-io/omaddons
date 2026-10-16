@@ -213,6 +213,7 @@ mod support {
     pub fn update_foo(target: &Target) -> TargetRequest {
         let update = RequestedChange::Update {
             addon: "foo".into(),
+            installed_primary_interface: None,
         };
         request(target, vec![update], TxKind::Update)
     }

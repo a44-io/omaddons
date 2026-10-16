@@ -13,7 +13,4 @@ retail (12.1.5, mainline)
   Foo  v1  → v2
   Pin  v1  pinned (latest v2)
 6 updates on 3 clients · 1 pinned · checked just now (0 requests, 5 reused)
-Install them with:
-  omaddons install gh:o/bar gh:o/foo -t classic
-  omaddons install gh:o/bar gh:o/foo -t era
-  omaddons install gh:o/bar gh:o/foo -t retail
+Run `omaddons update` to install them.

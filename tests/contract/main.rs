@@ -48,6 +48,7 @@ mod support {
     /// suite cannot invent. Matched as prefixes; keep this list small and explicit.
     pub const TEXT_FIXES: &[&str] = &[
         "omaddons targets add <path>",
+        "omaddons update <addon> --channel",
         "/reload in game",
         "restart the game client",
         "upgrade omaddons",

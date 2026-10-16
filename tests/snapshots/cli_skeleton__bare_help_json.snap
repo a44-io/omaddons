@@ -52,6 +52,14 @@ expression: envelope
         "name": "install"
       },
       {
+        "about": "Update every managed addon on every client, or the ones named (undo with one undo)",
+        "aliases": [
+          "upgrade"
+        ],
+        "group": "change",
+        "name": "update"
+      },
+      {
         "about": "Remove managed addons from one target (undoable)",
         "aliases": [],
         "group": "change",

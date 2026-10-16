@@ -129,6 +129,12 @@ pub enum Command {
     Status(crate::app::status::StatusArgs),
     /// Install or update addons in one target, verified by its own TOC rules
     Install(crate::app::install::InstallArgs),
+    /// Update every managed addon on every client, or the ones named (undo with one undo)
+    #[command(
+        visible_alias = "upgrade",
+        after_long_help = "A given version is an install, which pins it: omaddons install <addon> --version V"
+    )]
+    Update(crate::app::update::UpdateArgs),
     /// Remove managed addons from one target (undoable)
     Remove(crate::app::remove::RemoveArgs),
     /// Revert the last change (or one by id), SavedVariables included
@@ -357,6 +363,19 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
         argv.extend(path.iter().cloned());
         (Suggestion::command(argv), Vec::new())
     };
+    // `update --version V`: a version is an install (which pins), never an update.
+    // ubs:ignore — comparing a clap error kind, not a secret
+    let version_on_update = err.kind() == ErrorKind::UnknownArgument
+        && subcommand.as_deref() == Some("update")
+        && invalid(ContextKind::InvalidArg)
+            .is_some_and(|bad| bad.split('=').next() == Some("--version"));
+    if version_on_update {
+        return Error::new(
+            ErrorCode::Usage,
+            "update installs the newest release; a given version is an install, which pins it",
+            Suggestion::command(as_install(argv)),
+        );
+    }
     let (fix, alternatives) = match err.kind() {
         ErrorKind::InvalidSubcommand => invalid(ContextKind::InvalidSubcommand)
             .and_then(|bad| {
@@ -507,8 +526,22 @@ fn fix_argv_keeping(argv: &[String], keep: Option<usize>) -> Vec<String> {
     out
 }
 
+/// `argv` (without presentation flags) with its `update` (or `upgrade`) subcommand
+/// replaced by `install`.
+fn as_install(argv: &[String]) -> Vec<String> {
+    let mut argv = fix_argv(argv);
+    if let Some(slot) = argv
+        .iter_mut()
+        .skip(1)
+        .find(|a| *a == "update" || *a == "upgrade")
+    {
+        "install".clone_into(slot);
+    }
+    argv
+}
+
 /// `argv` without `flag` (and its value).
-fn without_flag(argv: &[String], flag: &str) -> Vec<String> {
+pub(crate) fn without_flag(argv: &[String], flag: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut skip = false;
     for arg in argv {

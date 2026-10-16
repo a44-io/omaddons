@@ -39,7 +39,7 @@ use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::{Fetched, Freshness, Origin, ReleaseCache};
 use crate::resolve::updates::{
     BlockedReason, Confidence, ReleaseBrief, StatusKind, StatusRow, UncheckedReason, UpdateStatus,
-    installed_primary_interface, is_static, statuses,
+    installed_primary_interface, is_static, statuses, update_floor,
 };
 use crate::sources::{SourceId, Wanted};
 use crate::state::memo::{CandidateFact, FactIndex};
@@ -234,15 +234,8 @@ impl Outcome for OutdatedOutcome {
             }
         }
         writeln!(w, "{}", self.summary_line())?;
-        match self.commands.as_slice() {
-            [] => {}
-            [only] => writeln!(w, "Run `{}` to install them.", only.command())?,
-            several => {
-                writeln!(w, "Install them with:")?;
-                for c in several {
-                    writeln!(w, "  {}", c.command())?;
-                }
-            }
+        if let Some(hint) = self.commands.first() {
+            writeln!(w, "Run `{}` to install them.", hint.command())?;
         }
         Ok(())
     }
@@ -431,7 +424,16 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
     let mut rows = evaluate(&facts);
     let mut learned: Vec<CandidateFact> = Vec::new();
     if args.verify {
-        let verified = verify(&engine, &cache, &targets, &rows);
+        // The planner refuses an older build than an adopted one, as `update` does.
+        let floor = |target_id: &str, addon: &str| {
+            let d = targets.iter().find(|d| d.target.id == target_id)?;
+            let record = records
+                .get(target_id)?
+                .addons
+                .get(&TargetRecord::addon_key(addon))?;
+            update_floor(&d.target, record, &world.table)
+        };
+        let verified = verify(&engine, &cache, &targets, &rows, &floor);
         partial |= verified.partial;
         warnings.extend(verified.warnings);
         notes.extend(verified.notes);
@@ -624,28 +626,26 @@ fn item(record: &crate::model::AddonRecord, status: UpdateStatus) -> OutdatedIte
     }
 }
 
-/// How to take the updates: one `install` per target with updates (it updates an
-/// installed addon to its newest release), until `update` exists.
+/// How to take the updates: `omaddons update`, or `omaddons update -t <id>` when only
+/// one target has updates.
 fn hints(targets: &[OutdatedTarget]) -> Vec<CommandHint> {
-    targets
+    let with_updates: Vec<&str> = targets
         .iter()
-        .filter_map(|t| {
-            let mut refs: Vec<String> = Vec::new();
-            for i in &t.items {
-                let r = i.r#ref.to_string();
-                if i.status == StatusKind::UpdateAvailable && !refs.contains(&r) {
-                    refs.push(r);
-                }
-            }
-            (!refs.is_empty()).then(|| {
-                let argv = std::iter::once("omaddons".to_owned())
-                    .chain(std::iter::once("install".to_owned()))
-                    .chain(refs)
-                    .chain(["-t".to_owned(), t.target.id.clone()]);
-                CommandHint::new("update", argv, false)
-            })
+        .filter(|t| {
+            t.items
+                .iter()
+                .any(|i| i.status == StatusKind::UpdateAvailable)
         })
-        .collect()
+        .map(|t| t.target.id.as_str())
+        .collect();
+    let argv: Vec<String> = match with_updates.as_slice() {
+        [] => return Vec::new(),
+        [only] => ["omaddons", "update", "-t", only]
+            .map(str::to_owned)
+            .to_vec(),
+        _ => ["omaddons", "update"].map(str::to_owned).to_vec(),
+    };
+    vec![CommandHint::new("update", argv, false)]
 }
 
 fn dedup(warnings: Vec<Warning>) -> Vec<Warning> {
@@ -687,6 +687,7 @@ fn verify(
     cache: &ReleaseCache<'_>,
     targets: &[&DiscoveredTarget],
     rows: &[StatusRow],
+    floor: &dyn Fn(&str, &str) -> Option<u32>,
 ) -> Verified {
     let mut by_target: BTreeMap<&str, Vec<RequestedChange>> = BTreeMap::new();
     for row in rows {
@@ -698,6 +699,7 @@ fn verify(
                 .or_default()
                 .push(RequestedChange::Update {
                     addon: row.addon.clone(),
+                    installed_primary_interface: floor(&row.target, &row.addon),
                 });
         }
     }

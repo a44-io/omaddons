@@ -9,39 +9,9 @@ expression: stable(&envelope)
       "action": "update",
       "argv": [
         "omaddons",
-        "install",
-        "gh:o/bar",
-        "gh:o/foo",
-        "-t",
-        "classic"
+        "update"
       ],
-      "command": "omaddons install gh:o/bar gh:o/foo -t classic",
-      "destructive": false
-    },
-    {
-      "action": "update",
-      "argv": [
-        "omaddons",
-        "install",
-        "gh:o/bar",
-        "gh:o/foo",
-        "-t",
-        "era"
-      ],
-      "command": "omaddons install gh:o/bar gh:o/foo -t era",
-      "destructive": false
-    },
-    {
-      "action": "update",
-      "argv": [
-        "omaddons",
-        "install",
-        "gh:o/bar",
-        "gh:o/foo",
-        "-t",
-        "retail"
-      ],
-      "command": "omaddons install gh:o/bar gh:o/foo -t retail",
+      "command": "omaddons update",
       "destructive": false
     }
   ],

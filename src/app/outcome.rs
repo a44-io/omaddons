@@ -357,7 +357,8 @@ impl TargetsData {
         self.recount();
     }
 
-    fn recount(&mut self) {
+    /// Recounts `summary` after a command changed items in place.
+    pub fn recount(&mut self) {
         let mut summary = Summary {
             targets: self.targets.len(),
             ..Summary::default()

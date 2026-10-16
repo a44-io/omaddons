@@ -112,6 +112,11 @@ pub enum RequestedChange {
     /// and reason: a pinned addon stays where it is (`addon_pinned`).
     Update {
         addon: String,
+        /// For a record versioned by its TOC (an identified adoption): the installed
+        /// primary folder's in-family interface. A candidate below it, or out of date on
+        /// this client, is refused (M2-D42), so an adopted newer build is never replaced
+        /// by an older one.
+        installed_primary_interface: Option<u32>,
     },
     /// A change to the record alone (an adoption names its addon in its spec).
     Edit {
@@ -146,6 +151,8 @@ pub struct InstallIntent {
     /// own installs. Empty for user requests.
     pub required_by_add: BTreeSet<String>,
     pub required_by_remove: BTreeSet<String>,
+    /// The floor a candidate must reach (`Update.installed_primary_interface`).
+    pub floor_interface: Option<u32>,
 }
 
 impl InstallIntent {
@@ -167,6 +174,7 @@ impl InstallIntent {
             reinstall,
             required_by_add: BTreeSet::new(),
             required_by_remove: BTreeSet::new(),
+            floor_interface: None,
         }
     }
 
@@ -899,7 +907,10 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
             addon: addon.clone(),
             edit: edit.clone(),
         },
-        RequestedChange::Update { addon } => {
+        RequestedChange::Update {
+            addon,
+            installed_primary_interface,
+        } => {
             match record.addons.get(&TargetRecord::addon_key(addon)) {
                 // No version: a pinned addon is the pinned no-op.
                 Some(installed) => Want::Install {
@@ -910,14 +921,17 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                         version: None,
                     },
                     file: None,
-                    intent: InstallIntent::requested(
-                        installed.channel,
-                        false,
-                        None,
-                        PinIntent::Keep,
-                        installed.reason,
-                        false,
-                    ),
+                    intent: InstallIntent {
+                        floor_interface: *installed_primary_interface,
+                        ..InstallIntent::requested(
+                            installed.channel,
+                            false,
+                            None,
+                            PinIntent::Keep,
+                            installed.reason,
+                            false,
+                        )
+                    },
                 },
                 None => Want::Failed {
                     r#ref: None,
@@ -1347,7 +1361,7 @@ impl TargetPlanner<'_> {
         let mut winner = None;
         let mut unreadable: Option<Error> = None;
         for candidate in candidates {
-            match self.try_candidate(&wanted.r#ref, &candidate) {
+            match self.try_candidate(&wanted.r#ref, &candidate, intent.floor_interface) {
                 Ok(Ok(won)) => {
                     winner = Some(won);
                     break;
@@ -1846,12 +1860,14 @@ impl TargetPlanner<'_> {
     }
 
     /// Downloads, inspects and verifies one candidate of `r#ref`: `Ok(Err(reason))` when
-    /// it does not load on this client, `Err` when it cannot even be read (download,
-    /// archive). A winner keeps only the folders this client loads (see [`accepts`]).
+    /// it does not load on this client, or (with a `floor`) is older than the installed
+    /// build; `Err` when it cannot even be read (download, archive). A winner keeps only
+    /// the folders this client loads (see [`accepts`]).
     fn try_candidate(
         &self,
         r#ref: &Ref,
         candidate: &Candidate,
+        floor: Option<u32>,
     ) -> Result<std::result::Result<Winner, String>> {
         let ctx = self.ctx;
         let mut downloaded = None;
@@ -1910,6 +1926,22 @@ impl TargetPlanner<'_> {
                 })
                 .collect();
             return Ok(Err(format!("wrong_flavor: {}", why.join("; "))));
+        }
+        // M2-D42: an adopted build is never replaced by an older one. The fact above is
+        // kept, so the next check shows the candidate blocked.
+        if let Some(floor) = floor {
+            let verdict = verdicts.iter().find(|v| Some(&v.folder) == primary);
+            let out_of_date = verdict.is_some_and(|v| {
+                matches!(v.report.verdict, Verdict::Compatible { out_of_date: true })
+            });
+            let below = verdict.and_then(|v| v.interface).filter(|i| *i < floor);
+            if out_of_date || below.is_some() {
+                let why = below.map_or_else(
+                    || "it is out of date on this client".to_owned(),
+                    |i| format!("its interface {i} is below the installed {floor}"),
+                );
+                return Ok(Err(format!("older_than_installed: {why}")));
+            }
         }
         let mut inspected = inspected;
         inspected

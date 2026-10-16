@@ -9,12 +9,11 @@ expression: s.stable(&c.envelope)
       "action": "update",
       "argv": [
         "omaddons",
-        "install",
-        "gh:WeakAuras/WeakAuras2",
+        "update",
         "-t",
         "retail"
       ],
-      "command": "omaddons install gh:WeakAuras/WeakAuras2 -t retail",
+      "command": "omaddons update -t retail",
       "destructive": false
     }
   ],
@@ -78,11 +77,10 @@ expression: s.stable(&c.envelope)
     "alternatives": [],
     "code": "check_failed",
     "details": {},
-    "fix": "omaddons install gh:WeakAuras/WeakAuras2 -t retail",
+    "fix": "omaddons update -t retail",
     "fix_argv": [
       "omaddons",
-      "install",
-      "gh:WeakAuras/WeakAuras2",
+      "update",
       "-t",
       "retail"
     ],
