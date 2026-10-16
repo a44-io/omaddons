@@ -45,7 +45,7 @@ use crate::model::{
 };
 use crate::net::Http;
 use crate::output::{Phase, ProgressSink};
-use crate::resolve::cache::{Origin, ReleaseCache};
+use crate::resolve::cache::ReleaseCache;
 use crate::resolve::catalog::Catalog;
 use crate::resolve::deps::{
     AmbiguityReason, BridgeDependency, DepLookups, DepResolution, DepView, MissingReason,
@@ -971,17 +971,8 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             _ => None,
         })
         .collect();
+    // The cache reports each ref it asks of a source as it answers (`fetch` progress).
     let fetched = ctx.cache.get(&to_fetch);
-    let from_sources: Vec<&Wanted> = fetched
-        .iter()
-        .filter(|(_, f)| f.origin == Origin::Fetched)
-        .map(|(w, _)| w)
-        .collect();
-    for w in &from_sources {
-        let total = from_sources.len() as u64;
-        ctx.progress
-            .event(Phase::Fetch, total, &w.r#ref.to_string());
-    }
     failpoint::hit("engine.plan.fetched").map_err(|e| fail(ctx, &e))?;
     // Each install wish is verified, and downloaded, at most once per target.
     let candidate_items = prepared
@@ -1630,19 +1621,9 @@ impl TargetPlanner<'_> {
                 version: lock(&d.r#ref),
             })
             .collect();
+        // The round's fetches join the run's progress as the cache asks them (it grows
+        // the phase); its downloads and verifications here.
         let answers = ctx.cache.get(&wants);
-        // The round's fetches, downloads and verifications join the run's progress.
-        let fetched: Vec<&Wanted> = answers
-            .iter()
-            .filter(|(_, f)| f.origin == Origin::Fetched)
-            .map(|(w, _)| w)
-            .collect();
-        let total = fetched.len() as u64;
-        ctx.progress.grow(Phase::Fetch, total);
-        for w in &fetched {
-            ctx.progress
-                .event(Phase::Fetch, total, &w.r#ref.to_string());
-        }
         ctx.progress.grow(Phase::Download, now.len() as u64);
         ctx.progress.grow(Phase::Verify, now.len() as u64);
         for (dep, w) in now.into_iter().zip(wants) {

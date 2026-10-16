@@ -1412,12 +1412,13 @@ fn a_long_install_reports_progress_only_when_asked() {
             assert!(items.insert(item.clone()), "{phase}: {item} twice");
         }
     }
-    let fetched: Vec<&str> = events
+    // Reported as each ref answers: completion order, so compared as a set.
+    let fetched: std::collections::BTreeSet<&str> = events
         .iter()
         .filter(|(p, ..)| p == "fetch")
         .map(|(_, item, ..)| item.as_str())
         .collect();
-    assert_eq!(fetched, ["gh:o/bar", "gh:o/foo"]);
+    assert_eq!(fetched, ["gh:o/bar", "gh:o/foo"].into());
 
     // Not asked for: --json alone, or --quiet even with --progress json.
     let next = home.run(&["remove", "Foo", "Bar", "-t", "retail"]);

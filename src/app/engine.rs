@@ -112,6 +112,7 @@ impl Engine {
     /// command so that its engine runs fetch each ref once.
     pub fn cache(&self, freshness: Freshness) -> ReleaseCache<'_> {
         ReleaseCache::new(&self.paths, self.http.as_ref(), &self.registry, freshness)
+            .with_progress(self.progress.clone())
     }
 
     /// The sources that are on.

@@ -25,9 +25,9 @@ use crate::engine::plan::{PinIntent, RequestedChange, addon_pinned};
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{AddonRecord, Channel, Ref, RunId, TxId, TxKind};
-use crate::output::{Outcome, Phase, Style};
+use crate::output::{Outcome, Style};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
-use crate::resolve::cache::{Freshness, Origin};
+use crate::resolve::cache::Freshness;
 use crate::resolve::catalog::Catalog;
 use crate::resolve::updates::{
     UncheckedReason, UpdateStatus, installed_primary_interface, is_static, statuses, update_floor,
@@ -167,17 +167,8 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
             wanted.push(w);
         }
     }
+    // The cache reports each ref it asks of a source as it answers.
     let answers = cache.get(&wanted);
-    let fetched: Vec<&Wanted> = answers
-        .iter()
-        .filter(|(_, f)| f.origin == Origin::Fetched)
-        .map(|(w, _)| w)
-        .collect();
-    for w in &fetched {
-        let total = fetched.len() as u64;
-        ctx.progress
-            .event(Phase::Fetch, total, &w.r#ref.to_string());
-    }
     // No stale fallback: a fetch that failed (and was not a remembered failure) fails
     // its items.
     let mut unanswered: BTreeMap<(Ref, Channel), Error> = BTreeMap::new();

@@ -225,6 +225,22 @@ pub trait Source: Send + Sync {
         )))
     }
 
+    /// [`Source::fetch`], calling `answered` as each wish is answered (fetch progress).
+    /// By default every wish is reported once the batch is back; a source that answers
+    /// wishes one at a time reports each as it comes.
+    fn fetch_reporting(
+        &self,
+        wanted: &[Wanted],
+        http: &dyn Http,
+        answered: &(dyn Fn(&Wanted) + Sync),
+    ) -> Vec<Result<ReleaseSet>> {
+        let sets = self.fetch(wanted, http);
+        for w in wanted {
+            answered(w);
+        }
+        sets
+    }
+
     /// Release notes for the releases of `r` newer than `since` (an installed release's
     /// identity; exclusive), newest first, at most `limit`; `latest` is the newest
     /// release, for a source that serves only its notes. `None` when the source has
@@ -250,6 +266,15 @@ impl<S: Source> Source for std::sync::Arc<S> {
 
     fn fetch(&self, wanted: &[Wanted], http: &dyn Http) -> Vec<Result<ReleaseSet>> {
         S::fetch(self, wanted, http)
+    }
+
+    fn fetch_reporting(
+        &self,
+        wanted: &[Wanted],
+        http: &dyn Http,
+        answered: &(dyn Fn(&Wanted) + Sync),
+    ) -> Vec<Result<ReleaseSet>> {
+        S::fetch_reporting(self, wanted, http, answered)
     }
 
     fn probe(&self, wanted: &Wanted, http: &dyn Http) -> Option<Result<String>> {
@@ -426,6 +451,17 @@ pub fn fetch_once(
     registry: &SourceRegistry,
     http: &dyn Http,
 ) -> BTreeMap<Wanted, Result<ReleaseSet>> {
+    fetch_once_reporting(wanted, registry, http, &|_| {})
+}
+
+/// [`fetch_once`], calling `answered` as each wish a source handles is answered (a
+/// disabled source's wishes are not reported: nothing was asked).
+pub fn fetch_once_reporting(
+    wanted: impl IntoIterator<Item = Wanted>,
+    registry: &SourceRegistry,
+    http: &dyn Http,
+    answered: &(dyn Fn(&Wanted) + Sync),
+) -> BTreeMap<Wanted, Result<ReleaseSet>> {
     let mut groups: BTreeMap<SourceId, Vec<Wanted>> = BTreeMap::new();
     for w in wanted {
         let group = groups.entry(SourceId::of(&w.r#ref)).or_default();
@@ -447,7 +483,7 @@ pub fn fetch_once(
         }
     }
     let fetched = run_bounded(work, MAX_CONCURRENT_REQUESTS, |(source, group)| {
-        let sets = source.fetch(&group, http);
+        let sets = source.fetch_reporting(&group, http, answered);
         (source.id(), group, sets)
     });
     for (id, group, sets) in fetched {
@@ -533,6 +569,27 @@ mod tests {
 
     fn w(s: &str) -> Wanted {
         Wanted::stable(r(s))
+    }
+
+    #[test]
+    fn each_answered_wish_is_reported_once_and_disabled_sources_never() {
+        let mut registry = SourceRegistry::new();
+        registry.register(Box::new(Counting {
+            id: SourceId::Github,
+            calls: Arc::new(Mutex::new(Vec::new())),
+            barrier: None,
+            failing: vec![r("gh:a/gone")],
+        }));
+        let reported = Mutex::new(Vec::new());
+        let wishes = ["gh:a/one", "gh:a/two", "gh:a/gone", "cf:1"].map(w);
+        let results = fetch_once_reporting(wishes, &registry, &NoNetwork::default(), &|w| {
+            reported.lock().unwrap().push(w.r#ref.to_string());
+        });
+        assert_eq!(results.len(), 4);
+        let mut reported = reported.into_inner().unwrap();
+        reported.sort();
+        // Failures are answers too; CurseForge (not registered) is asked nothing.
+        assert_eq!(reported, ["gh:a/gone", "gh:a/one", "gh:a/two"]);
     }
 
     #[test]

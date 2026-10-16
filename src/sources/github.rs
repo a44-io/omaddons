@@ -75,8 +75,20 @@ impl Source for GithubSource {
     }
 
     fn fetch(&self, wanted: &[Wanted], http: &dyn Http) -> Vec<Result<ReleaseSet>> {
+        self.fetch_reporting(wanted, http, &|_| {})
+    }
+
+    /// Each repository is fetched on its own, so each is reported as it answers.
+    fn fetch_reporting(
+        &self,
+        wanted: &[Wanted],
+        http: &dyn Http,
+        answered: &(dyn Fn(&Wanted) + Sync),
+    ) -> Vec<Result<ReleaseSet>> {
         run_bounded(wanted.to_vec(), MAX_CONCURRENT_REQUESTS, |w| {
-            self.fetch_one(&w, http)
+            let set = self.fetch_one(&w, http);
+            answered(&w);
+            set
         })
     }
 

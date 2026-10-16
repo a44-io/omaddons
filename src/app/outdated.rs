@@ -414,16 +414,13 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
             }
         }
     }
+    // The cache reports each ref it asks of a source as it answers.
     let answers = cache.get(&wanted);
-    let mut fetched_refs: BTreeSet<String> = answers
+    let fetched_refs: BTreeSet<String> = answers
         .iter()
         .filter(|(_, f)| f.origin == Origin::Fetched)
         .map(|(w, _)| w.r#ref.to_string())
         .collect();
-    // With `--changelog`, a ref's fetch includes its changelog: reported once both are in.
-    if !args.changelog {
-        report_fetches(ctx, &fetched_refs);
-    }
     let requests = count_requests(&answers);
 
     // A failed fetch: a remembered failure speaks for itself; a remembered release is
@@ -531,8 +528,10 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
     }
     if args.changelog {
         let asked = attach_changelogs(&engine, &records, &sets, &mut listed, &mut notes);
-        fetched_refs.extend(asked);
-        report_fetches(ctx, &fetched_refs);
+        // A ref whose metadata came from the memo but whose changelog was asked is a
+        // fetch too; a ref fetched now was reported already.
+        let more: BTreeSet<String> = asked.difference(&fetched_refs).cloned().collect();
+        report_fetches(ctx, &more);
     }
 
     let mut out_targets = Vec::new();
@@ -688,8 +687,9 @@ fn attach_changelogs(
     asked
 }
 
-/// One `fetch` progress event per ref fetched from its source now.
+/// One more `fetch` progress event per ref in `refs`, the phase grown to count them.
 fn report_fetches(ctx: &Context, refs: &BTreeSet<String>) {
+    ctx.progress.grow(Phase::Fetch, refs.len() as u64);
     for r in refs {
         ctx.progress.event(Phase::Fetch, refs.len() as u64, r);
     }

@@ -19,8 +19,9 @@ use crate::error::{Result, Suggestion, Warning, WarningCode};
 use crate::limits::RELEASE_MEMO_MAX_ENTRIES;
 use crate::model::{Channel, Ref, ReleaseSet};
 use crate::net::{Http, run_bounded};
+use crate::output::{Phase, ProgressSink};
 use crate::politeness::{MAX_CONCURRENT_REQUESTS, SOURCE_RECHECK_MIN_INTERVAL};
-use crate::sources::{SourceId, SourceRegistry, Wanted, fetch_once};
+use crate::sources::{SourceId, SourceRegistry, Wanted, fetch_once_reporting};
 use crate::state::memo::{self, CandidateFact, FactIndex, MemoEntry, ReleaseMemo, TukuiList};
 use crate::state::paths::Paths;
 
@@ -118,6 +119,8 @@ pub struct ReleaseCache<'a> {
     /// The oldest remembered answer used whatever its age.
     stale: Mutex<Option<Timestamp>>,
     notes: Vec<String>,
+    /// Where each ref asked of a source is reported as it is answered (`fetch`).
+    progress: ProgressSink,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -146,6 +149,7 @@ impl<'a> ReleaseCache<'a> {
             learned: Mutex::new(ReleaseMemo::default()),
             stale: Mutex::new(None),
             notes: note.into_iter().collect(),
+            progress: ProgressSink::none(),
         }
     }
 
@@ -164,7 +168,15 @@ impl<'a> ReleaseCache<'a> {
             learned: Mutex::new(ReleaseMemo::default()),
             stale: Mutex::new(None),
             notes: Vec::new(),
+            progress: ProgressSink::none(),
         }
+    }
+
+    /// Reports each ref asked of a source to `progress` as it is answered.
+    #[must_use]
+    pub fn with_progress(mut self, progress: ProgressSink) -> Self {
+        self.progress = progress;
+        self
     }
 
     /// Decides freshness as of `now` instead of the construction time.
@@ -244,7 +256,18 @@ impl<'a> ReleaseCache<'a> {
         to_fetch.extend(self.probe(to_probe, &mut answers));
         if !to_fetch.is_empty() {
             let fetched_at = Timestamp::now();
-            let results = fetch_once(to_fetch, self.registry, self.http);
+            // Progress as each ref answers: the phase grows by what goes to a source (a
+            // disabled one is asked nothing).
+            let asked = to_fetch
+                .iter()
+                .filter(|w| self.registry.get(SourceId::of(&w.r#ref)).is_some())
+                .count() as u64;
+            self.progress.grow(Phase::Fetch, asked);
+            let report = |w: &Wanted| {
+                self.progress
+                    .event(Phase::Fetch, asked, &w.r#ref.to_string());
+            };
+            let results = fetch_once_reporting(to_fetch, self.registry, self.http, &report);
             let mut learned = lock(&self.learned);
             for (w, set) in results {
                 if self.memoized(&w)

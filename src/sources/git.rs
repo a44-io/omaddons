@@ -24,7 +24,24 @@ impl Source for GitSource {
     }
 
     fn fetch(&self, wanted: &[Wanted], http: &dyn Http) -> Vec<Result<ReleaseSet>> {
-        wanted.iter().map(|w| self.fetch_one(w, http)).collect()
+        self.fetch_reporting(wanted, http, &|_| {})
+    }
+
+    /// One repository at a time, each reported as it answers.
+    fn fetch_reporting(
+        &self,
+        wanted: &[Wanted],
+        http: &dyn Http,
+        answered: &(dyn Fn(&Wanted) + Sync),
+    ) -> Vec<Result<ReleaseSet>> {
+        wanted
+            .iter()
+            .map(|w| {
+                let set = self.fetch_one(w, http);
+                answered(w);
+                set
+            })
+            .collect()
     }
 
     /// Commit titles from GitHub's commits feed; nothing for other hosts.
