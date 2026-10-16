@@ -854,7 +854,7 @@ omaddons undo 01M51F4QY5KB --saved-variables restore   # finish a deferred resto
 
 When one transaction of a run cannot be undone (`undo_conflict`, say), the others still are. The result is then `partial`, and `transactions[]` in the JSON data holds one result per transaction. The fields before it describe the first transaction undone, as they always did. When every transaction fails, `undo` fails with the first error.
 
-Undoing the newest change never conflicts with a later transaction. Undoing an older one is refused with `undo_conflict` if a later transaction touched the same folders, and the fix names the newer one to undo first. `undo_conflict` also covers a transaction already undone, and a folder it removed that was put back by hand.
+Undoing the newest change never conflicts with a later transaction. Undoing an older one is refused with `undo_conflict` if a later transaction touched the same folders, and the fix names the newer one to undo first. A later transaction that was itself undone no longer counts, so undoing your own transactions newest first, by id, always works. `undo_conflict` also covers a transaction already undone, and a folder it removed that was put back by hand.
 
 ### `history`
 

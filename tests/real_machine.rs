@@ -17,8 +17,9 @@ use std::path::PathBuf;
 use common::trees::tree_hash;
 use serde_json::Value;
 use support::{
-    addons_of, blizzard_hashes, declares, enabled, entries, flavors_of, hashes, install_then_undo,
-    note, omaddons, skip_if_running, target, target_where,
+    addons_of, blizzard_hashes, clients, declares, enabled, entries, flavors_of, forever_guard,
+    hashes, install_then_undo, net_log_lines, note, omaddons, recent_tags, skip_if_running,
+    snapshot_all, target, target_where, tx_of, undo_all,
 };
 
 /// The live Classic clients: family, product, interface, version prefix.
@@ -177,6 +178,121 @@ mod support {
             .collect()
     }
 
+    /// Every registered client: (id, key, `Interface/AddOns`, `WTF`), from `targets`.
+    pub fn clients() -> Vec<(String, String, PathBuf, PathBuf)> {
+        let (code, targets) = omaddons(&["targets"]);
+        assert_eq!(code, 0, "{targets:#}");
+        targets["data"]["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| {
+                let dir = PathBuf::from(t["client_dir"].as_str()?);
+                Some((
+                    t["id"].as_str()?.to_owned(),
+                    t["key"].as_str().unwrap_or_default().to_owned(),
+                    dir.join("Interface/AddOns"),
+                    dir.join("WTF"),
+                ))
+            })
+            .collect()
+    }
+
+    /// Every client's `Interface/AddOns` and `WTF/` tree hash, by id (empty: absent).
+    /// `WTF/` is hashed as a tree and never listed: its paths name accounts.
+    pub fn snapshot_all() -> BTreeMap<String, (String, String)> {
+        clients()
+            .into_iter()
+            .map(|(id, _, addons, wtf)| {
+                let hashed = hashes(&[addons, wtf]);
+                (id, (hashed[0].clone(), hashed[1].clone()))
+            })
+            .collect()
+    }
+
+    /// The Forever stress-test set's guard: `forever`'s record generation, its AddOns
+    /// tree hash, and its managed addons and folders (5 and 12 while the set stays).
+    pub fn forever_guard() -> Value {
+        let Some((_, key, addons, _)) = clients().into_iter().find(|(id, ..)| id == "forever")
+        else {
+            return Value::Null;
+        };
+        let state = std::env::var_os("XDG_STATE_HOME").map_or_else(
+            || PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state"),
+            PathBuf::from,
+        );
+        let record: Value = fs::read(state.join(format!("omaddons/targets/{key}.json")))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or(Value::Null);
+        let (code, list) = omaddons(&["list", "-t", "forever"]);
+        assert_eq!(code, 0, "{list:#}");
+        let managed = list["data"]["targets"][0]["addons"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let folders: u64 = managed.iter().filter_map(|a| a["folders"].as_u64()).sum();
+        serde_json::json!({
+            "generation": record["generation"],
+            "addons_hash": hashes(&[addons])[0],
+            "addons": managed.len(),
+            "folders": folders,
+        })
+    }
+
+    /// The real state's `net.log` line count.
+    pub fn net_log_lines() -> usize {
+        let state = std::env::var_os("XDG_STATE_HOME").map_or_else(
+            || PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state"),
+            PathBuf::from,
+        );
+        fs::read_to_string(state.join("omaddons/net.log"))
+            .map(|t| t.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// Undoes `txs` by id, newest first, each of which must exit 0. On a failure it says
+    /// which transactions are still applied and how to undo them, and fails.
+    pub fn undo_all(txs: &[String]) {
+        for (i, tx) in txs.iter().enumerate().rev() {
+            let (code, undone) = omaddons(&["undo", tx]);
+            note(&format!("undo {tx}"), &undone);
+            let left: Vec<String> = txs[..=i]
+                .iter()
+                .rev()
+                .map(|t| format!("omaddons undo {t}"))
+                .collect();
+            assert_eq!(
+                code, 0,
+                "undo {tx} failed; still applied, undo them in this order: {left:#?}"
+            );
+        }
+    }
+
+    /// The transaction an envelope committed: `data.tx`, else its only target's.
+    pub fn tx_of(envelope: &Value) -> Option<String> {
+        envelope["data"]["tx"]
+            .as_str()
+            .or_else(|| envelope["data"]["targets"][0]["tx"].as_str())
+            .map(str::to_owned)
+    }
+
+    /// Recent stable tags of `owner/repo`, newest first, from its `releases.atom` (an
+    /// isolated environment: nothing of it touches the real state).
+    pub fn recent_tags(owner: &str, repo: &str) -> Vec<String> {
+        use omaddons::net::{NetConfig, NetLog, stack};
+        use omaddons::state::paths::Paths;
+        let env = super::common::env::TestEnv::new();
+        let paths = Paths::with_roots(env.home(), env.config(), env.state(), env.cache());
+        let http = stack(&NetConfig::default(), NetLog::new(&paths).unwrap(), &paths);
+        omaddons::sources::github::GithubSource::recent_tags(owner, repo, http.as_ref())
+            .map(|t| t.tags.into_iter().map(|t| t.tag).collect::<Vec<String>>())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| !t.contains('-') && !t.contains('/'))
+            .collect()
+    }
+
     /// Installs `refs` into `id` and undoes the transaction at once, so no failed check
     /// leaves the machine changed; then checks every item landed (those in `may_refuse`
     /// may instead fail with `no_compatible_release`, never another way).
@@ -197,10 +313,14 @@ mod support {
         assert_eq!(code, 0, "{installed:#}");
         assert!(!tx.is_empty(), "{installed:#}");
         assert!(undo.as_ref().is_some_and(|(c, _)| *c == 0), "{undo:#?}");
-        let items = installed["data"]["items"]
+        // One item per ref; dependencies installed with them are items of their own.
+        let items: Vec<Value> = installed["data"]["items"]
             .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|i| refs.iter().any(|r| i["request"] == *r))
             .cloned()
-            .unwrap_or_default();
+            .collect();
         assert_eq!(items.len(), refs.len(), "{installed:#}");
         for item in &items {
             let refused = item["status"] == "failed"
@@ -618,4 +738,190 @@ fn legacy_installs_335_from_git_and_from_a_release() {
     install_then_undo(&id, &["gh:fondlez/GroupBulletinBoard"], &[]);
     assert_eq!(blizzard_hashes(&addons), blizzard, "Blizzard_* untouched");
     assert_eq!(tree_hash(&addons), before, "wotlk AddOns as before");
+}
+
+// M2 (H5). Rules: read-only on every client (forever included); mutations only with an
+// explicit `-t` on retail or a Classic client, never forever; no bare `update`, no
+// non-dry-run `sync`, no `adopt --apply`, no `pin`/`unpin` without `-t`; every
+// transaction undone by id, newest first, before anything is asserted; every client's
+// AddOns and WTF/ hash as before, and the Forever stress-test set stays untouched.
+
+/// `outdated`, `adopt --no-verify` (a report), `status` and `export` on every client.
+#[test]
+#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
+fn m2_read_only_sweep_on_every_client() {
+    if !enabled(true) {
+        return;
+    }
+    let (guard, snapshot) = (forever_guard(), snapshot_all());
+    note("forever guard", &guard);
+    for (id, ..) in clients() {
+        let (code, outdated) = omaddons(&["outdated", "-t", &id]);
+        assert_eq!(code, 0, "outdated -t {id}: {outdated:#}");
+        if id == "forever" {
+            note(
+                "forever: outdated items",
+                &outdated["data"]["targets"][0]["items"],
+            );
+        }
+        let (code, adopt) = omaddons(&["adopt", "--no-verify", "-t", &id]);
+        assert_eq!(code, 0, "adopt -t {id}: {adopt:#}");
+        let groups: Vec<Value> = adopt["data"]["targets"][0]["groups"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|g| serde_json::json!({"name": g["name"], "tier": g["tier"]}))
+            .collect();
+        note(&format!("{id}: adopt groups"), &Value::from(groups));
+    }
+    let (code, status) = omaddons(&["status"]);
+    assert_eq!(code, 0, "{status:#}");
+    let drift: Vec<Value> = status["data"]["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| serde_json::json!({"id": t["id"], "drift": t["drift"]}))
+        .collect();
+    note("drift per target", &Value::from(drift));
+    let (code, export) = omaddons(&["export"]);
+    assert_eq!(code, 0, "{export:#}");
+    assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
+    assert_eq!(forever_guard(), guard, "the Forever set untouched");
+}
+
+/// On era: Dominos (not in the Forever set) installed pinned at an older tag, unpinned,
+/// updated, and the three undone.
+#[test]
+#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
+fn m2_pin_unpin_update_on_era() {
+    if !enabled(true) {
+        return;
+    }
+    let (_, status) = omaddons(&["status"]);
+    if skip_if_running(&target_where(&status, "id", "era")) {
+        return;
+    }
+    let (guard, snapshot) = (forever_guard(), snapshot_all());
+    let tags = recent_tags("tullamods", "Dominos");
+    note("Dominos tags", &serde_json::json!(tags));
+    let mut txs: Vec<String> = Vec::new();
+    let mut steps: Vec<Value> = Vec::new();
+    // An older tag that loads on era, pinned.
+    let mut pinned: Option<String> = None;
+    for tag in tags.iter().skip(1).take(3) {
+        let (code, installed) = omaddons(&["install", "dominos", "--version", tag, "-t", "era"]);
+        note(
+            &format!("install dominos --version {tag} -t era"),
+            &installed,
+        );
+        txs.extend(tx_of(&installed));
+        if code == 0 && installed["data"]["items"][0]["status"] == "installed" {
+            steps.push(installed["data"]["items"][0].clone());
+            pinned = Some(tag.clone());
+            break;
+        }
+    }
+    if pinned.is_some() {
+        let (_, unpinned) = omaddons(&["unpin", "Dominos", "-t", "era"]);
+        note("unpin Dominos -t era", &unpinned);
+        txs.extend(tx_of(&unpinned));
+        steps.push(unpinned["data"]["targets"][0]["items"][0].clone());
+        let (_, updated) = omaddons(&["update", "Dominos", "-t", "era"]);
+        note("update Dominos -t era", &updated);
+        txs.extend(tx_of(&updated));
+        steps.push(updated["data"]["targets"][0]["items"][0].clone());
+    }
+    undo_all(&txs);
+    assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
+    assert_eq!(forever_guard(), guard, "the Forever set untouched");
+    assert!(
+        pinned.is_some(),
+        "no older Dominos tag installs on era: {tags:?}"
+    );
+    let statuses: Vec<&Value> = steps.iter().map(|s| &s["status"]).collect();
+    assert_eq!(statuses, ["installed", "unpinned", "updated"], "{steps:#?}");
+    assert_eq!(txs.len(), 3, "three transactions, three undos");
+}
+
+/// On retail: LittleWigs and its dependency BigWigs in one transaction, one undo.
+#[test]
+#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
+fn m2_dependency_install_on_retail() {
+    if !enabled(true) {
+        return;
+    }
+    let (_, status) = omaddons(&["status"]);
+    if skip_if_running(&target_where(&status, "id", "retail")) {
+        return;
+    }
+    let (guard, snapshot) = (forever_guard(), snapshot_all());
+    let by_hand = addons_of("retail").join("BigWigs").exists();
+    let (code, installed) = omaddons(&["install", "littlewigs", "-t", "retail"]);
+    note("install littlewigs -t retail", &installed);
+    let txs: Vec<String> = tx_of(&installed).into_iter().collect();
+    undo_all(&txs);
+    assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
+    assert_eq!(forever_guard(), guard, "the Forever set untouched");
+    assert_eq!(code, 0, "{installed:#}");
+    assert_eq!(txs.len(), 1, "one transaction");
+    let items = installed["data"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if by_hand {
+        // Satisfied by the folder on disk: nothing installed for it, a hint to adopt.
+        assert_eq!(items.len(), 1, "{installed:#}");
+        note("BigWigs present by hand", &installed["commands"]);
+    } else {
+        let shown: Vec<(&Value, &Value, &Value, &Value)> = items
+            .iter()
+            .map(|i| (&i["request"], &i["status"], &i["reason"], &i["required_by"]))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    &Value::from("littlewigs"),
+                    &Value::from("installed"),
+                    &Value::from("explicit"),
+                    &serde_json::json!([])
+                ),
+                (
+                    &Value::from("BigWigs"),
+                    &Value::from("installed"),
+                    &Value::from("dependency"),
+                    &serde_json::json!(["LittleWigs"])
+                )
+            ],
+            "{installed:#}"
+        );
+    }
+}
+
+/// `sync --dry-run` of a fresh export plans no change on any client and asks nothing.
+#[test]
+#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
+fn m2_export_then_sync_dry_run_changes_nothing() {
+    if !enabled(true) {
+        return;
+    }
+    let (guard, snapshot) = (forever_guard(), snapshot_all());
+    let (code, export) = omaddons(&["export"]);
+    assert_eq!(code, 0, "{export:#}");
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("addons.toml");
+    fs::write(
+        &file,
+        export["data"]["content"].as_str().unwrap_or_default(),
+    )
+    .unwrap();
+    let requests = net_log_lines();
+    let path = file.display().to_string();
+    let (code, synced) = omaddons(&["sync", &path, "--dry-run"]);
+    note("sync <export> --dry-run", &synced["data"]["summary"]);
+    assert_eq!(code, 0, "{synced:#}");
+    assert_eq!(synced["data"]["summary"]["changed"], 0, "{synced:#}");
+    assert_eq!(net_log_lines(), requests, "sync asked nothing");
+    assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
+    assert_eq!(forever_guard(), guard, "the Forever set untouched");
 }

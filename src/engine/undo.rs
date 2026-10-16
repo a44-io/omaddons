@@ -528,7 +528,8 @@ fn select(entries: &[HistoryEntry], selector: UndoSelector) -> Result<usize> {
 /// `undo_conflict` when a transaction after `entries[at]` (or after the deferred undo
 /// `sv_only`, for a SavedVariables follow-up) touched one of its folders on its target,
 /// or already undid it. Ops carrying an in-place `required_by` edit count on neither
-/// side: they are undone in place (M2-D35).
+/// side: they are undone in place (M2-D35). A later transaction that a later undo
+/// reverted cancels out with that undo, and neither counts (see [`cancelled_after`]).
 fn check_conflicts(entries: &[HistoryEntry], at: usize, sv_only: Option<usize>) -> Result<()> {
     let reverted = &entries[at];
     let keys: BTreeSet<&str> = reverted
@@ -538,6 +539,7 @@ fn check_conflicts(entries: &[HistoryEntry], at: usize, sv_only: Option<usize>) 
         .map(|o| o.folder.key())
         .collect();
     let after = sv_only.unwrap_or(at) + 1;
+    let cancelled = cancelled_after(&entries[after..], reverted.tx);
     let conflicting: Vec<&HistoryEntry> = entries[after..]
         .iter()
         .filter(|e| {
@@ -546,7 +548,7 @@ fn check_conflicts(entries: &[HistoryEntry], at: usize, sv_only: Option<usize>) 
                 .iter()
                 .any(|o| o.edit.is_none() && keys.contains(o.folder.key()));
             let undid = e.kind == TxKind::Undo && e.reverts == Some(reverted.tx);
-            e.target == reverted.target && (touches || undid)
+            e.target == reverted.target && (undid || (touches && !cancelled.contains(&e.tx)))
         })
         .collect();
     let Some(newest) = conflicting.last() else {
@@ -587,6 +589,28 @@ fn check_conflicts(entries: &[HistoryEntry], at: usize, sv_only: Option<usize>) 
         ]),
     )
     .details(serde_json::json!({ "tx": reverted.tx, "conflicting": listed })))
+}
+
+/// The transactions of `later` that cancel out: each one reverted by a later undo that is
+/// still in effect, and that undo. Walked newest first, so an undo undone in turn
+/// cancels nothing (the transaction it reverted counts again). An undo of `reverted`
+/// itself is never cancelled here: it means `reverted` was already undone.
+fn cancelled_after(later: &[HistoryEntry], reverted: TxId) -> BTreeSet<TxId> {
+    let present: BTreeSet<TxId> = later.iter().map(|e| e.tx).collect();
+    let mut cancelled: BTreeSet<TxId> = BTreeSet::new();
+    for e in later.iter().rev() {
+        if cancelled.contains(&e.tx) {
+            continue;
+        }
+        if let (TxKind::Undo, Some(of)) = (e.kind, e.reverts)
+            && of != reverted
+            && present.contains(&of)
+        {
+            cancelled.insert(of);
+            cancelled.insert(e.tx);
+        }
+    }
+    cancelled
 }
 
 /// The transaction was undone with its SavedVariables deferred; only `restore` finishes.
@@ -1348,6 +1372,54 @@ mod tests {
         // And back again.
         scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
         assert!(record(&scene).addons.is_empty());
+    }
+
+    #[test]
+    fn a_later_transaction_undone_in_turn_is_no_conflict() {
+        use crate::engine::edit::RecordEdit;
+        let tx_of = |done: crate::engine::tx::TxOutcomes| done.outcomes[0].tx.unwrap();
+        // Install, update, undo the update: the install undoes as if the update never was.
+        let scene = TxScene::new();
+        let empty = tree(&scene);
+        let t1 = install(&scene, "v1.zip", V1);
+        let t2 = install(&scene, "v2.zip", V2);
+        scene.undo(UndoSelector::Tx(t2), SvPolicy::Auto).unwrap();
+        scene.undo(UndoSelector::Tx(t1), SvPolicy::Auto).unwrap();
+        assert_eq!(tree(&scene), empty);
+        assert!(record(&scene).addons.is_empty());
+
+        // Unpin (records only), update, undo the update: the unpin undoes (the pin is
+        // back), and the folders stay as the update's undo left them.
+        let scene = TxScene::new();
+        install(&scene, "v1.zip", V1);
+        scene
+            .run(vec![scene.edit("Foo", RecordEdit::SetPinned(true))])
+            .unwrap();
+        let unpin = tx_of(
+            scene
+                .run(vec![scene.edit("Foo", RecordEdit::SetPinned(false))])
+                .unwrap(),
+        );
+        let v1 = tree(&scene);
+        let update = install(&scene, "v2.zip", V2);
+        scene
+            .undo(UndoSelector::Tx(update), SvPolicy::Auto)
+            .unwrap();
+        scene.undo(UndoSelector::Tx(unpin), SvPolicy::Auto).unwrap();
+        assert!(record(&scene).addons["foo"].pinned);
+        assert_eq!(tree(&scene), v1);
+
+        // The update's undo undone in turn: the update stands again, a conflict.
+        let scene = TxScene::new();
+        let t1 = install(&scene, "v1.zip", V1);
+        let t2 = install(&scene, "v2.zip", V2);
+        let u2 = scene.undo(UndoSelector::Tx(t2), SvPolicy::Auto).unwrap();
+        let u2 = u2.outcome.tx.unwrap();
+        scene.undo(UndoSelector::Tx(u2), SvPolicy::Auto).unwrap();
+        let err = scene
+            .undo(UndoSelector::Tx(t1), SvPolicy::Auto)
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::UndoConflict, "{err:?}");
     }
 
     #[test]
