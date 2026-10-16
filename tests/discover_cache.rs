@@ -6,12 +6,13 @@ mod common;
 use std::fs;
 
 use common::env::TestEnv;
+use common::home::Home;
 use common::trees::{BattlenetRoot, CustomRoot, Prefix};
 use omaddons::discover::cache::{CacheStats, DiscoveryMode, discover_cached};
 use omaddons::discover::{Discovery, DiscoveryInput, ScanLimits};
 use omaddons::rules::RulesTable;
 use omaddons::state::paths::Paths;
-use support::run;
+use support::{remapped, run, run_with};
 
 #[cfg(test)]
 mod support {
@@ -19,18 +20,32 @@ mod support {
 
     /// One discovery of the env's home in `mode`.
     pub fn run(env: &TestEnv, mode: DiscoveryMode) -> (Discovery, CacheStats) {
+        run_with(env, mode, &RulesTable::builtin())
+    }
+
+    /// One discovery of the env's home in `mode` under `table`.
+    pub fn run_with(
+        env: &TestEnv,
+        mode: DiscoveryMode,
+        table: &RulesTable,
+    ) -> (Discovery, CacheStats) {
         let paths = Paths::with_roots(env.home(), env.config(), env.state(), env.cache());
         let input = DiscoveryInput {
             home: env.home(),
             ..DiscoveryInput::default()
         };
-        discover_cached(
-            &input,
-            &RulesTable::builtin(),
-            &paths,
-            ScanLimits::default(),
-            mode,
-        )
+        discover_cached(&input, table, &paths, ScanLimits::default(), mode)
+    }
+
+    /// The builtin table with the custom 3.3 client mapped to `family`.
+    pub fn remapped(family: &str) -> RulesTable {
+        let overrides: omaddons::rules::RulesOverrides = toml::from_str(&format!(
+            "[[version_families]]\ninstall_kind = \"custom\"\n\
+             major = {{ min = 3, max = 3 }}\nminor = {{ min = 3, max = 3 }}\n\
+             family = \"{family}\"\n"
+        ))
+        .unwrap();
+        RulesTable::builtin().with_overrides(&overrides).unwrap()
     }
 }
 
@@ -191,9 +206,113 @@ fn a_corrupt_cache_is_ignored_and_rewritten() {
     assert_eq!(d.targets.len(), 3);
     let text = fs::read_to_string(&cache).unwrap();
     assert!(
-        text.starts_with("{\n  \"schema_version\": \"1.0\""),
+        text.starts_with("{\n  \"schema_version\": \"1.1\""),
         "{text}"
     );
+}
+
+/// The family of the custom client under `Games/wotlk`.
+fn custom_family(d: &Discovery) -> String {
+    d.targets
+        .iter()
+        .find(|t| t.target.install_root.ends_with("Games/wotlk"))
+        .map(|t| t.target.family.to_string())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_rules_change_re_parses_every_root_once() {
+    let env = TestEnv::new();
+    home(&env);
+    let (before, _) = run(&env, DiscoveryMode::Full);
+    let builtin = custom_family(&before);
+    assert!(!builtin.is_empty());
+    let table = remapped("titan");
+    // Every root is parsed again, without --rescan, and the new family shows at once.
+    let (after, stats) = run_with(&env, DiscoveryMode::Full, &table);
+    assert_eq!((stats.parsed, stats.reused, stats.written), (2, 0, true));
+    assert_eq!(custom_family(&after), "titan");
+    // Once: the cache now rests on the new rules.
+    let (again, stats) = run_with(&env, DiscoveryMode::Full, &table);
+    assert_eq!((stats.parsed, stats.reused), (0, 2));
+    assert_eq!(custom_family(&again), "titan");
+    // `Cached` and `NoScan` look only at the cached roots, but re-parse them too.
+    let (cached, stats) = run(&env, DiscoveryMode::Cached);
+    assert_eq!((stats.scanned, stats.parsed), (false, 2));
+    assert_eq!(custom_family(&cached), builtin);
+    let (no_scan, stats) = run_with(&env, DiscoveryMode::NoScan, &table);
+    assert_eq!(
+        (stats.scanned, stats.parsed, stats.written),
+        (false, 2, false)
+    );
+    assert_eq!(custom_family(&no_scan), "titan");
+}
+
+#[test]
+fn a_rules_edit_in_the_config_re_parses_and_any_other_edit_reuses() {
+    let mut home = Home::new(&["wow"]);
+    let custom = home.with_custom(CustomRoot::at(home.env.root().join("pserver")));
+    let config = home.env.config().join("omaddons/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    let status = |home: &Home| {
+        let r = home.run(&["status", "-v"]);
+        let envelope = r.expect(0);
+        let family = envelope["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["install_root"].as_str() == custom.to_str())
+            .map(|t| t["family"].as_str().unwrap_or_default().to_owned());
+        let line = r
+            .stderr
+            .lines()
+            .find(|l| l.contains("discovery: scanned"))
+            .map(str::to_owned);
+        (line.unwrap_or_default(), family.unwrap_or_default())
+    };
+    let (_, builtin) = status(&home);
+    let reused = "roots reused 2, parsed 0";
+    let (line, _) = status(&home);
+    assert!(line.contains(reused), "{line}");
+
+    fs::write(&config, "default_channel = \"beta\"\n").unwrap();
+    let (line, family) = status(&home);
+    assert!(line.contains(reused), "an unrelated edit: {line}");
+    assert_eq!(family, builtin);
+
+    fs::write(
+        &config,
+        "[[rules.version_families]]\ninstall_kind = \"custom\"\n\
+         major = { min = 3, max = 3 }\nminor = { min = 3, max = 3 }\nfamily = \"titan\"\n",
+    )
+    .unwrap();
+    let (line, family) = status(&home);
+    assert!(line.contains("roots reused 0, parsed 2"), "{line}");
+    assert_eq!(family, "titan");
+    let (line, _) = status(&home);
+    assert!(line.contains(reused), "once: {line}");
+}
+
+#[test]
+fn a_cache_from_another_binary_re_parses_once() {
+    let env = TestEnv::new();
+    home(&env);
+    run(&env, DiscoveryMode::Full);
+    // Another version's basis, or a 1.0 cache without one.
+    let cache = env.cache().join("omaddons/discovery.json");
+    let text = fs::read_to_string(&cache).unwrap();
+    let ours = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("\"basis\""))
+        .unwrap()
+        .to_owned();
+    for other in ["  \"basis\": \"0\",", ""] {
+        fs::write(&cache, text.replace(&ours, other)).unwrap();
+        let (_, stats) = run(&env, DiscoveryMode::Full);
+        assert_eq!((stats.parsed, stats.written), (2, true), "{other:?}");
+        let (_, stats) = run(&env, DiscoveryMode::Full);
+        assert_eq!((stats.parsed, stats.reused), (0, 2), "{other:?}");
+    }
 }
 
 #[test]

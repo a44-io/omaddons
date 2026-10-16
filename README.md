@@ -379,7 +379,7 @@ Then it looks for clients in this order. The first route that finds a client dec
 
 A directory with `.build.info` is a **Battle.net root**: each `_<flavor>_` folder in it becomes a target, identified by its `.flavor.info`, product.db or the folder table. A directory with `Interface/` and a `wow*.exe` is a **custom client**: its version comes from the executable's PE version resource, and its label comes from `realmlist.wtf`.
 
-Parsed results are cached in `~/.cache/omaddons/discovery.json` and reused while the stamped files (`.build.info`, `.flavor.info`, exes, `Config.wtf`, `realmlist.wtf`, `product.db`) are unchanged. `targets --rescan` ignores the cache, and `status --cached` skips the scan entirely.
+Parsed results are cached in `~/.cache/omaddons/discovery.json` and reused while the stamped files (`.build.info`, `.flavor.info`, exes, `Config.wtf`, `realmlist.wtf`, `product.db`) are unchanged, and while the rules and the omaddons version are the ones the cache was built with. `targets --rescan` ignores the cache, and `status --cached` skips the scan entirely.
 
 ### Battle.net products
 
@@ -1526,7 +1526,7 @@ The detection tables can be patched without a new release:
 - `[client_rules.<row>]` (or `[rules.client_rules.<row>]`) patches one load-rules row; an unknown row name adds a new row, which then needs every required field. Rows are `mainline`, `mainline-12.0.7`, `mainline-10.2.7`, `mainline-9.1`, `forever`, `vanilla`, `tbc`, `wrath`, `titan`, `cata`, `mists`, the five `*-legacy` rows, `fallback-battlenet` and `fallback-custom`. The fields are `family`, `install_kind`, `version_min`, `version_max`, `game`, `game_types`, `multi_toc`, `comma_interface`, `game_suffixes`, `family_suffixes`, `legacy_suffixes`, `directive_conditionals`, `path_variables`, `interface_includes_patch` and `legacy`.
 - `[rules]` can add or replace `products`, prepend `version_families` rules, and replace `family_ranges`.
 
-Client-rules rows and `family_ranges` apply on the next command. The discovery cache does not notice changes to `products`, `version_families` or `interface_includes_patch`, so run `omaddons targets --rescan` after editing those.
+Every rules edit applies on the next command. The discovery cache records the rules and the omaddons version it was built with, and re-parses every client once when either changes.
 
 ### Environment variables
 
@@ -1770,7 +1770,6 @@ Journals are recovered by the next command that commits a change, not by read co
 - Drive-letter mapping applies to clients that Battle.net's `product.db` names. A custom client on another drive letter needs `targets add` or `extra_roots`.
 - Custom clients between the five legacy versions (2.0–2.3, 3.0–3.2, 4.0–4.2, 5.0–5.3) get family `unknown`, which matches only their exact major.minor.
 - On unknown custom clients, the `safe` running policy behaves as for legacy clients and refuses every change while they run.
-- The discovery cache does not notice changes to the `products` or `version_families` overrides, or a binary upgrade; run `targets --rescan`.
 - The download cache reuses an asset whose SHA-256 is known: from the source (GitHub REST assets carry a digest) or remembered from an earlier download of that release's asset in the release memo. A release's assets are taken to be immutable, so a publisher re-uploading different bytes under the same tag and file name is not noticed while the old blob is cached (unless the source declares a different size or hash). Within one command, the same asset is still downloaded once per target that tries it. An unchanged release is never downloaded.
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
 - Private GitHub repositories and HTTP proxies are not supported.

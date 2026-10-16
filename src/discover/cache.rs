@@ -43,13 +43,31 @@ pub enum DiscoveryMode {
 /// The cache file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DiscoveryCache {
+    /// What every parse rests on besides the root's files: [`basis`] of the binary and
+    /// the effective rules. A cache built on another basis reuses no root. Empty before
+    /// 1.1.
+    #[serde(default)]
+    pub basis: String,
     /// Sorted by canonical path.
     pub roots: Vec<CachedRoot>,
 }
 
 impl Versioned for DiscoveryCache {
     const KIND: &'static str = "discovery_cache";
-    const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
+    const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
+}
+
+/// SHA-256 of this binary's version and the effective rules table (builtin plus
+/// `[rules]` and `[client_rules.*]`): a rules edit or an upgrade re-parses every root
+/// once, as `targets --rescan` would.
+pub fn basis(table: &RulesTable) -> String {
+    let mut hash = Sha256::new();
+    hash.update(env!("CARGO_PKG_VERSION").as_bytes());
+    hash.update([0]);
+    // A table that does not encode still yields a basis, just one shared by every such
+    // table; the builtin and validated overrides always encode.
+    hash.update(serde_json::to_vec(table).unwrap_or_default());
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// One root's parse and what it rests on.
@@ -132,6 +150,10 @@ pub fn discover_cached(
         DiscoveryMode::Rescan => None,
         DiscoveryMode::Cached | DiscoveryMode::NoScan | DiscoveryMode::Full => load_cache(paths),
     };
+    let basis = basis(table);
+    // The cache's roots are still where to look (no scan for `Cached` and `NoScan`), but
+    // none of its parses is reused on another basis.
+    let reusable = cache.as_ref().filter(|c| c.basis == basis);
     let mut diagnostics = Vec::new();
     let (requests, mut warnings) = match (mode, &cache) {
         (DiscoveryMode::Cached | DiscoveryMode::NoScan, Some(cache)) => (
@@ -162,7 +184,10 @@ pub fn discover_cached(
     };
 
     let mut targets = Vec::new();
-    let mut fresh = DiscoveryCache::default();
+    let mut fresh = DiscoveryCache {
+        basis,
+        roots: Vec::new(),
+    };
     for req in &requests {
         if !req.path.is_dir() {
             diagnostics.push(format!("{} is gone", req.path.display()));
@@ -173,7 +198,7 @@ pub fn discover_cached(
             continue;
         };
         let (stamps, listing) = fingerprint(req, kind);
-        let hit = cache.as_ref().and_then(|c| {
+        let hit = reusable.and_then(|c| {
             c.roots
                 .iter()
                 .find(|r| r.matches(req, kind, &stamps, &listing))
@@ -387,6 +412,26 @@ mod tests {
             "{\"schema_version\":\"1.0\",\"roots\":[]}",
         )
         .unwrap();
+        // A 1.0 cache has no basis: it loads, and reuses nothing.
         assert_eq!(load_cache(&paths), Some(DiscoveryCache::default()));
+    }
+
+    #[test]
+    fn the_basis_follows_the_effective_rules() {
+        let builtin = RulesTable::builtin();
+        assert_eq!(basis(&builtin), basis(&RulesTable::builtin()));
+        assert_eq!(basis(&builtin).len(), 64);
+        let overrides: crate::rules::RulesOverrides = toml::from_str(
+            r#"
+            [[version_families]]
+            install_kind = "custom"
+            major = { min = 3, max = 3 }
+            minor = { min = 3, max = 3 }
+            family = "tbc"
+            "#,
+        )
+        .unwrap();
+        let patched = builtin.with_overrides(&overrides).unwrap();
+        assert_ne!(basis(&builtin), basis(&patched));
     }
 }
