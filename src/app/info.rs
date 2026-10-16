@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::history::TargetRef;
-use super::install::parse_ref;
+use super::resolve_args::parse_ref;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -197,7 +197,14 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
     warnings.extend(catalog_warnings);
     let records = world.records()?;
     let cwd = std::env::current_dir().unwrap_or_default();
-    let parsed = parse_ref(&world, &records, &catalog, &cwd, &args.query).map_err(|e| {
+    let parsed = parse_ref(
+        &world.config.git_hosts,
+        &records,
+        &catalog,
+        &cwd,
+        &args.query,
+    )
+    .map_err(|e| {
         if matches!(e.code, ErrorCode::NotFound) {
             not_found(&args.query)
         } else {

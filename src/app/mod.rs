@@ -13,6 +13,7 @@ pub mod outcome;
 pub mod outdated;
 pub mod pin;
 pub mod remove;
+pub mod resolve_args;
 pub mod status;
 pub mod targets;
 pub mod undo;
