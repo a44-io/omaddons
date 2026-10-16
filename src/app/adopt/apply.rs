@@ -12,7 +12,9 @@ use serde_json::json;
 
 use super::{AdoptArgs, GroupWork, TargetWork, index_group, toc_version};
 use crate::app::engine::Engine;
-use crate::app::outcome::{ItemError, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetsData};
+use crate::app::outcome::{
+    ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetsData,
+};
 use crate::app::resolve_args::parse_ref;
 use crate::app::world::World;
 use crate::cli::{Context, fix_argv};
@@ -686,6 +688,7 @@ pub(super) fn commit(
                         to_version: Some(version),
                         folders: None,
                         required_by: None,
+                        deps: ItemDeps::default(),
                         error: None,
                     },
                 )),
@@ -845,6 +848,7 @@ fn failed_item(request: String, error: &Error) -> ItemResult {
         to_version: None,
         folders: None,
         required_by: None,
+        deps: ItemDeps::default(),
         error: Some(item_error),
     }
 }

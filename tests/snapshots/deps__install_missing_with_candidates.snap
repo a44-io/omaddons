@@ -1,0 +1,124 @@
+---
+source: tests/deps.rs
+assertion_line: 1052
+expression: "support::stable(&envelope)"
+---
+{
+  "command": "install",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<tx>"
+      ],
+      "command": "omaddons undo <tx>",
+      "destructive": false
+    },
+    {
+      "action": "install",
+      "argv": [
+        "omaddons",
+        "install",
+        "gh:o/acea",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons install gh:o/acea -t retail",
+      "destructive": false
+    },
+    {
+      "action": "install",
+      "argv": [
+        "omaddons",
+        "install",
+        "gh:o/aceb",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons install gh:o/aceb -t retail",
+      "destructive": false
+    },
+    {
+      "action": "install",
+      "argv": [
+        "omaddons",
+        "install",
+        "gh:o/acec",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons install gh:o/acec -t retail",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "atomic_swap": true,
+    "creates_addons_dir": false,
+    "dry_run": false,
+    "items": [
+      {
+        "bridge_dependencies": [],
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [
+            "LittleWigs"
+          ],
+          "recorded": [],
+          "removed": [],
+          "replaced": [],
+          "skipped": []
+        },
+        "from_version": null,
+        "name": "LittleWigs",
+        "reason": "explicit",
+        "ref": "gh:o/littlewigs",
+        "request": "littlewigs",
+        "required_by": [],
+        "status": "installed",
+        "to_version": "v1",
+        "unresolved": [
+          {
+            "candidates": [
+              "gh:o/acea",
+              "gh:o/aceb",
+              "gh:o/acec"
+            ],
+            "folder": "Ace",
+            "reason": "several_catalog_entries"
+          }
+        ],
+        "version_confidence": "release"
+      }
+    ],
+    "kind": "install",
+    "reload_required": "none",
+    "target": {
+      "id": "retail",
+      "key": "<key>"
+    },
+    "tx": "<tx>"
+  },
+  "exit_code": 0,
+  "meta": "<meta>",
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "missing_dependency",
+      "fix": "omaddons install gh:o/acea -t retail",
+      "fix_argv": [
+        "omaddons",
+        "install",
+        "gh:o/acea",
+        "-t",
+        "retail"
+      ],
+      "message": "LittleWigs on retail requires Ace, which was not installed: several projects ship it (gh:o/acea, gh:o/aceb, gh:o/acec)"
+    }
+  ]
+}

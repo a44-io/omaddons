@@ -523,6 +523,9 @@ pub struct DepFacts {
     /// What the other installed folders require outside the archive, before anything is
     /// judged satisfied.
     pub bridges: Vec<BridgeDependency>,
+    /// The needed folders' `OptionalDeps`, each once, in folder order: shown under `-v`,
+    /// never installed or warned about.
+    pub optional: Vec<FolderName>,
 }
 
 /// One addon changing.
@@ -1706,6 +1709,7 @@ impl TargetPlanner<'_> {
             view: &view,
             live: self.live,
         };
+        let mut warnings: Vec<Warning> = Vec::new();
         for w in &tp.work {
             let WorkMode::Folders(f) = &w.mode else {
                 continue;
@@ -1731,10 +1735,59 @@ impl TargetPlanner<'_> {
                 .addons
                 .values()
                 .any(|a| a.r#ref.identity() == record.r#ref.identity());
+            // Said once, when the addon arrives; an update keeps the item field only.
+            if first_install {
+                warnings.extend(open.iter().map(|b| self.bridge_warning(b)));
+            }
             let report = tp.dependencies.entry(w.addon.clone()).or_default();
             report.bridge_dependencies = open;
             report.first_install = first_install;
         }
+        // Tied to no work, so the commit keeps them as it keeps an unchanged addon's.
+        push_new(&mut tp.warnings, warnings.clone());
+        push_new(&mut tp.unchanged_warnings, warnings);
+    }
+
+    /// `bridge_dependency`: a folder of a newly installed addon works with `requires`,
+    /// which is not installed. The fix installs it by its catalog name, else by the ref
+    /// the resolver finds; with neither, it says no keyless source ships it.
+    fn bridge_warning(&self, bridge: &BridgeDependency) -> Warning {
+        let id = self.target.id.as_str();
+        let requires = bridge.requires.as_str();
+        let install = |arg: String| {
+            Suggestion::command([
+                "omaddons".to_owned(),
+                "install".to_owned(),
+                arg,
+                "-t".to_owned(),
+                id.to_owned(),
+            ])
+        };
+        let fix = if self.ctx.catalog.by_name(requires).is_some() {
+            install(requires.to_owned())
+        } else {
+            let lookups = DepLookups {
+                managed: self.record,
+                catalog: self.ctx.catalog,
+                tukui: None,
+                wowi: None,
+                now: Timestamp::now(),
+            };
+            match resolve(&bridge.requires, self.target, &lookups) {
+                DepResolution::Resolved { r#ref, .. } => install(r#ref.to_string()),
+                _ => Suggestion::text(format!(
+                    "no keyless source ships {requires}; it may only be on CurseForge or Wago, which arrive in M5"
+                )),
+            }
+        };
+        Warning::new(
+            WarningCode::BridgeDependency,
+            format!(
+                "{} works with {requires}, which is not installed on {id}",
+                bridge.folder.as_str()
+            ),
+        )
+        .with_fix(fix)
     }
 
     /// `owner`'s record gains `requester` in `required_by` (folded into its work when
@@ -3601,6 +3654,7 @@ impl TargetPlanner<'_> {
         };
         let mut requires: Vec<FolderName> = Vec::new();
         let mut unknown_condition: Vec<FolderName> = Vec::new();
+        let mut optional: Vec<FolderName> = Vec::new();
         for v in installed.iter().filter(|v| needed.contains(&v.folder)) {
             for dep in &v.dependencies.required {
                 if !requires.contains(dep) {
@@ -3612,9 +3666,16 @@ impl TargetPlanner<'_> {
                     unknown_condition.push(dep.clone());
                 }
             }
+            for dep in &v.dependencies.optional {
+                if !optional.contains(dep) {
+                    optional.push(dep.clone());
+                }
+            }
         }
         unknown_condition.retain(|dep| !requires.contains(dep));
+        optional.retain(|dep| !requires.contains(dep) && !needed.contains(dep));
         let deps = DepFacts {
+            optional,
             requires,
             unknown_condition,
             bridges: bridge_dependencies(&needed, &installed),

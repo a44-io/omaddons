@@ -164,6 +164,36 @@ mod support {
             .collect()
     }
 
+    /// `install`'s envelope with its volatile values replaced, for snapshots.
+    pub fn stable(envelope: &Value) -> Value {
+        let mut text = envelope.to_string();
+        for (value, placeholder) in [
+            (&envelope["data"]["tx"], "<tx>"),
+            (&envelope["data"]["target"]["key"], "<key>"),
+        ] {
+            if let Some(v) = value.as_str() {
+                text = text.replace(v, placeholder);
+            }
+        }
+        let mut stable: Value = serde_json::from_str(&text).unwrap();
+        stable["meta"] = Value::from("<meta>");
+        stable["tool_version"] = Value::from("<version>");
+        stable
+    }
+
+    /// `omaddons <args>` in human form, with the last transaction's id replaced: its
+    /// stdout, for snapshots.
+    pub fn human(home: &Home, args: &[&str]) -> String {
+        let argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        let r = home.exec(&argv);
+        assert_eq!(r.code, 0, "{}", r.context());
+        let mut out = r.stdout.clone();
+        if let Some(line) = super::common::state::history(home).pop() {
+            out = out.replace(&line.tx.to_string(), "<tx>");
+        }
+        out
+    }
+
     /// The last history line's kind, and the `edit` of its op on `addon`.
     pub fn last_line(
         home: &Home,
@@ -225,11 +255,27 @@ fn installing_littlewigs_installs_bigwigs_with_it_and_undo_removes_both() {
     let r = home.run(&["install", "littlewigs"]);
     let envelope = r.expect(0);
     assert_eq!(envelope["partial"], false, "{}", r.context());
-    let listed: Vec<&Value> = items(&envelope).iter().map(|i| &i["name"]).collect();
+    // The dependency is an item of its own, after its requester, named by the folder.
+    let listed: Vec<(&Value, &Value, &Value, &Value)> = items(&envelope)
+        .iter()
+        .map(|i| (&i["request"], &i["name"], &i["reason"], &i["required_by"]))
+        .collect();
     assert_eq!(
         listed,
-        [&json!("LittleWigs")],
-        "positionals only (C5 lists dependencies)"
+        [
+            (
+                &json!("littlewigs"),
+                &json!("LittleWigs"),
+                &json!("explicit"),
+                &json!([])
+            ),
+            (
+                &json!("BigWigs"),
+                &json!("BigWigs"),
+                &json!("dependency"),
+                &json!(["LittleWigs"])
+            )
+        ]
     );
     assert!(addons.join("LittleWigs/LittleWigs.toc").is_file());
     assert!(addons.join("BigWigs/BigWigs.toc").is_file());
@@ -493,6 +539,28 @@ fn a_dependency_without_a_compatible_release_leaves_the_requester_installed_and_
         })
         .collect();
     assert_eq!(named.len(), 1, "{}", r.context());
+    // A failed item, named by the folder DepA required, right after DepA.
+    let failed = &items(&envelope)[1];
+    assert_eq!(
+        (
+            &failed["request"],
+            &failed["ref"],
+            &failed["status"],
+            &failed["reason"],
+            &failed["required_by"],
+            &failed["error"]["details"]["required_by"]
+        ),
+        (
+            &json!("DepB"),
+            &json!("gh:o/depb"),
+            &json!("failed"),
+            &json!("dependency"),
+            &json!(["DepA"]),
+            &json!(["DepA"])
+        ),
+        "{}",
+        r.context()
+    );
 
     // --strict makes it a check failure.
     home.run(&["undo"]).expect(0);
@@ -778,10 +846,10 @@ fn an_update_whose_new_release_requires_a_dependency_installs_it_and_undo_revert
     let latest_before = fetches(&home, "bigwigs");
     let r = home.run(&["update", "--refresh"]);
     let envelope = r.expect(0);
-    // Items by name, as `update` lists them.
+    // Items by name, as `update` lists them, each dependency right after its requester.
     assert_eq!(
         update_items(&envelope),
-        [pair("BigWigs", "installed"), pair("LittleWigs", "updated")],
+        [pair("LittleWigs", "updated"), pair("BigWigs", "installed")],
         "{}",
         r.context()
     );
@@ -867,15 +935,24 @@ fn a_dependency_without_a_compatible_release_during_update_is_a_failed_item() {
     let r = home.run(&["update", "--refresh"]);
     let envelope = r.expect(0);
     assert_eq!(envelope["partial"], true, "{}", r.context());
+    // The dependency right after its requester.
     assert_eq!(
         update_items(&envelope),
-        [pair("DepB", "failed"), pair("LittleWigs", "updated")],
+        [pair("LittleWigs", "updated"), pair("DepB", "failed")],
         "{}",
         r.context()
     );
-    let failed = &envelope["data"]["targets"][0]["items"][0];
+    let failed = &envelope["data"]["targets"][0]["items"][1];
     assert_eq!(failed["ref"], "gh:o/depb");
     assert!(failed["skip_reason"].is_null(), "never skipped/blocked");
+    assert_eq!(
+        (&failed["reason"], &failed["required_by"]),
+        (&json!("dependency"), &json!(["LittleWigs"]))
+    );
+    assert_eq!(
+        failed["error"]["details"]["required_by"],
+        json!(["LittleWigs"])
+    );
     assert_eq!(record_of(&home, "LittleWigs").unwrap().version, "v2");
     home.run(&["undo"]).expect(0);
     home.run(&["update", "--refresh", "--strict"]).expect(6);
@@ -918,6 +995,236 @@ fn a_beta_update_takes_its_dependencies_from_the_default_channel() {
     assert_eq!(
         (lw.channel, lw.version.as_str(), bw.channel),
         (Channel::Beta, "v3-beta", Channel::Stable),
+        "{}",
+        r.context()
+    );
+}
+
+/// The `(action, argv)` of an envelope's commands.
+fn hints(envelope: &Value) -> Vec<(String, Value)> {
+    envelope["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| {
+            (
+                c["action"].as_str().unwrap_or_default().to_owned(),
+                c["argv"].clone(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn an_install_with_one_dependency_in_json_and_text() {
+    let home = wigs();
+    let r = home.run(&["install", "littlewigs"]);
+    insta::assert_json_snapshot!("install_with_dependency", support::stable(&r.expect(0)));
+    let text = support::human(&wigs(), &["install", "littlewigs"]);
+    assert!(
+        text.contains("BigWigs v1 (1 folders) (dependency of LittleWigs)"),
+        "{text}"
+    );
+    insta::assert_snapshot!("install_with_dependency_human", text);
+}
+
+#[test]
+fn a_missing_dependency_with_candidates_hints_at_most_three_installs() {
+    let home = Home::new(&["wow"]);
+    let aces = ["acea", "aceb", "acec", "aced"];
+    let bases: Vec<String> = aces
+        .iter()
+        .map(|a| format!("https://github.com/o/{a}"))
+        .collect();
+    let ace = [folder("Ace", &[])];
+    let little = [folder("LittleWigs", &["Ace"])];
+    let mut nodes = vec![node("https://github.com/o/littlewigs", &little)];
+    nodes.extend(bases.iter().map(|b| node(b, &ace)));
+    release_graph(&home.http, &nodes);
+    let mut entries: Vec<(&str, &str, &[&str])> =
+        vec![("LittleWigs", "littlewigs", &["LittleWigs"])];
+    let names = ["AceA", "AceB", "AceC", "AceD"];
+    entries.extend(names.iter().zip(aces).map(|(n, r)| (*n, r, &["Ace"][..])));
+    catalog(&home, &entries);
+
+    let r = home.run(&["install", "littlewigs"]);
+    let envelope = r.expect(0);
+    let unresolved = &items(&envelope)[0]["unresolved"];
+    assert_eq!(
+        (&unresolved[0]["folder"], &unresolved[0]["reason"]),
+        (&json!("Ace"), &json!("several_catalog_entries")),
+        "{}",
+        r.context()
+    );
+    assert_eq!(
+        unresolved[0]["candidates"].as_array().map(Vec::len),
+        Some(3)
+    );
+    let top = unresolved[0]["candidates"][0].as_str().unwrap().to_owned();
+    assert_eq!(
+        warning(&envelope, "missing_dependency")["fix_argv"],
+        json!(["omaddons", "install", top, "-t", "retail"])
+    );
+    let actions: Vec<String> = hints(&envelope).into_iter().map(|(a, _)| a).collect();
+    assert_eq!(actions, ["undo", "install", "install", "install"]);
+    insta::assert_json_snapshot!(
+        "install_missing_with_candidates",
+        support::stable(&envelope)
+    );
+    home.run(&["undo"]).expect(0);
+    insta::assert_snapshot!(
+        "install_missing_with_candidates_human",
+        support::human(&home, &["install", "littlewigs"])
+    );
+    // A hint runs.
+    let argv: Vec<String> = hints(&envelope)[1].1.as_array().unwrap()[1..]
+        .iter()
+        .map(|a| a.as_str().unwrap().to_owned())
+        .collect();
+    let r = home.exec(&[&argv[..], &["--json".to_owned()]].concat());
+    r.expect(0);
+}
+
+#[test]
+fn a_missing_dependency_without_candidates_gets_the_no_source_fix_and_no_hint() {
+    let home = Home::new(&["wow"]);
+    release_graph(
+        &home.http,
+        &[node(
+            "https://github.com/o/littlewigs",
+            &[folder("LittleWigs", &["Nowhere"])],
+        )],
+    );
+    catalog(&home, &[("LittleWigs", "littlewigs", &["LittleWigs"])]);
+    let r = home.run(&["install", "littlewigs"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        items(&envelope)[0]["unresolved"],
+        json!([{"folder": "Nowhere", "reason": "no_source", "candidates": []}]),
+        "{}",
+        r.context()
+    );
+    let w = warning(&envelope, "missing_dependency");
+    assert_eq!(w["fix_argv"], Value::Null);
+    assert!(
+        w["fix"]
+            .as_str()
+            .unwrap()
+            .starts_with("no keyless source ships Nowhere")
+    );
+    let actions: Vec<String> = hints(&envelope).into_iter().map(|(a, _)| a).collect();
+    assert_eq!(actions, ["undo"]);
+    insta::assert_json_snapshot!("install_missing_no_source", support::stable(&envelope));
+    home.run(&["undo"]).expect(0);
+    insta::assert_snapshot!(
+        "install_missing_no_source_human",
+        support::human(&home, &["install", "littlewigs"])
+    );
+}
+
+/// Retail; Foo ships `Foo` and the bridge `Foo_Masque`, which works with Masque (in the
+/// catalog).
+fn masque_bridge() -> Home {
+    let home = Home::new(&["wow"]);
+    release_graph(
+        &home.http,
+        &[
+            node(
+                "https://github.com/o/foo",
+                &[folder("Foo", &[]), folder("Foo_Masque", &["Masque"])],
+            ),
+            node("https://github.com/o/masque", &[folder("Masque", &[])]),
+        ],
+    );
+    catalog(&home, &[("Masque", "masque", &["Masque"])]);
+    home
+}
+
+#[test]
+fn a_bridge_dependency_warns_on_the_first_install_only() {
+    let home = masque_bridge();
+    let r = home.run(&["install", "gh:o/foo"]);
+    let envelope = r.expect(0);
+    let bridge = json!([{"folder": "Foo_Masque", "requires": "Masque"}]);
+    assert_eq!(
+        items(&envelope)[0]["bridge_dependencies"],
+        bridge,
+        "{}",
+        r.context()
+    );
+    let fix = json!(["omaddons", "install", "Masque", "-t", "retail"]);
+    let w = warning(&envelope, "bridge_dependency");
+    assert_eq!(w["fix_argv"], fix, "{}", r.context());
+    assert_eq!(
+        w["message"],
+        "Foo_Masque works with Masque, which is not installed on retail"
+    );
+    assert!(hints(&envelope).contains(&("install".to_owned(), fix.clone())));
+    assert!(
+        record_of(&home, "Masque").is_none(),
+        "reported, never installed"
+    );
+    insta::assert_json_snapshot!("install_bridge_dependency", support::stable(&envelope));
+    home.run(&["undo"]).expect(0);
+    insta::assert_snapshot!(
+        "install_bridge_dependency_human",
+        support::human(&home, &["install", "gh:o/foo"])
+    );
+
+    // An update keeps the field and says nothing more.
+    release_graph(
+        &home.http,
+        &[Node {
+            base: "https://github.com/o/foo",
+            tag: "v2",
+            folders: &[folder("Foo", &[]), folder("Foo_Masque", &["Masque"])],
+        }],
+    );
+    let r = home.run(&["update", "--refresh"]);
+    let envelope = r.expect(0);
+    let item = &envelope["data"]["targets"][0]["items"][0];
+    assert_eq!(
+        (
+            &item["status"],
+            &item["bridge_dependencies"],
+            &item["unresolved"]
+        ),
+        (&json!("updated"), &bridge, &json!([])),
+        "{}",
+        r.context()
+    );
+    assert_eq!(warning(&envelope, "bridge_dependency"), Value::Null);
+
+    // The hint runs, and then nothing is open.
+    let r = home.run(&["install", "Masque", "-t", "retail"]);
+    r.expect(0);
+    assert!(record_of(&home, "Masque").is_some(), "{}", r.context());
+}
+
+#[test]
+fn optional_dependencies_show_under_verbose_only() {
+    let home = Home::new(&["wow"]);
+    let with_optional = [common::graph::Folder {
+        name: "LittleWigs",
+        interface: RETAIL,
+        deps: &[],
+        optional: &["Opt"],
+    }];
+    release_graph(
+        &home.http,
+        &[node("https://github.com/o/littlewigs", &with_optional)],
+    );
+    catalog(&home, &[("LittleWigs", "littlewigs", &["LittleWigs"])]);
+    let r = home.run(&["install", "littlewigs", "--dry-run"]);
+    assert!(
+        items(&r.expect(0))[0]
+            .get("optional_dependencies")
+            .is_none()
+    );
+    let r = home.run(&["install", "littlewigs", "-v"]);
+    assert_eq!(
+        items(&r.expect(0))[0]["optional_dependencies"],
+        json!(["Opt"]),
         "{}",
         r.context()
     );

@@ -287,6 +287,9 @@ warning_codes! {
     StillRequired               = "still_required";
     /// Addons installed as dependencies that nothing requires any more.
     OrphanedDependency          = "orphaned_dependency";
+    /// A newly installed addon's other folder (a bridge or plugin) works with an addon
+    /// that is not installed; nothing is installed for it.
+    BridgeDependency            = "bridge_dependency";
 }
 
 impl fmt::Display for WarningCode {
@@ -768,7 +771,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 33);
+        assert_eq!(WarningCode::ALL.len(), 34);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

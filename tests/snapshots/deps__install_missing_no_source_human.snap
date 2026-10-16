@@ -1,0 +1,7 @@
+---
+source: tests/deps.rs
+assertion_line: 1093
+expression: "support::human(&home, &[\"install\", \"littlewigs\"])"
+---
+retail: installed LittleWigs v1 (1 folders)
+tx <tx> · undo: omaddons undo <tx>

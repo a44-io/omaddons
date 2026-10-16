@@ -9,7 +9,7 @@
 //! with `-v`. Any failed item or target error makes the run partial; when every item
 //! failed, the command fails with the first error.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use schemars::JsonSchema;
@@ -18,10 +18,15 @@ use serde::Serialize;
 use crate::engine::TxOutcome;
 use crate::engine::TxOutcomes;
 use crate::engine::edit::EditField;
-use crate::engine::plan::{Change, ChangeKind, FolderSummary, PlanFailure};
+use crate::engine::plan::{
+    Change, ChangeKind, DepReport, FolderSummary, PlanFailure, TargetPlan, Unresolved, WorkMode,
+};
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Suggestion, Warning};
-use crate::model::{AddonReason, Ref, ReloadRequired, RunId, TargetKey, TxId, TxKind};
+use crate::model::{
+    AddonReason, AddonRecord, FolderName, Ref, ReloadRequired, RunId, TargetKey, TxId, TxKind,
+};
 use crate::output::{Outcome, Style};
+use crate::resolve::deps::BridgeDependency;
 
 /// The target acted on.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -144,20 +149,25 @@ pub struct ItemError {
     pub fix_argv: Option<Vec<String>>,
     /// Only for a conflict between two works of one transaction
     /// (`within_transaction: true`, with each folder and its claimant), an `adopt` item
-    /// refused before the engine (`folder`, and `owner`, `class` or `refs`), and a rate
-    /// limit (`reset_at`).
+    /// refused before the engine (`folder`, and `owner`, `class` or `refs`), a rate
+    /// limit (`reset_at`), and a dependency that failed (`required_by`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }
 
-/// The details an item error carries: a within-transaction conflict's, else none.
+/// The details an item error carries: a within-transaction conflict's, a rate limit's
+/// `reset_at`, a dependency's `required_by`; else none.
 fn item_details(details: &serde_json::Value) -> Option<serde_json::Value> {
     if details["within_transaction"] == true {
         return Some(details.clone());
     }
-    // A rate limit says when it lifts.
-    let reset_at = details.get("reset_at")?;
-    Some(serde_json::json!({ "reset_at": reset_at }))
+    let mut kept = serde_json::Map::new();
+    for key in ["reset_at", "required_by"] {
+        if let Some(value) = details.get(key) {
+            kept.insert(key.to_owned(), value.clone());
+        }
+    }
+    (!kept.is_empty()).then_some(serde_json::Value::Object(kept))
 }
 
 impl From<&Error> for ItemError {
@@ -248,7 +258,121 @@ pub struct ItemResult {
     pub folders: Option<FolderSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_by: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub deps: ItemDeps,
     pub error: Option<ItemError>,
+}
+
+/// What an item says about its dependencies beyond `reason` and `required_by` (C5),
+/// each omitted for an item without a planned record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ItemDeps {
+    /// What its other folders (bridges, plugins) work with that is not installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge_dependencies: Option<Vec<BridgeDependency>>,
+    /// The required folders nothing was installed for, and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unresolved: Option<Vec<Unresolved>>,
+    /// `-v` only: its needed folders' `OptionalDeps`, never installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optional_dependencies: Option<Vec<FolderName>>,
+    /// Listed right after its requester, as its dependency: a command that orders its
+    /// items keeps it there.
+    #[serde(skip)]
+    pub listed_as_dependency: bool,
+}
+
+impl ItemDeps {
+    /// `addon`'s, from its target's dependency reports and planned works.
+    pub fn of(tp: &TargetPlan, addon: &str) -> Self {
+        let report = report_of(&tp.dependencies, addon);
+        Self {
+            bridge_dependencies: Some(
+                report
+                    .map(|r| r.bridge_dependencies.clone())
+                    .unwrap_or_default(),
+            ),
+            unresolved: Some(report.map(|r| r.unresolved.clone()).unwrap_or_default()),
+            optional_dependencies: Some(optional_of(tp, addon)),
+            listed_as_dependency: false,
+        }
+    }
+}
+
+/// `items` sorted by `key`, each requester with its dependency items kept right after it.
+pub fn sort_keeping_dependencies<K: Ord>(
+    items: &mut Vec<ItemResult>,
+    key: impl Fn(&ItemResult) -> K,
+) {
+    let mut groups: Vec<Vec<ItemResult>> = Vec::new();
+    for item in std::mem::take(items) {
+        match groups.last_mut() {
+            Some(group) if item.deps.listed_as_dependency => group.push(item),
+            _ => groups.push(vec![item]),
+        }
+    }
+    groups.sort_by_cached_key(|g| g.first().map(&key));
+    *items = groups.into_iter().flatten().collect();
+}
+
+/// One dependency of a requester, as items list it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DepItem {
+    /// Installed (or updated) with it: the folder it required and the dependency.
+    Planned { folder: FolderName, addon: String },
+    /// Resolved, but failed to plan: the folder and the dependency's ref.
+    Failed { folder: FolderName, r#ref: Ref },
+}
+
+/// `requester`'s dependency items in resolution order, each followed by its own, every
+/// dependency once: `listed` holds what is already listed (addon identities and ref
+/// identities) and gains what this returns.
+pub fn dependency_items(
+    deps: &BTreeMap<String, DepReport>,
+    requester: &str,
+    listed: &mut BTreeSet<String>,
+) -> Vec<DepItem> {
+    let mut out = Vec::new();
+    let Some(report) = report_of(deps, requester) else {
+        return out;
+    };
+    for (folder, addon) in &report.installs {
+        if listed.insert(addon_identity(addon)) {
+            out.push(DepItem::Planned {
+                folder: folder.clone(),
+                addon: addon.clone(),
+            });
+            out.extend(dependency_items(deps, addon, listed));
+        }
+    }
+    for (folder, r) in &report.failed {
+        if listed.insert(r.identity()) {
+            out.push(DepItem::Failed {
+                folder: folder.clone(),
+                r#ref: r.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// `addon`'s dependency report (by name, ignoring case).
+pub fn report_of<'a>(deps: &'a BTreeMap<String, DepReport>, addon: &str) -> Option<&'a DepReport> {
+    deps.iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(addon))
+        .map(|(_, report)| report)
+}
+
+/// The `OptionalDeps` of `addon`'s needed folders, from its planned work.
+pub fn optional_of(tp: &TargetPlan, addon: &str) -> Vec<FolderName> {
+    tp.work
+        .iter()
+        .filter(|w| w.addon.eq_ignore_ascii_case(addon))
+        .find_map(|w| match &w.mode {
+            WorkMode::Folders(f) => Some(f.deps.optional.clone()),
+            WorkMode::Records(_) => None,
+        })
+        .unwrap_or_default()
 }
 
 /// Items by outcome.
@@ -287,13 +411,16 @@ impl ItemRequest {
 }
 
 /// A target as the engine planned it: its id, key and planned changes, and each
-/// planned record's pin (by addon name), which says which way a pin edit went.
+/// planned record's pin (by addon name), which says which way a pin edit went. With its
+/// plan, items carry their dependency fields and each requester's dependencies follow
+/// it as items of their own.
 #[derive(Debug, Clone)]
 pub struct Planned<'a> {
     pub target: &'a str,
     pub key: Option<TargetKey>,
     pub changes: &'a [Change],
     pub pinned: Vec<(String, bool)>,
+    pub plan: Option<&'a TargetPlan>,
 }
 
 impl Planned<'_> {
@@ -302,6 +429,15 @@ impl Planned<'_> {
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case(addon))
             .map(|(_, pinned)| *pinned)
+    }
+
+    /// The record `addon`'s work leaves.
+    fn record_after(&self, addon: &str) -> Option<&AddonRecord> {
+        self.plan?
+            .work
+            .iter()
+            .filter(|w| w.addon.eq_ignore_ascii_case(addon))
+            .find_map(|w| w.record())
     }
 }
 
@@ -321,6 +457,7 @@ impl TargetsData {
                     .iter()
                     .filter_map(|w| w.record().map(|r| (r.name.clone(), r.pinned)))
                     .collect(),
+                plan: Some(tp),
             })
             .collect();
         Self::assemble(
@@ -401,6 +538,9 @@ impl TargetsData {
         if !verbose {
             for t in &mut self.targets {
                 t.items.retain(|i| i.status != ItemStatus::Unchanged);
+                for i in &mut t.items {
+                    i.deps.optional_dependencies = None;
+                }
             }
         }
         self
@@ -488,15 +628,86 @@ impl TargetResult {
 }
 
 /// How an item without a ref is identified: its addon's record key.
-fn addon_identity(name: &str) -> String {
+pub fn addon_identity(name: &str) -> String {
     format!(
         "addon:{}",
         crate::state::records::TargetRecord::addon_key(name)
     )
 }
 
-/// One planned target's result: requested items first, in request order, then changes
-/// nobody asked for by name (dependencies).
+/// What one target's items are built from.
+struct ItemsOf<'p, 'a> {
+    p: &'p Planned<'a>,
+    /// The committed (or, under `--dry-run`, planned) changes.
+    changes: &'p [Change],
+    /// The target's failures.
+    mine: &'p [&'p PlanFailure],
+    /// Nothing committed, for this reason.
+    target_error: Option<&'p ErrorBody>,
+}
+
+/// The items built so far, and what they hold.
+#[derive(Default)]
+struct Listed {
+    items: Vec<ItemResult>,
+    /// Indices into the changes.
+    used: BTreeSet<usize>,
+    /// Addon and ref identities listed as dependencies (or asked for).
+    deps: BTreeSet<String>,
+}
+
+impl ItemsOf<'_, '_> {
+    /// `requester`'s dependencies as items, after it: each installed one with its
+    /// change, each failed one with its failure, in resolution order.
+    fn dependencies(&self, listed: &mut Listed, requester: &str) {
+        let Some(tp) = self.p.plan else {
+            return;
+        };
+        for dep in dependency_items(&tp.dependencies, requester, &mut listed.deps) {
+            let item = match dep {
+                DepItem::Planned { folder, addon } => {
+                    let change = self
+                        .changes
+                        .iter()
+                        .enumerate()
+                        .find(|(_, c)| c.addon.eq_ignore_ascii_case(&addon));
+                    match (change, self.target_error) {
+                        (Some((i, change)), _) => {
+                            listed.used.insert(i);
+                            change_item(folder.as_str().to_owned(), change, self.p)
+                        }
+                        (None, Some(error)) => {
+                            let req = ItemRequest {
+                                request: folder.as_str().to_owned(),
+                                target: self.p.target.to_owned(),
+                                addon: Some(addon),
+                                r#ref: None,
+                                version: None,
+                            };
+                            failed_item(&req, None, None, error)
+                        }
+                        // Dropped under the lock: a concurrent run made it.
+                        (None, None) => continue,
+                    }
+                }
+                DepItem::Failed { folder, r#ref } => {
+                    let failure = self.mine.iter().find(|f| f.r#ref.as_ref() == Some(&r#ref));
+                    let Some(f) = failure else {
+                        continue;
+                    };
+                    dependency_failed(&folder, f)
+                }
+            };
+            let mut item = item;
+            item.deps.listed_as_dependency = true;
+            listed.items.push(item);
+        }
+    }
+}
+
+/// One planned target's result: requested items first, in request order, each followed
+/// by its dependencies; then changes nobody asked for by name, except the bookkeeping
+/// of `required_by` alone; then the dependencies of requesters no item lists.
 fn target_result(
     p: &Planned<'_>,
     outcomes: &[TxOutcome],
@@ -513,8 +724,13 @@ fn target_result(
         Some(o) if target_error.is_none() => &o.changes,
         _ => &[],
     };
-    let mut used: BTreeSet<usize> = BTreeSet::new();
-    let mut items = Vec::new();
+    let of = ItemsOf {
+        p,
+        changes,
+        mine: &mine,
+        target_error: target_error.as_ref(),
+    };
+    let mut listed = Listed::default();
     // Each ref's (or named addon's) first request: a later one collapsed into it.
     let mut seen: Vec<(String, String)> = Vec::new();
     for req in requested.iter().filter(|r| r.target == p.target) {
@@ -523,7 +739,7 @@ fn target_result(
             Ref::identity,
         );
         if let Some((_, first)) = seen.iter().find(|(i, _)| *i == identity) {
-            items.push(ItemResult {
+            listed.items.push(ItemResult {
                 request: req.request.clone(),
                 name: req.addon.clone(),
                 r#ref: req.r#ref.clone(),
@@ -535,6 +751,7 @@ fn target_result(
                 to_version: None,
                 folders: None,
                 required_by: None,
+                deps: ItemDeps::default(),
                 error: None,
             });
             continue;
@@ -544,7 +761,8 @@ fn target_result(
             (f.r#ref.is_some() || f.addon.is_some())
                 && req.names(f.addon.as_deref(), f.r#ref.as_ref())
         }) {
-            items.push(failed_item(req, f.addon.clone(), f.r#ref.clone(), &f.error));
+            let item = failed_item(req, f.addon.clone(), f.r#ref.clone(), &f.error);
+            listed.items.push(item);
             continue;
         }
         if let Some((i, change)) = changes
@@ -552,9 +770,12 @@ fn target_result(
             .enumerate()
             .find(|(_, c)| req.names(Some(&c.addon), Some(&c.r#ref)))
         {
-            used.insert(i);
-            let pinned = p.pinned_after(&change.addon);
-            items.push(change_item(req.request.clone(), change, pinned));
+            listed.used.insert(i);
+            listed.deps.insert(addon_identity(&change.addon));
+            listed
+                .items
+                .push(change_item(req.request.clone(), change, p));
+            of.dependencies(&mut listed, &change.addon);
             continue;
         }
         let planned = p
@@ -563,14 +784,14 @@ fn target_result(
             .find(|c| req.names(Some(&c.addon), Some(&c.r#ref)));
         match (planned, &target_error) {
             (Some(c), Some(error)) => {
-                items.push(failed_item(
+                listed.items.push(failed_item(
                     req,
                     Some(c.addon.clone()),
                     Some(c.r#ref.clone()),
                     error,
                 ));
             }
-            _ => items.push(ItemResult {
+            _ => listed.items.push(ItemResult {
                 request: req.request.clone(),
                 name: req.addon.clone(),
                 r#ref: req.r#ref.clone(),
@@ -582,16 +803,31 @@ fn target_result(
                 to_version: req.version.clone(),
                 folders: None,
                 required_by: None,
+                deps: ItemDeps::default(),
                 error: None,
             }),
         }
     }
     for (i, change) in changes.iter().enumerate() {
-        if !used.contains(&i) {
-            let pinned = p.pinned_after(&change.addon);
-            items.push(change_item(change.addon.clone(), change, pinned));
+        // `required_by` bookkeeping on another addon is the plan's, not an item.
+        let bookkeeping =
+            change.kind == ChangeKind::Edit && change.fields == [EditField::RequiredBy];
+        if listed.used.contains(&i) || bookkeeping {
+            continue;
+        }
+        listed.used.insert(i);
+        listed.deps.insert(addon_identity(&change.addon));
+        listed
+            .items
+            .push(change_item(change.addon.clone(), change, p));
+        of.dependencies(&mut listed, &change.addon);
+    }
+    if let Some(tp) = p.plan {
+        for requester in tp.dependencies.keys() {
+            of.dependencies(&mut listed, requester);
         }
     }
+    let items = listed.items;
     TargetResult {
         target: TargetRef {
             id: p.target.to_owned(),
@@ -627,26 +863,59 @@ fn failed_item(
         to_version: None,
         folders: None,
         required_by: None,
+        deps: ItemDeps::default(),
         error: Some(ItemError::from(error)),
     }
 }
 
+/// A dependency that resolved but failed to plan, as the item of the `folder` its
+/// requesters required (`details.required_by` names them).
+fn dependency_failed(folder: &FolderName, f: &PlanFailure) -> ItemResult {
+    let required_by: Vec<String> = f.error.details["required_by"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    ItemResult {
+        request: folder.as_str().to_owned(),
+        name: f.addon.clone(),
+        r#ref: f.r#ref.clone(),
+        status: ItemStatus::Failed,
+        skip_reason: None,
+        duplicate_of: None,
+        reason: Some(AddonReason::Dependency),
+        from_version: None,
+        to_version: None,
+        folders: None,
+        required_by: Some(required_by),
+        deps: ItemDeps::default(),
+        error: Some(ItemError::from(&f.error)),
+    }
+}
+
 /// A change as an item. An edit of the pin alone is `pinned` or `unpinned` by the
-/// planned record's new value (`pinned_after`).
-fn change_item(request: String, change: &Change, pinned_after: Option<bool>) -> ItemResult {
+/// planned record's new value. The planned record gives its `reason`, `required_by`
+/// and dependency fields (a removal has none).
+fn change_item(request: String, change: &Change, p: &Planned<'_>) -> ItemResult {
     let status = match change.kind {
         ChangeKind::Install => ItemStatus::Installed,
         ChangeKind::Update => ItemStatus::Updated,
         ChangeKind::Remove => ItemStatus::Removed,
         ChangeKind::Adopt => ItemStatus::Adopted,
         ChangeKind::Edit if change.fields == [EditField::Pinned] => {
-            if pinned_after == Some(false) {
+            if p.pinned_after(&change.addon) == Some(false) {
                 ItemStatus::Unpinned
             } else {
                 ItemStatus::Pinned
             }
         }
         ChangeKind::Edit => ItemStatus::Edited,
+    };
+    let record = p.record_after(&change.addon);
+    let deps = match (record, p.plan) {
+        (Some(_), Some(tp)) => ItemDeps::of(tp, &change.addon),
+        _ => ItemDeps::default(),
     };
     ItemResult {
         request,
@@ -655,11 +924,12 @@ fn change_item(request: String, change: &Change, pinned_after: Option<bool>) -> 
         status,
         skip_reason: None,
         duplicate_of: None,
-        reason: None,
+        reason: record.map(|r| r.reason),
         from_version: change.from_version.clone(),
         to_version: change.to_version.clone(),
         folders: Some(sorted(&change.folders)),
-        required_by: Some(Vec::new()),
+        required_by: Some(record.map(|r| r.required_by.clone()).unwrap_or_default()),
+        deps,
         error: None,
     }
 }
@@ -740,12 +1010,7 @@ pub fn render(
             .max()
             .unwrap_or(0);
         for i in &t.items {
-            writeln!(
-                w,
-                "  {:<width$}  {}",
-                item_name(i),
-                item_detail(i).trim_end()
-            )?;
+            writeln!(w, "  {:<width$}  {}", item_name(i), item_detail(i))?;
             if let Some(error) = &i.error {
                 writeln!(w, "  {:<width$}  fix: {}", "", error.fix)?;
             }
@@ -851,7 +1116,24 @@ fn header(command: &str, dry_run: bool, t: &TargetResult) -> String {
 }
 
 /// What an item's line says after its name.
+/// ` (dependency of LittleWigs)`, ` (dependency of A and B)`: what a dependency's line
+/// ends with; empty for anything else.
+pub fn dependency_suffix(reason: Option<AddonReason>, required_by: &[String]) -> String {
+    let names = match required_by {
+        _ if reason != Some(AddonReason::Dependency) => return String::new(),
+        [] => return String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    };
+    format!(" (dependency of {names})")
+}
+
 fn item_detail(i: &ItemResult) -> String {
+    let suffix = dependency_suffix(i.reason, i.required_by.as_deref().unwrap_or_default());
+    format!("{}{suffix}", status_detail(i))
+}
+
+fn status_detail(i: &ItemResult) -> String {
     let from = i.from_version.as_deref().unwrap_or("?");
     let to = i.to_version.as_deref().unwrap_or("?");
     match i.status {
@@ -952,6 +1234,7 @@ mod tests {
             key: None,
             changes,
             pinned: Vec::new(),
+            plan: None,
         }
     }
 
@@ -1103,6 +1386,7 @@ mod tests {
                 to_version: None,
                 folders: None,
                 required_by: None,
+                deps: ItemDeps::default(),
                 error: None,
             },
         );

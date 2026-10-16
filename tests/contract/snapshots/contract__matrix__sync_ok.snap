@@ -1,6 +1,5 @@
 ---
 source: tests/contract/matrix.rs
-assertion_line: 105
 expression: s.stable(&c.envelope)
 ---
 {
@@ -48,6 +47,7 @@ expression: s.stable(&c.envelope)
         "error": null,
         "items": [
           {
+            "bridge_dependencies": [],
             "error": null,
             "folders": {
               "added": [
@@ -60,14 +60,17 @@ expression: s.stable(&c.envelope)
             },
             "from_version": null,
             "name": "WeakAuras",
+            "reason": "explicit",
             "ref": "gh:WeakAuras/WeakAuras2",
             "request": "weakauras",
             "required_by": [],
             "skip_reason": null,
             "status": "installed",
-            "to_version": "5.19.2"
+            "to_version": "5.19.2",
+            "unresolved": []
           },
           {
+            "bridge_dependencies": [],
             "error": null,
             "folders": {
               "added": [
@@ -80,12 +83,14 @@ expression: s.stable(&c.envelope)
             },
             "from_version": null,
             "name": "Foo",
+            "reason": "explicit",
             "ref": "gh:o/foo",
             "request": "gh:o/foo",
             "required_by": [],
             "skip_reason": null,
             "status": "installed",
-            "to_version": "v1"
+            "to_version": "v1",
+            "unresolved": []
           }
         ],
         "kind": "sync",

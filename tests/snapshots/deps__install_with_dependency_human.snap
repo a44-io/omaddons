@@ -1,0 +1,8 @@
+---
+source: tests/deps.rs
+assertion_line: 1017
+expression: text
+---
+retail: installed LittleWigs v1 (1 folders)
+retail: installed BigWigs v1 (1 folders) (dependency of LittleWigs)
+tx <tx> · undo: omaddons undo <tx>

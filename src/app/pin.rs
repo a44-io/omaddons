@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 
 use super::adopt::hints::{adopt_fixes, adopting};
 use super::engine::Engine;
-use super::outcome::{ItemRequest, ItemResult, ItemStatus, TargetRef, TargetsData, TargetsOutcome};
+use super::outcome::{
+    ItemDeps, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetsData, TargetsOutcome,
+};
 use super::world::{World, names_addon};
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -227,6 +229,7 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
                     to_version: Some(a.version.clone()),
                     folders: None,
                     required_by: None,
+                    deps: ItemDeps::default(),
                     error: None,
                 },
             )),

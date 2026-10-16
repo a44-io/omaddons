@@ -22,6 +22,7 @@ expression: stable(&bare)
         "error": null,
         "items": [
           {
+            "bridge_dependencies": [],
             "error": null,
             "folders": {
               "added": [],
@@ -34,12 +35,14 @@ expression: stable(&bare)
             },
             "from_version": "v1",
             "name": "Foo",
+            "reason": "explicit",
             "ref": "gh:o/foo",
             "request": "Foo",
             "required_by": [],
             "skip_reason": null,
             "status": "updated",
-            "to_version": "v2"
+            "to_version": "v2",
+            "unresolved": []
           }
         ],
         "kind": "update",
@@ -71,6 +74,7 @@ expression: stable(&bare)
         "error": null,
         "items": [
           {
+            "bridge_dependencies": [],
             "error": null,
             "folders": {
               "added": [],
@@ -83,14 +87,17 @@ expression: stable(&bare)
             },
             "from_version": "v1",
             "name": "Bar",
+            "reason": "explicit",
             "ref": "gh:o/bar",
             "request": "Bar",
             "required_by": [],
             "skip_reason": null,
             "status": "updated",
-            "to_version": "v2"
+            "to_version": "v2",
+            "unresolved": []
           },
           {
+            "bridge_dependencies": [],
             "error": null,
             "folders": {
               "added": [],
@@ -103,12 +110,14 @@ expression: stable(&bare)
             },
             "from_version": "v1",
             "name": "Foo",
+            "reason": "explicit",
             "ref": "gh:o/foo",
             "request": "Foo",
             "required_by": [],
             "skip_reason": null,
             "status": "updated",
-            "to_version": "v2"
+            "to_version": "v2",
+            "unresolved": []
           }
         ],
         "kind": "update",

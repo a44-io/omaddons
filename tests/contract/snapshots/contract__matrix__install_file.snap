@@ -22,6 +22,7 @@ expression: s.stable(&c.envelope)
     "dry_run": false,
     "items": [
       {
+        "bridge_dependencies": [],
         "channel": "stable",
         "error": null,
         "folders": {
@@ -35,10 +36,13 @@ expression: s.stable(&c.envelope)
         },
         "from_version": null,
         "name": "Foo",
+        "reason": "explicit",
         "ref": "gh:o/foo",
         "request": "gh:o/foo",
+        "required_by": [],
         "status": "installed",
         "to_version": "1",
+        "unresolved": [],
         "version_confidence": "toc"
       }
     ],

@@ -1,0 +1,103 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 322
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "atomic_swap": true,
+    "creates_addons_dir": false,
+    "dry_run": false,
+    "items": [
+      {
+        "bridge_dependencies": [],
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [
+            "LittleWigs"
+          ],
+          "recorded": [],
+          "removed": [],
+          "replaced": [],
+          "skipped": []
+        },
+        "from_version": null,
+        "name": "LittleWigs",
+        "reason": "explicit",
+        "ref": "gh:o/littlewigs",
+        "request": "littlewigs",
+        "required_by": [],
+        "status": "installed",
+        "to_version": "v1",
+        "unresolved": [
+          {
+            "candidates": [],
+            "folder": "Nowhere",
+            "reason": "no_source"
+          }
+        ],
+        "version_confidence": "release"
+      },
+      {
+        "bridge_dependencies": [],
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [
+            "BigWigs"
+          ],
+          "recorded": [],
+          "removed": [],
+          "replaced": [],
+          "skipped": []
+        },
+        "from_version": null,
+        "name": "BigWigs",
+        "reason": "dependency",
+        "ref": "gh:o/bigwigs",
+        "request": "BigWigs",
+        "required_by": [
+          "LittleWigs"
+        ],
+        "status": "installed",
+        "to_version": "v1",
+        "unresolved": [],
+        "version_confidence": "release"
+      }
+    ],
+    "kind": "install",
+    "reload_required": "none",
+    "target": {
+      "id": "retail",
+      "key": "<ulid>"
+    },
+    "tx": "<ulid>"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "missing_dependency",
+      "fix": "no keyless source ships Nowhere; it may only be on CurseForge or Wago, which arrive in M5",
+      "fix_argv": null,
+      "message": "LittleWigs on retail requires Nowhere, which was not installed: no keyless source ships it"
+    }
+  ]
+}

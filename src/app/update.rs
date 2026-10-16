@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 use super::adopt::hints::{adopt_fixes, adopting};
 use super::engine::Engine;
 use super::outcome::{
-    ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef, TargetResult,
-    TargetsData, TargetsOutcome,
+    ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef, TargetResult,
+    TargetsData, TargetsOutcome, sort_keeping_dependencies,
 };
 use super::world::{World, names_addon};
 use crate::cli::Context;
@@ -341,7 +341,6 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
 
     let mut data = match &done {
         Some(done) => {
-            requested.extend(dependency_failures(done));
             let mut data = TargetsData::build(done, run, &requested);
             settle_failures(&mut data, done);
             for o in &done.outcomes {
@@ -385,6 +384,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
                     to_version: None,
                     folders: None,
                     required_by: None,
+                    deps: ItemDeps::default(),
                     error: Some(ItemError::from(&error)),
                 },
             );
@@ -400,10 +400,10 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
             }));
         }
     }
+    // By name, each with its dependencies right after it.
     for t in &mut data.targets {
-        t.items.sort_by(|a, b| {
-            let name = |i: &ItemResult| i.name.clone().unwrap_or_else(|| i.request.clone());
-            name(a).to_lowercase().cmp(&name(b).to_lowercase())
+        sort_keeping_dependencies(&mut t.items, |i| {
+            i.name.as_deref().unwrap_or(&i.request).to_lowercase()
         });
     }
     // Each failed item, mirrored as a warning (M1 install's rule).
@@ -543,6 +543,7 @@ fn item(s: &InScope<'_>, status: ItemStatus) -> ItemResult {
         to_version: None,
         folders: None,
         required_by: None,
+        deps: ItemDeps::default(),
         error: None,
     }
 }
@@ -566,29 +567,6 @@ fn failed(s: &InScope<'_>, error: ItemError) -> ItemResult {
         error: Some(error),
         ..item(s, ItemStatus::Failed)
     }
-}
-
-/// A dependency that resolved but failed to plan, as a request of its own, so it is a
-/// failed item (M2-D9): named by the folder its requester required, once per ref.
-fn dependency_failures(done: &TxOutcomes) -> Vec<ItemRequest> {
-    let mut out: Vec<ItemRequest> = Vec::new();
-    for tp in &done.plan.targets {
-        for (folder, r) in tp.dependencies.values().flat_map(|d| &d.failed) {
-            let seen = out
-                .iter()
-                .any(|q| q.target == tp.target && q.r#ref.as_ref() == Some(r));
-            if !seen {
-                out.push(ItemRequest {
-                    request: folder.to_string(),
-                    target: tp.target.clone(),
-                    addon: None,
-                    r#ref: Some(r.clone()),
-                    version: None,
-                });
-            }
-        }
-    }
-    out
 }
 
 /// What the engine's failures mean for `update`: a release of an addon it was asked

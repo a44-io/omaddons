@@ -22,6 +22,7 @@ expression: s.stable(&c.envelope)
     "dry_run": false,
     "items": [
       {
+        "bridge_dependencies": [],
         "channel": "stable",
         "error": null,
         "folders": {
@@ -35,10 +36,13 @@ expression: s.stable(&c.envelope)
         },
         "from_version": null,
         "name": "WeakAuras",
+        "reason": "explicit",
         "ref": "gh:WeakAuras/WeakAuras2",
         "request": "weakauras",
+        "required_by": [],
         "status": "installed",
         "to_version": "5.19.2",
+        "unresolved": [],
         "version_confidence": "release"
       }
     ],

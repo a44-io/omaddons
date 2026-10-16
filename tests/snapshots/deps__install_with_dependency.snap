@@ -1,0 +1,91 @@
+---
+source: tests/deps.rs
+assertion_line: 1014
+expression: "support::stable(&r.expect(0))"
+---
+{
+  "command": "install",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<tx>"
+      ],
+      "command": "omaddons undo <tx>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "atomic_swap": true,
+    "creates_addons_dir": false,
+    "dry_run": false,
+    "items": [
+      {
+        "bridge_dependencies": [],
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [
+            "LittleWigs"
+          ],
+          "recorded": [],
+          "removed": [],
+          "replaced": [],
+          "skipped": []
+        },
+        "from_version": null,
+        "name": "LittleWigs",
+        "reason": "explicit",
+        "ref": "gh:o/littlewigs",
+        "request": "littlewigs",
+        "required_by": [],
+        "status": "installed",
+        "to_version": "v1",
+        "unresolved": [],
+        "version_confidence": "release"
+      },
+      {
+        "bridge_dependencies": [],
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [
+            "BigWigs"
+          ],
+          "recorded": [],
+          "removed": [],
+          "replaced": [],
+          "skipped": []
+        },
+        "from_version": null,
+        "name": "BigWigs",
+        "reason": "dependency",
+        "ref": "gh:o/bigwigs",
+        "request": "BigWigs",
+        "required_by": [
+          "LittleWigs"
+        ],
+        "status": "installed",
+        "to_version": "v1",
+        "unresolved": [],
+        "version_confidence": "release"
+      }
+    ],
+    "kind": "install",
+    "reload_required": "none",
+    "target": {
+      "id": "retail",
+      "key": "<key>"
+    },
+    "tx": "<tx>"
+  },
+  "exit_code": 0,
+  "meta": "<meta>",
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

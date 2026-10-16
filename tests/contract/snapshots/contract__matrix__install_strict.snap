@@ -22,6 +22,7 @@ expression: s.stable(&c.envelope)
     "dry_run": false,
     "items": [
       {
+        "bridge_dependencies": [],
         "channel": "stable",
         "error": null,
         "folders": {
@@ -35,13 +36,17 @@ expression: s.stable(&c.envelope)
         },
         "from_version": "1",
         "name": "Foo",
+        "reason": "explicit",
         "ref": "gh:o/foo",
         "request": "gh:o/foo",
+        "required_by": [],
         "status": "updated",
         "to_version": "v1",
+        "unresolved": [],
         "version_confidence": "release"
       },
       {
+        "bridge_dependencies": [],
         "channel": null,
         "error": {
           "code": "no_compatible_release",
@@ -58,10 +63,13 @@ expression: s.stable(&c.envelope)
         },
         "from_version": null,
         "name": null,
+        "reason": null,
         "ref": "gh:o/bar",
         "request": "gh:o/bar",
+        "required_by": [],
         "status": "failed",
         "to_version": null,
+        "unresolved": [],
         "version_confidence": null
       }
     ],

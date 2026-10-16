@@ -642,6 +642,22 @@ Each item's `status` is `installed`, `updated`, `unchanged` or `failed`, or, whe
 
 A dependency that resolves but fails to install makes the run `partial`, with a warning naming it and what requires it. The requesting addon still installs.
 
+**In the output.** Each dependency installed (or failed) is an item of its own, right after the item that required it, with its `request` set to the folder that was required (a dependency's own dependencies follow it). The text says `(dependency of LittleWigs)`:
+
+```text
+retail: installed LittleWigs v1 (1 folders)
+retail: installed BigWigs v1 (1 folders) (dependency of LittleWigs)
+```
+
+Every item carries:
+
+- `reason`: `explicit` or `dependency` (`null` when nothing is known, such as a ref that does not parse);
+- `required_by`;
+- `bridge_dependencies` (`[{folder, requires}]`): what its other folders (bridges, plugins such as `Masque_Dominos`) work with and nothing installs;
+- `unresolved` (`[{folder, reason, candidates}]`): its required folders that were not installed, with up to three candidate refs, best first.
+
+With `-v` it also carries `optional_dependencies` (its `## OptionalDeps`, never installed). A bridge requirement warns `bridge_dependency` once, when the addon is first installed, with a fix that installs it (by catalog name, else by the ref the resolver finds); later installs and updates keep the field and say nothing more. After the `undo` hint, `commands` offers at most three `omaddons install <candidate> -t <id>` hints (action `install`): unresolved candidates in item order, then bridge requirements. `update`, `sync` and `pin` items carry the same fields, each dependency right after its requester.
+
 `required_by` stays true. An update whose new release no longer requires any folder of a dependency drops the addon from that dependency's `required_by`, in the same transaction and under `--no-deps` too. A dependency left required by nothing warns `orphaned_dependency` (see [`remove`](#remove-addon)). Installing a dependency by name makes it `explicit`, and an explicit addon is never an orphan.
 
 ### `update [ADDON]...`
@@ -1163,6 +1179,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `local_changes_replaced` | an install or update replaced folders whose files had changed on disk (it names up to 10 and counts them all); the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that the snapshot keeps them |
 | `still_required` | a removed addon is required by addons that stay, which will not load without it; the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that undo restores it |
 | `orphaned_dependency` | a remove or update left dependencies required by nothing; the fix is one `omaddons remove <names…> -t <id>` naming them all |
+| `bridge_dependency` | a newly installed addon's other folder (a bridge or plugin) works with an addon that is not installed; nothing is installed for it, and the fix installs it (`omaddons install <name or ref> -t <id>`), or says no keyless source ships it. Only on the addon's first install |
 
 </details>
 
@@ -1607,7 +1624,7 @@ Journals are recovered by the next command that commits a change, not by read co
 
 | Capability | State | Planned |
 |---|---|---|
-| Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing; WoWInterface and Tukui lookups, bridge folders and the dependency items in output are on the way | M2 |
+| Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing and updating, with dependency items, bridge requirements and unresolved folders in the output; WoWInterface and Tukui lookups are on the way | M2 |
 | Adopting addons installed by other managers | ✅ `adopt`; other `status`, `outdated` and `install` hints point to it soon | M2 |
 | `addons.toml`, `export`, `sync`, `copy` between clients | ⚠️ `sync` (with `--locked` and `--prune`) and `export` work; `copy` is on the way | M2 |
 | `search` | ❌ catalog names and links only | M2 |

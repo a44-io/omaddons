@@ -33,6 +33,7 @@ expression: s.stable(&c.envelope)
         "error": null,
         "items": [
           {
+            "bridge_dependencies": [],
             "error": null,
             "folders": {
               "added": [],
@@ -45,12 +46,14 @@ expression: s.stable(&c.envelope)
             },
             "from_version": "5.19.2",
             "name": "WeakAuras",
+            "reason": "explicit",
             "ref": "gh:WeakAuras/WeakAuras2",
             "request": "weakauras",
             "required_by": [],
             "skip_reason": null,
             "status": "pinned",
-            "to_version": "5.19.2"
+            "to_version": "5.19.2",
+            "unresolved": []
           }
         ],
         "kind": "pin",

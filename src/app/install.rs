@@ -9,7 +9,7 @@
 //! independently: some failing is `partial` (exit 0, or 6 with `--strict`); all failing
 //! is the first item's error.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -18,7 +18,9 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::engine::Engine;
-use super::outcome::sorted;
+use super::outcome::{
+    DepItem, ItemDeps, addon_identity, dependency_items, dependency_suffix, sorted,
+};
 pub use super::outcome::{ItemError, ItemStatus, ModeNote, SkipReason, TargetRef};
 use super::resolve_args::{catalog_name, parse_ref};
 use super::world::World;
@@ -26,9 +28,12 @@ use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::{resolve_one, with_target};
 use crate::engine::edit::EditField;
-use crate::engine::plan::{ChangeKind, FolderSummary, PinIntent, PlanFailure, RequestedChange};
+use crate::engine::plan::{
+    ChangeKind, FolderSummary, PinIntent, PlanFailure, RequestedChange, TargetPlan, Unresolved,
+    UnresolvedReason,
+};
 use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
-use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
+use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::model::{
     AddonReason, AddonRecord, Channel, FolderName, Ref, ReloadRequired, RunId, TxId, TxKind,
     VersionConfidence,
@@ -36,6 +41,7 @@ use crate::model::{
 use crate::output::{Outcome, Style};
 use crate::resolve::cache::{Freshness, ReleaseCache};
 use crate::resolve::catalog::Catalog;
+use crate::resolve::deps::BridgeDependency;
 use crate::rules::{RulesTable, TargetKind};
 use crate::sources::refs::ParsedRef;
 use crate::state::memo::CandidateFact;
@@ -121,9 +127,70 @@ pub struct InstallItem {
     pub channel: Option<Channel>,
     pub folders: FolderSummary,
     pub error: Option<ItemError>,
+    /// `explicit` or `dependency`; `null` when no record is known (a parse failure).
+    pub reason: Option<AddonReason>,
+    /// The addons that require it.
+    pub required_by: Vec<String>,
+    /// What its other folders (bridges, plugins) work with that is not installed.
+    pub bridge_dependencies: Vec<BridgeDependency>,
+    /// The required folders nothing was installed for, and why.
+    pub unresolved: Vec<Unresolved>,
     /// `-v` only: where the installed release came from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asset_url: Option<String>,
+    /// `-v` only: its needed folders' `OptionalDeps`, never installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optional_dependencies: Option<Vec<FolderName>>,
+}
+
+impl InstallItem {
+    /// An item with nothing but its request and status.
+    fn bare(request: String, r#ref: Option<Ref>, status: ItemStatus) -> Self {
+        Self {
+            request,
+            r#ref,
+            name: None,
+            status,
+            skip_reason: None,
+            duplicate_of: None,
+            fields: Vec::new(),
+            from_version: None,
+            to_version: None,
+            version_confidence: None,
+            channel: None,
+            folders: FolderSummary::default(),
+            error: None,
+            reason: None,
+            required_by: Vec::new(),
+            bridge_dependencies: Vec::new(),
+            unresolved: Vec::new(),
+            asset_url: None,
+            optional_dependencies: None,
+        }
+    }
+
+    /// Its record's `reason` and `required_by`, and what `tp` reports about its
+    /// dependencies (`optional_dependencies` under `verbose`).
+    fn with_dependencies(
+        mut self,
+        record: Option<&AddonRecord>,
+        tp: Option<&TargetPlan>,
+        verbose: bool,
+    ) -> Self {
+        if let Some(record) = record {
+            self.reason = Some(record.reason);
+            self.required_by.clone_from(&record.required_by);
+        }
+        let name = self.name.clone().unwrap_or_else(|| self.request.clone());
+        if let Some(tp) = tp {
+            let deps = ItemDeps::of(tp, &name);
+            self.bridge_dependencies = deps.bridge_dependencies.unwrap_or_default();
+            self.unresolved = deps.unresolved.unwrap_or_default();
+            self.optional_dependencies =
+                verbose.then_some(deps.optional_dependencies.unwrap_or_default());
+        }
+        self
+    }
 }
 
 /// `install`'s outcome.
@@ -137,8 +204,6 @@ pub struct InstallOutcome {
     reinstall: bool,
     /// The requests reinstalled from the blob cache, for the human line.
     from_cache: Vec<String>,
-    /// Dependencies that resolved but did not install (each one a warning).
-    failed_dependencies: usize,
     /// The global lock's hold time, for the `-v` log line.
     pub lock_held_ms: Option<u64>,
     /// Why addons were left unchanged, for `-v` log lines.
@@ -146,13 +211,13 @@ pub struct InstallOutcome {
 }
 
 impl InstallOutcome {
+    /// Failed items, dependencies included.
     fn failed(&self) -> usize {
         self.data
             .items
             .iter()
             .filter(|i| i.status == ItemStatus::Failed)
             .count()
-            + self.failed_dependencies
     }
 }
 
@@ -186,13 +251,9 @@ impl Outcome for InstallOutcome {
                 format!(
                     "{} of {} addons did not install (--strict)",
                     self.failed(),
-                    self.data.items.len() + self.failed_dependencies
+                    self.data.items.len()
                 ),
-                Suggestion::text(if self.failed_dependencies == 0 {
-                    "see data.items[].error for each failed addon"
-                } else {
-                    "see data.items[].error for each failed addon, and the warnings for dependencies"
-                }),
+                Suggestion::text("see data.items[].error for each failed addon"),
             )
         })
     }
@@ -218,6 +279,7 @@ impl Outcome for InstallOutcome {
         for item in &d.items {
             let name = item.name.as_deref().unwrap_or(&item.request);
             let folders = item.folders.added.len() + item.folders.replaced.len();
+            let dependency = dependency_suffix(item.reason, &item.required_by);
             match item.status {
                 ItemStatus::Installed | ItemStatus::Updated => {
                     let reinstalled = self.reinstall
@@ -240,7 +302,7 @@ impl Outcome for InstallOutcome {
                     };
                     writeln!(
                         w,
-                        "{id}: {verb} {name} {}{from} ({folders} folders)",
+                        "{id}: {verb} {name} {}{from} ({folders} folders){dependency}",
                         item.to_version.as_deref().unwrap_or("?")
                     )?;
                     let skipped: Vec<&str> = item
@@ -308,7 +370,7 @@ impl Outcome for InstallOutcome {
                         .error
                         .as_ref()
                         .map_or(("", ""), |e| (e.code.wire(), e.message.as_str()));
-                    writeln!(w, "{id}: failed {name}: {code}: {message}")?;
+                    writeln!(w, "{id}: failed {name}{dependency}: {code}: {message}")?;
                 }
             }
         }
@@ -556,7 +618,9 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         warnings.push(warning);
     }
     let built: Vec<InstallItem> = built.into_iter().map(|(item, _)| item).collect();
-    // A dependency that resolved but did not install: the run is partial (M2-D9).
+    let built = with_dependency_items(built, &done, outcome, verbose);
+    // A dependency that resolved but did not install: a failed item (the run is partial,
+    // M2-D9), and a warning saying what required it.
     let failed_dependencies: Vec<&PlanFailure> = done
         .failures
         .iter()
@@ -624,6 +688,8 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             .chain(["-t", id.as_str()]);
         commands.push(CommandHint::new("adopt", argv, false));
     }
+    let id = outcome.map_or_else(|| target.target.id.clone(), |o| o.target.clone());
+    commands.extend(install_hints(&built, &unique, &id));
     let swapped = tx.is_some();
     Ok(InstallOutcome {
         data: InstallData {
@@ -649,7 +715,6 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         strict: args.strict,
         reinstall: args.reinstall,
         from_cache,
-        failed_dependencies: failed_dependencies.len(),
         lock_held_ms: outcome.and_then(|o| o.lock_held_ms),
         notes: outcome
             .map(|o| o.notes.clone())
@@ -877,28 +942,21 @@ fn build_items(
             .url
             .clone()
     };
+    let tp = done.plan.targets.first();
     // Each ref's first request, by identity: a later one collapsed into it.
     let mut seen: Vec<(String, String)> = Vec::new();
     items
         .iter()
         .map(|item| {
             let failed = |r: Option<Ref>, error: &Error| {
+                let known = r.as_ref().and_then(|r| {
+                    record.and_then(|rec| rec.addons.values().find(|a| a.r#ref == *r))
+                });
                 let item = InstallItem {
-                    request: item.request.clone(),
-                    r#ref: r,
-                    name: None,
-                    status: ItemStatus::Failed,
-                    skip_reason: None,
-                    duplicate_of: None,
-                    fields: Vec::new(),
-                    from_version: None,
-                    to_version: None,
-                    version_confidence: None,
-                    channel: None,
-                    folders: FolderSummary::default(),
                     error: Some(ItemError::from(error)),
-                    asset_url: None,
-                };
+                    ..InstallItem::bare(item.request.clone(), r, ItemStatus::Failed)
+                }
+                .with_dependencies(known, None, false);
                 (item, Some(error.clone()))
             };
             let p = match &item.parsed {
@@ -908,20 +966,13 @@ fn build_items(
             let identity = p.r#ref.identity();
             if let Some((_, first)) = seen.iter().find(|(i, _)| *i == identity) {
                 let duplicate = InstallItem {
-                    request: item.request.clone(),
-                    r#ref: Some(p.r#ref.clone()),
-                    name: None,
-                    status: ItemStatus::Skipped,
                     skip_reason: Some(SkipReason::Duplicate),
                     duplicate_of: Some(first.clone()),
-                    fields: Vec::new(),
-                    from_version: None,
-                    to_version: None,
-                    version_confidence: None,
-                    channel: None,
-                    folders: FolderSummary::default(),
-                    error: None,
-                    asset_url: None,
+                    ..InstallItem::bare(
+                        item.request.clone(),
+                        Some(p.r#ref.clone()),
+                        ItemStatus::Skipped,
+                    )
                 };
                 return (duplicate, None);
             }
@@ -982,46 +1033,180 @@ fn build_items(
                         _ => Vec::new(),
                     };
                     let item = InstallItem {
-                        request: item.request.clone(),
-                        r#ref: Some(p.r#ref.clone()),
                         name: Some(change.addon.clone()),
-                        status,
-                        skip_reason: None,
-                        duplicate_of: None,
                         fields,
                         from_version: change.from_version.clone(),
                         to_version: change.to_version.clone(),
                         version_confidence: planned.map(|r| r.version_confidence),
                         channel: planned.map(|r| r.channel),
                         folders: sorted(&change.folders),
-                        error: None,
                         asset_url: asset_url(planned.and_then(|r| r.release_id.as_ref())),
-                    };
+                        ..InstallItem::bare(item.request.clone(), Some(p.r#ref.clone()), status)
+                    }
+                    .with_dependencies(planned.or(installed), tp, verbose);
                     (item, None)
                 }
                 None => {
                     let item = InstallItem {
-                        request: item.request.clone(),
-                        r#ref: Some(p.r#ref.clone()),
                         name: installed.map(|a| a.name.clone()),
-                        status: ItemStatus::Unchanged,
-                        skip_reason: None,
-                        duplicate_of: None,
-                        fields: Vec::new(),
                         from_version: installed.map(|a| a.version.clone()),
                         to_version: installed.map(|a| a.version.clone()),
                         version_confidence: installed.map(|a| a.version_confidence),
                         channel: installed.map(|a| a.channel),
-                        folders: FolderSummary::default(),
-                        error: None,
-                        asset_url: None,
-                    };
+                        ..InstallItem::bare(
+                            item.request.clone(),
+                            Some(p.r#ref.clone()),
+                            ItemStatus::Unchanged,
+                        )
+                    }
+                    .with_dependencies(installed, tp, verbose);
                     (item, None)
                 }
             }
         })
         .collect()
 }
+
+/// `items` with each requester's dependencies right after it, in resolution order (a
+/// dependency's own follow it), every dependency once; then those of requesters no item
+/// lists. Each is named by the folder that was required: installed or updated with its
+/// change, or failed with its failure (`details.required_by`).
+fn with_dependency_items(
+    items: Vec<InstallItem>,
+    done: &TxOutcomes,
+    outcome: Option<&TxOutcome>,
+    verbose: bool,
+) -> Vec<InstallItem> {
+    let Some(tp) = done.plan.targets.first() else {
+        return items;
+    };
+    let target_failure = done.failures.iter().find(|f| f.r#ref.is_none());
+    let planned = |addon: &str| {
+        tp.work
+            .iter()
+            .filter(|w| w.addon.eq_ignore_ascii_case(addon))
+            .find_map(|w| w.record())
+    };
+    let item_of = |dep: DepItem| -> Option<InstallItem> {
+        match dep {
+            DepItem::Planned { folder, addon } => {
+                let record = planned(&addon);
+                let request = folder.as_str().to_owned();
+                let change = outcome.and_then(|o| {
+                    o.changes
+                        .iter()
+                        .find(|c| c.addon.eq_ignore_ascii_case(&addon))
+                });
+                let item = match (change, target_failure) {
+                    (Some(change), None) => {
+                        let status = match change.kind {
+                            ChangeKind::Update => ItemStatus::Updated,
+                            _ => ItemStatus::Installed,
+                        };
+                        InstallItem {
+                            name: Some(change.addon.clone()),
+                            from_version: change.from_version.clone(),
+                            to_version: change.to_version.clone(),
+                            version_confidence: record.map(|r| r.version_confidence),
+                            channel: record.map(|r| r.channel),
+                            folders: sorted(&change.folders),
+                            ..InstallItem::bare(request, Some(change.r#ref.clone()), status)
+                        }
+                    }
+                    (_, Some(f)) => InstallItem {
+                        name: Some(addon),
+                        error: Some(ItemError::from(&f.error)),
+                        ..InstallItem::bare(
+                            request,
+                            record.map(|r| r.r#ref.clone()),
+                            ItemStatus::Failed,
+                        )
+                    },
+                    // Dropped under the lock: a concurrent run made it.
+                    (None, None) => return None,
+                };
+                Some(item.with_dependencies(record, Some(tp), verbose))
+            }
+            DepItem::Failed { folder, r#ref } => {
+                let f = done
+                    .failures
+                    .iter()
+                    .find(|f| f.r#ref.as_ref() == Some(&r#ref))?;
+                let required_by = f.error.details["required_by"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect();
+                Some(InstallItem {
+                    name: f.addon.clone(),
+                    error: Some(ItemError::from(&f.error)),
+                    reason: Some(AddonReason::Dependency),
+                    required_by,
+                    ..InstallItem::bare(folder.as_str().to_owned(), Some(r#ref), ItemStatus::Failed)
+                })
+            }
+        }
+    };
+    let mut listed: BTreeSet<String> = items
+        .iter()
+        .filter_map(|i| i.name.as_deref())
+        .map(addon_identity)
+        .chain(
+            items
+                .iter()
+                .filter_map(|i| i.r#ref.as_ref())
+                .map(Ref::identity),
+        )
+        .collect();
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let requester = item.name.clone();
+        out.push(item);
+        if let Some(requester) = requester {
+            let deps = dependency_items(&tp.dependencies, &requester, &mut listed);
+            out.extend(deps.into_iter().filter_map(&item_of));
+        }
+    }
+    for requester in tp.dependencies.keys() {
+        let deps = dependency_items(&tp.dependencies, requester, &mut listed);
+        out.extend(deps.into_iter().filter_map(&item_of));
+    }
+    out
+}
+
+/// At most three `install <candidate> -t <id>` hints (action `install`): the candidates
+/// of the items' unresolved requirements in item order (not a project that does not ship
+/// the folder here), then what each `bridge_dependency` warning's fix installs.
+fn install_hints(items: &[InstallItem], warnings: &[Warning], target: &str) -> Vec<CommandHint> {
+    let candidates = items
+        .iter()
+        .flat_map(|i| &i.unresolved)
+        .filter(|u| u.reason != UnresolvedReason::NotShipped)
+        .flat_map(|u| &u.candidates)
+        .map(|c| {
+            ["omaddons", "install", &c.to_string(), "-t", target]
+                .map(str::to_owned)
+                .to_vec()
+        });
+    let bridges = warnings
+        .iter()
+        .filter(|w| matches!(w.code, WarningCode::BridgeDependency))
+        .filter_map(|w| w.fix.as_ref()?.argv().map(<[String]>::to_vec));
+    let mut argvs: Vec<Vec<String>> = Vec::new();
+    for argv in candidates.chain(bridges) {
+        if argvs.len() < INSTALL_HINTS_MAX && !argvs.contains(&argv) {
+            argvs.push(argv);
+        }
+    }
+    argvs
+        .into_iter()
+        .map(|argv| CommandHint::new("install", argv, false))
+        .collect()
+}
+
+/// How many `install` hints a run suggests at most.
+const INSTALL_HINTS_MAX: usize = 3;
 
 /// `a`, `a and b`, `a, b and c`.
 fn and_list(items: &[String]) -> String {
@@ -1085,17 +1270,8 @@ mod tests {
     fn item(request: &str, status: ItemStatus, version: Option<&str>) -> InstallItem {
         let failed = status == ItemStatus::Failed;
         InstallItem {
-            request: request.into(),
-            r#ref: None,
             name: (!failed).then(|| request.to_owned()),
-            status,
-            skip_reason: None,
-            duplicate_of: None,
-            fields: Vec::new(),
-            from_version: None,
             to_version: version.map(str::to_owned),
-            version_confidence: None,
-            channel: None,
             folders: FolderSummary {
                 added: vec![FolderName::new(request).unwrap()],
                 ..FolderSummary::default()
@@ -1107,7 +1283,7 @@ mod tests {
                     Suggestion::text("x"),
                 ))
             }),
-            asset_url: None,
+            ..InstallItem::bare(request.into(), None, status)
         }
     }
 
@@ -1138,7 +1314,6 @@ mod tests {
             strict,
             reinstall: false,
             from_cache: Vec::new(),
-            failed_dependencies: 0,
             lock_held_ms: None,
             notes: Vec::new(),
         }

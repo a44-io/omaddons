@@ -33,6 +33,7 @@ expression: stable(&envelope)
         "error": null,
         "items": [
           {
+            "bridge_dependencies": [],
             "error": null,
             "folders": {
               "added": [],
@@ -45,12 +46,14 @@ expression: stable(&envelope)
             },
             "from_version": "v1",
             "name": "Foo",
+            "reason": "explicit",
             "ref": "gh:o/foo",
             "request": "foo",
             "required_by": [],
             "skip_reason": null,
             "status": "pinned",
-            "to_version": "v1"
+            "to_version": "v1",
+            "unresolved": []
           }
         ],
         "kind": "pin",

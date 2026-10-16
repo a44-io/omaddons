@@ -33,6 +33,7 @@ expression: s.stable(&c.envelope)
         "error": null,
         "items": [
           {
+            "bridge_dependencies": [],
             "error": null,
             "folders": {
               "added": [],
@@ -45,12 +46,14 @@ expression: s.stable(&c.envelope)
             },
             "from_version": null,
             "name": "Foo",
+            "reason": "explicit",
             "ref": "gh:o/foo",
             "request": "Foo",
             "required_by": [],
             "skip_reason": null,
             "status": "adopted",
-            "to_version": "v1"
+            "to_version": "v1",
+            "unresolved": []
           }
         ],
         "kind": "adopt",

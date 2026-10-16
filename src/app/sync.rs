@@ -18,8 +18,8 @@ use serde_json::json;
 
 use super::engine::Engine;
 use super::outcome::{
-    ItemError, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetResult, TargetsData,
-    TargetsOutcome,
+    ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetResult, TargetsData,
+    TargetsOutcome, sort_keeping_dependencies,
 };
 use super::resolve_args::{catalog_name, resolve_entry};
 use super::world::World;
@@ -347,6 +347,7 @@ fn failed_item(request: String, r: Option<Ref>, error: &Error) -> ItemResult {
         to_version: None,
         folders: None,
         required_by: None,
+        deps: ItemDeps::default(),
         error: Some(ItemError::from(error)),
     }
 }
@@ -543,6 +544,7 @@ fn target_work(
                     to_version: a.map(|a| a.version.clone()),
                     folders: None,
                     required_by: None,
+                    deps: ItemDeps::default(),
                     error: None,
                 });
             }
@@ -674,7 +676,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     let mut data = match &done {
         Some(done) => {
             let mut data = TargetsData::build(done, run, &requested);
-            settle_failures(&mut data, done, &ctx.argv);
+            settle_failures(&mut data, &ctx.argv);
             unlock_fixes(&mut data, &locked, &ctx.argv);
             for o in &done.outcomes {
                 warnings.extend(o.warnings.iter().cloned());
@@ -691,7 +693,8 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     for target in without {
         data.push_target(target);
     }
-    // Every selected target is listed; items in file order, dependencies last.
+    // Every selected target is listed; items in file order, each with its dependencies
+    // right after it.
     for d in &targets {
         if !data.targets.iter().any(|t| t.target.id == d.target.id) {
             data.push_target(TargetResult::empty(target_ref(d)));
@@ -701,7 +704,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
         let Some(order) = order.get(&t.target.id) else {
             continue;
         };
-        t.items.sort_by_key(|i| {
+        sort_keeping_dependencies(&mut t.items, |i| {
             order
                 .iter()
                 .position(|r| *r == i.request)
@@ -801,30 +804,9 @@ fn unlock_fixes(data: &mut TargetsData, locked: &BTreeMap<String, Vec<String>>, 
     }
 }
 
-/// What the engine's failures mean for `sync`: a dependency that resolved but failed
-/// is a failed item of its own (M2-D9); a fix that reruns this `sync` with `--force`
-/// (which `sync` does not have) says how with `install`.
-fn settle_failures(data: &mut TargetsData, done: &TxOutcomes, argv: &[String]) {
-    for f in done
-        .failures
-        .iter()
-        .filter(|f| f.error.details.get("required_by").is_some())
-    {
-        let Some(t) = data.targets.iter().find(|t| t.target.id == f.target) else {
-            continue;
-        };
-        let target = t.target.clone();
-        let request = f
-            .r#ref
-            .as_ref()
-            .map_or_else(|| "a dependency".to_owned(), ToString::to_string);
-        let mut item = ItemResult {
-            error: Some(ItemError::from(&f.error)),
-            ..failed_item(request, f.r#ref.clone(), &Error::internal(""))
-        };
-        item.name = f.addon.clone();
-        data.push_item(target, item);
-    }
+/// A fix that reruns this `sync` with `--force` (which `sync` does not have) says how
+/// with `install`. (A dependency that failed is a failed item of its own already.)
+fn settle_failures(data: &mut TargetsData, argv: &[String]) {
     for t in &mut data.targets {
         let id = t.target.id.clone();
         for i in &mut t.items {

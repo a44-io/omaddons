@@ -269,6 +269,75 @@ fn info() {
     insta::assert_json_snapshot!("info_not_found", s.stable(&c.envelope));
 }
 
+/// Dependency items, fields, warnings and hints: an install with a dependency, with one
+/// that nothing ships, and with a bridge requirement.
+#[test]
+fn install_with_dependencies() {
+    use super::common::graph::{Folder, Node, release_graph};
+    let s = Scene::new();
+    let folder = |name, deps| Folder {
+        name,
+        interface: "120105",
+        deps,
+        optional: &[],
+    };
+    let node = |base, folders| Node {
+        base,
+        tag: "v1",
+        folders,
+    };
+    release_graph(
+        &s.home.http,
+        &[
+            node(
+                "https://github.com/o/littlewigs",
+                &[folder("LittleWigs", &["BigWigs", "Nowhere"])],
+            ),
+            node("https://github.com/o/bigwigs", &[folder("BigWigs", &[])]),
+            node(
+                "https://github.com/o/plug",
+                &[folder("Plug", &[]), folder("Plug_Masque", &["Masque"])],
+            ),
+            node("https://github.com/o/masque", &[folder("Masque", &[])]),
+        ],
+    );
+    let catalog = s.home.env.config().join("omaddons/catalog.d");
+    std::fs::create_dir_all(&catalog).unwrap();
+    let mut text = String::from("schema_version = \"1.0\"\n");
+    for name in ["LittleWigs", "BigWigs", "Masque"] {
+        text.push_str(&format!(
+            "\n[[addon]]\nname = \"{name}\"\nref = \"gh:o/{}\"\nfolders = [\"{name}\"]\n",
+            name.to_lowercase()
+        ));
+    }
+    std::fs::write(catalog.join("50-deps.toml"), text).unwrap();
+    let c = s.json(&["install", "littlewigs", "-t", "retail"], 0);
+    let requests: Vec<&serde_json::Value> = c.envelope["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| &i["request"])
+        .collect();
+    assert_eq!(requests, ["littlewigs", "BigWigs"]);
+    insta::assert_json_snapshot!("install_dependencies", s.stable(&c.envelope));
+    let c = s.json(&["install", "gh:o/plug", "-t", "retail"], 0);
+    let codes: Vec<&serde_json::Value> = c.envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| &w["code"])
+        .collect();
+    assert_eq!(codes, ["bridge_dependency"]);
+    // Every hint runs.
+    for hint in c.envelope["commands"].as_array().unwrap() {
+        let argv = support::strings(&hint["argv"]);
+        if hint["action"] == "install" {
+            let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+            s.json(&args, 0);
+        }
+    }
+}
+
 /// Other commands' fixes for an unmanaged folder adopt it, and each runs.
 #[test]
 fn adopt_fixes() {
