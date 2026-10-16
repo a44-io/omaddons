@@ -174,12 +174,15 @@ pub(crate) fn is_slug(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// `path` against `cwd`, without `.` components (`./Bar.zip` → `<cwd>/Bar.zip`); `..` is
+/// kept, since resolving it lexically would be wrong past a symlink.
 fn absolute(cwd: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
+    let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
         cwd.join(path)
-    }
+    };
+    joined.components().collect()
 }
 
 // ---------------------------------------------------------------------------------------
@@ -614,6 +617,11 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("elvui")).unwrap();
         with_ctx(dir.path(), |ctx| {
             let zip = parse_user_ref("./Addon.zip", ctx).unwrap();
+            // No `.` component in the ref, as written or shown.
+            assert_eq!(
+                zip.r#ref.to_string(),
+                format!("file:{}", dir.path().join("Addon.zip").display())
+            );
             assert_eq!(
                 (zip.r#ref, zip.matched_by),
                 (
@@ -623,6 +631,13 @@ mod tests {
                     MatchKind::Path
                 )
             );
+            for written in ["././Addon.zip", "owner/./../Addon.zip"] {
+                let r = parse_user_ref(written, ctx).unwrap().r#ref.to_string();
+                assert!(!r.contains("/./"), "{written}: {r}");
+            }
+            // `..` stays: resolving it lexically would be wrong past a symlink.
+            let up = parse_user_ref("owner/../Addon.zip", ctx).unwrap().r#ref;
+            assert!(up.to_string().ends_with("owner/../Addon.zip"), "{up}");
             let abs = parse_user_ref(&dir.path().join("owner").display().to_string(), ctx).unwrap();
             assert_eq!(abs.matched_by, MatchKind::Path);
             assert_eq!(

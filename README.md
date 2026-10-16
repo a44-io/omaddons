@@ -292,18 +292,18 @@ This is real output from a test home with a retail and a Classic Era client and 
 
 ```text
 $ omaddons install ./HelloWorld ./Bar-2.1.0.zip -t retail --dry-run
-retail: would be installed HelloWorld 1.0.0 (1 folders)
-retail: would be installed Bar 2.1.0 (1 folders)
+retail: would be installed HelloWorld 1.0.0 (1 folder)
+retail: would be installed Bar 2.1.0 (1 folder)
 
 $ omaddons install ./HelloWorld ./Bar-2.1.0.zip -t retail --reason "set up retail UI"
-retail: installed HelloWorld 1.0.0 (1 folders)
-retail: installed Bar 2.1.0 (1 folders)
+retail: installed HelloWorld 1.0.0 (1 folder)
+retail: installed Bar 2.1.0 (1 folder)
 tx 01M51F4QXQRZQAP2KKSAKZ71QK · undo: omaddons undo 01M51F4QXQRZQAP2KKSAKZ71QK
 
 $ omaddons list -t retail
 retail (12.1.5.70391, mainline)
-  Bar         2.1.0  file:~/Downloads/./Bar-2.1.0.zip  stable
-  HelloWorld  1.0.0  file:~/Downloads/./HelloWorld     stable
+  Bar         2.1.0  file:~/Downloads/Bar-2.1.0.zip  stable
+  HelloWorld  1.0.0  file:~/Downloads/HelloWorld     stable
   2 managed · 1 unmanaged · 1 protected · 0 linked
 
 $ omaddons remove Bar -t retail --actor agent --reason "Bar conflicts with ElvUI"
@@ -312,7 +312,7 @@ tx 01M51F4QY5KBKP70YF3DZV69ZN · undo: omaddons undo 01M51F4QY5KBKP70YF3DZV69ZN
 
 $ omaddons undo --last-by agent --actor agent --reason "the user wants Bar back"
 reverted 01M51F4QY5… (remove by agent, 2026-10-15 23:22) on retail
-restored 1 folders, removed 0 · SavedVariables: 0 restored, 0 unchanged
+restored 1 folder, removed 0 · SavedVariables: 0 restored, 0 unchanged
 tx 01M51F4QYBQEXB2HECCHD1728N · undo this: omaddons undo 01M51F4QYBQEXB2HECCHD1728N
 
 $ omaddons history
@@ -659,8 +659,8 @@ A dependency that resolves but fails to install makes the run `partial`, with a 
 **In the output.** Each dependency installed (or failed) is an item of its own, right after the item that required it, with its `request` set to the folder that was required (a dependency's own dependencies follow it). The text says `(dependency of LittleWigs)`:
 
 ```text
-retail: installed LittleWigs v1 (1 folders)
-retail: installed BigWigs v1 (1 folders) (dependency of LittleWigs)
+retail: installed LittleWigs v1 (1 folder)
+retail: installed BigWigs v1 (1 folder) (dependency of LittleWigs)
 ```
 
 Every item carries:
@@ -1785,7 +1785,6 @@ These are bugs, found while this README was written:
 - Raising `limits.download_max_bytes` above 512 MiB has no effect; lowering it works.
 - A pasted `/releases/download/<tag>/<file>` link pins the tag, but the named file is not used to pick the asset.
 - Usage errors ignore `--no-color` and report `meta.offline: false` even when offline. `install http://github.com/a/b -t retail` suggests an https fix without the `-t`, and `status --version` suggests itself.
-- Human output says "1 folders", and `file:` refs keep a `./` component.
 - `install --dry-run` creates empty `inflight/` and `trash/` directories in the state directory.
 
 ---

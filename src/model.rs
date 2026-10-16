@@ -663,8 +663,10 @@ impl Ref {
         }
     }
 
-    /// The canonical string with GitHub owner and repo, and Tukui slugs, lowercased: the
-    /// identity behind `Eq`, `Hash` and `Ord`, and the release memo's key.
+    /// The canonical string with GitHub owner and repo, and Tukui slugs, lowercased, and a
+    /// local path without `.` components (a record written as `file:/x/./Bar` is the
+    /// same addon as `file:/x/Bar`): the identity behind `Eq`, `Hash` and `Ord`, and the
+    /// release memo's key.
     pub(crate) fn identity(&self) -> String {
         match self {
             Self::GitHub { owner, repo } => format!(
@@ -673,6 +675,10 @@ impl Ref {
                 repo.to_ascii_lowercase()
             ),
             Self::Tukui { slug } => format!("tukui:{}", slug.to_ascii_lowercase()),
+            Self::File { path } => {
+                let lexical: std::path::PathBuf = path.components().collect();
+                format!("file:{}", lexical.display())
+            }
             _ => self.to_string(),
         }
     }
@@ -1295,6 +1301,18 @@ mod tests {
     }
 
     // ---- Refs ----------------------------------------------------------------------
+
+    #[test]
+    fn a_recorded_file_ref_with_a_dot_component_is_the_same_addon() {
+        let old: Ref = "file:/home/u/Downloads/./Bar-2.1.0.zip".parse().unwrap();
+        let new: Ref = "file:/home/u/Downloads/Bar-2.1.0.zip".parse().unwrap();
+        assert_eq!(old, new);
+        assert_eq!(old.identity(), new.identity());
+        // As recorded: the stored spelling is kept.
+        assert_eq!(old.to_string(), "file:/home/u/Downloads/./Bar-2.1.0.zip");
+        let other: Ref = "file:/home/u/Bar-2.1.0.zip".parse().unwrap();
+        assert_ne!(old, other);
+    }
 
     #[test]
     fn canonical_refs_round_trip() {

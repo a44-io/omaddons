@@ -36,6 +36,15 @@ impl Style {
     }
 }
 
+/// `1 folder`, `2 folders`: `n` and `noun`, plural (an `s`) unless `n` is 1.
+pub fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
 /// Rows as left-aligned columns separated by two spaces, without trailing spaces.
 /// Widths count characters, so the alignment is right for plain text.
 pub fn table(rows: &[Vec<String>]) -> String {

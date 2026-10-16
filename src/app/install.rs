@@ -303,8 +303,9 @@ impl Outcome for InstallOutcome {
                     };
                     writeln!(
                         w,
-                        "{id}: {verb} {name} {}{from} ({folders} folders){dependency}",
-                        item.to_version.as_deref().unwrap_or("?")
+                        "{id}: {verb} {name} {}{from} ({}){dependency}",
+                        item.to_version.as_deref().unwrap_or("?"),
+                        crate::output::count(folders, "folder")
                     )?;
                     let skipped: Vec<&str> = item
                         .folders
@@ -1401,7 +1402,7 @@ mod tests {
         );
         assert_eq!(
             human(&o),
-            "retail: installed WeakAuras 5.19.2 (1 folders)\n\
+            "retail: installed WeakAuras 5.19.2 (1 folder)\n\
              retail: DBM unchanged (11.2.5)\n\
              retail: failed BigWigs: no_compatible_release: no release verifies for mainline 120105\n\
              tx 01JB8Q2VA00000000000000000 · /reload in game · undo: omaddons undo 01JB8Q2VA00000000000000000\n"
@@ -1414,7 +1415,7 @@ mod tests {
         );
         assert_eq!(
             human(&dry),
-            "retail: would be updated Foo 2.0 (1 folders)\n/reload in game\n"
+            "retail: would be updated Foo 2.0 (1 folder)\n/reload in game\n"
         );
     }
 
@@ -1468,9 +1469,9 @@ mod tests {
         one.folders.skipped = vec![skip("Foo_Retail")];
         assert_eq!(
             human(&outcome(vec![dbm.clone(), one], None, false, false)),
-            "retail: installed DBM-Core 12.1.14 (1 folders)\n  \
+            "retail: installed DBM-Core 12.1.14 (1 folder)\n  \
              skipped 2 folders this client does not load: DBM-Brawlers, DBM-Midnight\n\
-             retail: installed Foo 1.0 (1 folders)\n  \
+             retail: installed Foo 1.0 (1 folder)\n  \
              skipped 1 folder this client does not load: Foo_Retail\n\
              /reload in game\n"
         );

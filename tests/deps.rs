@@ -1024,7 +1024,7 @@ fn an_install_with_one_dependency_in_json_and_text() {
     insta::assert_json_snapshot!("install_with_dependency", support::stable(&r.expect(0)));
     let text = support::human(&wigs(), &["install", "littlewigs"]);
     assert!(
-        text.contains("BigWigs v1 (1 folders) (dependency of LittleWigs)"),
+        text.contains("BigWigs v1 (1 folder) (dependency of LittleWigs)"),
         "{text}"
     );
     insta::assert_snapshot!("install_with_dependency_human", text);

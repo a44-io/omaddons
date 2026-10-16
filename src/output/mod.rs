@@ -19,7 +19,7 @@ use std::time::Instant;
 use serde::Serialize;
 
 pub use envelope::{Envelope, Meta, SCHEMA_VERSION};
-pub use human::table;
+pub use human::{count, table};
 pub use stderr::{LogLevel, Phase, ProgressSink, Reporter, SharedReporter, lock, shared_stderr};
 pub use term::{
     OutputConfig, OutputFlags, OutputMode, ProgressMode, StderrMode, Style, TermEnv, resolve,

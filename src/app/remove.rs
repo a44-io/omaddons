@@ -124,12 +124,7 @@ impl Outcome for RemoveOutcome {
                 }
                 RemoveStatus::Removed => {
                     let verb = if d.dry_run { "would remove" } else { "removed" };
-                    let n = item.folders.len();
-                    let folders = if n == 1 {
-                        "1 folder".to_owned()
-                    } else {
-                        format!("{n} folders")
-                    };
+                    let folders = crate::output::count(item.folders.len(), "folder");
                     let version = item.version.as_deref().unwrap_or("?");
                     writeln!(w, "{id}: {verb} {name} {version} ({folders})")?;
                 }

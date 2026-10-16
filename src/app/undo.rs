@@ -220,8 +220,8 @@ fn render_undone(w: &mut dyn Write, u: &Undone, dry_run: bool, hint: bool) -> st
     )?;
     let sv = &u.sv;
     let mut parts = vec![format!(
-        "restored {} folders, removed {}",
-        u.folders.restored.len(),
+        "restored {}, removed {}",
+        crate::output::count(u.folders.restored.len(), "folder"),
         u.folders.removed.len()
     )];
     let mut counts = vec![
