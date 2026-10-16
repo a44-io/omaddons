@@ -634,11 +634,17 @@ fn outdated_changes_nothing_but_the_memo_and_net_log() {
 }
 
 #[test]
-fn changelog_is_not_a_flag_yet() {
+fn changelog_without_updates_asks_for_none() {
     let home = Home::new(&["wow"]);
-    let r = home.run(&["outdated", "--changelog"]);
-    let envelope = r.expect(2);
-    assert_eq!(envelope["error"]["code"], "usage");
+    let baz = Rel::new("Baz", "v1", EVERY, ALL);
+    gh_release(&home.http, BAZ, "v1", &baz.assets());
+    home.run(&["install", "gh:o/baz", "-t", "retail"]).expect(0);
+    let before = net_log(&home).len();
+    let r = home.run(&["outdated", "--changelog", "--refresh"]);
+    let envelope = r.expect(0);
+    assert_eq!(envelope["data"]["summary"]["update_available"], 0);
+    let log = only_new(net_log(&home), before);
+    assert_eq!(log.count_purpose("releases-atom"), 0, "{}", log.context());
 }
 
 #[test]

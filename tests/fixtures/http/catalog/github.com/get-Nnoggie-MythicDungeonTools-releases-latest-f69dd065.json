@@ -10,7 +10,7 @@
       "headers": [
         [
           "date",
-          "Thu, 15 Oct 2026 04:08:03 GMT"
+          "Fri, 16 Oct 2026 18:42:30 GMT"
         ],
         [
           "content-type",
@@ -18,7 +18,7 @@
         ],
         [
           "location",
-          "https://github.com/Nnoggie/MythicDungeonTools/releases/tag/6.3.6"
+          "https://github.com/Nnoggie/MythicDungeonTools/releases/tag/6.3.7"
         ],
         [
           "vary",
@@ -62,7 +62,7 @@
         ],
         [
           "x-github-request-id",
-          "9B48:171C5E:10273A2:14851FA:6AD051A3"
+          "D24A:304CB9:2C4DED:3D5C60:6AD27016"
         ],
         [
           "x-github-edge-region",

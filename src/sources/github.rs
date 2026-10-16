@@ -18,9 +18,11 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
 
+use super::changelog::{Changelog, ChangelogEntry, same_version};
 use super::release_json::{self, Manifest};
 use super::{Source, SourceId, Wanted, atom};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
+use crate::limits::CHANGELOG_MAX_CHARS;
 use crate::model::{Asset, AssetLocation, Channel, Ref, Release, ReleaseSet};
 use crate::net::{CacheState, Http, Request, run_bounded};
 use crate::politeness::MAX_CONCURRENT_REQUESTS;
@@ -56,6 +58,8 @@ pub struct RecentTag {
     pub tag: String,
     /// RFC 3339.
     pub updated: Option<String>,
+    /// The release notes, as the feed's `<content>` holds them (HTML).
+    pub notes: Option<String>,
 }
 
 /// `releases.atom`, newest first, and whether it was unchanged since the last run.
@@ -74,6 +78,51 @@ impl Source for GithubSource {
         run_bounded(wanted.to_vec(), MAX_CONCURRENT_REQUESTS, |w| {
             self.fetch_one(&w, http)
         })
+    }
+
+    /// From `releases.atom` (one conditional request, never the REST API): the notes of
+    /// each tag newer than `since`, which the feed's ten entries may not reach
+    /// (`truncated`, the releases page as `more_url`).
+    fn changelog(
+        &self,
+        r: &Ref,
+        _latest: &Release,
+        since: Option<&str>,
+        limit: usize,
+        http: &dyn Http,
+    ) -> Option<Result<Changelog>> {
+        let Ref::GitHub { owner, repo } = r else {
+            return None;
+        };
+        Some(Self::recent_tags(owner, repo, http).map(|feed| {
+            let mut entries = Vec::new();
+            let mut reached = since.is_none();
+            let mut cut = false;
+            for t in feed.tags {
+                if since.is_some_and(|s| same_version(&t.tag, s)) {
+                    reached = true;
+                    break;
+                }
+                if entries.len() == limit {
+                    cut = true;
+                    break;
+                }
+                entries.push(ChangelogEntry {
+                    version: t.tag,
+                    published_at: t.updated.and_then(|u| u.parse().ok()),
+                    text: t
+                        .notes
+                        .map(|n| crate::text::html_to_text(&n, CHANGELOG_MAX_CHARS))
+                        .unwrap_or_default(),
+                });
+            }
+            Changelog {
+                source: SourceId::Github,
+                entries,
+                truncated: since.is_some() && (cut || !reached),
+                more_url: Some(format!("https://github.com/{owner}/{repo}/releases")),
+            }
+        }))
     }
 
     /// The stable channel's newest release id from `releases/latest` alone (one request,
@@ -223,6 +272,7 @@ impl GithubSource {
                 (!tag.is_empty()).then_some(RecentTag {
                     tag,
                     updated: e.updated,
+                    notes: e.content,
                 })
             })
             .collect();
@@ -787,7 +837,8 @@ mod tests {
             recent.tags[0],
             RecentTag {
                 tag: "bundle/v1+v2".into(),
-                updated: Some("2026-10-12T20:29:01Z".into())
+                updated: Some("2026-10-12T20:29:01Z".into()),
+                notes: None,
             }
         );
         assert_eq!(recent.tags[1].tag, "no link");

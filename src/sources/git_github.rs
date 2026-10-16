@@ -13,6 +13,7 @@
 //! tag v1.2.3 heads at that tag's commit, and a missing branch answers 404.
 //! `--version` is a rev too; it must agree with `#<rev>`.
 
+use super::changelog::{Changelog, ChangelogEntry, same_version};
 use super::github::encode_segment;
 use super::{Wanted, atom};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
@@ -98,15 +99,66 @@ pub fn is_sha(rev: &str) -> bool {
     rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// The head commit of `rev` (the default branch when `None`); `None` on a 404.
-fn head(owner: &str, repo: &str, rev: Option<&str>, http: &dyn Http) -> Result<Option<String>> {
-    let url = match rev {
+/// The commits feed of `rev` (the default branch when `None`).
+fn commits_feed(owner: &str, repo: &str, rev: Option<&str>) -> String {
+    match rev {
         Some(rev) => format!(
             "https://github.com/{owner}/{repo}/commits/{}.atom",
             encode_path(rev)
         ),
         None => format!("https://github.com/{owner}/{repo}/commits.atom"),
-    };
+    }
+}
+
+/// The commits after `since` (an installed sha) on `rev`, newest first, at most `limit`:
+/// one entry per commit, its 7-character sha and its title. One conditional request.
+pub fn changelog(
+    owner: &str,
+    repo: &str,
+    rev: Option<&str>,
+    since: Option<&str>,
+    limit: usize,
+    http: &dyn Http,
+) -> Result<Changelog> {
+    let mut req = Request::get(commits_feed(owner, repo, rev), "commits-atom");
+    req.validators = true;
+    let body = http.send(req)?.error_for_status("commits atom")?.bytes()?;
+    let mut entries = Vec::new();
+    let mut reached = since.is_none();
+    let mut cut = false;
+    for e in atom::parse(&String::from_utf8_lossy(&body)) {
+        let Some(sha) = commit_sha(&e.id).or_else(|| e.link.as_deref().and_then(commit_sha)) else {
+            continue;
+        };
+        if since.is_some_and(|s| same_version(&sha, s)) {
+            reached = true;
+            break;
+        }
+        if entries.len() == limit {
+            cut = true;
+            break;
+        }
+        entries.push(ChangelogEntry {
+            version: sha.chars().take(7).collect(),
+            published_at: e.updated.and_then(|u| u.parse().ok()),
+            text: e.title,
+        });
+    }
+    let page = rev.map_or_else(
+        || "commits".to_owned(),
+        |r| format!("commits/{}", encode_path(r)),
+    );
+    Ok(Changelog {
+        source: super::SourceId::Git,
+        entries,
+        truncated: since.is_some() && (cut || !reached),
+        more_url: Some(format!("https://github.com/{owner}/{repo}/{page}")),
+    })
+}
+
+/// The head commit of `rev` (the default branch when `None`); `None` on a 404.
+fn head(owner: &str, repo: &str, rev: Option<&str>, http: &dyn Http) -> Result<Option<String>> {
+    let url = commits_feed(owner, repo, rev);
     // Conditional: an unchanged branch whose feed carries an ETag comes back as a 304,
     // answered from the HTTP cache.
     let mut req = Request::get(url, "commits-atom");

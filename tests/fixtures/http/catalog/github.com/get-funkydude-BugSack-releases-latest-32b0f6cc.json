@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "request": {
     "method": "GET",
-    "url": "https://github.com/Tercioo/Plater-Nameplates/releases/download/Plater-v660/release.json"
+    "url": "https://github.com/funkydude/BugSack/releases/latest"
   },
   "responses": [
     {
@@ -10,7 +10,7 @@
       "headers": [
         [
           "date",
-          "Thu, 15 Oct 2026 04:08:03 GMT"
+          "Fri, 16 Oct 2026 18:42:30 GMT"
         ],
         [
           "content-type",
@@ -18,7 +18,7 @@
         ],
         [
           "location",
-          "https://release-assets.githubusercontent.com/github-production-release-asset/179506957/1286fc4a-4050-418a-8cd8-7679987db0c2?response-content-disposition=attachment%3B%20filename%3Drelease.json&response-content-type=application%2Foctet-stream&rscd=attachment%3B+filename%3Drelease.json&rsct=application%2Foctet-stream&spr=https"
+          "https://github.com/funkydude/BugSack/releases/tag/v12.1.7"
         ],
         [
           "vary",
@@ -62,7 +62,7 @@
         ],
         [
           "x-github-request-id",
-          "9B4A:6DAD5:EDFD02:1311D68:6AD051A3"
+          "D242:1F5C5D:2E3888:3F75ED:6AD27016"
         ],
         [
           "x-github-edge-region",

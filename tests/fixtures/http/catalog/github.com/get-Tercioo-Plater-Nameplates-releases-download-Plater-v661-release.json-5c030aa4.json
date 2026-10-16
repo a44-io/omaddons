@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "request": {
     "method": "GET",
-    "url": "https://github.com/ATTWoWAddon/AllTheThings/releases/download/5.4.0/release.json"
+    "url": "https://github.com/Tercioo/Plater-Nameplates/releases/download/Plater-v661/release.json"
   },
   "responses": [
     {
@@ -10,7 +10,7 @@
       "headers": [
         [
           "date",
-          "Thu, 15 Oct 2026 04:08:04 GMT"
+          "Fri, 16 Oct 2026 18:42:30 GMT"
         ],
         [
           "content-type",
@@ -18,7 +18,7 @@
         ],
         [
           "location",
-          "https://release-assets.githubusercontent.com/github-production-release-asset/120390732/1252ef3f-396c-4fe3-96be-b2ab5cbfc85f?response-content-disposition=attachment%3B%20filename%3Drelease.json&response-content-type=application%2Foctet-stream&rscd=attachment%3B+filename%3Drelease.json&rsct=application%2Foctet-stream&spr=https"
+          "https://release-assets.githubusercontent.com/github-production-release-asset/179506957/9c949b3a-552e-41c7-995b-485b5b10f4b6?response-content-disposition=attachment%3B%20filename%3Drelease.json&response-content-type=application%2Foctet-stream&rscd=attachment%3B+filename%3Drelease.json&rsct=application%2Foctet-stream&spr=https"
         ],
         [
           "vary",
@@ -62,7 +62,7 @@
         ],
         [
           "x-github-request-id",
-          "9B4A:6DAD5:EE0047:1312168:6AD051A4"
+          "D244:242EFA:24CCB0:32A6FF:6AD27015"
         ],
         [
           "x-github-edge-region",

@@ -121,3 +121,10 @@ path = "fuzz_targets/tukui_addons.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "atom_feed"
+path = "fuzz_targets/atom_feed.rs"
+test = false
+doc = false
+bench = false

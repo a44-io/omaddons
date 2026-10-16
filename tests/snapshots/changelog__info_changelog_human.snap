@@ -1,0 +1,12 @@
+---
+source: tests/changelog.rs
+assertion_line: 215
+expression: from_changelog(&human.stdout)
+---
+  changelog:
+    5.19.3 (2026-10-28)
+      Fixes
+      - Faster loading
+      - Fewer errors
+    5.19.2 (2026-10-27)
+      Mists support & more

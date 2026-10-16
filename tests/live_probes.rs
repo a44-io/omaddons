@@ -252,11 +252,14 @@ fn catalog_matches_declared_flavors() {
                     });
                 rows.push((entry.name.clone(), false, declared, listed.join(", ")));
             }
-            _ => {
+            Ref::Git { .. } => {
                 let declared: BTreeSet<Family> = entry.families.iter().copied().collect();
                 let listed: Vec<&str> = entry.families.iter().map(|f| f.as_str()).collect();
                 rows.push((entry.name.clone(), true, Some(declared), listed.join(", ")));
             }
+            // Tukui entries declare by their TOCs alone; omad-m2-updates-adoption-2hp.8.4
+            // probes them.
+            _ => {}
         }
     }
 

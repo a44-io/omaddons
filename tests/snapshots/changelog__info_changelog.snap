@@ -1,0 +1,22 @@
+---
+source: tests/changelog.rs
+assertion_line: 211
+expression: "stable(&envelope)[\"data\"][\"changelog\"]"
+---
+{
+  "entries": [
+    {
+      "published_at": "2026-10-28T12:00:00Z",
+      "text": "Fixes\n- Faster loading\n- Fewer errors",
+      "version": "5.19.3"
+    },
+    {
+      "published_at": "2026-10-27T12:00:00Z",
+      "text": "Mists support & more",
+      "version": "5.19.2"
+    }
+  ],
+  "more_url": "https://github.com/WeakAuras/WeakAuras2/releases",
+  "source": "github",
+  "truncated": false
+}

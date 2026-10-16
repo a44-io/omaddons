@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/o/r/releases</id>
+  <link type="text/html" rel="alternate" href="https://github.com/o/r/releases"/>
+  <link type="application/atom+xml" rel="self" href="https://github.com/o/r/releases.atom"/>
+  <title>Release notes from r</title>
+  <updated>2026-10-28T12:00:00Z</updated>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v2.0</id>
+    <updated>2026-10-28T12:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/o/r/releases/tag/v2.0"/>
+    <title>v2.0</title>
+    <content type="html">&lt;h2&gt;Fixes&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;Faster &lt;b&gt;loading&lt;/b&gt; &amp;amp; more&lt;/li&gt;&lt;/ul&gt;</content>
+    <author>
+      <name>someone</name>
+    </author>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v1.0</id>
+    <updated>2026-10-27T12:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/o/r/releases/tag/v1.0"/>
+    <title>v1.0</title>
+    <content type="html">&lt;p&gt;First&lt;/p&gt;</content>
+    <author>
+      <name>someone</name>
+    </author>
+  </entry>
+</feed>

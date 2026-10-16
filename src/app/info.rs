@@ -1,7 +1,8 @@
 //! `omaddons info <ref|addon> [-t T]`: what an addon is and what installing it would
 //! get. The installed records across targets, the catalog entry, and the newest stable
 //! release with the targets that have a candidate for it (metadata only: nothing is
-//! downloaded or verified; `install` verifies). No changelog until M2.
+//! downloaded or verified; `install` verifies). `--changelog` adds the release notes of
+//! every release newer than the oldest installed one (`sources::changelog`).
 //!
 //! Release metadata comes through the release memo: a check from the last 15 minutes is
 //! reused (`--refresh` fetches anyway). `--offline` answers from the memo whatever its
@@ -33,6 +34,9 @@ use crate::resolve::cache::{Freshness, ReleaseCache};
 use crate::resolve::catalog::Catalog;
 use crate::resolve::select::{newest, select};
 use crate::rules::Family;
+use crate::sources::changelog::{
+    Changelog, ChangelogUnavailable, Installed, changelog_for, human_lines, oldest_since,
+};
 use crate::sources::git_hosts::GitRunner;
 use crate::sources::{SourceRegistry, Wanted};
 
@@ -45,6 +49,9 @@ pub struct InfoArgs {
     /// Fetch the newest release from its source, even if it was checked recently
     #[arg(long)]
     pub refresh: bool,
+    /// Add the release notes of every release newer than the oldest installed one
+    #[arg(long)]
+    pub changelog: bool,
 }
 
 /// `info`'s data.
@@ -59,6 +66,13 @@ pub struct InfoData {
     pub installed: Vec<InstalledInfo>,
     pub latest: Option<Latest>,
     pub offline: bool,
+    /// `--changelog` only: the notes of the releases newer than the oldest installed one
+    /// (the latest's alone when none records a release), or `null`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changelog: Option<Option<Changelog>>,
+    /// Why `changelog` is `null`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changelog_unavailable: Option<ChangelogUnavailable>,
 }
 
 /// The catalog entry.
@@ -212,6 +226,12 @@ impl Outcome for InfoOutcome {
             (None, true) => writeln!(w, "  latest: not checked (offline)")?,
             (None, false) => writeln!(w, "  latest: unavailable")?,
         }
+        if let Some(changelog) = &d.changelog {
+            writeln!(w, "  changelog:")?;
+            for line in human_lines(changelog.as_ref(), d.changelog_unavailable) {
+                writeln!(w, "    {line}")?;
+            }
+        }
         Ok(())
     }
 }
@@ -243,6 +263,8 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
     let targets: Vec<&DiscoveredTarget> = world.select_many(ctx)?;
 
     let mut installed = Vec::new();
+    // Each installed release, for the changelog's oldest.
+    let mut releases: Vec<Installed<'_>> = Vec::new();
     for d in &targets {
         let Some(record) = records.get(&d.target.id) else {
             continue;
@@ -250,6 +272,13 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
         let Some(key) = d.target.key else { continue };
         let mut report = None;
         for a in record.addons.values().filter(|a| a.r#ref == r) {
+            if let Some(release_id) = &a.release_id {
+                releases.push(Installed {
+                    release_id,
+                    version: &a.version,
+                    installed_at: a.installed_at,
+                });
+            }
             let report = report.get_or_insert_with(|| {
                 super::drift::report(&world.paths, &d.target, record, DriftMode::Stat)
             });
@@ -339,15 +368,35 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
     // Before any error return: a remembered failure is worth keeping too.
     let remembered = cache.remember(&[]);
     warnings.extend(remembered.warnings);
-    let (latest, partial) = match fetched {
-        Ok(set) => (Some(latest(&set, &targets, verbose)), false),
+    let (latest, partial, set) = match fetched {
+        Ok(set) => (Some(latest(&set, &targets, verbose)), false, Some(set)),
         // Offline with nothing remembered: the local part only, as in M1.
-        Err(_) if ctx.offline => (None, false),
+        Err(_) if ctx.offline => (None, false, None),
         Err(error) if known_locally => {
             warnings.push(Warning::item(&error));
-            (None, true)
+            (None, true, None)
         }
         Err(error) => return Err(error),
+    };
+    let mut notes = remembered.notes;
+    // `--changelog`: the releases newer than the oldest installed one.
+    let (changelog, changelog_unavailable) = if args.changelog {
+        let newest_stable = set
+            .as_ref()
+            .and_then(|s| newest(s, Channel::Stable).map(|r| (s, r)));
+        match newest_stable {
+            Some((set, release)) => {
+                let since = oldest_since(&releases, set);
+                let found = changelog_for(&registry, set, release, since.as_deref(), http.as_ref());
+                notes.extend(found.diagnostic);
+                (Some(found.changelog), found.unavailable)
+            }
+            None if ctx.offline => (Some(None), Some(ChangelogUnavailable::Offline)),
+            None if partial => (Some(None), Some(ChangelogUnavailable::FetchFailed)),
+            None => (Some(None), Some(ChangelogUnavailable::NoReleases)),
+        }
+    } else {
+        (None, None)
     };
     Ok(InfoOutcome {
         data: InfoData {
@@ -358,10 +407,12 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
             installed,
             latest: latest.flatten(),
             offline: ctx.offline,
+            changelog,
+            changelog_unavailable,
         },
         warnings,
         partial,
-        notes: remembered.notes,
+        notes,
     })
 }
 

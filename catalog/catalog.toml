@@ -1,11 +1,15 @@
 # The built-in addon catalog (vision §5.4), embedded in the binary.
 #
-# Every value here was verified, not remembered (2026-10-14):
+# Every value here was verified, not remembered (2026-10-14; BugSack, ElvUI and Tukui
+# 2026-10-16):
 # - the GitHub release.json publishers: the repository's releases/latest tag, its
 #   release.json, and the addon roots of the actual release zip;
+# - the Tukui entries: the API's list (api.tukui.org/v1/addons), then the zip that
+#   /v1/addon/<slug> hands out, downloaded at once: its top-level folders and each TOC's
+#   "## Interface" (the list's patch[] lags the TOCs);
 # - the legacy entries: the TOC's "## Interface" line in the repository.
 # `families` lists where an entry is known to work (from release.json flavors, or the
-# legacy Interface); TOC verification still decides every install.
+# TOCs' Interface); TOC verification still decides every install.
 #
 # Override or extend it in <config>/omaddons/catalog.d/*.toml (same format;
 # `remove = true` drops a built-in entry by name).
@@ -101,6 +105,30 @@ aliases = ["att"]
 ref = "gh:ATTWoWAddon/AllTheThings"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
 folders = ["AllTheThings"]
+
+[[addon]]
+name = "BugSack"
+ref = "gh:funkydude/BugSack"
+families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
+folders = ["BugSack"]
+notes = "!BugGrabber is an optional dependency with no official GitHub releases; install it yourself if you want it"
+
+# ---- Tukui -----------------------------------------------------------------------------
+
+[[addon]]
+name = "ElvUI"
+aliases = ["elv"]
+ref = "tukui:elvui"
+families = ["mainline", "vanilla", "tbc", "titan", "mists", "forever"]
+folders = ["ElvUI", "ElvUI_Libraries", "ElvUI_Options"]
+notes = "16.00: one zip for every client; each TOC carries Interface 11509, 16001, 20506, 38002, 50504, 120100, 120105"
+
+[[addon]]
+name = "Tukui"
+ref = "tukui:tukui"
+families = ["mainline", "vanilla", "mists"]
+folders = ["Tukui"]
+notes = "20.463: Tukui-Mainline.toc carries Interface 110207, Tukui-Classic.toc 11507, Tukui-Mists.toc 50501"
 
 # ---- Legacy clients: the repository is the addon ---------------------------------------
 

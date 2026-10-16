@@ -10,7 +10,7 @@
       "headers": [
         [
           "date",
-          "Thu, 15 Oct 2026 04:08:03 GMT"
+          "Fri, 16 Oct 2026 18:42:30 GMT"
         ],
         [
           "content-type",
@@ -18,7 +18,7 @@
         ],
         [
           "location",
-          "https://github.com/RaiderIO/raiderio-addon/releases/tag/v202610141525"
+          "https://github.com/RaiderIO/raiderio-addon/releases/tag/v202610160600"
         ],
         [
           "vary",
@@ -62,7 +62,7 @@
         ],
         [
           "x-github-request-id",
-          "9B38:158114:FC28C3:1414AF0:6AD051A3"
+          "D244:242EFA:24CDC8:32A86B:6AD27016"
         ],
         [
           "x-github-edge-region",

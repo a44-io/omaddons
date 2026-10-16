@@ -12,6 +12,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use jiff::Timestamp;
 use serde_json::Value;
 
+use super::changelog::{Changelog, ChangelogEntry, notes_text};
 use super::{ResolvedAsset, Source, SourceId, Wanted};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::{
@@ -170,6 +171,42 @@ impl TukuiSource {
 impl Source for TukuiSource {
     fn id(&self) -> SourceId {
         SourceId::Tukui
+    }
+
+    /// One entry, the latest version's, from its `changelog_url` (one request; HTML
+    /// stripped, text kept). [`super::changelog::changelog_for`] asks nothing when the
+    /// installed version is the latest.
+    fn changelog(
+        &self,
+        r: &Ref,
+        latest: &Release,
+        _since: Option<&str>,
+        _limit: usize,
+        http: &dyn Http,
+    ) -> Option<Result<Changelog>> {
+        let Ref::Tukui { slug } = r else {
+            return None;
+        };
+        let url = latest.changelog_url.clone().unwrap_or_else(|| {
+            format!(
+                "https://api.tukui.org/v1/changelog/{}",
+                slug.to_ascii_lowercase()
+            )
+        });
+        let fetched = http
+            .send(Request::get(url, "tukui-changelog"))
+            .and_then(|resp| resp.error_for_status("Tukui's changelog"))
+            .and_then(|resp| resp.bytes());
+        Some(fetched.map(|body| Changelog {
+            source: SourceId::Tukui,
+            entries: vec![ChangelogEntry {
+                version: latest.version.clone(),
+                published_at: latest.published_at,
+                text: notes_text(&String::from_utf8_lossy(&body)),
+            }],
+            truncated: false,
+            more_url: Some(canonical_url(slug)),
+        }))
     }
 
     fn fetch(&self, wanted: &[Wanted], http: &dyn Http) -> Vec<Result<ReleaseSet>> {

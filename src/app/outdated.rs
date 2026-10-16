@@ -33,13 +33,17 @@ use crate::engine::{TxRequest, TxTarget};
 use crate::error::{
     CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning, WarningCode,
 };
-use crate::model::{Channel, Ref, RunId, Target, TxKind};
+use crate::model::{Channel, Ref, ReleaseSet, RunId, Target, TxKind};
 use crate::output::{Outcome, Phase, Style};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::{Fetched, Freshness, Origin, ReleaseCache};
 use crate::resolve::updates::{
     BlockedReason, Confidence, ReleaseBrief, StatusKind, StatusRow, UncheckedReason, UpdateStatus,
     installed_primary_interface, is_static, statuses, update_floor,
+};
+use crate::sources::changelog::{
+    Changelog, ChangelogUnavailable, Installed as ChangelogInstalled, Notes, changelog_for,
+    human_lines, identity, newer_than, oldest_since,
 };
 use crate::sources::{SourceId, Wanted};
 use crate::state::memo::{CandidateFact, FactIndex};
@@ -57,6 +61,9 @@ pub struct OutdatedArgs {
     /// Download and verify each update not yet known to load, as installing it would
     #[arg(long)]
     pub verify: bool,
+    /// Add each update's release notes since the installed release
+    #[arg(long)]
+    pub changelog: bool,
 }
 
 /// `outdated`'s data.
@@ -102,13 +109,27 @@ pub struct OutdatedItem {
     pub pinned: bool,
     pub installed: Installed,
     /// `null` for `failed`, `unchecked` and `static`.
-    pub latest: Option<ReleaseBrief>,
+    pub latest: Option<LatestRelease>,
     pub status: StatusKind,
     /// `update_available` only.
     pub confidence: Option<Confidence>,
     pub blocked_reason: Option<BlockedReason>,
     pub unchecked_reason: Option<UncheckedReason>,
     pub error: Option<ErrorBody>,
+}
+
+/// The newest release an item is judged against; with `--changelog`, an
+/// `update_available` item's notes since its installed release.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct LatestRelease {
+    #[serde(flatten)]
+    pub release: ReleaseBrief,
+    /// `--changelog`, `update_available` only: the notes, or `null`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changelog: Option<Option<Changelog>>,
+    /// Why `changelog` is `null`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changelog_unavailable: Option<ChangelogUnavailable>,
 }
 
 /// The installed release.
@@ -212,7 +233,7 @@ impl Outcome for OutdatedOutcome {
             .unwrap_or(0);
         let latest_width = items()
             .filter(|i| i.status == StatusKind::UpdateAvailable)
-            .filter_map(|i| i.latest.as_ref().map(|l| l.version.chars().count()))
+            .filter_map(|i| i.latest.as_ref().map(|l| l.release.version.chars().count()))
             .max()
             .unwrap_or(0);
         // A ref is named on its first line only.
@@ -231,6 +252,14 @@ impl Outcome for OutdatedOutcome {
                     i.name, i.installed.version
                 );
                 writeln!(w, "{}", line.trim_end())?;
+                // `--changelog`: the notes under the item.
+                if let Some(l) = &i.latest
+                    && let Some(changelog) = &l.changelog
+                {
+                    for line in human_lines(changelog.as_ref(), l.changelog_unavailable) {
+                        writeln!(w, "      {line}")?;
+                    }
+                }
             }
         }
         writeln!(w, "{}", self.summary_line())?;
@@ -293,7 +322,10 @@ impl OutdatedOutcome {
 
 /// What an item's line says after its name and installed version.
 fn describe(i: &OutdatedItem, latest_width: usize, r: Option<&str>) -> String {
-    let latest = i.latest.as_ref().map_or("?", |l| l.version.as_str());
+    let latest = i
+        .latest
+        .as_ref()
+        .map_or("?", |l| l.release.version.as_str());
     match i.status {
         StatusKind::UpdateAvailable => {
             let doubt = match i.confidence {
@@ -383,7 +415,15 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
         }
     }
     let answers = cache.get(&wanted);
-    report_fetches(ctx, &answers);
+    let mut fetched_refs: BTreeSet<String> = answers
+        .iter()
+        .filter(|(_, f)| f.origin == Origin::Fetched)
+        .map(|(w, _)| w.r#ref.to_string())
+        .collect();
+    // With `--changelog`, a ref's fetch includes its changelog: reported once both are in.
+    if !args.changelog {
+        report_fetches(ctx, &fetched_refs);
+    }
     let requests = count_requests(&answers);
 
     // A failed fetch: a remembered failure speaks for itself; a remembered release is
@@ -446,6 +486,22 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
         .filter_map(|w| cache.entry(&w.r#ref, w.channel))
         .map(|e| e.fetched_at)
         .min();
+    // `--changelog`: the release sets of the refs with updates, before the memo write.
+    let sets: BTreeMap<(Ref, Channel), ReleaseSet> = if args.changelog {
+        rows.iter()
+            .filter(|row| row.status.kind() == StatusKind::UpdateAvailable)
+            .filter_map(|row| {
+                let record = records
+                    .get(&row.target)?
+                    .addons
+                    .get(&TargetRecord::addon_key(&row.addon))?;
+                let set = cache.entry(&record.r#ref, record.channel)?.result().ok()?;
+                Some(((record.r#ref.clone(), record.channel), set))
+            })
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
     // One memo write per command, even when nothing else succeeded.
     let remembered = cache.remember(&learned);
     warnings.extend(remembered.warnings);
@@ -472,6 +528,11 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
                 .or_default()
                 .push(item(record, status));
         }
+    }
+    if args.changelog {
+        let asked = attach_changelogs(&engine, &records, &sets, &mut listed, &mut notes);
+        fetched_refs.extend(asked);
+        report_fetches(ctx, &fetched_refs);
     }
 
     let mut out_targets = Vec::new();
@@ -517,17 +578,120 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
     })
 }
 
+/// An installed release: its `release_id`, version and install time.
+type InstalledRelease = (String, String, jiff::Timestamp);
+
+/// `--changelog`: each `update_available` item's release notes since its installed
+/// release. One changelog per distinct ref and channel, from the oldest installed release
+/// among its items (B4's order); each item keeps the entries newer than its own (an
+/// identified adoption without a release, the latest's alone). Other statuses get
+/// nothing. What failed joins `notes` (for `-v`); returns the refs whose source was
+/// asked, for the fetch progress.
+fn attach_changelogs(
+    engine: &Engine,
+    records: &BTreeMap<String, TargetRecord>,
+    sets: &BTreeMap<(Ref, Channel), ReleaseSet>,
+    listed: &mut BTreeMap<String, Vec<OutdatedItem>>,
+    notes: &mut Vec<String>,
+) -> BTreeSet<String> {
+    let updates = |i: &&mut OutdatedItem| i.status == StatusKind::UpdateAvailable;
+    // Per ref and channel: the newest release, and every installed release with one.
+    let mut groups: BTreeMap<(Ref, Channel), (String, Vec<InstalledRelease>)> = BTreeMap::new();
+    for (target, items) in listed.iter_mut() {
+        for i in items.iter_mut().filter(updates) {
+            let Some(latest) = &i.latest else { continue };
+            let group = groups
+                .entry((i.r#ref.clone(), i.channel))
+                .or_insert_with(|| (latest.release.release_id.clone(), Vec::new()));
+            let installed_at = records
+                .get(target)
+                .and_then(|r| r.addons.get(&TargetRecord::addon_key(&i.name)))
+                .map_or(jiff::Timestamp::UNIX_EPOCH, |a| a.installed_at);
+            if let Some(release_id) = &i.installed.release_id {
+                group.1.push((
+                    release_id.clone(),
+                    i.installed.version.clone(),
+                    installed_at,
+                ));
+            }
+        }
+    }
+    let mut asked = BTreeSet::new();
+    let mut found: BTreeMap<(Ref, Channel), Notes> = BTreeMap::new();
+    for (key, (latest_id, installed)) in &groups {
+        let release = sets.get(key).and_then(|set| {
+            set.releases
+                .iter()
+                .find(|r| r.release_id == *latest_id)
+                .map(|r| (set, r))
+        });
+        let found_notes = match release {
+            Some((set, release)) => {
+                let installed: Vec<ChangelogInstalled<'_>> = installed
+                    .iter()
+                    .map(|(release_id, version, installed_at)| ChangelogInstalled {
+                        release_id,
+                        version,
+                        installed_at: *installed_at,
+                    })
+                    .collect();
+                let since = oldest_since(&installed, set);
+                changelog_for(
+                    engine.registry(),
+                    set,
+                    release,
+                    since.as_deref(),
+                    engine.http(),
+                )
+            }
+            None => Notes {
+                changelog: None,
+                unavailable: Some(ChangelogUnavailable::NoReleases),
+                diagnostic: None,
+                asked: false,
+            },
+        };
+        if found_notes.asked {
+            asked.insert(key.0.to_string());
+        }
+        notes.extend(found_notes.diagnostic.clone());
+        found.insert(key.clone(), found_notes);
+    }
+    for items in listed.values_mut() {
+        for i in items.iter_mut().filter(updates) {
+            let Some(notes) = found.get(&(i.r#ref.clone(), i.channel)) else {
+                continue;
+            };
+            let Some(latest) = i.latest.as_mut() else {
+                continue;
+            };
+            match &notes.changelog {
+                Some(changelog) => {
+                    let mine = match &i.installed.release_id {
+                        Some(release_id) => newer_than(changelog, Some(identity(release_id))),
+                        // Nothing to start from: the latest release's notes alone.
+                        None => Changelog {
+                            entries: changelog.entries.iter().take(1).cloned().collect(),
+                            truncated: false,
+                            ..changelog.clone()
+                        },
+                    };
+                    latest.changelog = Some(Some(mine));
+                }
+                None => {
+                    latest.changelog = Some(None);
+                    latest.changelog_unavailable = notes.unavailable;
+                }
+            }
+        }
+    }
+    asked
+}
+
 /// One `fetch` progress event per ref fetched from its source now.
-fn report_fetches(ctx: &Context, answers: &BTreeMap<Wanted, Fetched>) {
-    let fetched: Vec<&Wanted> = answers
-        .iter()
-        .filter(|(_, f)| f.origin == Origin::Fetched)
-        .map(|(w, _)| w)
-        .collect();
-    for w in &fetched {
-        let total = fetched.len() as u64;
-        ctx.progress
-            .event(Phase::Fetch, total, &w.r#ref.to_string());
+fn report_fetches(ctx: &Context, refs: &BTreeSet<String>) {
+    for r in refs {
+        ctx.progress.event(Phase::Fetch, refs.len() as u64, r);
     }
 }
 
@@ -597,7 +761,11 @@ const fn worth_listing(kind: StatusKind) -> bool {
 }
 
 fn item(record: &crate::model::AddonRecord, status: UpdateStatus) -> OutdatedItem {
-    let latest = status.latest().cloned();
+    let latest = status.latest().cloned().map(|release| LatestRelease {
+        release,
+        changelog: None,
+        changelog_unavailable: None,
+    });
     let kind = status.kind();
     let (confidence, blocked_reason, unchecked_reason, error) = match status {
         UpdateStatus::UpdateAvailable { confidence, .. } => (Some(confidence), None, None, None),

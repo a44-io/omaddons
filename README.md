@@ -508,7 +508,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 
 ## The built-in catalog
 
-18 entries are embedded in the binary. Each was checked against its publisher on 2026-10-14: the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip, and the legacy entries against their TOC's `## Interface` line. The last column is the families the publisher declares (in `release.json`, or the legacy TOC's interface). It is shown by `info` and does not restrict anything: TOC verification decides every install. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but its TOCs also load on vanilla and mists.
+21 entries are embedded in the binary. Each was checked against its publisher on 2026-10-14 (BugSack, ElvUI and Tukui on 2026-10-16): the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip; the Tukui entries against the Tukui API's list and the folders and TOCs of the zip it hands out; and the legacy entries against their TOC's `## Interface` line. The last column is the families the publisher declares (in `release.json`, or the TOCs' interfaces). It is shown by `info` and does not restrict anything: TOC verification decides every install. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but its TOCs also load on vanilla and mists.
 
 | Name | Aliases | Ref | Declared families |
 |---|---|---|---|
@@ -525,6 +525,9 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 | RaiderIO | `raider.io`, `rio` | `gh:RaiderIO/raiderio-addon` | mainline |
 | MythicDungeonTools | `mdt` | `gh:Nnoggie/MythicDungeonTools` | mainline |
 | AllTheThings | `att` | `gh:ATTWoWAddon/AllTheThings` | mainline, vanilla, tbc, wrath, titan, cata, mists, forever |
+| BugSack | | `gh:funkydude/BugSack` | mainline, vanilla, tbc, wrath, titan, cata, mists, forever (its optional `!BugGrabber` has no official release and is never installed for it) |
+| ElvUI | `elv` | `tukui:elvui` | mainline, vanilla, tbc, titan, mists, forever (one zip for every client) |
+| Tukui | | `tukui:tukui` | mainline, vanilla, mists |
 | pfUI | | `git:https://github.com/shagu/pfUI#master` | vanilla-legacy (1.12.1) |
 | PlateBuffer | | `git:https://github.com/nullfoxh/PlateBuffer#master` | tbc-legacy (2.4.3) |
 | GroupBulletinBoard | `gbb` | `git:https://github.com/fondlez/GroupBulletinBoard#main` | wrath-legacy (3.3.5a) |
@@ -909,6 +912,7 @@ omaddons outdated -v              # every addon, current, static and unchecked o
 omaddons outdated --check         # exit 6 (check_failed) when any update is available
 omaddons outdated --refresh       # ask every source now, even inside the 15-minute window
 omaddons outdated --verify        # download and verify each update not yet known to load
+omaddons outdated --changelog     # each update's release notes since the installed release
 ```
 
 Each distinct ref and channel is fetched at most once, through the [release memo](#files-and-state). A check from the last 15 minutes is reused without a request, so a second run is free. After that, a GitHub release on the stable channel is first probed: one `releases/latest` request (no GitHub API), and when its tag has not moved the remembered release stands (counted as `probed`); a moved tag costs its `release.json` too. `git:` refs on GitHub revalidate their commits feed, so an unchanged branch comes back as a 304. `--offline` answers from the memo whatever its age, with a `stale_check` warning. Addons installed from a local file, a URL or `--file` have nothing upstream to compare and make no request (`static`).
@@ -925,6 +929,30 @@ The listing shows only what needs a decision; `-v` lists everything, and the sum
 | `current`, `static`, `unchecked` | Shown with `-v` only (`unchecked_reason`: `never_checked`, `offline`, `source_disabled`, `no_eligible_release`) |
 
 When a fetch fails, a remembered answer is used and the warning says so; with nothing remembered, the item is `failed`. Either way the run is `partial`. `--verify` downloads only the updates not yet verified, in a dry run that takes no lock, and remembers the verdicts: a candidate that does not load becomes `blocked` from then on. `outdated` writes only the release memo, the download cache and `net.log`.
+
+`--changelog` puts the release notes under each update, and in the JSON as `latest.changelog` of each `update_available` item (no other status gets one):
+
+```text
+$ omaddons outdated --changelog
+retail (12.1.5, mainline)
+  Foo  v1  → v3  gh:o/foo
+      v3 (2026-10-28)
+        Third: faster
+      v2 (2026-10-27)
+        - Second
+```
+
+`changelog` is `{source, entries [{version, published_at, text}], truncated, more_url}`, newest first: the releases newer than the installed one, at most 10, each as plain text of at most 4,000 characters. One changelog is fetched per ref, from the oldest release installed on any client, and each item keeps the part newer than its own. Where the notes come from:
+
+| Source | Notes | Cost |
+|---|---|---|
+| GitHub | The release notes in `releases.atom` | One request, usually a 304; never the GitHub API |
+| `git:` on GitHub | Commit titles from the branch's commits feed | One request, usually a 304 |
+| WoWInterface | The current file's changelog, already in the release | None, offline too |
+| Tukui | The latest version's changelog page | One request |
+| `git:` elsewhere, `url:`, `file:` | None | None |
+
+GitHub's feed holds the 10 newest releases. When the installed one is older, `truncated` is `true` and the listing ends with `older releases on GitHub: <more_url>`. An addon adopted without an exact release gets the latest release's notes only. With no changelog, `changelog` is `null` and `changelog_unavailable` says why: `not_supported`, `offline`, `fetch_failed` or `no_releases`. A changelog that cannot be fetched never makes the run `partial`.
 
 ### `adopt`
 
@@ -1034,6 +1062,20 @@ WeakAuras  gh:WeakAuras/WeakAuras2
 ```
 
 The newest release comes through the [release memo](#files-and-state): a check made in the last 15 minutes is reused without a request, and `--refresh` checks again anyway. With `--offline`, `latest` is the remembered answer whatever its age, with a `stale_check` warning, or `null` (as above) when nothing is remembered. A missing repository is remembered too, so asking again within the window costs nothing; a network or server error never is. Each installed record carries its `drift {state, files}` (as in [`status`](#status), with the paths under `-v`), checked locally, so `--offline` shows it too, and its `reason`, `required_by` and `orphan` on that target.
+
+`--changelog` adds the release notes of every release newer than the oldest one installed (the latest release's alone when none is installed), as `changelog` and `changelog_unavailable` after `offline`, shaped and sourced as in [`outdated --changelog`](#outdated):
+
+```text
+$ omaddons info weakauras --changelog
+WeakAuras  gh:WeakAuras/WeakAuras2
+  …
+  changelog:
+    5.19.3 (2026-10-28)
+      Fixes
+      - Faster loading
+    5.19.2 (2026-10-27)
+      Mists support & more
+```
 
 ### `config`
 
@@ -1751,7 +1793,7 @@ At the time of writing there are 760 tests: 464 unit tests in `src/`, 295 integr
 | `tests/engine_crash.rs` | All 24 engine failpoints armed as real `abort`s in a child process |
 | `tests/engine_concurrency.rs` | Parallel runs, duplicate installs, lock hold time under 50 ms |
 | `tests/discover_*.rs` | The discovery matrix, launchers, scanning, custom clients, the cache |
-| `tests/catalog.rs` | All 18 catalog entries replayed offline from recorded HTTP fixtures, with no REST calls |
+| `tests/catalog.rs` | The 19 GitHub and `git:` catalog entries replayed offline from recorded HTTP fixtures, with no REST calls |
 | `tests/single_writer.rs` | Only `src/fsx/` writes to the filesystem |
 
 Recorded HTTP fixtures live in `tests/fixtures/http/<scenario>/`. Debug builds replay them with `OMADDONS_HTTP_FIXTURES=<dir>` and re-record them with `OMADDONS_RECORD=1`. Recording never stores request headers, drops `set-cookie`, and strips secret query parameters from URLs and `location` headers.

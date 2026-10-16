@@ -712,7 +712,12 @@ fn every_fixture_folder_together_keeps_the_invariants() {
                 Some("gh:BigWigsMods/BigWigs".into()),
                 Tier::Identified
             ),
-            ("BugSack".into(), Some("wowi:5995".into()), Tier::Identified),
+            // The built-in catalog names BugSack's GitHub home over its TOC's WoWI id.
+            (
+                "BugSack".into(),
+                Some("gh:funkydude/BugSack".into()),
+                Tier::Identified,
+            ),
             (
                 "DBM-Core".into(),
                 Some("gh:DeadlyBossMods/DeadlyBossMods".into()),

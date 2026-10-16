@@ -44,7 +44,126 @@
                 "category": "feature",
                 "text": "Added \"Known Professions\" to the Professions Trainers menu",
                 "commit": "eb9d054757c1cc64e7caa9121da526b450013913",
-                "author": "contributor",
+                "author": "Gogo1951",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Added the current Forever dungeons to Journal",
+                "commit": "772e558d15fb9201cf7e0a172525a6badb75e727",
+                "author": "Cabro",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Adjust trivial quest range in Journal details frame",
+                "commit": "ffefa636266fca8663f720aa3b1994cf54ba3d3a",
+                "author": "Cabro",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Disable Darkmoon Faire in Forever for now",
+                "commit": "42ee926c519ed5d23be4ffc3e3d36d746e4edd7a",
+                "author": "BreakBB",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Don't open the quest log from Tracker in Forever via controller",
+                "commit": "e347c594ada139a2707e9a07f55c1276efb96572",
+                "author": "AJ Beumer",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Fixed \"Show/Hide Questie\" button inconsistently showing/hiding icons",
+                "commit": "b6ffc4f91a891dc9e72c5f476658c754e21b98c9",
+                "author": "BreakBB",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Fixed announcement of items that start a quest in Forever",
+                "commit": "0c2aabf038e5b939de2c069afb5b33d6e9333ddd",
+                "author": "BreakBB",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Fixed character name matching",
+                "commit": "b6caf5d519563e9946e148d6f1a689aeb68ae91c",
+                "author": "BreakBB",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Fixed journey import in Forever",
+                "commit": "e7479fd4560d3c6ec726ea972b5a230ab39278b6",
+                "author": "BreakBB",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Fixed party members showing up twice in tooltips",
+                "commit": "98da633975680dece6c2c49c8e4fbd14d814893d",
+                "author": "BreakBB",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Fixed tooltips showing duplicated player name",
+                "commit": "1161351d2c404f01ab5e5f31a4214ca089b9a39f",
+                "author": "BreakBB",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Group Night Elf quests under Teldrassil in Journey",
+                "commit": "8e6483d21e623488535008af7c348116fa73147d",
+                "author": "Logonz",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Handle objectives in dungeons without a UiMap",
+                "commit": "fc6cfe533ff7cada2a35d8673185271430fb195f",
+                "author": "Logonz",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Handle secret system messages on Forever",
+                "commit": "11fb75d648f30429e1f78bd256a8026937a98e0a",
+                "author": "Havi",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "Prevent breadcrumbs to be announced or abandoned on login",
+                "commit": "e5475ee0308d980f16839baa41ca2bf3421e2a84",
+                "author": "BreakBB",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "[Forever] Fixed off-by-one error for grey/green quest difficulty offset",
+                "commit": "127541072b6939c92ea41cb534c627f2f9c3d685",
+                "author": "Muehe",
+                "coAuthors": []
+            },
+            {
+                "category": "fix",
+                "text": "[Forever]\u00a0Fix tooltips not showing in combat",
+                "commit": "8cf589e860cd97efe63eea678e6df05f664e1288",
+                "author": "Logonz",
+                "coAuthors": []
+            },
+            {
+                "category": "quest",
+                "text": "Enable Ulduar quests for Titan p6",
+                "commit": "e9703c776402f01c79d78d88678abfd3aad562eb",
+                "author": "Loukky",
                 "coAuthors": []
             }
         ]
@@ -66,6 +185,41 @@
                 "rawBytes": 13020581
             },
             {
+                "flavor": "TBC",
+                "file": "QuestieDB-TBC.zip",
+                "sha256": "f62fcc72b9f5f786b2298bdec09c4db16990a405b7aca07433e67bc31ba0f0cf",
+                "bytes": 9853967,
+                "rawBytes": 21245434
+            },
+            {
+                "flavor": "Wrath",
+                "file": "QuestieDB-Wrath.zip",
+                "sha256": "33af3ed18dea05e9f57e139529ad86a31f5045633aba47b31fd6c32d671e8fae",
+                "bytes": 13925473,
+                "rawBytes": 29902358
+            },
+            {
+                "flavor": "Cata",
+                "file": "QuestieDB-Cata.zip",
+                "sha256": "2301199abc2af1c08f748322c5939f4ba6834a34207c366969da456011dae4af",
+                "bytes": 21742204,
+                "rawBytes": 47365660
+            },
+            {
+                "flavor": "Mists",
+                "file": "QuestieDB-Mists.zip",
+                "sha256": "6e688a122401342cedfcb5879940b70be9b293b3b03678c1ec0feb5b86067a13",
+                "bytes": 25928120,
+                "rawBytes": 57116420
+            },
+            {
+                "flavor": "Forever",
+                "file": "QuestieDB-Forever.zip",
+                "sha256": "d78b066c362eaf28258d9e2d041c0a7b03d6943a2dfc741dec70c6bfd8e1fc27",
+                "bytes": 13514513,
+                "rawBytes": 31802644
+            },
+            {
                 "flavor": "All",
                 "file": "QuestieDB-all.zip",
                 "sha256": "63b52f2ddd70b182b2921867e9eefdbc65b67378dd49b1fe89127ff253b93d79",
@@ -75,10 +229,17 @@
         ],
         "changelog": [
             {
+                "category": "fix",
+                "text": "Show the new dungeon quest icons on the entrance locations",
+                "commit": "75a388e2b73f156eac4684b743c20aef56ed6d9d",
+                "author": "Cabro",
+                "coAuthors": []
+            },
+            {
                 "category": "db",
                 "text": "[Forever] refresh base data from October 10 snapshot",
                 "commit": "2700bb230f4ac2b20aeaaad1cbea305655c7a1a1",
-                "author": "contributor",
+                "author": "Logonz",
                 "coAuthors": []
             }
         ]

@@ -78,15 +78,15 @@
         ],
         [
           "age",
-          "3651"
+          "0"
         ],
         [
           "date",
-          "Thu, 15 Oct 2026 04:08:03 GMT"
+          "Fri, 16 Oct 2026 18:42:30 GMT"
         ],
         [
           "x-served-by",
-          "cache-iad-kcgs7200156-IAD, cache-pdk-kpdk2140097-PDK"
+          "cache-iad-kcgs7200156-IAD, cache-pdk-kpdk2140023-PDK"
         ],
         [
           "x-cache",
@@ -94,11 +94,11 @@
         ],
         [
           "x-cache-hits",
-          "49, 0"
+          "105, 0"
         ],
         [
           "x-timer",
-          "S1792037283.400870,VS0,VE2"
+          "S1792176150.000733,VS0,VE22"
         ],
         [
           "content-disposition",

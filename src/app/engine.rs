@@ -118,6 +118,11 @@ impl Engine {
         self.http.as_ref()
     }
 
+    /// The sources, for what the release cache does not cover (changelogs).
+    pub fn registry(&self) -> &SourceRegistry {
+        &self.registry
+    }
+
     /// The archive limits in force: inspection's, and a live folder's indexing.
     pub fn archive_limits(&self) -> ArchiveLimits {
         self.limits

@@ -1,5 +1,6 @@
 //! A minimal Atom decoder for GitHub's `releases.atom` and `commits/<branch>.atom`:
-//! each `feed/entry` with its `id`, `title`, `updated` and alternate `link@href`.
+//! each `feed/entry` with its `id`, `title`, `updated`, alternate `link@href` and
+//! `content` (a release's notes, escaped HTML in `releases.atom`).
 //! A small tag scanner, not an XML parser: it ignores namespace prefixes, unknown
 //! elements, comments, processing instructions and CDATA outside the fields it reads,
 //! and never fails (a broken feed yields fewer entries).
@@ -13,6 +14,10 @@ pub struct AtomEntry {
     pub updated: Option<String>,
     /// The `alternate` link (or the first link without a `rel`).
     pub link: Option<String>,
+    /// The `<content>`, unescaped: for `type="html"` the HTML itself.
+    pub content: Option<String>,
+    /// The `<content>`'s `type` (`html`, `xhtml`, `text`), when it says.
+    pub content_type: Option<String>,
 }
 
 /// The entries of a feed, in feed order.
@@ -48,6 +53,7 @@ pub fn parse(xml: &str) -> Vec<AtomEntry> {
                 match name {
                     "id" => e.id = text,
                     "title" => e.title = text,
+                    "content" => e.content = Some(text),
                     _ => e.updated = Some(text),
                 }
             }
@@ -56,6 +62,12 @@ pub fn parse(xml: &str) -> Vec<AtomEntry> {
         if depth == 1 {
             match local {
                 "id" | "title" | "updated" if !tag.empty => field = Some((local, tag.end)),
+                "content" if !tag.empty => {
+                    field = Some((local, tag.end));
+                    if let Some(e) = entry.as_mut() {
+                        e.content_type = attr(tag.attrs, "type");
+                    }
+                }
                 "link" => {
                     let rel = attr(tag.attrs, "rel");
                     if let (Some(e), None | Some("alternate")) = (entry.as_mut(), rel.as_deref())
@@ -255,9 +267,21 @@ mod tests {
                 title: "v12.1.0".into(),
                 updated: Some("2026-10-12T20:29:01Z".into()),
                 link: Some("https://github.com/Questie/Questie/releases/tag/v12.1.0".into()),
+                // Escaped HTML, unescaped once: the HTML, its tags kept.
+                content: Some("<h2>Questie v12.1.0</h2> <title>not this</title>".into()),
+                content_type: Some("html".into()),
             }
         );
         assert_eq!(entries[1].title, "bundle/wago/v12.1.0+v1.0.6");
+        assert_eq!(
+            (&entries[1].content, &entries[1].content_type),
+            (&None, &None)
+        );
+        // CDATA content is kept verbatim.
+        let cdata = parse(
+            "<feed><entry><content type=\"html\"><![CDATA[<p>a &amp; b</p>]]></content></entry></feed>",
+        );
+        assert_eq!(cdata[0].content.as_deref(), Some("<p>a &amp; b</p>"));
         assert!(
             entries[1]
                 .link

@@ -1,0 +1,17 @@
+---
+source: tests/changelog.rs
+assertion_line: 317
+expression: human.stdout
+---
+era (1.15.9, Classic Era · Hardcore · Season of Discovery)
+  Foo  v2  → v3  gh:o/foo
+      v3 (2026-10-28)
+        Third: faster
+retail (12.1.5, mainline)
+  Foo  v1  → v3
+      v3 (2026-10-28)
+        Third: faster
+      v2 (2026-10-27)
+        - Second
+2 updates on 2 clients · checked just now (0 requests, 2 reused)
+Run `omaddons update` to install them.

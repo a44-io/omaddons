@@ -26,6 +26,32 @@ impl Source for GitSource {
     fn fetch(&self, wanted: &[Wanted], http: &dyn Http) -> Vec<Result<ReleaseSet>> {
         wanted.iter().map(|w| self.fetch_one(w, http)).collect()
     }
+
+    /// Commit titles from GitHub's commits feed; nothing for other hosts.
+    fn changelog(
+        &self,
+        r: &Ref,
+        _latest: &crate::model::Release,
+        since: Option<&str>,
+        limit: usize,
+        http: &dyn Http,
+    ) -> Option<Result<super::changelog::Changelog>> {
+        let Ref::Git { url, rev } = r else {
+            return None;
+        };
+        if !host(url).is_some_and(|h| h.eq_ignore_ascii_case("github.com")) {
+            return None;
+        }
+        let (owner, repo) = git_github::repository(url)?;
+        Some(git_github::changelog(
+            owner,
+            repo,
+            rev.as_deref(),
+            since,
+            limit,
+            http,
+        ))
+    }
 }
 
 impl GitSource {

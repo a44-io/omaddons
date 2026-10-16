@@ -14,7 +14,7 @@
         ],
         [
           "content-length",
-          "2715"
+          "9119"
         ],
         [
           "last-modified",
@@ -77,16 +77,16 @@
           "bytes"
         ],
         [
-          "date",
-          "Thu, 15 Oct 2026 02:39:45 GMT"
+          "age",
+          "1227"
         ],
         [
-          "age",
-          "363"
+          "date",
+          "Fri, 16 Oct 2026 18:42:30 GMT"
         ],
         [
           "x-served-by",
-          "cache-iad-kcgs7200150-IAD, cache-pdk-kpdk2140073-PDK"
+          "cache-iad-kcgs7200150-IAD, cache-pdk-kpdk2140022-PDK"
         ],
         [
           "x-cache",
@@ -94,11 +94,11 @@
         ],
         [
           "x-cache-hits",
-          "187, 1"
+          "187, 0"
         ],
         [
           "x-timer",
-          "S1792031986.690545,VS0,VE1"
+          "S1792176151.640026,VS0,VE14"
         ],
         [
           "content-disposition",

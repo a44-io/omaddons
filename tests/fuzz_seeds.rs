@@ -30,6 +30,7 @@ const TARGETS: &[&str] = &[
     "bbcode_text",
     "wowi_details",
     "tukui_addons",
+    "atom_feed",
 ];
 
 fn fuzz_dir() -> PathBuf {
@@ -332,6 +333,35 @@ fn write_fuzz_seeds() {
         "wowi_details",
         "malformed.json",
         br#"[{"UID":-1,"UIMD5":"ABCDEF0123456789abcdef012345678Z","UIDate":1e30,"UIChangeLog":"[url=<\u0000b]x"},{"UID":"7"},"#,
+    );
+
+    // atom_feed: a recorded commits feed, a releases feed with HTML notes, a broken one.
+    let recorded = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "tests/fixtures/http/catalog/github.com/get-shagu-pfUI-commits-master.atom-7c40e418.body",
+    );
+    write("atom_feed", "commits.atom", &fs::read(recorded).unwrap());
+    let feeds = env.root().join("feeds");
+    common::http::gh_feed(
+        &feeds,
+        "https://github.com/o/r",
+        &[
+            (
+                "v2.0",
+                "<h2>Fixes</h2><ul><li>Faster <b>loading</b> &amp; more</li></ul>",
+            ),
+            ("v1.0", "<p>First</p>"),
+        ],
+        None,
+    );
+    write(
+        "atom_feed",
+        "releases.atom",
+        &fs::read(feeds.join("github.com/feed-o-r.body")).unwrap(),
+    );
+    write(
+        "atom_feed",
+        "malformed.atom",
+        b"<feed><entry><id>tag:github.com,2008:Grit::Commit/abc</id><content type=\"html\">&lt;b&gt;unclosed<entry><title><![CDATA[x</title></entry",
     );
 
     // tukui_addons: the list as the API writes it, one project, a broken body.

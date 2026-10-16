@@ -10,7 +10,7 @@
       "headers": [
         [
           "date",
-          "Thu, 15 Oct 2026 04:08:04 GMT"
+          "Fri, 16 Oct 2026 18:42:30 GMT"
         ],
         [
           "content-type",
@@ -18,7 +18,7 @@
         ],
         [
           "location",
-          "https://github.com/ATTWoWAddon/AllTheThings/releases/tag/5.4.0"
+          "https://github.com/ATTWoWAddon/AllTheThings/releases/tag/5.4.1"
         ],
         [
           "vary",
@@ -62,7 +62,7 @@
         ],
         [
           "x-github-request-id",
-          "9B38:158114:FC2A9B:1414D5E:6AD051A4"
+          "D24A:304CB9:2C4F96:3D5EB8:6AD27016"
         ],
         [
           "x-github-edge-region",

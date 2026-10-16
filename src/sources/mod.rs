@@ -9,6 +9,7 @@
 //! the network (DEC-12).
 
 pub mod atom;
+pub mod changelog;
 pub mod git;
 pub mod git_github;
 pub mod git_hosts;
@@ -28,7 +29,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, ErrorCode, Result, Suggestion};
-use crate::model::{Channel, ExpectedHash, HashFromHeader, Ref, ReleaseSet};
+use crate::model::{Channel, ExpectedHash, HashFromHeader, Ref, Release, ReleaseSet};
 use crate::net::{Http, run_bounded};
 use crate::politeness::MAX_CONCURRENT_REQUESTS;
 use crate::state::config::SourceConfig;
@@ -190,6 +191,22 @@ pub trait Source: Send + Sync {
             self.id().wire()
         )))
     }
+
+    /// Release notes for the releases of `r` newer than `since` (an installed release's
+    /// identity; exclusive), newest first, at most `limit`; `latest` is the newest
+    /// release, for a source that serves only its notes. `None` when the source has
+    /// none ([`changelog::changelog_for`] says `not_supported`).
+    fn changelog(
+        &self,
+        r: &Ref,
+        latest: &Release,
+        since: Option<&str>,
+        limit: usize,
+        http: &dyn Http,
+    ) -> Option<Result<changelog::Changelog>> {
+        let _ = (r, latest, since, limit, http);
+        None
+    }
 }
 
 /// A shared source is the source (the registry keeps a typed handle to Tukui's list).
@@ -208,6 +225,17 @@ impl<S: Source> Source for std::sync::Arc<S> {
 
     fn resolve_asset(&self, key: &str, http: &dyn Http) -> Result<ResolvedAsset> {
         S::resolve_asset(self, key, http)
+    }
+
+    fn changelog(
+        &self,
+        r: &Ref,
+        latest: &Release,
+        since: Option<&str>,
+        limit: usize,
+        http: &dyn Http,
+    ) -> Option<Result<changelog::Changelog>> {
+        S::changelog(self, r, latest, since, limit, http)
     }
 }
 

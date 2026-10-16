@@ -36,6 +36,29 @@ fn net_log(home: &Home) -> String {
 }
 
 #[test]
+fn elvui_by_its_catalog_names_is_tukuis() {
+    let home = Home::new(&["wow", "wow_classic_era"]);
+    common::tukui::tukui_list(&home.http, &[common::tukui::elvui()]);
+    for name in ["elvui", "elv"] {
+        let r = home.run(&["info", name]);
+        let envelope = r.expect(0);
+        let data = &envelope["data"];
+        assert_eq!(
+            (&data["ref"], &data["catalog"]["name"]),
+            (&Value::from("tukui:elvui"), &Value::from("ElvUI")),
+            "{}",
+            r.context()
+        );
+        assert_eq!(
+            data["catalog"]["folders"],
+            serde_json::json!(["ElvUI", "ElvUI_Libraries", "ElvUI_Options"])
+        );
+        assert_eq!(data["latest"]["version"], "16.00", "{}", r.context());
+        assert_eq!(envelope["partial"], false);
+    }
+}
+
+#[test]
 fn info_reports_the_catalog_latest_and_installed() {
     let home = Home::new(&["wow", "wow_classic"]);
     weakauras(&home);
