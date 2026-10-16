@@ -949,30 +949,59 @@ fn installing_a_dependency_by_name_makes_it_explicit() {
     install(&v1).expect(0);
     // Foo became a dependency of Bar (as the resolver will record it).
     let file = support::record_file(&home);
-    let mut record: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-    record["addons"]["foo"]["reason"] = "dependency".into();
-    record["addons"]["foo"]["required_by"] = serde_json::json!(["Bar"]);
-    fs::write(&file, record.to_string()).unwrap();
+    let demote = || {
+        let mut record: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        record["addons"]["foo"]["reason"] = "dependency".into();
+        record["addons"]["foo"]["required_by"] = serde_json::json!(["Bar"]);
+        fs::write(&file, record.to_string()).unwrap();
+    };
+    demote();
 
-    // The same release: only the record would change, which is not recorded yet.
+    // The same release: a records-only install that promotes it.
+    let tree = tree_hash(&home.addons("_retail_"));
     let r = install(&v1);
     let envelope = r.expect(0);
+    let item = &items(&envelope)[0];
     assert_eq!(
-        (&envelope["data"]["tx"], &items(&envelope)[0]["status"]),
-        (&Value::Null, &Value::from("unchanged")),
+        (
+            &envelope["data"]["kind"],
+            &item["status"],
+            &item["fields"],
+            &item["folders"]["recorded"]
+        ),
+        (
+            &Value::from("install"),
+            &Value::from("edited"),
+            &serde_json::json!(["reason"]),
+            &serde_json::json!(["Foo"])
+        ),
         "{}",
         r.context()
     );
-    let noted = support::events(&r).iter().any(|e| {
-        e["event"] == "log"
-            && e["message"]
-                .as_str()
-                .is_some_and(|m| m.contains("Foo unchanged") && m.contains("record's reason"))
-    });
-    assert!(noted, "a -v note names the field\n{}", r.context());
-    assert_eq!(support::addon_record(&home, "foo")["reason"], "dependency");
+    assert!(envelope["data"]["tx"].is_string(), "{}", r.context());
+    let record = support::addon_record(&home, "foo");
+    assert_eq!(
+        (
+            &record["reason"],
+            &record["required_by"],
+            &record["version"]
+        ),
+        (
+            &Value::from("explicit"),
+            &serde_json::json!(["Bar"]),
+            &Value::from("1.0")
+        )
+    );
+    assert_eq!(tree_hash(&home.addons("_retail_")), tree, "no folder moved");
+    let again = install(&v1).expect(0);
+    assert_eq!(
+        (&again["data"]["tx"], &items(&again)[0]["status"]),
+        (&Value::Null, &Value::from("unchanged")),
+        "a repeat changes nothing"
+    );
 
     // A newer release: installed, promoted, still required by Bar.
+    demote();
     let r = install(&v2);
     assert_eq!(
         items(&r.expect(0))[0]["status"],
@@ -984,5 +1013,119 @@ fn installing_a_dependency_by_name_makes_it_explicit() {
     assert_eq!(
         (&record["reason"], &record["required_by"]),
         (&Value::from("explicit"), &serde_json::json!(["Bar"]))
+    );
+}
+
+/// `install gh:o/foo --file <zip> -t retail --offline` plus `extra`, under `--json`.
+fn file_install(home: &Home, zip: &str, extra: &[&str]) -> Run {
+    let mut args = vec![
+        "install",
+        "gh:o/foo",
+        "--file",
+        zip,
+        "-t",
+        "retail",
+        "--offline",
+    ];
+    args.extend_from_slice(extra);
+    home.run(&args)
+}
+
+#[test]
+fn installing_the_installed_release_with_a_version_pins_it_as_a_pin_transaction() {
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let v1 = support::foo_zip(&dl, "1.0");
+    file_install(&home, &v1, &[]).expect(0);
+    let tree = tree_hash(&home.addons("_retail_"));
+
+    let r = file_install(&home, &v1, &["--version", "1.0"]);
+    let envelope = r.expect(0);
+    let item = &items(&envelope)[0];
+    assert_eq!(
+        (
+            &envelope["data"]["kind"],
+            &item["status"],
+            &item["from_version"],
+            &item["to_version"],
+            &item["folders"]["recorded"]
+        ),
+        (
+            &Value::from("pin"),
+            &Value::from("pinned"),
+            &Value::from("1.0"),
+            &Value::from("1.0"),
+            &serde_json::json!(["Foo"])
+        ),
+        "{}",
+        r.context()
+    );
+    assert!(item.get("fields").is_none(), "{}", r.context());
+    let tx = envelope["data"]["tx"].as_str().unwrap().to_owned();
+    assert_eq!(
+        argv_of(&envelope["commands"][0]["argv"]),
+        ["omaddons", "undo", tx.as_str()]
+    );
+    assert_eq!(support::addon_record(&home, "foo")["pinned"], true);
+    assert_eq!(tree_hash(&home.addons("_retail_")), tree, "byte-identical");
+    let r = home.run(&["history", "-v"]);
+    let entry = &r.expect(0)["data"]["entries"][0];
+    assert_eq!(
+        (&entry["kind"], &entry["ops"]),
+        (
+            &Value::from("pin"),
+            &serde_json::json!([{"op": "record", "folder": "Foo", "addon": "Foo"}])
+        ),
+        "{}",
+        r.context()
+    );
+    // Pinned already: nothing to do.
+    let again = file_install(&home, &v1, &["--version", "1.0"]).expect(0);
+    assert_eq!(
+        (&again["data"]["tx"], &items(&again)[0]["status"]),
+        (&Value::Null, &Value::from("unchanged"))
+    );
+
+    // Undo unpins it, folders untouched.
+    let r = home.run(&["undo", &tx]);
+    r.expect(0);
+    assert_eq!(support::addon_record(&home, "foo")["pinned"], false);
+    assert_eq!(tree_hash(&home.addons("_retail_")), tree);
+}
+
+#[test]
+fn a_channel_switch_whose_release_is_installed_records_the_channel() {
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let v1 = support::foo_zip(&dl, "1.0");
+    file_install(&home, &v1, &[]).expect(0);
+
+    let r = file_install(&home, &v1, &["--channel", "beta"]);
+    let envelope = r.expect(0);
+    let item = &items(&envelope)[0];
+    assert_eq!(
+        (
+            &envelope["data"]["kind"],
+            &item["status"],
+            &item["fields"],
+            &item["channel"]
+        ),
+        (
+            &Value::from("install"),
+            &Value::from("edited"),
+            &serde_json::json!(["channel"]),
+            &Value::from("beta")
+        ),
+        "{}",
+        r.context()
+    );
+    assert_eq!(support::addon_record(&home, "foo")["channel"], "beta");
+    let again = file_install(&home, &v1, &["--channel", "beta"]).expect(0);
+    assert_eq!(
+        (&again["data"]["tx"], &items(&again)[0]["status"]),
+        (&Value::Null, &Value::from("unchanged")),
+        "an immediate repeat creates no transaction"
     );
 }

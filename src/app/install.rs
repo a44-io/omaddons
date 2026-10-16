@@ -22,6 +22,7 @@ use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::{resolve_one, with_target};
+use crate::engine::edit::EditField;
 use crate::engine::plan::{ChangeKind, FolderSummary, PinIntent, RequestedChange};
 use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
@@ -114,6 +115,9 @@ pub struct InstallItem {
     pub r#ref: Option<Ref>,
     pub name: Option<String>,
     pub status: ItemStatus,
+    /// The record fields an `edited` item changed, sorted; omitted when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<EditField>,
     pub from_version: Option<String>,
     pub to_version: Option<String>,
     pub version_confidence: Option<VersionConfidence>,
@@ -132,6 +136,12 @@ pub enum ItemStatus {
     Updated,
     Unchanged,
     Failed,
+    /// The installed release is now pinned (only the record changed).
+    Pinned,
+    /// The installed release is no longer pinned.
+    Unpinned,
+    /// Other record fields changed (`fields` names them); the release stays.
+    Edited,
 }
 
 /// A failed item's error.
@@ -279,6 +289,29 @@ impl Outcome for InstallOutcome {
                         "{id}: {name} unchanged ({})",
                         item.to_version.as_deref().unwrap_or("?")
                     )?;
+                }
+                ItemStatus::Pinned | ItemStatus::Unpinned | ItemStatus::Edited => {
+                    let verb = match item.status {
+                        ItemStatus::Pinned => "pinned",
+                        ItemStatus::Unpinned => "unpinned",
+                        _ => "edited",
+                    };
+                    let verb = if d.dry_run {
+                        format!("would be {verb}")
+                    } else {
+                        verb.to_owned()
+                    };
+                    let version = item.to_version.as_deref().unwrap_or("?");
+                    if item.fields.is_empty() {
+                        writeln!(w, "{id}: {verb} {name} at {version}")?;
+                    } else {
+                        let fields: Vec<&str> = item.fields.iter().map(|f| f.wire()).collect();
+                        writeln!(
+                            w,
+                            "{id}: {verb} {name} at {version} ({})",
+                            fields.join(", ")
+                        )?;
+                    }
                 }
                 ItemStatus::Failed => {
                     let (code, message) = item
@@ -774,6 +807,7 @@ fn build_items(
                     r#ref: r,
                     name: None,
                     status: ItemStatus::Failed,
+                    fields: Vec::new(),
                     from_version: None,
                     to_version: None,
                     version_confidence: None,
@@ -823,15 +857,32 @@ fn build_items(
                     if let Some(error) = &target_failure {
                         return failed(Some(p.r#ref.clone()), error);
                     }
+                    // A records-only change: the record as planned says which way a pin
+                    // went.
+                    let pinned = planned.or(installed).is_some_and(|r| r.pinned);
+                    let status = match change.kind {
+                        ChangeKind::Update => ItemStatus::Updated,
+                        ChangeKind::Edit if change.fields == [EditField::Pinned] && pinned => {
+                            ItemStatus::Pinned
+                        }
+                        ChangeKind::Edit if change.fields == [EditField::Pinned] => {
+                            ItemStatus::Unpinned
+                        }
+                        ChangeKind::Edit => ItemStatus::Edited,
+                        ChangeKind::Install | ChangeKind::Remove | ChangeKind::Adopt => {
+                            ItemStatus::Installed
+                        }
+                    };
+                    let fields = match status {
+                        ItemStatus::Edited => change.fields.clone(),
+                        _ => Vec::new(),
+                    };
                     let item = InstallItem {
                         request: item.request.clone(),
                         r#ref: Some(p.r#ref.clone()),
                         name: Some(change.addon.clone()),
-                        status: if change.kind == ChangeKind::Update {
-                            ItemStatus::Updated
-                        } else {
-                            ItemStatus::Installed
-                        },
+                        status,
+                        fields,
                         from_version: change.from_version.clone(),
                         to_version: change.to_version.clone(),
                         version_confidence: planned.map(|r| r.version_confidence),
@@ -848,6 +899,7 @@ fn build_items(
                         r#ref: Some(p.r#ref.clone()),
                         name: installed.map(|a| a.name.clone()),
                         status: ItemStatus::Unchanged,
+                        fields: Vec::new(),
                         from_version: installed.map(|a| a.version.clone()),
                         to_version: installed.map(|a| a.version.clone()),
                         version_confidence: installed.map(|a| a.version_confidence),
@@ -946,6 +998,7 @@ mod tests {
             r#ref: None,
             name: (!failed).then(|| request.to_owned()),
             status,
+            fields: Vec::new(),
             from_version: None,
             to_version: version.map(str::to_owned),
             version_confidence: None,
@@ -1091,6 +1144,44 @@ mod tests {
             human(&dry),
             "retail: would be updated Foo 2.0 (1 folders)\n/reload in game\n"
         );
+    }
+
+    #[test]
+    fn records_only_items_name_the_change() {
+        let tx: TxId = "01JB8Q2VA00000000000000000".parse().unwrap();
+        let mut edited = item("Bar", ItemStatus::Edited, Some("2.0"));
+        edited.fields = vec![EditField::Channel, EditField::Reason];
+        let mut o = outcome(
+            vec![
+                item("Foo", ItemStatus::Pinned, Some("1.2")),
+                item("Baz", ItemStatus::Unpinned, Some("3")),
+                edited,
+            ],
+            Some(tx),
+            false,
+            false,
+        );
+        o.data.reload_required = ReloadRequired::None;
+        assert_eq!(
+            human(&o),
+            "retail: pinned Foo at 1.2\n\
+             retail: unpinned Baz at 3\n\
+             retail: edited Bar at 2.0 (channel, reason)\n\
+             tx 01JB8Q2VA00000000000000000 · undo: omaddons undo 01JB8Q2VA00000000000000000\n"
+        );
+        o.data.dry_run = true;
+        o.data.tx = None;
+        assert!(human(&o).starts_with("retail: would be pinned Foo at 1.2\n"));
+        let json = serde_json::to_value(&o.data.items).unwrap();
+        assert_eq!(
+            (&json[0]["status"], &json[2]["status"], &json[2]["fields"]),
+            (
+                &json!("pinned"),
+                &json!("edited"),
+                &json!(["channel", "reason"])
+            )
+        );
+        assert!(json[0].get("fields").is_none(), "omitted when empty");
     }
 
     #[test]

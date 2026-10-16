@@ -700,7 +700,7 @@ fn an_update_of_a_pinned_addon_is_a_no_op_without_a_fetch() {
 }
 
 #[test]
-fn a_record_only_difference_is_unchanged_with_a_note() {
+fn a_record_only_difference_plans_a_records_only_edit() {
     let (env, retail) = foo_v1_with_v2_out(|r| {
         r.reason = AddonReason::Dependency;
         r.release_id = Some("gh:o/foo@v2".into());
@@ -709,16 +709,36 @@ fn a_record_only_difference_is_unchanged_with_a_note() {
     let plan = env.plan(vec![install(&retail)], false);
     assert!(plan.failures.is_empty(), "{:?}", plan.failures);
     let t = &plan.targets[0];
-    assert!(
-        t.work.is_empty() && t.warnings.is_empty(),
-        "{:?}",
-        t.warnings
+    assert!(t.notes.is_empty() && t.warnings.is_empty(), "{t:?}");
+    assert_eq!(
+        t.kind,
+        Some(TxKind::Install),
+        "a promotion keeps the command's kind"
     );
-    assert_eq!(t.notes.len(), 1, "{:?}", t.notes);
+    let value = serde_json::to_value(&t.changes[0]).unwrap();
+    assert_eq!(
+        (
+            &value["kind"],
+            &value["fields"],
+            &value["folders"]["recorded"]
+        ),
+        (
+            &serde_json::json!("edit"),
+            &serde_json::json!(["reason"]),
+            &serde_json::json!(["Foo"])
+        )
+    );
+    let record = t.work[0].record().unwrap();
+    assert_eq!(
+        (record.reason, record.release_id.as_deref()),
+        (AddonReason::Explicit, Some("gh:o/foo@v2")),
+        "promoted at the same release"
+    );
     assert!(
-        t.notes[0].contains("Foo unchanged") && t.notes[0].contains("record's reason"),
-        "{}",
-        t.notes[0]
+        read_net_log(&env.paths)
+            .iter()
+            .all(|e| !e.path.ends_with(".zip")),
+        "nothing downloaded"
     );
 
     // The same request with nothing to change has nothing to say.
@@ -728,6 +748,21 @@ fn a_record_only_difference_is_unchanged_with_a_note() {
     });
     let plan = env.plan(vec![install(&retail)], false);
     assert!(plan.targets[0].notes.is_empty() && plan.targets[0].work.is_empty());
+
+    // A folder missing: a reinstall case, not an edit; unchanged with a -v note.
+    let (env, retail) = foo_v1_with_v2_out(|r| {
+        r.reason = AddonReason::Dependency;
+        r.release_id = Some("gh:o/foo@v2".into());
+        r.folders.push(FolderName::new("FooGone").unwrap());
+    });
+    let mut pin = install(&retail);
+    if let RequestedChange::Install { pin, .. } = &mut pin.changes[0] {
+        *pin = PinIntent::Pin;
+    }
+    let plan = env.plan(vec![pin], false);
+    let t = &plan.targets[0];
+    assert!(t.work.is_empty(), "{:?}", t.changes);
+    assert!(t.notes[0].contains("folders are missing"), "{:?}", t.notes);
 }
 
 #[test]

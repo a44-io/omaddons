@@ -243,7 +243,7 @@ pub fn carry_over(
 
 /// The fields among `pinned`, `channel` and `reason` that `carried` changes in
 /// `existing`, sorted: what a request that chose the installed release would still
-/// record (records-only work, A4.3). `required_by` is never carried by a request.
+/// record. `required_by` is never carried by a request.
 pub fn record_differences(existing: &AddonRecord, carried: &AddonRecord) -> Vec<EditField> {
     changed_fields(Some(existing), Some(carried))
         .into_iter()
@@ -252,6 +252,20 @@ pub fn record_differences(existing: &AddonRecord, carried: &AddonRecord) -> Vec<
                 f,
                 EditField::Pinned | EditField::Channel | EditField::Reason
             )
+        })
+        .collect()
+}
+
+/// The edits that record [`record_differences`]: one per differing field, in field
+/// order.
+pub fn record_edits(existing: &AddonRecord, carried: &AddonRecord) -> Vec<RecordEdit> {
+    record_differences(existing, carried)
+        .into_iter()
+        .filter_map(|field| match field {
+            EditField::Pinned => Some(RecordEdit::SetPinned(carried.pinned)),
+            EditField::Channel => Some(RecordEdit::SetChannel(carried.channel)),
+            EditField::Reason => Some(RecordEdit::SetReason(carried.reason)),
+            EditField::Ref | EditField::RequiredBy => None,
         })
         .collect()
 }
@@ -772,10 +786,12 @@ pub fn rejudge(
                 if intent.pinned_noop(existing) {
                     return Ok(Planned::pinned(existing, &target.id));
                 }
+                // Installed meanwhile: its pin, channel or reason difference still
+                // records, as a records-only change.
                 if intent.keeps_release()
                     || (existing.release_id == template.release_id && planner.all_present(existing))
                 {
-                    return Ok(planner.current(existing, intent));
+                    return planner.current(existing, intent);
                 }
             }
             planner
@@ -1234,7 +1250,7 @@ impl TargetPlanner<'_> {
                 return Ok(Planned::pinned(existing, &self.target.id));
             }
             if intent.keeps_release() {
-                return Ok(self.current(existing, intent));
+                return self.current(existing, intent);
             }
         }
         let candidates = match (file, set) {
@@ -1275,7 +1291,7 @@ impl TargetPlanner<'_> {
             && existing.release_id.as_deref() == Some(first.release_id.as_str())
             && self.all_present(existing)
         {
-            return Ok(self.current(existing, intent));
+            return self.current(existing, intent);
         }
 
         let user_supplied =
@@ -1474,29 +1490,30 @@ impl TargetPlanner<'_> {
         }
     }
 
-    /// An installed addon that keeps its release: unchanged, with a `-v` note when some
-    /// of its folders are missing, or when the request would still change record
-    /// fields (records-only work records them, A4.3).
-    fn current(&self, existing: &AddonRecord, intent: &InstallIntent) -> Planned {
+    /// An installed addon that keeps its release. A request that would still change its
+    /// `pinned`, `channel` or `reason` records that: a records-only work with one edit
+    /// per field under the same-release guard (`install X --version <installed>` pins,
+    /// an install promotes a dependency). With a folder missing it is unchanged, with a
+    /// `-v` note: repairing it is a reinstall, not an edit.
+    fn current(&self, existing: &AddonRecord, intent: &InstallIntent) -> Result<Planned> {
         let (target, name) = (&self.target.id, &existing.name);
-        let mut notes = Vec::new();
         if !self.all_present(existing) {
-            notes.push(format!(
-                "{target}: {name} unchanged: this request keeps its release, and some of its folders are missing"
-            ));
+            return Ok(Planned::Unchanged {
+                warnings: Vec::new(),
+                notes: vec![format!(
+                    "{target}: {name} unchanged: this request keeps its release, and some of its folders are missing"
+                )],
+            });
         }
-        let fields = record_differences(existing, &carry_over(Some(existing), intent, existing));
-        if !fields.is_empty() {
-            let fields: Vec<&str> = fields.iter().map(|f| f.wire()).collect();
-            notes.push(format!(
-                "{target}: {name} unchanged: its release is installed, and the request would also change its record's {}, which needs a records-only change (not supported yet)",
-                fields.join(", ")
-            ));
-        }
-        Planned::Unchanged {
-            warnings: Vec::new(),
-            notes,
-        }
+        let edits = record_edits(existing, &carry_over(Some(existing), intent, existing));
+        let guard = edits.iter().fold(RecordGuard::default(), |guard, edit| {
+            guard.and(edit.guard(Some(existing)))
+        });
+        let after = apply_edits(Some(existing.clone()), &edits, name, target)?;
+        Ok(
+            records_change(name, Some(existing.clone()), after, edits, guard)
+                .map_or_else(Planned::nothing, Planned::change),
+        )
     }
 
     /// Folder changes, ownership, policy and swap ops for installing the loadable
@@ -2418,6 +2435,51 @@ mod tests {
         assert_eq!(
             serde_json::to_value(EditField::RequiredBy).unwrap(),
             EditField::RequiredBy.wire()
+        );
+    }
+
+    #[test]
+    fn record_edits_cover_every_combination_of_differing_fields() {
+        let existing = installed("1.0", false, Channel::Stable, AddonReason::Dependency);
+        for pinned in [false, true] {
+            for channel in [Channel::Stable, Channel::Beta] {
+                for reason in [AddonReason::Dependency, AddonReason::Explicit] {
+                    let mut carried = existing.clone();
+                    (carried.pinned, carried.channel, carried.reason) = (pinned, channel, reason);
+                    let mut edits = Vec::new();
+                    let mut fields = Vec::new();
+                    if channel != existing.channel {
+                        edits.push(RecordEdit::SetChannel(channel));
+                        fields.push(EditField::Channel);
+                    }
+                    if pinned != existing.pinned {
+                        edits.push(RecordEdit::SetPinned(pinned));
+                        fields.push(EditField::Pinned);
+                    }
+                    if reason != existing.reason {
+                        edits.push(RecordEdit::SetReason(reason));
+                        fields.push(EditField::Reason);
+                    }
+                    let case = format!("{pinned} {channel:?} {reason:?}");
+                    assert_eq!(record_edits(&existing, &carried), edits, "{case}");
+                    assert_eq!(record_differences(&existing, &carried), fields, "{case}");
+                    let after = apply_edits(Some(existing.clone()), &edits, "Foo", "retail")
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        (after.pinned, after.channel, after.reason),
+                        (pinned, channel, reason),
+                        "{case}"
+                    );
+                }
+            }
+        }
+        let mut other = existing.clone();
+        other.required_by = vec!["Bar".into()];
+        other.r#ref = "gh:o/other".parse().unwrap();
+        assert!(
+            record_edits(&existing, &other).is_empty(),
+            "only pinned, channel and reason count"
         );
     }
 

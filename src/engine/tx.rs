@@ -1532,6 +1532,110 @@ mod tests {
         assert!(scene.record().addons.contains_key("foo"));
     }
 
+    /// An install of `zip` as gh:o/foo with this pin intent and no version.
+    fn install_with(
+        scene: &TxScene,
+        zip: &std::path::Path,
+        pin: plan::PinIntent,
+    ) -> RequestedChange {
+        let mut change = scene.install("gh:o/foo", zip);
+        if let RequestedChange::Install { pin: intent, .. } = &mut change {
+            *intent = pin;
+        }
+        change
+    }
+
+    #[test]
+    fn a_record_only_difference_is_a_records_only_transaction_of_the_requests_kind() {
+        let scene = with_v1();
+        let tree = scene.addons();
+        let v1 = scene.zip("v1.zip", V1);
+        // The same release with --version: pinned-only, so a pin.
+        let done = scene
+            .run(vec![scene.install_pinned("gh:o/foo", &v1, "1")])
+            .unwrap();
+        let outcome = &done.outcomes[0];
+        assert_eq!(
+            (outcome.kind, outcome.changes[0].kind),
+            (Some(TxKind::Pin), ChangeKind::Edit)
+        );
+        assert_eq!(last_ops(&scene), records(&["Foo", "FooOld"]));
+        assert_eq!(scene.addons(), tree);
+
+        // Pinned and promoted at once: mixed fields keep the request's kind.
+        let scene = with_v1();
+        scene
+            .run(vec![scene.edit(
+                "Foo",
+                RecordEdit::SetReason(crate::model::AddonReason::Dependency),
+            )])
+            .unwrap();
+        let done = scene
+            .run(vec![scene.install_pinned("gh:o/foo", &v1, "1")])
+            .unwrap();
+        let outcome = &done.outcomes[0];
+        assert_eq!(outcome.kind, Some(TxKind::Install));
+        assert_eq!(
+            outcome.changes[0].fields,
+            [EditField::Pinned, EditField::Reason]
+        );
+    }
+
+    #[test]
+    fn a_pin_intent_alone_never_moves_the_release() {
+        let scene = with_v1();
+        let release = scene.record().addons["foo"].release_id.clone();
+        let tree = scene.addons();
+        let v2 = scene.zip("v2.zip", V2);
+        let done = scene
+            .run(vec![install_with(&scene, &v2, plan::PinIntent::Pin)])
+            .unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        assert_eq!(done.outcomes[0].kind, Some(TxKind::Pin));
+        let foo = &scene.record().addons["foo"];
+        assert!(foo.pinned);
+        assert_eq!(foo.release_id, release, "v2 was not installed");
+        assert_eq!(scene.addons(), tree);
+        let done = scene
+            .run(vec![install_with(&scene, &v2, plan::PinIntent::Unpin)])
+            .unwrap();
+        assert_eq!(done.outcomes[0].kind, Some(TxKind::Pin), "unpin too");
+        assert!(!scene.record().addons["foo"].pinned);
+        assert_eq!(scene.addons(), tree);
+    }
+
+    #[test]
+    fn a_pin_racing_an_install_of_the_same_release_still_records_itself() {
+        let scene = TxScene::new();
+        let v1 = scene.zip("v1.zip", V1);
+        std::thread::scope(|s| {
+            let slow = s.spawn(|| {
+                failpoint::with_spec("engine.stage.synced=sleep:400", || {
+                    scene.run(vec![scene.install_pinned("gh:o/foo", &v1, "1")])
+                })
+            });
+            std::thread::sleep(Duration::from_millis(150));
+            let fast = scene.run(vec![scene.install("gh:o/foo", &v1)]).unwrap();
+            assert_eq!(fast.outcomes[0].kind, Some(TxKind::Install));
+            let slow = slow.join().unwrap().unwrap();
+            assert!(slow.failures.is_empty(), "{:?}", slow.failures);
+            assert_eq!(
+                slow.plan.targets[0].changes[0].kind,
+                ChangeKind::Install,
+                "planned before the other install"
+            );
+            let outcome = &slow.outcomes[0];
+            assert_eq!(
+                (outcome.kind, outcome.changes[0].kind),
+                (Some(TxKind::Pin), ChangeKind::Edit),
+                "planned as an install, committed as a pin"
+            );
+        });
+        assert!(scene.record().addons["foo"].pinned);
+        assert_eq!(generation(&scene), 2);
+        assert!(leftovers(&scene).is_empty(), "{:?}", leftovers(&scene));
+    }
+
     #[test]
     fn an_error_at_any_failpoint_leaves_the_pin_iff_its_history_line() {
         let (mut failed, mut rolled_forward) = (Vec::new(), Vec::new());
