@@ -566,6 +566,7 @@ mod runs {
                     progress: &ProgressSink::none(),
                     catalog: None,
                     default_channel: Channel::Stable,
+                    downloads: None,
                 };
                 let done = omaddons::engine::run(&req, &ctx).unwrap();
                 let committed = done.outcomes.iter().filter(|o| o.tx.is_some()).count();

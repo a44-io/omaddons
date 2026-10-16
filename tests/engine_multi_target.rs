@@ -3,24 +3,42 @@
 //! journal, snapshots and history line) under one run id. A failpoint armed for the
 //! second commit only (`engine.lock.acquired=error@2`) shows a target-level failure that
 //! leaves the other two committed, and each committed transaction undoes on its own.
+//! Downloads are shared by the run's targets (M2-D28): one `asset` request per archive,
+//! failures included, and a `Deferred` asset resolved right before its download.
 
 mod common;
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use common::archives::zip_text;
+use common::http::{fixture, fixture_bytes};
+use common::netlog::read_net_log;
 use common::trees::tree_hash;
 use omaddons::app::outcome::{ItemStatus, TargetsData};
 use omaddons::engine::{UndoRequest, UndoSelector};
 use omaddons::model::{Actor, RunId};
+use omaddons::sources::SourceRegistry;
 use omaddons::state::history::{self, HistoryFilter};
 use omaddons::state::paths::ClientPaths;
-use support::{requests, scene};
+use support::{CANONICAL, DOWNLOAD, Deferring, EVERY, requests, scene, scene_with, texts};
+
+/// The `asset` lines in `net.log`.
+fn asset_requests(s: &support::Scene) -> usize {
+    read_net_log(&s.paths)
+        .iter()
+        .filter(|e| e.purpose == "asset")
+        .count()
+}
 
 #[cfg(test)]
 mod support {
     use std::collections::BTreeSet;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use omaddons::app::outcome::ItemRequest;
     use omaddons::discover::registry::reconcile;
@@ -29,10 +47,16 @@ mod support {
     use omaddons::engine::plan::{PinIntent, RequestedChange};
     use omaddons::engine::retention::RetentionLimits;
     use omaddons::engine::{EngineCtx, TxOutcomes, TxRequest, TxTarget};
+    use omaddons::error::Result;
     use omaddons::model::{Actor, AddonReason, Channel, RunId, TxKind};
+    use omaddons::model::{
+        Asset as ReleaseAsset, AssetFlavor, AssetLocation, HashFromHeader, Release, ReleaseSet,
+    };
     use omaddons::net::Http;
     use omaddons::output::ProgressSink;
+    use omaddons::resolve::cache::{Freshness, ReleaseCache};
     use omaddons::rules::RulesTable;
+    use omaddons::sources::{ResolvedAsset, Source, SourceId, Wanted};
     use omaddons::sources::{SourceConfigView, SourceRegistry};
     use omaddons::state::config::RunningPolicy;
     use omaddons::state::paths::Paths;
@@ -106,19 +130,25 @@ mod support {
                 progress: &self.progress,
                 catalog: None,
                 default_channel: Channel::Stable,
+                downloads: None,
             }
         }
 
         /// Installs `gh:o/foo` on every target as one run.
         pub fn install_everywhere(&self, run: RunId) -> TxOutcomes {
-            let req = TxRequest {
+            omaddons::engine::run(&self.request("gh:o/foo", run), &self.ctx()).unwrap()
+        }
+
+        /// Installs `r` on every target as one run.
+        pub fn request(&self, r: &str, run: RunId) -> TxRequest {
+            TxRequest {
                 targets: self
                     .targets()
                     .into_iter()
                     .map(|d| TxTarget {
                         discovered: d,
                         changes: vec![RequestedChange::Install {
-                            r#ref: "gh:o/foo".parse().unwrap(),
+                            r#ref: r.parse().unwrap(),
                             channel: Channel::Stable,
                             channel_explicit: false,
                             version: None,
@@ -139,15 +169,132 @@ mod support {
                 kind: None,
                 run,
                 no_deps: false,
+            }
+        }
+
+        /// Runs `req` fetching through `registry` and a release memo, which is written
+        /// afterwards as commands write it.
+        pub fn run_with(&self, req: &TxRequest, registry: &SourceRegistry) -> TxOutcomes {
+            let cache = ReleaseCache::new(
+                &self.paths,
+                self.http.as_ref(),
+                registry,
+                Freshness::Revalidate,
+            );
+            let ctx = EngineCtx {
+                registry,
+                cache: Some(&cache),
+                ..self.ctx()
             };
-            omaddons::engine::run(&req, &self.ctx()).unwrap()
+            let done = omaddons::engine::run(req, &ctx).unwrap();
+            cache.remember(&done.plan.facts);
+            done
         }
     }
 
-    const EVERY: &str = "## Interface: 11509, 50504, 120105\n## Version: 1\n";
+    pub const EVERY: &str = "## Interface: 11509, 50504, 120105\n## Version: 1\n";
+
+    /// Where [`Deferring`] resolves its asset: a token URL on an allowlisted host.
+    pub const DOWNLOAD: &str = "https://api.tukui.org/v1/download/foo";
+    /// What plans show for it instead.
+    pub const CANONICAL: &str = "https://api.tukui.org/v1/addon/foo";
+
+    /// A Tukui stand-in: `tukui:foo` has one release whose one asset (for every client)
+    /// is `Deferred`. Each resolve hands out the next token, `<DOWNLOAD>/TOKEN-000<n>`,
+    /// checked against the response's `ETag` MD5; `resolves` counts them.
+    pub struct Deferring {
+        pub resolves: Arc<AtomicUsize>,
+    }
+
+    impl Source for Deferring {
+        fn id(&self) -> SourceId {
+            SourceId::Tukui
+        }
+
+        fn fetch(&self, wanted: &[Wanted], _: &dyn Http) -> Vec<Result<ReleaseSet>> {
+            let flavors = [
+                ("mainline", 120_105),
+                ("classic", 11_509),
+                ("mists", 50_504),
+            ];
+            wanted
+                .iter()
+                .map(|w| {
+                    Ok(ReleaseSet {
+                        r#ref: w.r#ref.clone(),
+                        releases: vec![Release {
+                            release_id: format!("{}@1", w.r#ref),
+                            version: "1".into(),
+                            channel: Channel::Stable,
+                            published_at: None,
+                            assets: vec![ReleaseAsset {
+                                filename: "foo-1.zip".into(),
+                                location: AssetLocation::Deferred {
+                                    source: SourceId::Tukui,
+                                    key: "foo".into(),
+                                },
+                                size: None,
+                                expected_hash: None,
+                                flavors: flavors
+                                    .iter()
+                                    .map(|(flavor, interface)| AssetFlavor {
+                                        flavor: (*flavor).into(),
+                                        interface: Some(*interface),
+                                    })
+                                    .collect(),
+                                name_flavors: Vec::new(),
+                                nolib: false,
+                            }],
+                            changelog_url: None,
+                            notes: None,
+                            name_hint: None,
+                        }],
+                    })
+                })
+                .collect()
+        }
+
+        fn resolve_asset(&self, key: &str, _: &dyn Http) -> Result<ResolvedAsset> {
+            assert_eq!(key, "foo");
+            let n = self.resolves.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(ResolvedAsset {
+                url: format!("{DOWNLOAD}/TOKEN-{n:04}"),
+                expected_hash: None,
+                hash_from_header: Some(HashFromHeader::EtagMd5),
+                canonical_url: Some(CANONICAL.into()),
+            })
+        }
+    }
 
     /// The three clients, with `gh:o/foo` v1 (one zip for every client) to install.
     pub fn scene() -> Scene {
+        scene_with(|_| {})
+    }
+
+    /// Every file under `dir` but `net.log` (D4 redacts tokens there), as text.
+    pub fn texts(dir: &Path, out: &mut Vec<(String, String)>) {
+        let Ok(listing) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for item in listing {
+            let path = item.unwrap().path();
+            if path.is_dir() {
+                texts(&path, out);
+            } else if !path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("net.log"))
+            {
+                let bytes = std::fs::read(&path).unwrap();
+                out.push((
+                    path.display().to_string(),
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                ));
+            }
+        }
+    }
+
+    /// [`scene`] with more fixtures, written by `more` before replay loads them.
+    pub fn scene_with(more: impl FnOnce(&Path)) -> Scene {
         let env = TestEnv::new();
         let scenario = env.root().join("http");
         let assets: [Asset<'_>; 1] = [(
@@ -160,6 +307,7 @@ mod support {
             vec![("Foo/Foo.toc", EVERY), ("Foo/core.lua", "-- foo")],
         )];
         gh_release(&scenario, "https://github.com/o/foo", "v1", &assets);
+        more(&scenario);
         let http = replay(&env, &scenario);
         Scene::new(env, http)
     }
@@ -308,4 +456,127 @@ fn without_a_failpoint_every_target_commits_in_one_run() {
     .entries;
     assert_eq!(lines.len(), 3);
     assert_eq!(data.undo_commands().len(), 4);
+    assert_eq!(asset_requests(&s), 1, "one download for three targets");
+}
+
+#[test]
+fn a_failed_download_fails_every_target_once_and_a_new_run_retries() {
+    let s = scene_with(|scenario| {
+        fixture(
+            scenario,
+            "asset-o-foo-v1-Foo.zip",
+            "https://github.com/o/foo/releases/download/v1/Foo.zip",
+            404,
+            &[],
+            None,
+        );
+    });
+    let done = s.install_everywhere(RunId::new());
+    assert!(done.outcomes.iter().all(|o| o.tx.is_none()));
+    let failures: Vec<(String, String, u8)> = done
+        .failures
+        .iter()
+        .map(|f| {
+            (
+                f.target.clone(),
+                f.error.code.wire().to_owned(),
+                f.cause.as_ref().map_or(0, |c| c.exit().code()),
+            )
+        })
+        .collect();
+    assert_eq!(failures.len(), 3, "{failures:?}");
+    assert!(
+        failures
+            .iter()
+            .all(|(_, code, exit)| (code, exit) == (&failures[0].1, &failures[0].2)),
+        "the same error and exit code on every target: {failures:?}"
+    );
+    assert_eq!(
+        asset_requests(&s),
+        1,
+        "the failure is remembered for the run"
+    );
+
+    // A new run asks again.
+    s.install_everywhere(RunId::new());
+    assert_eq!(asset_requests(&s), 2);
+}
+
+#[test]
+fn a_deferred_asset_is_resolved_right_before_its_one_download() {
+    use md5::{Digest, Md5};
+
+    let zip = zip_text(&[("Foo/Foo.toc", EVERY), ("Foo/core.lua", "-- foo")]);
+    let md5: String = Md5::digest(&zip)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let etag = format!("\"{md5}\"");
+    let s = scene_with(|scenario| {
+        // The first token died before its download; the second serves the zip.
+        let dead = format!("{DOWNLOAD}/TOKEN-0001");
+        fixture(scenario, "token-1", &dead, 403, &[], None);
+        let live = format!("{DOWNLOAD}/TOKEN-0002");
+        fixture_bytes(
+            scenario,
+            "token-2",
+            &live,
+            200,
+            &[("etag", &etag)],
+            Some(&zip),
+        );
+    });
+    let resolves = Arc::new(AtomicUsize::new(0));
+    let mut registry = SourceRegistry::new();
+    registry.register(Box::new(Deferring {
+        resolves: Arc::clone(&resolves),
+    }));
+
+    let done = s.run_with(&s.request("tukui:foo", RunId::new()), &registry);
+    assert!(done.failures.is_empty(), "{:?}", done.failures);
+    assert_eq!(done.outcomes.iter().filter(|o| o.tx.is_some()).count(), 3);
+    assert_eq!(
+        resolves.load(Ordering::SeqCst),
+        2,
+        "once for the download, once more after its 403"
+    );
+    assert_eq!(
+        asset_requests(&s),
+        2,
+        "the 403, then the zip, for three targets"
+    );
+
+    // Plans show the canonical URL; no token is stored or shown anywhere but net.log.
+    let urls: Vec<Option<&str>> = done
+        .plan
+        .targets
+        .iter()
+        .flat_map(|t| &t.releases)
+        .map(|r| r.url.as_deref())
+        .collect();
+    assert_eq!(urls, [Some(CANONICAL); 3]);
+    let shown = format!(
+        "{}{}",
+        serde_json::to_string(&done.plan).unwrap(),
+        serde_json::to_string(&done.outcomes).unwrap()
+    );
+    assert!(!shown.contains("TOKEN-"), "{shown}");
+    let mut stored = Vec::new();
+    for dir in [
+        s.paths.state_dir(),
+        s.paths.cache_dir(),
+        s.paths.config_dir(),
+    ] {
+        texts(dir, &mut stored);
+    }
+    assert!(
+        stored
+            .iter()
+            .any(|(path, _)| path.ends_with("releases.json")),
+        "the memo was written: {:?}",
+        stored.iter().map(|(p, _)| p).collect::<Vec<_>>()
+    );
+    for (path, text) in &stored {
+        assert!(!text.contains("TOKEN-"), "a token in {path}");
+    }
 }

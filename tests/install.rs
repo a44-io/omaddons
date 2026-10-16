@@ -11,6 +11,7 @@ use common::addons::{addon_folder, toc};
 use common::archives::zip_text;
 use common::home::{Home, Run};
 use common::http::{Asset, gh_release};
+use common::netlog::net_log;
 use common::procfs::FakeProc;
 use common::trees::{CustomRoot, listing, tree_hash};
 use omaddons::discover::registry::marker_path;
@@ -333,6 +334,10 @@ fn the_single_compatible_live_target_is_chosen() {
     );
     assert!(home.addons("_retail_").join("Foo").is_dir());
     assert!(!home.addons("_classic_").join("Foo").exists());
+    // The probe tried the zip on both clients and the real run installed it: one
+    // download (M2-D28).
+    let log = net_log(&home);
+    assert_eq!(log.count_purpose("asset"), 1, "{}", log.context());
 }
 
 #[test]

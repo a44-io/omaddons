@@ -6,6 +6,7 @@
 use super::world::World;
 use crate::cli::Context;
 use crate::engine::inspect::ArchiveLimits;
+use crate::engine::plan::DownloadMemo;
 use crate::engine::retention::RetentionLimits;
 use crate::engine::{EngineCtx, TxOutcomes, TxRequest, UndoOutcome, UndoRequest};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
@@ -39,6 +40,9 @@ pub struct Engine {
     catalog: Catalog,
     /// The channel dependencies install from.
     default_channel: Channel,
+    /// What the command downloaded, so its engine runs (`install`'s probe and real
+    /// run, every target) download each archive once.
+    downloads: DownloadMemo,
 }
 
 impl Engine {
@@ -73,6 +77,7 @@ impl Engine {
             // A broken override is the command's own catalog warning, if it loads one.
             catalog: Catalog::load(&world.paths).0,
             default_channel: world.config.default_channel.unwrap_or_default(),
+            downloads: DownloadMemo::default(),
         })
     }
 
@@ -93,6 +98,7 @@ impl Engine {
             progress: &self.progress,
             catalog: Some(&self.catalog),
             default_channel: self.default_channel,
+            downloads: Some(&self.downloads),
         }
     }
 

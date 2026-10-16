@@ -45,6 +45,14 @@ pub struct BlobRef {
     pub path: PathBuf,
 }
 
+/// Where one download attempt's bytes are, and what they must hash to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadTarget {
+    pub url: String,
+    pub declared: Option<ExpectedHash>,
+    pub from_header: Option<HashFromHeader>,
+}
+
 /// Where a download may be kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Storage {
@@ -206,17 +214,44 @@ impl BlobCache {
         from_header: Option<HashFromHeader>,
         notes: &mut Vec<String>,
     ) -> Result<BlobRef> {
-        let declared_md5 = matches!(declared, Some(ExpectedHash::Md5(_)));
+        let target = DownloadTarget {
+            url: url.to_owned(),
+            declared: declared.cloned(),
+            from_header,
+        };
+        self.download_resolving(scopes, tx, http, &mut || Ok(target.clone()), false, notes)
+    }
+
+    /// [`BlobCache::download`] from a target `resolve` gives afresh before each attempt
+    /// (a deferred asset's token URL). The one retry follows a hash mismatch or, when
+    /// `refreshable`, a 403 or 404 (the token died), so `resolve` runs at most twice.
+    pub fn download_resolving(
+        &self,
+        scopes: &ScopeTable,
+        tx: &TxId,
+        http: &dyn Http,
+        resolve: &mut dyn FnMut() -> Result<DownloadTarget>,
+        refreshable: bool,
+        notes: &mut Vec<String>,
+    ) -> Result<BlobRef> {
         let mut attempt = 1;
         loop {
-            let resp = http
-                .send(Request::get(url, "asset").download())?
-                .error_for_status("asset")?;
-            let mut expected: Vec<ExpectedHash> = declared.into_iter().cloned().collect();
-            if let (Some(HashFromHeader::EtagMd5), false) = (from_header, declared_md5) {
+            let target = resolve()?;
+            let resp = http.send(Request::get(&target.url, "asset").download())?;
+            if refreshable && matches!(resp.status, 403 | 404) && attempt == 1 {
+                attempt += 1;
+                continue;
+            }
+            let resp = resp.error_for_status("asset")?;
+            let declared_md5 = matches!(target.declared, Some(ExpectedHash::Md5(_)));
+            let mut expected: Vec<ExpectedHash> = target.declared.into_iter().collect();
+            if let (Some(HashFromHeader::EtagMd5), false) = (target.from_header, declared_md5) {
                 match etag_md5(resp.header("etag")) {
                     Ok(md5) => expected.push(md5),
-                    Err(why) => notes.push(format!("{url}: {why}; its MD5 is not checked")),
+                    Err(why) => notes.push(format!(
+                        "{}: {why}; its MD5 is not checked",
+                        crate::net::redact(&target.url)
+                    )),
                 }
             }
             match self.store_checked(scopes, tx, resp.into_reader(), &expected, &Storage::Cache) {
@@ -810,6 +845,91 @@ mod tests {
         let declared = ExpectedHash::md5(&md5(b"elvui")).unwrap();
         let (got, notes) = download(&Serve::new(b"elvui", Some(&wrong)), Some(&declared));
         assert!(got.is_ok() && notes.is_empty());
+    }
+
+    /// Answers each URL its route names (404 otherwise): `(status, ETag)`, serving
+    /// `elvui` on a 200.
+    struct Routes(Vec<(String, u16, Option<String>)>);
+
+    impl Http for Routes {
+        fn send(&self, req: Request) -> Result<crate::net::Response> {
+            // ubs:ignore — matching fixture URLs, not secrets
+            let route = self.0.iter().find(|(url, ..)| *url == req.url);
+            let (status, etag) = route.map_or((404, None), |(_, s, e)| (*s, e.clone()));
+            let body = if status == 200 {
+                b"elvui".to_vec()
+            } else {
+                Vec::new()
+            };
+            Ok(crate::net::Response::new(
+                status,
+                etag.map(|e| ("ETag".to_owned(), e)).into_iter().collect(),
+                req.url,
+                Box::new(Cursor::new(body)),
+            ))
+        }
+    }
+
+    #[test]
+    fn a_resolved_download_resolves_again_before_its_one_retry() {
+        let f = fixture();
+        let cache = BlobCache::new(&f.paths);
+        let good = format!("\"{}\"", md5(b"elvui"));
+        let wrong = format!("\"{}\"", md5(b"other"));
+        let base = "https://api.tukui.org/v1/download/elvui/token";
+        // Token n answers `answers[n - 1]`; returns the result and how many resolves.
+        let run = |answers: &[(u16, Option<&str>)], refreshable: bool| {
+            let routes = answers
+                .iter()
+                .enumerate()
+                .map(|(i, (status, etag))| {
+                    (format!("{base}{}", i + 1), *status, etag.map(str::to_owned))
+                })
+                .collect();
+            let http = Routes(routes);
+            let mut resolves = 0;
+            let mut resolve = || {
+                resolves += 1;
+                Ok(DownloadTarget {
+                    url: format!("{base}{resolves}"),
+                    declared: None,
+                    from_header: Some(HashFromHeader::EtagMd5),
+                })
+            };
+            let got = cache.download_resolving(
+                &f.scopes,
+                &TxId::new(),
+                &http,
+                &mut resolve,
+                refreshable,
+                &mut Vec::new(),
+            );
+            (got, resolves)
+        };
+
+        // A dead token (403 or 404), or a hash mismatch, is resolved again once.
+        for first in [(403, None), (404, None), (200, Some(wrong.as_str()))] {
+            let (got, resolves) = run(&[first, (200, Some(&good))], true);
+            assert_eq!(got.unwrap().sha256, sha(b"elvui"), "{first:?}");
+            assert_eq!(resolves, 2, "{first:?}");
+        }
+        // Dead twice: the second answer is the error, after two resolves.
+        let (got, resolves) = run(&[(403, None), (403, None), (200, Some(&good))], true);
+        assert_eq!(got.unwrap_err().code, ErrorCode::HttpStatus);
+        assert_eq!(resolves, 2);
+        // A mismatch twice is not retryable.
+        let (got, resolves) = run(&[(200, Some(&wrong)), (200, Some(&wrong))], true);
+        let err = got.unwrap_err();
+        assert_eq!(
+            (err.code, err.retryable, resolves),
+            (ErrorCode::HashMismatch, false, 2)
+        );
+        // A fixed URL is not refreshed: a 403 fails at once.
+        let (got, resolves) = run(&[(403, None), (200, Some(&good))], false);
+        assert_eq!(
+            (got.unwrap_err().code, resolves),
+            (ErrorCode::HttpStatus, 1)
+        );
     }
 
     #[test]

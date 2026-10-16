@@ -114,6 +114,7 @@ mod support {
                 .collect();
             let cache = ReleaseCache::transient(http.as_ref(), registry);
             let catalog = omaddons::resolve::catalog::Catalog::default();
+            let downloads = omaddons::engine::plan::DownloadMemo::default();
             let ctx = PlanCtx {
                 paths: &self.paths,
                 scopes: &self.scopes,
@@ -131,6 +132,7 @@ mod support {
                 argv: &argv,
                 catalog: &catalog,
                 default_channel: Channel::Stable,
+                downloads: &downloads,
             };
             let req = PlanRequest {
                 targets,

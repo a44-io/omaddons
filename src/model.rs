@@ -939,6 +939,13 @@ pub enum AssetLocation {
         rev: String,
         sha: String,
     },
+    /// Downloaded into the blob cache from a URL `source` resolves for `key` right
+    /// before each attempt (`Source::resolve_asset`): a short-lived token URL that is
+    /// never stored (Tukui, M2-D13).
+    Deferred {
+        source: crate::sources::SourceId,
+        key: String,
+    },
 }
 
 /// One `release.json` metadata entry.
@@ -1549,6 +1556,20 @@ mod tests {
         assert_eq!(
             serde_json::to_value(HashFromHeader::EtagMd5).unwrap(),
             "etag_md5"
+        );
+    }
+
+    #[test]
+    fn a_deferred_location_round_trips() {
+        let location = AssetLocation::Deferred {
+            source: crate::sources::SourceId::Tukui,
+            key: "elvui".into(),
+        };
+        let wire = serde_json::json!({"deferred": {"source": "tukui", "key": "elvui"}});
+        assert_eq!(serde_json::to_value(&location).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<AssetLocation>(wire).unwrap(),
+            location
         );
     }
 

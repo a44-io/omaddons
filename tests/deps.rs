@@ -937,6 +937,7 @@ mod engine_api {
             progress: &ProgressSink::none(),
             catalog: Some(&catalog),
             default_channel: Channel::Stable,
+            downloads: None,
         };
         omaddons::engine::run(&req, &ctx).unwrap()
     }

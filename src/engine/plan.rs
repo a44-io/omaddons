@@ -22,7 +22,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::blobs::{BlobCache, BlobRef};
+use super::blobs::{BlobCache, BlobRef, DownloadTarget};
 use super::edit::{
     EditField, RecordEdit, RecordGuard, apply_edit, apply_edits, changed_fields, sorted_names,
 };
@@ -339,6 +339,50 @@ pub struct PlanCtx<'a> {
     /// The channel dependencies install from (config `default_channel`, else stable;
     /// never the requester's, M2-D33).
     pub default_channel: Channel,
+    /// What the command downloaded so far, shared by its plans (M2-D28).
+    pub downloads: &'a DownloadMemo,
+}
+
+/// What a command downloaded, by `(release_id, asset file name)`: the blob, or the
+/// error, so its later plans and targets never download one archive twice (M2-D28).
+/// It lives in memory for one command (`install`'s probe and real run share it), so a
+/// new command tries a failed download again. Local and git assets never enter it.
+#[derive(Debug, Default)]
+pub struct DownloadMemo {
+    entries: std::sync::Mutex<BTreeMap<(String, String), Result<Downloaded>>>,
+}
+
+impl DownloadMemo {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<(String, String), Result<Downloaded>>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn get(&self, key: &(String, String)) -> Option<Result<Downloaded>> {
+        self.lock().get(key).cloned()
+    }
+
+    fn put(&self, key: (String, String), result: Result<Downloaded>) {
+        self.lock().insert(key, result);
+    }
+
+    /// How many assets the command downloaded or failed to.
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// A downloaded asset: its blob, and a deferred asset's canonical URL (`None` when it
+/// came from the cache without resolving).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Downloaded {
+    pub blob: BlobRef,
+    pub canonical_url: Option<String>,
 }
 
 /// The plan: what `--dry-run` returns and the commit executes.
@@ -2155,6 +2199,8 @@ struct Winner {
     /// The name a new addon takes from the archive.
     name: String,
     blob: Option<PathBuf>,
+    /// A deferred asset's stable metadata URL, which plans show instead of its token.
+    canonical_url: Option<String>,
     warnings: Vec<Warning>,
     deps: DepFacts,
 }
@@ -2381,9 +2427,14 @@ impl TargetPlanner<'_> {
                 .and_then(|b| b.file_name())
                 .map(|n| n.to_string_lossy().into_owned()),
         };
+        // A deferred asset's token URL is never stored: the plan shows its canonical URL.
         let (url, expected_hash) = match &winner.candidate.asset.location {
             AssetLocation::Url(url) => (
                 Some(url.clone()),
+                winner.candidate.asset.expected_hash.clone(),
+            ),
+            AssetLocation::Deferred { .. } => (
+                winner.canonical_url.clone(),
                 winner.candidate.asset.expected_hash.clone(),
             ),
             _ => (None, None),
@@ -2842,14 +2893,19 @@ impl TargetPlanner<'_> {
     ) -> Result<std::result::Result<Winner, String>> {
         let ctx = self.ctx;
         let mut downloaded = None;
+        let mut canonical_url = None;
         let (inspected, blob) = match &candidate.asset.location {
-            AssetLocation::Url(url) => {
-                let blob = self
-                    .download(&candidate.release_id, &candidate.asset, url)
-                    .map_err(|e| missing_git_rev(e, candidate, url))?;
-                let inspected = inspect(&blob.path, &ctx.limits, ctx.table)?;
-                let path = blob.path.clone();
-                downloaded = Some(blob);
+            AssetLocation::Url(_) | AssetLocation::Deferred { .. } => {
+                let done = self
+                    .download(&candidate.release_id, &candidate.asset)
+                    .map_err(|e| match &candidate.asset.location {
+                        AssetLocation::Url(url) => missing_git_rev(e, candidate, url),
+                        _ => e,
+                    })?;
+                let inspected = inspect(&done.blob.path, &ctx.limits, ctx.table)?;
+                let path = done.blob.path.clone();
+                canonical_url = done.canonical_url;
+                downloaded = Some(done.blob);
                 (inspected, Some(path))
             }
             AssetLocation::LocalZip(path) => {
@@ -2963,6 +3019,7 @@ impl TargetPlanner<'_> {
             },
             name,
             blob,
+            canonical_url,
             warnings,
             deps,
         }))
@@ -3020,17 +3077,34 @@ impl TargetPlanner<'_> {
         merge_fact(&mut self.facts.borrow_mut(), fact);
     }
 
-    /// The blob of `asset` of `release_id`, at `url`, in this order: the cached blob of
-    /// its expected hash; the cached blob of the hash an earlier download remembered,
-    /// unless the source now declares another hash or size (a fact never stands in for
-    /// the blob: eviction makes facts stale); else a download, retried once on a hash
-    /// mismatch.
-    fn download(
-        &self,
-        release_id: &str,
-        asset: &crate::model::Asset,
-        url: &str,
-    ) -> Result<BlobRef> {
+    /// The blob of `asset` of `release_id`: what this command already downloaded (or
+    /// failed to: the same error again), else [`TargetPlanner::fetch_blob`], remembered
+    /// for the command's later plans and targets. A remembered blob evicted since is
+    /// fetched again.
+    fn download(&self, release_id: &str, asset: &crate::model::Asset) -> Result<Downloaded> {
+        let ctx = self.ctx;
+        let key = (release_id.to_owned(), asset.filename.clone());
+        match ctx.downloads.get(&key) {
+            Some(Ok(done)) => {
+                if let Some(blob) = ctx.blobs.get(ctx.scopes, &done.blob.sha256)? {
+                    return Ok(Downloaded { blob, ..done });
+                }
+            }
+            Some(Err(error)) => return Err(error),
+            None => {}
+        }
+        let result = self.fetch_blob(release_id, asset);
+        ctx.downloads.put(key, result.clone());
+        result
+    }
+
+    /// The blob of `asset` of `release_id`, in this order: the cached blob of its
+    /// expected hash; the cached blob of the hash an earlier download remembered, unless
+    /// the source now declares another hash or size (a fact never stands in for the
+    /// blob: eviction makes facts stale); else a download, retried once on a hash
+    /// mismatch. A `Deferred` location is resolved by its source right before each
+    /// attempt, and a 403 or 404 is retried once after resolving again.
+    fn fetch_blob(&self, release_id: &str, asset: &crate::model::Asset) -> Result<Downloaded> {
         let ctx = self.ctx;
         let expected = asset.expected_hash.as_ref();
         // The blob cache is keyed by SHA-256: an MD5 source's fast path is its facts.
@@ -3038,33 +3112,72 @@ impl TargetPlanner<'_> {
             Some(ExpectedHash::Sha256(sha)) => Some(sha.to_ascii_lowercase()),
             Some(ExpectedHash::Md5(_)) | None => None,
         };
+        let cached = |blob| Downloaded {
+            blob,
+            canonical_url: None,
+        };
         if let Some(sha) = &expected_sha
             && let Some(blob) = ctx.blobs.get(ctx.scopes, sha)?
         {
-            return Ok(blob);
+            return Ok(cached(blob));
         }
         if let Some((sha, size)) = ctx.cache.facts().hash(release_id, &asset.filename)
             && expected_sha.as_ref().is_none_or(|e| e == sha)
             && asset.size.is_none_or(|declared| declared == size)
             && let Some(blob) = ctx.blobs.get(ctx.scopes, sha)?
         {
-            return Ok(blob);
+            return Ok(cached(blob));
         }
-        // No source asks for a header-derived hash yet (Tukui's ETag, with A8).
-        let blob = ctx.blobs.download(
-            ctx.scopes,
-            &ctx.tx,
-            ctx.http,
-            url,
-            expected,
-            None,
-            &mut self.notes.borrow_mut(),
-        )?;
+        let mut canonical_url = None;
+        let blob = match &asset.location {
+            AssetLocation::Deferred { source, key } => {
+                let Some(source) = ctx.registry.get(*source) else {
+                    return Err(ctx.registry.unavailable(*source, release_id));
+                };
+                let mut resolve = || {
+                    let resolved = source.resolve_asset(key, ctx.http)?;
+                    canonical_url = resolved.canonical_url;
+                    Ok(DownloadTarget {
+                        url: resolved.url,
+                        declared: resolved.expected_hash.or_else(|| expected.cloned()),
+                        from_header: resolved.hash_from_header,
+                    })
+                };
+                ctx.blobs.download_resolving(
+                    ctx.scopes,
+                    &ctx.tx,
+                    ctx.http,
+                    &mut resolve,
+                    true,
+                    &mut self.notes.borrow_mut(),
+                )?
+            }
+            AssetLocation::Url(url) => ctx.blobs.download(
+                ctx.scopes,
+                &ctx.tx,
+                ctx.http,
+                url,
+                expected,
+                None,
+                &mut self.notes.borrow_mut(),
+            )?,
+            AssetLocation::LocalZip(_)
+            | AssetLocation::LocalDir(_)
+            | AssetLocation::GitCheckout { .. } => {
+                return Err(Error::internal(format!(
+                    "{release_id}: {} is not downloaded",
+                    asset.filename
+                )));
+            }
+        };
         failpoint::hit("engine.plan.downloaded").map_err(|e| fail(ctx, &e))?;
         let item = format!("{release_id} on {}", self.target.id);
         ctx.progress
             .event(Phase::Download, self.candidate_items, &item);
-        Ok(blob)
+        Ok(Downloaded {
+            blob,
+            canonical_url,
+        })
     }
 
     fn no_release(&self, wanted: &Wanted, tried: &[Value], why: &str) -> Error {
@@ -3687,6 +3800,7 @@ mod tests {
         let argv = ["omaddons".to_owned(), "install".to_owned()];
         let cache = ReleaseCache::transient(&crate::engine::testing::NoNetwork, &registry);
         let catalog = Catalog::default();
+        let downloads = DownloadMemo::default();
         let ctx = PlanCtx {
             paths: &scene.paths,
             scopes: &scopes,
@@ -3704,6 +3818,7 @@ mod tests {
             argv: &argv,
             catalog: &catalog,
             default_channel: Channel::Stable,
+            downloads: &downloads,
         };
         let req = PlanRequest {
             targets: vec![TargetRequest {

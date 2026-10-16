@@ -23,10 +23,10 @@ pub mod wowi;
 use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, ErrorCode, Result, Suggestion};
-use crate::model::{Channel, Ref, ReleaseSet};
+use crate::model::{Channel, ExpectedHash, HashFromHeader, Ref, ReleaseSet};
 use crate::net::{Http, run_bounded};
 use crate::politeness::MAX_CONCURRENT_REQUESTS;
 use crate::state::config::SourceConfig;
@@ -54,7 +54,9 @@ pub enum SourceSkipReason {
 }
 
 /// Which source a ref belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceId {
     Github,
@@ -168,6 +170,29 @@ pub trait Source: Send + Sync {
     /// Network; batched; called once per run with every distinct wish for this source.
     /// Result `i` belongs to `wanted[i]`.
     fn fetch(&self, wanted: &[Wanted], http: &dyn Http) -> Vec<Result<ReleaseSet>>;
+
+    /// The concrete URL and hash rule of a `Deferred` asset this source made for `key`,
+    /// fetched right before each download attempt. Only sources whose assets are
+    /// deferred implement it.
+    fn resolve_asset(&self, key: &str, http: &dyn Http) -> Result<ResolvedAsset> {
+        let _ = (key, http);
+        Err(Error::internal(format!(
+            "the {} source cannot resolve deferred assets",
+            self.id().wire()
+        )))
+    }
+}
+
+/// Where a `Deferred` asset's bytes are now. Used for one download attempt and never
+/// stored: plans show `canonical_url` instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAsset {
+    pub url: String,
+    pub expected_hash: Option<ExpectedHash>,
+    /// A hash the download response's header carries (Tukui's `ETag` MD5).
+    pub hash_from_header: Option<HashFromHeader>,
+    /// The stable metadata URL plans show, e.g. `https://api.tukui.org/v1/addon/elvui`.
+    pub canonical_url: Option<String>,
 }
 
 /// What a run wants from a ref: its channel, and a pinned version (`--version`, or a
@@ -265,18 +290,26 @@ impl SourceRegistry {
     /// `source_disabled` for a ref whose source is not registered: turned off in
     /// config.toml (the fix turns it back on), or not in this build.
     pub fn disabled(&self, r: &Ref) -> Error {
-        let id = SourceId::of(r);
+        self.unavailable(SourceId::of(r), &r.to_string())
+    }
+
+    /// `source_disabled` for `subject` (a ref, or a release whose download the source
+    /// must resolve) when source `id` is not registered.
+    pub fn unavailable(&self, id: SourceId, subject: &str) -> Error {
         if self.off.contains(&id) {
             let key = format!("sources.{}.enabled", id.wire());
             return Error::new(
                 ErrorCode::SourceDisabled,
-                format!("{r}: the {} source is disabled in config.toml", id.name()),
+                format!(
+                    "{subject}: the {} source is disabled in config.toml",
+                    id.name()
+                ),
                 Suggestion::command(["omaddons", "config", "set", &key, "true"]),
             );
         }
         let message = match id.later() {
-            Some(milestone) => format!("{r}: {} arrives in {milestone}", id.name()),
-            None => format!("{r}: the {} source is not available", id.name()),
+            Some(milestone) => format!("{subject}: {} arrives in {milestone}", id.name()),
+            None => format!("{subject}: the {} source is not available", id.name()),
         };
         Error::new(
             ErrorCode::SourceDisabled,
@@ -463,6 +496,24 @@ mod tests {
             http.0.load(Ordering::SeqCst),
             0,
             "disabled sources never touch the network"
+        );
+    }
+
+    #[test]
+    fn a_source_without_deferred_assets_cannot_resolve_one() {
+        let source = Counting {
+            id: SourceId::Github,
+            calls: Arc::new(Mutex::new(Vec::new())),
+            barrier: None,
+            failing: Vec::new(),
+        };
+        let error = source
+            .resolve_asset("x", &NoNetwork::default())
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert_eq!(
+            error.message,
+            "the github source cannot resolve deferred assets"
         );
     }
 

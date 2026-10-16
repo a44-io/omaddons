@@ -140,6 +140,9 @@ pub struct EngineCtx<'a> {
     pub catalog: Option<&'a Catalog>,
     /// The channel dependencies install from.
     pub default_channel: Channel,
+    /// What the command downloaded, shared by its engine runs; `None` shares downloads
+    /// within this run only.
+    pub downloads: Option<&'a super::plan::DownloadMemo>,
 }
 
 /// One target's result: the `data` core of install, remove and undo.
@@ -219,6 +222,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
             &transient
         }
     };
+    let run_downloads = super::plan::DownloadMemo::default();
     let plan_ctx = PlanCtx {
         paths: ctx.paths,
         scopes: &scopes,
@@ -236,6 +240,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         argv: ctx.argv,
         catalog: ctx.catalog.unwrap_or(&no_catalog),
         default_channel: ctx.default_channel,
+        downloads: ctx.downloads.unwrap_or(&run_downloads),
     };
     let planned = plan::plan(&plan_req, &plan_ctx);
     let plan = match planned {
@@ -501,10 +506,11 @@ fn locked(
     // ubs:ignore — comparing record generations, not secrets
     let changed = current.value.generation != tp.generation;
     let running = running_now(ctx, std::slice::from_ref(&target));
-    // Re-judging is offline: it never fetches or resolves, so it needs no memo and no
-    // catalog.
+    // Re-judging is offline: it never fetches, resolves or downloads, so it needs no
+    // memo, no catalog and no downloads.
     let offline = ReleaseCache::transient(ctx.http, ctx.registry);
     let no_catalog = Catalog::default();
+    let no_downloads = super::plan::DownloadMemo::default();
     let plan_ctx = PlanCtx {
         paths,
         scopes,
@@ -522,6 +528,7 @@ fn locked(
         argv: ctx.argv,
         catalog: &no_catalog,
         default_channel: ctx.default_channel,
+        downloads: &no_downloads,
     };
     let mut works = Vec::new();
     let mut changes = Vec::new();

@@ -362,6 +362,7 @@ impl TxScene {
             progress: &crate::output::ProgressSink::none(),
             catalog: None,
             default_channel: crate::model::Channel::Stable,
+            downloads: None,
         };
         f(&ctx)
     }
