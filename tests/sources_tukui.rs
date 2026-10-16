@@ -340,7 +340,7 @@ fn mixed_case_slugs_are_one_addon_and_unknown_slugs_are_not_found() {
     assert_eq!(envelope["error"]["message"], "tukui:nosuch is not on Tukui");
     assert_eq!(
         envelope["error"]["fix_argv"],
-        json!(["omaddons", "help", "install"])
+        json!(["omaddons", "search", "nosuch"])
     );
 }
 

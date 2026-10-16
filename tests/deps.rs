@@ -703,7 +703,7 @@ fn an_out_of_date_dependency_is_not_installed_and_warns() {
 }
 
 #[test]
-fn an_unresolvable_dependency_warns_with_a_text_fix() {
+fn an_unresolvable_dependency_warns_with_a_search_for_it() {
     let home = graph(&[node(
         "https://github.com/o/depa",
         &[folder("DepA", &["NowhereToBeFound"])],
@@ -717,16 +717,18 @@ fn an_unresolvable_dependency_warns_with_a_text_fix() {
         .find(|w| w["code"] == "missing_dependency");
     assert!(warning.is_some(), "no missing_dependency\n{}", r.context());
     let warning = warning.unwrap().clone();
+    let message = warning["message"].as_str().unwrap();
     assert!(
-        warning["message"]
-            .as_str()
-            .unwrap()
-            .contains("NowhereToBeFound")
+        message.contains("NowhereToBeFound") && message.contains("CurseForge or Wago"),
+        "{message}"
     );
     assert_eq!(
-        warning["fix"],
-        "no keyless source ships NowhereToBeFound; it may only be on CurseForge or Wago, which arrive in M5"
+        warning["fix_argv"],
+        json!(["omaddons", "search", "NowhereToBeFound"])
     );
+    // The fix runs (offline here: no GitHub fixture is needed).
+    let r = home.run(&["search", "NowhereToBeFound", "--offline"]);
+    assert_eq!(r.expect(0)["data"]["query"], "NowhereToBeFound");
 }
 
 #[test]
@@ -1105,15 +1107,13 @@ fn a_missing_dependency_without_candidates_gets_the_no_source_fix_and_no_hint() 
         r.context()
     );
     let w = warning(&envelope, "missing_dependency");
-    assert_eq!(w["fix_argv"], Value::Null);
-    assert!(
-        w["fix"]
-            .as_str()
-            .unwrap()
-            .starts_with("no keyless source ships Nowhere")
-    );
+    assert_eq!(w["fix_argv"], json!(["omaddons", "search", "Nowhere"]));
     let actions: Vec<String> = hints(&envelope).into_iter().map(|(a, _)| a).collect();
-    assert_eq!(actions, ["undo"]);
+    assert_eq!(
+        actions,
+        ["undo"],
+        "a search is the warning's fix, not an install hint"
+    );
     insta::assert_json_snapshot!("install_missing_no_source", support::stable(&envelope));
     home.run(&["undo"]).expect(0);
     insta::assert_snapshot!(

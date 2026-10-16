@@ -159,6 +159,12 @@ pub enum Command {
     Outdated(crate::app::outdated::OutdatedArgs),
     /// What an addon is: installed records, catalog entry and newest release
     Info(crate::app::info::InfoArgs),
+    /// Find addons by name in the catalog, WoWInterface, Tukui and GitHub
+    #[command(
+        visible_alias = "find",
+        after_long_help = "Only GitHub's search receives the query; the catalog, the WoWInterface index and\nthe Tukui list are searched on this machine. Compatibility per client is a hint:\ninstall verifies each addon's TOC."
+    )]
+    Search(crate::app::search::SearchArgs),
     /// Every client's addon set as one addons.toml for sync (stdout, or --write)
     Export(crate::app::export::ExportArgs),
     /// Every network request omaddons made

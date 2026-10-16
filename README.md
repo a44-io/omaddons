@@ -141,7 +141,8 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | `export`: every client's addon set as one `addons.toml`, printed or written with a backup | ✅ Done (milestone 2) |
 | WoWInterface: `wowi:` refs and links, keyless, every download checked against its MD5 | ✅ Done (milestone 2) |
 | Tukui (ElvUI and Tukui): `tukui:` refs and links, keyless, every download checked against its `ETag` MD5 | ✅ Done (milestone 2) |
-| `search`, drift detection, `copy` between clients | 🗓️ Milestone 2 (decomposed into 75 beads) |
+| `search` (alias `find`): the catalog, WoWInterface, Tukui and GitHub at once, with a compatibility hint per client | ✅ Done (milestone 2) |
+| `copy` between clients | 🗓️ Milestone 2 |
 | The Omarchy bar widget, Lua error capture, `WTF/` backups | 🗓️ Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
@@ -991,6 +992,36 @@ omaddons targets rm warmane                # unregister; nothing in the client d
 
 An id you choose (`--name`, `rename`) must match `^[a-z0-9][a-z0-9._-]*$`, be at most 32 characters, contain no `@`, and not be a key, family name or product code. Built-in default ids such as `vanilla` or `mists` are exempt, which is why they can shadow a family (see [Choosing a target](#choosing-a-target-with--t)).
 
+### `search <QUERY>...`
+
+Find an addon by name, folder, author or description, across the catalog, the WoWInterface index, the Tukui list and GitHub's repository search, at once. `find` is an alias.
+
+```text
+$ omaddons search damage meter -t retail
+  Recount Damage Meter   wowi:7000                    WoWInterface · 2.1M downloads · updated 2026 · retail: likely
+  Details! Damage Meter  wowi:23056                   WoWInterface · 515k downloads · updated 2020 · retail: abandoned
+  Skada                  gh:Skada-Damage-Meter/Skada  GitHub · ★412 · updated 2026 · retail: unknown
+Install: omaddons install wowi:7000 -t retail        (a hint: install verifies each addon's TOC)
+```
+
+| Flag | Meaning |
+|---|---|
+| `--source S` | Only this source (repeatable): `catalog`, `wowi`, `tukui` or `github` |
+| `--limit N` | Most results (default 20, at most 50) |
+| `--refresh` | Fetch the WoWInterface index and the Tukui list now, even inside their windows |
+
+Results are ranked: an exact catalog name or alias, or an exact WoWInterface or Tukui project name, first; then names that start with the query; then those with every word in the name or folders; then those with every word anywhere, author and description included. Within a rank, the catalog comes first, then popularity (WoWInterface downloads and GitHub stars, each scaled to its source's best), then the newest. A WoWInterface or GitHub hit for a catalog addon (the same ref, or the same name with all its folders) merges into the catalog's.
+
+Each result says, for every selected client, whether it is likely to load. This is a hint; `install` verifies every TOC.
+
+- `yes` or `no`: the catalog's families.
+- `likely` or `unlikely`: Tukui's patches.
+- `likely` or `unknown`: WoWInterface's declared versions, which lag behind, so never `no`.
+- `abandoned`: a WoWInterface project not updated in two years.
+- `unknown`: GitHub.
+
+`commands` holds `omaddons install <ref> -t <client>` for up to three results, each on its best client, never for `no`, `unlikely` or `abandoned`. A source not consulted is listed in `sources_skipped` (`offline`, `rate_limited` with `reset_at`, `disabled`, `no_index`). A spent GitHub search is not a failure; any other source failure makes the run `partial`. `--offline` searches the catalog, the stored index and the remembered Tukui list.
+
 ### `info <REF>`
 
 What an addon is: installed records on every target, the catalog entry, and the newest release.
@@ -1162,7 +1193,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `snapshot_cap_exceeded` | protected snapshots alone exceed the size cap |
 | `retention_failed` | pruning failed after commit; the transaction stands |
 | `out_of_date` | the TOC's interface is older than the client's; it loads only with "Load out of date AddOns" enabled |
-| `missing_dependency` | a folder an installed addon's TOC requires was not installed: no keyless source ships it, several projects do, its only build is out of date, a dependency limit was reached, or `--no-deps`; the fix names a candidate when there is one |
+| `missing_dependency` | a folder an installed addon's TOC requires was not installed: no keyless source ships it, several projects do, its only build is out of date, a dependency limit was reached, or `--no-deps`; the fix names a candidate when there is one, and searches for the folder (`omaddons search <folder>`) when no keyless source ships it |
 | `toc_comma_on_legacy` | a comma interface list on a client that reads only the first number |
 | `client_not_launched_since_patch` | `Config.wtf` predates the client's current version |
 | `widget_outdated` | reserved for the widget (M3) |
@@ -1186,7 +1217,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `local_changes_replaced` | an install or update replaced folders whose files had changed on disk (it names up to 10 and counts them all); the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that the snapshot keeps them |
 | `still_required` | a removed addon is required by addons that stay, which will not load without it; the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that undo restores it |
 | `orphaned_dependency` | a remove or update left dependencies required by nothing; the fix is one `omaddons remove <names…> -t <id>` naming them all |
-| `bridge_dependency` | a newly installed addon's other folder (a bridge or plugin) works with an addon that is not installed; nothing is installed for it, and the fix installs it (`omaddons install <name or ref> -t <id>`), or says no keyless source ships it. Only on the addon's first install |
+| `bridge_dependency` | a newly installed addon's other folder (a bridge or plugin) works with an addon that is not installed; nothing is installed for it, and the fix installs it (`omaddons install <name or ref> -t <id>`), or searches for it (`omaddons search <folder>`) when no keyless source ships it. Only on the addon's first install |
 
 </details>
 
@@ -1297,7 +1328,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 | Host | Used for | State |
 |---|---|---|
 | `github.com` | `releases/latest`, `release.json`, commits feeds | used |
-| `api.github.com` | REST fallback (beta and alpha channels, releases without `release.json`) | used |
+| `api.github.com` | REST fallback (beta and alpha channels, releases without `release.json`); `search`'s repository search | used |
 | `codeload.github.com` | zips of exact commits for `git:` refs | used |
 | `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | release asset downloads | used |
 | `api.mmoui.com`, `cdn.wowinterface.com` | WoWInterface: project details, downloads | used (also allowed for `url:`) |
@@ -1309,6 +1340,8 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 **What a stable GitHub install costs:** zero REST calls. omaddons reads `releases/latest` without following its redirect, then fetches `release.json` and the asset. Both of those redirect to `release-assets.githubusercontent.com`, so `net.log` shows five lines per repository, plus one more download for each candidate that does not load. Requests are limited to 6 at a time overall and 3 per host. Retries cover 429, 5xx and network errors, up to 3 times with full-jitter backoff (0.5 s base, 8 s cap), and honor `Retry-After` up to 60 s.
 
 **Tokens.** `OMADDONS_GITHUB_TOKEN`, if set, is sent only to `api.github.com` and raises the REST budget from 60 to 5,000 requests an hour. `GITHUB_TOKEN` is never read, and `Authorization` is dropped on any redirect to another host. With or without a token, omaddons stops sending REST requests once the response headers say 5 or fewer remain, and reports `rate_limited` with the reset time. The budget is tracked per run, so the first REST request of a run is always sent.
+
+**Search.** Only GitHub receives what you search for, in one `search/repositories` request per run (10 a minute without a token, 30 with one, counted apart from the REST budget). The catalog is built in, and WoWInterface's index and Tukui's list are whole lists, fetched (or reused) and searched on this machine, so neither learns the query.
 
 **The git subprocess** runs with a cleared environment. Only `PATH` and `HOME` are kept, plus `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ALLOW_PROTOCOL=https`. It also gets no credential helper, no askpass, no redirects and https as the only protocol. Arguments go as argv (never through a shell), and the run is in its own process group, which is killed on timeout. URLs with embedded credentials are refused.
 
@@ -1634,7 +1667,7 @@ Journals are recovered by the next command that commits a change, not by read co
 | Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing and updating, with dependency items, bridge requirements and unresolved folders in the output; WoWInterface and Tukui lookups are on the way | M2 |
 | Adopting addons installed by other managers | ✅ `adopt`; other `status`, `outdated` and `install` hints point to it soon | M2 |
 | `addons.toml`, `export`, `sync`, `copy` between clients | ⚠️ `sync` (with `--locked` and `--prune`) and `export` work; `copy` is on the way | M2 |
-| `search` | ❌ catalog names and links only | M2 |
+| `search` | ✅ the catalog, the WoWInterface index, the Tukui list and GitHub's search | M2 |
 | Progress output | ⚠️ `install`, `update` and `outdated` report progress; the other long commands arrive with M2 | M2 |
 | The Omarchy bar widget | ❌ the help text mentions it, the code does not exist yet | M3 |
 | Lua error capture (BugGrabber), `WTF/` backups | ❌ | M3 |

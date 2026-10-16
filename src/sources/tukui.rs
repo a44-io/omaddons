@@ -230,13 +230,13 @@ pub fn canonical_url(slug: &str) -> String {
     format!("{ADDON_URL}/{slug}")
 }
 
-/// `not_found` for a slug Tukui does not list. The fix names `help install` until
-/// `search` exists.
+/// `not_found` for a slug Tukui does not list: the fix searches for it by that name.
 fn missing(slug: &str) -> Error {
+    let slug = slug.to_ascii_lowercase();
     Error::new(
         ErrorCode::NotFound,
-        format!("tukui:{} is not on Tukui", slug.to_ascii_lowercase()),
-        Suggestion::command(["omaddons", "help", "install"]),
+        format!("tukui:{slug} is not on Tukui"),
+        Suggestion::command(["omaddons", "search", slug.as_str()]),
     )
 }
 
@@ -557,7 +557,7 @@ mod tests {
         assert_eq!(
             missing.fix.argv(),
             Some(
-                ["omaddons", "help", "install"]
+                ["omaddons", "search", "nosuch"]
                     .map(str::to_owned)
                     .as_slice()
             )

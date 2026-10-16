@@ -154,8 +154,8 @@ pub fn decode_details(body: &[u8]) -> Result<Vec<WowiDetails>> {
         .collect())
 }
 
-/// `not_found` for an id the API does not know. The fix names `help install` until
-/// `search` exists.
+/// `not_found` for an id the API does not know. The fix names `help install`: the id
+/// carries no name a `search` could use.
 fn missing(r: &Ref) -> Error {
     Error::new(
         ErrorCode::NotFound,

@@ -14,6 +14,7 @@ pub mod git_github;
 pub mod git_hosts;
 pub mod github;
 pub mod github_rest;
+pub mod github_search;
 pub mod local;
 pub mod refs;
 pub mod release_json;

@@ -17,6 +17,7 @@ pub mod outdated;
 pub mod pin;
 pub mod remove;
 pub mod resolve_args;
+pub mod search;
 pub mod status;
 pub mod sync;
 pub mod targets;
@@ -78,6 +79,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("list", Group::Look),
     entry("outdated", Group::Look),
     entry("info", Group::Look),
+    entry("search", Group::Look),
     entry("export", Group::Look),
     entry("history", Group::Look),
     entry("net-log", Group::Look),
@@ -136,6 +138,7 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         Some(Command::Info(_)) => "info",
         Some(Command::Export(_)) => "export",
         Some(Command::Outdated(_)) => "outdated",
+        Some(Command::Search(_)) => "search",
         Some(Command::NetLog(_)) => "net-log",
         Some(Command::List(_)) => "list",
         Some(Command::Targets(args)) => args
@@ -337,6 +340,15 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         }
         Some(Command::Outdated(args)) => {
             let result = outdated::run(ctx, args);
+            if let Ok(outcome) = &result {
+                for note in &outcome.notes {
+                    out.log(output::LogLevel::Debug, note);
+                }
+            }
+            out.emit(result)
+        }
+        Some(Command::Search(args)) => {
+            let result = search::run(ctx, args);
             if let Ok(outcome) = &result {
                 for note in &outcome.notes {
                     out.log(output::LogLevel::Debug, note);

@@ -1230,10 +1230,9 @@ fn missing_dependency(
         .collect();
     let (why, fix) = match unresolved.reason {
         UnresolvedReason::NoSource => (
-            "no keyless source ships it".to_owned(),
-            Suggestion::text(format!(
-                "no keyless source ships {folder}; it may only be on CurseForge or Wago, which arrive in M5"
-            )),
+            "no keyless source ships it; it may only be on CurseForge or Wago, which arrive in M5"
+                .to_owned(),
+            Suggestion::command(["omaddons", "search", folder]),
         ),
         UnresolvedReason::ManagedFolderMissing => (
             format!(
@@ -1750,7 +1749,7 @@ impl TargetPlanner<'_> {
 
     /// `bridge_dependency`: a folder of a newly installed addon works with `requires`,
     /// which is not installed. The fix installs it by its catalog name, else by the ref
-    /// the resolver finds; with neither, it says no keyless source ships it.
+    /// the resolver finds; with neither, it searches for it.
     fn bridge_warning(&self, bridge: &BridgeDependency) -> Warning {
         let id = self.target.id.as_str();
         let requires = bridge.requires.as_str();
@@ -1775,9 +1774,7 @@ impl TargetPlanner<'_> {
             };
             match resolve(&bridge.requires, self.target, &lookups) {
                 DepResolution::Resolved { r#ref, .. } => install(r#ref.to_string()),
-                _ => Suggestion::text(format!(
-                    "no keyless source ships {requires}; it may only be on CurseForge or Wago, which arrive in M5"
-                )),
+                _ => Suggestion::command(["omaddons", "search", requires]),
             }
         };
         Warning::new(

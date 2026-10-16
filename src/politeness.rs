@@ -55,6 +55,8 @@ pub const DISCOVERY_MAX_DIRS: usize = 50_000;
 /// Redirect hops followed per request before failing with `http_status`; every hop is
 /// checked against the host allowlist.
 pub const MAX_REDIRECTS: usize = 5;
+/// Repositories one `search` asks GitHub's search API for (one request per run).
+pub const GITHUB_SEARCH_PER_PAGE: usize = 20;
 
 /// Every politeness constant, in table order.
 pub const REGISTRY: &[LimitInfo] = &[
@@ -197,6 +199,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "count",
         None,
         "Hops followed per request; every hop is checked against the allowlist",
+    ),
+    limit(
+        "GITHUB_SEARCH_PER_PAGE",
+        LimitValue::Count(GITHUB_SEARCH_PER_PAGE as u64),
+        "count",
+        None,
+        "Repositories one search asks GitHub's search API for (10 requests a minute unauthenticated)",
     ),
 ];
 

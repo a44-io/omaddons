@@ -1,12 +1,13 @@
 ---
 source: tests/cli_skeleton.rs
+assertion_line: 130
 expression: r.stdout
 ---
 World of Warcraft addon manager (CLI + Omarchy plugin)
 
 Usage: omaddons [OPTIONS] <COMMAND>
 
-Look      status  list  outdated  info  export  history  net-log
+Look      status  list  outdated  info  search  export  history  net-log
 Change    install  update  pin  unpin  adopt  sync  remove  undo
 Setup     targets  config  help
 

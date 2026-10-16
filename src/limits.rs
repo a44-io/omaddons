@@ -100,6 +100,10 @@ pub const DRIFT_LIST_MAX: usize = 50;
 /// The racy slack on a filesystem with whole-second mtimes (FAT and the like): a file
 /// whose mtime is this close to its folder's stamp is re-hashed. Nanoseconds.
 pub const RACY_SLACK_COARSE_NS: i128 = 2_000_000_000;
+/// Most results one `search` lists (`--limit`'s bound; its default is 20).
+pub const SEARCH_MAX_RESULTS: usize = 50;
+/// Characters a search result's `summary` keeps.
+pub const SEARCH_SUMMARY_MAX_CHARS: usize = 200;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -381,6 +385,20 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "The racy slack on filesystems with whole-second mtimes: files this close to a folder's stamp are re-hashed",
     ),
+    limit(
+        "SEARCH_MAX_RESULTS",
+        LimitValue::Count(SEARCH_MAX_RESULTS as u64),
+        "count",
+        None,
+        "Results one search lists at most (--limit; 20 by default)",
+    ),
+    limit(
+        "SEARCH_SUMMARY_MAX_CHARS",
+        LimitValue::Count(SEARCH_SUMMARY_MAX_CHARS as u64),
+        "count",
+        None,
+        "Characters a search result's summary keeps",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -541,7 +559,7 @@ mod tests {
         "RETRY_AFTER_CAP", "SOURCE_RECHECK_MIN_INTERVAL", "DEFAULT_CHECK_INTERVAL",
         "WOWI_FILELIST_MIN_AGE", "GITHUB_REST_RESERVE", "CURSEFORGE_BATCH_SIZE",
         "WOWI_DETAILS_BATCH_SIZE", "DISCOVERY_MAX_DEPTH", "DISCOVERY_SKIP_DIRS",
-        "DISCOVERY_MAX_DIRS", "MAX_REDIRECTS",
+        "DISCOVERY_MAX_DIRS", "MAX_REDIRECTS", "GITHUB_SEARCH_PER_PAGE",
     ];
 
     #[rustfmt::skip]
@@ -559,6 +577,8 @@ mod tests {
         "ADOPT_MAX_ALTERNATIVES",
         "DRIFT_LIST_MAX",
         "RACY_SLACK_COARSE_NS",
+        "SEARCH_MAX_RESULTS",
+        "SEARCH_SUMMARY_MAX_CHARS",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

@@ -1,5 +1,6 @@
 ---
 source: src/limits.rs
+assertion_line: 774
 expression: "(politeness, REGISTRY)"
 ---
 [
@@ -187,6 +188,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Hops followed per request; every hop is checked against the allowlist"
+    },
+    {
+      "name": "GITHUB_SEARCH_PER_PAGE",
+      "value": {
+        "count": 20
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Repositories one search asks GitHub's search API for (10 requests a minute unauthenticated)"
     }
   ],
   [
@@ -463,6 +473,24 @@ expression: "(politeness, REGISTRY)"
       "unit": "ms",
       "config_key": null,
       "notes": "The racy slack on filesystems with whole-second mtimes: files this close to a folder's stamp are re-hashed"
+    },
+    {
+      "name": "SEARCH_MAX_RESULTS",
+      "value": {
+        "count": 50
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Results one search lists at most (--limit; 20 by default)"
+    },
+    {
+      "name": "SEARCH_SUMMARY_MAX_CHARS",
+      "value": {
+        "count": 200
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Characters a search result's summary keeps"
     }
   ]
 ]

@@ -1,0 +1,49 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 360
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "search",
+  "commands": [
+    {
+      "action": "install",
+      "argv": [
+        "omaddons",
+        "install",
+        "gh:WeakAuras/WeakAuras2",
+        "-t",
+        "classic"
+      ],
+      "command": "omaddons install gh:WeakAuras/WeakAuras2 -t classic",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "query": "weakauras",
+    "results": [
+      {
+        "author": null,
+        "compat": {
+          "classic": "yes",
+          "retail": "no"
+        },
+        "name": "WeakAuras",
+        "popularity": {
+          "stars": 1300
+        },
+        "ref": "gh:WeakAuras/WeakAuras2",
+        "source": "catalog",
+        "summary": "5.22.1's release.json lists no mainline build and the zip ships no Mainline TOC",
+        "updated_at": "<time>"
+      }
+    ],
+    "sources_skipped": []
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

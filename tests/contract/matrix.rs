@@ -338,6 +338,35 @@ fn install_with_dependencies() {
     }
 }
 
+/// `search`: a catalog hit merged with its GitHub duplicate, the offline skips, and the
+/// bounded `--limit`.
+#[test]
+fn search() {
+    let s = Scene::new();
+    super::common::http::github_search(
+        &s.home.http,
+        "weakauras",
+        &[(
+            "WeakAuras",
+            "WeakAuras2",
+            "A powerful framework",
+            1300,
+            "2026-10-01T00:00:00Z",
+        )],
+    );
+    super::common::wowi::wowi_filelist(&s.home.http, &[]);
+    super::common::tukui::tukui_list(&s.home.http, &[]);
+    let c = s.json(&["search", "weakauras"], 0);
+    insta::assert_json_snapshot!("search_ok", s.stable(&c.envelope));
+    let c = s.json(&["find", "weakauras", "--offline"], 0);
+    assert_eq!(
+        c.envelope["data"]["sources_skipped"][0],
+        serde_json::json!({"source": "github", "reason": "offline"})
+    );
+    let c = s.json(&["search", "weakauras", "--limit", "99"], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+}
+
 /// Other commands' fixes for an unmanaged folder adopt it, and each runs.
 #[test]
 fn adopt_fixes() {

@@ -1,6 +1,6 @@
 ---
 source: tests/deps.rs
-assertion_line: 1091
+assertion_line: 1113
 expression: "support::stable(&envelope)"
 ---
 {
@@ -70,9 +70,13 @@ expression: "support::stable(&envelope)"
   "warnings": [
     {
       "code": "missing_dependency",
-      "fix": "no keyless source ships Nowhere; it may only be on CurseForge or Wago, which arrive in M5",
-      "fix_argv": null,
-      "message": "LittleWigs on retail requires Nowhere, which was not installed: no keyless source ships it"
+      "fix": "omaddons search Nowhere",
+      "fix_argv": [
+        "omaddons",
+        "search",
+        "Nowhere"
+      ],
+      "message": "LittleWigs on retail requires Nowhere, which was not installed: no keyless source ships it; it may only be on CurseForge or Wago, which arrive in M5"
     }
   ]
 }

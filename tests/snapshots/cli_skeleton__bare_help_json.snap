@@ -1,5 +1,6 @@
 ---
 source: tests/cli_skeleton.rs
+assertion_line: 163
 expression: envelope
 ---
 {
@@ -32,6 +33,14 @@ expression: envelope
         "aliases": [],
         "group": "look",
         "name": "info"
+      },
+      {
+        "about": "Find addons by name in the catalog, WoWInterface, Tukui and GitHub",
+        "aliases": [
+          "find"
+        ],
+        "group": "look",
+        "name": "search"
       },
       {
         "about": "Every client's addon set as one addons.toml for sync (stdout, or --write)",

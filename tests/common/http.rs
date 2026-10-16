@@ -160,6 +160,7 @@ pub fn gh_latest(scenario: &Path, base: &str, tag: &str) {
             }
             let doc: serde_json::Value =
                 serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            // ubs:ignore — comparing fixture URLs, not secrets
             if doc["request"]["url"] == url.as_str() {
                 fs::remove_file(&path).unwrap();
             }
@@ -315,6 +316,85 @@ pub fn record(env: &TestEnv, scenario: &Path) -> Box<dyn Http> {
         &paths,
         transport,
     )
+}
+
+/// One repository GitHub's search finds: (owner, name, description, stars, pushed_at).
+pub type Repo<'a> = (&'a str, &'a str, &'a str, u64, &'a str);
+
+/// Serves GitHub's repository search for `query` (the URL `search` builds), finding
+/// `repos`, with the search resource's rate-limit headers.
+pub fn github_search(scenario: &Path, query: &str, repos: &[Repo<'_>]) {
+    let url = omaddons::sources::github_search::GithubSearch::with_token(None)
+        .request(query)
+        .url;
+    let items: Vec<serde_json::Value> = repos
+        .iter()
+        .map(|(owner, name, description, stars, pushed_at)| {
+            json!({
+                "name": name,
+                "full_name": format!("{owner}/{name}"),
+                "owner": {"login": owner},
+                "description": description,
+                "stargazers_count": stars,
+                "pushed_at": pushed_at,
+                "html_url": format!("https://github.com/{owner}/{name}"),
+            })
+        })
+        .collect();
+    let body = json!({"total_count": repos.len(), "incomplete_results": false, "items": items})
+        .to_string();
+    fixture(
+        scenario,
+        &search_fixture_name(query),
+        &url,
+        200,
+        &[
+            ("content-type", "application/json; charset=utf-8"),
+            ("x-ratelimit-limit", "10"),
+            ("x-ratelimit-remaining", "9"),
+            ("x-ratelimit-reset", "1760652120"),
+            ("x-ratelimit-resource", "search"),
+        ],
+        Some(&body),
+    );
+}
+
+/// Serves GitHub's repository search for `query` as spent: 403 with no requests left
+/// until `reset` (epoch seconds).
+pub fn github_search_spent(scenario: &Path, query: &str, reset: i64) {
+    let url = omaddons::sources::github_search::GithubSearch::with_token(None)
+        .request(query)
+        .url;
+    let reset = reset.to_string();
+    fixture(
+        scenario,
+        &search_fixture_name(query),
+        &url,
+        403,
+        &[
+            ("content-type", "application/json; charset=utf-8"),
+            ("x-ratelimit-limit", "10"),
+            ("x-ratelimit-remaining", "0"),
+            ("x-ratelimit-reset", reset.as_str()),
+            ("x-ratelimit-resource", "search"),
+        ],
+        Some(r#"{"message":"API rate limit exceeded"}"#),
+    );
+}
+
+/// One fixture file per searched query.
+fn search_fixture_name(query: &str) -> String {
+    let slug: String = query
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("github-search-{slug}")
 }
 
 /// A committed scenario under `tests/fixtures/http/`.
