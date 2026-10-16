@@ -135,7 +135,8 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | `outdated` (alias `check`): what has updates, on every client | ✅ Done (milestone 2) |
 | `update` (alias `upgrade`): every client's updates in one run, undone with one `undo` | ✅ Done (milestone 2) |
 | `pin` and `unpin`: hold an addon at its release through updates | ✅ Done (milestone 2) |
-| WoWInterface and Tukui, dependencies, adopting other managers' addons, `export` and `sync`, `search` | 🗓️ Milestone 2 (decomposed into 75 beads) |
+| Dependencies: what a TOC requires installs with it, from the catalog | ✅ Done (milestone 2; more sources to come) |
+| WoWInterface and Tukui, adopting other managers' addons, `export` and `sync`, `search` | 🗓️ Milestone 2 (decomposed into 75 beads) |
 | The Omarchy bar widget, Lua error capture, `WTF/` backups | 🗓️ Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
