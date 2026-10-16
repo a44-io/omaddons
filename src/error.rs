@@ -281,6 +281,8 @@ warning_codes! {
     ExportLocalSource           = "export_local_source";
     /// Files of a replaced folder had changed on disk; undo brings them back.
     LocalChangesReplaced        = "local_changes_replaced";
+    /// `sync --locked`: entries without a version installed their newest release.
+    NotLocked                   = "not_locked";
 }
 
 impl fmt::Display for WarningCode {
@@ -762,7 +764,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 30);
+        assert_eq!(WarningCode::ALL.len(), 31);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

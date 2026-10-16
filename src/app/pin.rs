@@ -196,6 +196,7 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
                 pin: PinIntent::Pin,
                 reason: a.reason,
                 reinstall: false,
+                blob_sha256: None,
             }),
         };
         match change {

@@ -226,6 +226,7 @@ mod support {
             pin: PinIntent::Keep,
             reason: AddonReason::Explicit,
             reinstall: false,
+            blob_sha256: None,
         }
     }
 

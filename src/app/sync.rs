@@ -28,7 +28,7 @@ use crate::discover::DiscoveredTarget;
 use crate::engine::edit::RecordEdit;
 use crate::engine::plan::{PinIntent, RequestedChange};
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
-use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
+use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::model::{AddonReason, AddonRecord, Ref, RunId, Target, TxId, TxKind};
 use crate::output::{Outcome, Style};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
@@ -50,6 +50,9 @@ pub struct SyncArgs {
     /// Install only the listed addons, not the ones their TOCs require
     #[arg(long)]
     pub no_deps: bool,
+    /// Install the versions the file records, from the blob cache when cached
+    #[arg(long)]
+    pub locked: bool,
 }
 
 /// `sync`'s outcome: the shared multi-target outcome, with `--strict`.
@@ -126,14 +129,22 @@ pub struct DiffItem<'s, 'r> {
 /// The changes that make `record` match `wants`, one per entry at most (first matching
 /// row wins), never moving an installed addon to a newer release by itself:
 ///
-/// | situation | change |
-/// |---|---|
-/// | not installed | install (its `version` only when pinned) |
-/// | pinned at another `version` | install that version, pinned |
-/// | another `channel` | install from that channel (a records-only switch when its newest release is installed) |
-/// | only the pin differs | records-only `SetPinned` |
-/// | otherwise | nothing |
-pub fn diff<'s, 'r>(wants: &[Want<'s>], record: Option<&'r TargetRecord>) -> Vec<DiffItem<'s, 'r>> {
+/// | situation | change | under `locked` |
+/// |---|---|---|
+/// | not installed | install (its `version` only when pinned) | its `version` whenever it has one |
+/// | pinned at another `version` | install that version, pinned | the same |
+/// | at another `version` | nothing | install that version, its pin as the entry says |
+/// | another `channel` | install from that channel (a records-only switch when its newest release is installed) | at its `version` |
+/// | only the pin differs | records-only `SetPinned` | the same |
+/// | otherwise | nothing | nothing |
+///
+/// A lock never pins: an unpinned entry installs its version unpinned. A locked install
+/// carries the entry's `sha256`, so its archive may come from the blob cache.
+pub fn diff<'s, 'r>(
+    wants: &[Want<'s>],
+    record: Option<&'r TargetRecord>,
+    locked: bool,
+) -> Vec<DiffItem<'s, 'r>> {
     wants
         .iter()
         .map(|w| {
@@ -143,7 +154,8 @@ pub fn diff<'s, 'r>(wants: &[Want<'s>], record: Option<&'r TargetRecord>) -> Vec
                     .values()
                     .find(|a| a.r#ref.identity() == w.r#ref.identity())
             });
-            let install = |r#ref: Ref, name: Option<String>, version, pin| {
+            let install = |r#ref: Ref, name: Option<String>, version: Option<String>, pin| {
+                let blob_sha256 = e.sha256.clone().filter(|_| locked && version.is_some());
                 Some(RequestedChange::Install {
                     r#ref,
                     channel: e.channel,
@@ -154,9 +166,11 @@ pub fn diff<'s, 'r>(wants: &[Want<'s>], record: Option<&'r TargetRecord>) -> Vec
                     pin,
                     reason: AddonReason::Explicit,
                     reinstall: false,
+                    blob_sha256,
                 })
             };
-            let pinned_version = || e.version.clone().filter(|_| e.pinned);
+            // The version an install takes: pinned ones always, every one when locked.
+            let pinned_version = || e.version.clone().filter(|_| e.pinned || locked);
             let change = match installed {
                 None => {
                     let pin = if e.pinned {
@@ -175,9 +189,13 @@ pub fn diff<'s, 'r>(wants: &[Want<'s>], record: Option<&'r TargetRecord>) -> Vec
                     } else {
                         PinIntent::Unpin
                     };
-                    if e.pinned && e.version.as_ref().is_some_and(|v| *v != a.version) {
+                    let elsewhere = e.version.as_ref().is_some_and(|v| *v != a.version);
+                    if e.pinned && elsewhere {
                         let (r, name) = again();
                         install(r, name, e.version.clone(), PinIntent::Pin)
+                    } else if locked && elsewhere {
+                        let (r, name) = again();
+                        install(r, name, e.version.clone(), pin)
                     } else if e.channel != a.channel {
                         let (r, name) = again();
                         install(r, name, pinned_version(), pin)
@@ -308,6 +326,13 @@ struct TargetWork {
     items: Vec<ItemResult>,
     /// Item requests in file order.
     order: Vec<String>,
+    /// `--locked`: the dependency locks (`dependency = true` entries with a version), by
+    /// resolved ref.
+    locks: BTreeMap<Ref, String>,
+    /// `--locked`: entries installed without a version (the newest release).
+    unlocked: Vec<String>,
+    /// `--locked`: the requests that install a recorded version.
+    locked: Vec<String>,
 }
 
 /// Resolves, checks and diffs `target`'s entries.
@@ -318,6 +343,7 @@ fn target_work(
     catalog: &Catalog,
     world: &World,
     path: &Path,
+    locked: bool,
 ) -> TargetWork {
     let t = &d.target;
     let base = path.parent().unwrap_or_else(|| Path::new("/"));
@@ -329,8 +355,12 @@ fn target_work(
     let mut work = TargetWork::default();
     let mut wants: Vec<Want<'_>> = Vec::new();
     for d in wanted {
-        // Locks are not requests (`--locked` reads them).
+        // Locks are not requests: `--locked` fixes the version of a dependency it
+        // installs; one that resolves to nothing is ignored.
         if d.entry.dependency {
+            if let (true, Ok(r), Some(version)) = (locked, &d.resolved, &d.entry.version) {
+                work.locks.insert(r.clone(), version.clone());
+            }
             continue;
         }
         work.order.push(label(d.entry));
@@ -387,8 +417,17 @@ fn target_work(
         .map(|(_, w)| w)
         .collect();
     let record = records.get(&t.id);
-    for (item, want) in diff(&wants, record).into_iter().zip(&wants) {
+    for (item, want) in diff(&wants, record, locked).into_iter().zip(&wants) {
         let request = label(item.entry);
+        if let Some(RequestedChange::Install { version, .. }) = &item.change
+            && locked
+        {
+            match version {
+                Some(_) => work.locked.push(request.clone()),
+                None if item.installed.is_none() => work.unlocked.push(request.clone()),
+                None => {}
+            }
+        }
         match item.change {
             Some(change) => {
                 work.changes.push(change);
@@ -451,6 +490,8 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     let mut pushed: Vec<(TargetRef, ItemResult)> = Vec::new();
     let mut order: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut without: Vec<TargetResult> = Vec::new();
+    let mut locks: BTreeMap<String, BTreeMap<Ref, String>> = BTreeMap::new();
+    let mut locked: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut matching = 0usize;
     for d in &targets {
         if !has_section(&state, &d.target) {
@@ -461,7 +502,12 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
             continue;
         }
         matching += 1;
-        let work = target_work(&state, d, &records, &catalog, &world, &path);
+        let work = target_work(&state, d, &records, &catalog, &world, &path, args.locked);
+        if !work.unlocked.is_empty() {
+            warnings.push(not_locked(&d.target.id, &work.unlocked, &path));
+        }
+        locks.insert(d.target.id.clone(), work.locks);
+        locked.insert(d.target.id.clone(), work.locked);
         if !work.changes.is_empty() {
             changes.insert(d.target.id.clone(), work.changes);
         }
@@ -490,7 +536,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
                         discovered: (*d).clone(),
                         changes: changes.remove(&d.target.id)?,
                         default_kind: TxKind::Sync,
-                        dependency_locks: BTreeMap::new(),
+                        dependency_locks: locks.remove(&d.target.id).unwrap_or_default(),
                     })
                 })
                 .collect(),
@@ -513,6 +559,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
         Some(done) => {
             let mut data = TargetsData::build(done, run, &requested);
             settle_failures(&mut data, done, &ctx.argv);
+            unlock_fixes(&mut data, &locked, &ctx.argv);
             for o in &done.outcomes {
                 warnings.extend(o.warnings.iter().cloned());
                 notes.extend(o.notes.iter().cloned());
@@ -595,6 +642,47 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
         locks,
         notes,
     })
+}
+
+/// `not_locked`: `entries` of `target` have no version, so `--locked` installs their
+/// newest release.
+fn not_locked(target: &str, entries: &[String], path: &Path) -> Warning {
+    Warning::new(
+        WarningCode::NotLocked,
+        format!(
+            "{target}: {} {} no version in {}, so the newest release installs",
+            entries.join(", "),
+            if entries.len() == 1 { "has" } else { "have" },
+            path.display()
+        ),
+    )
+    .with_fix(Suggestion::text(
+        "add `version = \"…\"` to those entries, or regenerate the file with `omaddons export`",
+    ))
+}
+
+/// A locked version the source no longer serves (`not_found`): the fix syncs to the
+/// newest instead, which is this invocation without `--locked`.
+fn unlock_fixes(data: &mut TargetsData, locked: &BTreeMap<String, Vec<String>>, argv: &[String]) {
+    let fix: Vec<String> = crate::cli::fix_argv(argv)
+        .into_iter()
+        .filter(|a| !matches!(a.as_str(), "--locked"))
+        .collect();
+    let fix = Suggestion::command(fix);
+    for t in &mut data.targets {
+        let Some(requests) = locked.get(&t.target.id) else {
+            continue;
+        };
+        for i in &mut t.items {
+            if let Some(error) = &mut i.error
+                && error.code == ErrorCode::NotFound
+                && requests.contains(&i.request)
+            {
+                error.fix = fix.display().to_owned();
+                error.fix_argv = fix.argv().map(<[String]>::to_vec);
+            }
+        }
+    }
 }
 
 /// What the engine's failures mean for `sync`: a dependency that resolved but failed
@@ -731,6 +819,85 @@ mod tests {
     }
 
     #[test]
+    fn locked_installs_the_recorded_versions_without_pinning() {
+        use Channel::{Beta, Stable};
+        let installed = record(&[
+            ("Foo", "gh:o/foo", "v1", Stable, false),
+            ("Pinned", "gh:o/pinned", "v1", Stable, true),
+        ]);
+        let with_sha = |mut e: Entry| {
+            e.sha256 = Some("ab".repeat(32));
+            e
+        };
+        let cases: &[(Entry, &str, Shape<'_>, Shape<'_>)] = &[
+            // Missing: its version whenever it has one, unpinned unless the entry pins.
+            (
+                entry("New", Stable, Some("v3"), false),
+                "gh:o/new",
+                ("install", Some("v3"), "Keep", "Stable"),
+                ("install", None, "Keep", "Stable"),
+            ),
+            (
+                entry("New", Stable, None, false),
+                "gh:o/new",
+                ("install", None, "Keep", "Stable"),
+                ("install", None, "Keep", "Stable"),
+            ),
+            // Installed at another version: moved there, still unpinned.
+            (
+                entry("Foo", Stable, Some("v9"), false),
+                "gh:o/foo",
+                ("install", Some("v9"), "Keep", "Stable"),
+                ("none", None, "", ""),
+            ),
+            // A pinned record whose entry is unpinned at another version: moved there and
+            // unpinned (plain sync only unpins).
+            (
+                entry("Pinned", Stable, Some("v2"), false),
+                "gh:o/pinned",
+                ("install", Some("v2"), "Unpin", "Stable"),
+                ("edit", None, "SetPinned(false)", ""),
+            ),
+            // Another channel: at its version.
+            (
+                entry("Foo", Beta, Some("v1"), false),
+                "gh:o/foo",
+                ("install", Some("v1"), "Keep", "Beta"),
+                ("install", None, "Keep", "Beta"),
+            ),
+            // At its version already: nothing either way.
+            (
+                entry("Foo", Stable, Some("v1"), false),
+                "gh:o/foo",
+                ("none", None, "", ""),
+                ("none", None, "", ""),
+            ),
+        ];
+        for (e, r, locked, plain) in cases {
+            for (on, expected) in [(true, locked), (false, plain)] {
+                let items = diff(&[want(e, r)], Some(&installed), on);
+                let got = shape(items[0].change.as_ref());
+                assert_eq!(
+                    (got.0, got.1.as_deref(), got.2.as_str(), got.3.as_str()),
+                    *expected,
+                    "locked {on}: {e:?} {r}"
+                );
+            }
+        }
+        // Only a locked install with a version carries the recorded archive.
+        let sha = |e: Entry, on: bool| {
+            let items = diff(&[want(&e, "gh:o/new")], None, on);
+            match &items[0].change {
+                Some(RequestedChange::Install { blob_sha256, .. }) => blob_sha256.clone(),
+                _ => None,
+            }
+        };
+        assert!(sha(with_sha(entry("New", Stable, Some("v3"), false)), true).is_some());
+        assert!(sha(with_sha(entry("New", Stable, Some("v3"), false)), false).is_none());
+        assert!(sha(with_sha(entry("New", Stable, None, false)), true).is_none());
+    }
+
+    #[test]
     fn the_diff_table() {
         use Channel::{Beta, Stable};
         let installed = record(&[
@@ -814,7 +981,7 @@ mod tests {
             ),
         ];
         for (e, r, (kind, version, pin, channel)) in cases {
-            let items = diff(&[want(e, r)], Some(&installed));
+            let items = diff(&[want(e, r)], Some(&installed), false);
             let got = shape(items[0].change.as_ref());
             assert_eq!(
                 (got.0, got.1.as_deref(), got.2.as_str(), got.3.as_str()),
@@ -828,7 +995,7 @@ mod tests {
     fn an_existing_addon_is_named_and_reffed_as_recorded() {
         let installed = record(&[("Foo", "gh:o/foo", "v1", Channel::Stable, false)]);
         let e = entry("whatever", Channel::Beta, None, false);
-        let items = diff(&[want(&e, "gh:O/FOO")], Some(&installed));
+        let items = diff(&[want(&e, "gh:O/FOO")], Some(&installed), false);
         assert!(
             matches!(
                 items[0].change.as_ref(),
@@ -839,7 +1006,7 @@ mod tests {
             items[0].change
         );
         // Nothing installed, no record at all: installs, under the given name.
-        let items = diff(&[want(&e, "gh:o/new")], None);
+        let items = diff(&[want(&e, "gh:o/new")], None, false);
         assert!(items[0].installed.is_none());
         assert!(matches!(
             items[0].change,

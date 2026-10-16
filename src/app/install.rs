@@ -420,6 +420,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
                 _ => AddonReason::Explicit,
             },
             reinstall: args.reinstall,
+            blob_sha256: None,
         }
     };
     let parsed: Vec<&ParsedRef> = items

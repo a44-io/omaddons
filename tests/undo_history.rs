@@ -533,6 +533,7 @@ mod runs {
                                 pin: PinIntent::Keep,
                                 reason: AddonReason::Explicit,
                                 reinstall: false,
+                                blob_sha256: None,
                             }],
                             default_kind: TxKind::Install,
                             dependency_locks: std::collections::BTreeMap::new(),

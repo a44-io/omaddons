@@ -989,6 +989,7 @@ mod tests {
             pin: crate::engine::plan::PinIntent::Keep,
             reason: crate::model::AddonReason::Explicit,
             reinstall: false,
+            blob_sha256: None,
         };
         let done = scene.run(vec![change]).unwrap();
         assert!(done.failures.is_empty(), "{:?}", done.failures);

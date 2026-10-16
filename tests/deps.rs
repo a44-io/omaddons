@@ -939,6 +939,7 @@ mod engine_api {
             pin: PinIntent::Keep,
             reason: AddonReason::Explicit,
             reinstall: false,
+            blob_sha256: None,
         }
     }
 

@@ -15,7 +15,7 @@ use common::netlog::net_log;
 use common::trees::tree_hash;
 use omaddons::model::{Channel, TxKind};
 use serde_json::{Value, json};
-use support::{ON_BOTH, items, record_of, statuses, target};
+use support::{ON_BOTH, exported, items, record_of, statuses, target};
 
 #[cfg(test)]
 mod support {
@@ -26,6 +26,17 @@ mod support {
 
     /// Loads on retail (12.1.5) and the PTR (12.1.0).
     pub const ON_BOTH: &str = "120105, 120100";
+
+    /// `export`'s document on `home`, written to `<root>/<name>.toml`.
+    pub fn exported(home: &Home, name: &str) -> String {
+        let content = home.run(&["export"]).expect(0)["data"]["content"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_default();
+        let path = home.env.root().join(format!("{name}.toml"));
+        std::fs::write(&path, content).unwrap();
+        path.display().to_string()
+    }
 
     pub const fn folder<'a>(name: &'a str, deps: &'a [&'a str]) -> Folder<'a> {
         Folder {
@@ -705,4 +716,250 @@ fn offline_an_unpin_works_and_an_uncached_install_fails() {
         r.context()
     );
     assert_eq!(items(&envelope, "retail")[1]["error"]["code"], "offline");
+}
+
+/// gh:o/foo at v1 and v2 (latest), for a home that never installed it.
+fn foo_v1_and_v2(home: &Home) {
+    let (v1, v2) = (foo_assets("v1"), foo_assets("v2"));
+    let a1: [common::http::Asset<'_>; 1] = [("Foo.zip", &[], borrowed(&v1))];
+    let a2: [common::http::Asset<'_>; 1] = [("Foo.zip", &[], borrowed(&v2))];
+    common::http::gh_release_v(&home.http, "https://github.com/o/foo", "v1", &a1);
+    common::http::gh_release(&home.http, "https://github.com/o/foo", "v2", &a2);
+}
+
+#[test]
+fn export_then_locked_sync_reproduces_versions_on_a_fresh_machine() {
+    // Old machine: Foo v1, while v2 is out.
+    let old = foo_behind();
+    let file = exported(&old, "dotfiles");
+    let text = fs::read_to_string(&file).unwrap();
+    assert!(text.contains("version = \"v1\""), "{text}");
+
+    // New machine, both releases served: locked reproduces v1, plain sync takes v2.
+    let new = Home::new(&["wow"]);
+    foo_v1_and_v2(&new);
+    let r = new.run(&["sync", &file, "--locked"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        statuses(&envelope, "retail"),
+        [pair("Foo", "installed")],
+        "{}",
+        r.context()
+    );
+    let foo = record_of(&new, "retail", "Foo").unwrap();
+    assert_eq!(
+        (
+            foo.r#ref.to_string(),
+            foo.version.as_str(),
+            foo.release_id.as_deref(),
+            foo.pinned
+        ),
+        ("gh:o/foo".to_owned(), "v1", Some("gh:o/foo@v1"), false)
+    );
+    // Again: nothing to do, no request.
+    let before = net_log(&new).len();
+    let r = new.run(&["sync", &file, "--locked"]);
+    assert_eq!(
+        r.expect(0)["data"]["summary"]["changed"],
+        0,
+        "{}",
+        r.context()
+    );
+    assert_eq!(net_log(&new).len(), before);
+
+    let plain = Home::new(&["wow"]);
+    foo_v1_and_v2(&plain);
+    plain.run(&["sync", &file]).expect(0);
+    assert_eq!(record_of(&plain, "retail", "Foo").unwrap().version, "v2");
+}
+
+#[test]
+fn a_locked_restore_on_the_same_machine_needs_no_network() {
+    let home = foo_behind();
+    let file = exported(&home, "dotfiles");
+    home.run(&["remove", "Foo", "-t", "retail"]).expect(0);
+    let before = net_log(&home).len();
+    let r = home.run(&["sync", &file, "--locked", "--offline"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        statuses(&envelope, "retail"),
+        [pair("Foo", "installed")],
+        "{}",
+        r.context()
+    );
+    assert_eq!(net_log(&home).len(), before, "the blob and its fact answer");
+    assert_eq!(record_of(&home, "retail", "Foo").unwrap().version, "v1");
+}
+
+#[test]
+fn a_cached_blob_without_a_fact_costs_the_metadata_and_a_bad_one_a_download() {
+    let home = foo_behind();
+    let file = exported(&home, "dotfiles");
+    // The memo forgets what the download taught.
+    let paths = common::http::paths(&home.env);
+    let (mut memo, _) = omaddons::state::memo::load(&paths);
+    memo.candidates.clear();
+    home.seed_memo(&memo);
+    home.run(&["remove", "Foo", "-t", "retail"]).expect(0);
+    let (lines, assets) = (net_log(&home).len(), net_log(&home).count_purpose("asset"));
+    let r = home.run(&["sync", &file, "--locked"]);
+    r.expect(0);
+    assert_eq!(
+        net_log(&home).len(),
+        lines + 1,
+        "the exact release's metadata"
+    );
+    assert_eq!(
+        net_log(&home).count_purpose("asset"),
+        assets,
+        "{}",
+        r.context()
+    );
+
+    // A blob whose bytes no longer hash to the entry's sha256 is not used.
+    let sha = record_of(&home, "retail", "Foo")
+        .unwrap()
+        .blob_sha256
+        .unwrap();
+    fs::write(paths.blob(&sha), b"not the archive").unwrap();
+    home.run(&["remove", "Foo", "-t", "retail"]).expect(0);
+    let assets = net_log(&home).count_purpose("asset");
+    let r = home.run(&["sync", &file, "--locked"]);
+    r.expect(0);
+    assert_eq!(
+        net_log(&home).count_purpose("asset"),
+        assets + 1,
+        "downloaded again: {}",
+        r.context()
+    );
+    assert_eq!(record_of(&home, "retail", "Foo").unwrap().version, "v1");
+}
+
+#[test]
+fn a_version_no_longer_served_fails_and_an_unversioned_entry_warns() {
+    let home = Home::new(&["wow"]);
+    foo_v1_and_v2(&home);
+    release_graph(
+        &home.http,
+        &[Node {
+            base: "https://github.com/o/bar",
+            tag: "v1",
+            folders: &[support::folder("Bar", &[])],
+        }],
+    );
+    for (name, url) in [
+        (
+            "v9-json",
+            "https://github.com/o/foo/releases/download/v9/release.json",
+        ),
+        (
+            "v9-api",
+            "https://api.github.com/repos/o/foo/releases/tags/v9",
+        ),
+    ] {
+        common::http::fixture(&home.http, name, url, 404, &[], None);
+    }
+    let file = home.write_desired(
+        "[family.mainline]\naddons = [\"gh:o/bar\"]\n\n[[family.mainline.addon]]\nname = \"Foo\"\nref = \"gh:o/foo\"\nversion = \"v9\"\n",
+    );
+    let file = file.display().to_string();
+    let r = home.run(&["sync", &file, "--locked"]);
+    let envelope = r.expect(0);
+    assert_eq!(envelope["partial"], true, "{}", r.context());
+    let foo = items(&envelope, "retail")
+        .iter()
+        .find(|i| i["request"] == "Foo")
+        .cloned()
+        .unwrap();
+    assert_eq!(foo["error"]["code"], "not_found");
+    assert_eq!(foo["error"]["fix_argv"], json!(["omaddons", "sync", file]));
+    assert!(record_of(&home, "retail", "Bar").is_some());
+    let not_locked: Vec<&Value> = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "not_locked")
+        .collect();
+    assert_eq!(not_locked.len(), 1, "{}", r.context());
+    assert!(
+        not_locked[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("gh:o/bar")
+    );
+    assert_eq!(not_locked[0]["fix_argv"], Value::Null);
+}
+
+#[test]
+fn locked_moves_an_installed_unpinned_addon_to_its_version() {
+    let home = foo_behind();
+    home.write_desired(
+        "[[family.mainline.addon]]\nname = \"Foo\"\nref = \"gh:o/foo\"\nversion = \"v2\"\n",
+    );
+    let r = home.run(&["sync"]);
+    let summary = &r.expect(0)["data"]["summary"];
+    assert_eq!(
+        (&summary["changed"], &summary["unchanged"]),
+        (&json!(0), &json!(1)),
+        "{}",
+        r.context()
+    );
+    let r = home.run(&["sync", "--locked"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        statuses(&envelope, "retail"),
+        [pair("Foo", "updated")],
+        "{}",
+        r.context()
+    );
+    let foo = record_of(&home, "retail", "Foo").unwrap();
+    assert_eq!((foo.version.as_str(), foo.pinned), ("v2", false));
+}
+
+#[test]
+fn a_dependency_lock_fixes_the_version_it_installs() {
+    let home = Home::new(&["wow"]);
+    release_graph(
+        &home.http,
+        &[
+            Node {
+                base: "https://github.com/o/littlewigs",
+                tag: "v1",
+                folders: &[support::folder("LittleWigs", &["BigWigs"])],
+            },
+            Node {
+                base: "https://github.com/o/bigwigs",
+                tag: "v1",
+                folders: &[support::folder("BigWigs", &[])],
+            },
+            Node {
+                base: "https://github.com/o/bigwigs",
+                tag: "v2",
+                folders: &[support::folder("BigWigs", &[])],
+            },
+        ],
+    );
+    let catalog_d = home.env.config().join("omaddons/catalog.d");
+    fs::create_dir_all(&catalog_d).unwrap();
+    fs::write(
+        catalog_d.join("50-wigs.toml"),
+        "schema_version = \"1.0\"\n\n[[addon]]\nname = \"LittleWigs\"\nref = \"gh:o/littlewigs\"\nfolders = [\"LittleWigs\"]\n\n[[addon]]\nname = \"BigWigs\"\nref = \"gh:o/bigwigs\"\nfolders = [\"BigWigs\"]\n",
+    )
+    .unwrap();
+    home.write_desired(
+        "[family.mainline]\naddons = [\"littlewigs\"]\n\n[[family.mainline.addon]]\nname = \"BigWigs\"\nref = \"gh:o/bigwigs\"\ndependency = true\nversion = \"v1\"\n\n[[family.mainline.addon]]\nname = \"Nothing\"\nref = \"gh:o/nothing\"\ndependency = true\nversion = \"v1\"\n",
+    );
+    let r = home.run(&["sync", "--locked"]);
+    r.expect(0);
+    let bw = record_of(&home, "retail", "BigWigs");
+    assert!(bw.is_some(), "{}", r.context());
+    let bw = bw.unwrap();
+    assert_eq!(
+        (bw.version.as_str(), bw.reason, bw.pinned),
+        ("v1", omaddons::model::AddonReason::Dependency, false)
+    );
+    assert!(
+        record_of(&home, "retail", "Nothing").is_none(),
+        "an unmatched lock is ignored"
+    );
 }

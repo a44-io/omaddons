@@ -337,6 +337,14 @@ impl FactIndex {
             .map(|(sha256, size)| (sha256.as_str(), *size))
     }
 
+    /// The release an archive with this SHA-256 was downloaded as, when one was.
+    pub fn release_of(&self, sha256: &str) -> Option<&str> {
+        self.hashes
+            .iter()
+            .find(|(_, (sha, _))| sha.eq_ignore_ascii_case(sha256))
+            .map(|((release_id, _), _)| release_id.as_str())
+    }
+
     /// Whether `asset` of `release_id` loads on the rules row `rules` at `interface`, when
     /// a plan verified it there.
     pub fn verdict(

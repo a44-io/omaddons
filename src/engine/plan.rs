@@ -116,6 +116,9 @@ pub enum RequestedChange {
         /// Install the chosen release even when it is the installed one. A pinned addon
         /// is reinstalled at its pinned release.
         reinstall: bool,
+        /// `sync --locked`: the archive the desired state recorded (its `sha256`), used
+        /// from the blob cache while it is there and still hashes to it. Internal.
+        blob_sha256: Option<String>,
     },
     Remove {
         addon: String,
@@ -774,6 +777,8 @@ enum Want {
         /// A reinstall's recorded release from the blob cache ([`local_blob_candidate`]):
         /// the source is not asked.
         local: Option<Box<Candidate>>,
+        /// A locked install's recorded archive hash (`RequestedChange::Install.blob_sha256`).
+        cached: Option<String>,
     },
     Remove {
         addon: String,
@@ -824,6 +829,30 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                     release_id,
                     &installed.version,
                     installed.channel,
+                    sha,
+                )
+                .map(Box::new);
+            }
+        }
+        // A locked install whose archive the cache holds, and whose release a fact names
+        // by that archive's hash, needs no source either.
+        for w in &mut wants {
+            if let Want::Install {
+                wanted,
+                file: None,
+                local: local @ None,
+                cached: Some(sha),
+                ..
+            } = w
+                && let Some(version) = &wanted.version
+                && let Some(release_id) = ctx.cache.facts().release_of(sha)
+            {
+                *local = local_blob_candidate(
+                    ctx.blobs,
+                    ctx.scopes,
+                    release_id,
+                    version,
+                    wanted.channel,
                     sha,
                 )
                 .map(Box::new);
@@ -945,13 +974,14 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                     file,
                     intent,
                     local,
+                    cached,
                 } => {
                     let identity = wanted.r#ref.identity();
                     if seen.contains(&identity) {
                         continue;
                     }
                     seen.push(identity);
-                    // A pinned addon, one whose release is kept, or a reinstall from the
+                    // A pinned addon, one whose release is kept, or an install from the
                     // blob cache was not fetched.
                     let set = match (&file, &local) {
                         (None, None) => fetched.get(&wanted).map(|f| f.set.clone()),
@@ -965,6 +995,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                             file: file.as_deref(),
                             local: local.as_deref(),
                             set,
+                            cached: cached.as_deref(),
                         },
                         &intent,
                     ) {
@@ -1532,6 +1563,7 @@ impl TargetPlanner<'_> {
             file: None,
             local: None,
             set,
+            cached: None,
         };
         let build = match self.prepare_install(dep.name.as_deref(), wanted, source, &intent)? {
             Prepared::Build(build) => build,
@@ -2073,6 +2105,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
             pin,
             reason,
             reinstall,
+            blob_sha256,
         } => {
             // A reinstall without a version asks for the recorded release exactly; the
             // intent keeps no version, so the pin stays as recorded.
@@ -2097,6 +2130,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                     *reinstall,
                 ),
                 local: None,
+                cached: blob_sha256.clone(),
             }
         }
         RequestedChange::Remove { addon } => Want::Remove {
@@ -2132,6 +2166,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                         )
                     },
                     local: None,
+                    cached: None,
                 },
                 None => Want::Failed {
                     r#ref: None,
@@ -2503,6 +2538,9 @@ struct CandidateSource<'a> {
     file: Option<&'a std::path::Path>,
     local: Option<&'a Candidate>,
     set: Option<Result<ReleaseSet>>,
+    /// A locked install's recorded archive hash: the set's release is tried from the
+    /// blob cache first, when the cache still holds that archive.
+    cached: Option<&'a str>,
 }
 
 /// An install after its first pass: settled, or a verified winner still to judge
@@ -2554,7 +2592,12 @@ impl TargetPlanner<'_> {
         intent: &InstallIntent,
     ) -> Result<Prepared> {
         one_addons_dir(&ClientPaths::new(&self.target.client_dir))?;
-        let CandidateSource { file, local, set } = source;
+        let CandidateSource {
+            file,
+            local,
+            set,
+            cached,
+        } = source;
         let existing = self
             .record
             .addons
@@ -2641,6 +2684,21 @@ impl TargetPlanner<'_> {
         {
             return self.current(existing, intent).map(Prepared::Done);
         }
+        // A locked install whose recorded archive the cache still holds: the selected
+        // release from there first, with no download (its candidates follow).
+        let mut candidates = candidates;
+        if let (None, None, Some(sha), Some(first)) = (file, local, cached, candidates.first())
+            && let Some(from_cache) = local_blob_candidate(
+                self.ctx.blobs,
+                self.ctx.scopes,
+                &first.release_id,
+                &first.version,
+                first.channel,
+                sha,
+            )
+        {
+            candidates.insert(0, from_cache);
+        }
 
         let user_supplied =
             file.is_some() || matches!(wanted.r#ref, Ref::File { .. } | Ref::Url { .. });
@@ -2678,6 +2736,7 @@ impl TargetPlanner<'_> {
                     file: None,
                     local: None,
                     set: fetched.get(wanted).map(|f| f.set.clone()),
+                    cached: None,
                 };
                 return self.prepare_install(name, wanted, source, intent);
             }

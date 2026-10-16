@@ -351,7 +351,9 @@ The file (default: addons.toml in omaddons' config directory):
   addons = [\"DBM\"]
 
 sync installs what is missing and sets pins and channels; it never updates an installed
-addon (omaddons update does). A second run changes nothing.";
+addon (omaddons update does). A second run changes nothing. With --locked it installs
+the version each entry records (from the download cache when it is still there), so
+`omaddons export` on one machine and `sync --locked` on another reproduce the set.";
 
 // ---------------------------------------------------------------------------------------
 // Usage errors.

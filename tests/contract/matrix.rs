@@ -109,6 +109,14 @@ fn sync() {
         .write_desired("[family.mainline]\naddons = \"weakauras\"\n");
     let c = s.json(&["sync"], 2);
     insta::assert_json_snapshot!("sync_invalid", s.stable(&c.envelope));
+    // --locked: an entry without a version warns not_locked; a second run is free.
+    s.json(&["remove", "gh:o/foo", "-t", "retail"], 0);
+    s.home
+        .write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
+    let c = s.json(&["sync", "--locked", "-t", "retail"], 0);
+    insta::assert_json_snapshot!("sync_locked", s.stable(&c.envelope));
+    let c = s.json(&["sync", "--locked", "-t", "retail"], 0);
+    assert_eq!(c.envelope["data"]["summary"]["changed"], 0);
 }
 
 #[test]

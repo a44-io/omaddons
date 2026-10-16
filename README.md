@@ -137,7 +137,7 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | `update` (alias `upgrade`): every client's updates in one run, undone with one `undo` | ✅ Done (milestone 2) |
 | `pin` and `unpin`: hold an addon at its release through updates | ✅ Done (milestone 2) |
 | Dependencies: what a TOC requires installs with it, from the catalog | ✅ Done (milestone 2; more sources to come) |
-| `sync`: every client made to match `addons.toml`, idempotently | ✅ Done (milestone 2; `--locked` and `--prune` to come) |
+| `sync`: every client made to match `addons.toml`, idempotently; `--locked` reproduces exact versions | ✅ Done (milestone 2; `--prune` to come) |
 | `export`: every client's addon set as one `addons.toml`, printed or written with a backup | ✅ Done (milestone 2) |
 | WoWInterface: `wowi:` refs and links, keyless, every download checked against its MD5 | ✅ Done (milestone 2) |
 | Tukui (ElvUI and Tukui): `tukui:` refs and links, keyless, every download checked against its `ETag` MD5 | ✅ Done (milestone 2) |
@@ -718,6 +718,7 @@ addons = ["DBM"]
 |---|---|
 | `--strict` | Exit 6 when only some of the addons sync |
 | `--no-deps` | Install only the listed addons, not the ones their TOCs require |
+| `--locked` | Install the version each entry records, from the download cache when it is still there |
 
 **The file.**
 
@@ -743,6 +744,15 @@ addons = ["DBM"]
 - It never moves an installed addon to a newer release; that is `omaddons update`'s job.
 
 So a second `sync` changes nothing and sends no request. Each client with changes gets one transaction of kind `sync`, all under one run, and `omaddons undo` reverts the whole sync. An entry that cannot be resolved fails on its own (`partial: true`), and so do two entries that name the same addon. What an addon's TOC requires installs with it, as for `install`.
+
+**`--locked`** reproduces versions, not only refs: `omaddons export` on one machine, then `omaddons sync <file> --locked` on another.
+
+- Every entry with a `version` installs that version, and an installed addon at another version moves to it. A lock never pins: `pinned` comes only from the entry.
+- With the entry's `sha256`, the archive comes from the download cache while the cache still holds those exact bytes. On the machine that exported, a restore then needs no network, `--offline` included.
+- Otherwise the exact release is fetched (and downloaded unless already cached).
+- A version its source no longer serves fails its entry (`not_found`), with `sync` without `--locked` as the fix.
+- Entries without a version install the newest release, with one `not_locked` warning per client.
+- `dependency = true` entries fix the version of a dependency that `sync --locked` installs; one that matches nothing is ignored.
 
 ### `export`
 
@@ -1130,6 +1140,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `adopt_name_changed` | an adopted addon's name was taken on its client; it is recorded as `<name> (<primary folder>)` |
 | `export_missing_target` | `export`: a registered client whose directory is gone was exported from its records |
 | `export_local_source` | `export`: an addon installed from a local file or folder was left out |
+| `not_locked` | `sync --locked`: entries without a version installed their newest release (one warning per client, naming them) |
 | `local_changes_replaced` | an install or update replaced folders whose files had changed on disk (it names up to 10 and counts them all); the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that the snapshot keeps them |
 
 </details>
@@ -1571,7 +1582,7 @@ Journals are recovered by the next command that commits a change, not by read co
 |---|---|---|
 | Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing; WoWInterface and Tukui lookups, bridge folders and the dependency items in output are on the way | M2 |
 | Adopting addons installed by other managers | ✅ `adopt`; other `status`, `outdated` and `install` hints point to it soon | M2 |
-| `addons.toml`, `export`, `sync`, `copy` between clients | ⚠️ `sync` and `export` work; `sync --locked`, `sync --prune` and `copy` are on the way | M2 |
+| `addons.toml`, `export`, `sync`, `copy` between clients | ⚠️ `sync`, `sync --locked` and `export` work; `sync --prune` and `copy` are on the way | M2 |
 | `search` | ❌ catalog names and links only | M2 |
 | Progress output | ⚠️ `install`, `update` and `outdated` report progress; the other long commands arrive with M2 | M2 |
 | The Omarchy bar widget | ❌ the help text mentions it, the code does not exist yet | M3 |
