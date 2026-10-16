@@ -148,6 +148,82 @@ fn update() {
     assert_eq!(c.envelope["error"]["code"], "not_managed");
 }
 
+/// The M2 flags and aliases the per-command rows leave out, each with a success and a
+/// failure (the contract audit, omad-m2-updates-adoption-2hp.8.1).
+#[test]
+fn m2_surface() {
+    let s = Scene::new();
+    // An empty export is never written.
+    let c = s.json(&["export", "--write"], 2);
+    assert_eq!(c.envelope["error"]["details"]["reason"], "empty");
+    insta::assert_json_snapshot!("export_empty", s.stable(&c.envelope));
+
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    // install --reinstall and --refresh.
+    let c = s.json(&["install", "weakauras", "-t", "retail", "--reinstall"], 0);
+    assert_eq!(c.envelope["data"]["items"][0]["status"], "updated");
+    let c = s.json(&["install", "gh:o/nope", "-t", "retail", "--reinstall"], 3);
+    assert_eq!(c.envelope["error"]["code"], "not_managed");
+    s.json(&["install", "weakauras", "-t", "classic", "--refresh"], 0);
+    s.json(&["install", "gh:", "--refresh"], 2);
+    // status --deep and list --deep.
+    s.json(&["status", "--deep"], 0);
+    s.json(&["status", "--deep", "-t", "nosuch"], 3);
+    s.json(&["list", "--deep"], 0);
+    s.json(&["list", "--deep", "-t", "nosuch"], 3);
+    // history --by.
+    let c = s.json(&["history", "--by", "human"], 0);
+    assert!(c.envelope["data"]["entries"].is_array());
+    let c = s.json(&["history", "--by", "robot"], 2);
+    insta::assert_json_snapshot!("history_bad_by", s.stable(&c.envelope));
+
+    // A newer WeakAuras with release notes.
+    let both = "## Interface: 120105, 50504\n## Version: 4\n";
+    let wa: [common::http::Asset<'_>; 1] = [(
+        "WeakAuras.zip",
+        &[("mainline", 120_105), ("mists", 50_504)],
+        vec![("WeakAuras/WeakAuras.toc", both)],
+    )];
+    let base = "https://github.com/WeakAuras/WeakAuras2";
+    common::http::gh_release_v(&s.home.http, base, "5.20.0", &wa);
+    common::http::gh_latest(&s.home.http, base, "5.20.0");
+    common::http::gh_feed(
+        &s.home.http,
+        base,
+        &[("5.20.0", "<p>Faster</p>"), ("5.19.2", "<p>Older</p>")],
+        None,
+    );
+    // info --refresh and --changelog.
+    s.json(&["info", "weakauras", "--refresh"], 0);
+    s.json(&["info", "nosuchaddon", "--refresh"], 3);
+    let c = s.json(&["info", "weakauras", "--changelog"], 0);
+    insta::assert_json_snapshot!("info_changelog", s.stable(&c.envelope));
+    s.json(&["info", "nosuchaddon", "--changelog"], 3);
+    // outdated --changelog, and the check alias.
+    let c = s.json(&["outdated", "--changelog"], 0);
+    insta::assert_json_snapshot!("outdated_changelog", s.stable(&c.envelope));
+    s.json(&["outdated", "--changelog", "-t", "nosuch"], 3);
+    let c = s.json(&["check"], 0);
+    assert_eq!(c.envelope["command"], "outdated");
+    // update: names with --all, and a version, are usage errors with fixes.
+    let c = s.json(&["update", "--all", "weakauras"], 2);
+    insta::assert_json_snapshot!("update_all_with_names", s.stable(&c.envelope));
+    let c = s.json(&["update", "weakauras", "--version", "5.19.2"], 2);
+    insta::assert_json_snapshot!("update_with_version", s.stable(&c.envelope));
+    // The upgrade alias.
+    let c = s.json(&["upgrade"], 0);
+    assert_eq!(c.envelope["command"], "update");
+    // The find alias fails like search.
+    let c = s.json(&["find", "weakauras", "--limit", "0"], 2);
+    assert_eq!(c.envelope["command"], "search");
+
+    // auth github set from standard input, then clear.
+    let c = s.json_input(&["auth", "github", "set"], b"ghp_contract\n", 0);
+    insta::assert_json_snapshot!("auth_set", s.stable(&c.envelope));
+    let c = s.json(&["auth", "github", "clear"], 0);
+    insta::assert_json_snapshot!("auth_clear", s.stable(&c.envelope));
+}
+
 #[test]
 fn auth() {
     let s = Scene::new();

@@ -1,0 +1,127 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 204
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "outdated",
+  "commands": [
+    {
+      "action": "update",
+      "argv": [
+        "omaddons",
+        "update"
+      ],
+      "command": "omaddons update",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "checked_at": "<time>",
+    "requests": {
+      "fetched": 0,
+      "probed": 0,
+      "reused": 1
+    },
+    "summary": {
+      "ahead": 0,
+      "blocked": 0,
+      "current": 0,
+      "failed": 0,
+      "pinned": 0,
+      "static": 0,
+      "unchecked": 0,
+      "update_available": 2
+    },
+    "targets": [
+      {
+        "items": [
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": "declared",
+            "error": null,
+            "installed": {
+              "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",
+              "version": "5.19.2"
+            },
+            "latest": {
+              "changelog": {
+                "entries": [
+                  {
+                    "published_at": "<time>",
+                    "text": "Faster",
+                    "version": "5.20.0"
+                  }
+                ],
+                "more_url": "https://github.com/WeakAuras/WeakAuras2/releases",
+                "source": "github",
+                "truncated": false
+              },
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:WeakAuras/WeakAuras2@5.20.0",
+              "version": "5.20.0"
+            },
+            "name": "WeakAuras",
+            "pinned": false,
+            "ref": "gh:WeakAuras/WeakAuras2",
+            "status": "update_available",
+            "unchecked_reason": null
+          }
+        ],
+        "target": {
+          "id": "classic",
+          "key": "<ulid>"
+        }
+      },
+      {
+        "items": [
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": "declared",
+            "error": null,
+            "installed": {
+              "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",
+              "version": "5.19.2"
+            },
+            "latest": {
+              "changelog": {
+                "entries": [
+                  {
+                    "published_at": "<time>",
+                    "text": "Faster",
+                    "version": "5.20.0"
+                  }
+                ],
+                "more_url": "https://github.com/WeakAuras/WeakAuras2/releases",
+                "source": "github",
+                "truncated": false
+              },
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:WeakAuras/WeakAuras2@5.20.0",
+              "version": "5.20.0"
+            },
+            "name": "WeakAuras",
+            "pinned": false,
+            "ref": "gh:WeakAuras/WeakAuras2",
+            "status": "update_available",
+            "unchecked_reason": null
+          }
+        ],
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        }
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

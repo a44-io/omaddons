@@ -1,0 +1,28 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 178
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "history",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons history --by agent",
+    "fix_argv": [
+      "omaddons",
+      "history",
+      "--by",
+      "agent"
+    ],
+    "message": "--by is human, agent or widget, not \"robot\"",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

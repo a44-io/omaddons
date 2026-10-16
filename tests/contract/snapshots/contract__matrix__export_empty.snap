@@ -1,0 +1,26 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 159
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "export",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "desired_state_invalid",
+    "details": {
+      "path": "<root>/config/omaddons/addons.toml",
+      "reason": "empty"
+    },
+    "fix": "install or adopt addons first; an empty export never replaces addons.toml",
+    "fix_argv": null,
+    "message": "nothing to export, so <root>/config/omaddons/addons.toml is left as it is",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

@@ -1,0 +1,40 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 212
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "update",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "pin",
+          "weakauras",
+          "--version",
+          "5.19.2"
+        ],
+        "display": "omaddons pin weakauras --version 5.19.2"
+      }
+    ],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons install weakauras --version 5.19.2",
+    "fix_argv": [
+      "omaddons",
+      "install",
+      "weakauras",
+      "--version",
+      "5.19.2"
+    ],
+    "message": "update installs the newest release; a given version is an install, which pins it",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

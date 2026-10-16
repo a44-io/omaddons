@@ -451,7 +451,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
 /// `--all` with names, and `--channel` without names, are usage errors; the channel.
 fn check_args(ctx: &Context, args: &UpdateArgs) -> Result<Option<Channel>> {
     if args.all && !args.addons.is_empty() {
-        let argv = crate::cli::without_flag(&crate::cli::fix_argv(&ctx.argv), "--all");
+        let argv = crate::cli::without_switch(&crate::cli::fix_argv(&ctx.argv), "--all");
         return Err(Error::new(
             ErrorCode::Usage,
             "--all updates every addon: name addons or give --all, not both",

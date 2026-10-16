@@ -10,6 +10,7 @@ mod common;
 
 mod exit_sites;
 mod matrix;
+mod recommendations;
 mod special;
 
 use std::collections::BTreeMap;
@@ -387,6 +388,62 @@ mod support {
             let mut argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
             argv.push("--json".to_owned());
             check(self.home.exec_with(&argv, env), code)
+        }
+
+        /// LittleWigs requiring BigWigs and Nowhere (which nothing ships, Tukui and
+        /// WoWInterface included), Plug with a bridge folder requiring Masque, and a
+        /// catalog naming them (and two projects called Foo).
+        pub fn dependencies(&self) {
+            use super::common::graph::{Folder, Node, release_graph};
+            let folder = |name, deps| Folder {
+                name,
+                interface: "120105",
+                deps,
+                optional: &[],
+            };
+            let node = |base, folders| Node {
+                base,
+                tag: "v1",
+                folders,
+            };
+            release_graph(
+                &self.home.http,
+                &[
+                    node(
+                        "https://github.com/o/littlewigs",
+                        &[folder("LittleWigs", &["BigWigs", "Nowhere"])],
+                    ),
+                    node("https://github.com/o/bigwigs", &[folder("BigWigs", &[])]),
+                    node(
+                        "https://github.com/o/plug",
+                        &[folder("Plug", &[]), folder("Plug_Masque", &["Masque"])],
+                    ),
+                ],
+            );
+            let catalog = self.home.env.config().join("omaddons/catalog.d");
+            fs::create_dir_all(&catalog).unwrap();
+            let mut text = String::from("schema_version = \"1.0\"\n");
+            for (name, repo, folder) in [
+                ("LittleWigs", "littlewigs", "LittleWigs"),
+                ("BigWigs", "bigwigs", "BigWigs"),
+                ("Masque", "masque", "Masque"),
+                ("Foo", "foo", "Foo"),
+                ("Foo", "foo-two", "FooTwo"),
+            ] {
+                text.push_str(&format!(
+                    "\n[[addon]]\nname = \"{name}\"\nref = \"gh:o/{repo}\"\nfolders = [\"{folder}\"]\n"
+                ));
+            }
+            fs::write(catalog.join("50-audit.toml"), text).unwrap();
+            super::common::tukui::tukui_list(&self.home.http, &[super::common::tukui::elvui()]);
+            super::common::wowi::wowi_filelist(&self.home.http, &[]);
+        }
+
+        /// The same with `input` on standard input.
+        pub fn json_input(&self, args: &[&str], input: &[u8], code: i32) -> Checked {
+            let mut argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+            argv.push("--json".to_owned());
+            check(self.home.exec_input(&argv, &[], input), code)
         }
 
         /// Installs the `foo` zip into retail; returns the tx.

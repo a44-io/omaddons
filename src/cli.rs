@@ -642,6 +642,12 @@ pub(crate) fn without_flag(argv: &[String], flag: &str) -> Vec<String> {
     out
 }
 
+/// `argv` without `switch`, a flag that takes no value (`--all`): the word after it is
+/// kept.
+pub(crate) fn without_switch(argv: &[String], switch: &str) -> Vec<String> {
+    argv.iter().filter(|a| *a != switch).cloned().collect()
+}
+
 /// `argv` with `flag`'s value replaced by `value`.
 fn with_flag_value(argv: &[String], flag: &str, value: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -834,6 +840,11 @@ mod tests {
         assert_eq!(
             without_flag(&argv(&["--actor", "robot", "help"]), "--actor"),
             argv(&["help"])
+        );
+        // A switch takes no value: the name after it stays.
+        assert_eq!(
+            without_switch(&argv(&["update", "--all", "weakauras", "dbm"]), "--all"),
+            argv(&["update", "weakauras", "dbm"])
         );
         assert_eq!(
             with_flag_value(&argv(&["--reason=long"]), "--reason", "cut"),

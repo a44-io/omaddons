@@ -117,6 +117,64 @@ fn repeated_runs_are_byte_identical() {
     }
 }
 
+/// The M2 outputs, populated (updates, drift, an adoptable folder, an orphan), are the
+/// same bytes twice but for `meta`.
+#[test]
+fn m2_outputs_are_byte_identical() {
+    let s = Scene::new();
+    s.dependencies();
+    s.json(&["install", "littlewigs", "-t", "retail"], 0);
+    s.json(&["remove", "LittleWigs", "-t", "retail"], 0);
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    let both = "## Interface: 120105, 50504\n## Version: 4\n";
+    let wa: [Asset<'_>; 1] = [(
+        "WeakAuras.zip",
+        &[("mainline", 120_105), ("mists", 50_504)],
+        vec![("WeakAuras/WeakAuras.toc", both)],
+    )];
+    let base = "https://github.com/WeakAuras/WeakAuras2";
+    common::http::gh_release_v(&s.home.http, base, "5.20.0", &wa);
+    common::http::gh_latest(&s.home.http, base, "5.20.0");
+    s.json(&["outdated", "--refresh"], 0);
+    // Drift, and an unmanaged folder the catalog names.
+    let toc = s.home.addons("_retail_").join("WeakAuras/WeakAuras.toc");
+    fs::write(&toc, "## Interface: 120105\n## Title: edited by hand\n").unwrap();
+    fs::create_dir_all(s.home.addons("_retail_").join("Masque")).unwrap();
+    fs::write(
+        s.home.addons("_retail_").join("Masque/Masque.toc"),
+        "## Interface: 120105\n",
+    )
+    .unwrap();
+    let status = s.json(&["status"], 0);
+    let t = status.envelope["data"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "retail")
+        .unwrap();
+    assert!(
+        t["updates"]["available"].as_u64() > Some(0)
+            && t["adoptable"].as_u64() > Some(0)
+            && t["orphans"].as_u64() > Some(0),
+        "{t:#}"
+    );
+    for args in [
+        &["outdated"][..],
+        &["status"][..],
+        &["status", "--deep"][..],
+        &["export"][..],
+        &["search", "wigs", "--offline"][..],
+    ] {
+        let a = s.json(args, 0);
+        let b = s.json(args, 0);
+        assert_eq!(
+            support::without_meta(&a.run.stdout),
+            support::without_meta(&b.run.stdout),
+            "{args:?}"
+        );
+    }
+}
+
 #[test]
 fn human_failures_leave_stdout_empty() {
     let s = Scene::new();
@@ -132,4 +190,90 @@ fn human_failures_leave_stdout_empty() {
         assert!(run.stdout.is_empty(), "{}", run.context());
         assert!(!run.stderr.is_empty(), "{}", run.context());
     }
+}
+
+/// Every warning M2 added, and `missing_dependency` (first emitted in M2), is raised once
+/// through the harness, which checks its fix: an argv that runs, or a text fix.
+#[test]
+fn every_m2_warning_carries_a_fix() {
+    use std::collections::BTreeSet;
+
+    let s = Scene::new();
+    s.dependencies();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut run = |args: &[&str], code: i32| {
+        let c = s.json(args, code);
+        for w in c.envelope["warnings"].as_array().into_iter().flatten() {
+            seen.insert(w["code"].as_str().unwrap_or_default().to_owned());
+        }
+    };
+
+    // Dependencies: one nothing ships, a bridge, still required, then an orphan.
+    run(&["install", "littlewigs", "-t", "retail"], 0);
+    run(&["install", "gh:o/plug", "-t", "retail"], 0);
+    run(&["remove", "BigWigs", "-t", "retail", "--dry-run"], 0);
+    run(&["remove", "LittleWigs", "-t", "retail"], 0);
+
+    // A pinned addon asked for again; then its files changed by hand and reinstalled.
+    run(&["install", "weakauras", "-t", "retail"], 0);
+    run(&["pin", "weakauras", "-t", "retail"], 0);
+    run(&["install", "weakauras", "-t", "retail"], 0);
+    let toc = s.home.addons("_retail_").join("WeakAuras/WeakAuras.toc");
+    fs::write(&toc, "## Interface: 120105\n## Title: edited\n").unwrap();
+    run(&["install", "weakauras", "-t", "retail", "--reinstall"], 0);
+
+    // An answer from the memo while offline.
+    run(&["outdated"], 0);
+    run(&["outdated", "--offline"], 0);
+
+    // An adopted folder whose catalog name is taken.
+    s.install_foo();
+    fs::create_dir_all(s.home.addons("_retail_").join("FooTwo")).unwrap();
+    fs::write(
+        s.home.addons("_retail_").join("FooTwo/FooTwo.toc"),
+        "## Interface: 120105\n## Version: 2\n",
+    )
+    .unwrap();
+    run(&["adopt", "FooTwo", "--no-verify"], 0);
+
+    // A desired-state file with an unknown key, an unknown client and an unlocked entry.
+    s.home.write_desired(
+        "[family.mainline]\naddons = [\"littlewigs\"]\nadons = []\n\n[target.\"elsewhere\"]\naddons = [\"x\"]\n",
+    );
+    run(&["sync", "--locked", "--dry-run"], 0);
+
+    // An export with a local install, and a client whose directory is gone.
+    let both = s.zip("both");
+    run(&["install", &format!("file:{both}"), "-t", "classic"], 0);
+    fs::rename(
+        s.home.client("_classic_"),
+        s.home.env.root().join("unplugged"),
+    )
+    .unwrap();
+    run(&["export"], 0);
+
+    let expected = [
+        "addon_pinned",
+        "still_required",
+        "orphaned_dependency",
+        "bridge_dependency",
+        "local_changes_replaced",
+        "stale_check",
+        "adopt_name_changed",
+        "export_missing_target",
+        "export_local_source",
+        "desired_unknown_key",
+        "desired_unknown_target",
+        "not_locked",
+        "missing_dependency",
+    ];
+    let missing: Vec<&str> = expected
+        .iter()
+        .filter(|c| !seen.contains(**c))
+        .copied()
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "never raised: {missing:?}; saw {seen:?}"
+    );
 }

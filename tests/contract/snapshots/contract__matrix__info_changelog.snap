@@ -1,0 +1,116 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 200
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "info",
+  "commands": [],
+  "data": {
+    "catalog": {
+      "aliases": [
+        "wa",
+        "weakauras2"
+      ],
+      "families": [
+        "vanilla",
+        "tbc",
+        "cata",
+        "mists",
+        "titan"
+      ],
+      "folders": [
+        "WeakAuras",
+        "WeakAurasArchive",
+        "WeakAurasModelPaths",
+        "WeakAurasOptions",
+        "WeakAurasTemplates"
+      ],
+      "name": "WeakAuras",
+      "notes": "5.22.1's release.json lists no mainline build and the zip ships no Mainline TOC"
+    },
+    "changelog": {
+      "entries": [
+        {
+          "published_at": "<time>",
+          "text": "Faster",
+          "version": "5.20.0"
+        }
+      ],
+      "more_url": "https://github.com/WeakAuras/WeakAuras2/releases",
+      "source": "github",
+      "truncated": false
+    },
+    "installed": [
+      {
+        "channel": "stable",
+        "drift": {
+          "files": 0,
+          "state": "clean"
+        },
+        "folders": [
+          "WeakAuras"
+        ],
+        "installed_at": "<time>",
+        "orphan": false,
+        "pinned": false,
+        "reason": "explicit",
+        "required_by": [],
+        "state": "ok",
+        "target": {
+          "id": "classic",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>",
+        "version": "5.19.2",
+        "version_confidence": "release"
+      },
+      {
+        "channel": "stable",
+        "drift": {
+          "files": 0,
+          "state": "clean"
+        },
+        "folders": [
+          "WeakAuras"
+        ],
+        "installed_at": "<time>",
+        "orphan": false,
+        "pinned": false,
+        "reason": "explicit",
+        "required_by": [],
+        "state": "ok",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>",
+        "version": "5.19.2",
+        "version_confidence": "release"
+      }
+    ],
+    "latest": {
+      "channel": "stable",
+      "flavors": [
+        "mainline",
+        "mists"
+      ],
+      "release_id": "gh:WeakAuras/WeakAuras2@5.20.0",
+      "targets": [
+        "classic",
+        "retail"
+      ],
+      "version": "5.20.0"
+    },
+    "name": "WeakAuras",
+    "offline": false,
+    "query": "weakauras",
+    "ref": "gh:WeakAuras/WeakAuras2"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
