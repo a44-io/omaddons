@@ -18,6 +18,7 @@ expression: s.stable(&c.envelope)
           "degraded": 0,
           "total": 0
         },
+        "adoptable": 0,
         "attention": [],
         "default": false,
         "family": "mists",
@@ -44,6 +45,15 @@ expression: s.stable(&c.envelope)
         "product": "wow_classic",
         "registered": false,
         "running": false,
+        "updates": {
+          "available": 0,
+          "blocked": 0,
+          "checked_at": null,
+          "failed": 0,
+          "pinned": 0,
+          "stale": false,
+          "unchecked": 0
+        },
         "version": "5.5.4.63854"
       },
       {
@@ -51,6 +61,7 @@ expression: s.stable(&c.envelope)
           "degraded": 0,
           "total": 0
         },
+        "adoptable": 0,
         "attention": [],
         "default": false,
         "family": "mainline",
@@ -77,6 +88,15 @@ expression: s.stable(&c.envelope)
         "product": "wow",
         "registered": false,
         "running": false,
+        "updates": {
+          "available": 0,
+          "blocked": 0,
+          "checked_at": null,
+          "failed": 0,
+          "pinned": 0,
+          "stale": false,
+          "unchecked": 0
+        },
         "version": "12.1.5.70391"
       }
     ]

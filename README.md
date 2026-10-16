@@ -572,6 +572,18 @@ omaddons status --check       # exit 6 when anything needs attention
 omaddons status -v --json     # adds client_dir, install_root and exe_name
 ```
 
+Each client also shows:
+
+- **`updates`.** Its pending update counts (`available`, `pinned`, `blocked`, `failed`, `unchecked`) and `checked_at`, the oldest check. They come from what earlier `outdated`, `update` and `install` runs remembered, never from a request, so `status` stays offline. `stale` is true when that check is older than `check_interval_hours` (default 6).
+- **`adoptable`.** How many unmanaged folders a catalog entry names that is not installed on that client.
+
+Pending updates never count as attention: `status --check` stays a health check, and `outdated --check` is the update check. The recommendations:
+
+- `omaddons update`, or `-t <id>` when only one client has updates;
+- `omaddons outdated`, when a client was never checked or its check is stale;
+- the attention fixes;
+- a look at unmanaged folders.
+
 ### `install <REF>...`
 
 Install or update addons in one target. Each ref is fetched once and verified against the target's TOC rules before anything is written, and all addons for a target go into one transaction. Re-running `install` on an installed addon updates it to the newest release its channel allows. `url:` refs are never re-checked, and pinned addons stay where they are (`addon_pinned`; see [Pinning](#sources-and-refs)).
@@ -783,6 +795,8 @@ omaddons list                              # every target: managed addons with v
 omaddons list -t forever --unmanaged       # also unmanaged, linked and invalid folders, with title, version and load verdict
 omaddons list -t wotlk --protected         # also Blizzard_* folders
 ```
+
+Each addon also carries `latest {version, status}`: the newest release remembered from earlier checks and its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`). `list` never asks a source; the column is blank when the addon is unchecked or static.
 
 ### `outdated`
 

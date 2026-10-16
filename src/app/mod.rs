@@ -240,6 +240,9 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
                         if d.written { "yes" } else { "no" }
                     ),
                 );
+                for note in &outcome.notes {
+                    out.log(output::LogLevel::Debug, note);
+                }
             }
             out.emit(result)
         }

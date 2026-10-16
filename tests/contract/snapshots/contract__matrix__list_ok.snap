@@ -30,6 +30,10 @@ expression: s.stable(&c.envelope)
           {
             "channel": "stable",
             "folders": 1,
+            "latest": {
+              "status": "static",
+              "version": null
+            },
             "missing_folders": [],
             "name": "Foo",
             "pinned": false,

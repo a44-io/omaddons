@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::status::Remembered;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -15,6 +16,7 @@ use crate::error::{Result, Warning};
 use crate::inventory::{Depth, FolderClass, FolderEntry, Inventory, inventory};
 use crate::model::{AddonRecord, AddonState, Channel, TargetKey, VersionConfidence};
 use crate::output::{Outcome, Style, table};
+use crate::resolve::updates::{StatusKind, StatusRow, UpdateStatus};
 use crate::rules::{ClientVersion, Family, RulesTable};
 use crate::state::records::load_record;
 use crate::toc::Verdict;
@@ -72,6 +74,8 @@ pub struct ListAddon {
     pub channel: Channel,
     pub pinned: bool,
     pub state: AddonState,
+    /// The newest release the release memo knows, as `outdated` judges it (no request).
+    pub latest: Latest,
     /// A count; with `-v` the folder names.
     pub folders: Folders,
     /// Record folders that are not on disk.
@@ -79,6 +83,14 @@ pub struct ListAddon {
     /// `-v`: each folder's TOC.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folder_tocs: Option<Vec<FolderInfo>>,
+}
+
+/// What the release memo says is newest for an addon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Latest {
+    /// The newest release's version, when the status names one.
+    pub version: Option<String>,
+    pub status: StatusKind,
 }
 
 /// A folder count, or the names with `-v`.
@@ -175,6 +187,7 @@ pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
         Depth::Classes
     };
     let mut warnings = world.warnings.clone();
+    let remembered = Remembered::load(&world);
     let mut targets = Vec::new();
     for d in world.select_many(ctx)? {
         let record = match d.target.key {
@@ -186,12 +199,17 @@ pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
             None => None,
         };
         let inv = inventory(&d.target, record.as_ref(), &world.table, depth)?;
+        let rows = record
+            .as_ref()
+            .map(|r| remembered.statuses(&d.target, r, &world.table))
+            .unwrap_or_default();
         targets.push(list_target(
             d,
             record
                 .as_ref()
                 .map(|r| r.addons.values().collect())
                 .unwrap_or_default(),
+            &rows,
             &inv,
             args,
             verbose,
@@ -208,6 +226,7 @@ pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
 fn list_target(
     d: &DiscoveredTarget,
     addons: Vec<&AddonRecord>,
+    rows: &[StatusRow],
     inv: &Inventory,
     args: ListArgs,
     verbose: bool,
@@ -215,6 +234,18 @@ fn list_target(
 ) -> ListTarget {
     let t = &d.target;
     let info = |e: &FolderEntry| folder_info(e, t.family, table);
+    let latest = |a: &AddonRecord| {
+        let status = rows
+            .iter()
+            .find(|r| r.addon.eq_ignore_ascii_case(&a.name))
+            .map(|r| &r.status);
+        Latest {
+            version: status
+                .and_then(UpdateStatus::latest)
+                .map(|l| l.version.clone()),
+            status: status.map_or(StatusKind::Unchecked, UpdateStatus::kind),
+        }
+    };
     let mut listed: Vec<ListAddon> = addons
         .into_iter()
         .map(|a| {
@@ -228,6 +259,7 @@ fn list_target(
                 channel: a.channel,
                 pinned: a.pinned,
                 state: a.state,
+                latest: latest(a),
                 folders: if verbose {
                     Folders::Names(a.folders.iter().map(|f| f.as_str().to_owned()).collect())
                 } else {
@@ -355,9 +387,12 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
             if !a.missing_folders.is_empty() {
                 flags.push(style.warn(&format!("missing {}", a.missing_folders.join(", "))));
             }
+            // The newest known release; blank when unchecked or static.
+            let latest = a.latest.version.clone().unwrap_or_default();
             vec![
                 format!("  {}", a.name),
                 a.version.clone(),
+                latest,
                 a.source_ref.clone(),
                 flags.join("  "),
             ]

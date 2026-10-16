@@ -371,3 +371,242 @@ fn a_deleted_client_is_missing() {
     let envelope = m.status(&["--check"], 6);
     assert_eq!(envelope["error"]["fix_argv"], serde_json::json!(rm));
 }
+
+/// Pending updates and adoptable folders (M2), from the release memo and the catalog,
+/// never from the network.
+#[cfg(test)]
+mod updates {
+    use std::fs;
+
+    use serde_json::{Value, json};
+
+    use super::common::addons::{addon_folder, toc};
+    use super::common::home::Home;
+    use super::common::http::Asset;
+
+    /// Retail and Mists Classic; Foo and Bar v1 installed on retail while v2 of each
+    /// is out, the memo aged (past the 6 h check interval).
+    pub fn behind() -> Home {
+        behind_of(&["Foo", "Bar"])
+    }
+
+    /// [`behind`] for `names`; each one ages the memo by a day.
+    pub fn behind_of(names: &[&str]) -> Home {
+        let mut home = Home::new(&["wow", "wow_classic"]);
+        for name in names {
+            let base = format!("https://github.com/o/{}", name.to_lowercase());
+            let file = format!("{name}.zip");
+            let path = format!("{name}/{name}.toc");
+            let (t1, t2) = (
+                toc("120105", &["## Version: v1"]),
+                toc("120105", &["## Version: v2"]),
+            );
+            let a1: [Asset<'_>; 1] = [(&file, &[], vec![(path.as_str(), t1.as_str())])];
+            let a2: [Asset<'_>; 1] = [(&file, &[], vec![(path.as_str(), t2.as_str())])];
+            home.installed_behind(&base, ("v1", &a1), ("v2", &a2), &["retail"]);
+        }
+        home
+    }
+
+    /// The bytes of `net.log` (empty when there is none).
+    pub fn net_log_bytes(home: &Home) -> Vec<u8> {
+        fs::read(home.state().join("net.log")).unwrap_or_default()
+    }
+
+    /// `status --cached --json`, asserting it asked nothing.
+    pub fn cached(home: &Home) -> Value {
+        let before = net_log_bytes(home);
+        let envelope = home.run(&["status", "--cached"]).expect(0);
+        assert_eq!(net_log_bytes(home), before, "status made a request");
+        envelope
+    }
+
+    pub fn target<'v>(envelope: &'v Value, id: &str) -> &'v Value {
+        envelope["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .unwrap()
+    }
+
+    /// The `(action, argv)` of each recommendation.
+    pub fn hints(envelope: &Value) -> Vec<(String, Value)> {
+        envelope["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| (c["action"].as_str().unwrap().to_owned(), c["argv"].clone()))
+            .collect()
+    }
+
+    fn actions(envelope: &Value) -> Vec<String> {
+        hints(envelope).into_iter().map(|(a, _)| a).collect()
+    }
+
+    #[test]
+    fn status_counts_pending_updates_from_the_memo_and_recommends_update() {
+        let home = behind();
+        home.run(&["outdated"]).expect(0);
+        let envelope = cached(&home);
+        let retail = &target(&envelope, "retail")["updates"];
+        assert_eq!(
+            (
+                &retail["available"],
+                &retail["pinned"],
+                &retail["stale"],
+                retail["checked_at"].is_string()
+            ),
+            (&json!(2), &json!(0), &json!(false), true),
+            "{envelope}"
+        );
+        // A target without records: nothing to check, no hint for it.
+        let classic = &target(&envelope, "classic")["updates"];
+        assert_eq!(
+            (
+                &classic["available"],
+                &classic["checked_at"],
+                &classic["stale"]
+            ),
+            (&json!(0), &Value::Null, &json!(false))
+        );
+        assert_eq!(
+            hints(&envelope),
+            [(
+                "update".to_owned(),
+                json!(["omaddons", "update", "-t", "retail"])
+            )],
+            "{envelope}"
+        );
+        // Updates are not attention.
+        assert_eq!(envelope["data"]["needs_attention"], false);
+        home.run(&["status", "--cached", "--check"]).expect(0);
+        let human = home.exec(&["status".to_owned(), "--cached".to_owned()]);
+        assert!(human.stdout.contains("2 updates"), "{}", human.stdout);
+
+        home.run(&["update"]).expect(0);
+        let envelope = cached(&home);
+        assert_eq!(target(&envelope, "retail")["updates"]["available"], 0);
+        assert!(!actions(&envelope).contains(&"update".to_owned()));
+    }
+
+    #[test]
+    fn a_stale_or_missing_memo_recommends_a_check() {
+        let home = behind_of(&["Foo"]);
+        // A day old, past the 6 h default.
+        let envelope = cached(&home);
+        assert_eq!(target(&envelope, "retail")["updates"]["stale"], true);
+        assert!(actions(&envelope).contains(&"check_updates".to_owned()));
+        let (_, argv) = hints(&envelope)
+            .into_iter()
+            .find(|(a, _)| a == "check_updates")
+            .unwrap();
+        assert_eq!(argv, json!(["omaddons", "outdated"]));
+
+        // Two days is the threshold now.
+        let config = home.env.config().join("omaddons/config.toml");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(&config, "check_interval_hours = 48\n").unwrap();
+        let envelope = cached(&home);
+        assert_eq!(target(&envelope, "retail")["updates"]["stale"], false);
+        assert!(!actions(&envelope).contains(&"check_updates".to_owned()));
+
+        // No memo at all: never checked.
+        fs::remove_file(home.memo()).unwrap();
+        let envelope = cached(&home);
+        let retail = &target(&envelope, "retail")["updates"];
+        assert_eq!(
+            (
+                &retail["checked_at"],
+                &retail["stale"],
+                &retail["unchecked"]
+            ),
+            (&Value::Null, &json!(false), &json!(1))
+        );
+        assert_eq!(
+            actions(&envelope)
+                .iter()
+                .filter(|a| *a == "check_updates")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn static_addons_need_no_check() {
+        let home = Home::new(&["wow"]);
+        let dir = home.env.root().join("MyAddon");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("MyAddon.toc"), toc("120105", &[])).unwrap();
+        let path = dir.display().to_string();
+        home.run(&["install", &path, "-t", "retail"]).expect(0);
+        let envelope = cached(&home);
+        let retail = &target(&envelope, "retail")["updates"];
+        assert_eq!(
+            (
+                &retail["checked_at"],
+                &retail["stale"],
+                &retail["unchecked"]
+            ),
+            (&Value::Null, &json!(false), &json!(0))
+        );
+        assert!(!actions(&envelope).contains(&"check_updates".to_owned()));
+    }
+
+    #[test]
+    fn adoptable_counts_catalog_folders_not_installed_here() {
+        let home = behind();
+        // Foo's catalog entry also names Foo_Extra; WeakAuras is in the built-in catalog.
+        let catalog_d = home.env.config().join("omaddons/catalog.d");
+        fs::create_dir_all(&catalog_d).unwrap();
+        fs::write(
+            catalog_d.join("50-foo.toml"),
+            "schema_version = \"1.0\"\n\n[[addon]]\nname = \"Foo\"\nref = \"gh:o/foo\"\nfolders = [\"Foo\", \"Foo_Extra\"]\n",
+        )
+        .unwrap();
+        let addons = home.addons("_retail_");
+        for name in ["WeakAuras", "Foo_Extra", "Random"] {
+            let file = format!("{name}.toc");
+            addon_folder(&addons, name, &[(&file, &toc("120105", &[]))], &[]);
+        }
+        let envelope = cached(&home);
+        let retail = target(&envelope, "retail");
+        // WeakAuras only: Foo_Extra is a managed addon's leftover, Random unknown.
+        assert_eq!(
+            (&retail["adoptable"], &retail["folders"]["unmanaged"]),
+            (&json!(1), &json!(3)),
+            "{envelope}"
+        );
+        // Recommendations in order: check, then the look at unmanaged folders.
+        let order = actions(&envelope);
+        assert_eq!(order, ["check_updates", "list_unmanaged"], "{envelope}");
+        assert_eq!(target(&envelope, "classic")["adoptable"], 0);
+    }
+
+    #[test]
+    fn list_shows_the_latest_known_release_from_the_memo() {
+        let home = behind();
+        home.run(&["outdated"]).expect(0);
+        let before = net_log_bytes(&home);
+        let envelope = home.run(&["list", "-t", "retail"]).expect(0);
+        assert_eq!(net_log_bytes(&home), before, "list made a request");
+        let foo = envelope["data"]["targets"][0]["addons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == "Foo")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            foo["latest"],
+            json!({"version": "v2", "status": "update_available"})
+        );
+        home.run(&["pin", "foo", "-t", "retail"]).expect(0);
+        let envelope = home.run(&["list", "-t", "retail"]).expect(0);
+        let foo = &envelope["data"]["targets"][0]["addons"][1];
+        assert_eq!(
+            (&foo["name"], &foo["latest"]["status"]),
+            (&json!("Foo"), &json!("pinned"))
+        );
+    }
+}
