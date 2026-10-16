@@ -134,12 +134,13 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | Commands: `status`, `install`, `remove`, `undo`, `history`, `list`, `targets`, `info`, `config`, `net-log`, `help` | ✅ Done |
 | `outdated` (alias `check`): what has updates, on every client | ✅ Done (milestone 2) |
 | `update` (alias `upgrade`): every client's updates in one run, undone with one `undo` | ✅ Done (milestone 2) |
-| `pin`, WoWInterface and Tukui, dependencies, adopting other managers' addons, `export` and `sync`, `search` | 🗓️ Milestone 2 (decomposed into 75 beads) |
+| `pin` and `unpin`: hold an addon at its release through updates | ✅ Done (milestone 2) |
+| WoWInterface and Tukui, dependencies, adopting other managers' addons, `export` and `sync`, `search` | 🗓️ Milestone 2 (decomposed into 75 beads) |
 | The Omarchy bar widget, Lua error capture, `WTF/` backups | 🗓️ Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
-`omaddons outdated` lists what has updates, and `omaddons update` installs them on every client, one transaction per client, all undone by one `omaddons undo`. Two kinds of addon are left alone. A `url:` ref's release is the URL itself, so there is nothing newer to fetch. An addon installed with `--version` is pinned, so it stays where it is (`skipped`, reason `pinned`).
+`omaddons outdated` lists what has updates, and `omaddons update` installs them on every client, one transaction per client, all undone by one `omaddons undo`. Two kinds of addon are left alone. A `url:` ref's release is the URL itself, so there is nothing newer to fetch. A pinned addon (by `pin`, or installed with `--version`) stays where it is (`skipped`, reason `pinned`) until `unpin`.
 
 ---
 
@@ -620,9 +621,34 @@ omaddons update --strict            # exit 6 when only some addons update
 
 What to update comes from the same statuses `outdated` shows, fetched once per ref (free inside 15 minutes; `--refresh` asks again). Each client with updates commits its own transaction, all under one run, so `omaddons undo` reverts every client and `omaddons undo <tx>` one of them. A failure on one client does not roll back another.
 
-Some addons are left alone and say why (`skipped`, with `skip_reason`): `pinned` (installed with `--version`; naming it adds an `addon_pinned` warning), `ahead`, `static` (a local file or URL), `unchecked`, and `blocked`. A newer release that turns out not to load on a client is `blocked`, not a failure; the verdict is remembered, so `outdated` shows it too. A fetch that fails fails its addons (`update` never installs from stale metadata) and makes the run `partial`. `unchanged` addons are counted in `summary` and listed with `-v`.
+Some addons are left alone and say why (`skipped`, with `skip_reason`): `pinned` (by `pin` or `install --version`; naming it adds an `addon_pinned` warning whose fix is `omaddons unpin <addon> -t <target>`), `ahead`, `static` (a local file or URL), `unchecked`, and `blocked`. A newer release that turns out not to load on a client is `blocked`, not a failure; the verdict is remembered, so `outdated` shows it too. A fetch that fails fails its addons (`update` never installs from stale metadata) and makes the run `partial`. `unchanged` addons are counted in `summary` and listed with `-v`.
 
-There is no `--version` and no `--force`: a given version is an install (`omaddons install <addon> --version V`, which pins it), and taking over another addon's folder is `omaddons install <addon> --force -t <target>`, which an `ownership_conflict` names as its fix.
+There is no `--version` and no `--force`: a given version is an install (`omaddons install <addon> --version V` or `omaddons pin <addon> --version V`, which pin it), and taking over another addon's folder is `omaddons install <addon> --force -t <target>`, which an `ownership_conflict` names as its fix.
+
+### `pin <ADDON>` and `unpin <ADDON>`
+
+Hold an addon at its release through `update`, and let it go again.
+
+```text
+$ omaddons pin questie
+forever: pinned 1 addon (tx 01M5Q2VB2M…)
+  Questie  pinned at bundle/v12.1.0+v1.0.6
+undo: omaddons undo 01M5Q2VB2MZ0N4E6V7A8C9D1EF
+$ omaddons unpin questie
+forever: unpinned 1 addon (tx 01M5Q2VB3N…)
+  Questie  unpinned at bundle/v12.1.0+v1.0.6
+undo: omaddons undo 01M5Q2VB3NA1P5F7W8B9D0E2FG
+forever: `omaddons update Questie -t forever` installs bundle/v12.2.0+v1.0.7
+```
+
+```bash
+omaddons pin dbm                     # every client that has DBM
+omaddons pin dbm -t retail
+omaddons pin dbm --version 12.1.14   # install that release where DBM is installed, then pin it
+omaddons unpin dbm
+```
+
+A pin changes only the record, never a game file, so it works while the game runs. Like every change it is a transaction (kind `pin`), with one per client under one run, so `omaddons undo` reverts it. An addon already pinned (or unpinned) is left as it is, with no transaction. A pin keeps the addon's channel and its reason (a pinned dependency stays a dependency). `--version` takes a tag (`gh:` refs) or a rev (`git:` refs). `url:` and local installs have no other release to choose, so `--version` is refused for them. After `unpin`, the last line says what `update` would install, from the remembered metadata and without a request.
 
 ### `remove <ADDON>...`
 
@@ -1362,7 +1388,6 @@ Journals are recovered by the next command that commits a change, not by read co
 
 | Capability | State | Planned |
 |---|---|---|
-| `pin`/`unpin` | ❌ pin with `install --version`; reinstall without it to unpin | M2 |
 | WoWInterface, Tukui | ❌ refs parse and are refused | M2 |
 | Dependency resolution (`## Dependencies`) | ❌ collected, not resolved; `--no-deps` does nothing | M2 |
 | Adopting addons installed by other managers | ❌ they show as unmanaged | M2 |
@@ -1492,7 +1517,7 @@ Yes, by default. Updates that keep the loaded TOC land and tell you to `/reload`
 
 ### How do I update my addons?
 
-Run `omaddons outdated` to see what has updates on every client, then `omaddons update` to install them (or `omaddons update <addon>` for some). Each client gets its own transaction, and `omaddons undo` reverts the whole update. `url:` refs are one exception: their release is the URL, so install a new URL instead. Pinned addons (installed with `--version`) are the other: they stay put until you install another `--version`.
+Run `omaddons outdated` to see what has updates on every client, then `omaddons update` to install them (or `omaddons update <addon>` for some). Each client gets its own transaction, and `omaddons undo` reverts the whole update. `url:` refs are one exception: their release is the URL, so install a new URL instead. Pinned addons (`omaddons pin <addon>`, or installed with `--version`) are the other: they stay put until `omaddons unpin <addon>`.
 
 ### Does it work with Turtle WoW, Warmane or other private servers?
 

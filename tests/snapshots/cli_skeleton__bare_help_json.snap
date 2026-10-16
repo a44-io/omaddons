@@ -60,6 +60,18 @@ expression: envelope
         "name": "update"
       },
       {
+        "about": "Hold an addon at its release through updates (undoable)",
+        "aliases": [],
+        "group": "change",
+        "name": "pin"
+      },
+      {
+        "about": "Let a pinned addon update again",
+        "aliases": [],
+        "group": "change",
+        "name": "unpin"
+      },
+      {
         "about": "Remove managed addons from one target (undoable)",
         "aliases": [],
         "group": "change",

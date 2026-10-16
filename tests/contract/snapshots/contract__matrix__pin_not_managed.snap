@@ -1,0 +1,26 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "pin",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_managed",
+    "details": {},
+    "fix": "omaddons install nosuch",
+    "fix_argv": [
+      "omaddons",
+      "install",
+      "nosuch"
+    ],
+    "message": "nosuch is not installed on classic, retail",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

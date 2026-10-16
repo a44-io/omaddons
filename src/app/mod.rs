@@ -11,6 +11,7 @@ pub mod list;
 pub mod net_log;
 pub mod outcome;
 pub mod outdated;
+pub mod pin;
 pub mod remove;
 pub mod status;
 pub mod targets;
@@ -76,6 +77,8 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("net-log", Group::Look),
     entry("install", Group::Change),
     entry("update", Group::Change),
+    entry("pin", Group::Change),
+    entry("unpin", Group::Change),
     entry("remove", Group::Change),
     entry("undo", Group::Change),
     entry("targets", Group::Setup),
@@ -115,6 +118,8 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         Some(Command::Status(_)) => "status",
         Some(Command::Install(_)) => "install",
         Some(Command::Update(_)) => "update",
+        Some(Command::Pin(_)) => "pin",
+        Some(Command::Unpin(_)) => "unpin",
         Some(Command::Remove(_)) => "remove",
         Some(Command::Undo(_)) => "undo",
         Some(Command::History(_)) => "history",
@@ -176,6 +181,19 @@ impl Out<'_> {
             );
         }
     }
+}
+
+/// `pin`'s and `unpin`'s `-v` lines, then the outcome.
+fn out_pin(out: &Out<'_>, result: crate::error::Result<pin::PinOutcome>) -> Exit {
+    if let Ok(outcome) = &result {
+        for note in &outcome.notes {
+            out.log(output::LogLevel::Debug, note);
+        }
+        for (tx, ms) in &outcome.locks {
+            out.lock_released(Some(*ms), Some(*tx));
+        }
+    }
+    out.emit(result)
 }
 
 /// Runs the parsed command and renders its outcome through `reporter`, the run's one
@@ -243,6 +261,8 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
             }
             out.emit(result)
         }
+        Some(Command::Pin(args)) => out_pin(&out, pin::pin(ctx, args)),
+        Some(Command::Unpin(args)) => out_pin(&out, pin::unpin(ctx, args)),
         Some(Command::Remove(args)) => {
             let result = remove::run(ctx, args);
             if let Ok(outcome) = &result {

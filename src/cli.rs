@@ -132,9 +132,13 @@ pub enum Command {
     /// Update every managed addon on every client, or the ones named (undo with one undo)
     #[command(
         visible_alias = "upgrade",
-        after_long_help = "A given version is an install, which pins it: omaddons install <addon> --version V"
+        after_long_help = "A given version is an install, which pins it:\n  omaddons install <addon> --version V\n  omaddons pin <addon> --version V"
     )]
     Update(crate::app::update::UpdateArgs),
+    /// Hold an addon at its release through updates (undoable)
+    Pin(crate::app::pin::PinArgs),
+    /// Let a pinned addon update again
+    Unpin(crate::app::pin::UnpinArgs),
     /// Remove managed addons from one target (undoable)
     Remove(crate::app::remove::RemoveArgs),
     /// Revert the last change (or one by id), SavedVariables included
@@ -370,11 +374,16 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
         && invalid(ContextKind::InvalidArg)
             .is_some_and(|bad| bad.split('=').next() == Some("--version"));
     if version_on_update {
+        let mut as_pin = as_install(argv);
+        if let Some(slot) = as_pin.get_mut(1) {
+            "pin".clone_into(slot);
+        }
         return Error::new(
             ErrorCode::Usage,
             "update installs the newest release; a given version is an install, which pins it",
             Suggestion::command(as_install(argv)),
-        );
+        )
+        .alternative(Suggestion::command(as_pin));
     }
     let (fix, alternatives) = match err.kind() {
         ErrorKind::InvalidSubcommand => invalid(ContextKind::InvalidSubcommand)

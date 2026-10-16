@@ -1,0 +1,6 @@
+---
+source: tests/pin.rs
+expression: dry.stdout
+---
+retail: would be pinned 1 addon
+  Foo  pinned at v1

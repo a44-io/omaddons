@@ -833,7 +833,7 @@ fn a_pinned_addon_stays_until_a_version_moves_it() {
         "Foo is pinned at v1.0.0 on retail; nothing was installed. Pass --version to move it"
     );
     let fix = argv_of(&warning["fix_argv"]);
-    assert_eq!(fix, ["omaddons", "info", "Foo", "-t", "retail"]);
+    assert_eq!(fix, ["omaddons", "unpin", "Foo", "-t", "retail"]);
     let mirrored = support::events(&r)
         .into_iter()
         .find(|e| e["event"] == "warning" && e["code"] == "addon_pinned");

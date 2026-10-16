@@ -1,0 +1,13 @@
+---
+source: tests/pin.rs
+expression: dry.stdout
+---
+era: would be unpinned 1 addon
+  Foo  unpinned at v1
+retail: would be unpinned 1 addon
+  Foo  unpinned at v1
+turtle: would be unpinned 1 addon
+  Foo  unpinned at v1
+era: Foo is current
+retail: Foo is current
+turtle: Foo is current

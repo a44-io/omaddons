@@ -1,0 +1,175 @@
+---
+source: tests/pin.rs
+expression: stable(&unpinned)
+---
+{
+  "command": "unpin",
+  "commands": [
+    {
+      "action": "undo_run",
+      "argv": [
+        "omaddons",
+        "undo",
+        "--run",
+        "<run>"
+      ],
+      "command": "omaddons undo --run <run>",
+      "destructive": false
+    },
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<tx:era>"
+      ],
+      "command": "omaddons undo <tx:era>",
+      "destructive": false
+    },
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<tx:retail>"
+      ],
+      "command": "omaddons undo <tx:retail>",
+      "destructive": false
+    },
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<tx:turtle>"
+      ],
+      "command": "omaddons undo <tx:turtle>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "dry_run": false,
+    "run": "<run>",
+    "summary": {
+      "changed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "targets": 3,
+      "unchanged": 0
+    },
+    "targets": [
+      {
+        "atomic_swap": true,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "error": null,
+            "folders": {
+              "added": [],
+              "recorded": [
+                "Foo"
+              ],
+              "removed": [],
+              "replaced": [],
+              "skipped": []
+            },
+            "from_version": "v1",
+            "name": "Foo",
+            "ref": "gh:o/foo",
+            "request": "foo",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "unpinned",
+            "to_version": "v1"
+          }
+        ],
+        "kind": "pin",
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "era",
+          "key": "<key:era>"
+        },
+        "tx": "<tx:era>"
+      },
+      {
+        "atomic_swap": true,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "error": null,
+            "folders": {
+              "added": [],
+              "recorded": [
+                "Foo"
+              ],
+              "removed": [],
+              "replaced": [],
+              "skipped": []
+            },
+            "from_version": "v1",
+            "name": "Foo",
+            "ref": "gh:o/foo",
+            "request": "foo",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "unpinned",
+            "to_version": "v1"
+          }
+        ],
+        "kind": "pin",
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "retail",
+          "key": "<key:retail>"
+        },
+        "tx": "<tx:retail>"
+      },
+      {
+        "atomic_swap": true,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "error": null,
+            "folders": {
+              "added": [],
+              "recorded": [
+                "Foo"
+              ],
+              "removed": [],
+              "replaced": [],
+              "skipped": []
+            },
+            "from_version": "v1",
+            "name": "Foo",
+            "ref": "gh:o/foo",
+            "request": "foo",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "unpinned",
+            "to_version": "v1"
+          }
+        ],
+        "kind": "pin",
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "turtle",
+          "key": "<key:turtle>"
+        },
+        "tx": "<tx:turtle>"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "meta": "<meta>",
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

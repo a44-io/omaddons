@@ -11,7 +11,8 @@ use crate::discover::cache::{CacheStats, DiscoveryMode, discover_cached};
 use crate::discover::registry::{Resolved, reconcile, resolve, resolve_one};
 use crate::discover::{DiscoveredTarget, DiscoveryInput, DiscoverySource, ScanLimits};
 use crate::error::{Error, Result, Warning};
-use crate::model::TargetKey;
+use crate::model::{AddonRecord, TargetKey};
+use crate::resolve::catalog::Catalog;
 use crate::rules::RulesTable;
 use crate::state::config::Config;
 use crate::state::paths::Paths;
@@ -211,6 +212,15 @@ fn apply_target_overrides(resolved: &mut Resolved, config: &Config, table: &Rule
             d.target.refresh_rules(table);
         }
     }
+}
+
+/// Whether `name`, as a user typed it, names the installed `addon`: its name in any
+/// case, or a catalog name or alias whose ref is the addon's (`update`, `pin`, `unpin`).
+pub fn names_addon(name: &str, addon: &AddonRecord, catalog: &Catalog) -> bool {
+    addon.name.eq_ignore_ascii_case(name)
+        || catalog
+            .by_name(name)
+            .is_some_and(|e| e.r#ref.identity() == addon.r#ref.identity())
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ use super::outcome::{
     ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef, TargetResult,
     TargetsData, TargetsOutcome,
 };
-use super::world::World;
+use super::world::{World, names_addon};
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::engine::plan::{PinIntent, RequestedChange, addon_pinned};
@@ -471,12 +471,7 @@ fn in_scope<'w>(
 ) -> (Vec<InScope<'w>>, Vec<String>) {
     let mut scope = Vec::new();
     let mut unknown = Vec::new();
-    let matches = |a: &AddonRecord, name: &str| {
-        a.name.eq_ignore_ascii_case(name)
-            || catalog
-                .by_name(name)
-                .is_some_and(|e| e.r#ref.identity() == a.r#ref.identity())
-    };
+    let matches = |a: &AddonRecord, name: &str| names_addon(name, a, catalog);
     if names.is_empty() {
         for d in targets {
             let Some(record) = records.get(&d.target.id) else {

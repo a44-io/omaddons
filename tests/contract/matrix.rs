@@ -75,6 +75,22 @@ fn list() {
 }
 
 #[test]
+fn pin_and_unpin() {
+    let s = Scene::new();
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    let c = s.json(&["pin", "weakauras"], 0);
+    insta::assert_json_snapshot!("pin_ok", s.stable(&c.envelope));
+    let c = s.json(&["unpin", "weakauras"], 0);
+    assert_eq!(
+        c.envelope["data"]["targets"][0]["items"][0]["status"],
+        "unpinned"
+    );
+    let c = s.json(&["pin", "nosuch"], 3);
+    insta::assert_json_snapshot!("pin_not_managed", s.stable(&c.envelope));
+    s.json(&["unpin", "nosuch"], 3);
+}
+
+#[test]
 fn update() {
     let s = Scene::new();
     s.json(&["install", "weakauras", "-t", "retail"], 0);

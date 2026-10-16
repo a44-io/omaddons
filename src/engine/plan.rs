@@ -283,8 +283,7 @@ pub fn record_edits(existing: &AddonRecord, carried: &AddonRecord) -> Vec<Record
         .collect()
 }
 
-/// `addon_pinned`: a pinned addon was left where it is. Its fix shows the pin and the
-/// newest release (`unpin` arrives with the pin commands).
+/// `addon_pinned`: a pinned addon was left where it is. Its fix unpins it there.
 pub fn addon_pinned(existing: &AddonRecord, target: &str) -> Warning {
     Warning::new(
         WarningCode::AddonPinned,
@@ -295,7 +294,7 @@ pub fn addon_pinned(existing: &AddonRecord, target: &str) -> Warning {
     )
     .with_fix(Suggestion::command([
         "omaddons",
-        "info",
+        "unpin",
         existing.name.as_str(),
         "-t",
         target,
@@ -2634,7 +2633,7 @@ mod tests {
         );
         assert_eq!(
             warning.fix.as_ref().and_then(|f| f.argv()),
-            Some(&["omaddons", "info", "Foo", "-t", "retail"].map(String::from)[..])
+            Some(&["omaddons", "unpin", "Foo", "-t", "retail"].map(String::from)[..])
         );
     }
 
