@@ -98,6 +98,88 @@ fn an_http_ref_is_fixed_to_https_keeping_every_other_argument() {
     );
 }
 
+/// Every entry under `dir` with its bytes (a directory's are empty), but `net.log`,
+/// which records each request whatever the run (and the `omaddons/` dir it may create).
+fn state_tree(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(next) = todo.pop() {
+        for entry in fs::read_dir(&next).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let name = path.display().to_string();
+            if name.contains("net.log") {
+                continue;
+            }
+            if path == dir.join("omaddons") {
+                todo.push(path);
+            } else if path.is_dir() {
+                todo.push(path);
+                out.push((name, Vec::new()));
+            } else {
+                out.push((name, fs::read(&path).unwrap_or_default()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn a_dry_run_leaves_the_state_directory_as_it_was() {
+    let s = Scene::new();
+    let state = s.home.env.state();
+    let (foo, foo2) = (s.zip("foo"), s.zip("foo2"));
+    let dry_runs = |runs: &[&[&str]]| {
+        let before = state_tree(&state);
+        for args in runs {
+            let r = s.home.run(args);
+            assert_eq!(r.code, 0, "{args:?}\n{}", r.context());
+            assert_eq!(
+                state_tree(&state)
+                    .iter()
+                    .map(|(n, _)| n)
+                    .collect::<Vec<_>>(),
+                before.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+                "{args:?}"
+            );
+            assert!(state_tree(&state) == before, "{args:?}: a file changed");
+        }
+    };
+    // A fresh home: nothing registered, nothing installed.
+    dry_runs(&[
+        &[
+            "install",
+            "gh:o/foo",
+            "--file",
+            &foo,
+            "-t",
+            "retail",
+            "--dry-run",
+        ],
+        &["install", "gh:o/foo", "-t", "retail", "--dry-run"],
+        &["install", "weakauras", "-t", "classic", "--dry-run"],
+        &["targets", "default", "retail", "--dry-run"],
+    ]);
+    // With an install to change, remove, update and undo.
+    let tx = s.install_foo();
+    dry_runs(&[
+        &[
+            "install",
+            "gh:o/foo",
+            "--file",
+            &foo2,
+            "-t",
+            "retail",
+            "--dry-run",
+        ],
+        &["remove", "Foo", "-t", "retail", "--dry-run"],
+        &["update", "--all", "--dry-run"],
+        &["undo", &tx, "--dry-run"],
+        &["undo", "--dry-run"],
+        &["pin", "Foo", "-t", "retail", "--dry-run"],
+    ]);
+}
+
 #[test]
 fn ci_and_dumb_terminals_get_ndjson_stderr() {
     let s = Scene::new();

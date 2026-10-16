@@ -209,8 +209,8 @@ pub fn pinned_blobs(paths: &Paths) -> Result<BTreeSet<String>> {
     Ok(pins)
 }
 
-/// Stage dirs and in-flight lock files of dead transactions: lock free, no journal,
-/// older than `ORPHAN_MIN_AGE`.
+/// Stage dirs and in-flight lock files (the state's and the cache's scratch locks) of
+/// dead transactions: lock free, no journal, older than `ORPHAN_MIN_AGE`.
 fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp) -> Result<Vec<PathBuf>> {
     let old = |path: &Path| {
         std::fs::symlink_metadata(path)
@@ -234,7 +234,10 @@ fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp) -> Result<Vec<Pa
             found.push(path);
         }
     }
-    for (name, path) in listing(&paths.inflight_dir()) {
+    let locks = listing(&paths.inflight_dir())
+        .into_iter()
+        .chain(listing(&paths.cache_inflight_dir()));
+    for (name, path) in locks {
         if let Some(tx) = name
             .strip_suffix(".lock")
             .and_then(|t| t.parse::<TxId>().ok())
@@ -479,12 +482,25 @@ mod tests {
         let _live = InflightLock::create(&f.paths, &held).unwrap();
         std::fs::create_dir_all(f.paths.journal_dir()).unwrap();
         std::fs::write(f.paths.journal(&journaled), b"").unwrap();
+        // Scratch locks (planning, dry runs) live in the cache: a dead one is swept, a
+        // held one keeps its cache scratch.
+        let (dead_scratch, held_scratch) = (TxId::new(), TxId::new());
+        std::fs::create_dir_all(f.paths.cache_inflight_dir()).unwrap();
+        std::fs::write(f.paths.cache_inflight_lock(&dead_scratch), b"").unwrap();
+        let _scratch = InflightLock::create_scratch(&f.paths, &held_scratch).unwrap();
+        std::fs::create_dir_all(f.paths.cache_tmp(&held_scratch)).unwrap();
 
         let report = f.run(&RetentionLimits::default(), &BTreeSet::new());
-        assert_eq!(report.orphans_swept, 2, "{report:?}");
+        assert_eq!(report.orphans_swept, 3, "{report:?}");
         assert!(!stage(&dead).exists() && !f.paths.inflight_lock(&dead).exists());
         assert!(stage(&held).exists() && f.paths.inflight_lock(&held).exists());
         assert!(stage(&journaled).exists(), "journal recovery owns it");
+        assert!(!f.paths.cache_inflight_lock(&dead_scratch).exists());
+        assert!(f.paths.cache_inflight_lock(&held_scratch).exists());
+        assert!(
+            f.paths.cache_tmp(&held_scratch).exists(),
+            "live scratch is kept"
+        );
     }
 
     #[cfg(debug_assertions)]

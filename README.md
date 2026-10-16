@@ -560,7 +560,7 @@ remove = true
 
 ## Command reference
 
-`omaddons help` lists the commands. `omaddons help <command>` or `omaddons <command> --help` shows every flag. For subcommands, use `omaddons targets add --help` or `omaddons help "targets add"` (quoted; see [Known issues](#known-issues)).
+`omaddons help` lists the commands. `omaddons help <command>` or `omaddons <command> --help` shows every flag. For subcommands, use `omaddons targets add --help` or `omaddons help targets add`.
 
 ### Global options
 
@@ -1198,7 +1198,7 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 | `error` | object | `code`, `message`, `fix` (display string), `fix_argv` (argv array, or `null` when the fix is prose), `alternatives` (`[{display, argv}]`), `retryable`, `details` (always an object) |
 | `warnings` | array | `{code, message, fix, fix_argv}`. On a partial run, each failed item is mirrored here |
 | `commands` | array | suggested next steps: `{action, command, argv, destructive}`, e.g. `undo <tx>` after a change and `undo --run <run>` (action `undo_run`) after a change on several clients, `update`, `check_updates`, `adopt`, `reinstall`, `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive) |
-| `meta` | object | `elapsed_ms`, `offline` (always `false` on usage errors; see Known issues) |
+| `meta` | object | `elapsed_ms`, `offline` (`--offline` or `OMADDONS_OFFLINE=1`, usage errors included) |
 
 `check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status. Long commands also stream NDJSON `progress` events on stderr with `--progress json` (see [stderr events](#stderr-events)); stdout stays one envelope.
 
@@ -1477,7 +1477,7 @@ check_interval_hours = 6     # 0–48; 0 checks only when the panel opens
 archive_max_entries = 20000
 archive_max_uncompressed = "1GiB"
 archive_max_ratio = 200
-download_max_bytes = "512MiB"    # values above 512 MiB do not take effect yet (Known issues)
+download_max_bytes = "512MiB"    # the largest download accepted
 tx_retention_count = 10
 tx_retention_days = 7
 snapshot_max_bytes = "2GiB"      # per target, beyond the 24-hour window
@@ -1562,7 +1562,7 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_HTTP_FIXTURES`, `OMADDON
 | `~/.local/state/omaddons/lock` | The global lock (never delete while running) | No |
 | `~/.local/state/omaddons/status.json` | A derived summary for the future widget | Yes |
 | `~/.local/state/omaddons/net.log`, `net.log.1` | The request log | Yes |
-| `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `trash/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, staged deletions | Yes when no command is running; reinstalls then download again |
+| `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `inflight/`, `trash/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, the in-flight locks of planning and dry runs, staged deletions | Yes when no command is running; reinstalls then download again |
 | `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), failures retrying cannot change, and what downloading candidates taught (each archive's hash, and whether it loads on a client) | Yes; the next commands fetch and download again |
 | `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim (refreshed after its hour) | Yes; the next search or dependency lookup fetches it again |
 | `~/.cache/omaddons/export.json` | The hash of the `addons.toml` `export --write` last wrote, so a hand-edited file is not overwritten | Yes; the next `--write` then needs `--overwrite` |
@@ -1780,9 +1780,7 @@ Journals are recovered by the next command that commits a change, not by read co
 
 ### Known issues
 
-These are bugs, found while this README was written:
-
-- `install --dry-run` creates empty `inflight/` and `trash/` directories in the state directory.
+None open. The bugs found while this README was written are fixed.
 
 ---
 

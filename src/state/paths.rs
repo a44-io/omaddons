@@ -299,6 +299,17 @@ impl Paths {
         self.cache.join("tmp").join(tx.to_string())
     }
 
+    /// `<cache>/inflight/`: the in-flight locks that guard only cache scratch
+    /// (planning, release checks, dry runs), so those never write the state directory.
+    pub fn cache_inflight_dir(&self) -> PathBuf {
+        self.cache.join("inflight")
+    }
+
+    /// `<cache>/inflight/<tx>.lock`.
+    pub fn cache_inflight_lock(&self, tx: &TxId) -> PathBuf {
+        self.cache_inflight_dir().join(format!("{tx}.lock"))
+    }
+
     /// Where `prune()` stages cache victims before deleting them.
     pub fn cache_trash(&self) -> PathBuf {
         self.cache.join("trash")

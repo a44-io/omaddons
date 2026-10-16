@@ -231,7 +231,7 @@ fn while_planned(home: &Home, meanwhile: &[&str]) -> common::home::Run {
         &argv,
         &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:2000")],
     );
-    let inflight = home.state().join("inflight");
+    let inflight = home.planning_locks();
     support::poll("the install to plan", || {
         std::fs::read_dir(&inflight).is_ok_and(|mut d| d.next().is_some())
     });

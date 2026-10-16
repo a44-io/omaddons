@@ -324,6 +324,7 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
                 Kind::Blob
             }
             ["tmp", name] if is_tx(name) => Kind::CacheTmp,
+            ["inflight", name] if name.strip_suffix(".lock").is_some_and(is_tx) => Kind::Inflight,
             _ => return None,
         };
         return Some((kind, scopes.cache_dir().join("trash")));
@@ -502,6 +503,10 @@ mod tests {
             ),
             (cache.join("blobs").join(&blob), PruneReason::Retention),
             (cache.join("tmp").join(TX), PruneReason::PostCommitCleanup),
+            (
+                cache.join("inflight").join(format!("{TX}.lock")),
+                PruneReason::PostCommitCleanup,
+            ),
         ];
         let reasons = [
             PruneReason::Retention,
@@ -692,6 +697,35 @@ mod tests {
         assert_eq!(report.removed.len(), 2, "{report:?}");
         assert!(!f.paths.inflight_lock(&tx).exists() && !f.paths.cache_tmp(&tx).exists());
         assert!(f.paths.cache_tmp(&other).exists());
+        drop(lock);
+
+        // A scratch lock (planning, a dry run) lives in the cache and is pruned through
+        // the cache's trash: the state directory is never touched.
+        let scratch: TxId = "01JB8Q2VA00000000000000002".parse().unwrap();
+        let lock = super::super::lock::InflightLock::create_scratch(&f.paths, &scratch).unwrap();
+        assert!(super::super::lock::InflightLock::is_live(&f.paths, &scratch).unwrap());
+        fs::create_dir_all(f.paths.cache_tmp(&scratch)).unwrap();
+        let state_before = fs::read_dir(f.paths.state_dir())
+            .map(|d| d.count())
+            .unwrap_or(0);
+        let mine = [
+            f.paths.cache_inflight_lock(&scratch),
+            f.paths.cache_tmp(&scratch),
+        ];
+        let report = prune(
+            &f.scopes,
+            PruneReason::PostCommitCleanup,
+            &mine,
+            LockUse::Own(&lock),
+        )
+        .unwrap();
+        assert_eq!(report.removed.len(), 2, "{report:?}");
+        let state_after = fs::read_dir(f.paths.state_dir())
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(state_before, state_after, "no state trash");
+        drop(lock);
+        assert!(!super::super::lock::InflightLock::is_live(&f.paths, &scratch).unwrap());
     }
 
     #[test]

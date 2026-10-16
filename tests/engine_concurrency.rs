@@ -236,7 +236,7 @@ fn a_pin_that_commits_while_an_update_plans_wins() {
         ]),
     )
     .unwrap();
-    let inflight = s.home.state().join("inflight");
+    let inflight = s.home.planning_locks();
     let planning = || fs::read_dir(&inflight).is_ok_and(|mut d| d.next().is_some());
     assert!(!planning(), "nothing in flight yet");
 
@@ -317,7 +317,7 @@ fn pin_races_an_install(sleeper: Sleeper) {
         "retail",
         "--offline",
     ];
-    let inflight = s.home.state().join("inflight");
+    let inflight = s.home.planning_locks();
     let stage = s.home.client("_retail_").join("Interface/.omaddons/stage");
     let busy = |dir: &std::path::Path| fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some());
     let (pinned, installed) = match sleeper {
@@ -390,7 +390,7 @@ fn an_update_and_an_install_of_another_addon_both_commit() {
     let s = Scene::new();
     let update = shapes::update_many(&s);
     let update: Vec<&str> = update.iter().map(String::as_str).collect();
-    let inflight = s.home.state().join("inflight");
+    let inflight = s.home.planning_locks();
     let child = s.home.spawn(
         &update[..update.len() - 1],
         &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:1500")],
@@ -423,7 +423,7 @@ fn an_adoption_racing_an_install_of_its_folder_ends_clean() {
     let adopt = shapes::adopt(&s);
     let adopt: Vec<&str> = adopt.iter().map(String::as_str).collect();
     s.release("echo", "v2", &[common::engine::folder("Echo", &[])]);
-    let inflight = s.home.state().join("inflight");
+    let inflight = s.home.planning_locks();
     let child = s.home.spawn(
         &adopt[..adopt.len() - 1],
         &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:1500")],

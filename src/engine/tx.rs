@@ -212,7 +212,8 @@ pub fn check_releases(jobs: &[CheckJob], ctx: &EngineCtx<'_>) -> Result<CheckedR
     let scopes = ScopeTable::new(ctx.paths, &[], None)?;
     let blobs = BlobCache::new(ctx.paths).with_max_download(ctx.limits.max_download);
     let tx = TxId::new();
-    let inflight = InflightLock::create(ctx.paths, &tx)?;
+    // Guards only the cache scratch of the checks: kept in the cache.
+    let inflight = InflightLock::create_scratch(ctx.paths, &tx)?;
     let transient;
     let cache = match ctx.cache {
         Some(cache) => cache,
@@ -268,7 +269,10 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
     let scopes = ScopeTable::new(ctx.paths, &client_dirs, None)?;
     let blobs = BlobCache::new(ctx.paths).with_max_download(ctx.limits.max_download);
     let plan_tx = TxId::new();
-    let plan_inflight = InflightLock::create(ctx.paths, &plan_tx)?;
+    // Planning writes only cache scratch (downloads, inspections), so its lock lives in
+    // the cache and a dry run leaves the state directory alone; each target's
+    // transaction takes its own lock in the state directory.
+    let plan_inflight = InflightLock::create_scratch(ctx.paths, &plan_tx)?;
     let targets: Vec<Target> = req
         .targets
         .iter()
@@ -1133,6 +1137,7 @@ pub(super) fn cleanup(
     let mut victims = vec![
         paths.journal(tx),
         paths.inflight_lock(tx),
+        paths.cache_inflight_lock(tx),
         paths.cache_tmp(tx),
     ];
     victims.extend(stage_dir.cloned());
@@ -1227,6 +1232,7 @@ mod tests {
         for dir in [
             scene.paths.journal_dir(),
             scene.paths.inflight_dir(),
+            scene.paths.cache_inflight_dir(),
             scene.client.meta_dir().join("stage"),
         ] {
             if let Ok(listing) = std::fs::read_dir(&dir) {

@@ -10,7 +10,7 @@
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use jiff::Timestamp;
@@ -192,6 +192,9 @@ pub fn probe_global(paths: &Paths) -> Result<LockState> {
 
 /// A transaction's liveness lock, held from planning until cleanup. Stage dirs, temp
 /// blobs and plans are orphaned only when their transaction's lock is free or missing.
+/// A transaction's lock lives in the state directory; a lock that guards only cache
+/// scratch ([`InflightLock::create_scratch`]) lives in the cache, so planning, release
+/// checks and dry runs leave the state directory alone.
 #[derive(Debug)]
 pub struct InflightLock {
     _file: File,
@@ -199,12 +202,26 @@ pub struct InflightLock {
 }
 
 impl InflightLock {
-    /// Creates `inflight/<tx>.lock` (it must not exist) and holds it exclusively.
+    /// Creates `<state>/inflight/<tx>.lock` (it must not exist) and holds it
+    /// exclusively.
     pub fn create(paths: &Paths, tx: &TxId) -> Result<Self> {
-        let path = paths.inflight_lock(tx);
+        Self::create_at(&paths.inflight_dir(), paths.inflight_lock(tx), tx)
+    }
+
+    /// Creates `<cache>/inflight/<tx>.lock` for work that writes only cache scratch
+    /// (`<cache>/tmp/<tx>`): the sweeps honour it like a transaction's lock.
+    pub fn create_scratch(paths: &Paths, tx: &TxId) -> Result<Self> {
+        Self::create_at(
+            &paths.cache_inflight_dir(),
+            paths.cache_inflight_lock(tx),
+            tx,
+        )
+    }
+
+    fn create_at(dir: &Path, path: PathBuf, tx: &TxId) -> Result<Self> {
         let io =
             |err: &io::Error| Error::io(&path, err, Suggestion::command(["omaddons", "status"]));
-        sys::create_dir_all(&paths.inflight_dir()).map_err(|err| io(&err))?;
+        sys::create_dir_all(dir).map_err(|err| io(&err))?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -223,9 +240,13 @@ impl InflightLock {
         self.tx
     }
 
-    /// Whether some live process holds `tx`'s lock. A missing file is not live.
+    /// Whether some live process holds `tx`'s lock, in the state directory or the cache.
+    /// A missing file is not live.
     pub fn is_live(paths: &Paths, tx: &TxId) -> Result<bool> {
-        let path = paths.inflight_lock(tx);
+        Ok(Self::held(paths.inflight_lock(tx))? || Self::held(paths.cache_inflight_lock(tx))?)
+    }
+
+    fn held(path: PathBuf) -> Result<bool> {
         let file = match File::open(&path) {
             Ok(file) => file,
             // ubs:ignore — an io::ErrorKind, not a secret

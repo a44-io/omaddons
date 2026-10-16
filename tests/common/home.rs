@@ -153,6 +153,12 @@ impl Home {
         dir
     }
 
+    /// `<cache>/omaddons/inflight`: the in-flight locks of planning, release checks and
+    /// dry runs, non-empty while a command plans.
+    pub fn planning_locks(&self) -> PathBuf {
+        self.env.cache().join("omaddons/inflight")
+    }
+
     /// A retail client process in the fake `/proc`.
     pub fn retail_running(&mut self) {
         let prefix = self.prefix.display().to_string();

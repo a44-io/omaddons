@@ -147,7 +147,7 @@ mod support {
             for item in listing {
                 let path = item.unwrap().path();
                 let rel = path.strip_prefix(root).unwrap().display().to_string();
-                if rel.starts_with("net.log") || rel.starts_with("inflight") {
+                if rel.starts_with("net.log") {
                     continue;
                 }
                 if path.is_dir() {
@@ -556,13 +556,13 @@ fn adopt_writes_nothing_but_the_cache_and_repeats_identically() {
         tree,
         "AddOns unchanged"
     );
-    assert!(
-        fs::read_dir(home.state().join("inflight"))
-            .map(|l| l.count())
-            .unwrap_or(0)
-            == 0,
-        "no in-flight lock left"
-    );
+    for dir in [home.state().join("inflight"), home.planning_locks()] {
+        assert!(
+            fs::read_dir(&dir).map(|l| l.count()).unwrap_or(0) == 0,
+            "no in-flight lock left in {}",
+            dir.display()
+        );
+    }
     // Progress never goes back within a phase, and the download is announced first.
     let mut seen: BTreeMap<String, u64> = BTreeMap::new();
     for (phase, current) in support::progress(&first) {
@@ -1151,7 +1151,7 @@ fn a_file_changed_between_planning_and_the_lock_is_plan_stale() {
         &argv,
         &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:2000")],
     );
-    let inflight = home.state().join("inflight");
+    let inflight = home.planning_locks();
     support::poll("adopt to plan", || {
         fs::read_dir(&inflight).is_ok_and(|mut d| d.next().is_some())
     });

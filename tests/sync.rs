@@ -681,7 +681,7 @@ fn an_ownership_conflict_says_how_to_force_it_with_install() {
 }
 
 #[test]
-fn a_dry_run_writes_only_the_cache_the_net_log_and_inflight() {
+fn a_dry_run_writes_only_the_cache_and_the_net_log() {
     let home = two_clients();
     let path = home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
     let state = home.state();
@@ -690,11 +690,7 @@ fn a_dry_run_writes_only_the_cache_the_net_log_and_inflight() {
         for root in [&state, &home.env.config(), &home.root] {
             for entry in walk(root) {
                 let shown = entry.display().to_string();
-                // The in-flight lock, and the trash its cleanup leaves (omad-gfoq).
-                let bookkeeping = ["/inflight", "/trash"]
-                    .iter()
-                    .any(|d| shown.contains(&format!("{}{d}", state.display())));
-                if !bookkeeping && !shown.ends_with("net.log") {
+                if !shown.ends_with("net.log") {
                     files.push(shown);
                 }
             }

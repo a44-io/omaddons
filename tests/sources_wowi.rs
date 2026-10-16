@@ -125,8 +125,8 @@ mod support {
         }
     }
 
-    /// Every file under `dir` but `net.log` (and its rotation) and `inflight/`, with its
-    /// bytes; empty when `dir` does not exist.
+    /// Every file under `dir` but `net.log` (and its rotation), with its bytes; empty when
+    /// `dir` does not exist.
     pub fn state_files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
         fn walk(dir: &Path, root: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
             let Ok(listing) = std::fs::read_dir(dir) else {
@@ -135,7 +135,7 @@ mod support {
             for item in listing {
                 let path = item.unwrap().path();
                 let rel = path.strip_prefix(root).unwrap().display().to_string();
-                if rel.starts_with("net.log") || rel.starts_with("inflight") {
+                if rel.starts_with("net.log") {
                     continue;
                 }
                 if path.is_dir() {

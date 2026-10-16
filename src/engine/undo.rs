@@ -1301,6 +1301,7 @@ mod tests {
         for dir in [
             scene.paths.journal_dir(),
             scene.paths.inflight_dir(),
+            scene.paths.cache_inflight_dir(),
             scene.client.meta_dir().join("stage"),
         ] {
             if let Ok(listing) = std::fs::read_dir(&dir) {
