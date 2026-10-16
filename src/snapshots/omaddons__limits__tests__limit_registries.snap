@@ -436,6 +436,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "ms",
       "config_key": null,
       "notes": "Covers the kernel's coarse file-timestamp clock: index entries are stamped this long after the newest staged mtime"
+    },
+    {
+      "name": "ADOPT_MAX_ALTERNATIVES",
+      "value": {
+        "count": 3
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Other refs an adoption group lists beside its own"
     }
   ]
 ]

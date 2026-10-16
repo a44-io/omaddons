@@ -91,6 +91,9 @@ pub const DEPENDENCY_MAX_ADDONS: usize = 32;
 /// file-timestamp clock, so a file changed in the same tick is re-hashed, never
 /// trusted (M2-D16). Nanoseconds, to compare with `mtime_ns`.
 pub const RACY_SLACK_NS: i128 = 20_000_000;
+/// Most other refs an adoption group lists beside its own (`alternatives`), each an
+/// `adopt --ref` command in the report.
+pub const ADOPT_MAX_ALTERNATIVES: usize = 3;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -351,6 +354,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Covers the kernel's coarse file-timestamp clock: index entries are stamped this long after the newest staged mtime",
     ),
+    limit(
+        "ADOPT_MAX_ALTERNATIVES",
+        LimitValue::Count(ADOPT_MAX_ALTERNATIVES as u64),
+        "count",
+        None,
+        "Other refs an adoption group lists beside its own",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -526,6 +536,7 @@ mod tests {
         "DEPENDENCY_MAX_DEPTH",
         "DEPENDENCY_MAX_ADDONS",
         "RACY_SLACK_NS",
+        "ADOPT_MAX_ALTERNATIVES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

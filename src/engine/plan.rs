@@ -3406,6 +3406,13 @@ pub fn primary_folder<'a>(
     {
         return Some(same);
     }
+    primary_by_shape(folders)
+}
+
+/// The primary folder by the folders' names alone (no ref, no hint): the folder the
+/// others extend (`WeakAuras` for `WeakAurasOptions`), else the one core folder
+/// (`DBM-Core` beside `DBM-GUI`), else the shortest.
+pub fn primary_by_shape(folders: &[FolderName]) -> Option<&FolderName> {
     let extended = |n: &FolderName| {
         let n = n.as_str();
         folders

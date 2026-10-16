@@ -1,0 +1,84 @@
+# Folder sets for adoption's identification tests (tests/adopt_identify.rs): each
+# `[<set>.<Folder>]` is one AddOns folder with its TOC. Trimmed to the lines adoption
+# reads. Ids are the publishers' (BigWigs 5086, BugSack 5995 and its CurseForge and
+# Wago ids, ElvUI's Tukui id -2); everything else is synthetic.
+
+# Deadly Boss Mods: the catalog's 8 folders. DBM-Core's website names no source.
+[dbm."DBM-Core"]
+toc = """
+## Interface: 120105
+## Title: |cffffe00aDBM|r - Core
+## Author: Synthetic Author
+## Version: 12.0.0
+## X-Website: https://deadlybossmods.com
+"""
+[dbm."DBM-GUI"]
+toc = "## Interface: 120105\n## Title: DBM - GUI\n## Dependencies: DBM-Core\n"
+[dbm."DBM-StatusBarTimers"]
+toc = "## Interface: 120105\n## Title: DBM - Timers\n## Dependencies: DBM-Core\n"
+[dbm."DBM-Brawlers"]
+toc = "## Interface: 120105\n## Title: DBM - Brawlers\n## Dependencies: DBM-Core\n"
+[dbm."DBM-Lairs-Midnight"]
+toc = "## Interface: 120105\n## Title: DBM - Lairs\n## Dependencies: DBM-Core\n"
+[dbm."DBM-Midnight"]
+toc = "## Interface: 120105\n## Title: DBM - Midnight\n## Dependencies: DBM-Core\n"
+[dbm."DBM-Raids-Midnight"]
+toc = "## Interface: 120105\n## Title: DBM - Raids\n## Dependencies: DBM-Core\n"
+[dbm."DBM-VPVEM"]
+toc = "## Interface: 120105\n## Title: DBM - VEM\n## Dependencies: DBM-Core\n"
+
+# Strays beside DBM: one shares the prefix and requires DBM-Core, one does not.
+[dbm_strays."DBM-Extra"]
+toc = "## Interface: 120105\n## Title: DBM - Extra (synthetic)\n## Dependencies: DBM-Core\n"
+[dbm_strays."XYZ-Thing"]
+toc = "## Interface: 120105\n## Title: XYZ Thing (synthetic)\n## Dependencies: DBM-Core\n"
+
+# BigWigs: the catalog lists it; its TOC carries the WoWInterface id 5086.
+[bigwigs.BigWigs]
+toc = "## Interface: 120105\n## Title: BigWigs\n## Author: Synthetic Author\n## X-WoWI-ID: 5086\n"
+[bigwigs.BigWigs_Core]
+toc = "## Interface: 120105\n## Title: BigWigs Core\n## Dependencies: BigWigs\n"
+[bigwigs.BigWigs_Options]
+toc = "## Interface: 120105\n## Title: BigWigs Options\n## Dependencies: BigWigs\n"
+[bigwigs.BigWigs_Plugins]
+toc = "## Interface: 120105\n## Title: BigWigs Plugins\n## Dependencies: BigWigs\n"
+
+# ElvUI: three folders, each naming its Tukui project.
+[elvui.ElvUI]
+toc = """
+## Interface: 11509, 16001, 20506, 38002, 50504, 120100, 120105
+## Title: |cff1784d1ElvUI|r
+## X-Tukui-ProjectID: -2
+## X-Tukui-ProjectFolders: ElvUI, ElvUI_Libraries, ElvUI_Options
+"""
+[elvui.ElvUI_Libraries]
+toc = """
+## Interface: 11509, 16001, 20506, 38002, 50504, 120100, 120105
+## X-Tukui-ProjectID: -2
+## X-Tukui-ProjectFolders: ElvUI, ElvUI_Libraries, ElvUI_Options
+"""
+[elvui.ElvUI_Options]
+toc = """
+## Interface: 11509, 16001, 20506, 38002, 50504, 120100, 120105
+## X-Tukui-ProjectID: -2
+## X-Tukui-ProjectFolders: ElvUI, ElvUI_Libraries, ElvUI_Options
+"""
+
+# BugSack: three ids.
+[bugsack.BugSack]
+toc = """
+## Interface: 120105
+## Title: BugSack
+## Author: funkydude
+## X-WoWI-ID: 5995
+## X-Curse-Project-ID: 6273
+## X-Wago-ID: rkGrrgGy
+## OptionalDeps: !BugGrabber, Ace3, LibSharedMedia-3.0, LibDBIcon-1.0
+"""
+
+# Details: a coloured title, and a storage folder. WoWInterface project 23056 (stale)
+# is in the fake index.
+[details.Details]
+toc = "## Interface: 120105\n## Title: |cff33ff99Details!|r Damage Meter\n## Author: Synthetic Author\n"
+[details.Details_DataStorage]
+toc = "## Interface: 120105\n## Title: Details! Storage\n## Dependencies: Details\n"

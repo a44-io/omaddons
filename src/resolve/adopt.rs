@@ -10,10 +10,15 @@
 //! CurseForge and Wago ids alone (M5). A weaker claim that disagrees with a stronger one
 //! is still returned: grouping lists it as an alternative and never chooses it.
 
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet};
+
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use crate::engine::plan::{primary_by_shape, primary_folder};
 use crate::inventory::{FolderClass, FolderEntry, TocSummary};
+use crate::limits::ADOPT_MAX_ALTERNATIVES;
 use crate::model::{FolderName, Ref};
 use crate::resolve::catalog::{Catalog, Entry};
 use crate::rules::Family;
@@ -390,6 +395,499 @@ pub fn evidence(candidate: &CandidateFolder, lookups: &AdoptLookups<'_>) -> Vec<
     // ubs:ignore — comparing evidence kinds and refs, not secrets
     claims.dedup_by(|b, a| a.evidence == b.evidence && a.r#ref == b.r#ref);
     claims
+}
+
+/// The shortest name prefix (up to the first `-` or `_`) under which an evidence-less
+/// folder joins a group it requires or is required by: `DBM-` and `BigWigs_` join, while
+/// `UI_` would join unrelated addons.
+pub const GROUP_PREFIX_MIN_CHARS: usize = 3;
+
+/// How sure adoption is of a group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    /// The files equal the newest release's install set: decided by downloading, never
+    /// by [`identify`].
+    Exact,
+    /// A catalog, TOC-id or corroborated claim, uncontested.
+    Identified,
+    /// A name-only, contested or borrowed claim: applied only with an explicit folder.
+    Guess,
+    /// Only a CurseForge or Wago id (M5).
+    CfOnly,
+    /// No evidence.
+    Unknown,
+}
+
+/// What a group is claimed to be.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct GroupClaim {
+    /// `None` only for `cf_only`.
+    #[serde(rename = "ref")]
+    pub r#ref: Option<Ref>,
+    pub strength: Strength,
+    /// Sorted by rank, each once.
+    pub evidence: Vec<Evidence>,
+    /// The source's name: the catalog name, the Tukui name or the WoWInterface `UIName`.
+    pub name: Option<String>,
+}
+
+/// One addon adoption would record: folders that belong together.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Group {
+    /// Sorted by key.
+    pub folders: Vec<FolderName>,
+    pub primary: FolderName,
+    pub tier: Tier,
+    /// `None` only for `unknown`.
+    pub claim: Option<GroupClaim>,
+    /// Other refs the folders may be from, never the claim's: at most
+    /// `ADOPT_MAX_ALTERNATIVES`.
+    pub alternatives: Vec<Ref>,
+    /// Folders the client does not load; filled by the report, empty here.
+    pub unloaded_folders: Vec<FolderName>,
+}
+
+/// The wire strength of a precedence rank.
+const fn strength_of_rank(rank: u8) -> Strength {
+    match rank {
+        1 => Strength::Catalog,
+        2..=4 => Strength::TocId,
+        5 => Strength::Corroborated,
+        6 => Strength::NameOnly,
+        _ => Strength::CfOnly,
+    }
+}
+
+/// The name prefix joining compares: up to the first `-` or `_`, lowercased; `None`
+/// when shorter than [`GROUP_PREFIX_MIN_CHARS`].
+fn prefix(name: &str) -> Option<String> {
+    let head = name.split(['-', '_']).next().unwrap_or(name);
+    (head.chars().count() >= GROUP_PREFIX_MIN_CHARS).then(|| head.to_ascii_lowercase())
+}
+
+/// One ref-bearing claim as a proposal for the folders it covers.
+struct Proposal<'c> {
+    /// The candidate that made it, by key.
+    source: String,
+    rank: u8,
+    r#ref: Ref,
+    /// Its folders present among the candidates, by key.
+    covered: Vec<String>,
+    claim: &'c Claim,
+}
+
+/// Groups the candidates' claims into addons (M2-D40), each with a tier, the winning
+/// ref, the evidence behind it and the alternatives. Pure, and independent of the
+/// candidates' order. Never yields [`Tier::Exact`]: downloading decides that.
+///
+/// Claims are settled in rank rounds, strongest first: in each round, every folder not
+/// yet assigned goes to the strongest-ranked ref whose valid proposal covers it (a
+/// proposal is valid while its own folder is unassigned or assigned to the same ref);
+/// several refs at that rank make it contested, the first in tie order winning. A
+/// folder with no evidence joins a group it requires (or is required by) under the same
+/// name prefix; what is left groups by the same relation as `unknown`.
+pub fn identify(candidates: &[CandidateFolder], lookups: &AdoptLookups<'_>) -> Vec<Group> {
+    let mut present: BTreeMap<String, &CandidateFolder> = BTreeMap::new();
+    for c in candidates {
+        present.entry(c.folder.key().to_owned()).or_insert(c);
+    }
+    let claims: BTreeMap<String, Vec<Claim>> = present
+        .iter()
+        .map(|(key, c)| (key.clone(), evidence(c, lookups)))
+        .collect();
+    let mut proposals: Vec<Proposal<'_>> = Vec::new();
+    for (key, own) in &claims {
+        for claim in own {
+            let Some(r#ref) = &claim.r#ref else { continue };
+            if claim.evidence.rank() > 6 {
+                continue;
+            }
+            proposals.push(Proposal {
+                source: key.clone(),
+                rank: claim.evidence.rank(),
+                r#ref: r#ref.clone(),
+                covered: claim
+                    .folders
+                    .iter()
+                    .map(|f| f.key().to_owned())
+                    .filter(|k| present.contains_key(k))
+                    .collect(),
+                claim,
+            });
+        }
+    }
+
+    // Rank rounds. Each round's assignments come from the state at its start.
+    let mut assigned: BTreeMap<String, (Ref, u8)> = BTreeMap::new();
+    let mut tied: BTreeMap<String, Vec<Ref>> = BTreeMap::new();
+    for rank in 1..=6u8 {
+        // ubs:ignore — comparing refs, not secrets
+        let valid: Vec<&Proposal<'_>> = proposals
+            .iter()
+            .filter(|p| p.rank == rank)
+            .filter(|p| assigned.get(&p.source).is_none_or(|(r, _)| *r == p.r#ref))
+            .collect();
+        let mut round: Vec<(String, Vec<Ref>)> = Vec::new();
+        for (key, candidate) in &present {
+            if assigned.contains_key(key) {
+                continue;
+            }
+            // Each covering ref once: its widest coverage and a name.
+            let mut refs: BTreeMap<Ref, (usize, Option<&str>)> = BTreeMap::new();
+            for p in valid.iter().filter(|p| p.covered.contains(key)) {
+                let slot = refs.entry(p.r#ref.clone()).or_insert((0, None));
+                slot.0 = slot.0.max(p.covered.len());
+                slot.1 = slot.1.or(p.claim.name.as_deref());
+            }
+            if refs.is_empty() {
+                continue;
+            }
+            let mut order: Vec<(TieKey, Ref)> = refs
+                .into_iter()
+                .map(|(r, (coverage, name))| {
+                    (tie_key(&r, coverage, name, &candidate.folder, lookups), r)
+                })
+                .collect();
+            order.sort();
+            round.push((key.clone(), order.into_iter().map(|(_, r)| r).collect()));
+        }
+        for (key, mut refs) in round {
+            if refs.is_empty() {
+                continue;
+            }
+            let winner = refs.remove(0);
+            if !refs.is_empty() {
+                tied.insert(key.clone(), refs);
+            }
+            assigned.insert(key, (winner, rank));
+        }
+    }
+
+    // Ref groups, then one cf_only group per folder with only a CurseForge/Wago id.
+    let mut members: Vec<(Option<Ref>, BTreeSet<String>)> = Vec::new();
+    let mut by_ref: BTreeMap<Ref, BTreeSet<String>> = BTreeMap::new();
+    for (key, (r#ref, _)) in &assigned {
+        by_ref.entry(r#ref.clone()).or_default().insert(key.clone());
+    }
+    members.extend(by_ref.into_iter().map(|(r, keys)| (Some(r), keys)));
+    for (key, own) in &claims {
+        if !assigned.contains_key(key) && !own.is_empty() {
+            members.push((None, BTreeSet::from([key.clone()])));
+        }
+    }
+
+    // Joining: an evidence-less folder joins a group it requires or that requires it,
+    // under the same name prefix; repeated so chains join.
+    let requires = |a: &str, b: &str| {
+        present.get(a).zip(present.get(b)).is_some_and(|(a, b)| {
+            a.toc.as_ref().is_some_and(|t| {
+                t.dependencies
+                    .iter()
+                    .any(|d| d.eq_ignore_ascii_case(b.folder.as_str()))
+            })
+        })
+    };
+    let related = |a: &str, b: &str| {
+        let (pa, pb) = (
+            present.get(a).and_then(|c| prefix(c.folder.as_str())),
+            present.get(b).and_then(|c| prefix(c.folder.as_str())),
+        );
+        pa.is_some() && pa == pb && (requires(a, b) || requires(b, a))
+    };
+    let mut loose: BTreeSet<String> = claims
+        .iter()
+        .filter(|(key, own)| own.is_empty() && !assigned.contains_key(*key))
+        .map(|(key, _)| key.clone())
+        .collect();
+    let group_rank = |keys: &BTreeSet<String>| {
+        keys.iter()
+            .filter_map(|k| assigned.get(k).map(|(_, rank)| *rank))
+            .min()
+            .unwrap_or(7)
+    };
+    loop {
+        let mut joined = false;
+        for key in loose.clone() {
+            let best = members
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, keys))| keys.iter().any(|m| related(&key, m)))
+                .min_by_key(|(_, (r#ref, keys))| {
+                    let folders = folders_of(keys, &present);
+                    let primary =
+                        shape_primary(r#ref.as_ref(), &folders).map(|p| p.key().to_owned());
+                    (group_rank(keys), r#ref.clone(), primary)
+                })
+                .map(|(at, _)| at);
+            if let Some(at) = best
+                && let Some((_, keys)) = members.get_mut(at)
+            {
+                keys.insert(key.clone());
+                loose.remove(&key);
+                joined = true;
+            }
+        }
+        if !joined {
+            break;
+        }
+    }
+
+    // The rest: unknown, grouped by the same relation.
+    let mut unknown: Vec<BTreeSet<String>> = Vec::new();
+    while let Some(seed) = loose.iter().next().cloned() {
+        let mut component = BTreeSet::from([seed.clone()]);
+        loose.remove(&seed);
+        loop {
+            let reached: Vec<String> = loose
+                .iter()
+                .filter(|k| component.iter().any(|m| related(k, m)))
+                .cloned()
+                .collect();
+            if reached.is_empty() {
+                break;
+            }
+            for k in reached {
+                loose.remove(&k);
+                component.insert(k);
+            }
+        }
+        unknown.push(component);
+    }
+
+    let mut groups: Vec<Group> = members
+        .into_iter()
+        .filter_map(|(r#ref, keys)| match r#ref {
+            Some(r#ref) => ref_group(
+                r#ref, &keys, &claims, &assigned, &tied, &proposals, &present,
+            ),
+            None => cf_group(&keys, &claims, &present),
+        })
+        .chain(unknown.into_iter().filter_map(|keys| {
+            let folders = folders_of(&keys, &present);
+            Some(Group {
+                primary: shape_primary(None, &folders)?,
+                folders,
+                tier: Tier::Unknown,
+                claim: None,
+                alternatives: Vec::new(),
+                unloaded_folders: Vec::new(),
+            })
+        }))
+        .collect();
+    groups.sort_by(|a, b| a.primary.key().cmp(b.primary.key()));
+    groups
+}
+
+/// The order ties are broken in: more covered candidates first; two WoWInterface
+/// projects by `UIName` equal to the folder, then downloads, then recency; two GitHub
+/// refs (catalog entries) by name equal to the folder; then the ref. Classes come in
+/// ref identity order (`gh:` before `tukui:` before `wowi:`), so the key is a total order.
+type TieKey = (Reverse<usize>, u8, u8, Reverse<u64>, Reverse<i64>);
+
+fn tie_key(
+    r: &Ref,
+    coverage: usize,
+    name: Option<&str>,
+    folder: &FolderName,
+    lookups: &AdoptLookups<'_>,
+) -> TieKey {
+    let named =
+        |n: Option<&str>| u8::from(!n.is_some_and(|n| n.eq_ignore_ascii_case(folder.as_str())));
+    match r {
+        Ref::GitHub { .. } | Ref::Git { .. } => {
+            (Reverse(coverage), 0, named(name), Reverse(0), Reverse(0))
+        }
+        Ref::Tukui { .. } => (Reverse(coverage), 1, 0, Reverse(0), Reverse(0)),
+        Ref::Wowi { id } => {
+            let project = lookups.wowi.and_then(|w| w.by_uid(*id));
+            let same = project
+                .as_ref()
+                .is_some_and(|p| normalise(&p.name) == normalise(folder.as_str()));
+            (
+                Reverse(coverage),
+                2,
+                u8::from(!same),
+                Reverse(project.as_ref().map_or(0, |p| p.downloads)),
+                Reverse(project.as_ref().map_or(0, |p| p.date_ms)),
+            )
+        }
+        _ => (Reverse(coverage), 3, 0, Reverse(0), Reverse(0)),
+    }
+}
+
+/// The candidates of `keys`, as folder names sorted by key.
+fn folders_of(
+    keys: &BTreeSet<String>,
+    present: &BTreeMap<String, &CandidateFolder>,
+) -> Vec<FolderName> {
+    keys.iter()
+        .filter_map(|k| present.get(k).map(|c| c.folder.clone()))
+        .collect()
+}
+
+/// A group's primary folder by shape (and repository name), for ordering and for
+/// groups without a claim; `None` only for no folders.
+fn shape_primary(r#ref: Option<&Ref>, folders: &[FolderName]) -> Option<FolderName> {
+    let found = match r#ref {
+        Some(r) => primary_folder(r, folders, None),
+        None => primary_by_shape(folders),
+    };
+    found.or_else(|| folders.first()).cloned()
+}
+
+/// A group claimed by `r#ref` (rule 4): its tier from its members' own evidence.
+fn ref_group(
+    r#ref: Ref,
+    keys: &BTreeSet<String>,
+    claims: &BTreeMap<String, Vec<Claim>>,
+    assigned: &BTreeMap<String, (Ref, u8)>,
+    tied: &BTreeMap<String, Vec<Ref>>,
+    proposals: &[Proposal<'_>],
+    present: &BTreeMap<String, &CandidateFolder>,
+) -> Option<Group> {
+    let own = |key: &String| claims.get(key).map(Vec::as_slice).unwrap_or_default();
+    // ubs:ignore — comparing refs, not secrets
+    let for_ref = |c: &&Claim| c.r#ref.as_ref() == Some(&r#ref);
+    // Each member's best rank for the group's ref, when it has its own evidence for it.
+    let best: BTreeMap<&String, u8> = keys
+        .iter()
+        .filter_map(|k| {
+            own(k)
+                .iter()
+                .filter(for_ref)
+                .map(|c| c.evidence.rank())
+                .min()
+                .map(|rank| (k, rank))
+        })
+        .collect();
+    let rank = best.values().copied().max().unwrap_or_else(|| {
+        keys.iter()
+            .filter_map(|k| assigned.get(k).map(|(_, rank)| *rank))
+            .max()
+            .unwrap_or(6)
+    });
+    let strength = strength_of_rank(rank);
+    let contested = keys.iter().any(|k| tied.contains_key(k));
+    let tier = if contested || best.is_empty() {
+        Tier::Guess
+    } else {
+        match strength {
+            Strength::Catalog | Strength::TocId | Strength::Corroborated => Tier::Identified,
+            Strength::NameOnly => Tier::Guess,
+            Strength::CfOnly => Tier::CfOnly,
+        }
+    };
+
+    // Alternatives: tied refs first, then other refs members' own TOC ids or
+    // corroborated WoWInterface projects name.
+    let mut alternatives: Vec<Ref> = keys
+        .iter()
+        .filter_map(|k| tied.get(k))
+        .flatten()
+        .cloned()
+        .collect();
+    let mut disagreeing: Vec<(u8, Ref)> = keys
+        .iter()
+        .flat_map(&own)
+        .filter(|c| c.evidence.rank() <= 5)
+        .filter_map(|c| c.r#ref.clone().map(|r| (c.evidence.rank(), r)))
+        .collect();
+    disagreeing.sort();
+    alternatives.extend(disagreeing.into_iter().map(|(_, r)| r));
+    let mut seen: BTreeSet<Ref> = BTreeSet::new();
+    // ubs:ignore — comparing refs, not secrets
+    alternatives.retain(|r| *r != r#ref && seen.insert(r.clone()));
+    alternatives.truncate(ADOPT_MAX_ALTERNATIVES);
+
+    // Evidence: each member's own at its best rank, and the alternatives' claims.
+    let mut evidence: Vec<Evidence> = keys
+        .iter()
+        .flat_map(|k| {
+            let at = best.get(k).copied();
+            own(k)
+                .iter()
+                .filter(for_ref)
+                .filter(move |c| Some(c.evidence.rank()) == at)
+                .map(|c| c.evidence)
+        })
+        .chain(keys.iter().flat_map(&own).filter_map(|c| {
+            c.r#ref
+                .as_ref()
+                .filter(|r| alternatives.contains(r))
+                .map(|_| c.evidence)
+        }))
+        .collect();
+    evidence.sort();
+    evidence.dedup();
+
+    // Name: the best own claim's, else the assigning proposal's.
+    let name = keys
+        .iter()
+        .filter_map(|k| {
+            own(k)
+                .iter()
+                .filter(for_ref)
+                .min_by_key(|c| c.evidence.rank())
+                .map(|c| (c.evidence.rank(), k, c.name.clone()))
+        })
+        .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)))
+        .and_then(|(_, _, name)| name)
+        .or_else(|| {
+            proposals
+                .iter()
+                .filter(|p| p.r#ref == r#ref && p.covered.iter().any(|k| keys.contains(k)))
+                .min_by_key(|p| p.rank)
+                .and_then(|p| p.claim.name.clone())
+        });
+
+    let folders = folders_of(keys, present);
+    let primary = primary_folder(&r#ref, &folders, name.as_deref())
+        .cloned()
+        .or_else(|| shape_primary(Some(&r#ref), &folders))?;
+    Some(Group {
+        folders,
+        primary,
+        tier,
+        claim: Some(GroupClaim {
+            r#ref: Some(r#ref),
+            strength,
+            evidence,
+            name,
+        }),
+        alternatives,
+        unloaded_folders: Vec::new(),
+    })
+}
+
+/// A group with only a CurseForge or Wago id (and its joiners).
+fn cf_group(
+    keys: &BTreeSet<String>,
+    claims: &BTreeMap<String, Vec<Claim>>,
+    present: &BTreeMap<String, &CandidateFolder>,
+) -> Option<Group> {
+    let mut evidence: Vec<Evidence> = keys
+        .iter()
+        .filter_map(|k| claims.get(k))
+        .flatten()
+        .map(|c| c.evidence)
+        .collect();
+    evidence.sort();
+    evidence.dedup();
+    let folders = folders_of(keys, present);
+    Some(Group {
+        primary: shape_primary(None, &folders)?,
+        folders,
+        tier: Tier::CfOnly,
+        claim: Some(GroupClaim {
+            r#ref: None,
+            strength: Strength::CfOnly,
+            evidence,
+            name: None,
+        }),
+        alternatives: Vec::new(),
+        unloaded_folders: Vec::new(),
+    })
 }
 
 /// A Tukui project from [`TUKUI_BUILTIN`].
@@ -1217,6 +1715,58 @@ mod tests {
         assert!(!names_match("", "Bagnon"));
         assert!(!names_match("!!!", "!!!"), "empty once normalised");
         assert!(!names_match("Details", "Bagnon"));
+    }
+
+    #[test]
+    fn joining_prefixes_need_three_characters() {
+        assert_eq!(prefix("DBM-Core").as_deref(), Some("dbm"));
+        assert_eq!(prefix("BigWigs_Core").as_deref(), Some("bigwigs"));
+        assert_eq!(prefix("Plain").as_deref(), Some("plain"));
+        assert_eq!(prefix("UI_Thing"), None);
+        assert_eq!(prefix("ab"), None);
+    }
+
+    #[test]
+    fn a_proposal_whose_folder_went_elsewhere_carries_nothing() {
+        // Lib is the catalog's (rank 1); its TOC's Tukui project (rank 2) also lists Mod,
+        // which has no evidence of its own. Once Lib is gh:z/z, the tukui:elvui
+        // proposal is discarded, so Mod is not pulled into it.
+        let catalog = FakeCatalog(vec![entry("Zed", &[], "gh:z/z", &[], &["Lib"])]);
+        let l = lookups(&catalog, None, None);
+        let tukui = toc(
+            None,
+            None,
+            &[
+                ("X-Tukui-ProjectID", "-2"),
+                ("X-Tukui-ProjectFolders", "Lib, Mod"),
+            ],
+        );
+        let candidates = [
+            candidate("Lib", Some(tukui)),
+            candidate("Mod", Some(toc(None, None, &[]))),
+        ];
+        let groups = identify(&candidates, &l);
+        let shown: Vec<(Vec<&str>, Option<String>, Tier)> = groups
+            .iter()
+            .map(|g| {
+                (
+                    g.folders.iter().map(FolderName::as_str).collect(),
+                    g.claim
+                        .as_ref()
+                        .and_then(|c| c.r#ref.as_ref())
+                        .map(ToString::to_string),
+                    g.tier,
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (vec!["Lib"], Some("gh:z/z".to_owned()), Tier::Identified),
+                (vec!["Mod"], None, Tier::Unknown),
+            ]
+        );
+        assert_eq!(groups[0].alternatives, [r("tukui:elvui")]);
     }
 
     /// A ref adoption can install from.
