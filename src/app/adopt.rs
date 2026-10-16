@@ -1,49 +1,70 @@
-//! `omaddons adopt [-t T] [--no-verify] [--refresh]`, report mode: which unmanaged
-//! folders come from where, and whether they are exactly a release. Changes nothing.
+//! `omaddons adopt [<folder>…] [-t T] [--apply] [--ref R] [--no-verify] [--refresh]`:
+//! which unmanaged folders come from where, whether they are exactly a release, and,
+//! when asked, bringing them under management as they are.
 //!
 //! Each target's unmanaged folders (inventory at full depth) are identified from their
 //! TOCs, the catalog, the Tukui list and the WoWInterface index, and grouped into addons
 //! with a tier (M2-D40, `resolve::adopt`). A group whose ref is already recorded on the
 //! target is a leftover of a managed addon, reported as `already_managed`. Then, unless
-//! `--no-verify`, each `identified` group's newest release is checked as installing it
-//! would (downloads through the blob cache, once per command) and compared, file by
-//! file, with the folders on disk: equal is `exact`. It writes only the release memo and
-//! the blob cache, `net.log` and an in-flight lock while downloading.
+//! `--no-verify`, each `identified` group the command looks at has its newest release
+//! checked as installing it would (downloads through the blob cache, once per command)
+//! and compared, file by file, with the folders on disk: equal is `exact`.
+//!
+//! Without folders or `--apply`, that report is all: it writes only the release memo and
+//! the blob cache, `net.log` and an in-flight lock while downloading. `--apply`, named
+//! folders and `--ref` ([`apply`]) then commit one records-only `adopt` transaction per
+//! target: records and index entries, never a folder.
+
+mod apply;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use self::apply::{Act, Mode};
 use super::engine::Engine;
-use super::outcome::TargetRef;
+use super::outcome::{TargetRef, TargetsData};
 use super::status::modes_or_family;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
-use crate::engine::plan::Checked;
+use crate::engine::inspect::ArchiveLimits;
+use crate::engine::plan::{Checked, ReleaseCheck};
 use crate::engine::tx::CheckJob;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Warning};
-use crate::inventory::{Depth, inventory};
-use crate::model::{FolderName, Ref, VersionConfidence};
+use crate::inventory::{Depth, FolderEntry, inventory};
+use crate::model::{FolderName, Ref, TxId, VersionConfidence};
 use crate::output::{Outcome, Phase, Style};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::adopt::{
     AdoptLookups, AdoptTukui, AdoptWowi, CandidateFolder, Evidence, Group, Strength, Tier,
     TukuiProject, WowiProject, identify, normalise,
 };
-use crate::resolve::cache::{Fetched, Freshness, Origin};
+use crate::resolve::cache::{Fetched, Freshness, Origin, ReleaseCache};
 use crate::resolve::catalog::Catalog;
 use crate::resolve::select::select;
 use crate::sources::wowi::index::{IndexPolicy, WowiIndex};
 use crate::sources::{SourceId, SourceSkipReason, SourceSkipped, Wanted};
 use crate::state::files_index::{FolderIndex, index_live_folder};
-use crate::state::memo::TukuiList;
+use crate::state::memo::{CandidateFact, TukuiList};
+use crate::state::records::TargetRecord;
 
-/// `adopt`'s own arguments (report mode).
+/// `adopt`'s arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct AdoptArgs {
+    /// Adopt the addons these folders belong to (a guess too, unless it has rivals)
+    #[arg(value_name = "FOLDER")]
+    pub folders: Vec<String>,
+    /// Adopt every exact and identified addon (never a guess)
+    #[arg(long)]
+    pub apply: bool,
+    /// Where the one folder named comes from (anything install accepts); re-points the
+    /// addon when it is already managed
+    #[arg(long = "ref", value_name = "REF")]
+    pub r#ref: Option<String>,
     /// Identify only: download nothing, compare nothing
     #[arg(long)]
     pub no_verify: bool,
@@ -52,9 +73,19 @@ pub struct AdoptArgs {
     pub refresh: bool,
 }
 
-/// `adopt`'s data.
+/// `adopt`'s data: the report, or what adopting did.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct AdoptData {
+#[serde(untagged)]
+pub enum AdoptData {
+    /// No folders and no `--apply`.
+    Report(AdoptReport),
+    /// `--apply`, named folders or `--ref`: the multi-target result.
+    Adopted(TargetsData),
+}
+
+/// The report.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AdoptReport {
     /// What checking against releases will do; `null` under `--no-verify`.
     pub verify: Option<VerifyPlan>,
     /// Every selected target, sorted by id.
@@ -156,11 +187,14 @@ pub enum FailReason {
 pub struct AdoptOutcome {
     data: AdoptData,
     warnings: Vec<Warning>,
+    commands: Vec<CommandHint>,
     partial: bool,
-    /// Per target, in `data.targets` order: `retail (12.1.5, mainline)`.
+    /// The report's targets, in `targets` order: `retail (12.1.5, mainline)`.
     headings: Vec<String>,
     /// The announcement before checking, for humans.
     announcement: Option<String>,
+    /// Each committed transaction's global lock hold time, for `-v` log lines.
+    pub locks: Vec<(TxId, u64)>,
     /// For `-v` log lines.
     pub notes: Vec<String>,
 }
@@ -181,18 +215,30 @@ impl Outcome for AdoptOutcome {
     }
 
     fn commands(&self) -> &[CommandHint] {
-        &[]
+        &self.commands
     }
 
     fn partial(&self) -> bool {
-        self.partial
+        match &self.data {
+            AdoptData::Report(_) => self.partial,
+            AdoptData::Adopted(data) => data.partial(),
+        }
     }
 
     fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
         if let Some(line) = &self.announcement {
             writeln!(w, "{line}")?;
         }
-        for (t, heading) in self.data.targets.iter().zip(&self.headings) {
+        match &self.data {
+            AdoptData::Report(report) => self.render_report(w, report),
+            AdoptData::Adopted(data) => super::outcome::render(w, "adopt", data, &[]),
+        }
+    }
+}
+
+impl AdoptOutcome {
+    fn render_report(&self, w: &mut dyn Write, report: &AdoptReport) -> std::io::Result<()> {
+        for (t, heading) in report.targets.iter().zip(&self.headings) {
             writeln!(w, "{heading}: {} unmanaged", t.unmanaged)?;
             let width = t
                 .groups
@@ -216,10 +262,11 @@ impl Outcome for AdoptOutcome {
                 };
                 writeln!(
                     w,
-                    "  {:<width$}  {:<10}  {source}  {}{folders}{why}",
+                    "  {:<width$}  {:<10}  {source}  {}{folders}{why}{}",
                     g.name,
                     tier_text(g.tier),
-                    g.version
+                    g.version,
+                    group_note(g)
                 )?;
             }
             for f in &t.failed {
@@ -230,6 +277,9 @@ impl Outcome for AdoptOutcome {
                     fail_text(f.reason)
                 )?;
             }
+        }
+        if let Some(apply) = self.commands.iter().find(|c| c.action() == "adopt") {
+            writeln!(w, "Apply exact + identified: {}", apply.command())?;
         }
         Ok(())
     }
@@ -260,6 +310,21 @@ const fn fail_text(reason: FailReason) -> &'static str {
         FailReason::AlreadyManaged => "its addon is already managed",
         FailReason::Unindexable => "it holds a link or an unreadable file",
         FailReason::LimitExceeded => "it is larger than the archive limits",
+    }
+}
+
+/// What a report line adds for a group `--apply` leaves alone.
+fn group_note(g: &AdoptGroup) -> String {
+    match g.tier {
+        Tier::Guess if !g.alternatives.is_empty() => {
+            let others: Vec<String> = g.alternatives.iter().map(ToString::to_string).collect();
+            format!(
+                " — not applied; choose with --ref (or {})",
+                others.join(" or ")
+            )
+        }
+        Tier::CfOnly => " — CurseForge arrives in M5; pass --ref".to_owned(),
+        _ => String::new(),
     }
 }
 
@@ -345,35 +410,75 @@ fn skip_reason(error: &Error) -> SourceSkipReason {
     }
 }
 
-/// One target's identification, before checking.
+/// One target's identification, and what the command does there.
 struct TargetWork<'w> {
     discovered: &'w DiscoveredTarget,
     unmanaged: u32,
+    /// Its AddOns entries, for the folders named.
+    entries: Vec<FolderEntry>,
     candidates: Vec<CandidateFolder>,
     groups: Vec<GroupWork>,
+    /// Groups whose ref is already recorded here, each with the addon recording it.
+    leftovers: Vec<(Group, String)>,
     failed: Vec<FailedFolder>,
+    /// What adopting does here; empty in report mode.
+    acts: Vec<Act>,
 }
 
 /// One group and what checking it found.
 struct GroupWork {
     group: Group,
     reason: Option<AdoptReason>,
-    /// `exact`: the release.
-    release: Option<(String, String)>,
+    /// The release the folders are exactly.
+    exact: Option<Exact>,
     /// Folders the release ships that this client does not load.
     unloaded: Vec<FolderName>,
     /// The live folders' indexes, by key, once indexed.
     indexes: BTreeMap<String, FolderIndex>,
+    /// Why a folder could not be indexed (the first one).
+    index_error: Option<Error>,
+    /// The command adopts it (so it is the one checked).
+    chosen: bool,
 }
 
-/// Runs `adopt` in report mode.
+impl GroupWork {
+    fn new(group: Group) -> Self {
+        Self {
+            reason: (group.tier == Tier::Identified).then_some(AdoptReason::NotVerified),
+            group,
+            exact: None,
+            unloaded: Vec::new(),
+            indexes: BTreeMap::new(),
+            index_error: None,
+            chosen: false,
+        }
+    }
+}
+
+/// The release a group's folders are, file for file.
+struct Exact {
+    release_id: String,
+    version: String,
+    blob_sha256: Option<String>,
+}
+
+/// Runs `adopt`.
 pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
+    let mode = Mode::of(ctx, args)?;
     let world = World::load()?;
     let mut warnings = world.warnings.clone();
     let mut notes: Vec<String> = Vec::new();
-    let mut partial = false;
-    let targets: Vec<&DiscoveredTarget> = world.select_many(ctx)?;
     let records = world.records()?;
+    let (catalog, catalog_warnings) = Catalog::load(&world.paths);
+    warnings.extend(catalog_warnings);
+    // `--ref` lands on one target, with the ref read as `install` reads it.
+    let (targets, over) = match &mode {
+        Mode::Ref { folder, r#ref } => (
+            vec![apply::ref_target(ctx, &world, folder)?],
+            Some(apply::parse_override(&world, &records, &catalog, r#ref)?),
+        ),
+        _ => (world.select_many(ctx)?, None),
+    };
     let engine = Engine::new(ctx, &world, "adopt")?;
     let enabled = engine.enabled_sources();
     // `--offline` wins over `--refresh`.
@@ -397,8 +502,6 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
                 reset_at: None,
             })
             .collect();
-    let (catalog, catalog_warnings) = Catalog::load(&world.paths);
-    warnings.extend(catalog_warnings);
     let tukui_list = if enabled.contains(&SourceId::Tukui) {
         match cache.tukui_list() {
             Ok(list) => Some(list),
@@ -456,81 +559,300 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
             tukui: tukui.as_ref().map(|t| t as &dyn AdoptTukui),
             wowi: wowi.as_ref().map(|w| w as &dyn AdoptWowi),
         };
-        let recorded: Vec<&Ref> = record
-            .map(|r| r.addons.values().map(|a| &a.r#ref).collect())
-            .unwrap_or_default();
-        let mut failed = Vec::new();
-        let mut groups = Vec::new();
-        for group in identify(&candidates, &lookups) {
-            let r = group.claim.as_ref().and_then(|c| c.r#ref.as_ref());
-            if r.is_some_and(|r| recorded.contains(&r)) {
-                failed.extend(group.folders.iter().map(|f| FailedFolder {
-                    folder: f.as_str().to_owned(),
-                    reason: FailReason::AlreadyManaged,
-                }));
-                continue;
-            }
-            groups.push(GroupWork {
-                reason: (group.tier == Tier::Identified).then_some(AdoptReason::NotVerified),
-                group,
-                release: None,
-                unloaded: Vec::new(),
-                indexes: BTreeMap::new(),
-            });
-        }
-        works.push(TargetWork {
+        let mut work = TargetWork {
             discovered: d,
             unmanaged: inv.counts.unmanaged,
-            candidates,
+            entries: Vec::new(),
+            candidates: Vec::new(),
+            groups: Vec::new(),
+            leftovers: Vec::new(),
+            failed: Vec::new(),
+            acts: Vec::new(),
+        };
+        for group in identify(&candidates, &lookups) {
+            let claimed = group.claim.as_ref().and_then(|c| c.r#ref.as_ref());
+            if let Some(owner) = claimed.and_then(|r| recorded_as(record, r)) {
+                work.failed
+                    .extend(group.folders.iter().map(|f| FailedFolder {
+                        folder: f.as_str().to_owned(),
+                        reason: FailReason::AlreadyManaged,
+                    }));
+                work.leftovers.push((group, owner));
+                continue;
+            }
+            work.groups.push(GroupWork::new(group));
+        }
+        work.entries = inv.folders;
+        work.candidates = candidates;
+        works.push(work);
+    }
+
+    // What adopting takes; in report mode, nothing.
+    apply::choose(&mode, &mut works, &records, over.as_ref());
+
+    // Exactness: each identified group the command looks at whose source is on, checked
+    // against its newest release.
+    let checks = Checks {
+        ctx,
+        world: &world,
+        engine: &engine,
+        cache: &cache,
+        enabled: &enabled,
+        all: matches!(mode, Mode::Report),
+    };
+    let verified = if args.no_verify {
+        Verified::default()
+    } else {
+        checks.verify(&mut works)?
+    };
+    notes.extend(verified.notes);
+    warnings.extend(verified.warnings);
+    let announcement = verified.plan.as_ref().map(|(_, line)| line.clone());
+
+    if !matches!(mode, Mode::Report) {
+        let committed = apply::commit(ctx, &engine, &cache, works, &records);
+        let mut facts = verified.facts;
+        if let Ok(c) = &committed {
+            facts.extend(c.facts.iter().cloned());
+        }
+        let remembered = cache.remember(&facts);
+        warnings.extend(remembered.warnings);
+        notes.extend(remembered.notes);
+        let committed = committed?;
+        warnings.extend(committed.warnings.iter().cloned());
+        notes.extend(committed.notes.iter().cloned());
+        if let Some(error) = committed.failure() {
+            return Err(error);
+        }
+        let data = committed.data.listing(ctx.output.style.verbose > 0);
+        let commands = data.undo_commands();
+        return Ok(AdoptOutcome {
+            data: AdoptData::Adopted(data),
+            warnings: unique(warnings),
+            commands,
+            partial: false,
+            headings: Vec::new(),
+            announcement,
+            locks: committed.locks,
+            notes,
+        });
+    }
+
+    let remembered = cache.remember(&verified.facts);
+    warnings.extend(remembered.warnings);
+    notes.extend(remembered.notes);
+    let mut out_targets = Vec::new();
+    let mut headings = Vec::new();
+    for work in works {
+        let t = &work.discovered.target;
+        let modes = world.table.mode_names(t.product.as_deref());
+        let v = t.version;
+        headings.push(format!(
+            "{} ({}.{}.{}, {})",
+            t.id,
+            v.major,
+            v.minor,
+            v.patch,
+            modes_or_family(&modes, t.family)
+        ));
+        let mut groups: Vec<AdoptGroup> = work
+            .groups
+            .into_iter()
+            .map(|gw| render(gw, &work.candidates))
+            .collect();
+        groups.sort_by(|a, b| {
+            a.tier
+                .cmp(&b.tier)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                .then_with(|| a.primary.key().cmp(b.primary.key()))
+        });
+        let mut failed = work.failed;
+        failed.sort_by_key(|f| f.folder.to_lowercase());
+        failed.dedup();
+        out_targets.push(AdoptTarget {
+            target: TargetRef {
+                id: t.id.clone(),
+                key: t.key,
+                mode: None,
+            },
+            unmanaged: work.unmanaged,
             groups,
             failed,
         });
     }
+    let commands = report_commands(ctx, &out_targets);
+    Ok(AdoptOutcome {
+        data: AdoptData::Report(AdoptReport {
+            verify: verified.plan.map(|(plan, _)| plan),
+            targets: out_targets,
+            sources_skipped,
+        }),
+        warnings: unique(warnings),
+        commands,
+        partial: verified.partial,
+        headings,
+        announcement,
+        locks: Vec::new(),
+        notes,
+    })
+}
 
-    // Exactness: each identified group whose source is on, checked against its newest
-    // release.
-    let mut verify_plan = None;
-    if !args.no_verify {
+/// The addon on this target that records `r`.
+fn recorded_as(record: Option<&TargetRecord>, r: &Ref) -> Option<String> {
+    record?
+        .addons
+        .values()
+        .find(|a| a.r#ref.identity() == r.identity())
+        .map(|a| a.name.clone())
+}
+
+/// `warnings` without repeats, first occurrence kept.
+fn unique(warnings: Vec<Warning>) -> Vec<Warning> {
+    let mut unique: Vec<Warning> = Vec::new();
+    for w in warnings {
+        if !unique.contains(&w) {
+            unique.push(w);
+        }
+    }
+    unique
+}
+
+/// The report's runnable commands: `adopt --apply` when something is exact or
+/// identified (scoped to its one target, else to the user's own `-t`: never wider),
+/// then per guess `adopt <folder>`, or, when it has rivals, `adopt <folder> --ref <r>`
+/// for its ref and each alternative.
+fn report_commands(ctx: &Context, targets: &[AdoptTarget]) -> Vec<CommandHint> {
+    let mut commands = Vec::new();
+    let applicable: Vec<&str> = targets
+        .iter()
+        .filter(|t| {
+            t.groups
+                .iter()
+                .any(|g| matches!(g.tier, Tier::Exact | Tier::Identified))
+        })
+        .map(|t| t.target.id.as_str())
+        .collect();
+    if !applicable.is_empty() {
+        let mut argv = vec!["omaddons".to_owned(), "adopt".into(), "--apply".into()];
+        match (applicable.as_slice(), &ctx.target) {
+            ([one], _) => argv.extend(["-t".to_owned(), (*one).to_owned()]),
+            (_, Some(selector)) => argv.extend(["-t".to_owned(), selector.clone()]),
+            _ => {}
+        }
+        commands.push(CommandHint::new("adopt", argv, false));
+    }
+    for t in targets {
+        let id = t.target.id.as_str();
+        for g in t.groups.iter().filter(|g| g.tier == Tier::Guess) {
+            let folder = g.primary.as_str();
+            if g.alternatives.is_empty() {
+                commands.push(CommandHint::new(
+                    "adopt_folder",
+                    ["omaddons", "adopt", folder, "-t", id],
+                    false,
+                ));
+                continue;
+            }
+            for r in apply::ref_choices(g.r#ref.as_ref(), &g.alternatives) {
+                commands.push(CommandHint::new(
+                    "adopt_with_ref",
+                    apply::with_ref_argv(folder, &r, id),
+                    false,
+                ));
+            }
+        }
+    }
+    commands
+}
+
+/// Indexes each of the group's folders not indexed yet, under `limits`, and returns
+/// those that failed. The first failure is kept in `index_error`; once a group has one,
+/// it is not indexed again.
+fn index_group(
+    gw: &mut GroupWork,
+    addons: &Path,
+    limits: &ArchiveLimits,
+) -> Vec<(FolderName, Error)> {
+    if gw.index_error.is_some() {
+        return Vec::new();
+    }
+    let mut failed = Vec::new();
+    for folder in &gw.group.folders {
+        if gw.indexes.contains_key(folder.key()) {
+            continue;
+        }
+        match index_live_folder(&addons.join(folder.as_str()), limits) {
+            Ok(index) => {
+                gw.indexes.insert(folder.key().to_owned(), index);
+            }
+            Err(error) => failed.push((folder.clone(), error)),
+        }
+    }
+    gw.index_error = failed.first().map(|(_, e)| e.clone());
+    failed
+}
+
+/// What checking shares.
+struct Checks<'a> {
+    ctx: &'a Context,
+    world: &'a World,
+    engine: &'a Engine,
+    cache: &'a ReleaseCache<'a>,
+    enabled: &'a BTreeSet<SourceId>,
+    /// Every identified group (the report), else only the chosen ones.
+    all: bool,
+}
+
+/// What checking found besides each group's answer.
+#[derive(Default)]
+struct Verified {
+    /// The plan and its announcement.
+    plan: Option<(VerifyPlan, String)>,
+    /// For the release memo.
+    facts: Vec<CandidateFact>,
+    notes: Vec<String>,
+    warnings: Vec<Warning>,
+    /// A retryable failure (the report is partial).
+    partial: bool,
+}
+
+impl Checks<'_> {
+    /// Checks each identified group in scope against its newest release (see the
+    /// module docs) and records each answer in its group.
+    fn verify(&self, works: &mut [TargetWork<'_>]) -> Result<Verified> {
+        let (ctx, engine, cache) = (self.ctx, self.engine, self.cache);
+        let mut out = Verified::default();
         let channel = engine.default_channel();
+        let limits = engine.archive_limits();
         let mut to_check: Vec<(usize, usize, Wanted)> = Vec::new();
         for (t, work) in works.iter_mut().enumerate() {
             let addons = work.discovered.target.addons_dir();
             for (g, gw) in work.groups.iter_mut().enumerate() {
-                if gw.group.tier != Tier::Identified {
+                if gw.group.tier != Tier::Identified || !(self.all || gw.chosen) {
                     continue;
                 }
                 let Some(r) = gw.group.claim.as_ref().and_then(|c| c.r#ref.clone()) else {
                     continue;
                 };
-                if !enabled.contains(&SourceId::of(&r)) {
+                if !self.enabled.contains(&SourceId::of(&r)) {
                     continue;
                 }
                 if ctx.offline && cache.entry(&r, channel).is_none() {
                     gw.reason = Some(AdoptReason::NotVerifiedOffline);
                     continue;
                 }
-                let mut indexed = true;
-                for folder in &gw.group.folders {
-                    match index_live_folder(&addons.join(folder.as_str()), &engine.archive_limits())
-                    {
-                        Ok(index) => {
-                            gw.indexes.insert(folder.key().to_owned(), index);
-                        }
-                        Err(error) => {
-                            let reason = match error.details["reason"].as_str() {
-                                Some("limit_exceeded") => FailReason::LimitExceeded,
-                                _ => FailReason::Unindexable,
-                            };
-                            notes.push(format!("adopt: {}", error.message));
-                            work.failed.push(FailedFolder {
-                                folder: folder.as_str().to_owned(),
-                                reason,
-                            });
-                            indexed = false;
-                        }
-                    }
+                let failed = index_group(gw, &addons, &limits);
+                for (folder, error) in &failed {
+                    out.notes.push(format!("adopt: {}", error.message));
+                    work.failed.push(FailedFolder {
+                        folder: folder.as_str().to_owned(),
+                        reason: match error.details["reason"].as_str() {
+                            Some("limit_exceeded") => FailReason::LimitExceeded,
+                            _ => FailReason::Unindexable,
+                        },
+                    });
                 }
-                if !indexed {
+                if gw.index_error.is_some() {
                     continue;
                 }
                 to_check.push((
@@ -573,14 +895,16 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
                     } else {
                         AdoptReason::SourceError
                     });
-                    notes.push(format!("adopt: {}: {}", w.r#ref, error.message));
+                    out.notes
+                        .push(format!("adopt: {}: {}", w.r#ref, error.message));
                     if error.retryable {
-                        warnings.push(Warning::item(error));
-                        partial = true;
+                        out.warnings.push(Warning::item(error));
+                        out.partial = true;
                     }
                     continue;
                 }
             };
+            let name_hint = gw.group.claim.as_ref().and_then(|c| c.name.clone());
             let Some(work) = works.get(t) else { continue };
             let target = &work.discovered.target;
             plan.groups += 1;
@@ -593,7 +917,7 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
                         Some(crate::model::ExpectedHash::Sha256(sha)) => Some(sha.clone()),
                         _ => None,
                     });
-                let in_cache = known.is_some_and(|sha| world.paths.blob(&sha).is_file());
+                let in_cache = known.is_some_and(|sha| self.world.paths.blob(&sha).is_file());
                 if in_cache {
                     cached += 1;
                 } else if uncached.insert((top.release_id.clone(), top.asset.filename.clone())) {
@@ -601,11 +925,6 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
                     plan.bytes += top.asset.size.unwrap_or(0);
                 }
             }
-            let name_hint = works
-                .get(t)
-                .and_then(|work| work.groups.get(g))
-                .and_then(|gw| gw.group.claim.as_ref())
-                .and_then(|c| c.name.clone());
             jobs.push((
                 t,
                 g,
@@ -625,17 +944,14 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
         );
         ctx.progress
             .announce(Phase::Download, plan.downloads as u64, &announcement);
-        verify_plan = Some((plan, announcement));
+        out.plan = Some((plan, announcement));
 
         let job_list: Vec<CheckJob> = jobs.iter().map(|(_, _, j)| j.clone()).collect();
-        let checked = engine.check_releases(&job_list, &cache)?;
-        notes.extend(checked.notes.notes.iter().cloned());
+        let checked = engine.check_releases(&job_list, cache)?;
+        out.notes.extend(checked.notes.notes.iter().cloned());
         let total = jobs.len() as u64;
         for ((t, g, job), result) in jobs.into_iter().zip(checked.results) {
-            let Some(work) = works.get_mut(t) else {
-                continue;
-            };
-            let Some(gw) = work.groups.get_mut(g) else {
+            let Some(gw) = works.get_mut(t).and_then(|work| work.groups.get_mut(g)) else {
                 continue;
             };
             ctx.progress.event(
@@ -646,100 +962,35 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
             match result {
                 Ok(Checked::Loads(check)) => compare(gw, &check),
                 Ok(Checked::Refused(why)) => {
-                    notes.push(format!("adopt: {}: {why}", job.wanted.r#ref));
+                    out.notes
+                        .push(format!("adopt: {}: {why}", job.wanted.r#ref));
                     gw.reason = Some(AdoptReason::SourceError);
                 }
                 Err(error) => {
-                    notes.push(format!("adopt: {}: {}", job.wanted.r#ref, error.message));
+                    out.notes
+                        .push(format!("adopt: {}: {}", job.wanted.r#ref, error.message));
                     gw.reason = Some(if error.code == ErrorCode::Offline {
                         AdoptReason::NotVerifiedOffline
                     } else {
                         AdoptReason::SourceError
                     });
                     if error.retryable {
-                        warnings.push(Warning::item(&error));
-                        partial = true;
+                        out.warnings.push(Warning::item(&error));
+                        out.partial = true;
                     }
                 }
             }
         }
-        let remembered = cache.remember(&checked.notes.facts);
-        warnings.extend(remembered.warnings);
-        notes.extend(remembered.notes);
-    } else {
-        let remembered = cache.remember(&[]);
-        warnings.extend(remembered.warnings);
-        notes.extend(remembered.notes);
+        out.facts = checked.notes.facts;
+        Ok(out)
     }
-
-    let mut out_targets = Vec::new();
-    let mut headings = Vec::new();
-    for work in works {
-        let t = &work.discovered.target;
-        let modes = world.table.mode_names(t.product.as_deref());
-        let v = t.version;
-        headings.push(format!(
-            "{} ({}.{}.{}, {})",
-            t.id,
-            v.major,
-            v.minor,
-            v.patch,
-            modes_or_family(&modes, t.family)
-        ));
-        let mut groups: Vec<AdoptGroup> = work
-            .groups
-            .into_iter()
-            .map(|gw| render(gw, &work.candidates))
-            .collect();
-        groups.sort_by(|a, b| {
-            a.tier
-                .cmp(&b.tier)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-                .then_with(|| a.primary.key().cmp(b.primary.key()))
-        });
-        let mut failed = work.failed;
-        failed.sort_by_key(|f| f.folder.to_lowercase());
-        failed.dedup();
-        out_targets.push(AdoptTarget {
-            target: TargetRef {
-                id: t.id.clone(),
-                key: t.key,
-                mode: None,
-            },
-            unmanaged: work.unmanaged,
-            groups,
-            failed,
-        });
-    }
-    let (verify, announcement) = match verify_plan {
-        Some((plan, line)) => (Some(plan), Some(line)),
-        None => (None, None),
-    };
-    let mut unique: Vec<Warning> = Vec::new();
-    for w in warnings {
-        if !unique.contains(&w) {
-            unique.push(w);
-        }
-    }
-    Ok(AdoptOutcome {
-        data: AdoptData {
-            verify,
-            targets: out_targets,
-            sources_skipped,
-        },
-        warnings: unique,
-        partial,
-        headings,
-        announcement,
-        notes,
-    })
 }
 
 /// One released folder: its key and its `(path, sha256)` set.
 type ReleasedFolder<'a> = (&'a str, BTreeSet<(&'a str, &'a str)>);
 
 /// Checks a group against its release ([`exactness`]) and records the answer.
-fn compare(gw: &mut GroupWork, check: &crate::engine::plan::ReleaseCheck) {
+fn compare(gw: &mut GroupWork, check: &ReleaseCheck) {
     let installs: Vec<ReleasedFolder<'_>> = check
         .install
         .iter()
@@ -758,7 +1009,11 @@ fn compare(gw: &mut GroupWork, check: &crate::engine::plan::ReleaseCheck) {
     gw.reason = reason;
     if reason.is_none() {
         gw.group.tier = Tier::Exact;
-        gw.release = Some((check.release_id.clone(), check.version.clone()));
+        gw.exact = Some(Exact {
+            release_id: check.release_id.clone(),
+            version: check.version.clone(),
+            blob_sha256: check.blob_sha256.clone(),
+        });
     }
 }
 
@@ -799,19 +1054,31 @@ fn exactness(
     (reason, unloaded)
 }
 
-/// A group as reported.
-fn render(gw: GroupWork, candidates: &[CandidateFolder]) -> AdoptGroup {
-    let toc_version = candidates
+/// The primary folder's `## Version`, else `unknown`.
+fn toc_version(candidates: &[CandidateFolder], primary: &FolderName) -> String {
+    candidates
         .iter()
-        .find(|c| c.folder == gw.group.primary)
+        .find(|c| c.folder == *primary)
         .and_then(|c| c.toc.as_ref())
         .and_then(|t| t.version.clone())
         .filter(|v| !v.trim().is_empty() && !v.contains("@project-version@"))
-        .unwrap_or_else(|| "unknown".to_owned());
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+/// A group as reported.
+fn render(gw: GroupWork, candidates: &[CandidateFolder]) -> AdoptGroup {
     let claim = gw.group.claim;
-    let (version, version_confidence, release_id) = match gw.release {
-        Some((release_id, version)) => (version, VersionConfidence::Release, Some(release_id)),
-        None => (toc_version, VersionConfidence::Toc, None),
+    let (version, version_confidence, release_id) = match gw.exact {
+        Some(exact) => (
+            exact.version,
+            VersionConfidence::Release,
+            Some(exact.release_id),
+        ),
+        None => (
+            toc_version(candidates, &gw.group.primary),
+            VersionConfidence::Toc,
+            None,
+        ),
     };
     AdoptGroup {
         name: claim

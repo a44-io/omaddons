@@ -60,6 +60,8 @@ mod support {
         "update the addon, or enable",
         "the AddOns filesystem does not support atomic renames",
         "use an archive built for this client",
+        // adopt: the ref to fill in
+        "omaddons adopt --ref <ref>",
         // missing_dependency
         "no keyless source ships",
         "install the one you use",

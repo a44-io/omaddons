@@ -185,8 +185,22 @@ fn adopt() {
     insta::assert_json_snapshot!("adopt_ok", s.stable(&c.envelope));
     let c = s.json(&["adopt", "--no-verify"], 0);
     assert_eq!(c.envelope["data"]["verify"], serde_json::Value::Null);
-    let c = s.json(&["adopt", "--apply"], 2);
+    let c = s.json(&["adopt", "--apply", "Foo"], 2);
     assert_eq!(c.envelope["error"]["code"], "usage");
+    let c = s.json(&["adopt", "--ref", "gh:o/foo"], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+    // A folder nothing identifies: the fix is the --ref text.
+    std::fs::create_dir_all(addons.join("Mystery")).unwrap();
+    std::fs::write(addons.join("Mystery/Mystery.toc"), "## Interface: 120105\n").unwrap();
+    let c = s.json(&["adopt", "Mystery", "-t", "retail", "--no-verify"], 3);
+    insta::assert_json_snapshot!("adopt_unknown_folder", s.stable(&c.envelope));
+    let c = s.json(&["adopt", "--apply", "-t", "retail"], 0);
+    insta::assert_json_snapshot!("adopt_apply", s.stable(&c.envelope));
+    let c = s.json(&["adopt", "Foo", "--ref", "gh:o/bar", "-t", "retail"], 0);
+    assert_eq!(
+        c.envelope["data"]["targets"][0]["items"][0]["status"],
+        "edited"
+    );
 }
 
 #[test]

@@ -272,6 +272,9 @@ warning_codes! {
     DesiredUnknownKey           = "desired_unknown_key";
     /// An `addons.toml` `[target.<id>]` section names no known client; it is skipped.
     DesiredUnknownTarget        = "desired_unknown_target";
+    /// An adopted addon's name was taken on its target: it is recorded as
+    /// `<name> (<primary folder>)`.
+    AdoptNameChanged            = "adopt_name_changed";
 }
 
 impl fmt::Display for WarningCode {
@@ -753,7 +756,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 26);
+        assert_eq!(WarningCode::ALL.len(), 27);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

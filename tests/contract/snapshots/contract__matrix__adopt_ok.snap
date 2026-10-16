@@ -4,7 +4,20 @@ expression: s.stable(&c.envelope)
 ---
 {
   "command": "adopt",
-  "commands": [],
+  "commands": [
+    {
+      "action": "adopt",
+      "argv": [
+        "omaddons",
+        "adopt",
+        "--apply",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons adopt --apply -t retail",
+      "destructive": false
+    }
+  ],
   "data": {
     "sources_skipped": [
       {

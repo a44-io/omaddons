@@ -316,6 +316,9 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
                 for note in &outcome.notes {
                     out.log(output::LogLevel::Debug, note);
                 }
+                for (tx, ms) in &outcome.locks {
+                    out.lock_released(Some(*ms), Some(*tx));
+                }
             }
             out.emit(result)
         }

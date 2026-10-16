@@ -143,7 +143,8 @@ pub struct ItemError {
     pub fix: String,
     pub fix_argv: Option<Vec<String>>,
     /// Only for a conflict between two works of one transaction
-    /// (`within_transaction: true`, with each folder and its claimant).
+    /// (`within_transaction: true`, with each folder and its claimant), and for an
+    /// `adopt` item refused before the engine (`folder`, and `owner`, `class` or `refs`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }
@@ -794,6 +795,15 @@ fn header(command: &str, dry_run: bool, t: &TargetResult) -> String {
     let n = changed.len();
     let addons = if n == 1 { "addon" } else { "addons" };
     let what = match kinds.as_slice() {
+        [ItemStatus::Adopted] => {
+            let folders: usize = changed
+                .iter()
+                .filter_map(|i| i.folders.as_ref())
+                .map(|f| f.recorded.len())
+                .sum();
+            let plural = if folders == 1 { "folder" } else { "folders" };
+            format!("adopted {n} {addons} ({folders} {plural})")
+        }
         [only] => format!("{} {n} {addons}", only.wire()),
         _ => {
             let parts: Vec<String> = kinds
@@ -811,13 +821,24 @@ fn header(command: &str, dry_run: bool, t: &TargetResult) -> String {
     } else {
         format!("{id}: {what}")
     };
+    // An adoption records folders as they are: `retail: adopted 2 addons (3 folders), tx
+    // 01M5… — no folder was changed`.
+    let adoption = t.kind == Some(TxKind::Adopt);
     if let Some(tx) = t.tx {
         let full = tx.to_string();
-        line.push_str(&format!(" (tx {}…)", full.get(..10).unwrap_or(&full)));
+        let short = full.get(..10).unwrap_or(&full);
+        if adoption {
+            line.push_str(&format!(", tx {short}…"));
+        } else {
+            line.push_str(&format!(" (tx {short}…)"));
+        }
     }
     match t.reload_required {
         ReloadRequired::Reload => line.push_str(" — /reload in game"),
         ReloadRequired::Restart => line.push_str(" — restart the game client"),
+        ReloadRequired::None if adoption && t.tx.is_some() => {
+            line.push_str(" — no folder was changed");
+        }
         ReloadRequired::None => {}
     }
     line

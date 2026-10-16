@@ -1,0 +1,73 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "adopt",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "dry_run": false,
+    "run": "<ulid>",
+    "summary": {
+      "changed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "targets": 1,
+      "unchanged": 0
+    },
+    "targets": [
+      {
+        "atomic_swap": true,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "error": null,
+            "folders": {
+              "added": [],
+              "recorded": [
+                "Foo"
+              ],
+              "removed": [],
+              "replaced": [],
+              "skipped": []
+            },
+            "from_version": null,
+            "name": "Foo",
+            "ref": "gh:o/foo",
+            "request": "Foo",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "adopted",
+            "to_version": "v1"
+          }
+        ],
+        "kind": "adopt",
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

@@ -72,7 +72,7 @@ expression: envelope
         "name": "unpin"
       },
       {
-        "about": "Report which unmanaged addons come from where, and whether they are exactly a release (changes nothing)",
+        "about": "Bring addons installed by hand or by other managers under management, as they are (records only, undoable); alone, report where they come from",
         "aliases": [],
         "group": "change",
         "name": "adopt"

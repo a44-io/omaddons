@@ -37,7 +37,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated`, `update`, `pin` and `sync` work, installs bring their catalog dependencies, WoWInterface and Tukui (ElvUI) addons install and update, and `adopt` reports where unmanaged addons come from. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated`, `update`, `pin` and `sync` work, installs bring their catalog dependencies, WoWInterface and Tukui (ElvUI) addons install and update, and `adopt` brings addons installed by hand or by other managers under management. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -133,7 +133,7 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | The CLI contract: one JSON envelope, typed errors with fixes (an argv whenever the fix is a command), exit codes 0 to 6, contract snapshot tests | ✅ Done (freezes in M4) |
 | Commands: `status`, `install`, `remove`, `undo`, `history`, `list`, `targets`, `info`, `config`, `net-log`, `help` | ✅ Done |
 | `outdated` (alias `check`): what has updates, on every client | ✅ Done (milestone 2) |
-| `adopt` (report mode): where unmanaged addons come from, and whether they are exactly a release | ✅ Done (milestone 2; adopting them is on the way) |
+| `adopt`: where unmanaged addons come from, whether they are exactly a release, and bringing them under management as they are (undoable) | ✅ Done (milestone 2) |
 | `update` (alias `upgrade`): every client's updates in one run, undone with one `undo` | ✅ Done (milestone 2) |
 | `pin` and `unpin`: hold an addon at its release through updates | ✅ Done (milestone 2) |
 | Dependencies: what a TOC requires installs with it, from the catalog | ✅ Done (milestone 2; more sources to come) |
@@ -843,12 +843,15 @@ When a fetch fails, a remembered answer is used and the warning says so; with no
 
 ### `adopt`
 
-Which unmanaged folders (installed by hand or by another manager) come from where, and whether they are exactly a release. Report mode changes nothing; adopting them arrives next.
+Bring folders installed by hand or by another manager under management, exactly as they are: only records change, never a folder. Alone, `adopt` reports where each unmanaged folder comes from and whether it is exactly a release, and changes nothing.
 
 ```bash
 omaddons adopt                    # every client: identify, then check against the newest releases
 omaddons adopt -t retail --no-verify   # identify only: no download
 omaddons adopt --refresh          # ask every source (and the WoWInterface index) now
+omaddons adopt --apply            # adopt every exact and identified addon (never a guess)
+omaddons adopt Bagnon -t retail   # adopt the addon this folder belongs to, a guess included
+omaddons adopt Bagnon --ref wowi:25068   # say where it comes from (anything install accepts)
 ```
 
 Each client's unmanaged folders are grouped into addons. The evidence, strongest first:
@@ -870,7 +873,24 @@ A folder that only requires another (`DBM-Extra` beside `DBM-Core`) joins its gr
 
 A TOC id that disagrees with stronger evidence is listed in `evidence` and `alternatives` and never chosen. Folders the release ships but this client does not load are listed in `unloaded_folders` and do not prevent `exact`. A folder whose addon is already managed (`already_managed`), or that holds a symlink (`unindexable`) or exceeds the archive limits (`limit_exceeded`), is listed in `failed`.
 
-Checking downloads each identified group's newest release once, through the download cache (announced first as `verify: {groups, downloads, bytes}`), so a second run downloads nothing. `--offline` checks only what the release memo and the cache already hold. `adopt` writes only the release memo, the download cache and `net.log`.
+Checking downloads each identified group's newest release once, through the download cache (announced first as `verify: {groups, downloads, bytes}`), so a second run downloads nothing. `--offline` checks only what the release memo and the cache already hold. The report writes only the release memo, the download cache and `net.log`. Its `commands` are runnable: `adopt` (`adopt --apply`, scoped to the one client that has something to apply, else to your own `-t`), `adopt_folder` for each guess, and `adopt_with_ref` for each candidate of a contested guess.
+
+**Adopting.** `--apply` adopts every `exact` and `identified` group of the selected clients. Folder names adopt the groups holding them, from `guess` up (`--apply` with folder names is a usage error). `--ref R` (exactly one folder, on one client: `-t`, else the only client that has it) decides where the folder comes from, overriding identification; on a folder already managed it re-points its addon to `R` instead, so the next `update` installs from there. Unless `--no-verify`, a group being adopted is checked as in the report. Each client gets one `adopt` transaction (one run: a bare `undo` reverts them all), with `reload_required: none`, allowed while the client runs. An `exact` group is recorded with its release (`version_confidence: release`); any other with its TOC's version (`toc`), so `outdated` and `update` treat it as an install of that version, and never replace it with a release built for an older interface (`blocked`, `older_than_installed`). Folders the client does not load stay unmanaged. A name another addon on the client already has is recorded as `<name> (<primary folder>)`, with an `adopt_name_changed` warning. Undo forgets the records and leaves every folder as it is.
+
+Each item is `adopted`, `edited` (re-pointed), `unchanged` or `failed`. A folder fails when it:
+
+| Is | Code | Fix |
+|---|---|---|
+| not in AddOns | `not_found` | `omaddons list -t <id> --unmanaged` |
+| identified by nothing | `not_found` | `omaddons adopt --ref <ref> <folder> -t <id>` (fill in the ref) |
+| known only to CurseForge or Wago | `source_disabled` | the same |
+| a guess with rivals, without `--ref` | `ref_ambiguous` | one `adopt <folder> --ref <r>` per candidate |
+| a leftover of a managed addon, or `--ref` names a ref another addon records | `ownership_conflict` (`details.owner`) | remove the leftover yourself, or pass the ref it belongs to |
+| a `Blizzard_*` folder | `protected_folder` | `omaddons list -t <id> --protected` |
+| a symlink or not an addon folder | `unmanaged_folder` (`details.class`) | `omaddons list -t <id> --unmanaged` |
+| unreadable, or larger than the archive limits | the indexer's error | `omaddons list -t <id> --unmanaged` |
+
+Folders are hashed before the lock and checked again under it: one that changed in between makes its client's transaction `plan_stale` (retryable), and nothing of it is recorded.
 
 ### `targets`
 
@@ -1075,6 +1095,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `stale_check` | an offline answer came from the release memo, whatever its age; it names the oldest remembered check |
 | `desired_unknown_key` | `addons.toml` has a key omaddons does not know (named, with its line); it is ignored |
 | `desired_unknown_target` | an `addons.toml` `[target.<id>]` section names no known client; its entries are skipped |
+| `adopt_name_changed` | an adopted addon's name was taken on its client; it is recorded as `<name> (<primary folder>)` |
 
 </details>
 
@@ -1145,7 +1166,7 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
 | Another managed addon's folder | `ownership_conflict`; `--force` transfers it and marks the old owner degraded |
 | An unmanaged folder | `unmanaged_folder`; `--force` replaces it, and the snapshot keeps the original for undo |
 
-Ownership comes only from omaddons' own records. Other managers' metadata is not read; `adopt` reports where their folders come from, and adopting them is milestone 2.
+Ownership comes only from omaddons' own records. Other managers' metadata is not read; [`adopt`](#adopt) identifies their folders and records them as they are.
 
 ### Hostile archives
 
@@ -1514,7 +1535,7 @@ Journals are recovered by the next command that commits a change, not by read co
 | Capability | State | Planned |
 |---|---|---|
 | Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing; WoWInterface and Tukui lookups, bridge folders and the dependency items in output are on the way | M2 |
-| Adopting addons installed by other managers | ⚠️ `adopt` reports where they come from and whether they are exact; adopting them is on the way | M2 |
+| Adopting addons installed by other managers | ✅ `adopt`; other `status`, `outdated` and `install` hints point to it soon | M2 |
 | `addons.toml`, `export`, `sync`, `copy` between clients | ⚠️ `sync` works; `sync --locked`, `sync --prune`, `export` and `copy` are on the way | M2 |
 | `search` | ❌ catalog names and links only | M2 |
 | Progress output | ⚠️ `install`, `update` and `outdated` report progress; the other long commands arrive with M2 | M2 |
