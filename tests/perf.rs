@@ -14,7 +14,7 @@ use common::home::Home;
 use common::http::{paths, replay, scenario};
 use jiff::Timestamp;
 use omaddons::model::{Channel, FolderName, Ref};
-use omaddons::sources::{SourceRegistry, Wanted, fetch_once};
+use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use omaddons::state::memo::{self, MemoEntry, ReleaseMemo};
 
 /// `status --cached` (the widget's view) with 100 records and a memo of 200 entries
@@ -34,10 +34,14 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
     .iter()
     .map(|r| Wanted::stable(r.parse().unwrap()))
     .collect();
-    let sets: Vec<_> = fetch_once(wanted, &SourceRegistry::builtin(), http.as_ref())
-        .into_values()
-        .map(Result::unwrap)
-        .collect();
+    let sets: Vec<_> = fetch_once(
+        wanted,
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    )
+    .into_values()
+    .map(Result::unwrap)
+    .collect();
     assert_eq!(sets.len(), 3);
 
     // Retail, registered by a first install, then 100 records.

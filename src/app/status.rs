@@ -427,7 +427,7 @@ impl Remembered {
         Self {
             memo,
             facts,
-            enabled: SourceRegistry::builtin().enabled(),
+            enabled: SourceRegistry::builtin(&world.sources()).enabled(),
             note,
         }
     }

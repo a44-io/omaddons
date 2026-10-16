@@ -899,6 +899,14 @@ pub struct Release {
     pub published_at: Option<Timestamp>,
     pub assets: Vec<Asset>,
     pub changelog_url: Option<String>,
+    /// Release notes as plain text, at most `CHANGELOG_MAX_CHARS` (and the cut's `…`),
+    /// when the source sends them with the release (WoWInterface's changelog).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    /// The addon's name as the source knows it (WoWInterface's `UIName`), which names
+    /// the primary folder when no catalog name applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_hint: Option<String>,
 }
 
 /// One downloadable or local artifact of a release.

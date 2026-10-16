@@ -264,6 +264,8 @@ mod tests {
             published_at: None,
             assets,
             changelog_url: None,
+            notes: None,
+            name_hint: None,
         }
     }
 

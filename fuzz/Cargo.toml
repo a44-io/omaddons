@@ -107,3 +107,10 @@ path = "fuzz_targets/bbcode_text.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "wowi_details"
+path = "fuzz_targets/wowi_details.rs"
+test = false
+doc = false
+bench = false

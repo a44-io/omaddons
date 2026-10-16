@@ -508,7 +508,7 @@ mod m2 {
     #[cfg(test)]
     mod support {
         use omaddons::net::{Http, Request};
-        use omaddons::sources::{SourceRegistry, Wanted, fetch_once};
+        use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 
         use super::super::common::addons::toc;
         use super::super::common::http::Asset;
@@ -523,7 +523,11 @@ mod m2 {
         /// The newest release id of `r` through the production GitHub source.
         pub fn newest(http: &dyn Http, r: &str) -> String {
             let w = Wanted::stable(r.parse().unwrap());
-            let mut results = fetch_once([w], &SourceRegistry::builtin(), http);
+            let mut results = fetch_once(
+                [w],
+                &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+                http,
+            );
             let set = results.pop_first().unwrap().1.unwrap();
             set.releases[0].release_id.clone()
         }

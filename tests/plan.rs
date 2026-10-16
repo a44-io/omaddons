@@ -28,7 +28,7 @@ use omaddons::model::{
 use omaddons::net::Http;
 use omaddons::resolve::cache::ReleaseCache;
 use omaddons::rules::RulesTable;
-use omaddons::sources::SourceRegistry;
+use omaddons::sources::{SourceConfigView, SourceRegistry};
 use omaddons::state::config::RunningPolicy;
 use omaddons::state::paths::Paths;
 use omaddons::state::records::TargetRecord;
@@ -91,7 +91,11 @@ mod support {
         }
 
         pub fn plan(&self, targets: Vec<TargetRequest>, force: bool) -> Plan {
-            self.plan_with(targets, force, &SourceRegistry::builtin())
+            self.plan_with(
+                targets,
+                force,
+                &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+            )
         }
 
         /// [`Env::plan`] fetching through `registry`.
@@ -565,7 +569,7 @@ fn one_failing_ref_does_not_stop_the_others() {
         )],
     );
     let mut request = install(&env.retail);
-    request.changes.push(user_install("wowi:5108"));
+    request.changes.push(user_install("cf:61284"));
     let plan = env.plan(vec![request], false);
     assert_eq!(plan.failures.len(), 1);
     assert_eq!(plan.failures[0].error.code.wire(), "source_disabled");
@@ -575,7 +579,7 @@ fn one_failing_ref_does_not_stop_the_others() {
             .as_ref()
             .map(ToString::to_string)
             .as_deref(),
-        Some("wowi:5108")
+        Some("cf:61284")
     );
     assert_eq!(plan.targets[0].changes.len(), 1, "gh:o/foo still planned");
 }
@@ -628,7 +632,11 @@ fn local_and_url_sources_fetch_without_requests() {
     .map(|r| omaddons::sources::Wanted::stable(r.parse().unwrap()))
     .collect();
     let http = env.http();
-    let sets = omaddons::sources::fetch_once(wanted, &SourceRegistry::builtin(), http.as_ref());
+    let sets = omaddons::sources::fetch_once(
+        wanted,
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    );
     assert_eq!(sets.len(), 3);
     assert!(sets.values().all(Result::is_ok), "{sets:?}");
     assert!(read_net_log(&env.paths).is_empty(), "no request");
@@ -885,6 +893,8 @@ impl omaddons::sources::Source for HashSource {
                             .chain([Self::asset("Foo.zip", WOWI_ZIP, self.hash.clone())])
                             .collect(),
                         changelog_url: None,
+                        notes: None,
+                        name_hint: None,
                     }],
                 })
             })

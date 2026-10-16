@@ -179,6 +179,8 @@ fn release_set(w: &Wanted, url: &str, owner: &str, repo: &str, resolved: &Resolv
                 nolib: false,
             }],
             changelog_url: None,
+            notes: None,
+            name_hint: None,
         }],
     }
 }

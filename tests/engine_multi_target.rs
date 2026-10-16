@@ -33,7 +33,7 @@ mod support {
     use omaddons::net::Http;
     use omaddons::output::ProgressSink;
     use omaddons::rules::RulesTable;
-    use omaddons::sources::SourceRegistry;
+    use omaddons::sources::{SourceConfigView, SourceRegistry};
     use omaddons::state::config::RunningPolicy;
     use omaddons::state::paths::Paths;
     use omaddons::state::registry::load_registry;
@@ -75,7 +75,7 @@ mod support {
                 _env: env,
                 http,
                 table: RulesTable::builtin(),
-                sources: SourceRegistry::builtin(),
+                sources: SourceRegistry::builtin(&SourceConfigView::all_enabled()),
                 argv: vec!["omaddons".into(), "update".into()],
                 nothing_runs: BTreeSet::new(),
                 progress: ProgressSink::none(),

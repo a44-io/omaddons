@@ -49,6 +49,8 @@ fn with_assets(
             published_at: None,
             assets,
             changelog_url: None,
+            notes: None,
+            name_hint: None,
         }],
     };
     let entry = MemoEntry::of(&r, Channel::Stable, &Ok(set), fetched_at).unwrap();

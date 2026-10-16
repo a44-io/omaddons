@@ -2230,6 +2230,9 @@ impl TargetPlanner<'_> {
                 return self.current(existing, intent).map(Prepared::Done);
             }
         }
+        // The source's name for the addon (WoWInterface's `UIName`), when no catalog
+        // name applies.
+        let mut source_name: Option<String> = None;
         let candidates = match (file, set) {
             (Some(file), _) => vec![file_candidate(file, wanted)],
             (None, Some(set)) => {
@@ -2257,7 +2260,17 @@ impl TargetPlanner<'_> {
                         ));
                     }
                     Some(reason) => return Err(self.no_release(wanted, &[], reason_text(reason))),
-                    None => selection.candidates,
+                    None => {
+                        source_name = selection
+                            .candidates
+                            .first()
+                            .and_then(|c| {
+                                // ubs:ignore — matching release ids, not secrets
+                                set.releases.iter().find(|r| r.release_id == c.release_id)
+                            })
+                            .and_then(|r| r.name_hint.clone());
+                        selection.candidates
+                    }
                 }
             }
             (None, None) => {
@@ -2278,8 +2291,9 @@ impl TargetPlanner<'_> {
         let mut unreadable: Option<Error> = None;
         // Some candidate was judged and does not load (as opposed to failing to arrive).
         let mut refused = false;
+        let hint = name.or(source_name.as_deref());
         for candidate in candidates {
-            match self.try_candidate(&wanted.r#ref, &candidate, intent.floor_interface) {
+            match self.try_candidate(&wanted.r#ref, &candidate, hint, intent.floor_interface) {
                 Ok(Ok(won)) => {
                     winner = Some(won);
                     break;
@@ -2817,11 +2831,13 @@ impl TargetPlanner<'_> {
     /// Downloads, inspects and verifies one candidate of `r#ref`: `Ok(Err(reason))` when
     /// it does not load on this client, or (with a `floor`) is older than the installed
     /// build; `Err` when it cannot even be read (download, archive). A winner keeps only
-    /// the folders this client loads (see [`accepts`]).
+    /// the folders this client loads (see [`accepts`]). `name_hint` names the primary
+    /// folder (see [`primary_folder`]).
     fn try_candidate(
         &self,
         r#ref: &Ref,
         candidate: &Candidate,
+        name_hint: Option<&str>,
         floor: Option<u32>,
     ) -> Result<std::result::Result<Winner, String>> {
         let ctx = self.ctx;
@@ -2851,7 +2867,7 @@ impl TargetPlanner<'_> {
             .event(Phase::Verify, self.candidate_items, &item);
         let split = partition(&verdicts);
         let all: Vec<FolderName> = inspected.folders.iter().map(|f| f.name.clone()).collect();
-        let primary = primary_folder(r#ref, &all, None);
+        let primary = primary_folder(r#ref, &all, name_hint);
         // The publisher's release.json names this client for this very file.
         let declared = matches!(
             candidate.rank,

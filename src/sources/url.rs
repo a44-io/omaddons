@@ -82,6 +82,8 @@ impl UrlSource {
                     nolib: false,
                 }],
                 changelog_url: None,
+                notes: None,
+                name_hint: None,
             }],
         })
     }

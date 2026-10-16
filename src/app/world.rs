@@ -14,6 +14,7 @@ use crate::error::{Error, Result, Warning};
 use crate::model::{AddonRecord, TargetKey};
 use crate::resolve::catalog::Catalog;
 use crate::rules::RulesTable;
+use crate::sources::SourceConfigView;
 use crate::state::config::Config;
 use crate::state::paths::Paths;
 use crate::state::records::{TargetRecord, load_record};
@@ -103,6 +104,11 @@ impl World {
             diagnostics: found.diagnostics,
             discovery,
         })
+    }
+
+    /// Which sources config.toml turns off: every registry a command builds honours it.
+    pub fn sources(&self) -> SourceConfigView {
+        SourceConfigView::from_config(&self.config.sources)
     }
 
     /// The record of every registered discovered target, by target id.

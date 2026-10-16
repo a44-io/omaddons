@@ -21,6 +21,7 @@ use omaddons::rules::{Family, RulesTable};
 use omaddons::sources::git::GitSource;
 use omaddons::sources::git_hosts::GitRunner;
 use omaddons::sources::github::GithubSource;
+use omaddons::sources::wowi::WowiSource;
 use omaddons::sources::{Source, Wanted};
 use omaddons::state::paths::Paths;
 use serde_json::Value;
@@ -680,4 +681,53 @@ fn git_source_decodes_live() {
         );
     }
     assert_no_github_rest(&read_net_log(&paths(&env)));
+}
+
+/// WoWInterface's `filedetails` decodes, and BugSack's file, downloaded from the CDN
+/// link it gives, has exactly the MD5 it promises (M2-D11's content identity).
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn wowi_details_decode_and_the_file_has_its_md5() {
+    use md5::{Digest, Md5};
+
+    let Some((env, http)) = live() else { return };
+    let wanted = Wanted::stable("wowi:5995".parse().unwrap());
+    let set = WowiSource
+        .fetch(&[wanted], http.as_ref())
+        .pop()
+        .unwrap()
+        .unwrap();
+    let release = &set.releases[0];
+    let md5 = release
+        .release_id
+        .strip_prefix("wowi:5995@")
+        .unwrap_or_default();
+    assert_eq!(md5.len(), 32, "{release:?}");
+    assert!(release.notes.is_some() && release.name_hint.as_deref() == Some("BugSack"));
+    let url = match &release.assets[0].location {
+        AssetLocation::Url(url) => Some(url.clone()),
+        _ => None,
+    };
+    assert!(
+        url.as_deref()
+            .is_some_and(|u| u.starts_with("https://cdn.wowinterface.com/")),
+        "{release:?}"
+    );
+    let body = http
+        .send(Request::get(url.unwrap(), "asset"))
+        .unwrap()
+        .error_for_status("asset")
+        .unwrap()
+        .bytes()
+        .unwrap();
+    let got: String = Md5::digest(&body)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(got, md5, "the file's MD5 is UIMD5");
+    let purposes: Vec<String> = read_net_log(&paths(&env))
+        .into_iter()
+        .map(|e| e.purpose)
+        .collect();
+    assert_eq!(purposes, ["wowi-details", "asset"]);
 }

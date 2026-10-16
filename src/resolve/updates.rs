@@ -501,6 +501,8 @@ mod tests {
             published_at: published.map(at),
             assets,
             changelog_url: None,
+            notes: None,
+            name_hint: None,
         }
     }
 

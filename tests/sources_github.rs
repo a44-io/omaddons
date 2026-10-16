@@ -10,7 +10,7 @@ use common::netlog::{assert_each_url_once, assert_no_github_rest, count_host, re
 use omaddons::error::ErrorCode;
 use omaddons::model::{AssetLocation, ReleaseSet};
 use omaddons::sources::github::GithubSource;
-use omaddons::sources::{SourceRegistry, Wanted, fetch_once};
+use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use support::{fetch_one, want};
 
 /// Six `release.json` publishers (owner/repo confirmed against GitHub on 2026-10-14).
@@ -38,7 +38,11 @@ mod support {
         w: Wanted,
     ) -> omaddons::error::Result<ReleaseSet> {
         let http = replay(env, scenario);
-        let mut results = fetch_once([w], &SourceRegistry::builtin(), http.as_ref());
+        let mut results = fetch_once(
+            [w],
+            &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+            http.as_ref(),
+        );
         results.pop_first().unwrap().1
     }
 }
@@ -56,7 +60,7 @@ fn record_github_stable() {
     let http = record(&env, &scenario("github-stable"));
     let results = fetch_once(
         PUBLISHERS.map(want),
-        &SourceRegistry::builtin(),
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
         http.as_ref(),
     );
     for (w, result) in results {
@@ -71,7 +75,11 @@ fn six_publishers_for_three_targets_without_rest() {
     let env = TestEnv::new();
     let http = replay(&env, &scenario("github-stable"));
     let wanted = (0..3).flat_map(|_| PUBLISHERS.map(want));
-    let results = fetch_once(wanted, &SourceRegistry::builtin(), http.as_ref());
+    let results = fetch_once(
+        wanted,
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    );
     assert_eq!(results.len(), 6, "three targets, one fetch per addon");
 
     let set = |r: &str| -> &ReleaseSet {

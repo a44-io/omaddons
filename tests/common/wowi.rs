@@ -1,5 +1,5 @@
-//! WoWInterface fixtures: the file list, gzipped as the API serves it, and
-//! `filedetails` batches.
+//! WoWInterface fixtures: the file list, gzipped as the API serves it, `filedetails`
+//! batches and entries, and the files their `UIDownload` links serve.
 
 use std::path::Path;
 
@@ -80,14 +80,69 @@ pub fn wowi_filelist(scenario: &Path, entries: &[FileEntry]) {
 
 /// Serves one `filedetails/<ids>.json` batch of `details` (the WoWInterface source).
 pub fn wowi_details(scenario: &Path, ids: &[u64], details: &[Value]) {
+    let (name, url) = details_url(ids);
+    let body = serde_json::to_vec(details).unwrap();
+    fixture_seq(scenario, &name, &url, &[Resp::ok(body)]);
+}
+
+/// Serves the batch of `ids` as the API answers when it knows none of them: 404 with its
+/// own error (verified 2026-10-16).
+pub fn wowi_unknown(scenario: &Path, ids: &[u64]) {
+    let (name, url) = details_url(ids);
+    let mut resp = Resp::status(404).header("content-type", "application/json; charset=utf-8");
+    resp.body = Some(br#"{"ERROR":"No AddOn found."}"#.to_vec());
+    fixture_seq(scenario, &name, &url, &[resp]);
+}
+
+/// The fixture name and URL of the `filedetails` batch of `ids`, in that order.
+fn details_url(ids: &[u64]) -> (String, String) {
     let joined: Vec<String> = ids.iter().map(u64::to_string).collect();
     let joined = joined.join(",");
-    let url = format!("https://api.mmoui.com/v3/game/WOW/filedetails/{joined}.json");
-    let body = serde_json::to_vec(details).unwrap();
+    (
+        format!("wowi-details-{joined}"),
+        format!("https://api.mmoui.com/v3/game/WOW/filedetails/{joined}.json"),
+    )
+}
+
+/// The CDN link `UIDownload` gives for `uid`'s file.
+pub fn file_url(uid: u64) -> String {
+    format!("https://cdn.wowinterface.com/downloads/getfile.php?id={uid}&d=1760300000&minion")
+}
+
+/// One `filedetails` entry as the API writes it: the id as a string, the date as a
+/// number, the changelog as BBCode with CRLF, and `UIDownload` at [`file_url`]. `md5`
+/// is the served file's ([`wowi_file`]).
+pub fn details(uid: u64, name: &str, version: &str, md5: &str) -> Value {
+    json!({
+        "UID": uid.to_string(),
+        "UICATID": "154",
+        "UIVersion": version,
+        "UIDate": 1_760_300_000_000_u64,
+        "UIMD5": md5,
+        "UIFileName": format!("{name}-{version}.zip"),
+        "UIDownload": file_url(uid),
+        "UIPending": "0",
+        "UIName": name,
+        "UIAuthorName": "someone",
+        "UIDescription": format!("[b]{name}[/b] does things."),
+        "UIChangeLog": format!("[SIZE=5]{name}[/SIZE]\r\n[list]\r\n[*]{version}: fixed [b]things[/b]\r\n[/list]"),
+        "UIHitCount": "1000",
+        "UIHitCountMonthly": "10",
+        "UIFavoriteTotal": "5",
+    })
+}
+
+/// Serves `zip` as `uid`'s file at [`file_url`]; returns its MD5, for `UIMD5`.
+pub fn wowi_file(scenario: &Path, uid: u64, zip: &[u8]) -> String {
+    use md5::{Digest, Md5};
     fixture_seq(
         scenario,
-        &format!("wowi-details-{joined}"),
-        &url,
-        &[Resp::ok(body)],
+        &format!("wowi-file-{uid}"),
+        &file_url(uid),
+        &[Resp::ok(zip.to_vec())],
     );
+    Md5::digest(zip)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }

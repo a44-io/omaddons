@@ -1,0 +1,83 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://cdn.wowinterface.com/downloads/getfile.php?d=1791824100&id=5995&minion"
+  },
+  "responses": [
+    {
+      "status": 200,
+      "headers": [
+        [
+          "date",
+          "Fri, 16 Oct 2026 12:31:26 GMT"
+        ],
+        [
+          "content-type",
+          "application/zip"
+        ],
+        [
+          "content-length",
+          "71111"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "server",
+          "cloudflare"
+        ],
+        [
+          "cache-control",
+          "private"
+        ],
+        [
+          "pragma",
+          "private"
+        ],
+        [
+          "content-disposition",
+          "attachment; filename=\"BugSack-v12.1.7.zip\""
+        ],
+        [
+          "content-transfer-encoding",
+          "binary"
+        ],
+        [
+          "last-modified",
+          "Mon, 12 Oct 2026 16:55:00 GMT"
+        ],
+        [
+          "nel",
+          "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}"
+        ],
+        [
+          "accept-ranges",
+          "bytes"
+        ],
+        [
+          "cf-cache-status",
+          "BYPASS"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "report-to",
+          "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=BnV9ehRCUS2W0NAyKPjpiHDY6OErEbalsphOmxUSamijYfEQFZjLO7i6M1zmW26KQIdlKHpflbbIpg9iv568V586mBMz1HvQGDBvp3%2FdN6oZ5FamOb0hv3J3KnjhEZ0p31ZYodW%2F\"}]}"
+        ],
+        [
+          "cf-ray",
+          "a4b7149efc602703-ATL"
+        ],
+        [
+          "alt-svc",
+          "h3=\":443\"; ma=86400"
+        ]
+      ],
+      "body_file": "get-downloads-getfile.php-5925d73b.body"
+    }
+  ]
+}

@@ -360,6 +360,8 @@ mod tests {
                             published_at: None,
                             assets: Vec::new(),
                             changelog_url: None,
+                            notes: None,
+                            name_hint: None,
                         }],
                     }),
                 })

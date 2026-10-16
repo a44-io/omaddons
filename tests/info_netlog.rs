@@ -128,7 +128,7 @@ fn info_errors_and_a_failing_fetch() {
         serde_json::json!(["omaddons", "list"])
     );
 
-    let r = home.run(&["info", "wowi:5108"]);
+    let r = home.run(&["info", "wago:aNDmy96o"]);
     let envelope = r.expect(1);
     assert_eq!(
         envelope["error"]["code"],

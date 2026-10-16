@@ -4,8 +4,9 @@
 //! [`fetch_once`] deduplicates refs (D28: requests never multiply by target count),
 //! groups them by [`SourceId`], and calls each registered source's [`Source::fetch`]
 //! exactly once, groups in parallel. Errors are per ref. Refs of sources this build does
-//! not have (WoWInterface and Tukui arrive in M2, CurseForge and Wago in M5) fail with
-//! `source_disabled` without touching the network (DEC-12).
+//! not have (Tukui arrives in M2, CurseForge and Wago in M5), or that config.toml turns
+//! off (`[sources.<id>] enabled = false`), fail with `source_disabled` without touching
+//! the network (DEC-12).
 
 pub mod atom;
 pub mod git;
@@ -19,7 +20,7 @@ pub mod release_json;
 pub mod url;
 pub mod wowi;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -28,6 +29,7 @@ use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::{Channel, Ref, ReleaseSet};
 use crate::net::{Http, run_bounded};
 use crate::politeness::MAX_CONCURRENT_REQUESTS;
+use crate::state::config::SourceConfig;
 
 /// A source a command could not consult, and why (`sources_skipped` in outputs).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -66,6 +68,17 @@ pub enum SourceId {
 }
 
 impl SourceId {
+    pub const ALL: [Self; 8] = [
+        Self::Github,
+        Self::Git,
+        Self::Url,
+        Self::Local,
+        Self::Wowi,
+        Self::Tukui,
+        Self::Curseforge,
+        Self::Wago,
+    ];
+
     pub fn of(r: &Ref) -> Self {
         match r {
             Ref::GitHub { .. } => Self::Github,
@@ -92,15 +105,60 @@ impl SourceId {
         }
     }
 
-    /// The source's name and the milestone it arrives in, for sources this build lacks.
-    const fn later(self) -> Option<(&'static str, &'static str)> {
+    /// The id config.toml names (`[sources.<wire>]`).
+    pub fn from_wire(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|id| id.wire() == name)
+    }
+
+    /// The name people know the source by.
+    pub const fn name(self) -> &'static str {
         match self {
-            Self::Wowi => Some(("WoWInterface", "M2")),
-            Self::Tukui => Some(("Tukui", "M2")),
-            Self::Curseforge => Some(("CurseForge", "M5")),
-            Self::Wago => Some(("Wago", "M5")),
-            Self::Github | Self::Git | Self::Url | Self::Local => None,
+            Self::Github => "GitHub",
+            Self::Git => "git",
+            Self::Url => "url",
+            Self::Local => "local file",
+            Self::Wowi => "WoWInterface",
+            Self::Tukui => "Tukui",
+            Self::Curseforge => "CurseForge",
+            Self::Wago => "Wago",
         }
+    }
+
+    /// The milestone a source this build lacks arrives in.
+    const fn later(self) -> Option<&'static str> {
+        match self {
+            Self::Tukui => Some("M2"),
+            Self::Curseforge | Self::Wago => Some("M5"),
+            Self::Github | Self::Git | Self::Url | Self::Local | Self::Wowi => None,
+        }
+    }
+}
+
+/// Which sources config.toml turns off (`[sources.<id>] enabled = false`). Every
+/// source is on unless turned off; names that are not sources are ignored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SourceConfigView {
+    disabled: BTreeSet<SourceId>,
+}
+
+impl SourceConfigView {
+    pub fn from_config(sources: &BTreeMap<String, SourceConfig>) -> Self {
+        Self {
+            disabled: sources
+                .iter()
+                .filter(|(_, config)| matches!(config.enabled, Some(false)))
+                .filter_map(|(name, _)| SourceId::from_wire(name))
+                .collect(),
+        }
+    }
+
+    /// Every source on (tests).
+    pub fn all_enabled() -> Self {
+        Self::default()
+    }
+
+    pub fn enabled(&self, id: SourceId) -> bool {
+        !self.disabled.contains(&id)
     }
 }
 
@@ -139,6 +197,8 @@ pub struct SourceRegistry {
     /// The git runner, when the command layer provides one: the git source resolves
     /// non-GitHub hosts with it and the engine checks them out with it.
     git: Option<std::sync::Arc<git_hosts::GitRunner>>,
+    /// Sources this build has that config.toml turned off.
+    off: BTreeSet<SourceId>,
 }
 
 impl SourceRegistry {
@@ -146,21 +206,35 @@ impl SourceRegistry {
         Self::default()
     }
 
-    /// Every source this build ships.
-    pub fn builtin() -> Self {
+    /// Every source this build ships that `config` leaves on.
+    pub fn builtin(config: &SourceConfigView) -> Self {
+        let shipped: [Box<dyn Source>; 5] = [
+            Box::new(github::GithubSource {
+                rest: Some(Box::new(github_rest::GithubRest::from_env())),
+            }),
+            Box::new(git::GitSource::default()),
+            Box::new(local::LocalSource),
+            Box::new(url::UrlSource::new()),
+            Box::new(wowi::WowiSource),
+        ];
         let mut registry = Self::new();
-        registry.register(Box::new(github::GithubSource {
-            rest: Some(Box::new(github_rest::GithubRest::from_env())),
-        }));
-        registry.register(Box::new(git::GitSource::default()));
-        registry.register(Box::new(local::LocalSource));
-        registry.register(Box::new(url::UrlSource::new()));
+        for source in shipped {
+            if config.enabled(source.id()) {
+                registry.register(source);
+            } else {
+                registry.off.insert(source.id());
+            }
+        }
         registry
     }
 
-    /// With `runner` for `git:` refs to configured non-GitHub hosts.
+    /// With `runner` for `git:` refs to configured non-GitHub hosts; unchanged when
+    /// config.toml turned git off.
     #[must_use]
     pub fn with_git(mut self, runner: git_hosts::GitRunner) -> Self {
+        if self.off.contains(&SourceId::Git) {
+            return self;
+        }
         let runner = std::sync::Arc::new(runner);
         self.register(Box::new(git::GitSource {
             runner: Some(runner.clone()),
@@ -184,23 +258,32 @@ impl SourceRegistry {
     }
 
     /// The ids of the sources registered: the ones that are on.
-    pub fn enabled(&self) -> std::collections::BTreeSet<SourceId> {
+    pub fn enabled(&self) -> BTreeSet<SourceId> {
         self.sources.keys().copied().collect()
     }
-}
 
-/// `source_disabled` for a ref whose source this build does not have.
-pub fn disabled(r: &Ref) -> Error {
-    let id = SourceId::of(r);
-    let message = match id.later() {
-        Some((name, milestone)) => format!("{r}: {name} arrives in {milestone}"),
-        None => format!("{r}: the {} source is not available", id.wire()),
-    };
-    Error::new(
-        ErrorCode::SourceDisabled,
-        message,
-        Suggestion::command(["omaddons", "help", "install"]),
-    )
+    /// `source_disabled` for a ref whose source is not registered: turned off in
+    /// config.toml (the fix turns it back on), or not in this build.
+    pub fn disabled(&self, r: &Ref) -> Error {
+        let id = SourceId::of(r);
+        if self.off.contains(&id) {
+            let key = format!("sources.{}.enabled", id.wire());
+            return Error::new(
+                ErrorCode::SourceDisabled,
+                format!("{r}: the {} source is disabled in config.toml", id.name()),
+                Suggestion::command(["omaddons", "config", "set", &key, "true"]),
+            );
+        }
+        let message = match id.later() {
+            Some(milestone) => format!("{r}: {} arrives in {milestone}", id.name()),
+            None => format!("{r}: the {} source is not available", id.name()),
+        };
+        Error::new(
+            ErrorCode::SourceDisabled,
+            message,
+            Suggestion::command(["omaddons", "help", "install"]),
+        )
+    }
 }
 
 /// Fetches every distinct ref once: one `fetch` call per source, sources in parallel.
@@ -223,7 +306,7 @@ pub fn fetch_once(
             Some(source) => work.push((source, group)),
             None => {
                 for w in group {
-                    let error = disabled(&w.r#ref);
+                    let error = registry.disabled(&w.r#ref);
                     results.insert(w, Err(error));
                 }
             }
@@ -334,7 +417,7 @@ mod tests {
             "gh:weakauras/weakauras2",
             "gh:WEAKAURAS/WeakAuras2",
             "gh:a/gone",
-            "wowi:5108",
+            "wago:aNDmy96o",
             "cf:1",
         ];
         let mut wishes: Vec<Wanted> = wanted.iter().map(|s| w(s)).collect();
@@ -359,12 +442,16 @@ mod tests {
             ErrorCode::NotFound,
             "per-ref failure"
         );
-        let wowi = results[&w("wowi:5108")].as_ref().unwrap_err();
+        let wago = results[&w("wago:aNDmy96o")].as_ref().unwrap_err();
         assert_eq!(
-            (wowi.code, wowi.exit().code()),
+            (wago.code, wago.exit().code()),
             (ErrorCode::SourceDisabled, 1)
         );
-        assert!(wowi.message.contains("M2"), "{}", wowi.message);
+        assert!(
+            wago.message.contains("Wago arrives in M5"),
+            "{}",
+            wago.message
+        );
         assert!(
             results[&w("cf:1")]
                 .as_ref()
@@ -412,5 +499,117 @@ mod tests {
             "curseforge"
         );
         assert_eq!(SourceId::of(&r("file:/x")).wire(), "local");
+        for id in SourceId::ALL {
+            assert_eq!(serde_json::to_value(id).unwrap(), id.wire());
+            assert_eq!(SourceId::from_wire(id.wire()), Some(id));
+        }
+        assert_eq!(SourceId::from_wire("wowinterface"), None);
+    }
+
+    fn config(entries: &[(&str, Option<bool>)]) -> SourceConfigView {
+        let sources = entries
+            .iter()
+            .map(|(name, enabled)| {
+                let config = SourceConfig {
+                    enabled: *enabled,
+                    credential: None,
+                };
+                ((*name).to_owned(), config)
+            })
+            .collect();
+        SourceConfigView::from_config(&sources)
+    }
+
+    #[test]
+    fn config_turns_sources_off_and_ignores_unknown_names() {
+        let view = config(&[
+            ("wowi", Some(false)),
+            ("github", Some(true)),
+            ("url", None),
+            ("nonsense", Some(false)),
+        ]);
+        let off: Vec<SourceId> = SourceId::ALL
+            .into_iter()
+            .filter(|id| !view.enabled(*id))
+            .collect();
+        assert_eq!(off, [SourceId::Wowi]);
+        assert!(
+            SourceId::ALL
+                .iter()
+                .all(|id| SourceConfigView::all_enabled().enabled(*id))
+        );
+    }
+
+    #[test]
+    fn builtin_registers_what_config_leaves_on() {
+        let all = SourceRegistry::builtin(&SourceConfigView::all_enabled());
+        assert_eq!(
+            all.enabled(),
+            [
+                SourceId::Github,
+                SourceId::Git,
+                SourceId::Url,
+                SourceId::Local,
+                SourceId::Wowi
+            ]
+            .into(),
+            "curseforge, wago and tukui are not in this build"
+        );
+        // Turning a source this build lacks off changes nothing.
+        let view = config(&[
+            ("wowi", Some(false)),
+            ("git", Some(false)),
+            ("curseforge", Some(false)),
+        ]);
+        let some = SourceRegistry::builtin(&view);
+        assert_eq!(
+            some.enabled(),
+            [SourceId::Github, SourceId::Url, SourceId::Local].into()
+        );
+
+        let wowi = some.disabled(&r("wowi:5995"));
+        assert_eq!(
+            (wowi.code, wowi.exit().code()),
+            (ErrorCode::SourceDisabled, 1)
+        );
+        assert_eq!(
+            wowi.message,
+            "wowi:5995: the WoWInterface source is disabled in config.toml"
+        );
+        assert_eq!(
+            wowi.fix.argv(),
+            Some(
+                ["omaddons", "config", "set", "sources.wowi.enabled", "true"]
+                    .map(str::to_owned)
+                    .as_slice()
+            )
+        );
+        let cf = some.disabled(&r("cf:1"));
+        assert_eq!(cf.message, "cf:1: CurseForge arrives in M5");
+        assert_eq!(
+            cf.fix.argv(),
+            Some(
+                ["omaddons", "help", "install"]
+                    .map(str::to_owned)
+                    .as_slice()
+            )
+        );
+    }
+
+    #[test]
+    fn a_disabled_source_is_refused_without_the_network() {
+        let view = config(&[("wowi", Some(false))]);
+        let registry = SourceRegistry::builtin(&view);
+        let http = NoNetwork::default();
+        let results = fetch_once([w("wowi:5995"), w("tukui:elvui")], &registry, &http);
+        let wowi = results[&w("wowi:5995")].as_ref().unwrap_err();
+        assert!(
+            wowi.message.contains("disabled in config.toml"),
+            "{}",
+            wowi.message
+        );
+        let tukui = results[&w("tukui:elvui")].as_ref().unwrap_err();
+        assert_eq!(tukui.message, "tukui:elvui: Tukui arrives in M2");
+        assert_eq!(http.0.load(Ordering::SeqCst), 0);
     }
 }

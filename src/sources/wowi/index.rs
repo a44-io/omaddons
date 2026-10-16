@@ -356,7 +356,7 @@ pub fn decode_filelist(body: &[u8]) -> Result<(Vec<WowiEntry>, usize)> {
 }
 
 /// A non-negative integer given as a number or a string.
-fn number(value: &Value) -> Option<u64> {
+pub(super) fn number(value: &Value) -> Option<u64> {
     match value {
         Value::Number(n) => n
             .as_u64()
@@ -367,7 +367,7 @@ fn number(value: &Value) -> Option<u64> {
 }
 
 /// A string, or a number written as one; anything else is empty.
-fn text(value: &Value) -> String {
+pub(super) fn text(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),

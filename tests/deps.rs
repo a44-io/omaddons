@@ -850,7 +850,7 @@ mod engine_api {
     use omaddons::output::ProgressSink;
     use omaddons::resolve::catalog::Catalog;
     use omaddons::rules::RulesTable;
-    use omaddons::sources::SourceRegistry;
+    use omaddons::sources::{SourceConfigView, SourceRegistry};
     use omaddons::state::config::RunningPolicy;
     use omaddons::state::registry::load_registry;
     use serde_json::json;
@@ -916,7 +916,7 @@ mod engine_api {
             no_deps: false,
         };
         let http = replay(&home.env, &home.http);
-        let sources = SourceRegistry::builtin();
+        let sources = SourceRegistry::builtin(&SourceConfigView::all_enabled());
         let argv: Vec<String> = vec!["omaddons".into(), "install".into()];
         let nothing_runs = BTreeSet::new();
         let (catalog, warnings) = Catalog::load(&paths);

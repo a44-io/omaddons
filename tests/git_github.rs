@@ -16,7 +16,7 @@ use common::netlog::{assert_no_github_rest, read_net_log};
 use common::trees::CustomRoot;
 use omaddons::model::{AssetLocation, ReleaseSet};
 use omaddons::net::Request;
-use omaddons::sources::{SourceRegistry, Wanted, fetch_once};
+use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use serde_json::Value;
 use support::{GBB, GBB_SHA, GBB_TAG, fetch_with};
 
@@ -40,9 +40,13 @@ mod support {
         let http = replay(env, scenario);
         let mut wanted = Wanted::stable(r.parse().unwrap());
         wanted.version = version.map(str::to_owned);
-        fetch_once([wanted.clone()], &SourceRegistry::builtin(), http.as_ref())
-            .remove(&wanted)
-            .unwrap()
+        fetch_once(
+            [wanted.clone()],
+            &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+            http.as_ref(),
+        )
+        .remove(&wanted)
+        .unwrap()
     }
 }
 
@@ -62,7 +66,11 @@ fn record_git_github() {
         Wanted::stable(GBB.parse().unwrap()),
         Wanted::stable(format!("{GBB}#main").parse().unwrap()),
     ];
-    for (w, result) in fetch_once(wanted, &SourceRegistry::builtin(), http.as_ref()) {
+    for (w, result) in fetch_once(
+        wanted,
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    ) {
         assert!(result.is_ok(), "{}: {result:?}", w.r#ref);
         let set = result.unwrap();
         let location = &set.releases[0].assets[0].location;
@@ -75,7 +83,11 @@ fn record_git_github() {
     }
     // A tag: GitHub serves its commits feed too (resolution only; no archive recorded).
     let tag = Wanted::stable(format!("{GBB}#{GBB_TAG}").parse().unwrap());
-    fetch_once([tag], &SourceRegistry::builtin(), http.as_ref());
+    fetch_once(
+        [tag],
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    );
 }
 
 /// GitHub serves `commits/<tag>.atom` like a branch's feed, headed by the tag's commit,

@@ -8,7 +8,7 @@ use common::http::{record, replay, scenario};
 use common::netlog::{assert_each_url_once, assert_no_github_rest, read_net_log};
 use omaddons::model::Ref;
 use omaddons::resolve::catalog::Catalog;
-use omaddons::sources::{SourceRegistry, Wanted, fetch_once};
+use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use support::wanted;
 
 #[cfg(test)]
@@ -46,7 +46,11 @@ fn record_catalog() {
     }
     let env = TestEnv::new();
     let http = record(&env, &scenario("catalog"));
-    let results = fetch_once(wanted(github), &SourceRegistry::builtin(), http.as_ref());
+    let results = fetch_once(
+        wanted(github),
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    );
     for (w, result) in results {
         assert!(result.is_ok(), "{}: {result:?}", w.r#ref);
     }
@@ -64,7 +68,11 @@ fn record_catalog_git() {
     }
     let env = TestEnv::new();
     let http = record(&env, &scenario("catalog"));
-    let results = fetch_once(wanted(git), &SourceRegistry::builtin(), http.as_ref());
+    let results = fetch_once(
+        wanted(git),
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    );
     for (w, result) in results {
         assert!(result.is_ok(), "{}: {result:?}", w.r#ref);
     }
@@ -76,7 +84,11 @@ fn every_github_entry_resolves_without_rest() {
     let http = replay(&env, &scenario("catalog"));
     let wanted = wanted(github);
     assert_eq!(wanted.len(), 13, "the release.json publishers");
-    let results = fetch_once(wanted, &SourceRegistry::builtin(), http.as_ref());
+    let results = fetch_once(
+        wanted,
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    );
     for (w, result) in &results {
         assert!(result.is_ok(), "{}: {result:?}", w.r#ref);
         let set = result.as_ref().unwrap();
@@ -97,7 +109,11 @@ fn every_git_entry_resolves() {
     let http = replay(&env, &scenario("catalog"));
     let wanted = wanted(git);
     assert_eq!(wanted.len(), 5, "one per legacy family");
-    let results = fetch_once(wanted, &SourceRegistry::builtin(), http.as_ref());
+    let results = fetch_once(
+        wanted,
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    );
     for (w, result) in &results {
         assert!(result.is_ok(), "{}: {result:?}", w.r#ref);
         let release = &result.as_ref().unwrap().releases[0];

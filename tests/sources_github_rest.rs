@@ -17,7 +17,7 @@ use omaddons::model::{AssetLocation, Channel, ExpectedHash, ReleaseSet};
 use omaddons::net::Request;
 use omaddons::sources::github::{GithubRestFallback, RestReason};
 use omaddons::sources::github_rest::GithubRest;
-use omaddons::sources::{SourceRegistry, Wanted, fetch_once};
+use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use serde_json::Value;
 use support::{GBB, WOWUP, fetch};
 
@@ -33,10 +33,14 @@ mod support {
         let http = replay(env, &scenario("github-rest"));
         let mut w = Wanted::stable(r.parse().unwrap());
         w.channel = channel;
-        fetch_once([w], &SourceRegistry::builtin(), http.as_ref())
-            .pop_first()
-            .unwrap()
-            .1
+        fetch_once(
+            [w],
+            &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+            http.as_ref(),
+        )
+        .pop_first()
+        .unwrap()
+        .1
     }
 }
 
@@ -55,7 +59,11 @@ fn record_github_rest() {
     let mut beta = Wanted::stable(WOWUP.parse().unwrap());
     beta.channel = Channel::Beta;
     let wanted = [Wanted::stable(GBB.parse().unwrap()), beta];
-    for (w, result) in fetch_once(wanted, &SourceRegistry::builtin(), http.as_ref()) {
+    for (w, result) in fetch_once(
+        wanted,
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    ) {
         assert!(result.is_ok(), "{}: {result:?}", w.r#ref);
         if w.r#ref.to_string() == GBB {
             let set = result.unwrap();

@@ -28,6 +28,7 @@ const TARGETS: &[&str] = &[
     "wowi_filelist",
     "html_text",
     "bbcode_text",
+    "wowi_details",
 ];
 
 fn fuzz_dir() -> PathBuf {
@@ -293,6 +294,38 @@ fn write_fuzz_seeds() {
         "bbcode_text",
         "malformed",
         &with_max(b"[url=\"unterminated [b][[i]i]] [/list [*][COLOR=red\r\n"),
+    );
+
+    // wowi_details: BugSack's real entry, synthetic ones, the API's answer when no id
+    // exists, a broken body.
+    write(
+        "wowi_details",
+        "bugsack.json",
+        &serde_json::to_vec(&[&details]).unwrap(),
+    );
+    let synthetic = [
+        common::wowi::details(
+            5995,
+            "BugSack",
+            "v12.1.7",
+            "683278e9d6e1cbc1514c3066d3d347b2",
+        ),
+        common::wowi::details(7032, "Clique", "", ""),
+    ];
+    write(
+        "wowi_details",
+        "synthetic.json",
+        &serde_json::to_vec(&synthetic).unwrap(),
+    );
+    write(
+        "wowi_details",
+        "unknown.json",
+        br#"{"ERROR":"No AddOn found."}"#,
+    );
+    write(
+        "wowi_details",
+        "malformed.json",
+        br#"[{"UID":-1,"UIMD5":"ABCDEF0123456789abcdef012345678Z","UIDate":1e30,"UIChangeLog":"[url=<\u0000b]x"},{"UID":"7"},"#,
     );
 
     // wowi_filelist: entries as the API writes them, an empty list, a broken body.

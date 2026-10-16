@@ -250,6 +250,8 @@ impl GithubRest {
                 published_at,
                 assets,
                 changelog_url: release.html_url.clone(),
+                notes: None,
+                name_hint: None,
             }],
         })
     }

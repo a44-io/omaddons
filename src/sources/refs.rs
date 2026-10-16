@@ -237,18 +237,26 @@ fn url(input: &str, rest: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
                 _ => with_url(gh()),
             });
         }
-        "wowinterface.com" => {
-            let id = segments.last().and_then(|page| {
-                let digits = page
-                    .strip_prefix("info")
-                    .or_else(|| page.strip_prefix("download"))?;
-                digits.split(['-', '.']).next()?.parse::<u64>().ok()
+        // The site's pages, and the CDN link `UIDownload` and browsers produce.
+        "wowinterface.com" | "cdn.wowinterface.com" => {
+            let id = segments.last().and_then(|page| match *page {
+                "fileinfo.php" | "getfile.php" => query
+                    .split('&')
+                    .find_map(|kv| kv.strip_prefix("id="))?
+                    .parse::<u64>()
+                    .ok(),
+                _ => {
+                    let digits = page
+                        .strip_prefix("info")
+                        .or_else(|| page.strip_prefix("download"))?;
+                    digits.split(['-', '.']).next()?.parse::<u64>().ok()
+                }
             });
             return match id {
                 Some(id) => Ok(with_url(Ref::Wowi { id })),
                 None => Err(invalid(
                     input,
-                    "a WoWInterface link names info<id>-<name>.html",
+                    "a WoWInterface link names info<id>-<name>.html or fileinfo.php?id=<id>",
                 )),
             };
         }
@@ -538,6 +546,15 @@ mod tests {
         ("https://www.wowinterface.com/downloads/info5108-Clique.html", "wowi:5108", Some(MatchKind::Url), None, None),
         ("https://www.wowinterface.com/downloads/download5108-Clique", "wowi:5108", Some(MatchKind::Url), None, None),
         ("https://www.wowinterface.com/forums/", "ref_invalid", None, None, None),
+        ("https://www.wowinterface.com/downloads/fileinfo.php?id=5995", "wowi:5995", Some(MatchKind::Url), None, None),
+        ("https://wowinterface.com/downloads/fileinfo.php?s=abc&id=5995#comments", "wowi:5995", Some(MatchKind::Url), None, None),
+        ("https://www.wowinterface.com/downloads/getfile.php?id=5995", "wowi:5995", Some(MatchKind::Url), None, None),
+        ("https://cdn.wowinterface.com/downloads/getfile.php?id=5995&d=1791824100&minion", "wowi:5995", Some(MatchKind::Url), None, None),
+        ("https://cdn.wowinterface.com/downloads/fileinfo.php?id=5995", "wowi:5995", Some(MatchKind::Url), None, None),
+        ("https://www.wowinterface.com/downloads/fileinfo.php", "ref_invalid", None, None, None),
+        ("https://www.wowinterface.com/downloads/fileinfo.php?id=59x5", "ref_invalid", None, None, None),
+        ("https://cdn.wowinterface.com/downloads/getfile.php?d=1791824100", "ref_invalid", None, None, None),
+        ("https://cdn.wowinterface.com/", "ref_invalid", None, None, None),
         ("https://www.tukui.org/addon/elvui", "tukui:elvui", Some(MatchKind::Url), None, None),
         ("https://tukui.org/download.php?ui=ElvUI", "tukui:elvui", Some(MatchKind::Url), None, None),
         ("https://www.curseforge.com/wow/addons/details", "source_disabled", None, None, None),
@@ -674,7 +691,7 @@ mod tests {
         fn url_shaped_input_never_panics(path in "[a-zA-Z0-9/._#?=&-]{0,60}") {
             let dir = std::env::temp_dir();
             with_ctx(&dir, |ctx| {
-                for host in ["github.com", "www.wowinterface.com", "tukui.org", "codeberg.org", "example.org"] {
+                for host in ["github.com", "www.wowinterface.com", "cdn.wowinterface.com", "tukui.org", "codeberg.org", "example.org"] {
                     let _ = parse_user_ref(&format!("https://{host}/{path}"), ctx);
                 }
             });

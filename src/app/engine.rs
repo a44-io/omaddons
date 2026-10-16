@@ -61,7 +61,7 @@ impl Engine {
         Ok(Self {
             http: stack(&net, log.clone(), &world.paths),
             paths: world.paths.clone(),
-            registry: SourceRegistry::builtin().with_git(GitRunner::new(&net, log)),
+            registry: SourceRegistry::builtin(&world.sources()).with_git(GitRunner::new(&net, log)),
             table: world.table.clone(),
             policy: world.config.running_policy.unwrap_or_default(),
             limits: ArchiveLimits::from(&limits),

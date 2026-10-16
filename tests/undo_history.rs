@@ -462,7 +462,7 @@ mod runs {
         use omaddons::model::{Actor, AddonReason, Channel, RunId, TxKind};
         use omaddons::output::ProgressSink;
         use omaddons::rules::RulesTable;
-        use omaddons::sources::SourceRegistry;
+        use omaddons::sources::{SourceConfigView, SourceRegistry};
         use omaddons::state::config::RunningPolicy;
         use omaddons::state::registry::load_registry;
         use serde_json::Value;
@@ -547,7 +547,7 @@ mod runs {
                     no_deps: false,
                 };
                 let http = replay(&self.home.env, &self.home.http);
-                let sources = SourceRegistry::builtin();
+                let sources = SourceRegistry::builtin(&SourceConfigView::all_enabled());
                 let argv: Vec<String> = vec!["omaddons".into(), "update".into()];
                 let nothing_runs = BTreeSet::new();
                 let ctx = EngineCtx {
