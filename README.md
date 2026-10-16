@@ -598,6 +598,7 @@ Install or update addons in one target. Each ref is fetched once and verified ag
 | `--channel stable\|beta\|alpha` | Release channel (default: recorded, then `default_channel`, then stable) |
 | `--version <V>` | Exactly this release, pinned: a tag for `gh:`, a rev for `git:` |
 | `--file <ZIP>` | Use this downloaded archive as the release of the one given ref |
+| `--reinstall` | Install the recorded release again, replacing its folders: repairs modified or missing files (undoable) |
 | `--force` | Take over a folder another addon owns, or replace an unmanaged folder (both undoable) |
 | `--strict` | Exit 6 when only some of the addons install |
 | `--refresh` | Fetch every release from its source, never from remembered metadata |
@@ -611,9 +612,12 @@ omaddons install gh:tullamods/Dominos --version 11.4.5 -t retail
 omaddons install pfui -t turtle
 omaddons install ./MyAddon -t retail --dry-run
 omaddons install gh:someone/addon --file ~/Downloads/addon-1.2.zip -t retail
+omaddons install Plater -t retail --reinstall   # put back modified or deleted files
 ```
 
 Each item's `status` is `installed`, `updated`, `unchanged` or `failed`, or, when only its record changed, `pinned`, `unpinned` or `edited` (with `fields`). A partial result (some addons failed) is still exit 0, with `partial: true` and each failure in `data.items[].error`. With `--strict` it is exit 6. Never-launched clients have no `Interface/AddOns` yet: the first install creates it inside its transaction and reports `creates_addons_dir: true`.
+
+**Reinstalling.** `--reinstall` installs the recorded release again, even when it is current, and replaces the addon's folders: files modified by hand come back as released, and deleted folders come back. The archive comes from the download cache when it is still there, with no request (offline too). Otherwise that exact release is fetched again, never a newer one. A pinned addon stays pinned, and a dependency stays a dependency. The item is `updated` from and to the same version, in an `update` transaction, so `undo` brings the replaced files back. Only an installed addon can be reinstalled (`not_managed`, fix `omaddons install <addon>`). `omaddons reinstall X` is a usage error whose fix is `omaddons install X --reinstall`.
 
 **Dependencies.** What an addon's TOC requires (`## Dependencies`, `## RequiredDeps`) installs in the same transaction when a keyless source ships it (today the catalog, including your `catalog.d` entries), from `default_channel` (never the requesting addon's channel). It is recorded as `reason: dependency` with `required_by`, and `undo` removes it with its requester. `## OptionalDeps` never installs anything. Some required folders install nothing:
 

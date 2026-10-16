@@ -1,0 +1,39 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "offline",
+    "details": {
+      "items": [
+        {
+          "code": "offline",
+          "message": "WeakAuras: its archive is not in the blob cache, and getting it again needs the network",
+          "request": "weakauras"
+        }
+      ],
+      "reason": "not_cached",
+      "ref": "gh:WeakAuras/WeakAuras2"
+    },
+    "fix": "omaddons install weakauras -t retail --reinstall",
+    "fix_argv": [
+      "omaddons",
+      "install",
+      "weakauras",
+      "-t",
+      "retail",
+      "--reinstall"
+    ],
+    "message": "WeakAuras: its archive is not in the blob cache, and getting it again needs the network",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

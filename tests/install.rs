@@ -1231,3 +1231,273 @@ fn a_long_install_reports_progress_only_when_asked() {
         r.context()
     );
 }
+
+/// Retail with gh:o/foo v1 installed; returns the Foo folder.
+fn installed_foo() -> (Home, std::path::PathBuf) {
+    let home = Home::new(&["wow"]);
+    foo_release(&home.http, "v1", mainline(), "120105");
+    home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+    let folder = home.addons("_retail_").join("Foo");
+    (home, folder)
+}
+
+#[test]
+fn reinstall_repairs_from_the_blob_cache_with_no_request_and_undo_brings_the_edit_back() {
+    let (home, foo) = installed_foo();
+    let fresh = tree_hash(&foo);
+    let before = support::addon_record(&home, "foo");
+    fs::write(foo.join("core.lua"), "-- edited by hand").unwrap();
+    let requests = net_log(&home).len();
+
+    let r = home.run(&["install", "gh:o/foo", "-t", "retail", "--reinstall"]);
+    let envelope = r.expect(0);
+    let item = &items(&envelope)[0];
+    assert_eq!(
+        (
+            &item["status"],
+            &item["from_version"],
+            &item["to_version"],
+            &envelope["data"]["kind"]
+        ),
+        (
+            &Value::from("updated"),
+            &Value::from("v1"),
+            &Value::from("v1"),
+            &Value::from("update")
+        ),
+        "{}",
+        r.context()
+    );
+    assert_eq!(
+        item["folders"]["replaced"],
+        serde_json::json!(["Foo", "FooOptions"])
+    );
+    assert_eq!(net_log(&home).len(), requests, "no request");
+    assert_eq!(tree_hash(&foo), fresh, "repaired");
+    let after = support::addon_record(&home, "foo");
+    assert_eq!(
+        (&after["release_id"], &after["blob_sha256"]),
+        (&before["release_id"], &before["blob_sha256"])
+    );
+    assert_ne!(after["tx_id"], before["tx_id"], "restamped");
+
+    home.run(&["undo"]).expect(0);
+    assert_eq!(
+        fs::read_to_string(foo.join("core.lua")).unwrap(),
+        "-- edited by hand",
+        "undo brings the edit back"
+    );
+
+    // Said as a reinstall from the local cache.
+    let human = home.exec(&argv_of(&serde_json::json!([
+        "install",
+        "gh:o/foo",
+        "-t",
+        "retail",
+        "--reinstall"
+    ])));
+    assert_eq!(human.code, 0, "{}", human.context());
+    assert!(
+        human
+            .stdout
+            .contains("retail: reinstalled Foo v1 from the local cache"),
+        "{}",
+        human.context()
+    );
+}
+
+#[test]
+fn reinstall_keeps_the_pin_and_the_recorded_release() {
+    let (home, foo) = installed_foo();
+    home.run(&["pin", "Foo"]).expect(0);
+    // A newer release exists; the folder is gone.
+    foo_release(&home.http, "v2", mainline(), "120105");
+    fs::remove_dir_all(&foo).unwrap();
+    let requests = net_log(&home).len();
+    let r = home.run(&["install", "gh:o/foo", "-t", "retail", "--reinstall"]);
+    let envelope = r.expect(0);
+    assert_eq!(items(&envelope)[0]["to_version"], "v1", "{}", r.context());
+    assert!(foo.join("Foo.toc").is_file(), "the folder is back");
+    let record = support::addon_record(&home, "foo");
+    assert_eq!(
+        (&record["version"], &record["pinned"]),
+        (&Value::from("v1"), &Value::Bool(true))
+    );
+    assert_eq!(net_log(&home).len(), requests, "from the cache");
+}
+
+#[test]
+fn without_its_blob_a_reinstall_fetches_the_recorded_release() {
+    let (home, foo) = installed_foo();
+    let record = support::addon_record(&home, "foo");
+    let blob = home
+        .env
+        .cache()
+        .join("omaddons/blobs")
+        .join(record["blob_sha256"].as_str().unwrap());
+    fs::remove_file(&blob).unwrap();
+    foo_release(&home.http, "v2", mainline(), "120105");
+    fs::write(foo.join("core.lua"), "-- edited").unwrap();
+
+    // Offline: nothing to install it from.
+    let r = home.run(&[
+        "install",
+        "gh:o/foo",
+        "-t",
+        "retail",
+        "--reinstall",
+        "--offline",
+    ]);
+    let envelope = r.expect(1);
+    assert_eq!(envelope["error"]["code"], "offline", "{}", r.context());
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not in the blob cache"),
+        "{}",
+        r.context()
+    );
+    assert_eq!(
+        argv_of(&envelope["error"]["fix_argv"]),
+        [
+            "omaddons",
+            "install",
+            "gh:o/foo",
+            "-t",
+            "retail",
+            "--reinstall"
+        ]
+    );
+
+    let assets = net_log(&home).count_purpose("asset");
+    let r = home.run(&["install", "gh:o/foo", "-t", "retail", "--reinstall"]);
+    let envelope = r.expect(0);
+    assert_eq!(items(&envelope)[0]["to_version"], "v1", "{}", r.context());
+    assert_eq!(
+        net_log(&home).count_purpose("asset"),
+        assets + 1,
+        "downloaded again"
+    );
+    assert!(blob.is_file(), "and cached again");
+    assert_eq!(fs::read_to_string(foo.join("core.lua")).unwrap(), "v1");
+
+    // Offline with the blob back: no request.
+    let requests = net_log(&home).len();
+    home.run(&[
+        "install",
+        "gh:o/foo",
+        "-t",
+        "retail",
+        "--reinstall",
+        "--offline",
+    ])
+    .expect(0);
+    assert_eq!(net_log(&home).len(), requests);
+}
+
+#[test]
+fn reinstall_needs_an_installed_addon_and_a_version_pins_it() {
+    let (home, _) = installed_foo();
+    let r = home.run(&["install", "gh:o/bar", "-t", "retail", "--reinstall"]);
+    let envelope = r.expect(3);
+    assert_eq!(envelope["error"]["code"], "not_managed", "{}", r.context());
+    assert_eq!(
+        argv_of(&envelope["error"]["fix_argv"]),
+        ["omaddons", "install", "gh:o/bar", "-t", "retail"]
+    );
+
+    foo_release(&home.http, "v2", mainline(), "120105");
+    let r = home.run(&[
+        "install",
+        "gh:o/foo",
+        "-t",
+        "retail",
+        "--reinstall",
+        "--version",
+        "v2",
+    ]);
+    let envelope = r.expect(0);
+    assert_eq!(items(&envelope)[0]["to_version"], "v2", "{}", r.context());
+    let record = support::addon_record(&home, "foo");
+    assert_eq!(
+        (&record["version"], &record["pinned"]),
+        (&Value::from("v2"), &Value::Bool(true))
+    );
+}
+
+#[test]
+fn a_reinstalled_dependency_stays_a_dependency() {
+    let (home, foo) = installed_foo();
+    let path = support::record_file(&home);
+    let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    record["addons"]["foo"]["reason"] = Value::from("dependency");
+    fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    fs::write(foo.join("core.lua"), "-- edited").unwrap();
+    home.run(&["install", "gh:o/foo", "-t", "retail", "--reinstall"])
+        .expect(0);
+    assert_eq!(support::addon_record(&home, "foo")["reason"], "dependency");
+}
+
+#[test]
+fn the_reinstall_verb_is_install_with_reinstall() {
+    let (home, foo) = installed_foo();
+    fs::write(foo.join("core.lua"), "-- edited").unwrap();
+    let r = home.run(&["reinstall", "gh:o/foo", "-t", "retail"]);
+    let envelope = r.expect(2);
+    let fix = argv_of(&envelope["error"]["fix_argv"]);
+    assert_eq!(
+        fix,
+        [
+            "omaddons",
+            "install",
+            "gh:o/foo",
+            "-t",
+            "retail",
+            "--reinstall"
+        ],
+        "{}",
+        r.context()
+    );
+    let args: Vec<&str> = fix[1..].iter().map(String::as_str).collect();
+    home.run(&args).expect(0);
+    assert_eq!(fs::read_to_string(foo.join("core.lua")).unwrap(), "v1");
+}
+
+#[test]
+fn a_release_that_loads_only_as_declared_is_reinstalled_from_its_source_metadata() {
+    // Its publisher declares retail, and it ships a folder only Classic Era loads: the
+    // cached archive alone (no rank) is refused, so the exact release is asked for, and
+    // its archive still comes from the cache.
+    let home = Home::new(&["wow"]);
+    let foo = toc("120105", &["## Version: 1"]);
+    let era = toc("11507", &[]);
+    let assets: [Asset<'_>; 1] = [(
+        "Foo.zip",
+        mainline(),
+        vec![
+            ("Foo/Foo.toc", foo.as_str()),
+            ("FooEra/FooEra.toc", era.as_str()),
+        ],
+    )];
+    gh_release(&home.http, support::FOO, "v1", &assets);
+    home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+    let addons = home.addons("_retail_");
+    fs::write(addons.join("Foo/Foo.toc"), "-- edited").unwrap();
+    let downloads = net_log(&home).count_purpose("asset");
+    let requests = net_log(&home).len();
+
+    let r = home.run(&["install", "gh:o/foo", "-t", "retail", "--reinstall"]);
+    let envelope = r.expect(0);
+    assert_eq!(items(&envelope)[0]["status"], "updated", "{}", r.context());
+    assert_eq!(fs::read_to_string(addons.join("Foo/Foo.toc")).unwrap(), foo);
+    assert_eq!(
+        net_log(&home).count_purpose("asset"),
+        downloads,
+        "the archive came from the cache"
+    );
+    assert!(
+        net_log(&home).len() > requests,
+        "the release was asked for: the cached archive alone was refused"
+    );
+}

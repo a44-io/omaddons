@@ -165,6 +165,10 @@ pub struct InstallIntent {
     pub required_by_remove: BTreeSet<String>,
     /// The floor a candidate must reach (`Update.installed_primary_interface`).
     pub floor_interface: Option<u32>,
+    /// A reinstall's installed release as planned against (`Some(release_id)`): under the
+    /// lock, a record that moved since (a concurrent update) refuses the reinstall
+    /// instead of rolling it back. `None` for every other install.
+    pub reinstall_of: Option<Option<String>>,
 }
 
 impl InstallIntent {
@@ -187,6 +191,7 @@ impl InstallIntent {
             required_by_add: BTreeSet::new(),
             required_by_remove: BTreeSet::new(),
             floor_interface: None,
+            reinstall_of: None,
         }
     }
 
@@ -242,7 +247,7 @@ pub fn carry_over(
         .collect();
     match existing {
         None => {
-            record.pinned = intent.pin == PinIntent::Pin;
+            record.pinned = matches!(intent.pin, PinIntent::Pin);
             record.channel = intent.channel;
             record.reason = intent.reason;
         }
@@ -717,6 +722,9 @@ enum Want {
         wanted: Wanted,
         file: Option<PathBuf>,
         intent: InstallIntent,
+        /// A reinstall's recorded release from the blob cache ([`local_blob_candidate`]):
+        /// the source is not asked.
+        local: Option<Box<Candidate>>,
     },
     Remove {
         addon: String,
@@ -744,7 +752,34 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             .key
             .map_or_else(|| tr.target.id.clone(), |k| k.to_string());
         generations.insert(generation_key, record.generation);
-        let wants: Vec<Want> = tr.changes.iter().map(|c| want(c, &record)).collect();
+        let mut wants: Vec<Want> = tr.changes.iter().map(|c| want(c, &record)).collect();
+        // A reinstall of the recorded release whose archive is still cached needs no
+        // source.
+        for w in &mut wants {
+            if let Want::Install {
+                wanted,
+                file: None,
+                intent,
+                local,
+                ..
+            } = w
+                && intent.reinstall
+                && intent.version.is_none()
+                && let Some(installed) = record.addons.values().find(|a| a.r#ref == wanted.r#ref)
+                && let (Some(release_id), Some(sha)) =
+                    (&installed.release_id, &installed.blob_sha256)
+            {
+                *local = local_blob_candidate(
+                    ctx.blobs,
+                    ctx.scopes,
+                    release_id,
+                    &installed.version,
+                    installed.channel,
+                    sha,
+                )
+                .map(Box::new);
+            }
+        }
         prepared.push((tr, record, index, wants));
     }
 
@@ -756,6 +791,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                 wanted,
                 file: None,
                 intent,
+                local: None,
                 ..
             } if !keeps_installed(record, &wanted.r#ref, intent) => Some(wanted.clone()),
             _ => None,
@@ -859,23 +895,28 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                     wanted,
                     file,
                     intent,
+                    local,
                 } => {
                     let identity = wanted.r#ref.identity();
                     if seen.contains(&identity) {
                         continue;
                     }
                     seen.push(identity);
-                    // A pinned addon, or one whose release is kept, was not fetched.
-                    let set = match &file {
-                        Some(_) => None,
-                        None => fetched.get(&wanted).map(|f| f.set.clone()),
+                    // A pinned addon, one whose release is kept, or a reinstall from the
+                    // blob cache was not fetched.
+                    let set = match (&file, &local) {
+                        (None, None) => fetched.get(&wanted).map(|f| f.set.clone()),
+                        _ => None,
                     };
                     let r = Some(wanted.r#ref.clone());
                     match planner.prepare_install(
                         name.as_deref(),
                         &wanted,
-                        file.as_deref(),
-                        set,
+                        CandidateSource {
+                            file: file.as_deref(),
+                            local: local.as_deref(),
+                            set,
+                        },
                         &intent,
                     ) {
                         Ok(Prepared::Build(build)) => Step::Build(r, name, build),
@@ -1029,7 +1070,13 @@ fn missing_dependency(
                 "it is missing from {}'s folders",
                 detail.unwrap_or("an installed addon")
             ),
-            Suggestion::command(["omaddons", "list", "-t", id, "-v"]),
+            // Reinstalling its owner brings it back, at the recorded release.
+            detail.map_or_else(
+                || Suggestion::command(["omaddons", "list", "-t", id, "-v"]),
+                |owner| {
+                    Suggestion::command(["omaddons", "install", owner, "--reinstall", "-t", id])
+                },
+            ),
         ),
         UnresolvedReason::SeveralCatalogEntries | UnresolvedReason::WowiAmbiguous => (
             format!("several projects ship it ({})", listed.join(", ")),
@@ -1432,7 +1479,12 @@ impl TargetPlanner<'_> {
                 false,
             )
         };
-        let build = match self.prepare_install(dep.name.as_deref(), wanted, None, set, &intent)? {
+        let source = CandidateSource {
+            file: None,
+            local: None,
+            set,
+        };
+        let build = match self.prepare_install(dep.name.as_deref(), wanted, source, &intent)? {
             Prepared::Build(build) => build,
             // Installed and kept as it is, yet the folder is not there.
             Prepared::Done(_) => return Ok(Err(UnresolvedReason::NotShipped)),
@@ -1896,10 +1948,27 @@ pub fn rejudge(
                 if intent.pinned_noop(existing) {
                     return Ok(Planned::pinned(existing, &target.id));
                 }
+                // A reinstall planned against a release the record has left (a
+                // concurrent update): refused, never rolled back (`plan_stale` with the
+                // generation moved).
+                if let Some(planned) = &intent.reinstall_of
+                    && existing.release_id != *planned
+                {
+                    return Err(Error::new(
+                        ErrorCode::NotFound,
+                        format!(
+                            "{} is now at {}, not the release this reinstall was planned for",
+                            existing.name, existing.version
+                        ),
+                        Suggestion::command(["omaddons", "list", "-t", target.id.as_str()]),
+                    ));
+                }
                 // Installed meanwhile: its pin, channel or reason difference still
-                // records, as a records-only change.
+                // records, as a records-only change. A reinstall installs again.
                 if intent.keeps_release()
-                    || (existing.release_id == template.release_id && planner.all_present(existing))
+                    || (!intent.reinstall
+                        && existing.release_id == template.release_id
+                        && planner.all_present(existing))
                 {
                     return planner.current(existing, intent);
                 }
@@ -1945,23 +2014,32 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
             pin,
             reason,
             reinstall,
-        } => Want::Install {
-            name: name.clone(),
-            wanted: Wanted {
-                r#ref: r#ref.clone(),
-                channel: *channel,
-                version: version.clone(),
-            },
-            file: file.clone(),
-            intent: InstallIntent::requested(
-                *channel,
-                *channel_explicit,
-                version.clone(),
-                *pin,
-                *reason,
-                *reinstall,
-            ),
-        },
+        } => {
+            // A reinstall without a version asks for the recorded release exactly; the
+            // intent keeps no version, so the pin stays as recorded.
+            let installed = record.addons.values().find(|a| a.r#ref == *r#ref);
+            let exact = installed
+                .filter(|_| *reinstall && version.is_none())
+                .and_then(exact_version);
+            Want::Install {
+                name: name.clone(),
+                wanted: Wanted {
+                    r#ref: r#ref.clone(),
+                    channel: *channel,
+                    version: version.clone().or(exact),
+                },
+                file: file.clone(),
+                intent: InstallIntent::requested(
+                    *channel,
+                    *channel_explicit,
+                    version.clone(),
+                    *pin,
+                    *reason,
+                    *reinstall,
+                ),
+                local: None,
+            }
+        }
         RequestedChange::Remove { addon } => Want::Remove {
             addon: addon.clone(),
         },
@@ -1994,6 +2072,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                             false,
                         )
                     },
+                    local: None,
                 },
                 None => Want::Failed {
                     r#ref: None,
@@ -2359,6 +2438,14 @@ struct Loadable {
     skipped: Vec<SkippedFolder>,
 }
 
+/// Where an install's candidates come from, first match wins: the `--file` archive, a
+/// reinstall's cached archive, else the release set the source answered.
+struct CandidateSource<'a> {
+    file: Option<&'a std::path::Path>,
+    local: Option<&'a Candidate>,
+    set: Option<Result<ReleaseSet>>,
+}
+
 /// An install after its first pass: settled, or a verified winner still to judge
 /// against the working view.
 enum Prepared {
@@ -2404,32 +2491,50 @@ impl TargetPlanner<'_> {
         &self,
         name: Option<&str>,
         wanted: &Wanted,
-        file: Option<&std::path::Path>,
-        set: Option<Result<ReleaseSet>>,
+        source: CandidateSource<'_>,
         intent: &InstallIntent,
     ) -> Result<Prepared> {
         one_addons_dir(&ClientPaths::new(&self.target.client_dir))?;
+        let CandidateSource { file, local, set } = source;
         let existing = self
             .record
             .addons
             .values()
             .find(|a| a.r#ref == wanted.r#ref);
         // Before any candidate is looked at: these never move an installed release.
-        if let Some(existing) = existing {
-            if intent.pinned_noop(existing) {
-                return Ok(Prepared::Done(Planned::pinned(existing, &self.target.id)));
+        match existing {
+            Some(existing) => {
+                if intent.pinned_noop(existing) {
+                    return Ok(Prepared::Done(Planned::pinned(existing, &self.target.id)));
+                }
+                if intent.keeps_release() {
+                    return self.current(existing, intent).map(Prepared::Done);
+                }
             }
-            if intent.keeps_release() {
-                return self.current(existing, intent).map(Prepared::Done);
+            // Only what is installed can be installed again.
+            None if intent.reinstall => {
+                return Err(super::edit::not_managed(
+                    &wanted.r#ref.to_string(),
+                    &self.target.id,
+                ));
             }
+            None => {}
         }
+        // The release a reinstall repairs, for the race check under the lock.
+        let intent = &InstallIntent {
+            reinstall_of: existing
+                .filter(|_| intent.reinstall)
+                .map(|e| e.release_id.clone()),
+            ..intent.clone()
+        };
         // The source's name for the addon (WoWInterface's `UIName`), when no catalog
         // name applies.
         let mut source_name: Option<String> = None;
-        let candidates = match (file, set) {
-            (Some(file), _) => vec![file_candidate(file, wanted)],
-            (None, Some(set)) => {
-                let set = set?;
+        let candidates = match (file, local, set) {
+            (Some(file), _, _) => vec![file_candidate(file, wanted)],
+            (None, Some(local), _) => vec![local.clone()],
+            (None, None, Some(set)) => {
+                let set = set.map_err(|e| self.not_cached(e, wanted, intent))?;
                 // A git source already resolved `--version` as the rev it fetched.
                 let pin = match wanted.r#ref {
                     Ref::Git { .. } => None,
@@ -2466,11 +2571,12 @@ impl TargetPlanner<'_> {
                     }
                 }
             }
-            (None, None) => {
+            (None, None, None) => {
                 return Err(Error::internal(format!("{} was not fetched", wanted.r#ref)));
             }
         };
         if let (Some(existing), Some(first)) = (existing, candidates.first())
+            && !intent.reinstall
             && existing.release_id.as_deref() == Some(first.release_id.as_str())
             && self.all_present(existing)
         {
@@ -2503,6 +2609,19 @@ impl TargetPlanner<'_> {
             }
         }
         let Some(winner) = winner else {
+            // A reinstall's cached archive carries no rank, so a release that loads only
+            // as its publisher declares it is refused: ask the source for the exact
+            // release (its blob is still found through the facts). Offline, the memo
+            // answers or the refusal stands as `offline`.
+            if local.is_some() {
+                let fetched = self.ctx.cache.get(std::slice::from_ref(wanted));
+                let source = CandidateSource {
+                    file: None,
+                    local: None,
+                    set: fetched.get(wanted).map(|f| f.set.clone()),
+                };
+                return self.prepare_install(name, wanted, source, intent);
+            }
             if user_supplied {
                 // The user's own archive: why it cannot be read, else it does not load.
                 if let Some(error) = unreadable {
@@ -3277,6 +3396,7 @@ impl TargetPlanner<'_> {
             return Ok(cached(blob));
         }
         if let Some((sha, size)) = ctx.cache.facts().hash(release_id, &asset.filename)
+            // ubs:ignore — comparing archive hashes, not secrets
             && expected_sha.as_ref().is_none_or(|e| e == sha)
             && asset.size.is_none_or(|declared| declared == size)
             && let Some(blob) = ctx.blobs.get(ctx.scopes, sha)?
@@ -3333,6 +3453,43 @@ impl TargetPlanner<'_> {
             blob,
             canonical_url,
         })
+    }
+
+    /// A reinstall that needs its source while offline: its archive is not in the blob
+    /// cache. Any other error stays as it is.
+    fn not_cached(&self, error: Error, wanted: &Wanted, intent: &InstallIntent) -> Error {
+        // ubs:ignore — comparing error codes, not secrets
+        if !intent.reinstall || error.code != ErrorCode::Offline {
+            return error;
+        }
+        let name = self
+            .record
+            .addons
+            .values()
+            .find(|a| a.r#ref == wanted.r#ref)
+            .map_or_else(|| wanted.r#ref.to_string(), |a| a.name.clone());
+        let fix = if self
+            .ctx
+            .argv
+            .iter()
+            .any(|a| matches!(a.as_str(), "--offline"))
+        {
+            let argv: Vec<String> = crate::cli::fix_argv(self.ctx.argv)
+                .into_iter()
+                .filter(|a| !matches!(a.as_str(), "--offline"))
+                .collect();
+            Suggestion::command(argv)
+        } else {
+            Suggestion::text("run without --offline and with OMADDONS_OFFLINE unset")
+        };
+        Error::new(
+            ErrorCode::Offline,
+            format!(
+                "{name}: its archive is not in the blob cache, and getting it again needs the network"
+            ),
+            fix,
+        )
+        .details(json!({ "ref": wanted.r#ref.to_string(), "reason": "not_cached" }))
     }
 
     fn no_release(&self, wanted: &Wanted, tried: &[Value], why: &str) -> Error {
@@ -3421,6 +3578,55 @@ fn family_name(target: &Target) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_default()
+}
+
+/// The version that asks a source for `installed`'s release exactly: its tag, a git
+/// ref's revision (from its `release_id`), and nothing for a URL or a local path, whose
+/// one release is the archive itself.
+fn exact_version(installed: &AddonRecord) -> Option<String> {
+    match &installed.r#ref {
+        Ref::Url { .. } | Ref::File { .. } => None,
+        Ref::Git { .. } => installed
+            .release_id
+            .as_deref()
+            .and_then(|id| id.rsplit_once('@'))
+            .map(|(_, rev)| rev.to_owned()),
+        _ => Some(installed.version.clone()),
+    }
+}
+
+/// The cached archive of a recorded release as an install candidate, carrying that
+/// release's identity (`release_id`, `version`) rather than a local file's: `None` when
+/// the blob `sha256` is not in the cache, or no longer hashes to it. Its rank is not
+/// recorded, so it is `Unannotated`. Reinstalls use it, and `sync --locked` will.
+pub fn local_blob_candidate(
+    blobs: &BlobCache,
+    scopes: &ScopeTable,
+    release_id: &str,
+    version: &str,
+    channel: Channel,
+    sha256: &str,
+) -> Option<Candidate> {
+    let blob = blobs.get(scopes, sha256).ok().flatten()?;
+    let (size, hex) = crate::state::files_index::hash_file_streaming(&blob.path).ok()?;
+    if !hex.eq_ignore_ascii_case(sha256) {
+        return None;
+    }
+    Some(Candidate {
+        release_id: release_id.to_owned(),
+        version: version.to_owned(),
+        channel,
+        asset: crate::model::Asset {
+            filename: format!("{}.zip", blob.sha256),
+            location: AssetLocation::LocalZip(blob.path),
+            size: Some(size),
+            expected_hash: Some(ExpectedHash::Sha256(blob.sha256)),
+            flavors: Vec::new(),
+            name_flavors: Vec::new(),
+            nolib: false,
+        },
+        rank: crate::model::RankReason::Unannotated,
+    })
 }
 
 /// `--file <zip>`: the archive itself, as the only candidate of the ref.
@@ -3562,6 +3768,48 @@ pub fn primary_by_shape(folders: &[FolderName]) -> Option<&FolderName> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cached_blob_is_the_recorded_release_while_it_hashes_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let paths = Paths::with_roots(root, root.join("c"), root.join("s"), root.join("k"));
+        let scopes = ScopeTable::new(&paths, &[], None).unwrap();
+        let blobs = BlobCache::new(&paths);
+        let bytes = b"PK fake archive";
+        let sha: String = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        let build =
+            || local_blob_candidate(&blobs, &scopes, "gh:o/foo@v1", "v1", Channel::Beta, &sha);
+        assert!(build().is_none(), "not cached");
+
+        std::fs::create_dir_all(paths.blobs_dir()).unwrap();
+        std::fs::write(paths.blob(&sha), bytes).unwrap();
+        let candidate = build().unwrap();
+        assert_eq!(
+            (
+                candidate.release_id.as_str(),
+                candidate.version.as_str(),
+                candidate.channel
+            ),
+            ("gh:o/foo@v1", "v1", Channel::Beta),
+            "the recorded identity, not a local file's"
+        );
+        let local = match &candidate.asset.location {
+            AssetLocation::LocalZip(path) => Some(path.clone()),
+            _ => None,
+        };
+        assert_eq!(local, Some(paths.blob(&sha)), "the cached blob itself");
+        assert_eq!(candidate.rank, crate::model::RankReason::Unannotated);
+
+        std::fs::write(paths.blob(&sha), b"changed since").unwrap();
+        assert!(build().is_none(), "a blob that no longer hashes to it");
+    }
 
     fn inspected(names: &[&str]) -> Inspected {
         let dir = tempfile::tempdir().unwrap();

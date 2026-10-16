@@ -416,6 +416,10 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
     let (fix, alternatives) = match err.kind() {
         ErrorKind::InvalidSubcommand => invalid(ContextKind::InvalidSubcommand)
             .and_then(|bad| {
+                // M2-D39: `install` alone would leave a current addon as it is.
+                if bad == "reinstall" {
+                    return Some((reinstall_fix(argv), Vec::new()));
+                }
                 let names: Vec<String> = cmd
                     .get_subcommands()
                     .map(|c| c.get_name().to_owned())
@@ -448,6 +452,23 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
         error = error.alternative(alternative);
     }
     error
+}
+
+/// `omaddons reinstall X …` as `omaddons install X … --reinstall`, every other argument
+/// kept.
+fn reinstall_fix(argv: &[String]) -> Suggestion {
+    let position = argv
+        .iter()
+        .skip(1)
+        .position(|a| a == "reinstall")
+        .map(|i| i + 1);
+    let mut argv = argv.to_vec();
+    if let Some(slot) = position.and_then(|i| argv.get_mut(i)) {
+        "install".clone_into(slot);
+    }
+    let mut fixed = fix_argv_keeping(&argv, position);
+    fixed.push("--reinstall".to_owned());
+    Suggestion::command(fixed)
 }
 
 /// The fix replacing `bad` in argv with its closest candidate, plus the other close
@@ -750,6 +771,23 @@ mod tests {
         let raw = argv(&["help", "--frobnicate"]);
         let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
         assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help", "help"]);
+    }
+
+    #[test]
+    fn reinstall_is_install_with_reinstall_not_a_typo() {
+        let raw = argv(&["reinstall", "Plater", "-t", "retail", "--json"]);
+        let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+        assert_eq!(
+            err.fix.argv().unwrap(),
+            argv(&["install", "Plater", "-t", "retail", "--reinstall"])
+        );
+        assert!(err.alternatives.is_empty(), "no Levenshtein alternatives");
+        let raw = argv(&["-v", "reinstall", "Foo"]);
+        let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+        assert_eq!(
+            err.fix.argv().unwrap(),
+            argv(&["-v", "install", "Foo", "--reinstall"])
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ use crate::engine::plan::{ChangeKind, FolderSummary, PinIntent, PlanFailure, Req
 use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{
-    AddonReason, Channel, Ref, ReloadRequired, RunId, TxId, TxKind, VersionConfidence,
+    AddonReason, AddonRecord, Channel, Ref, ReloadRequired, RunId, TxId, TxKind, VersionConfidence,
 };
 use crate::output::{Outcome, Style};
 use crate::resolve::cache::{Freshness, ReleaseCache};
@@ -57,6 +57,10 @@ pub struct InstallArgs {
     /// Install this downloaded archive as the release of the one given ref
     #[arg(long, value_name = "ZIP")]
     pub file: Option<PathBuf>,
+    /// Install the recorded release again, replacing its folders (repairs modified or
+    /// missing files)
+    #[arg(long)]
+    pub reinstall: bool,
     /// Install only the named addons, not the ones their TOCs require
     #[arg(long)]
     pub no_deps: bool,
@@ -128,6 +132,10 @@ pub struct InstallOutcome {
     warnings: Vec<Warning>,
     commands: Vec<CommandHint>,
     strict: bool,
+    /// `--reinstall`: an updated item at the same version was reinstalled.
+    reinstall: bool,
+    /// The requests reinstalled from the blob cache, for the human line.
+    from_cache: Vec<String>,
     /// Dependencies that resolved but did not install (each one a warning).
     failed_dependencies: usize,
     /// The global lock's hold time, for the `-v` log line.
@@ -211,19 +219,27 @@ impl Outcome for InstallOutcome {
             let folders = item.folders.added.len() + item.folders.replaced.len();
             match item.status {
                 ItemStatus::Installed | ItemStatus::Updated => {
-                    let verb = if item.status == ItemStatus::Installed {
-                        "installed"
-                    } else {
-                        "updated"
+                    let reinstalled = self.reinstall
+                        && item.status == ItemStatus::Updated
+                        && item.from_version == item.to_version;
+                    let verb = match item.status {
+                        ItemStatus::Installed => "installed",
+                        _ if reinstalled => "reinstalled",
+                        _ => "updated",
                     };
                     let verb = if d.dry_run {
                         format!("would be {verb}")
                     } else {
                         verb.to_owned()
                     };
+                    let from = if reinstalled && self.from_cache.contains(&item.request) {
+                        " from the local cache"
+                    } else {
+                        ""
+                    };
                     writeln!(
                         w,
-                        "{id}: {verb} {name} {} ({folders} folders)",
+                        "{id}: {verb} {name} {}{from} ({folders} folders)",
                         item.to_version.as_deref().unwrap_or("?")
                     )?;
                     let skipped: Vec<&str> = item
@@ -380,10 +396,11 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
     let engine = Engine::new(ctx, &world, "install")?;
     let change_for = |p: &ParsedRef, target: &DiscoveredTarget| {
         let version = args.version.clone().or_else(|| p.version_hint.clone());
+        let installed = recorded(&records, target, &p.r#ref);
         RequestedChange::Install {
             r#ref: p.r#ref.clone(),
             channel: channel
-                .or_else(|| recorded_channel(&records, target, &p.r#ref))
+                .or_else(|| installed.map(|a| a.channel))
                 .or(world.config.default_channel)
                 .unwrap_or_default(),
             channel_explicit: channel.is_some(),
@@ -396,9 +413,13 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             version,
             file: file.clone(),
             name: catalog_name(&catalog, &p.r#ref),
-            // Asking for an addon by name makes it explicit, promoting a dependency.
-            reason: AddonReason::Explicit,
-            reinstall: false,
+            // Asking for an addon by name makes it explicit, promoting a dependency; a
+            // reinstall is a repair and keeps the recorded reason.
+            reason: match installed {
+                Some(a) if args.reinstall => a.reason,
+                _ => AddonReason::Explicit,
+            },
+            reinstall: args.reinstall,
         }
     };
     let parsed: Vec<&ParsedRef> = items
@@ -484,7 +505,40 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         .map(|l| l.value)
         .or(record);
     let verbose = ctx.output.style.verbose > 0;
-    let built = build_items(&items, &done, outcome, after.as_ref(), verbose);
+    let mut built = build_items(&items, &done, outcome, after.as_ref(), verbose);
+    // Only what is installed can be reinstalled: the fix installs it.
+    if args.reinstall {
+        let id = outcome.map_or_else(|| target.target.id.clone(), |o| o.target.clone());
+        for (item, error) in &mut built {
+            if let Some(e) = error.as_mut().filter(|e| e.code == ErrorCode::NotManaged) {
+                let fix = Suggestion::command(["omaddons", "install", &item.request, "-t", &id]);
+                *e = Error::new(e.code, e.message.clone(), fix);
+                item.error = Some(ItemError::from(&*e));
+            }
+        }
+    }
+    // Reinstalls from a release with no download URL: the blob cache.
+    let from_cache: Vec<String> = built
+        .iter()
+        .filter(|(i, _)| args.reinstall && i.status == ItemStatus::Updated)
+        .filter(|(i, _)| {
+            let planned = done
+                .plan
+                .targets
+                .iter()
+                .flat_map(|t| &t.work)
+                .find_map(|w| w.record().filter(|r| Some(&r.r#ref) == i.r#ref.as_ref()));
+            let release = planned.and_then(|r| r.release_id.as_ref()).and_then(|id| {
+                done.plan
+                    .targets
+                    .iter()
+                    .flat_map(|t| &t.releases)
+                    .find(|r| &r.release_id == id)
+            });
+            release.is_some_and(|r| r.url.is_none())
+        })
+        .map(|(i, _)| i.request.clone())
+        .collect();
     let errors: Vec<(String, Error)> = built
         .iter()
         .filter_map(|(item, e)| e.clone().map(|e| (item.request.clone(), e)))
@@ -587,6 +641,8 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         warnings: unique,
         commands,
         strict: args.strict,
+        reinstall: args.reinstall,
+        from_cache,
         failed_dependencies: failed_dependencies.len(),
         lock_held_ms: outcome.and_then(|o| o.lock_held_ms),
         notes: outcome
@@ -598,18 +654,17 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
     })
 }
 
-/// The channel an addon was installed with on `target`.
-fn recorded_channel(
-    records: &BTreeMap<String, TargetRecord>,
+/// The record of `r` on `target`, when it is installed there.
+fn recorded<'r>(
+    records: &'r BTreeMap<String, TargetRecord>,
     target: &DiscoveredTarget,
     r: &Ref,
-) -> Option<Channel> {
+) -> Option<&'r AddonRecord> {
     records
         .get(&target.target.id)?
         .addons
         .values()
         .find(|a| a.r#ref == *r)
-        .map(|a| a.channel)
 }
 
 /// `-t`, else the configured default, else the single live target every addon
@@ -1075,6 +1130,8 @@ mod tests {
             warnings: Vec::new(),
             commands: Vec::new(),
             strict,
+            reinstall: false,
+            from_cache: Vec::new(),
             failed_dependencies: 0,
             lock_held_ms: None,
             notes: Vec::new(),

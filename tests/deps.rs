@@ -283,6 +283,38 @@ fn a_present_unmanaged_dependency_installs_nothing_and_hints_a_look() {
 }
 
 #[test]
+fn a_managed_dependency_folder_gone_from_disk_is_fixed_by_reinstalling_its_owner() {
+    let home = wigs();
+    home.run(&["install", "bigwigs"]).expect(0);
+    let bigwigs = home.addons("_retail_").join("BigWigs");
+    fs::remove_dir_all(&bigwigs).unwrap();
+    let r = home.run(&["install", "littlewigs"]);
+    let envelope = r.expect(0);
+    let warning = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["code"] == "missing_dependency")
+        .cloned();
+    assert!(warning.is_some(), "{}", r.context());
+    let fix: Vec<String> = serde_json::from_value(warning.unwrap()["fix_argv"].clone()).unwrap();
+    assert_eq!(
+        fix,
+        [
+            "omaddons",
+            "install",
+            "BigWigs",
+            "--reinstall",
+            "-t",
+            "retail"
+        ]
+    );
+    let args: Vec<&str> = fix[1..].iter().map(String::as_str).collect();
+    home.run(&args).expect(0);
+    assert!(bigwigs.join("BigWigs.toc").is_file(), "its folder is back");
+}
+
+#[test]
 fn a_managed_explicit_dependency_gains_the_requester_in_the_same_transaction() {
     let home = wigs();
     home.run(&["install", "bigwigs"]).expect(0);

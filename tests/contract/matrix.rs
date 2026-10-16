@@ -221,6 +221,33 @@ fn export() {
 }
 
 #[test]
+fn reinstall() {
+    let s = Scene::new();
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    // The verb: install with --reinstall, and that runs.
+    let c = s.json(&["reinstall", "weakauras", "-t", "retail"], 2);
+    insta::assert_json_snapshot!("reinstall_verb", s.stable(&c.envelope));
+    let fix = crate::support::strings(&c.envelope["error"]["fix_argv"]);
+    let args: Vec<&str> = fix[1..].iter().map(String::as_str).collect();
+    let c = s.json(&args, 0);
+    assert_eq!(c.envelope["data"]["items"][0]["status"], "updated");
+    // Offline, with the archive gone from the cache: nothing to reinstall from.
+    std::fs::remove_dir_all(s.home.env.cache().join("omaddons/blobs")).unwrap();
+    let c = s.json(
+        &[
+            "install",
+            "weakauras",
+            "-t",
+            "retail",
+            "--reinstall",
+            "--offline",
+        ],
+        1,
+    );
+    insta::assert_json_snapshot!("reinstall_offline", s.stable(&c.envelope));
+}
+
+#[test]
 fn info() {
     let s = Scene::new();
     let c = s.json(&["info", "weakauras"], 0);
