@@ -43,6 +43,7 @@ expression: s.stable(&c.envelope)
             "name": "Mists of Pandaria Classic"
           }
         ],
+        "orphans": 0,
         "product": "wow_classic",
         "registered": false,
         "running": false,
@@ -89,6 +90,7 @@ expression: s.stable(&c.envelope)
             "name": "Retail"
           }
         ],
+        "orphans": 0,
         "product": "wow",
         "registered": true,
         "running": false,

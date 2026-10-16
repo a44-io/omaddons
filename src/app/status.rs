@@ -101,6 +101,12 @@ pub struct StatusTarget {
     pub drift: Vec<DriftItem>,
     /// Unmanaged folders a catalog entry not installed here names.
     pub adoptable: usize,
+    /// Addons installed as dependencies that nothing requires any more (from the
+    /// record, `--cached` too). Reported and recommended, never removed by themselves.
+    pub orphans: usize,
+    /// Their names, sorted ignoring case, for the `remove_orphans` recommendation.
+    #[serde(skip)]
+    pub orphan_names: Vec<String>,
     pub attention: Vec<Attention>,
     /// `-v` only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -242,6 +248,11 @@ impl Outcome for StatusOutcome {
                 }
                 if t.adoptable > 0 {
                     counts.push_str(&format!(" · {} adoptable", t.adoptable));
+                }
+                if t.orphans > 0 {
+                    let n = t.orphans;
+                    let s = if n == 1 { "" } else { "s" };
+                    counts.push_str(&format!(" · {n} orphan{s}"));
                 }
                 if !t.attention.is_empty() {
                     let names: Vec<String> =
@@ -439,6 +450,10 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         } else {
             0
         };
+        let orphan_names = record
+            .as_ref()
+            .map(|l| orphans(&l.value))
+            .unwrap_or_default();
         targets.push(StatusTarget {
             id: t.id.clone(),
             key: t.key,
@@ -460,6 +475,8 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             updates,
             drift,
             adoptable,
+            orphans: orphan_names.len(),
+            orphan_names,
             attention,
             client_dir: verbose.then(|| t.client_dir.clone()),
             install_root: verbose.then(|| t.install_root.clone()),
@@ -498,6 +515,8 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             updates: UpdateCounts::default(),
             drift: Vec::new(),
             adoptable: 0,
+            orphans: 0,
+            orphan_names: Vec::new(),
             attention,
             client_dir: verbose.then(|| e.client_dir.clone()),
             install_root: verbose.then(|| e.install_root.clone()),
@@ -693,6 +712,13 @@ fn recommendations(
             false,
         ));
     }
+    for t in targets.iter().filter(|t| !t.orphan_names.is_empty()) {
+        let argv = ["omaddons", "remove"]
+            .into_iter()
+            .chain(t.orphan_names.iter().map(String::as_str))
+            .chain(["-t", t.id.as_str()]);
+        commands.push(CommandHint::new("remove_orphans", argv, true));
+    }
     commands.extend(fixes);
     for t in targets.iter().filter(|t| t.folders.unmanaged > 0) {
         commands.push(CommandHint::new(
@@ -767,6 +793,12 @@ fn attention_fixes(targets: &[StatusTarget]) -> (Vec<CommandHint>, Option<(Strin
         }
     }
     (commands, first)
+}
+
+/// The names of `record`'s orphans, sorted ignoring case.
+fn orphans(record: &TargetRecord) -> Vec<String> {
+    let names = record.addons.values().filter(|a| a.is_orphan());
+    crate::engine::edit::sorted_names(names.map(|a| a.name.clone()))
 }
 
 fn counts(record: &TargetRecord) -> AddonCounts {
@@ -853,6 +885,8 @@ mod tests {
             },
             drift: Vec::new(),
             adoptable: 0,
+            orphans: 0,
+            orphan_names: Vec::new(),
             attention: attention.to_vec(),
             client_dir: None,
             install_root: None,
@@ -899,6 +933,28 @@ mod tests {
         );
         let (commands, first) = recommendations(&[target("retail", 0, &[], 0)], false);
         assert!(commands.is_empty() && first.is_none());
+    }
+
+    #[test]
+    fn orphans_are_recommended_after_the_update_check_and_before_attention() {
+        let mut retail = target("retail", 1, &[Attention::AddonDegraded], 0);
+        retail.orphans = 2;
+        retail.orphan_names = vec!["Ace".into(), "BigWigs".into()];
+        let (commands, _) = recommendations(&[retail], true);
+        assert_eq!(
+            actions(&commands),
+            ["update", "check_updates", "remove_orphans", "inspect"]
+        );
+        assert_eq!(
+            commands[2].argv(),
+            ["omaddons", "remove", "Ace", "BigWigs", "-t", "retail"]
+        );
+        assert_eq!(
+            serde_json::to_value(&commands[2]).unwrap()["destructive"],
+            true
+        );
+        let none = target("retail", 0, &[], 0);
+        assert!(recommendations(&[none], false).0.is_empty());
     }
 
     #[test]

@@ -64,6 +64,8 @@ mod support {
         "omaddons adopt --ref <ref>",
         // local_changes_replaced under --dry-run
         "the replaced files are kept in the transaction snapshot",
+        // still_required under --dry-run
+        "nothing is removed under --dry-run",
         // missing_dependency
         "no keyless source ships",
         "install the one you use",

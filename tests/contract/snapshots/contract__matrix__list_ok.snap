@@ -36,8 +36,11 @@ expression: s.stable(&c.envelope)
             },
             "missing_folders": [],
             "name": "Foo",
+            "orphan": false,
             "pinned": false,
+            "reason": "explicit",
             "ref": "gh:o/foo",
+            "required_by": [],
             "state": "ok",
             "version": "1",
             "version_confidence": "toc"

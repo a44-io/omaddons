@@ -564,6 +564,14 @@ pub struct AddonRecord {
     pub blob_sha256: Option<String>,
 }
 
+impl AddonRecord {
+    /// Installed as a dependency, and nothing requires it any more. An explicitly
+    /// installed addon is never an orphan.
+    pub fn is_orphan(&self) -> bool {
+        self.reason == AddonReason::Dependency && self.required_by.is_empty()
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Refs.
 

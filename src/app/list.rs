@@ -17,7 +17,7 @@ use crate::discover::DiscoveredTarget;
 use crate::drift::{DriftMode, DriftState};
 use crate::error::{Result, Warning};
 use crate::inventory::{Depth, FolderClass, FolderEntry, Inventory, inventory};
-use crate::model::{AddonRecord, AddonState, Channel, TargetKey, VersionConfidence};
+use crate::model::{AddonReason, AddonRecord, AddonState, Channel, TargetKey, VersionConfidence};
 use crate::output::{Outcome, Style, table};
 use crate::resolve::updates::{StatusKind, StatusRow, UpdateStatus};
 use crate::rules::{ClientVersion, Family, RulesTable};
@@ -80,6 +80,12 @@ pub struct ListAddon {
     pub channel: Channel,
     pub pinned: bool,
     pub state: AddonState,
+    /// `explicit` when a user asked for it, `dependency` when only the resolver did.
+    pub reason: AddonReason,
+    /// The addons that require it, sorted.
+    pub required_by: Vec<String>,
+    /// A dependency nothing requires any more.
+    pub orphan: bool,
     /// The newest release the release memo knows, as `outdated` judges it (no request).
     pub latest: Latest,
     /// A count; with `-v` the folder names.
@@ -285,6 +291,9 @@ fn list_target(
                 channel: a.channel,
                 pinned: a.pinned,
                 state: a.state,
+                reason: a.reason,
+                required_by: a.required_by.clone(),
+                orphan: a.is_orphan(),
                 latest: latest(a),
                 folders: if verbose {
                     Folders::Names(a.folders.iter().map(|f| f.as_str().to_owned()).collect())
@@ -407,6 +416,15 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
             let mut flags = vec![wire(&a.channel)];
             if a.pinned {
                 flags.push("pinned".into());
+            }
+            if a.orphan {
+                flags.push(style.warn("orphan"));
+            } else if a.reason == AddonReason::Dependency {
+                flags.push(if style.verbose > 0 && !a.required_by.is_empty() {
+                    format!("dependency of {}", a.required_by.join(", "))
+                } else {
+                    "dep".into()
+                });
             }
             if a.state != AddonState::Ok {
                 flags.push(style.warn(&wire(&a.state)));

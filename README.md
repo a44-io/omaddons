@@ -136,7 +136,7 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | `adopt`: where unmanaged addons come from, whether they are exactly a release, and bringing them under management as they are (undoable) | ✅ Done (milestone 2) |
 | `update` (alias `upgrade`): every client's updates in one run, undone with one `undo` | ✅ Done (milestone 2) |
 | `pin` and `unpin`: hold an addon at its release through updates | ✅ Done (milestone 2) |
-| Dependencies: what a TOC requires installs with it, from the catalog | ✅ Done (milestone 2; more sources to come) |
+| Dependencies: what a TOC requires installs with it, from the catalog; `required_by` kept true on update and remove, orphans reported | ✅ Done (milestone 2; more sources to come) |
 | `sync`: every client made to match `addons.toml`, idempotently; `--locked` reproduces exact versions, `--prune` removes what the file drops | ✅ Done (milestone 2) |
 | `export`: every client's addon set as one `addons.toml`, printed or written with a backup | ✅ Done (milestone 2) |
 | WoWInterface: `wowi:` refs and links, keyless, every download checked against its MD5 | ✅ Done (milestone 2) |
@@ -583,12 +583,14 @@ Each client also shows:
 - **`updates`.** Its pending update counts (`available`, `pinned`, `blocked`, `failed`, `unchecked`) and `checked_at`, the oldest check. They come from what earlier `outdated`, `update` and `install` runs remembered, never from a request, so `status` stays offline. `stale` is true when that check is older than `check_interval_hours` (default 6).
 - **`drift`.** Each managed addon whose files changed on disk since omaddons installed them (`modified`), whose folder is gone or replaced by a symlink (`missing`), or that has no file index to check against (`unindexed`), with its changed-file count (`files`; the paths with `-v`). A file whose size or time changed is re-hashed, so one merely touched is not reported; `--deep` re-hashes every file. `--cached` checks only that the folders are there. Drift is computed on every run and never stored. `modified` raises the attention `addon_modified`, `missing` raises `addon_folder_missing`.
 - **`adoptable`.** How many unmanaged folders a catalog entry names that is not installed on that client.
+- **`orphans`.** How many addons installed as dependencies nothing requires any more (from the record, `--cached` too).
 
 Pending updates never count as attention: `status --check` stays a health check, and `outdated --check` is the update check. The recommendations:
 
 - `omaddons install <addon> -t <id> --reinstall`, for each modified or missing addon (at most 5);
 - `omaddons update`, or `-t <id>` when only one client has updates;
 - `omaddons outdated`, when a client was never checked or its check is stale;
+- `omaddons remove <orphans…> -t <id>` (`remove_orphans`, destructive), for each client with orphans;
 - the attention fixes;
 - a look at unmanaged folders.
 
@@ -635,6 +637,8 @@ Each item's `status` is `installed`, `updated`, `unchanged` or `failed`, or, whe
 - was not installed because of `--no-deps`.
 
 A dependency that resolves but fails to install makes the run `partial`, with a warning naming it and what requires it. The requesting addon still installs.
+
+`required_by` stays true. An update whose new release no longer requires any folder of a dependency drops the addon from that dependency's `required_by`, in the same transaction and under `--no-deps` too. A dependency left required by nothing warns `orphaned_dependency` (see [`remove`](#remove-addon)). Installing a dependency by name makes it `explicit`, and an explicit addon is never an orphan.
 
 ### `update [ADDON]...`
 
@@ -796,6 +800,8 @@ Unmanaged, linked (symlinked) and `Blizzard_*` folders, and names that match no 
 
 An addon whose folders were all deleted by hand is forgotten: its record and index entries go, in a transaction that records each folder (`record` ops) and that `undo` reverts. Such a remove changes no folder, so it also goes through while the game runs.
 
+**Dependencies.** Removing an addon others still require goes ahead, with `still_required` naming them: they will not load without it, and its fix is `omaddons undo <tx>`. Every addon that listed the removed one in `required_by` drops it in the same transaction (a `record` op with `edit: {"required_by_remove": "<name>"}`). A dependency that nothing requires any more is an orphan, and `orphaned_dependency` names them all with one `omaddons remove <names…> -t <id>` as its fix. Orphans are never removed by themselves. `undo` restores `required_by` exactly, even if the dependency was updated in between. Removing an addon together with what it requires (`remove LittleWigs BigWigs`) raises neither warning.
+
 ### `undo [TX]`
 
 Revert what a command did, as new transactions, SavedVariables included.
@@ -851,7 +857,7 @@ omaddons list -v                           # also each addon's drift (files chan
 omaddons list --deep                       # drift by content: every managed file re-hashed
 ```
 
-Each addon also carries `latest {version, status}`: the newest release remembered from earlier checks and its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`). `list` never asks a source; the column is blank when the addon is unchecked or static. With `-v` or `--deep` each addon carries `drift {state, files}` too (as in [`status`](#status); the paths with `-v`); a plain `list` checks no file.
+Each addon also carries `latest {version, status}`: the newest release remembered from earlier checks and its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`). `list` never asks a source; the column is blank when the addon is unchecked or static. With `-v` or `--deep` each addon carries `drift {state, files}` too (as in [`status`](#status); the paths with `-v`); a plain `list` checks no file. Each addon carries `reason` (`explicit` or `dependency`), `required_by` and `orphan` (a dependency nothing requires any more): the table marks a dependency `dep` (`dependency of LittleWigs` with `-v`) and an orphan `orphan`.
 
 ### `outdated`
 
@@ -969,7 +975,7 @@ WeakAuras  gh:WeakAuras/WeakAuras2
   latest: not checked (offline)
 ```
 
-The newest release comes through the [release memo](#files-and-state): a check made in the last 15 minutes is reused without a request, and `--refresh` checks again anyway. With `--offline`, `latest` is the remembered answer whatever its age, with a `stale_check` warning, or `null` (as above) when nothing is remembered. A missing repository is remembered too, so asking again within the window costs nothing; a network or server error never is. Each installed record carries its `drift {state, files}` (as in [`status`](#status), with the paths under `-v`), checked locally, so `--offline` shows it too.
+The newest release comes through the [release memo](#files-and-state): a check made in the last 15 minutes is reused without a request, and `--refresh` checks again anyway. With `--offline`, `latest` is the remembered answer whatever its age, with a `stale_check` warning, or `null` (as above) when nothing is remembered. A missing repository is remembered too, so asking again within the window costs nothing; a network or server error never is. Each installed record carries its `drift {state, files}` (as in [`status`](#status), with the paths under `-v`), checked locally, so `--offline` shows it too, and its `reason`, `required_by` and `orphan` on that target.
 
 ### `config`
 
@@ -1151,6 +1157,8 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `export_local_source` | `export`: an addon installed from a local file or folder was left out |
 | `not_locked` | `sync --locked`: entries without a version installed their newest release (one warning per client, naming them) |
 | `local_changes_replaced` | an install or update replaced folders whose files had changed on disk (it names up to 10 and counts them all); the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that the snapshot keeps them |
+| `still_required` | a removed addon is required by addons that stay, which will not load without it; the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that undo restores it |
+| `orphaned_dependency` | a remove or update left dependencies required by nothing; the fix is one `omaddons remove <names…> -t <id>` naming them all |
 
 </details>
 

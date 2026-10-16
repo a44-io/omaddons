@@ -23,7 +23,9 @@ use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::drift::{DriftMode, DriftState};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
-use crate::model::{AddonState, Channel, FolderName, Ref, ReleaseSet, TxId, VersionConfidence};
+use crate::model::{
+    AddonReason, AddonState, Channel, FolderName, Ref, ReleaseSet, TxId, VersionConfidence,
+};
 use crate::net::{NetConfig, NetLog, stack};
 use crate::output::{Outcome, Style};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
@@ -78,6 +80,12 @@ pub struct InstalledInfo {
     pub channel: Channel,
     pub pinned: bool,
     pub state: AddonState,
+    /// `explicit` when a user asked for it, `dependency` when only the resolver did.
+    pub reason: AddonReason,
+    /// The addons that require it here, sorted.
+    pub required_by: Vec<String>,
+    /// A dependency nothing requires any more.
+    pub orphan: bool,
     pub folders: Vec<FolderName>,
     /// Whether its files changed on disk (stat-first, local), with paths under `-v`.
     pub drift: DriftSummary,
@@ -170,9 +178,16 @@ impl Outcome for InfoOutcome {
                 DriftState::Unindexed => " · not indexed".to_owned(),
                 DriftState::Clean => String::new(),
             };
+            let dependency = if i.orphan {
+                " · a dependency nothing requires".to_owned()
+            } else if i.reason == AddonReason::Dependency {
+                format!(" · dependency of {}", i.required_by.join(", "))
+            } else {
+                String::new()
+            };
             writeln!(
                 w,
-                "  {}: {} ({confidence}, {channel}) installed {}{drift}",
+                "  {}: {} ({confidence}, {channel}) installed {}{drift}{dependency}",
                 i.target.id,
                 i.version,
                 super::history::local_time(i.installed_at)
@@ -260,6 +275,9 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
                 channel: a.channel,
                 pinned: a.pinned,
                 state: a.state,
+                reason: a.reason,
+                required_by: a.required_by.clone(),
+                orphan: a.is_orphan(),
                 folders: a.folders.clone(),
                 drift,
                 installed_at: a.installed_at,

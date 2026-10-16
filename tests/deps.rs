@@ -17,7 +17,9 @@ use common::trees::tree_hash;
 use omaddons::model::{AddonReason, Channel};
 use omaddons::state::history::HistoryEdit;
 use serde_json::{Value, json};
-use support::{RETAIL, catalog, fetches, folder, graph, items, record_of, warnings_with, wigs};
+use support::{
+    RETAIL, catalog, fetches, folder, graph, items, last_line, record_of, warnings_with, wigs,
+};
 
 #[cfg(test)]
 mod support {
@@ -160,6 +162,20 @@ mod support {
             .filter(|w| w["code"] == code)
             .map(|w| w["message"].as_str().unwrap().to_owned())
             .collect()
+    }
+
+    /// The last history line's kind, and the `edit` of its op on `addon`.
+    pub fn last_line(
+        home: &Home,
+        addon: &str,
+    ) -> (Value, Option<omaddons::state::history::HistoryEdit>) {
+        let line = super::common::state::history(home).pop().unwrap();
+        let edit = line
+            .ops
+            .iter()
+            .find(|op| op.addon == addon)
+            .and_then(|op| op.edit.clone());
+        (serde_json::to_value(line.kind).unwrap(), edit)
     }
 
     /// The retail record of the addon named `name`.
@@ -896,6 +912,255 @@ fn a_beta_update_takes_its_dependencies_from_the_default_channel() {
         "{}",
         r.context()
     );
+}
+
+/// The first warning with `code`, `null` when there is none.
+fn warning(envelope: &Value, code: &str) -> Value {
+    envelope["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|w| w["code"] == code)
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// The retail `status` (`args` added), and its `remove_orphans` hint (`null` if none).
+fn orphan_status(home: &Home, args: &[&str]) -> (Value, Value) {
+    let mut argv = vec!["status"];
+    argv.extend(args);
+    let envelope = home.run(&argv).expect(0);
+    let hint = envelope["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["action"] == "remove_orphans")
+        .cloned()
+        .unwrap_or(Value::Null);
+    (envelope["data"]["targets"][0].clone(), hint)
+}
+
+#[test]
+fn removing_a_dependency_still_required_goes_ahead_and_warns_with_undo() {
+    let home = wigs();
+    home.run(&["install", "littlewigs"]).expect(0);
+
+    // Planned only: the reminder, as text.
+    let r = home.run(&["remove", "bigwigs", "-t", "retail", "--dry-run"]);
+    let w = warning(&r.expect(0), "still_required");
+    assert!(
+        w["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("LittleWigs")),
+        "{}",
+        r.context()
+    );
+    assert_eq!(w["fix_argv"], Value::Null);
+    assert!(record_of(&home, "BigWigs").is_some());
+
+    let r = home.run(&["remove", "bigwigs", "-t", "retail"]);
+    let envelope = r.expect(0);
+    let tx = common::state::history(&home).pop().unwrap().tx.to_string();
+    let w = warning(&envelope, "still_required");
+    assert_eq!(
+        w["fix_argv"],
+        json!(["omaddons", "undo", tx]),
+        "{}",
+        r.context()
+    );
+    assert!(w["message"].as_str().unwrap().contains("LittleWigs"));
+    assert_eq!(warning(&envelope, "orphaned_dependency"), Value::Null);
+    assert!(record_of(&home, "BigWigs").is_none());
+    let (kind, edit) = last_line(&home, "LittleWigs");
+    assert_eq!(
+        (kind, edit),
+        (json!("remove"), None),
+        "the requester untouched"
+    );
+
+    home.run(&["undo", &tx]).expect(0);
+    let bw = record_of(&home, "BigWigs").unwrap();
+    assert_eq!(
+        (bw.reason, names(&bw.required_by)),
+        (AddonReason::Dependency, vec!["LittleWigs"])
+    );
+}
+
+#[test]
+fn removing_the_requester_orphans_its_dependency_until_the_recommendation_runs() {
+    let home = wigs();
+    home.run(&["install", "littlewigs"]).expect(0);
+    let r = home.run(&["remove", "littlewigs", "-t", "retail"]);
+    let envelope = r.expect(0);
+    let fix = json!(["omaddons", "remove", "BigWigs", "-t", "retail"]);
+    assert_eq!(
+        warning(&envelope, "orphaned_dependency")["fix_argv"],
+        fix,
+        "{}",
+        r.context()
+    );
+    assert_eq!(warning(&envelope, "still_required"), Value::Null);
+    let bw = record_of(&home, "BigWigs").unwrap();
+    assert_eq!(
+        (bw.reason, names(&bw.required_by)),
+        (AddonReason::Dependency, vec![])
+    );
+    assert_eq!(
+        last_line(&home, "BigWigs"),
+        (
+            json!("remove"),
+            Some(HistoryEdit::RequiredByRemove("LittleWigs".into()))
+        )
+    );
+
+    for args in [&[][..], &["--cached"]] {
+        let (target, hint) = orphan_status(&home, args);
+        assert_eq!(target["orphans"], 1, "{args:?}: {target}");
+        assert_eq!(
+            (&hint["argv"], &hint["destructive"]),
+            (&fix, &json!(true)),
+            "{args:?}"
+        );
+    }
+    let list = home.run(&["list"]).expect(0);
+    let listed = list["data"]["targets"][0]["addons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "BigWigs")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let info = home.run(&["info", "bigwigs"]).expect(0);
+    for shown in [&listed, &info["data"]["installed"][0]] {
+        assert_eq!(
+            (&shown["reason"], &shown["required_by"], &shown["orphan"]),
+            (&json!("dependency"), &json!([]), &json!(true)),
+            "{shown}"
+        );
+    }
+
+    // Never removed by itself; the recommendation removes it.
+    let argv: Vec<&str> = fix.as_array().unwrap()[1..]
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    home.run(&argv).expect(0);
+    assert!(record_of(&home, "BigWigs").is_none());
+    let (target, hint) = orphan_status(&home, &[]);
+    assert_eq!((&target["orphans"], &hint), (&json!(0), &Value::Null));
+}
+
+#[test]
+fn undoing_the_remove_restores_required_by_even_after_the_dependency_updated() {
+    let home = wigs();
+    home.run(&["install", "littlewigs"]).expect(0);
+    home.run(&["remove", "littlewigs", "-t", "retail"])
+        .expect(0);
+    let remove = common::state::history(&home).pop().unwrap().tx.to_string();
+    release_graph(
+        &home.http,
+        &[Node {
+            base: "https://github.com/o/bigwigs",
+            tag: "v2",
+            folders: &[folder("BigWigs", &[])],
+        }],
+    );
+    home.run(&["update", "bigwigs", "--refresh"]).expect(0);
+    assert_eq!(record_of(&home, "BigWigs").unwrap().version, "v2");
+
+    let r = home.run(&["undo", &remove]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        warning(&envelope, "undo_conflict"),
+        Value::Null,
+        "{}",
+        r.context()
+    );
+    assert!(record_of(&home, "LittleWigs").is_some());
+    let bw = record_of(&home, "BigWigs").unwrap();
+    assert_eq!(
+        (bw.version.as_str(), names(&bw.required_by)),
+        ("v2", vec!["LittleWigs"]),
+        "the dependency keeps its update and gets its requester back"
+    );
+}
+
+#[test]
+fn removing_a_requester_with_its_dependency_warns_nothing() {
+    let home = wigs();
+    home.run(&["install", "littlewigs"]).expect(0);
+    let r = home.run(&["remove", "littlewigs", "bigwigs", "-t", "retail"]);
+    let envelope = r.expect(0);
+    for code in ["still_required", "orphaned_dependency"] {
+        assert_eq!(warning(&envelope, code), Value::Null, "{}", r.context());
+    }
+    assert!(record_of(&home, "LittleWigs").is_none() && record_of(&home, "BigWigs").is_none());
+    let line = common::state::history(&home).pop().unwrap();
+    assert!(
+        line.ops.iter().all(|op| op.edit.is_none()),
+        "{:?}",
+        line.ops
+    );
+}
+
+#[test]
+fn an_update_whose_new_release_drops_a_dependency_unrequires_it() {
+    for extra in [&[][..], &["--no-deps"]] {
+        let home = wigs();
+        home.run(&["install", "littlewigs"]).expect(0);
+        release_graph(
+            &home.http,
+            &[Node {
+                base: "https://github.com/o/littlewigs",
+                tag: "v2",
+                folders: &[folder("LittleWigs", &[])],
+            }],
+        );
+        let mut argv = vec!["update", "--refresh"];
+        argv.extend(extra);
+        let r = home.run(&argv);
+        let envelope = r.expect(0);
+        assert_eq!(
+            warning(&envelope, "orphaned_dependency")["fix_argv"],
+            json!(["omaddons", "remove", "BigWigs", "-t", "retail"]),
+            "{extra:?}: {}",
+            r.context()
+        );
+        assert_eq!(record_of(&home, "LittleWigs").unwrap().version, "v2");
+        assert!(record_of(&home, "BigWigs").unwrap().required_by.is_empty());
+        assert_eq!(
+            last_line(&home, "BigWigs"),
+            (
+                json!("update"),
+                Some(HistoryEdit::RequiredByRemove("LittleWigs".into()))
+            ),
+            "{extra:?}"
+        );
+    }
+}
+
+#[test]
+fn an_explicit_or_promoted_addon_never_becomes_an_orphan() {
+    let home = wigs();
+    home.run(&["install", "littlewigs"]).expect(0);
+    // Installing a dependency by name promotes it.
+    home.run(&["install", "bigwigs"]).expect(0);
+    let bw = record_of(&home, "BigWigs").unwrap();
+    assert_eq!(
+        (bw.reason, names(&bw.required_by)),
+        (AddonReason::Explicit, vec!["LittleWigs"])
+    );
+    let r = home.run(&["remove", "littlewigs", "-t", "retail"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        warning(&envelope, "orphaned_dependency"),
+        Value::Null,
+        "{}",
+        r.context()
+    );
+    assert!(record_of(&home, "BigWigs").unwrap().required_by.is_empty());
+    let (target, hint) = orphan_status(&home, &[]);
+    assert_eq!((&target["orphans"], &hint), (&json!(0), &Value::Null));
 }
 
 /// The engine API: dependency locks and the failure's `details.required_by`.

@@ -804,6 +804,11 @@ fn locked(
         },
     };
     warnings.extend(swap_warnings);
+    // What the committed works did to `required_by`, with this transaction's undo.
+    push_new(
+        &mut warnings,
+        plan::bookkeeping_warnings(&current.value, &works, &target.id, Some(*tx)),
+    );
     // Files changed by hand were replaced: undoing this transaction brings them back
     // (M2-D17); `-v` names where its snapshot keeps them.
     let snapshots = ClientPaths::new(&target.client_dir).snapshots(tx);

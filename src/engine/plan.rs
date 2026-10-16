@@ -691,6 +691,89 @@ pub fn local_changes_warning(addon: &str, changes: &LocalChanges, tx: Option<TxI
     Warning::new(WarningCode::LocalChangesReplaced, message).with_fix(fix)
 }
 
+/// The warnings dependency bookkeeping raises for `works` on `target`, whose record
+/// before the transaction is `record`:
+/// - `still_required` for each removed addon that addons staying still require (the
+///   remove goes ahead); committed as `tx`, its fix is `omaddons undo <tx>`;
+/// - one `orphaned_dependency` naming every dependency the transaction left required by
+///   nothing, with one `omaddons remove` for all of them as its fix.
+pub fn bookkeeping_warnings(
+    record: &TargetRecord,
+    works: &[AddonWork],
+    target: &str,
+    tx: Option<TxId>,
+) -> Vec<Warning> {
+    let key = |name: &str| TargetRecord::addon_key(name);
+    let removed: BTreeSet<String> = works
+        .iter()
+        .filter(|w| w.record().is_none())
+        .map(|w| key(&w.addon))
+        .collect();
+    let stays = |name: &str| {
+        let k = key(name);
+        !removed.contains(&k)
+            && (record.addons.contains_key(&k)
+                || works
+                    .iter()
+                    .any(|w| w.record().is_some_and(|r| key(&r.name) == k)))
+    };
+    let mut warnings = Vec::new();
+    for w in works.iter().filter(|w| w.record().is_none()) {
+        let Some(gone) = record.addons.get(&key(&w.addon)) else {
+            continue;
+        };
+        let dependents: Vec<&str> = gone
+            .required_by
+            .iter()
+            .filter(|n| stays(n))
+            .map(String::as_str)
+            .collect();
+        if dependents.is_empty() {
+            continue;
+        }
+        let message = format!(
+            "On {target}, {} is required by {}, which will not load without it",
+            gone.name,
+            dependents.join(", ")
+        );
+        let fix = match tx {
+            Some(tx) => {
+                Suggestion::command(["omaddons".to_owned(), "undo".to_owned(), tx.to_string()])
+            }
+            None => Suggestion::text(
+                "nothing is removed under --dry-run; after the remove, `omaddons undo <tx>` restores it",
+            ),
+        };
+        warnings.push(Warning::new(WarningCode::StillRequired, message).with_fix(fix));
+    }
+    let orphans = sorted_names(works.iter().filter_map(|w| {
+        let after = w.record()?;
+        let before = record.addons.get(&key(&w.addon))?;
+        (!before.is_orphan() && after.is_orphan()).then(|| after.name.clone())
+    }));
+    if !orphans.is_empty() {
+        let message = match orphans.as_slice() {
+            [one] => format!(
+                "On {target}, {one} was installed as a dependency, and nothing requires it any more"
+            ),
+            many => format!(
+                "On {target}, {} were installed as dependencies, and nothing requires them any more",
+                many.join(", ")
+            ),
+        };
+        let argv = ["omaddons", "remove"]
+            .into_iter()
+            .map(str::to_owned)
+            .chain(orphans)
+            .chain(["-t".to_owned(), target.to_owned()]);
+        warnings.push(
+            Warning::new(WarningCode::OrphanedDependency, message)
+                .with_fix(Suggestion::command(argv.collect::<Vec<_>>())),
+        );
+    }
+    warnings
+}
+
 /// A change to the record alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordsWork {
@@ -1056,7 +1139,11 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         settle_handovers(&mut tp.work, &mut tp.changes, Some(&mut tp.ops));
         planner.dependency_rounds(&mut tp, &mut failures, &tr.dependency_locks);
         settle_handovers(&mut tp.work, &mut tp.changes, Some(&mut tp.ops));
+        planner.unrequire(&mut tp, &mut failures);
         planner.bridges(&mut tp);
+        // A dry run shows them; a commit raises them again with its transaction.
+        let bookkept = bookkeeping_warnings(&record, &tp.work, &target.id, None);
+        push_new(&mut tp.warnings, bookkept);
         tp.kind = target_kind(&tp.changes, req.kind, tp.default_kind);
         tp.creates_addons_dir =
             live.addons_dir_missing && tp.work.iter().any(|w| w.inspected().is_some());
@@ -1660,7 +1747,79 @@ impl TargetPlanner<'_> {
         requester: &str,
     ) {
         let edit = RecordEdit::AddRequiredBy(requester.to_owned());
-        let planned = self.edit(owner, &edit, &tp.work);
+        self.bookkeep(tp, failures, owner, &edit);
+    }
+
+    /// Keeps `required_by` true once the requests and dependency rounds are planned
+    /// (C6): a record listing an addon this transaction removes drops it, and one listing
+    /// an updated requester whose new release's needed folders no longer require any of
+    /// its folders drops that requester. A record the transaction removes gets nothing;
+    /// a requester with no work (current, pinned) changes nothing. Planned under
+    /// `--no-deps` too: bookkeeping installs nothing.
+    fn unrequire(&self, tp: &mut TargetPlan, failures: &mut Vec<PlanFailure>) {
+        let key = |name: &str| TargetRecord::addon_key(name);
+        let removed: BTreeSet<String> = tp
+            .work
+            .iter()
+            .filter(|w| w.record().is_none())
+            .map(|w| key(&w.addon))
+            .collect();
+        // An owner's folders as its own work leaves them, else as recorded.
+        let folders_of = |owner: &AddonRecord| -> Vec<FolderName> {
+            tp.work
+                .iter()
+                .find(|w| key(&w.addon) == key(&owner.name))
+                .and_then(AddonWork::record)
+                .map_or_else(|| owner.folders.clone(), |r| r.folders.clone())
+        };
+        let mut drops: Vec<(String, String)> = Vec::new();
+        for w in &tp.work {
+            let requester = key(&w.addon);
+            // `None` for a removed requester: it requires nothing any more.
+            let requires: Option<&[FolderName]> = match &w.mode {
+                _ if removed.contains(&requester) => None,
+                WorkMode::Folders(f)
+                    if f.inspected.is_some() && self.record.addons.contains_key(&requester) =>
+                {
+                    Some(&f.deps.requires)
+                }
+                _ => continue,
+            };
+            for owner in self.record.addons.values() {
+                let owner_key = key(&owner.name);
+                if owner_key == requester
+                    || removed.contains(&owner_key)
+                    || !owner.required_by.iter().any(|n| key(n) == requester)
+                {
+                    continue;
+                }
+                let still = requires
+                    .is_some_and(|requires| folders_of(owner).iter().any(|f| requires.contains(f)));
+                if !still {
+                    drops.push((owner.name.clone(), w.addon.clone()));
+                }
+            }
+        }
+        for (owner, requester) in drops {
+            self.bookkeep(
+                tp,
+                failures,
+                &owner,
+                &RecordEdit::RemoveRequiredBy(requester),
+            );
+        }
+    }
+
+    /// Plans a `required_by` `edit` of `owner`, folded into its work when it has one. A
+    /// failure is reported under the owner's ref.
+    fn bookkeep(
+        &self,
+        tp: &mut TargetPlan,
+        failures: &mut Vec<PlanFailure>,
+        owner: &str,
+        edit: &RecordEdit,
+    ) {
+        let planned = self.edit(owner, edit, &tp.work);
         if let Err(error) = planned.and_then(|p| p.merge_into(tp, &self.target.id)) {
             // Under the owner's ref: a failure without one is the target's.
             let key = TargetRecord::addon_key(owner);
@@ -4091,6 +4250,105 @@ mod tests {
             tx_id: TxId::new(),
             blob_sha256: Some("aa".into()),
         }
+    }
+
+    /// `name`'s record with `reason`, required by `by`.
+    fn requiring(name: &str, reason: AddonReason, by: &[&str]) -> AddonRecord {
+        AddonRecord {
+            r#ref: format!("gh:o/{}", name.to_ascii_lowercase())
+                .parse()
+                .unwrap(),
+            name: name.into(),
+            required_by: by.iter().map(|b| (*b).to_owned()).collect(),
+            folders: vec![FolderName::new(name).unwrap()],
+            ..installed("1", false, Channel::Stable, reason)
+        }
+    }
+
+    #[test]
+    fn bookkeeping_warns_once_per_still_required_removal_and_once_for_every_orphan() {
+        use AddonReason::{Dependency, Explicit};
+        let mut record = TargetRecord::empty(TargetKey::new());
+        for r in [
+            requiring("Little", Explicit, &[]),
+            requiring("Big", Dependency, &["Little", "Plater"]),
+            requiring("Lib", Dependency, &["Little"]),
+            requiring("Ace", Dependency, &["little"]),
+            requiring("Promoted", Explicit, &["Little"]),
+            requiring("Plater", Explicit, &[]),
+        ] {
+            record.addons.insert(TargetRecord::addon_key(&r.name), r);
+        }
+        let forget = |name: &str| {
+            let before = record.addons[&TargetRecord::addon_key(name)].clone();
+            records_change(
+                name,
+                Some(before),
+                None,
+                vec![RecordEdit::Forget],
+                RecordGuard::default(),
+            )
+            .unwrap()
+            .work
+        };
+        let unrequire = |name: &str, by: &str| {
+            let before = record.addons[&TargetRecord::addon_key(name)].clone();
+            let edit = RecordEdit::RemoveRequiredBy(by.into());
+            let after = apply_edit(Some(before.clone()), &edit, name, "retail").unwrap();
+            records_change(
+                name,
+                Some(before),
+                after,
+                vec![edit],
+                RecordGuard::default(),
+            )
+            .unwrap()
+            .work
+        };
+        let codes = |warnings: &[Warning]| -> Vec<WarningCode> {
+            warnings.iter().map(|w| w.code).collect()
+        };
+
+        // Little goes: nothing required it; Lib and Ace are left to nothing, Big keeps
+        // Plater, and Promoted was asked for.
+        let works = [
+            forget("Little"),
+            unrequire("Big", "Little"),
+            unrequire("Lib", "Little"),
+            unrequire("Ace", "Little"),
+            unrequire("Promoted", "Little"),
+        ];
+        let warnings = bookkeeping_warnings(&record, &works, "retail", None);
+        assert_eq!(codes(&warnings), [WarningCode::OrphanedDependency]);
+        let fix = warnings[0].fix.as_ref().unwrap();
+        assert_eq!(
+            fix.argv().unwrap(),
+            ["omaddons", "remove", "Ace", "Lib", "-t", "retail"]
+        );
+        assert!(
+            warnings[0]
+                .message
+                .contains("Ace, Lib were installed as dependencies")
+        );
+
+        // Big goes while Little stays: still required by Little alone (Plater goes too).
+        let tx = TxId::new();
+        let works = [forget("Big"), forget("Plater")];
+        let warnings = bookkeeping_warnings(&record, &works, "retail", Some(tx));
+        assert_eq!(codes(&warnings), [WarningCode::StillRequired]);
+        assert_eq!(
+            warnings[0].message,
+            "On retail, Big is required by Little, which will not load without it"
+        );
+        let undo = ["omaddons".to_owned(), "undo".to_owned(), tx.to_string()];
+        assert_eq!(warnings[0].fix.as_ref().unwrap().argv().unwrap(), undo);
+        // Planned only, the fix is text.
+        let planned = bookkeeping_warnings(&record, &works, "retail", None);
+        assert!(planned[0].fix.as_ref().unwrap().argv().is_none());
+
+        // Removed with everything that requires it: nothing to say.
+        let works = [forget("Big"), forget("Plater"), forget("Little")];
+        assert!(bookkeeping_warnings(&record, &works, "retail", None).is_empty());
     }
 
     /// The release a request chose: what the planner's template holds.

@@ -283,6 +283,10 @@ warning_codes! {
     LocalChangesReplaced        = "local_changes_replaced";
     /// `sync --locked`: entries without a version installed their newest release.
     NotLocked                   = "not_locked";
+    /// A removed addon is still required by addons that stay; undo brings it back.
+    StillRequired               = "still_required";
+    /// Addons installed as dependencies that nothing requires any more.
+    OrphanedDependency          = "orphaned_dependency";
 }
 
 impl fmt::Display for WarningCode {
@@ -764,7 +768,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 31);
+        assert_eq!(WarningCode::ALL.len(), 33);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }
