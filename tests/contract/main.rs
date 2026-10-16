@@ -85,6 +85,8 @@ mod support {
         "check that",
         // stale_check (the WoWInterface index)
         "run the command again online",
+        // copy given -t: the clients are the user's to name
+        "omaddons copy --from <client> --to <client>",
     ];
 
     /// The top-level keys of a JSON object, in document order.

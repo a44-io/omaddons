@@ -1,0 +1,26 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 176
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "copy",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons targets",
+    "fix_argv": [
+      "omaddons",
+      "targets"
+    ],
+    "message": "--from and --to both name retail: copy needs two clients",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

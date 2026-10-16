@@ -1028,12 +1028,12 @@ pub fn render(
     Ok(())
 }
 
-fn item_name(i: &ItemResult) -> &str {
+pub(crate) fn item_name(i: &ItemResult) -> &str {
     i.name.as_deref().unwrap_or(&i.request)
 }
 
 /// `retail: updated 2 addons (tx 01M5…) — /reload in game`.
-fn header(command: &str, dry_run: bool, t: &TargetResult) -> String {
+pub(crate) fn header(command: &str, dry_run: bool, t: &TargetResult) -> String {
     let id = &t.target.id;
     if let Some(error) = &t.error {
         return format!("{id}: failed: {}: {}", error.code.wire(), error.message);
@@ -1128,7 +1128,7 @@ pub fn dependency_suffix(reason: Option<AddonReason>, required_by: &[String]) ->
     format!(" (dependency of {names})")
 }
 
-fn item_detail(i: &ItemResult) -> String {
+pub(crate) fn item_detail(i: &ItemResult) -> String {
     let suffix = dependency_suffix(i.reason, i.required_by.as_deref().unwrap_or_default());
     format!("{}{suffix}", status_detail(i))
 }

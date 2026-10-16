@@ -148,6 +148,11 @@ pub enum Command {
     /// Make every client match addons.toml: install what is missing, set pins and channels
     #[command(after_long_help = SYNC_HELP)]
     Sync(crate::app::sync::SyncArgs),
+    /// Install one client's addons on another, where builds exist (undoable)
+    #[command(
+        after_long_help = "Copies every addon installed explicitly on --from (or the ones named) to\n--to, in one transaction, unpinned. Dependencies resolve on --to from its own\nTOCs. An addon already there, a local file and an addon with no build for --to\nare skipped, never failed."
+    )]
+    Copy(crate::app::copy::CopyArgs),
     /// Remove managed addons from one target (undoable)
     Remove(crate::app::remove::RemoveArgs),
     /// Revert the last change (or one by id), SavedVariables included

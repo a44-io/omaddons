@@ -1,0 +1,11 @@
+---
+source: tests/copy.rs
+assertion_line: 200
+expression: human.stdout
+---
+anniversary: would be installed 4 addons
+  Foo  v1 (installed)
+  Pin  v2 (installed)
+  Req  v1 (installed)
+  Lib  v1 (installed) (dependency of Req)
+  skipped: Bar (no build for tbc), Loc (local source), Qux (already installed)

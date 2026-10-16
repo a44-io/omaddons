@@ -149,6 +149,39 @@ fn update() {
 }
 
 #[test]
+fn copy() {
+    let s = Scene::new();
+    s.install_foo();
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    // WeakAuras has a Mists build, Foo does not: one install, one skip.
+    let c = s.json(&["copy", "--from", "retail", "--to", "classic"], 0);
+    assert_eq!(c.envelope["data"]["summary"]["changed"], 1);
+    assert_eq!(c.envelope["data"]["summary"]["skipped"], 1);
+    insta::assert_json_snapshot!("copy_ok", s.stable(&c.envelope));
+    let c = s.json(
+        &[
+            "copy",
+            "--from",
+            "retail",
+            "--to",
+            "classic",
+            "weakauras",
+            "nosuch",
+        ],
+        0,
+    );
+    assert_eq!(c.envelope["partial"], true);
+    insta::assert_json_snapshot!("copy_partial", s.stable(&c.envelope));
+    let c = s.json(&["copy", "--from", "retail", "--to", "retail"], 2);
+    insta::assert_json_snapshot!("copy_same_client", s.stable(&c.envelope));
+    let c = s.json(
+        &["copy", "--from", "retail", "--to", "classic", "-t", "x"],
+        2,
+    );
+    assert_eq!(c.envelope["error"]["code"], "usage");
+}
+
+#[test]
 fn outdated() {
     let s = Scene::new();
     s.install_foo();

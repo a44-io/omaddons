@@ -37,7 +37,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated`, `update`, `pin`, `sync` and `export` work, installs bring their catalog dependencies, WoWInterface and Tukui (ElvUI) addons install and update, and `adopt` brings addons installed by hand or by other managers under management. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their catalog dependencies, WoWInterface and Tukui (ElvUI) addons install and update, and `adopt` brings addons installed by hand or by other managers under management. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -129,7 +129,7 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | The TOC load-rule engine (`ClientRules`) for all 12 Battle.net products and five legacy private-server versions | ✅ Done |
 | The transaction engine: plan, stage, journal, atomic swap, crash recovery, undo, retention | ✅ Done |
 | Keyless sources: GitHub releases, git (GitHub without the binary, other hosts with it), direct URLs, local zips and folders | ✅ Done |
-| A catalog of 18 verified addons (13 GitHub release entries, 5 legacy private-server addons from git) | ✅ Done |
+| A catalog of 21 verified addons (14 GitHub release entries, ElvUI and Tukui from Tukui, 5 legacy private-server addons from git) | ✅ Done |
 | The CLI contract: one JSON envelope, typed errors with fixes (an argv whenever the fix is a command), exit codes 0 to 6, contract snapshot tests | ✅ Done (freezes in M4) |
 | Commands: `status`, `install`, `remove`, `undo`, `history`, `list`, `targets`, `info`, `config`, `net-log`, `help` | ✅ Done |
 | `outdated` (alias `check`): what has updates, on every client | ✅ Done (milestone 2) |
@@ -142,7 +142,8 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | WoWInterface: `wowi:` refs and links, keyless, every download checked against its MD5 | ✅ Done (milestone 2) |
 | Tukui (ElvUI and Tukui): `tukui:` refs and links, keyless, every download checked against its `ETag` MD5 | ✅ Done (milestone 2) |
 | `search` (alias `find`): the catalog, WoWInterface, Tukui and GitHub at once, with a compatibility hint per client | ✅ Done (milestone 2) |
-| `copy` between clients | 🗓️ Milestone 2 |
+| Changelogs: `info --changelog` and `outdated --changelog`, from GitHub's Atom feeds, WoWInterface and Tukui | ✅ Done (milestone 2) |
+| `copy`: one client's addons installed on another where builds exist, the rest skipped and said why | ✅ Done (milestone 2) |
 | The Omarchy bar widget, Lua error capture, `WTF/` backups | 🗓️ Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
@@ -574,7 +575,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--no-color` | No ANSI color (also `NO_COLOR`) |
 | `--quiet` | Only errors on stderr |
 | `-v, --verbose` | More detail: paths, and debug `log` events on stderr (repeatable) |
-| `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install`, `update`, `outdated` and `adopt` today). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
+| `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install`, `update`, `outdated`, `adopt` and `copy` today). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
 | `-h, --help` | Help |
 | `-V, --version` | Version (`omaddons -V` only; after a command, `--version` is that command's flag or a usage error) |
 
@@ -817,6 +818,30 @@ It reads only omaddons' records: no request, and without `--write` it writes not
 - A registered client whose directory is gone (an unplugged drive) is exported from its records, in its own section, with `export_missing_target`.
 
 `--write` refuses, with `desired_state_invalid` (exit 2), a file changed since omaddons last wrote it, or one it did not write (`details.reason: "edited"`): `--overwrite` replaces it. An export with no entries is never written (`reason: "empty"`). The previous file is kept as `addons.toml.bak`, and an unchanged export writes nothing. Under `--json`, `data` is `{path, backup, targets, entries, content}`, with `path` and `backup` `null` when nothing was written.
+
+### `copy`
+
+Install one client's addons on another, where builds exist: every addon installed explicitly on `--from`, or the ones named, goes to `--to` in one transaction.
+
+```text
+$ omaddons copy --from era --to anniversary
+anniversary: installed 4 addons (tx 01M5…)
+  Foo  v1 (installed)
+  Pin  v2 (installed)
+  Req  v1 (installed)
+  Lib  v1 (installed) (dependency of Req)
+  skipped: Bar (no build for tbc), Loc (local source), Qux (already installed)
+undo: omaddons undo 01M5…
+```
+
+```bash
+omaddons copy --from era --to anniversary Questie   # only the addons named (any record of --from, dependencies too)
+omaddons copy --from era --to anniversary --dry-run # what would install, and what would be skipped
+omaddons copy --from era --to anniversary --strict  # exit 6 when an addon fails (skips never count)
+omaddons copy --from era --to anniversary --no-deps # only the addons copied, not what their TOCs require there
+```
+
+Each side is exactly one client: a selector that matches two is `target_ambiguous`, with one fix per candidate, and `-t` is a usage error. Each addon installs from its ref on its recorded channel, the way `install` would: the newest release that loads on `--to`, unpinned, because versions differ between flavors. Dependency records are not copied; what `--to`'s own TOCs require installs with it, as for `install`. Three kinds of addon are skipped, never failed: one already on `--to` (by ref, `already_installed`), one installed from a local file or folder (`local_source`), and one with no build that loads on `--to` (`no_build_for_target`). Any other failure, such as a source that cannot be reached, makes the run `partial`. `omaddons undo <tx>` from `commands` reverts the copy.
 
 ### `remove <ADDON>...`
 
@@ -1273,7 +1298,7 @@ When stderr is not a terminal, or `CI` is set, or `TERM=dumb`, stderr carries ND
 {"event":"log","level":"debug","message":"discovery: scanned yes, roots reused 2, parsed 0, cache written no"}
 ```
 
-Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. `progress` events come from long commands (`install`, `update`, `outdated` and `adopt` today) when progress is on: `{"event":"progress","phase":"download","message":"gh:o/foo@v1 on retail","current":1,"total":2}`. The phases are `fetch`, `download`, `verify`, `stage` and `commit`. Within a phase, `current` counts up to a fixed `total`, and each item appears once. On a terminal in human mode, progress is one line that is rewritten in place.
+Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. `progress` events come from long commands (`install`, `update`, `outdated`, `adopt` and `copy` today) when progress is on: `{"event":"progress","phase":"download","message":"gh:o/foo@v1 on retail","current":1,"total":2}`. The phases are `fetch`, `download`, `verify`, `stage` and `commit`. Within a phase, `current` counts up to a fixed `total`, and each item appears once. On a terminal in human mode, progress is one line that is rewritten in place.
 
 ### Stability
 
@@ -1708,9 +1733,9 @@ Journals are recovered by the next command that commits a change, not by read co
 |---|---|---|
 | Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing and updating, with dependency items, bridge requirements and unresolved folders in the output; WoWInterface and Tukui lookups are on the way | M2 |
 | Adopting addons installed by other managers | ✅ `adopt`; other `status`, `outdated` and `install` hints point to it soon | M2 |
-| `addons.toml`, `export`, `sync`, `copy` between clients | ⚠️ `sync` (with `--locked` and `--prune`) and `export` work; `copy` is on the way | M2 |
+| `addons.toml`, `export`, `sync`, `copy` between clients | ✅ `sync` (with `--locked` and `--prune`), `export` and `copy` | M2 |
 | `search` | ✅ the catalog, the WoWInterface index, the Tukui list and GitHub's search | M2 |
-| Progress output | ⚠️ `install`, `update` and `outdated` report progress; the other long commands arrive with M2 | M2 |
+| Progress output | ⚠️ `install`, `update`, `outdated`, `adopt` and `copy` report progress; the other long commands arrive with M2 | M2 |
 | The Omarchy bar widget | ❌ the help text mentions it, the code does not exist yet | M3 |
 | Lua error capture (BugGrabber), `WTF/` backups | ❌ | M3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, agent skill | ❌ | M4 |

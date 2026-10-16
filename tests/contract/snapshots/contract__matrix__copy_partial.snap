@@ -1,0 +1,85 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 174
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "copy",
+  "commands": [],
+  "data": {
+    "dry_run": false,
+    "run": null,
+    "summary": {
+      "changed": 0,
+      "failed": 1,
+      "skipped": 1,
+      "targets": 1,
+      "unchanged": 0
+    },
+    "targets": [
+      {
+        "atomic_swap": null,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "error": {
+              "code": "not_managed",
+              "fix": "omaddons list -t retail",
+              "fix_argv": [
+                "omaddons",
+                "list",
+                "-t",
+                "retail"
+              ],
+              "message": "nosuch is not installed on retail"
+            },
+            "from_version": null,
+            "name": null,
+            "ref": null,
+            "request": "nosuch",
+            "skip_reason": null,
+            "status": "failed",
+            "to_version": null
+          },
+          {
+            "error": null,
+            "from_version": "5.19.2",
+            "name": "WeakAuras",
+            "ref": "gh:WeakAuras/WeakAuras2",
+            "request": "weakauras",
+            "skip_reason": "already_installed",
+            "status": "skipped",
+            "to_version": null
+          }
+        ],
+        "kind": null,
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "classic",
+          "key": "<ulid>"
+        },
+        "tx": null
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": true,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "not_managed",
+      "fix": "omaddons list -t retail",
+      "fix_argv": [
+        "omaddons",
+        "list",
+        "-t",
+        "retail"
+      ],
+      "message": "classic: nosuch: nosuch is not installed on retail"
+    }
+  ]
+}

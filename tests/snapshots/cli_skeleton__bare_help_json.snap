@@ -99,6 +99,12 @@ expression: envelope
         "name": "sync"
       },
       {
+        "about": "Install one client's addons on another, where builds exist (undoable)",
+        "aliases": [],
+        "group": "change",
+        "name": "copy"
+      },
+      {
         "about": "Remove managed addons from one target (undoable)",
         "aliases": [],
         "group": "change",

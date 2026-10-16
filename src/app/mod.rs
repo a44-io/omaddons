@@ -3,6 +3,7 @@
 
 pub mod adopt;
 pub mod config;
+pub mod copy;
 pub mod drift;
 pub mod engine;
 pub mod export;
@@ -89,6 +90,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("unpin", Group::Change),
     entry("adopt", Group::Change),
     entry("sync", Group::Change),
+    entry("copy", Group::Change),
     entry("remove", Group::Change),
     entry("undo", Group::Change),
     entry("targets", Group::Setup),
@@ -132,6 +134,7 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         Some(Command::Unpin(_)) => "unpin",
         Some(Command::Adopt(_)) => "adopt",
         Some(Command::Sync(_)) => "sync",
+        Some(Command::Copy(_)) => "copy",
         Some(Command::Remove(_)) => "remove",
         Some(Command::Undo(_)) => "undo",
         Some(Command::History(_)) => "history",
@@ -282,6 +285,18 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         Some(Command::Unpin(args)) => out_pin(&out, pin::unpin(ctx, args)),
         Some(Command::Sync(args)) => {
             let result = sync::run(ctx, args);
+            if let Ok(outcome) = &result {
+                for note in &outcome.notes {
+                    out.log(output::LogLevel::Debug, note);
+                }
+                for (tx, ms) in &outcome.locks {
+                    out.lock_released(Some(*ms), Some(*tx));
+                }
+            }
+            out.emit(result)
+        }
+        Some(Command::Copy(args)) => {
+            let result = copy::run(ctx, args);
             if let Ok(outcome) = &result {
                 for note in &outcome.notes {
                     out.log(output::LogLevel::Debug, note);
