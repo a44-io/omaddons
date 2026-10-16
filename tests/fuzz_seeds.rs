@@ -26,6 +26,8 @@ const TARGETS: &[&str] = &[
     "ref_parse",
     "desired_toml",
     "wowi_filelist",
+    "html_text",
+    "bbcode_text",
 ];
 
 fn fuzz_dir() -> PathBuf {
@@ -248,6 +250,50 @@ fn write_fuzz_seeds() {
     );
     write("ref_parse", "url", b"url:https://example.org/addon.zip");
     write("ref_parse", "malformed", b"gh:/\xff#@../..");
+
+    // html_text and bbcode_text: two bytes of max_chars (4000), then the text.
+    let text_fixture = |name: &str| {
+        std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/text")
+                .join(name),
+        )
+        .unwrap()
+    };
+    let with_max = |body: &[u8]| -> Vec<u8> {
+        let mut seed = 4000u16.to_le_bytes().to_vec();
+        seed.extend_from_slice(body);
+        seed
+    };
+    write(
+        "html_text",
+        "weakauras",
+        &with_max(&text_fixture("weakauras_release.html")),
+    );
+    write(
+        "html_text",
+        "handmade",
+        &with_max(&text_fixture("handmade.html")),
+    );
+    write(
+        "html_text",
+        "malformed",
+        &with_max(b"<a href=\"never closed>text &#xFFFFFFFF; &#27;<script>x"),
+    );
+    let details: serde_json::Value =
+        serde_json::from_slice(&text_fixture("bugsack_filedetails.json")).unwrap();
+    let field = |key: &str| details[key].as_str().unwrap().as_bytes().to_vec();
+    write("bbcode_text", "changelog", &with_max(&field("UIChangeLog")));
+    write(
+        "bbcode_text",
+        "description",
+        &with_max(&field("UIDescription")),
+    );
+    write(
+        "bbcode_text",
+        "malformed",
+        &with_max(b"[url=\"unterminated [b][[i]i]] [/list [*][COLOR=red\r\n"),
+    );
 
     // wowi_filelist: entries as the API writes them, an empty list, a broken body.
     let list: Vec<serde_json::Value> = [

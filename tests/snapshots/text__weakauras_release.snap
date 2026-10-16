@@ -1,0 +1,39 @@
+---
+source: tests/text.rs
+expression: text
+---
+5.22.1 (2026-10-10)
+Full Changelog
+Highlights
+Commits
+Contributor A (3):
+- Hardcore: Show a warning on the Options window about hardcore
+- Hardcore: Use lowest compression level for hardcore
+- Hardcode: Fix import warning for custom code
+Contributor B (2):
+- Update wow-interface-updater to v1.3.0
+- chore: update interface updater to v1.2.0
+Contributor C (6):
+- Enable CreatureType, IncomingSummon, ProcGlow
+- Update Character Stats
+- Enable Absorb, Heal Absorb and Incoming Heal to Health Trigger
+- WeakAuras: Upgrade deprecated API
+- Titan: Prepare EncounterAndZoneLists
+- WeakAuras: Update security
+Contributor D (2):
+- Update WeakAurasModelPaths from wago.tools
+- Update WeakAurasModelPaths from wago.tools
+Contributor E (1):
+- fix: update LibCompress source URL
+Contributor F (5):
+- build(deps): bump BigWigsMods/packager
+- build(deps): bump nearform-actions/github-action-notify-twitter
+- build(deps): bump cbrgm/mastodon-github-action from 2.2.4 to 2.2.5
+- build(deps): bump cbrgm/mastodon-github-action from 2.2.3 to 2.2.4
+- build(deps): bump BigWigsMods/packager
+Contributor G (1):
+- don't register a nonexistent sound
+Contributor H (3):
+- Update WeakAurasModelPaths from wago.tools (#6324)
+- Update WeakAurasModelPaths from wago.tools (#6322)
+- Update WeakAurasModelPaths from wago.tools (#6318)

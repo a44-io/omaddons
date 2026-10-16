@@ -1,0 +1,7 @@
+ [size=5]BugSack[/size]
+[size=4][url=https://github.com/funkydude/BugSack/tree/v12.1.7]v12.1.7[/url] (2026-10-12)[/size]
+[url=https://github.com/funkydude/BugSack/compare/v12.1.6...v12.1.7]Full Changelog[/url] [url=https://github.com/funkydude/BugSack/releases]Previous Releases[/url]
+[list]
+[*]Fix accidental locale removal
+[*]Fix warning message when BugGrabber is missing
+[/list]

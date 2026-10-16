@@ -1,0 +1,15 @@
+---
+source: tests/text.rs
+expression: "bbcode_to_text(bbcode, CHANGELOG_MAX_CHARS)"
+---
+Version 3.1
+[Fixed] the minimap button; [WIP] new options
+See the notes (https://example.org/notes) or https://example.org/raw.
+
+- First
+- Second with colour
+- Nested
+
+Quoted text
+https://example.org/shot.png
+Done.

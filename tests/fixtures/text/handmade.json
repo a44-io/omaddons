@@ -1,0 +1,3 @@
+{
+ "bbcode": "[size=4][B]Version 3.1[/B][/size]\r\n[Fixed] the minimap button; [WIP] new options\r\nSee [url=\"https://example.org/notes\"]the notes[/url] or [url]https://example.org/raw[/url].\r\n[list]\r\n[*]First\r\n[*]Second with [color=Orange]colour[/color]\r\n[list][*]Nested[/list]\r\n[/list]\r\n\r\n\r\n\r\n[quote]Quoted text[/quote]\r\n[img]https://example.org/shot.png[/img]\r\n[hr][/hr]Done."
+}

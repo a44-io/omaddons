@@ -1,0 +1,19 @@
+---
+source: tests/text.rs
+expression: "bbcode_to_text(description, CHANGELOG_MAX_CHARS)"
+---
+https://cdn-wow.mmoui.com/preview/pvw68420.png (https://github.com/sponsors/author) Please support my work on Patreon/GitHub! (https://github.com/sponsors/author)
+
+BugSack eases the process of viewing bugs. It displays Lua errors that occurred during your play session, including the full debug stack. It aims to be invaluable to developers, and a useful tool for players.
+
+Features
+
+- LDB data broker plugin that displays the last 5 errors in the tooltip
+- Frame to display all other errors for the current session
+- The text of the error can then be copied & pasted
+
+BugGrabber
+
+This addon REQUIRES BugGrabber (https://www.wowinterface.com/downloads/info23141-BugGrabber.html) be installed, which is the addon that actually grabs the bugs.
+
+BugSack is open source and development is done on GitHub. You can contribute code, localization, and report issues there: https://github.com/funkydude/BugSack

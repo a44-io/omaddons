@@ -74,6 +74,10 @@ pub const MEMO_KNOWN_RELEASES: usize = 10;
 /// A WoWInterface project unchanged for longer is never chosen on its own to satisfy a
 /// dependency (`wowi_abandoned`); `search` calls it abandoned.
 pub const DEPENDENCY_SOURCE_MAX_AGE: Duration = Duration::from_secs(730 * 24 * 60 * 60);
+/// The longest changelog entry shown, in characters (longer ones end with `…`).
+pub const CHANGELOG_MAX_CHARS: usize = 4_000;
+/// Most changelog entries one answer shows.
+pub const CHANGELOG_MAX_ENTRIES: usize = 10;
 /// The largest decoded API response (JSON, feeds): a decompression-bomb guard. Archives
 /// have `DOWNLOAD_MAX_BYTES`.
 pub const API_RESPONSE_MAX_BYTES: u64 = 64 * MIB;
@@ -301,6 +305,20 @@ pub const REGISTRY: &[LimitInfo] = &[
         "A WoWInterface project unchanged this long is not chosen on its own for a dependency",
     ),
     limit(
+        "CHANGELOG_MAX_CHARS",
+        LimitValue::Count(CHANGELOG_MAX_CHARS as u64),
+        "count",
+        None,
+        "Longest changelog entry shown, in characters; longer ones end with an ellipsis",
+    ),
+    limit(
+        "CHANGELOG_MAX_ENTRIES",
+        LimitValue::Count(CHANGELOG_MAX_ENTRIES as u64),
+        "count",
+        None,
+        "Most changelog entries one answer shows",
+    ),
+    limit(
         "API_RESPONSE_MAX_BYTES",
         LimitValue::Bytes(API_RESPONSE_MAX_BYTES),
         "bytes",
@@ -491,7 +509,8 @@ mod tests {
         "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",
-        "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "API_RESPONSE_MAX_BYTES",
+        "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",
+        "CHANGELOG_MAX_ENTRIES", "API_RESPONSE_MAX_BYTES",
         "DEPENDENCY_MAX_DEPTH",
         "DEPENDENCY_MAX_ADDONS",
     ];

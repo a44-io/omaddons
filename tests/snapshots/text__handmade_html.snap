@@ -1,0 +1,16 @@
+---
+source: tests/text.rs
+expression: "html_to_text(&html, CHANGELOG_MAX_CHARS)"
+---
+Release 2.0 & friends
+Entities: &lt;Frame>, 1 < 2, "quoted", it's, © — &unknown; done.
+A link with a tricky attribute stays text.
+- Top level
+- Nested one
+- Nested two
+- Back at the top
+local function f()
+    return 1   -- keep    this spacing
+end
+Last line
+after a break

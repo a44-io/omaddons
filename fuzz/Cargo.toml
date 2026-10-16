@@ -93,3 +93,17 @@ path = "fuzz_targets/wowi_filelist.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "html_text"
+path = "fuzz_targets/html_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bbcode_text"
+path = "fuzz_targets/bbcode_text.rs"
+test = false
+doc = false
+bench = false

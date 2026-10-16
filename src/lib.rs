@@ -20,4 +20,5 @@ pub mod resolve;
 pub mod rules;
 pub mod sources;
 pub mod state;
+pub mod text;
 pub mod toc;

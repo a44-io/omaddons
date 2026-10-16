@@ -384,6 +384,24 @@ expression: "(politeness, REGISTRY)"
       "notes": "A WoWInterface project unchanged this long is not chosen on its own for a dependency"
     },
     {
+      "name": "CHANGELOG_MAX_CHARS",
+      "value": {
+        "count": 4000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Longest changelog entry shown, in characters; longer ones end with an ellipsis"
+    },
+    {
+      "name": "CHANGELOG_MAX_ENTRIES",
+      "value": {
+        "count": 10
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Most changelog entries one answer shows"
+    },
+    {
       "name": "API_RESPONSE_MAX_BYTES",
       "value": {
         "bytes": 67108864
