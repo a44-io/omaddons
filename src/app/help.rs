@@ -250,25 +250,45 @@ pub fn for_command(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, E
     let Some(name) = name else { return Ok(bare()) };
     let mut root = Cli::command();
     root.build();
-    let names: Vec<String> = root
-        .get_subcommands()
-        .map(|c| c.get_name().to_owned())
-        .collect();
-    // A nested path such as `targets add` walks one level per word.
-    let found = name
-        .split_whitespace()
-        .try_fold(&mut root, |cmd, part| cmd.find_subcommand_mut(part));
-    let Some(sub) = found else {
-        let (fix, alternatives) = crate::cli::suggest(argv, name, &names)
-            .unwrap_or_else(|| (Suggestion::command(["omaddons", "help"]), Vec::new()));
-        let mut error = Error::new(
-            ErrorCode::Usage,
-            format!("there is no command {name:?}"),
-            fix,
-        );
-        error.alternatives = alternatives;
-        return Err(error);
-    };
+    // A nested path such as `targets add` walks one level per word; an unknown word is
+    // suggested among the subcommands of the command it follows.
+    let mut sub = &mut root;
+    let mut walked: Vec<&str> = Vec::new();
+    for part in name.split_whitespace() {
+        if sub.find_subcommand(part).is_none() {
+            let names: Vec<String> = sub
+                .get_subcommands()
+                .map(|c| c.get_name().to_owned())
+                .collect();
+            // Past the first word: the parent's help lists its subcommands.
+            let parent = || {
+                let mut argv = vec!["omaddons", "help"];
+                argv.extend(&walked);
+                (Suggestion::command(argv), Vec::new())
+            };
+            let (fix, alternatives) =
+                crate::cli::suggest(argv, part, &names).unwrap_or_else(parent);
+            let message = if walked.is_empty() {
+                format!("there is no command {name:?}")
+            } else {
+                format!(
+                    "there is no command {name:?}: {} has {}",
+                    walked.join(" "),
+                    names.join(", ")
+                )
+            };
+            let mut error = Error::new(ErrorCode::Usage, message, fix);
+            error.alternatives = alternatives;
+            return Err(error);
+        }
+        walked.push(part);
+        let Some(next) = sub.find_subcommand_mut(part) else {
+            return Err(Error::internal(format!(
+                "{part} vanished from the command tree"
+            )));
+        };
+        sub = next;
+    }
     let text = sub.render_long_help().to_string();
     let usage = sub
         .render_usage()

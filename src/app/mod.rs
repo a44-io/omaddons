@@ -240,7 +240,9 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
     match &cli.command {
         None => out.emit(Ok(help::bare())),
         Some(Command::Help { command }) => {
-            out.emit(help::for_command(command.as_deref(), &ctx.argv))
+            let path = command.join(" ");
+            let name = (!path.is_empty()).then_some(path.as_str());
+            out.emit(help::for_command(name, &ctx.argv))
         }
         Some(Command::Status(args)) => {
             let result = status::run(ctx, *args);

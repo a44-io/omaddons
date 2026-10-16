@@ -1146,7 +1146,7 @@ omaddons net-log --since 1d --json
 ```bash
 omaddons help
 omaddons help install
-omaddons targets add --help    # subcommands: --help, or omaddons help "targets add" (see Known issues)
+omaddons help targets add      # a subcommand by its path; the same as omaddons targets add --help
 ```
 
 ---
@@ -1781,7 +1781,6 @@ Journals are recovered by the next command that commits a change, not by read co
 
 These are bugs, found while this README was written:
 
-- `omaddons help targets add` (a nested command after `help`) is a usage error whose fix is `omaddons help help`. Use `omaddons targets add --help` or `omaddons help "targets add"`.
 - Some `--json` error fixes (`--force`, `--while-running`) repeat `--json` inside `fix_argv`.
 - Raising `limits.download_max_bytes` above 512 MiB has no effect; lowering it works.
 - A pasted `/releases/download/<tag>/<file>` link pins the tag, but the named file is not used to pick the asset.

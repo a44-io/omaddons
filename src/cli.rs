@@ -122,8 +122,9 @@ impl GlobalArgs {
 pub enum Command {
     /// Show help for omaddons or one command
     Help {
-        /// The command to explain
-        command: Option<String>,
+        /// The command to explain; a nested one by its path (`targets add`)
+        #[arg(num_args = 0..)]
+        command: Vec<String>,
     },
     /// Triage: every client, its addons, running state and what needs attention
     Status(crate::app::status::StatusArgs),

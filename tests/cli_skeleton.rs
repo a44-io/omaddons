@@ -193,6 +193,55 @@ fn help_for_a_command() {
 }
 
 #[test]
+fn help_walks_a_nested_path() {
+    for path in [
+        &["targets", "add"][..],
+        &["targets", "rm"],
+        &["targets", "rename"],
+        &["targets", "default"],
+        &["config", "get"],
+        &["config", "set"],
+        &["config", "path"],
+    ] {
+        let mut asked = vec!["help"];
+        asked.extend(path);
+        let via_help = run(&asked);
+        let mut direct = path.to_vec();
+        direct.push("--help");
+        let flag = run(&direct);
+        assert_eq!(via_help.code, 0, "{}", via_help.context());
+        assert_eq!(via_help.stdout, flag.stdout, "{path:?}");
+        asked.push("--json");
+        let envelope = run(&asked).envelope();
+        // The envelope is help's; the data names the subcommand, as `help "targets add"`.
+        assert_eq!(
+            (&envelope["command"], &envelope["data"]["command"]),
+            (&Value::from("help"), &Value::from(path[1])),
+            "{envelope}"
+        );
+    }
+    // An unknown word names the subcommands of the command it follows.
+    let r = run(&["help", "targets", "nosuch", "--json"]);
+    assert_eq!(r.code, 2, "{}", r.context());
+    let error = &r.envelope()["error"];
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("add, rm, rename, default")),
+        "{error}"
+    );
+    assert_eq!(
+        error["fix_argv"],
+        serde_json::json!(["omaddons", "help", "targets"])
+    );
+    let r = run(&["help", "config", "st", "--json"]);
+    assert_eq!(
+        r.envelope()["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "help", "config", "set"])
+    );
+}
+
+#[test]
 fn version() {
     let r = run(&["-V"]);
     assert_eq!(
