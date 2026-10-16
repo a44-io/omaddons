@@ -365,6 +365,7 @@ It first collects the Wine prefixes (directories containing `drive_c/`):
   - Heroic: every `winePrefix` in `GamesConfig/*.json`, native and Flatpak;
   - Steam: the `compatdata/*/pfx` Proton prefixes of every library in `libraryfolders.vdf`, native and Flatpak (WoW is usually a non-Steam shortcut with its own compatdata id);
   - Bottles: every bottle, including bottles kept at a custom path, native and Flatpak;
+- the prefixes of **running WoW and Battle.net processes** (their `WINEPREFIX`, your own processes only), when the prefix is under your home: a client in a nested prefix such as `~/Games/umu/umu-default` is found while it runs;
 - the **direct children of `~/Games`** that are prefixes;
 - **`~/.wine`**.
 
@@ -372,10 +373,11 @@ Then it looks for clients in this order. The first route that finds a client dec
 
 1. **Battle.net's `product.db`** in every prefix (`drive_c/ProgramData/Battle.net/Agent/product.db`). Windows drive letters are mapped through `dosdevices/`, so a game on `D:` outside the prefix is found.
 2. **Executables named by launcher configs** (Lutris's `exe:` lines).
-3. **A walk of each launcher-named prefix's `drive_c`**, skipping `windows`, `users` and `ProgramData`.
+3. **A walk of the `drive_c` of each launcher-named prefix and each running process's prefix**, skipping `windows`, `users` and `ProgramData`.
 4. **`extra_roots`** from `config.toml`, and the roots of manually added targets.
 5. **A walk of the `drive_c` of each `~/Games` prefix and of `~/.wine`**, with the same skips.
 6. **A plain walk of `~/Games`** for clients outside any prefix.
+7. **The roots of registered targets** that no route above reached, while they are still WoW roots. A client found once, for example while it ran, is still found after it exits.
 
 A directory with `.build.info` is a **Battle.net root**: each `_<flavor>_` folder in it becomes a target, identified by its `.flavor.info`, product.db or the folder table. A directory with `Interface/` and a `wow*.exe` is a **custom client**: its version comes from the executable's PE version resource, and its label comes from `realmlist.wtf`.
 

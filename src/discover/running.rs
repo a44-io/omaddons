@@ -19,7 +19,9 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::dosdevices::map_windows_path;
+use super::{DiscoverySource, ExtraPrefix};
 use crate::model::Target;
+use crate::rules::RulesTable;
 
 /// `comm` holds at most this many bytes of the name.
 const COMM_MAX: usize = 15;
@@ -73,6 +75,43 @@ pub fn detect_running_in(
     detect(proc_root, own_uid, targets, home, &|p| {
         std::fs::read(p).ok()
     })
+}
+
+/// The Wine prefixes under `home` of the user's running WoW and Battle.net processes,
+/// from the real `/proc` (`OMADDONS_PROC_ROOT` in debug builds), as discovery's
+/// `process` route: a client in a prefix that no launcher names and that is not a
+/// direct child of `~/Games` is found while it runs, qualified by the prefix's directory
+/// name. Once registered, it is found afterwards too (discovery's registered-roots
+/// route). Only under `home`, as every scanned place is: a throwaway `HOME` never
+/// reaches the user's real clients.
+pub fn process_prefixes(table: &RulesTable, home: &Path) -> Vec<ExtraPrefix> {
+    let Ok(uid) = std::fs::metadata("/proc/self").map(|m| m.uid()) else {
+        return Vec::new();
+    };
+    let root = proc_root(
+        std::env::var_os("OMADDONS_PROC_ROOT"),
+        cfg!(debug_assertions),
+    );
+    // Every product's exe, a custom client's usual ones, and the Battle.net app.
+    let names: Vec<String> = table
+        .products()
+        .iter()
+        .map(|p| p.exe.clone())
+        .chain(["Wow.exe", "Wow-64.exe", "Battle.net.exe"].map(str::to_owned))
+        .collect();
+    // A prefix the scan looks at anyway (a direct child of `~/Games`, `~/.wine`) keeps
+    // its scan route, running or not.
+    let games = home.join("Games");
+    let scanned = |p: &Path| p.parent() == Some(games.as_path()) || p == home.join(".wine");
+    running_prefixes(&root, uid, &names)
+        .into_iter()
+        .filter(|path| path.starts_with(home) && !scanned(path))
+        .map(|path| ExtraPrefix {
+            qualifier: super::dir_slug(&path),
+            path,
+            source: DiscoverySource::Process,
+        })
+        .collect()
 }
 
 /// The `WINEPREFIX` of every own process whose `comm` matches one of `names` (exe

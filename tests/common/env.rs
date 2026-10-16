@@ -37,7 +37,7 @@ impl TestEnv {
     }
 
     fn layout(root: &Path) {
-        for sub in ["home/.local/share", "config", "state", "cache"] {
+        for sub in ["home/.local/share", "config", "state", "cache", "no-proc"] {
             std::fs::create_dir_all(root.join(sub)).unwrap();
         }
     }
@@ -101,23 +101,27 @@ impl TestEnv {
         }
     }
 
-    fn vars(&self) -> [(&'static str, PathBuf); 5] {
+    fn vars(&self) -> [(&'static str, PathBuf); 6] {
         [
             ("HOME", self.home()),
             ("XDG_CONFIG_HOME", self.config()),
             ("XDG_STATE_HOME", self.state()),
             ("XDG_CACHE_HOME", self.cache()),
             ("XDG_DATA_HOME", self.data()),
+            // An empty `/proc` (debug builds read it): a WoW client running on this
+            // machine is never a test's running client, nor its process-found target.
+            // A test with a running client sets its own after this.
+            ("OMADDONS_PROC_ROOT", self.root().join("no-proc")),
         ]
     }
 
-    /// [`CLEARED`] plus every `OMADDONS_*` variable of the test process.
+    /// [`CLEARED`] plus every other `OMADDONS_*` variable of the test process.
     fn removed(&self) -> Vec<String> {
         let mut keys: Vec<String> = CLEARED.iter().map(|k| (*k).to_owned()).collect();
         keys.extend(
             std::env::vars_os()
                 .filter_map(|(k, _)| k.into_string().ok())
-                .filter(|k| k.starts_with("OMADDONS_")),
+                .filter(|k| k.starts_with("OMADDONS_") && k != "OMADDONS_PROC_ROOT"),
         );
         keys
     }

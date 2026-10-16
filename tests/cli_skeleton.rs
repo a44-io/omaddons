@@ -60,7 +60,9 @@ mod support {
             .env("XDG_DATA_HOME", home.join("data"))
             .env("XDG_STATE_HOME", home.join("state"))
             .env("XDG_CACHE_HOME", home.join("cache"))
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            // An empty `/proc`: no running client of this machine is discovered.
+            .env("OMADDONS_PROC_ROOT", home.join("no-proc"));
         // Coverage runs: the instrumented binary writes its profile where
         // cargo-llvm-cov collects it, not into the crate root.
         for (key, value) in std::env::vars_os() {

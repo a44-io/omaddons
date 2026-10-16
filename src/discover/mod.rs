@@ -8,8 +8,9 @@
 //!
 //! [`discover`] finds every WoW root with zero configuration (vision §5.2 steps 1–2).
 //! Hints come first, in this order: `product.db` per prefix, launcher configs, running
-//! processes and extra roots. The bounded scan comes last. A root reachable several ways
-//! is kept once, in its first route's terms (source and qualifier).
+//! processes and extra roots. The bounded scan comes next, and registered roots no
+//! route reached come last. A root reachable several ways is kept once, in its first
+//! route's terms (source and qualifier).
 
 pub mod battlenet;
 pub mod bpsv;
@@ -242,6 +243,25 @@ pub(crate) fn collect(input: &DiscoveryInput, limits: ScanLimits) -> Collected {
                 &mut diagnostics,
             );
         }
+    }
+    // Last, registered roots no route reached that are still WoW roots: a client found
+    // once (while it ran, say) is found after it exits, under its recorded qualifier.
+    for (path, qualifier, source) in &input.registered_roots {
+        let kind = if battlenet::is_battlenet_root(path) {
+            RootKind::Battlenet
+        } else if custom::is_custom_root(path) {
+            RootKind::Custom
+        } else {
+            continue;
+        };
+        roots.add(
+            path.clone(),
+            Some(kind),
+            Route::new(qualifier, source.clone()),
+            BattlenetHints::default(),
+            None,
+            &mut diagnostics,
+        );
     }
 
     let mut warnings = Vec::new();

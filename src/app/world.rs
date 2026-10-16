@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::cli::Context;
 use crate::discover::cache::{CacheStats, DiscoveryMode, discover_cached};
 use crate::discover::registry::{Resolved, reconcile, resolve, resolve_one};
+use crate::discover::running::process_prefixes;
 use crate::discover::{DiscoveredTarget, DiscoveryInput, DiscoverySource, ScanLimits};
 use crate::error::{Error, Result, Warning};
 use crate::model::{AddonRecord, TargetKey};
@@ -81,9 +82,15 @@ impl World {
                 registered_roots.push((e.install_root.clone(), e.qualifier.clone(), source));
             }
         }
+        // Running clients' prefixes, for the modes that look for roots.
+        let extra_prefixes = match mode {
+            DiscoveryMode::Full | DiscoveryMode::Rescan => process_prefixes(&table, paths.home()),
+            DiscoveryMode::Cached | DiscoveryMode::NoScan => Vec::new(),
+        };
         let input = DiscoveryInput {
             home: paths.home().to_path_buf(),
             extra_roots,
+            extra_prefixes,
             registered_roots,
             config_home: Some(paths.config_home().to_path_buf()),
             data_home: Some(paths.data_home().to_path_buf()),

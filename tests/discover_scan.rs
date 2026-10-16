@@ -8,7 +8,8 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use common::env::TestEnv;
-use common::procfs::running_as_root;
+use common::home::Home;
+use common::procfs::{FakeProc, running_as_root};
 use common::product_db::ProductDb;
 use common::trees::{BattlenetRoot, CustomRoot, Prefix, tree_hash};
 use omaddons::discover::{
@@ -403,4 +404,81 @@ fn an_empty_home_finds_nothing() {
             .targets
             .is_empty()
     );
+}
+
+/// `(id, found_by)` of every client `omaddons targets` lists in `home`, by id.
+fn listed(home: &Home) -> Vec<(String, String)> {
+    let envelope = home.run(&["targets"]).expect(0);
+    let mut listed: Vec<(String, String)> = envelope["data"]["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| {
+            (
+                t["id"].as_str().unwrap_or_default().to_owned(),
+                t["found_by"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    listed.sort();
+    listed
+}
+
+#[test]
+fn a_running_client_in_a_nested_prefix_is_found_by_its_process_then_by_its_registration() {
+    let mut home = Home::new(&["wow"]);
+    // Below the scan's depth, in a prefix no launcher names.
+    let nested = Prefix::at(home.env.home().join("Games/nested/pfx"));
+    BattlenetRoot::at(
+        nested
+            .drive_c()
+            .join("Program Files (x86)/World of Warcraft"),
+    )
+    .product("wow_classic_era")
+    .build();
+    let retail = ("retail".to_owned(), "scan".to_owned());
+    assert_eq!(
+        listed(&home),
+        std::slice::from_ref(&retail),
+        "not running: not found"
+    );
+
+    let running = |home: &mut Home, dir: &str, prefix: &Path| {
+        let proc = FakeProc::new(home.env.root().join(dir)).process(
+            4243,
+            true,
+            "WowClassic.exe",
+            &["C:\\Program Files (x86)\\World of Warcraft\\_classic_era_\\WowClassic.exe"],
+            &[("WINEPREFIX", &prefix.display().to_string())],
+        );
+        home.proc = Some(proc.root().to_path_buf());
+    };
+    running(&mut home, "proc-nested", nested.path());
+    let era = ("era".to_owned(), "process".to_owned());
+    assert_eq!(listed(&home), [era, retail.clone()]);
+
+    // Registered (its first change, or here `targets default`), it stays found after
+    // the process exits.
+    home.run(&["targets", "default", "era"]).expect(0);
+    home.nothing_running();
+    let era = ("era".to_owned(), "scan".to_owned());
+    assert_eq!(listed(&home), [era.clone(), retail.clone()]);
+
+    // A running client in a prefix the scan reaches keeps its scan route.
+    let battlenet = home.env.home().join("Games/battlenet");
+    running(&mut home, "proc-scanned", &battlenet);
+    assert_eq!(listed(&home), [era, retail.clone()]);
+
+    // A prefix outside HOME is never a process route: a throwaway home stays apart.
+    let mut other = Home::new(&["wow"]);
+    let outside = Prefix::at(home.env.root().join("elsewhere/pfx"));
+    BattlenetRoot::at(
+        outside
+            .drive_c()
+            .join("Program Files (x86)/World of Warcraft"),
+    )
+    .product("wow_classic_era")
+    .build();
+    running(&mut other, "proc-outside", outside.path());
+    assert_eq!(listed(&other), [retail]);
 }
