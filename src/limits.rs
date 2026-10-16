@@ -94,6 +94,12 @@ pub const RACY_SLACK_NS: i128 = 20_000_000;
 /// Most other refs an adoption group lists beside its own (`alternatives`), each an
 /// `adopt --ref` command in the report.
 pub const ADOPT_MAX_ALTERNATIVES: usize = 3;
+/// Most paths a drift check lists per category (`modified`, `deleted`, `added`) per
+/// folder; `changed` still counts them all.
+pub const DRIFT_LIST_MAX: usize = 50;
+/// The racy slack on a filesystem with whole-second mtimes (FAT and the like): a file
+/// whose mtime is this close to its folder's stamp is re-hashed. Nanoseconds.
+pub const RACY_SLACK_COARSE_NS: i128 = 2_000_000_000;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -361,6 +367,20 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Other refs an adoption group lists beside its own",
     ),
+    limit(
+        "DRIFT_LIST_MAX",
+        LimitValue::Count(DRIFT_LIST_MAX as u64),
+        "count",
+        None,
+        "Paths a drift check lists per category per folder (the count stays exact)",
+    ),
+    limit(
+        "RACY_SLACK_COARSE_NS",
+        LimitValue::Millis((RACY_SLACK_COARSE_NS / 1_000_000) as u64),
+        "ms",
+        None,
+        "The racy slack on filesystems with whole-second mtimes: files this close to a folder's stamp are re-hashed",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -537,6 +557,8 @@ mod tests {
         "DEPENDENCY_MAX_ADDONS",
         "RACY_SLACK_NS",
         "ADOPT_MAX_ALTERNATIVES",
+        "DRIFT_LIST_MAX",
+        "RACY_SLACK_COARSE_NS",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

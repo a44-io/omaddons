@@ -7,6 +7,7 @@
 pub mod app;
 pub mod cli;
 pub mod discover;
+pub mod drift;
 pub mod engine;
 pub mod error;
 pub mod fsx;

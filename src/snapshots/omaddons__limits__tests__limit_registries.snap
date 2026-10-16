@@ -445,6 +445,24 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Other refs an adoption group lists beside its own"
+    },
+    {
+      "name": "DRIFT_LIST_MAX",
+      "value": {
+        "count": 50
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Paths a drift check lists per category per folder (the count stays exact)"
+    },
+    {
+      "name": "RACY_SLACK_COARSE_NS",
+      "value": {
+        "millis": 2000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "The racy slack on filesystems with whole-second mtimes: files this close to a folder's stamp are re-hashed"
     }
   ]
 ]
