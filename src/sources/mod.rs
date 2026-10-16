@@ -159,6 +159,11 @@ impl SourceRegistry {
     pub fn get(&self, id: SourceId) -> Option<&dyn Source> {
         self.sources.get(&id).map(Box::as_ref)
     }
+
+    /// The ids of the sources registered: the ones that are on.
+    pub fn enabled(&self) -> std::collections::BTreeSet<SourceId> {
+        self.sources.keys().copied().collect()
+    }
 }
 
 /// `source_disabled` for a ref whose source this build does not have.

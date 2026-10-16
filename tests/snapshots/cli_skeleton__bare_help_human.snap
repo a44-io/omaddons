@@ -6,7 +6,7 @@ World of Warcraft addon manager (CLI + Omarchy plugin)
 
 Usage: omaddons [OPTIONS] <COMMAND>
 
-Look      status  list  info  history  net-log
+Look      status  list  outdated  info  history  net-log
 Change    install  remove  undo
 Setup     targets  config  help
 

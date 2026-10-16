@@ -296,10 +296,15 @@ pub struct FactIndex {
 impl FactIndex {
     pub fn new(facts: &[CandidateFact]) -> Self {
         let mut index = Self::default();
+        index.extend(facts);
+        index
+    }
+
+    /// Adds `facts`, which win over what the index knew (they are newer).
+    pub fn extend(&mut self, facts: &[CandidateFact]) {
         for fact in facts {
             let asset = (fact.release_id.clone(), fact.asset.clone());
-            index
-                .hashes
+            self.hashes
                 .insert(asset.clone(), (fact.sha256.clone(), fact.size));
             for verdict in &fact.verdicts {
                 let key = (
@@ -308,10 +313,9 @@ impl FactIndex {
                     verdict.rules.clone(),
                     verdict.interface,
                 );
-                index.verdicts.insert(key, verdict.clone());
+                self.verdicts.insert(key, verdict.clone());
             }
         }
-        index
     }
 
     /// The SHA-256 (lowercase hex) and size of `asset` of `release_id`, when downloaded.

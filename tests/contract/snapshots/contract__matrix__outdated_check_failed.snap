@@ -1,0 +1,98 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "outdated",
+  "commands": [
+    {
+      "action": "update",
+      "argv": [
+        "omaddons",
+        "install",
+        "gh:WeakAuras/WeakAuras2",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons install gh:WeakAuras/WeakAuras2 -t retail",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "checked_at": "<time>",
+    "requests": {
+      "fetched": 1,
+      "probed": 0,
+      "reused": 0
+    },
+    "summary": {
+      "ahead": 0,
+      "blocked": 0,
+      "current": 0,
+      "failed": 0,
+      "pinned": 0,
+      "static": 1,
+      "unchecked": 0,
+      "update_available": 1
+    },
+    "targets": [
+      {
+        "items": [],
+        "target": {
+          "id": "classic",
+          "key": null
+        }
+      },
+      {
+        "items": [
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": "declared",
+            "error": null,
+            "installed": {
+              "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",
+              "version": "5.19.2"
+            },
+            "latest": {
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:WeakAuras/WeakAuras2@5.20.0",
+              "version": "5.20.0"
+            },
+            "name": "WeakAuras",
+            "pinned": false,
+            "ref": "gh:WeakAuras/WeakAuras2",
+            "status": "update_available",
+            "unchecked_reason": null
+          }
+        ],
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        }
+      }
+    ]
+  },
+  "error": {
+    "alternatives": [],
+    "code": "check_failed",
+    "details": {},
+    "fix": "omaddons install gh:WeakAuras/WeakAuras2 -t retail",
+    "fix_argv": [
+      "omaddons",
+      "install",
+      "gh:WeakAuras/WeakAuras2",
+      "-t",
+      "retail"
+    ],
+    "message": "1 update available",
+    "retryable": false
+  },
+  "exit_code": 6,
+  "ok": false,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

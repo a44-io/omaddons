@@ -1,0 +1,19 @@
+---
+source: tests/outdated.rs
+expression: human.stdout
+---
+classic (5.5.4, mists)
+  Bar  v1  → v2  gh:o/bar
+  Foo  v1  → v2  gh:o/foo
+era (1.15.9, Classic Era · Hardcore · Season of Discovery)
+  Bar  v1  → v2
+  Foo  v1  → v2
+retail (12.1.5, mainline)
+  Bar  v1  → v2
+  Foo  v1  → v2
+  Pin  v1  pinned (latest v2)
+6 updates on 3 clients · 1 pinned · checked just now (0 requests, 5 reused)
+Install them with:
+  omaddons install gh:o/bar gh:o/foo -t classic
+  omaddons install gh:o/bar gh:o/foo -t era
+  omaddons install gh:o/bar gh:o/foo -t retail

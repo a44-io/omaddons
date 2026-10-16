@@ -20,6 +20,14 @@ expression: envelope
         "name": "list"
       },
       {
+        "about": "Which managed addons have updates, on every client (changes nothing)",
+        "aliases": [
+          "check"
+        ],
+        "group": "look",
+        "name": "outdated"
+      },
+      {
         "about": "What an addon is: installed records, catalog entry and newest release",
         "aliases": [],
         "group": "look",

@@ -106,6 +106,57 @@ pub struct ReleaseBrief {
     pub channel: Channel,
 }
 
+/// The name of a status, as the wire spells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusKind {
+    Current,
+    UpdateAvailable,
+    Pinned,
+    Ahead,
+    Blocked,
+    Failed,
+    Unchecked,
+    Static,
+}
+
+impl UpdateStatus {
+    pub const fn kind(&self) -> StatusKind {
+        match self {
+            Self::Current { .. } => StatusKind::Current,
+            Self::UpdateAvailable { .. } => StatusKind::UpdateAvailable,
+            Self::Pinned { .. } => StatusKind::Pinned,
+            Self::Ahead { .. } => StatusKind::Ahead,
+            Self::Blocked { .. } => StatusKind::Blocked,
+            Self::Failed { .. } => StatusKind::Failed,
+            Self::Unchecked { .. } => StatusKind::Unchecked,
+            Self::Static => StatusKind::Static,
+        }
+    }
+
+    /// The newest release the status was judged against, when there is one.
+    pub const fn latest(&self) -> Option<&ReleaseBrief> {
+        match self {
+            Self::Current { latest }
+            | Self::UpdateAvailable { latest, .. }
+            | Self::Ahead { latest }
+            | Self::Blocked { latest, .. } => Some(latest),
+            Self::Pinned { latest } => latest.as_ref(),
+            Self::Failed { .. } | Self::Unchecked { .. } | Self::Static => None,
+        }
+    }
+}
+
+/// Whether `record` has nothing upstream to compare (M2-D31): a `file:` or `url:` ref,
+/// or a release id naming a given archive or directory (`@sha256:`, `@dir:`).
+pub fn is_static(record: &AddonRecord) -> bool {
+    let from_file = record
+        .release_id
+        .as_deref()
+        .is_some_and(|id| id.contains("@sha256:") || id.contains("@dir:"));
+    matches!(record.r#ref, Ref::File { .. } | Ref::Url { .. }) || from_file
+}
+
 /// The update status of `record` on `target`, from its memo `entry` and the candidate
 /// `facts`. `installed_primary_interface` is the installed primary folder's in-family
 /// interface (read only for records versioned by their TOC); `source_enabled` says
@@ -119,11 +170,7 @@ pub fn evaluate(
     source_enabled: bool,
 ) -> UpdateStatus {
     // 1. Nothing to check: a local or URL install, or one from a given archive.
-    let from_file = record
-        .release_id
-        .as_deref()
-        .is_some_and(|id| id.contains("@sha256:") || id.contains("@dir:"));
-    if matches!(record.r#ref, Ref::File { .. } | Ref::Url { .. }) || from_file {
+    if is_static(record) {
         return UpdateStatus::Static;
     }
     // 2. No usable answer.

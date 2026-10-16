@@ -1,0 +1,246 @@
+---
+source: tests/outdated.rs
+expression: stable(&envelope)
+---
+{
+  "command": "outdated",
+  "commands": [
+    {
+      "action": "update",
+      "argv": [
+        "omaddons",
+        "install",
+        "gh:o/bar",
+        "gh:o/foo",
+        "-t",
+        "classic"
+      ],
+      "command": "omaddons install gh:o/bar gh:o/foo -t classic",
+      "destructive": false
+    },
+    {
+      "action": "update",
+      "argv": [
+        "omaddons",
+        "install",
+        "gh:o/bar",
+        "gh:o/foo",
+        "-t",
+        "era"
+      ],
+      "command": "omaddons install gh:o/bar gh:o/foo -t era",
+      "destructive": false
+    },
+    {
+      "action": "update",
+      "argv": [
+        "omaddons",
+        "install",
+        "gh:o/bar",
+        "gh:o/foo",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons install gh:o/bar gh:o/foo -t retail",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "checked_at": "<checked_at>",
+    "requests": {
+      "fetched": 5,
+      "probed": 0,
+      "reused": 0
+    },
+    "summary": {
+      "ahead": 0,
+      "blocked": 0,
+      "current": 4,
+      "failed": 0,
+      "pinned": 1,
+      "static": 0,
+      "unchecked": 0,
+      "update_available": 6
+    },
+    "targets": [
+      {
+        "items": [
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": "declared",
+            "error": null,
+            "installed": {
+              "release_id": "gh:o/bar@v1",
+              "version": "v1"
+            },
+            "latest": {
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:o/bar@v2",
+              "version": "v2"
+            },
+            "name": "Bar",
+            "pinned": false,
+            "ref": "gh:o/bar",
+            "status": "update_available",
+            "unchecked_reason": null
+          },
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": "declared",
+            "error": null,
+            "installed": {
+              "release_id": "gh:o/foo@v1",
+              "version": "v1"
+            },
+            "latest": {
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:o/foo@v2",
+              "version": "v2"
+            },
+            "name": "Foo",
+            "pinned": false,
+            "ref": "gh:o/foo",
+            "status": "update_available",
+            "unchecked_reason": null
+          }
+        ],
+        "target": {
+          "id": "classic",
+          "key": "<key:classic>"
+        }
+      },
+      {
+        "items": [
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": "declared",
+            "error": null,
+            "installed": {
+              "release_id": "gh:o/bar@v1",
+              "version": "v1"
+            },
+            "latest": {
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:o/bar@v2",
+              "version": "v2"
+            },
+            "name": "Bar",
+            "pinned": false,
+            "ref": "gh:o/bar",
+            "status": "update_available",
+            "unchecked_reason": null
+          },
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": "declared",
+            "error": null,
+            "installed": {
+              "release_id": "gh:o/foo@v1",
+              "version": "v1"
+            },
+            "latest": {
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:o/foo@v2",
+              "version": "v2"
+            },
+            "name": "Foo",
+            "pinned": false,
+            "ref": "gh:o/foo",
+            "status": "update_available",
+            "unchecked_reason": null
+          }
+        ],
+        "target": {
+          "id": "era",
+          "key": "<key:era>"
+        }
+      },
+      {
+        "items": [
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": "declared",
+            "error": null,
+            "installed": {
+              "release_id": "gh:o/bar@v1",
+              "version": "v1"
+            },
+            "latest": {
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:o/bar@v2",
+              "version": "v2"
+            },
+            "name": "Bar",
+            "pinned": false,
+            "ref": "gh:o/bar",
+            "status": "update_available",
+            "unchecked_reason": null
+          },
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": "declared",
+            "error": null,
+            "installed": {
+              "release_id": "gh:o/foo@v1",
+              "version": "v1"
+            },
+            "latest": {
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:o/foo@v2",
+              "version": "v2"
+            },
+            "name": "Foo",
+            "pinned": false,
+            "ref": "gh:o/foo",
+            "status": "update_available",
+            "unchecked_reason": null
+          },
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": null,
+            "error": null,
+            "installed": {
+              "release_id": "gh:o/pin@v1",
+              "version": "v1"
+            },
+            "latest": {
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:o/pin@v2",
+              "version": "v2"
+            },
+            "name": "Pin",
+            "pinned": true,
+            "ref": "gh:o/pin",
+            "status": "pinned",
+            "unchecked_reason": null
+          }
+        ],
+        "target": {
+          "id": "retail",
+          "key": "<key:retail>"
+        }
+      }
+    ]
+  },
+  "exit_code": 0,
+  "meta": "<meta>",
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

@@ -37,7 +37,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). `update`, `outdated`, WoWInterface, Tukui and dependency resolution arrive in milestone 2. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated` works; `update`, WoWInterface, Tukui and dependency resolution are on the way. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -132,12 +132,13 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | A catalog of 18 verified addons (13 GitHub release entries, 5 legacy private-server addons from git) | ✅ Done |
 | The CLI contract: one JSON envelope, typed errors with fixes (an argv whenever the fix is a command), exit codes 0 to 6, contract snapshot tests | ✅ Done (freezes in M4) |
 | Commands: `status`, `install`, `remove`, `undo`, `history`, `list`, `targets`, `info`, `config`, `net-log`, `help` | ✅ Done |
-| Bulk `update` and `outdated`, `pin`, WoWInterface and Tukui, dependencies, adopting other managers' addons, `export` and `sync`, `search` | 🗓️ Milestone 2 (decomposed into 75 beads) |
+| `outdated` (alias `check`): what has updates, on every client | ✅ Done (milestone 2) |
+| Bulk `update`, `pin`, WoWInterface and Tukui, dependencies, adopting other managers' addons, `export` and `sync`, `search` | 🗓️ Milestone 2 (decomposed into 75 beads) |
 | The Omarchy bar widget, Lua error capture, `WTF/` backups | 🗓️ Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
-To update an addon today, run `install` again: it installs the newest release the channel allows and replaces the old one in one transaction. There are two exceptions. A `url:` ref's release is the URL itself, so a re-run never re-downloads it. An addon installed with `--version` is pinned, so a re-run without `--version` leaves it where it is (warning `addon_pinned`).
+`omaddons outdated` lists what has updates. To update an addon today, run `install` again (`outdated` prints the command): it installs the newest release the channel allows and replaces the old one in one transaction. There are two exceptions. A `url:` ref's release is the URL itself, so a re-run never re-downloads it. An addon installed with `--version` is pinned, so a re-run without `--version` leaves it where it is (warning `addon_pinned`).
 
 ---
 
@@ -552,7 +553,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--no-color` | No ANSI color (also `NO_COLOR`) |
 | `--quiet` | Only errors on stderr |
 | `-v, --verbose` | More detail: paths, and debug `log` events on stderr (repeatable) |
-| `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install` today). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
+| `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install` and `outdated` today). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
 | `-h, --help` | Help |
 | `-V, --version` | Version (`omaddons -V` only; after a command, `--version` is that command's flag or a usage error) |
 
@@ -649,6 +650,47 @@ omaddons list                              # every target: managed addons with v
 omaddons list -t forever --unmanaged       # also unmanaged, linked and invalid folders, with title, version and load verdict
 omaddons list -t wotlk --protected         # also Blizzard_* folders
 ```
+
+### `outdated`
+
+Which managed addons have updates, on every client (or the clients `-t` names), without changing anything. `check` is an alias.
+
+```text
+$ omaddons outdated
+classic (5.5.4, mists)
+  Bar  v1  → v2  gh:o/bar
+  Foo  v1  → v2  gh:o/foo
+retail (12.1.5, mainline)
+  Bar  v1  → v2
+  Foo  v1  → v2
+  Pin  v1  pinned (latest v2)
+4 updates on 2 clients · 1 pinned · checked just now (3 requests, 0 reused)
+Install them with:
+  omaddons install gh:o/bar gh:o/foo -t classic
+  omaddons install gh:o/bar gh:o/foo -t retail
+```
+
+```bash
+omaddons outdated -v              # every addon, current, static and unchecked ones included
+omaddons outdated --check         # exit 6 (check_failed) when any update is available
+omaddons outdated --refresh       # ask every source now, even inside the 15-minute window
+omaddons outdated --verify        # download and verify each update not yet known to load
+```
+
+Each distinct ref and channel is fetched at most once, through the [release memo](#files-and-state). A check from the last 15 minutes is reused without a request, so a second run is free. `--offline` answers from the memo whatever its age, with a `stale_check` warning. Addons installed from a local file, a URL or `--file` have nothing upstream to compare and make no request (`static`).
+
+The listing shows only what needs a decision; `-v` lists everything, and the summary always counts every status:
+
+| Status | Meaning |
+|---|---|
+| `update_available` | A newer release exists. `confidence` says how likely it is to load: `verified` (a download proved it), `declared` (the publisher's metadata names this client), `likely`, `unlikely` |
+| `pinned` | Installed with `--version`, and a newer release exists (`latest`) |
+| `blocked` | The newest release is known not to load on this client (`blocked_reason`) |
+| `ahead` | The installed release is newer than the newest one on its channel |
+| `failed` | The source cannot answer for it (a deleted repository: fix `omaddons remove <name> -t <id>`, or a fetch error) |
+| `current`, `static`, `unchecked` | Shown with `-v` only (`unchecked_reason`: `never_checked`, `offline`, `source_disabled`, `no_eligible_release`) |
+
+When a fetch fails, a remembered answer is used and the warning says so; with nothing remembered, the item is `failed`. Either way the run is `partial`. `--verify` downloads only the updates not yet verified, in a dry run that takes no lock, and remembers the verdicts: a candidate that does not load becomes `blocked` from then on. `outdated` writes only the release memo, the download cache and `net.log`.
 
 ### `targets`
 
@@ -863,7 +905,7 @@ When stderr is not a terminal, or `CI` is set, or `TERM=dumb`, stderr carries ND
 {"event":"log","level":"debug","message":"discovery: scanned yes, roots reused 2, parsed 0, cache written no"}
 ```
 
-Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. `progress` events come from long commands (`install` today) when progress is on: `{"event":"progress","phase":"download","message":"gh:o/foo@v1 on retail","current":1,"total":2}`. The phases are `fetch`, `download`, `verify`, `stage` and `commit`. Within a phase, `current` counts up to a fixed `total`, and each item appears once. On a terminal in human mode, progress is one line that is rewritten in place.
+Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. `progress` events come from long commands (`install` and `outdated` today) when progress is on: `{"event":"progress","phase":"download","message":"gh:o/foo@v1 on retail","current":1,"total":2}`. The phases are `fetch`, `download`, `verify`, `stage` and `commit`. Within a phase, `current` counts up to a fixed `total`, and each item appears once. On a terminal in human mode, progress is one line that is rewritten in place.
 
 ### Stability
 
@@ -1282,13 +1324,13 @@ Journals are recovered by the next command that commits a change, not by read co
 
 | Capability | State | Planned |
 |---|---|---|
-| Bulk `update`, `outdated`, `pin`/`unpin` | ❌ re-run `install` per addon | M2 |
+| Bulk `update`, `pin`/`unpin` | ❌ re-run `install` per target (`outdated` prints the command) | M2 |
 | WoWInterface, Tukui | ❌ refs parse and are refused | M2 |
 | Dependency resolution (`## Dependencies`) | ❌ collected, not resolved; `--no-deps` does nothing | M2 |
 | Adopting addons installed by other managers | ❌ they show as unmanaged | M2 |
 | `addons.toml`, `export`, `sync`, `copy` between clients | ❌ | M2 |
 | `search` | ❌ catalog names and links only | M2 |
-| Progress output | ⚠️ `install` reports progress; the other long commands arrive with M2 | M2 |
+| Progress output | ⚠️ `install` and `outdated` report progress; the other long commands arrive with M2 | M2 |
 | The Omarchy bar widget | ❌ the help text mentions it, the code does not exist yet | M3 |
 | Lua error capture (BugGrabber), `WTF/` backups | ❌ | M3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, agent skill | ❌ | M4 |
@@ -1412,7 +1454,7 @@ Yes, by default. Updates that keep the loaded TOC land and tell you to `/reload`
 
 ### How do I update my addons?
 
-Today, run `omaddons install <name> -t <target>` again; it installs the newest release in one undoable transaction. `url:` refs are one exception: their release is the URL, so install a new URL instead. Pinned addons (installed with `--version`) are the other: they stay put until you install another `--version`. `outdated` and a bulk `update` arrive in milestone 2.
+Run `omaddons outdated` to see what has updates on every client. Then run the `omaddons install <ref>... -t <target>` line it prints; install updates each one to the newest release in one undoable transaction. `url:` refs are one exception: their release is the URL, so install a new URL instead. Pinned addons (installed with `--version`) are the other: they stay put until you install another `--version`. A bulk `update` arrives later in milestone 2.
 
 ### Does it work with Turtle WoW, Warmane or other private servers?
 

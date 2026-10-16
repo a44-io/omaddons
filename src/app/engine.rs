@@ -92,6 +92,11 @@ impl Engine {
         ReleaseCache::new(&self.paths, self.http.as_ref(), &self.registry, freshness)
     }
 
+    /// The sources that are on.
+    pub fn enabled_sources(&self) -> std::collections::BTreeSet<crate::sources::SourceId> {
+        self.registry.enabled()
+    }
+
     /// Plans and commits `req`, fetching through `cache` (`None`: no memo).
     pub fn run(&self, req: &TxRequest, cache: Option<&ReleaseCache<'_>>) -> Result<TxOutcomes> {
         crate::engine::run(req, &self.ctx(cache))

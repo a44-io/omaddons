@@ -135,6 +135,9 @@ pub enum Command {
     Undo(crate::app::undo::UndoArgs),
     /// Show what changed, when, by whom and why
     History(crate::app::history::HistoryArgs),
+    /// Which managed addons have updates, on every client (changes nothing)
+    #[command(visible_alias = "check")]
+    Outdated(crate::app::outdated::OutdatedArgs),
     /// What an addon is: installed records, catalog entry and newest release
     Info(crate::app::info::InfoArgs),
     /// Every network request omaddons made

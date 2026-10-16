@@ -9,6 +9,7 @@ pub mod info;
 pub mod install;
 pub mod list;
 pub mod net_log;
+pub mod outdated;
 pub mod remove;
 pub mod status;
 pub mod targets;
@@ -67,6 +68,7 @@ const fn entry(name: &'static str, group: Group) -> CommandEntry {
 pub const COMMANDS: &[CommandEntry] = &[
     entry("status", Group::Look),
     entry("list", Group::Look),
+    entry("outdated", Group::Look),
     entry("info", Group::Look),
     entry("history", Group::Look),
     entry("net-log", Group::Look),
@@ -113,6 +115,7 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         Some(Command::Undo(_)) => "undo",
         Some(Command::History(_)) => "history",
         Some(Command::Info(_)) => "info",
+        Some(Command::Outdated(_)) => "outdated",
         Some(Command::NetLog(_)) => "net-log",
         Some(Command::List(_)) => "list",
         Some(Command::Targets(args)) => args
@@ -240,6 +243,15 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         }
         Some(Command::Info(args)) => {
             let result = info::run(ctx, args);
+            if let Ok(outcome) = &result {
+                for note in &outcome.notes {
+                    out.log(output::LogLevel::Debug, note);
+                }
+            }
+            out.emit(result)
+        }
+        Some(Command::Outdated(args)) => {
+            let result = outdated::run(ctx, args);
             if let Ok(outcome) = &result {
                 for note in &outcome.notes {
                     out.log(output::LogLevel::Debug, note);

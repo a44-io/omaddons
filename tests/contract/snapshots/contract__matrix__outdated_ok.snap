@@ -1,0 +1,48 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "outdated",
+  "commands": [],
+  "data": {
+    "checked_at": "<time>",
+    "requests": {
+      "fetched": 0,
+      "probed": 0,
+      "reused": 1
+    },
+    "summary": {
+      "ahead": 0,
+      "blocked": 0,
+      "current": 1,
+      "failed": 0,
+      "pinned": 0,
+      "static": 1,
+      "unchecked": 0,
+      "update_available": 0
+    },
+    "targets": [
+      {
+        "items": [],
+        "target": {
+          "id": "classic",
+          "key": null
+        }
+      },
+      {
+        "items": [],
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        }
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

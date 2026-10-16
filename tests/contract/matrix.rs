@@ -75,6 +75,30 @@ fn list() {
 }
 
 #[test]
+fn outdated() {
+    let s = Scene::new();
+    s.install_foo();
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    let c = s.json(&["outdated"], 0);
+    insta::assert_json_snapshot!("outdated_ok", s.stable(&c.envelope));
+    let both = "## Interface: 120105, 50504\n## Version: 4\n";
+    let wa: [common::http::Asset<'_>; 1] = [(
+        "WeakAuras.zip",
+        &[("mainline", 120_105), ("mists", 50_504)],
+        vec![("WeakAuras/WeakAuras.toc", both)],
+    )];
+    let base = "https://github.com/WeakAuras/WeakAuras2";
+    common::http::gh_release_v(&s.home.http, base, "5.20.0", &wa);
+    common::http::gh_latest(&s.home.http, base, "5.20.0");
+    let c = s.json(&["outdated", "--refresh", "--check"], 6);
+    assert_eq!(c.envelope["error"]["code"], "check_failed");
+    insta::assert_json_snapshot!("outdated_check_failed", s.stable(&c.envelope));
+    let c = s.json(&["check", "-t", "nosuch"], 3);
+    assert_eq!(c.envelope["command"], "outdated");
+    assert_eq!(c.envelope["error"]["code"], "target_not_found");
+}
+
+#[test]
 fn info() {
     let s = Scene::new();
     let c = s.json(&["info", "weakauras"], 0);
