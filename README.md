@@ -896,12 +896,13 @@ omaddons targets add --help    # subcommands: --help, or omaddons help "targets 
 A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 
 <details>
-<summary><strong>Every error code (38)</strong></summary>
+<summary><strong>Every error code (39)</strong></summary>
 
 | Code | Exit | Retryable | When |
 |---|---|---|---|
 | `usage` | 2 | no | bad flag, value, `--since`, `--limit`, `--actor`, `--reason`, config key or id |
 | `ref_invalid` | 2 | no | malformed ref: `gh:owner`, `git:` without https, `http://` |
+| `desired_state_invalid` | 2 | no | `addons.toml` cannot be read (for `sync` and `export`, arriving in M2): broken TOML, a bad value, an unknown family, an entry listed twice, or a newer schema; `details: {path, line, key, reason}` |
 | `target_not_found` | 3 | no | no target matches the selector; a known game mode whose client is missing |
 | `target_ambiguous` | 3 | no | several targets fit; one alternative per candidate |
 | `ref_ambiguous` | 3 | no | a name matches several addons or a local path |
@@ -942,7 +943,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 </details>
 
 <details>
-<summary><strong>Every warning code (24)</strong></summary>
+<summary><strong>Every warning code (26)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -970,6 +971,8 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `credential_file_mode` | reserved for credential files other users can read (no command reads credentials yet) |
 | `addon_pinned` | a pinned addon was left at its release; the fix shows it with `info`, and `--version` moves it |
 | `stale_check` | an offline answer came from the release memo, whatever its age; it names the oldest remembered check |
+| `desired_unknown_key` | `addons.toml` has a key omaddons does not know (named, with its line); it is ignored |
+| `desired_unknown_target` | an `addons.toml` `[target.<id>]` section names no known client; its entries are skipped |
 
 </details>
 

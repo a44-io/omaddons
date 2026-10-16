@@ -79,3 +79,10 @@ path = "fuzz_targets/ref_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "desired_toml"
+path = "fuzz_targets/desired_toml.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,38 @@
+---
+source: src/state/desired.rs
+expression: rendered
+---
+# Desired addon sets for omaddons. `omaddons sync` makes each client match this file.
+schema_version = "1.0"
+
+[[family.vanilla.addon]]
+name = "DBM"
+
+[[family.vanilla.addon]]
+name = "Questie"
+
+[[family.mainline.addon]]
+name = "BigWigs"
+ref = "gh:BigWigsMods/BigWigs"
+version = "v428"
+dependency = true
+
+[[family.mainline.addon]]
+name = "DBM"
+
+[[family.mainline.addon]]
+name = "LittleWigs"
+
+[[family.mainline.addon]]
+name = "Plater"
+version = "Plater-v661"
+pinned = true
+
+[[family.mainline.addon]]
+name = "WeakAuras"
+
+[[family.mainline.addon]]
+ref = "wowi:5995"
+
+[[target."wotlk".addon]]
+ref = "git:https://github.com/fondlez/GroupBulletinBoard#main"

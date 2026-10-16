@@ -24,6 +24,7 @@ const TARGETS: &[&str] = &[
     "toc",
     "archive",
     "ref_parse",
+    "desired_toml",
 ];
 
 fn fuzz_dir() -> PathBuf {
@@ -246,4 +247,38 @@ fn write_fuzz_seeds() {
     );
     write("ref_parse", "url", b"url:https://example.org/addon.zip");
     write("ref_parse", "malformed", b"gh:/\xff#@../..");
+
+    // desired_toml: the documented example, an empty file, a broken one.
+    write("desired_toml", "example.toml", DESIRED_EXAMPLE.as_bytes());
+    write("desired_toml", "empty.toml", b"");
+    write(
+        "desired_toml",
+        "malformed.toml",
+        b"schema_version = \"1.0\"\n[family.mainline\naddons = [\"DBM\", 3\n[[family.mainline.addon]]\nname = \"\"\n",
+    );
 }
+
+/// The `addons.toml` example of `src/state/desired.rs`.
+const DESIRED_EXAMPLE: &str = r#"# Desired addon sets for omaddons. `omaddons sync` makes each client match this file.
+schema_version = "1.0"
+
+[family.mainline]                       # every live mainline client
+addons = ["WeakAuras", "DBM", "wowi:5995", "LittleWigs"]
+
+[[family.mainline.addon]]               # table form when options are needed
+name = "BigWigs"
+ref = "gh:BigWigsMods/BigWigs"
+dependency = true                       # a lock for LittleWigs' dependency, not a request
+version = "v428"
+
+[[family.mainline.addon]]
+name = "Plater"
+version = "Plater-v661"
+pinned = true
+
+[family.vanilla]
+addons = ["Questie", "DBM"]
+
+[target."wotlk"]                        # one client by id; the only way to address test clients
+addons = ["git:https://github.com/fondlez/GroupBulletinBoard#main"]
+"#;

@@ -6,10 +6,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::error::Error;
+use crate::error::{Error, Result};
 use crate::model::Ref;
 use crate::resolve::catalog::Catalog;
 use crate::sources::refs::{CatalogMatch, InstalledMatch, ParsedRef, RefContext, parse_user_ref};
+use crate::state::desired::Entry;
 use crate::state::records::TargetRecord;
 
 /// Parses `request` against the installed addons of `records` (by target id; name or
@@ -22,9 +23,42 @@ pub fn parse_ref(
     cwd: &Path,
     request: &str,
 ) -> std::result::Result<ParsedRef, Error> {
+    let all: Vec<(&str, &TargetRecord)> = records.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    parse_among(git_hosts, &all, catalog, cwd, request)
+}
+
+/// What a desired-state entry names on the target `target_id`: its `ref`, else its
+/// `name`, read as `install` reads an argument, except that an installed name is looked
+/// up in that target's record only, and a relative path resolves against `base_dir`
+/// (the directory of the desired-state file, so a file means the same thing wherever it
+/// is used). Only the ref: a release link's tag is not a pin (`version` and `pinned`
+/// are). Errors are `ref_invalid`, `ref_ambiguous` and `not_found`, as for `install`.
+pub fn resolve_entry(
+    entry: &Entry,
+    target_id: &str,
+    records: &BTreeMap<String, TargetRecord>,
+    catalog: &Catalog,
+    git_hosts: &[String],
+    base_dir: &Path,
+) -> Result<Ref> {
+    let own: Vec<(&str, &TargetRecord)> = records
+        .iter()
+        .filter(|(id, _)| id.eq_ignore_ascii_case(target_id))
+        .map(|(k, v)| (k.as_str(), v))
+        .collect();
+    parse_among(git_hosts, &own, catalog, base_dir, entry.request()).map(|p| p.r#ref)
+}
+
+fn parse_among(
+    git_hosts: &[String],
+    records: &[(&str, &TargetRecord)],
+    catalog: &Catalog,
+    cwd: &Path,
+    request: &str,
+) -> std::result::Result<ParsedRef, Error> {
     let installed = |name: &str| -> Vec<InstalledMatch> {
         let mut found: Vec<InstalledMatch> = Vec::new();
-        for (target_id, record) in records {
+        for &(target_id, record) in records {
             for addon in record.addons.values() {
                 let by_folder = addon
                     .folders
@@ -36,7 +70,7 @@ pub fn parse_ref(
                     found.push(InstalledMatch {
                         name: addon.name.clone(),
                         r#ref: addon.r#ref.clone(),
-                        target_id: target_id.clone(),
+                        target_id: target_id.to_owned(),
                     });
                 }
             }

@@ -67,6 +67,11 @@ mod support {
         "install without --no-deps",
         "install a project that ships",
         "install the addon that ships",
+        // desired_state_invalid and desired_unknown_key
+        "use a family name",
+        "keep one of the entries",
+        "correct line",
+        "remove it, or correct its spelling",
     ];
 
     /// The top-level keys of a JSON object, in document order.

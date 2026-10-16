@@ -2,6 +2,7 @@
 //! index, history, plans and `status.json`.
 
 pub mod config;
+pub mod desired;
 pub mod files_index;
 pub mod history;
 pub mod memo;

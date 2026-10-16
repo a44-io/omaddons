@@ -1,0 +1,22 @@
+# Desired addon sets for omaddons. `omaddons sync` makes each client match this file.
+schema_version = "1.0"
+
+[family.mainline]                       # every live mainline client
+addons = ["WeakAuras", "DBM", "wowi:5995", "LittleWigs"]
+
+[[family.mainline.addon]]               # table form when options are needed
+name = "BigWigs"
+ref = "gh:BigWigsMods/BigWigs"
+dependency = true                       # a lock for LittleWigs' dependency, not a request
+version = "v428"
+
+[[family.mainline.addon]]
+name = "Plater"
+version = "Plater-v661"
+pinned = true
+
+[family.vanilla]
+addons = ["Questie", "DBM"]
+
+[target."wotlk"]                        # one client by id; the only way to address test clients
+addons = ["git:https://github.com/fondlez/GroupBulletinBoard#main"]

@@ -69,6 +69,18 @@ pub struct Resolved {
     pub missing: Vec<RegistryEntry>,
 }
 
+impl Resolved {
+    /// Every id a person may name: discovered targets (registered or provisional) and
+    /// registered ones this discovery did not find.
+    pub fn known_ids(&self) -> Vec<&str> {
+        self.targets
+            .iter()
+            .map(|d| d.target.id.as_str())
+            .chain(self.missing.iter().map(|m| m.id.as_str()))
+            .collect()
+    }
+}
+
 /// Gives each discovered target its registered key and id: by client dir, else by
 /// marker (a moved install). Never writes.
 pub fn reconcile(registry: &Registry, discovered: &[DiscoveredTarget]) -> Resolved {

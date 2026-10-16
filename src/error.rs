@@ -150,6 +150,8 @@ macro_rules! error_codes {
 error_codes! {
     Usage               = "usage",                 Usage,       false;
     RefInvalid          = "ref_invalid",           Usage,       false;
+    /// `addons.toml` cannot be read as desired state; `details: {path, line, key, reason}`.
+    DesiredStateInvalid = "desired_state_invalid", Usage,       false;
     TargetNotFound      = "target_not_found",      NotFound,    false;
     TargetAmbiguous     = "target_ambiguous",      NotFound,    false;
     RefAmbiguous        = "ref_ambiguous",         NotFound,    false;
@@ -266,6 +268,10 @@ warning_codes! {
     AddonPinned                 = "addon_pinned";
     /// An answer came from remembered release metadata, not from the source now.
     StaleCheck                  = "stale_check";
+    /// `addons.toml` has a key omaddons does not know; it is ignored.
+    DesiredUnknownKey           = "desired_unknown_key";
+    /// An `addons.toml` `[target.<id>]` section names no known client; it is skipped.
+    DesiredUnknownTarget        = "desired_unknown_target";
 }
 
 impl fmt::Display for WarningCode {
@@ -646,7 +652,7 @@ mod tests {
     /// A hand-written copy of the bead's table: wire name, exit code, default retryable.
     #[rustfmt::skip]
     const EXPECTED: &[(&str, u8, bool)] = &[
-        ("usage", 2, false), ("ref_invalid", 2, false),
+        ("usage", 2, false), ("ref_invalid", 2, false), ("desired_state_invalid", 2, false),
         ("target_not_found", 3, false), ("target_ambiguous", 3, false),
         ("ref_ambiguous", 3, false), ("not_found", 3, false), ("not_managed", 3, false),
         ("plan_not_found", 3, false), ("no_compatible_release", 3, false),
@@ -703,8 +709,8 @@ mod tests {
 
     #[test]
     fn error_registry_matches_the_table() {
-        assert_eq!(ErrorCode::ALL.len(), 38);
-        assert_eq!(EXPECTED.len(), 38);
+        assert_eq!(ErrorCode::ALL.len(), 39);
+        assert_eq!(EXPECTED.len(), 39);
         for (code, &(wire, exit, retryable)) in ErrorCode::ALL.iter().zip(EXPECTED) {
             assert_eq!(code.wire(), wire);
             assert_eq!(code.exit().code(), exit, "{wire}");
@@ -747,7 +753,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 24);
+        assert_eq!(WarningCode::ALL.len(), 26);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }
