@@ -72,6 +72,12 @@ expression: envelope
         "name": "unpin"
       },
       {
+        "about": "Make every client match addons.toml: install what is missing, set pins and channels",
+        "aliases": [],
+        "group": "change",
+        "name": "sync"
+      },
+      {
         "about": "Remove managed addons from one target (undoable)",
         "aliases": [],
         "group": "change",

@@ -91,6 +91,27 @@ fn pin_and_unpin() {
 }
 
 #[test]
+fn sync() {
+    let s = Scene::new();
+    let c = s.json(&["sync"], 3);
+    insta::assert_json_snapshot!("sync_not_found", s.stable(&c.envelope));
+    s.home
+        .write_desired("[family.mainline]\naddons = [\"weakauras\", \"gh:o/foo\"]\n");
+    // A dry run is deterministic, and the same twice.
+    let dry = || support::without_meta(&s.json(&["sync", "--dry-run"], 0).run.stdout);
+    assert_eq!(dry(), dry());
+    let c = s.json(&["sync"], 0);
+    assert_eq!(c.envelope["data"]["summary"]["changed"], 2);
+    insta::assert_json_snapshot!("sync_ok", s.stable(&c.envelope));
+    let c = s.json(&["sync"], 0);
+    assert_eq!(c.envelope["data"]["summary"]["changed"], 0);
+    s.home
+        .write_desired("[family.mainline]\naddons = \"weakauras\"\n");
+    let c = s.json(&["sync"], 2);
+    insta::assert_json_snapshot!("sync_invalid", s.stable(&c.envelope));
+}
+
+#[test]
 fn update() {
     let s = Scene::new();
     s.json(&["install", "weakauras", "-t", "retail"], 0);

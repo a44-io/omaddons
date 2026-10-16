@@ -1,0 +1,25 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 97
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "sync",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_found",
+    "details": {
+      "path": "<root>/config/omaddons/addons.toml"
+    },
+    "fix": "pass the file: `omaddons sync <path>`, or write <root>/config/omaddons/addons.toml (see `omaddons help sync`)",
+    "fix_argv": null,
+    "message": "<root>/config/omaddons/addons.toml does not exist",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

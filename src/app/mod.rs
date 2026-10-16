@@ -15,6 +15,7 @@ pub mod pin;
 pub mod remove;
 pub mod resolve_args;
 pub mod status;
+pub mod sync;
 pub mod targets;
 pub mod undo;
 pub mod update;
@@ -80,6 +81,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("update", Group::Change),
     entry("pin", Group::Change),
     entry("unpin", Group::Change),
+    entry("sync", Group::Change),
     entry("remove", Group::Change),
     entry("undo", Group::Change),
     entry("targets", Group::Setup),
@@ -121,6 +123,7 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         Some(Command::Update(_)) => "update",
         Some(Command::Pin(_)) => "pin",
         Some(Command::Unpin(_)) => "unpin",
+        Some(Command::Sync(_)) => "sync",
         Some(Command::Remove(_)) => "remove",
         Some(Command::Undo(_)) => "undo",
         Some(Command::History(_)) => "history",
@@ -264,6 +267,18 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         }
         Some(Command::Pin(args)) => out_pin(&out, pin::pin(ctx, args)),
         Some(Command::Unpin(args)) => out_pin(&out, pin::unpin(ctx, args)),
+        Some(Command::Sync(args)) => {
+            let result = sync::run(ctx, args);
+            if let Ok(outcome) = &result {
+                for note in &outcome.notes {
+                    out.log(output::LogLevel::Debug, note);
+                }
+                for (tx, ms) in &outcome.locks {
+                    out.lock_released(Some(*ms), Some(*tx));
+                }
+            }
+            out.emit(result)
+        }
         Some(Command::Remove(args)) => {
             let result = remove::run(ctx, args);
             if let Ok(outcome) = &result {

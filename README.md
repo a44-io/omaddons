@@ -37,7 +37,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated`, `update` and `pin` work, and installs bring their catalog dependencies; WoWInterface and Tukui are on the way. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated`, `update`, `pin` and `sync` work, and installs bring their catalog dependencies; WoWInterface and Tukui are on the way. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -136,7 +136,8 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | `update` (alias `upgrade`): every client's updates in one run, undone with one `undo` | ✅ Done (milestone 2) |
 | `pin` and `unpin`: hold an addon at its release through updates | ✅ Done (milestone 2) |
 | Dependencies: what a TOC requires installs with it, from the catalog | ✅ Done (milestone 2; more sources to come) |
-| WoWInterface and Tukui, adopting other managers' addons, `export` and `sync`, `search` | 🗓️ Milestone 2 (decomposed into 75 beads) |
+| `sync`: every client made to match `addons.toml`, idempotently | ✅ Done (milestone 2; `--locked` and `--prune` to come) |
+| WoWInterface and Tukui, adopting other managers' addons, `export`, `search` | 🗓️ Milestone 2 (decomposed into 75 beads) |
 | The Omarchy bar widget, Lua error capture, `WTF/` backups | 🗓️ Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
@@ -665,6 +666,55 @@ omaddons unpin dbm
 
 A pin changes only the record, never a game file, so it works while the game runs. Like every change it is a transaction (kind `pin`), with one per client under one run, so `omaddons undo` reverts it. An addon already pinned (or unpinned) is left as it is, with no transaction. A pin keeps the addon's channel and its reason (a pinned dependency stays a dependency). `--version` takes a tag (`gh:` refs) or a rev (`git:` refs). `url:` and local installs have no other release to choose, so `--version` is refused for them. After `unpin`, the last line says what `update` would install, from the remembered metadata and without a request.
 
+### `sync [FILE]`
+
+Make every client match a desired-state file: `addons.toml` in the config directory (`~/.config/omaddons/addons.toml`), or the file named.
+
+```toml
+schema_version = "1.0"
+
+[family.mainline]                  # every live mainline client
+addons = ["WeakAuras", "DBM", "gh:BigWigsMods/BigWigs"]
+
+[[family.mainline.addon]]          # the table form, when an entry needs options
+name = "Plater"
+version = "Plater-v661"
+pinned = true
+
+[target."ptr"]                     # one client by id: the only way to reach a test client
+addons = ["DBM"]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--strict` | Exit 6 when only some of the addons sync |
+| `--no-deps` | Install only the listed addons, not the ones their TOCs require |
+
+**The file.**
+
+- A family section applies to every live client of that family, and never to a test client (a PTR or beta).
+- A `[target."<id>"]` section applies to that one client, and its entries replace family entries for the same addon.
+- An entry is a name or a ref, read the way `install` reads its arguments. Installed names are looked up on that client only, and relative paths are read against the file's own directory.
+- An entry in table form has these keys:
+  - `name`, unless `ref` is given;
+  - `ref`;
+  - `channel`: absent means `stable`, whatever `default_channel` says;
+  - `version`;
+  - `pinned` (default `false`);
+  - `dependency`: a version lock for a dependency, not a request.
+- Unknown keys are warned about (`desired_unknown_key`), and so are sections naming no known client (`desired_unknown_target`).
+- A file that cannot be read changes nothing: `desired_state_invalid`, exit 2, with the line.
+
+**What sync does.**
+
+- It installs what is missing.
+- A pinned entry at another version installs that version, pinned.
+- An entry on another channel switches the addon to it: a records-only change when that channel's newest release is the installed one.
+- A pin that differs from the file is set or cleared without touching a folder.
+- It never moves an installed addon to a newer release; that is `omaddons update`'s job.
+
+So a second `sync` changes nothing and sends no request. Each client with changes gets one transaction of kind `sync`, all under one run, and `omaddons undo` reverts the whole sync. An entry that cannot be resolved fails on its own (`partial: true`), and so do two entries that name the same addon. What an addon's TOC requires installs with it, as for `install`.
+
 ### `remove <ADDON>...`
 
 Remove managed addons from one target, as an undoable transaction. An addon is named by its name, its ref or a folder it owns.
@@ -902,7 +952,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 |---|---|---|---|
 | `usage` | 2 | no | bad flag, value, `--since`, `--limit`, `--actor`, `--reason`, config key or id |
 | `ref_invalid` | 2 | no | malformed ref: `gh:owner`, `git:` without https, `http://` |
-| `desired_state_invalid` | 2 | no | `addons.toml` cannot be read (for `sync` and `export`, arriving in M2): broken TOML, a bad value, an unknown family, an entry listed twice, or a newer schema; `details: {path, line, key, reason}` |
+| `desired_state_invalid` | 2 | no | `sync`'s `addons.toml` cannot be read: broken TOML, a bad value, an unknown family, an entry listed twice, or a newer schema (`details: {path, line, key, reason}`); also a failed `sync` item when two entries name the same addon |
 | `target_not_found` | 3 | no | no target matches the selector; a known game mode whose client is missing |
 | `target_ambiguous` | 3 | no | several targets fit; one alternative per candidate |
 | `ref_ambiguous` | 3 | no | a name matches several addons or a local path |
@@ -1409,7 +1459,7 @@ Journals are recovered by the next command that commits a change, not by read co
 | WoWInterface, Tukui | ❌ refs parse and are refused | M2 |
 | Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing; WoWInterface and Tukui lookups, bridge folders and the dependency items in output are on the way | M2 |
 | Adopting addons installed by other managers | ❌ they show as unmanaged | M2 |
-| `addons.toml`, `export`, `sync`, `copy` between clients | ❌ | M2 |
+| `addons.toml`, `export`, `sync`, `copy` between clients | ⚠️ `sync` works; `sync --locked`, `sync --prune`, `export` and `copy` are on the way | M2 |
 | `search` | ❌ catalog names and links only | M2 |
 | Progress output | ⚠️ `install`, `update` and `outdated` report progress; the other long commands arrive with M2 | M2 |
 | The Omarchy bar widget | ❌ the help text mentions it, the code does not exist yet | M3 |

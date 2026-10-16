@@ -72,6 +72,9 @@ mod support {
         "keep one of the entries",
         "correct line",
         "remove it, or correct its spelling",
+        // sync
+        "pass the file",
+        "check that",
     ];
 
     /// The top-level keys of a JSON object, in document order.

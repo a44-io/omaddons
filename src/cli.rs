@@ -139,6 +139,9 @@ pub enum Command {
     Pin(crate::app::pin::PinArgs),
     /// Let a pinned addon update again
     Unpin(crate::app::pin::UnpinArgs),
+    /// Make every client match addons.toml: install what is missing, set pins and channels
+    #[command(after_long_help = SYNC_HELP)]
+    Sync(crate::app::sync::SyncArgs),
     /// Remove managed addons from one target (undoable)
     Remove(crate::app::remove::RemoveArgs),
     /// Revert the last change (or one by id), SavedVariables included
@@ -324,6 +327,26 @@ fn command_of(argv: &[String]) -> &'static str {
     }
     crate::app::canonical(&path.join(" "))
 }
+
+/// `sync`'s long help: the file it reads.
+const SYNC_HELP: &str = "\
+The file (default: addons.toml in omaddons' config directory):
+
+  schema_version = \"1.0\"
+
+  [family.mainline]               # every live mainline client
+  addons = [\"WeakAuras\", \"DBM\", \"gh:BigWigsMods/BigWigs\"]
+
+  [[family.mainline.addon]]       # options: ref, channel, version, pinned
+  name = \"Plater\"
+  version = \"Plater-v661\"
+  pinned = true
+
+  [target.\"ptr\"]                  # one client by id (the only way to reach a test client)
+  addons = [\"DBM\"]
+
+sync installs what is missing and sets pins and channels; it never updates an installed
+addon (omaddons update does). A second run changes nothing.";
 
 // ---------------------------------------------------------------------------------------
 // Usage errors.

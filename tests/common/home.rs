@@ -109,6 +109,15 @@ impl Home {
         behind
     }
 
+    /// Writes `text` as `<config>/omaddons/addons.toml`, the default desired-state file;
+    /// returns its path.
+    pub fn write_desired(&self, text: &str) -> PathBuf {
+        let path = self.env.config().join("omaddons/addons.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+        path
+    }
+
     /// Builds the custom client `root` and registers it with `omaddons targets add`;
     /// returns its client dir. Build it under this home's tempdir
     /// (`CustomRoot::at(home.env.root().join("pserver"))`).

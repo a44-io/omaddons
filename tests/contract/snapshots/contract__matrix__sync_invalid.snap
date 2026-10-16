@@ -1,0 +1,28 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 110
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "sync",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "desired_state_invalid",
+    "details": {
+      "key": "family.mainline.addons",
+      "line": 2,
+      "path": "<root>/config/omaddons/addons.toml",
+      "reason": "bad_value"
+    },
+    "fix": "correct line 2 of <root>/config/omaddons/addons.toml",
+    "fix_argv": null,
+    "message": "<root>/config/omaddons/addons.toml line 2: family.mainline.addons is a list of names and refs",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
