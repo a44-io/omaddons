@@ -208,6 +208,29 @@ impl Home {
             .unwrap()
     }
 
+    /// Runs `omaddons <args>` with `input` piped to its standard input and extra
+    /// environment variables.
+    pub fn exec_input(&self, args: &[String], extra: &[(&str, &str)], input: &[u8]) -> Run {
+        use std::io::Write as _;
+        use std::process::Stdio;
+        let mut child = self
+            .std_command(args, extra)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Written, then closed by the drop.
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let output = child.wait_with_output().unwrap();
+        Run {
+            argv: args.to_vec(),
+            code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8(output.stdout).unwrap(),
+            stderr: String::from_utf8(output.stderr).unwrap(),
+        }
+    }
+
     fn std_command(&self, args: &[String], extra: &[(&str, &str)]) -> std::process::Command {
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_omaddons"));
         self.env.apply_to(&mut cmd);

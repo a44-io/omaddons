@@ -16,6 +16,7 @@ pub mod git_hosts;
 pub mod github;
 pub mod github_rest;
 pub mod github_search;
+pub mod github_token;
 pub mod local;
 pub mod refs;
 pub mod release_json;
@@ -24,6 +25,7 @@ pub mod url;
 pub mod wowi;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -143,7 +145,22 @@ impl SourceId {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceConfigView {
     disabled: BTreeSet<SourceId>,
+    /// The GitHub token REST requests carry; none unless given.
+    github: TokenSlot,
 }
+
+/// The token a view hands to the GitHub clients; views compare by where it comes from.
+#[derive(Debug, Clone, Default)]
+struct TokenSlot(Option<Arc<github_token::GithubToken>>);
+
+impl PartialEq for TokenSlot {
+    fn eq(&self, other: &Self) -> bool {
+        let source = |s: &Self| s.0.as_ref().map(|t| t.source());
+        source(self) == source(other)
+    }
+}
+
+impl Eq for TokenSlot {}
 
 impl SourceConfigView {
     pub fn from_config(sources: &BTreeMap<String, SourceConfig>) -> Self {
@@ -153,12 +170,28 @@ impl SourceConfigView {
                 .filter(|(_, config)| matches!(config.enabled, Some(false)))
                 .filter_map(|(name, _)| SourceId::from_wire(name))
                 .collect(),
+            github: TokenSlot::default(),
         }
     }
 
     /// Every source on (tests).
     pub fn all_enabled() -> Self {
         Self::default()
+    }
+
+    /// With the command's resolved GitHub token.
+    #[must_use]
+    pub fn with_github_token(mut self, token: Arc<github_token::GithubToken>) -> Self {
+        self.github = TokenSlot(Some(token));
+        self
+    }
+
+    /// The GitHub token (none when the view was given none).
+    pub fn github_token(&self) -> Arc<github_token::GithubToken> {
+        self.github
+            .0
+            .clone()
+            .unwrap_or_else(github_token::GithubToken::none)
     }
 
     pub fn enabled(&self, id: SourceId) -> bool {
@@ -294,7 +327,7 @@ impl SourceRegistry {
         let tukui = std::sync::Arc::new(tukui::TukuiSource::default());
         let shipped: [Box<dyn Source>; 6] = [
             Box::new(github::GithubSource::with_rest(Box::new(
-                github_rest::GithubRest::from_env(),
+                github_rest::GithubRest::with_github_token(config.github_token()),
             ))),
             Box::new(git::GitSource::default()),
             Box::new(local::LocalSource),

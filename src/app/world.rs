@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::cli::Context;
 use crate::discover::cache::{CacheStats, DiscoveryMode, discover_cached};
@@ -15,6 +16,7 @@ use crate::model::{AddonRecord, TargetKey};
 use crate::resolve::catalog::Catalog;
 use crate::rules::RulesTable;
 use crate::sources::SourceConfigView;
+use crate::sources::github_token::GithubToken;
 use crate::state::config::Config;
 use crate::state::paths::Paths;
 use crate::state::records::{TargetRecord, load_record};
@@ -34,6 +36,8 @@ pub struct World {
     pub diagnostics: Vec<String>,
     /// Whether discovery scanned, reused the cache, or wrote it.
     pub discovery: CacheStats,
+    /// The GitHub token REST requests carry, if any.
+    pub github_token: Arc<GithubToken>,
 }
 
 impl World {
@@ -94,6 +98,9 @@ impl World {
         // Unfinished transactions, reported without recovering (D23). A mutating
         // command recovers them under the lock and reports `journal_recovered` instead.
         warnings.extend(crate::engine::journal::pending_warnings(&paths)?);
+        // Resolved once; a `command` credential runs only when REST first needs it.
+        let github_token = GithubToken::resolve(&paths, &config.sources);
+        warnings.extend(github_token.warnings.iter().cloned());
         Ok(Self {
             paths,
             config,
@@ -103,12 +110,15 @@ impl World {
             warnings,
             diagnostics: found.diagnostics,
             discovery,
+            github_token,
         })
     }
 
-    /// Which sources config.toml turns off: every registry a command builds honours it.
+    /// Which sources config.toml turns off, and the GitHub token: every registry a
+    /// command builds honours them.
     pub fn sources(&self) -> SourceConfigView {
         SourceConfigView::from_config(&self.config.sources)
+            .with_github_token(Arc::clone(&self.github_token))
     }
 
     /// The record of every registered discovered target, by target id.

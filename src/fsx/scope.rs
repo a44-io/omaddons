@@ -21,7 +21,7 @@ use crate::state::paths::Paths;
 pub enum Writer {
     /// `config set` and `export --write`.
     Config,
-    /// `auth` (M5).
+    /// `auth github set`, `--from-gh` and `clear`: the credentials directory.
     Auth,
     /// Every mutating command.
     Mutating,

@@ -1,0 +1,20 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 156
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "auth github",
+  "commands": [],
+  "data": {
+    "configured": false,
+    "rate_limit": null,
+    "source": "none"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

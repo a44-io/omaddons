@@ -1,0 +1,23 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 159
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "auth github",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "echo \"$TOKEN\" | omaddons auth github set",
+    "fix_argv": null,
+    "message": "no token was given",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

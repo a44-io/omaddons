@@ -13,13 +13,14 @@
 //! - `OMADDONS_GITHUB_TOKEN`, when set, is sent as a bearer token to the API host only;
 //!   `GITHUB_TOKEN` is never read (D12). The net layer logs no headers.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use jiff::Timestamp;
 use serde::Deserialize;
 
 use super::Wanted;
 use super::github::{GithubRestFallback, RestReason, encode_segment, release_set};
+use super::github_token::{GithubToken, TokenSource};
 use super::release_json;
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::{
@@ -38,7 +39,7 @@ const PER_PAGE: u32 = 20;
 
 /// The REST fallback; one per run, so its rate-limit budget is shared by every fetch.
 pub struct GithubRest {
-    token: Option<String>,
+    token: Arc<GithubToken>,
     budget: Mutex<Budget>,
     /// Held across each request, so the next one sees the budget this one's answer
     /// left (parallel fetches would otherwise all pass an unknown budget).
@@ -48,7 +49,7 @@ pub struct GithubRest {
 impl std::fmt::Debug for GithubRest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GithubRest")
-            .field("token", &self.token.as_ref().map(|_| "<set>"))
+            .field("token", &self.token.source())
             .finish_non_exhaustive()
     }
 }
@@ -85,12 +86,18 @@ impl Budget {
 }
 
 impl GithubRest {
-    /// With the token from the process environment, if any.
-    pub fn from_env() -> Self {
-        Self::with_token(token_from(|name| std::env::var(name).ok()))
+    /// With `token` as if from the environment (tests).
+    pub fn with_token(token: Option<String>) -> Self {
+        let source = if token.is_some() {
+            TokenSource::Env
+        } else {
+            TokenSource::None
+        };
+        Self::with_github_token(GithubToken::fixed(source, token))
     }
 
-    pub fn with_token(token: Option<String>) -> Self {
+    /// With the command's resolved token.
+    pub fn with_github_token(token: Arc<GithubToken>) -> Self {
         Self {
             token,
             budget: Mutex::new(Budget::default()),
@@ -108,8 +115,8 @@ impl GithubRest {
         let mut req = Request::get(format!("{API}{path}"), "rest-releases")
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28");
-        if let Some(token) = &self.token {
-            // ubs:ignore — an outbound request header; token_from rejects CR, LF and other controls
+        if let Ok(Some(token)) = self.token.value() {
+            // ubs:ignore — an outbound request header; github_token::valid rejects controls and spaces
             req = req.header("Authorization", format!("Bearer {token}"));
         }
         req
@@ -123,6 +130,8 @@ impl GithubRest {
             .gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A configured credential that cannot be resolved stops the first REST request.
+        let token = self.token.value()?;
         let budget = self.budget();
         if !budget.allows() {
             let reset = budget.reset.unwrap_or_else(Timestamp::now);
@@ -133,13 +142,16 @@ impl GithubRest {
                     budget.remaining.unwrap_or(0)
                 ),
                 Suggestion::text(format!(
-                    "wait until {reset}, or export {TOKEN_VAR}=<a GitHub token> for 5000 requests an hour"
+                    "wait until {reset}, or store a GitHub token with omaddons auth github set for 5000 requests an hour"
                 )),
             ));
         }
         let resp = http.send(req)?;
         if let Ok(mut b) = self.budget.lock() {
             b.update(&resp);
+        }
+        if resp.status == 401 && token.is_some() {
+            return Err(self.token.rejected());
         }
         Ok(resp)
     }

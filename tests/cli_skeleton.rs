@@ -111,7 +111,8 @@ fn bare_omaddons_prints_help_and_exits_0() {
     assert!(
         r.stdout.contains("\nLook      status")
             && r.stdout.contains("\nChange    install")
-            && r.stdout.contains("\nSetup     targets  config  help\n"),
+            && r.stdout
+                .contains("\nSetup     targets  config  auth  help\n"),
         "one line per group\n{}",
         r.context()
     );

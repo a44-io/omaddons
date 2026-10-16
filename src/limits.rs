@@ -65,6 +65,8 @@ pub const QUICK_DETECTOR_BUDGET: Duration = Duration::from_millis(5);
 pub const DISCOVERY_FILE_MAX_BYTES: u64 = MIB;
 /// How long a credential `command` may run before it is killed.
 pub const CREDENTIAL_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Most bytes `auth github set` reads from standard input for the token's line.
+pub const AUTH_TOKEN_MAX_BYTES: u64 = 4_096;
 /// Most entries (and most candidate facts) the release memo keeps; past it, the oldest
 /// go.
 pub const RELEASE_MEMO_MAX_ENTRIES: usize = 4_096;
@@ -258,6 +260,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "chars",
         None,
         "--reason, in Unicode scalar values",
+    ),
+    limit(
+        "AUTH_TOKEN_MAX_BYTES",
+        LimitValue::Bytes(AUTH_TOKEN_MAX_BYTES),
+        "bytes",
+        None,
+        "auth github set: the token's line on stdin; past it, refused",
     ),
     limit(
         "NET_LOG_MAX_BYTES",
@@ -566,7 +575,8 @@ mod tests {
     const LIMIT_NAMES: &[&str] = &[
         "ARCHIVE_MAX_ENTRIES", "ARCHIVE_MAX_UNCOMPRESSED", "ARCHIVE_MAX_RATIO",
         "ARCHIVE_RATIO_FLOOR", "DOWNLOAD_MAX_BYTES", "LOCK_ACQUIRE_TIMEOUT", "TX_RETENTION", "SNAPSHOT_MAX_BYTES",
-        "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS", "NET_LOG_MAX_BYTES",
+        "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS",
+        "AUTH_TOKEN_MAX_BYTES", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",
         "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",

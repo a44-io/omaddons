@@ -212,7 +212,7 @@ fn the_reserve_stops_the_next_api_request() {
     assert_eq!(err.details["reset_at"], "2027-01-15T08:00:00Z", "{err:?}");
     assert!(err.fix.argv().is_none());
     assert!(
-        err.fix.display().contains("OMADDONS_GITHUB_TOKEN"),
+        err.fix.display().contains("omaddons auth github set"),
         "{}",
         err.fix.display()
     );

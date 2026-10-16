@@ -129,6 +129,12 @@ expression: envelope
         "name": "config"
       },
       {
+        "about": "Store, check or clear the opt-in GitHub token (5,000 REST requests an hour)",
+        "aliases": [],
+        "group": "setup",
+        "name": "auth"
+      },
+      {
         "about": "Show help for omaddons or one command",
         "aliases": [],
         "group": "setup",

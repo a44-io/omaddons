@@ -3,12 +3,13 @@
 //! (`x-ratelimit-resource: search`, 10 requests a minute unauthenticated, 30 with a
 //! token), so it keeps a budget of its own, apart from [`super::github_rest`]'s.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use jiff::Timestamp;
 use serde::Deserialize;
 
-use super::github_rest::{Budget, TOKEN_VAR, token_from};
+use super::github_rest::Budget;
+use super::github_token::{GithubToken, TokenSource};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::Ref;
 use crate::net::{Http, Request};
@@ -27,14 +28,14 @@ pub struct RepoHit {
 
 /// The search client; its budget is the search resource's, never the core API's.
 pub struct GithubSearch {
-    token: Option<String>,
+    token: Arc<GithubToken>,
     budget: Mutex<Budget>,
 }
 
 impl std::fmt::Debug for GithubSearch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GithubSearch")
-            .field("token", &self.token.as_ref().map(|_| "<set>"))
+            .field("token", &self.token.source())
             .finish_non_exhaustive()
     }
 }
@@ -62,12 +63,18 @@ struct Owner {
 }
 
 impl GithubSearch {
-    /// With the token from the process environment, if any.
-    pub fn from_env() -> Self {
-        Self::with_token(token_from(|name| std::env::var(name).ok()))
+    /// With `token` as if from the environment (tests).
+    pub fn with_token(token: Option<String>) -> Self {
+        let source = if token.is_some() {
+            TokenSource::Env
+        } else {
+            TokenSource::None
+        };
+        Self::with_github_token(GithubToken::fixed(source, token))
     }
 
-    pub fn with_token(token: Option<String>) -> Self {
+    /// With the command's resolved token.
+    pub fn with_github_token(token: Arc<GithubToken>) -> Self {
         Self {
             token,
             budget: Mutex::new(Budget::default()),
@@ -92,8 +99,8 @@ impl GithubSearch {
         )
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28");
-        if let Some(token) = &self.token {
-            // ubs:ignore — an outbound request header; token_from rejects CR, LF and other controls
+        if let Ok(Some(token)) = self.token.value() {
+            // ubs:ignore — an outbound request header; github_token::valid rejects controls and spaces
             req = req.header("Authorization", format!("Bearer {token}"));
         }
         req
@@ -102,6 +109,8 @@ impl GithubSearch {
     /// The repositories GitHub finds for `query`, best first. A spent search budget, or a
     /// 403 or 429 with no requests left, is `rate_limited` with its reset time.
     pub fn search(&self, query: &str, http: &dyn Http) -> Result<Vec<RepoHit>> {
+        // A configured credential that cannot be resolved stops the search.
+        let token = self.token.value()?.is_some();
         let budget = self.budget();
         if budget.remaining == Some(0) {
             let reset = budget.reset.unwrap_or_else(Timestamp::now);
@@ -109,7 +118,7 @@ impl GithubSearch {
                 reset,
                 format!("GitHub's search allows no more requests before {reset}"),
                 Suggestion::text(format!(
-                    "wait until {reset}, or export {TOKEN_VAR}=<a GitHub token> for 30 searches a minute"
+                    "wait until {reset}, or store a GitHub token with omaddons auth github set for 30 searches a minute"
                 )),
             ));
         }
@@ -129,6 +138,9 @@ impl GithubSearch {
         };
         if let Ok(mut b) = self.budget.lock() {
             b.update(&resp);
+        }
+        if resp.status == 401 && token {
+            return Err(self.token.rejected());
         }
         let body = resp.error_for_status("GitHub's search API")?.bytes()?;
         let page: Page = serde_json::from_slice(&body).map_err(|e| {

@@ -1,6 +1,6 @@
 ---
 source: src/limits.rs
-assertion_line: 774
+assertion_line: 783
 expression: "(politeness, REGISTRY)"
 ---
 [
@@ -311,6 +311,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "chars",
       "config_key": null,
       "notes": "--reason, in Unicode scalar values"
+    },
+    {
+      "name": "AUTH_TOKEN_MAX_BYTES",
+      "value": {
+        "bytes": 4096
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "auth github set: the token's line on stdin; past it, refused"
     },
     {
       "name": "NET_LOG_MAX_BYTES",

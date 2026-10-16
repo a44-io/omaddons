@@ -2,6 +2,7 @@
 //! rendering happens in `output`.
 
 pub mod adopt;
+pub mod auth;
 pub mod config;
 pub mod copy;
 pub mod drift;
@@ -102,6 +103,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("config get", Group::Setup),
     entry("config set", Group::Setup),
     entry("config path", Group::Setup),
+    entry("auth", Group::Setup),
     entry("help", Group::Setup),
 ];
 
@@ -152,6 +154,7 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
             .action
             .as_ref()
             .map_or("config", config::ConfigAction::command),
+        Some(Command::Auth(_)) => "auth github",
     }
 }
 
@@ -392,6 +395,7 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
             Some(TargetsAction::Rename { id, new }) => out.emit(targets::rename(ctx, id, new)),
             Some(TargetsAction::Default { id }) => out.emit(targets::default(ctx, id)),
         },
+        Some(Command::Auth(args)) => out.emit(auth::run(ctx, args)),
         Some(Command::Config(args)) => {
             use config::ConfigAction;
             match &args.action {

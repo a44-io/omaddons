@@ -408,7 +408,9 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
         if ctx.offline {
             skip(SourceId::Github, SourceSkipReason::Offline, None);
         } else {
-            match GithubSearch::from_env().search(&query, engine.http()) {
+            let search =
+                GithubSearch::with_github_token(std::sync::Arc::clone(&world.github_token));
+            match search.search(&query, engine.http()) {
                 Ok(repos) => hits.extend(repos.into_iter().map(|r| Hit {
                     name: r.name,
                     r#ref: r.r#ref,

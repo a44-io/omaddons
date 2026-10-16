@@ -435,6 +435,35 @@ fn credentials_never_follow_a_redirect_to_another_host() {
 }
 
 #[test]
+fn a_stored_github_token_never_follows_a_redirect_to_another_host() {
+    use crate::sources::github_rest::GithubRest;
+    use crate::sources::github_token::{GithubToken, TokenSource};
+
+    let h = harness(
+        NetConfig::default(),
+        vec![redirect("https://codeload.github.com/o/r"), ok(b"{}")],
+    );
+    let rest = GithubRest::with_github_token(GithubToken::fixed(
+        TokenSource::File,
+        Some("ghp_st0red".into()),
+    ));
+    h.http
+        .send(rest.api_request("/repos/o/r/releases"))
+        .unwrap()
+        .bytes()
+        .unwrap();
+    let seen = h.seen.lock().unwrap();
+    let bearer = |r: &Request| {
+        r.headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v == "Bearer ghp_st0red")
+    };
+    assert!(bearer(&seen[0]), "api.github.com gets the token");
+    assert!(!bearer(&seen[1]), "another host never does");
+    assert!(!log_text(&h.paths).contains("ghp_st0red"));
+}
+
+#[test]
 fn transport_errors_are_logged_without_a_status() {
     let failure = Err(Error::new(
         ErrorCode::Network,

@@ -180,6 +180,11 @@ pub enum Command {
     Targets(crate::app::targets::TargetsArgs),
     /// Show or change config.toml
     Config(crate::app::config::ConfigArgs),
+    /// Store, check or clear the opt-in GitHub token (5,000 REST requests an hour)
+    #[command(
+        after_long_help = "auth github           which token is used, and the hour's REST budget left\necho \"$TOKEN\" | omaddons auth github set\n                      store a token (standard input only, never argv)\nauth github --from-gh store the token gh auth token prints\nauth github clear     forget the stored token\n\nThe main GitHub path needs no token. A token goes only to api.github.com, never\nGITHUB_TOKEN or gh's credentials unless you ask with --from-gh."
+    )]
+    Auth(crate::app::auth::AuthArgs),
 }
 
 /// What every command receives (DEC-2).
@@ -199,6 +204,8 @@ pub struct Context {
     pub started: Instant,
     /// Where long commands report progress (nothing when progress is off).
     pub progress: crate::output::ProgressSink,
+    /// Standard input is a terminal: a command that reads a secret from it refuses.
+    pub stdin_is_tty: bool,
 }
 
 impl Context {
@@ -248,6 +255,7 @@ impl Context {
             target: global.target.clone(),
             started,
             progress: crate::output::ProgressSink::none(),
+            stdin_is_tty,
         })
     }
 }

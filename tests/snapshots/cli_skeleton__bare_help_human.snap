@@ -9,7 +9,7 @@ Usage: omaddons [OPTIONS] <COMMAND>
 
 Look      status  list  outdated  info  search  export  history  net-log
 Change    install  update  pin  unpin  adopt  sync  copy  remove  undo
-Setup     targets  config  help
+Setup     targets  config  auth  help
 
 Start with `omaddons status`. Run `omaddons help <command>` for details; add --json for one JSON envelope on stdout.
 

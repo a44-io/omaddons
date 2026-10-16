@@ -149,6 +149,19 @@ fn update() {
 }
 
 #[test]
+fn auth() {
+    let s = Scene::new();
+    // No token configured: status needs no request offline.
+    let c = s.json(&["auth", "github", "--offline"], 0);
+    insta::assert_json_snapshot!("auth_status_offline", s.stable(&c.envelope));
+    // Standard input is not a terminal here, and empty: nothing to store.
+    let c = s.json(&["auth", "github", "set"], 2);
+    insta::assert_json_snapshot!("auth_set_nothing", s.stable(&c.envelope));
+    let c = s.json(&["auth", "github", "clear", "--from-gh"], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+}
+
+#[test]
 fn copy() {
     let s = Scene::new();
     s.install_foo();
@@ -507,6 +520,7 @@ fn install_of_a_pinned_addon() {
         .stderr
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        // ubs:ignore — comparing event fields, not secrets
         .find(|e| e["event"] == "warning" && e["code"] == "addon_pinned");
     assert_eq!(
         mirrored.map(|e| e["fix_argv"].clone()),
