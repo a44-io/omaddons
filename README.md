@@ -37,7 +37,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated` and `update` work; WoWInterface, Tukui and dependency resolution are on the way. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated`, `update` and `pin` work, and installs bring their catalog dependencies; WoWInterface and Tukui are on the way. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -582,7 +582,7 @@ Install or update addons in one target. Each ref is fetched once and verified ag
 | `--force` | Take over a folder another addon owns, or replace an unmanaged folder (both undoable) |
 | `--strict` | Exit 6 when only some of the addons install |
 | `--refresh` | Fetch every release from its source, never from remembered metadata |
-| `--no-deps` | Accepted; dependencies arrive in milestone 2 |
+| `--no-deps` | Install only the named addons, not the ones their TOCs require (what they require is still checked, and warned about) |
 
 ```bash
 omaddons install dbm bigwigs littlewigs -t retail
@@ -595,6 +595,20 @@ omaddons install gh:someone/addon --file ~/Downloads/addon-1.2.zip -t retail
 ```
 
 Each item's `status` is `installed`, `updated`, `unchanged` or `failed`, or, when only its record changed, `pinned`, `unpinned` or `edited` (with `fields`). A partial result (some addons failed) is still exit 0, with `partial: true` and each failure in `data.items[].error`. With `--strict` it is exit 6. Never-launched clients have no `Interface/AddOns` yet: the first install creates it inside its transaction and reports `creates_addons_dir: true`.
+
+**Dependencies.** What an addon's TOC requires (`## Dependencies`, `## RequiredDeps`) installs in the same transaction when a keyless source ships it (today the catalog, including your `catalog.d` entries), from `default_channel` (never the requesting addon's channel). It is recorded as `reason: dependency` with `required_by`, and `undo` removes it with its requester. `## OptionalDeps` never installs anything. Some required folders install nothing:
+
+- `Blizzard_*` folders and folders of the same archive.
+- A folder that is already present. A managed owner gains the requester in `required_by`. For an unmanaged one, `commands` offers `omaddons list -t <id> --unmanaged`.
+
+`missing_dependency` warns, and the run stays a success, when a required folder:
+
+- cannot be resolved (no keyless source ships it, or several do);
+- has only a build that is out of date for the client;
+- is past a dependency limit (4 rounds, 32 dependencies per client);
+- was not installed because of `--no-deps`.
+
+A dependency that resolves but fails to install makes the run `partial`, with a warning naming it and what requires it. The requesting addon still installs.
 
 ### `update [ADDON]...`
 
@@ -940,7 +954,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `snapshot_cap_exceeded` | protected snapshots alone exceed the size cap |
 | `retention_failed` | pruning failed after commit; the transaction stands |
 | `out_of_date` | the TOC's interface is older than the client's; it loads only with "Load out of date AddOns" enabled |
-| `missing_dependency` | reserved for dependencies (M2) |
+| `missing_dependency` | a folder an installed addon's TOC requires was not installed: no keyless source ships it, several projects do, its only build is out of date, a dependency limit was reached, or `--no-deps`; the fix names a candidate when there is one |
 | `toc_comma_on_legacy` | a comma interface list on a client that reads only the first number |
 | `client_not_launched_since_patch` | `Config.wtf` predates the client's current version |
 | `widget_outdated` | reserved for the widget (M3) |
@@ -1389,7 +1403,7 @@ Journals are recovered by the next command that commits a change, not by read co
 | Capability | State | Planned |
 |---|---|---|
 | WoWInterface, Tukui | ❌ refs parse and are refused | M2 |
-| Dependency resolution (`## Dependencies`) | ❌ collected, not resolved; `--no-deps` does nothing | M2 |
+| Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing; WoWInterface and Tukui lookups, bridge folders and the dependency items in output are on the way | M2 |
 | Adopting addons installed by other managers | ❌ they show as unmanaged | M2 |
 | `addons.toml`, `export`, `sync`, `copy` between clients | ❌ | M2 |
 | `search` | ❌ catalog names and links only | M2 |
