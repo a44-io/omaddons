@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use super::archives::zip_text;
+use super::graph::{Folder, Node, release_graph};
 use super::home::{Home, Run};
 use super::trees::tree_hash;
 
@@ -191,6 +192,74 @@ impl Scene {
             .collect()
     }
 
+    /// `omaddons <args> --json`, which must succeed.
+    pub fn ok(&self, args: &[&str]) -> Value {
+        self.home.run(args).expect(0)
+    }
+
+    /// Each of `names`' folder tree hash, `None` when absent.
+    pub fn folders_of(&self, names: &[&str]) -> BTreeMap<String, Option<String>> {
+        names
+            .iter()
+            .map(|f| {
+                let dir = self.addons().join(f);
+                ((*f).to_owned(), dir.is_dir().then(|| tree_hash(&dir)))
+            })
+            .collect()
+    }
+
+    /// Every record but the recovery command's (`bar`), without what differs between
+    /// two runs of one transaction (`tx_id`, `installed_at`).
+    pub fn view(&self) -> BTreeMap<String, Value> {
+        let Some(file) = self.record_file() else {
+            return BTreeMap::new();
+        };
+        let value: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+        value["addons"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(key, _)| *key != "bar")
+            .map(|(key, record)| {
+                let mut record = record.clone();
+                if let Some(map) = record.as_object_mut() {
+                    map.remove("tx_id");
+                    map.remove("installed_at");
+                }
+                (key.clone(), record)
+            })
+            .collect()
+    }
+
+    /// `<config>/omaddons/catalog.d/50-scene.toml`: one entry per (name, repository
+    /// under `o/`, folders).
+    pub fn catalog(&self, entries: &[(&str, &str, &[&str])]) {
+        let mut text = String::from("schema_version = \"1.0\"\n");
+        for (name, repo, folders) in entries {
+            let folders: Vec<String> = folders.iter().map(|f| format!("{f:?}")).collect();
+            text.push_str(&format!(
+                "\n[[addon]]\nname = {name:?}\nref = \"gh:o/{repo}\"\nfolders = [{}]\n",
+                folders.join(", ")
+            ));
+        }
+        let dir = self.home.env.config().join("omaddons/catalog.d");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("50-scene.toml"), text).unwrap();
+    }
+
+    /// Release `tag` of `gh:o/<repo>`, shipping `folders`, as the latest.
+    pub fn release(&self, repo: &str, tag: &str, folders: &[Folder<'_>]) {
+        let base = format!("https://github.com/o/{repo}");
+        release_graph(
+            &self.home.http,
+            &[Node {
+                base: &base,
+                tag,
+                folders,
+            }],
+        );
+    }
+
     /// The kinds in history.jsonl, oldest first (torn lines skipped).
     pub fn history(&self) -> Vec<String> {
         fs::read_to_string(self.home.state().join("history.jsonl"))
@@ -226,6 +295,113 @@ impl Scene {
             },
             tree_hash(&self.home.client("_retail_")),
         )
+    }
+}
+
+/// A retail folder requiring `deps`.
+pub const fn folder<'a>(name: &'a str, deps: &'a [&'a str]) -> Folder<'a> {
+    Folder {
+        name,
+        interface: "120105",
+        deps,
+        optional: &[],
+    }
+}
+
+fn json_argv(args: &[&str]) -> Vec<String> {
+    args.iter()
+        .copied()
+        .chain(["--json"])
+        .map(str::to_owned)
+        .collect()
+}
+
+/// M2's transaction shapes (H2), each prepared on a fresh scene from release fixtures:
+/// the baseline is installed, and the argv (with `--json`) of the one transaction is
+/// returned. `FOLDERS_*` are the folders each one touches.
+pub mod shapes {
+    use super::super::addons::addon_folder;
+    use super::{Scene, folder, json_argv};
+
+    pub const UPDATE_MANY: &[&str] = &["Alpha", "Beta", "Gamma"];
+    pub const INSTALL_WITH_DEP: &[&str] = &["Little", "Big", "Lib"];
+    pub const SYNC_MIXED: &[&str] = &["Kilo", "Lima", "Mike"];
+    pub const HANDOVER: &[&str] = &["Alpha", "Beta", "Shared"];
+    pub const ADOPT: &[&str] = &["Echo", "Fox"];
+
+    /// Alpha, Beta and Gamma installed at v1, with v2 out for each: one `update` of three.
+    pub fn update_many(s: &Scene) -> Vec<String> {
+        let addons = [("alpha", "Alpha"), ("beta", "Beta"), ("gamma", "Gamma")];
+        for (repo, name) in addons {
+            s.release(repo, "v1", &[folder(name, &[])]);
+        }
+        s.ok(&[
+            "install",
+            "gh:o/alpha",
+            "gh:o/beta",
+            "gh:o/gamma",
+            "-t",
+            "retail",
+        ]);
+        for (repo, name) in addons {
+            s.release(repo, "v2", &[folder(name, &[])]);
+        }
+        json_argv(&["update", "-t", "retail", "--refresh"])
+    }
+
+    /// Little requires Big (not installed: a dependency round installs it) and Lib
+    /// (installed by name: its record gains the requester).
+    pub fn install_with_dep(s: &Scene) -> Vec<String> {
+        s.release("little", "v1", &[folder("Little", &["Big", "Lib"])]);
+        s.release("big", "v1", &[folder("Big", &[])]);
+        s.release("lib", "v1", &[folder("Lib", &[])]);
+        s.catalog(&[
+            ("Little", "little", &["Little"]),
+            ("Big", "big", &["Big"]),
+            ("Lib", "lib", &["Lib"]),
+        ]);
+        s.ok(&["install", "gh:o/lib", "-t", "retail"]);
+        json_argv(&["install", "gh:o/little", "-t", "retail"])
+    }
+
+    /// One `sync --prune`: Kilo installs, Lima (no longer listed) goes, and pinned Mike,
+    /// listed without a version, is unpinned (records only).
+    pub fn sync_mixed(s: &Scene) -> Vec<String> {
+        for (repo, name) in [("kilo", "Kilo"), ("lima", "Lima"), ("mike", "Mike")] {
+            s.release(repo, "v1", &[folder(name, &[])]);
+        }
+        s.ok(&["install", "gh:o/lima", "gh:o/mike", "-t", "retail"]);
+        s.ok(&["pin", "Mike", "-t", "retail"]);
+        s.home
+            .write_desired("[family.mainline]\naddons = [\"gh:o/kilo\", \"gh:o/mike\"]\n");
+        json_argv(&["sync", "--prune", "-t", "retail"])
+    }
+
+    /// Beta v1 ships Shared, which Beta v2 drops and Alpha v2 ships: one `update`, in
+    /// which Alpha (the claimant) is planned first.
+    pub fn handover(s: &Scene) -> Vec<String> {
+        s.release("alpha", "v1", &[folder("Alpha", &[])]);
+        s.release("beta", "v1", &[folder("Beta", &[]), folder("Shared", &[])]);
+        s.ok(&["install", "gh:o/alpha", "gh:o/beta", "-t", "retail"]);
+        s.release(
+            "alpha",
+            "v2",
+            &[folder("Alpha", &[]), folder("Shared", &[])],
+        );
+        s.release("beta", "v2", &[folder("Beta", &[])]);
+        json_argv(&["update", "-t", "retail", "--refresh"])
+    }
+
+    /// Echo and Fox unpacked by hand, both in the catalog: one records-only
+    /// `adopt --apply`.
+    pub fn adopt(s: &Scene) -> Vec<String> {
+        for name in ["Echo", "Fox"] {
+            let toc = format!("{name}.toc");
+            let text = "## Interface: 120105\n## Version: 1\n";
+            addon_folder(&s.addons(), name, &[(toc.as_str(), text)], &[]);
+        }
+        s.catalog(&[("Echo", "echo", &["Echo"]), ("Fox", "fox", &["Fox"])]);
+        json_argv(&["adopt", "--apply", "-t", "retail", "--no-verify"])
     }
 }
 

@@ -9,7 +9,7 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 use common::archives::zip_text;
-use common::engine::{Scene, warning_codes};
+use common::engine::{Scene, shapes, warning_codes};
 use common::home::{Run, wait};
 use serde_json::Value;
 use support::{poll, status};
@@ -371,6 +371,160 @@ fn pin_races_an_install(sleeper: Sleeper) {
 fn a_pin_and_an_install_of_another_addon_both_commit_either_way() {
     pin_races_an_install(Sleeper::Pin);
     pin_races_an_install(Sleeper::Install);
+}
+
+/// Every code an envelope's error and items' errors carry.
+fn error_codes(envelope: &Value) -> Vec<String> {
+    let top = envelope["error"]["code"].as_str().map(str::to_owned);
+    let items = envelope["data"]["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|t| t["items"].as_array().into_iter().flatten())
+        .filter_map(|i| i["error"]["code"].as_str().map(str::to_owned));
+    top.into_iter().chain(items).collect()
+}
+
+#[test]
+fn an_update_and_an_install_of_another_addon_both_commit() {
+    let s = Scene::new();
+    let update = shapes::update_many(&s);
+    let update: Vec<&str> = update.iter().map(String::as_str).collect();
+    let inflight = s.home.state().join("inflight");
+    let child = s.home.spawn(
+        &update[..update.len() - 1],
+        &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:1500")],
+    );
+    poll("the update to plan", || {
+        fs::read_dir(&inflight).is_ok_and(|mut d| d.next().is_some())
+    });
+    let install = s.install("gh:o/bar", "bar");
+    let updated = wait(child, &update);
+    let envelope = updated.expect(0);
+    assert!(
+        envelope["data"]["targets"][0]["tx"].is_string() && install["data"]["tx"].is_string(),
+        "{}",
+        updated.context()
+    );
+    let mut kinds = s.history();
+    kinds.sort();
+    assert_eq!(
+        kinds,
+        ["install", "install", "update"],
+        "baseline, Bar, the update"
+    );
+    assert!(s.view().values().all(|r| r["version"] == "v2"));
+    assert!(!s.record("bar").is_null() && s.journals().is_empty());
+}
+
+#[test]
+fn an_adoption_racing_an_install_of_its_folder_ends_clean() {
+    let s = Scene::new();
+    let adopt = shapes::adopt(&s);
+    let adopt: Vec<&str> = adopt.iter().map(String::as_str).collect();
+    s.release("echo", "v2", &[common::engine::folder("Echo", &[])]);
+    let inflight = s.home.state().join("inflight");
+    let child = s.home.spawn(
+        &adopt[..adopt.len() - 1],
+        &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:1500")],
+    );
+    poll("the adoption to plan", || {
+        fs::read_dir(&inflight).is_ok_and(|mut d| d.next().is_some())
+    });
+    // The install replaces Echo's files (it is unmanaged until the adoption commits).
+    let installed = s
+        .home
+        .run(&["install", "gh:o/echo", "-t", "retail", "--force"]);
+    installed.expect(0);
+    let adopted = wait(child, &adopt);
+    let codes = error_codes(&adopted.envelope());
+    assert!(
+        codes
+            .iter()
+            .any(|c| c == "plan_stale" || c == "ownership_conflict"),
+        "the adoption saw the change\n{}",
+        adopted.context()
+    );
+    // Nothing half-applied: Echo has one owner, whose index matches its files.
+    let owners: Vec<String> = s
+        .view()
+        .into_iter()
+        .filter(|(_, r)| {
+            r["folders"]
+                .as_array()
+                .is_some_and(|f| f.iter().any(|x| x == "Echo"))
+        })
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(owners, ["echo"], "{}", adopted.context());
+    assert_eq!(s.record("echo")["version"], "v2");
+    let status = status(&s);
+    assert_eq!(
+        status["data"]["targets"][0]["drift"],
+        serde_json::json!([]),
+        "{status}"
+    );
+    // A stale adoption records nothing of its target: Fox stays unmanaged.
+    assert_eq!(codes, ["plan_stale"], "{}", adopted.context());
+    assert!(!s.history().contains(&"adopt".to_owned()));
+    assert!(!s.view().contains_key("fox"), "{}", adopted.context());
+    assert!(s.journals().is_empty());
+}
+
+#[test]
+fn two_outdated_runs_at_once_leave_a_valid_memo() {
+    let s = Scene::new();
+    shapes::update_many(&s);
+    let argv = ["outdated", "-t", "retail", "--refresh"];
+    let a = s.home.spawn(&argv, &[]);
+    let b = s.home.spawn(&argv, &[]);
+    for r in [wait(a, &argv), wait(b, &argv)] {
+        assert_eq!(r.code, 0, "{}", r.context());
+    }
+    let memo: Value = serde_json::from_slice(&fs::read(s.home.memo()).unwrap()).unwrap();
+    assert_eq!(memo["schema_version"], "1.0", "{memo}");
+    let (_, problem) = omaddons::state::memo::load(&common::http::paths(&s.home.env));
+    assert!(problem.is_none(), "{problem:?}");
+}
+
+#[test]
+fn multi_addon_commits_hold_the_lock_under_50_ms() {
+    let mut held: Vec<(String, u64)> = Vec::new();
+    for (what, prepare) in [
+        (
+            "update of three",
+            shapes::update_many as fn(&Scene) -> Vec<String>,
+        ),
+        ("install with dependencies", shapes::install_with_dep),
+        ("mixed sync", shapes::sync_mixed),
+        ("handover", shapes::handover),
+    ] {
+        let s = Scene::new();
+        let mut args = prepare(&s);
+        args.push("-v".to_owned());
+        let r = s.run(&args, "");
+        assert_eq!(r.code, 0, "{}", r.context());
+        let ms = r
+            .stderr
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|v| v["message"].as_str().map(str::to_owned))
+            .find_map(|m| {
+                m.strip_prefix("lock released: ")
+                    .and_then(|rest| rest.rsplit("lock_held_ms ").next())
+                    .and_then(|n| n.trim().parse::<u64>().ok())
+            });
+        assert!(ms.is_some(), "{what}: no lock log line\n{}", r.context());
+        held.extend(ms.map(|ms| (what.to_owned(), ms)));
+    }
+    let _ = std::io::Write::write_fmt(
+        &mut std::io::stderr(),
+        format_args!("lock_held_ms of multi-addon commits: {held:?}\n"),
+    );
+    assert!(
+        held.iter().all(|(_, ms)| *ms < 50),
+        "lock hold times {held:?}"
+    );
 }
 
 #[test]
