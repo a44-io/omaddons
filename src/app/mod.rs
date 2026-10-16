@@ -3,6 +3,7 @@
 
 pub mod adopt;
 pub mod config;
+pub mod drift;
 pub mod engine;
 pub mod export;
 pub mod help;

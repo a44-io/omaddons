@@ -17,11 +17,13 @@ use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::drift::{DriftItem, needs_reinstall, reinstall_hint};
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::cache::{CacheStats, DiscoveryMode};
 use crate::discover::running::detect_running;
+use crate::drift::{AddonDrift, DriftMode, DriftState};
 use crate::engine::journal;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::fsx::{LockState, probe_global};
@@ -49,7 +51,15 @@ pub struct StatusArgs {
     /// Exit 6 when anything needs attention
     #[arg(long)]
     pub check: bool,
+    /// Re-hash every managed file, not only those whose size or time changed
+    #[arg(long, conflicts_with = "cached")]
+    pub deep: bool,
 }
+
+/// Reinstall recommendations at most, across targets.
+const REINSTALL_HINTS_MAX: usize = 5;
+/// Changed paths a human line names per addon, unless `-v`.
+const DRIFT_PATHS_SHOWN: usize = 5;
 
 /// `status`'s data.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -86,6 +96,9 @@ pub struct StatusTarget {
     pub addons: AddonCounts,
     /// Pending updates, from the release memo (no request).
     pub updates: UpdateCounts,
+    /// Managed addons whose files changed on disk, whose folders are gone, or that are
+    /// not indexed, by name ignoring case (`--cached`: missing folders only).
+    pub drift: Vec<DriftItem>,
     /// Unmanaged folders a catalog entry not installed here names.
     pub adoptable: usize,
     pub attention: Vec<Attention>,
@@ -135,6 +148,10 @@ pub enum Attention {
     TargetMissing,
     /// An addon lost a folder to another (`--force`).
     AddonDegraded,
+    /// A managed addon's files changed on disk.
+    AddonModified,
+    /// A managed addon's folder is gone (or replaced by a symlink).
+    AddonFolderMissing,
 }
 
 /// Unfinished transactions.
@@ -154,6 +171,8 @@ pub struct StatusOutcome {
     check: bool,
     /// The first attention item's fix, for `--check`.
     first_fix: Option<(String, Suggestion)>,
+    /// One human line per drifted addon, with its paths.
+    drift_lines: Vec<String>,
     /// What discovery did, for the `-v` log line.
     pub discovery: CacheStats,
     /// For `-v` log lines (a release memo that could not be read).
@@ -225,7 +244,8 @@ impl Outcome for StatusOutcome {
                     counts.push_str(&format!(" · {} adoptable", t.adoptable));
                 }
                 if !t.attention.is_empty() {
-                    let names: Vec<String> = t.attention.iter().map(|a| wire(*a)).collect();
+                    let names: Vec<String> =
+                        t.attention.iter().map(|a| attention_text(*a, t)).collect();
                     counts.push_str(&format!(" · attention: {}", names.join(", ")));
                 }
                 vec![
@@ -238,7 +258,76 @@ impl Outcome for StatusOutcome {
                 ]
             })
             .collect();
-        write!(w, "{}", table(&rows))
+        write!(w, "{}", table(&rows))?;
+        for line in &self.drift_lines {
+            writeln!(w, "{line}")?;
+        }
+        for c in &self.commands {
+            writeln!(w, "Next: {}", c.command())?;
+        }
+        Ok(())
+    }
+}
+
+/// An attention item in the target row: drift as a count (`1 addon modified`), the
+/// rest by wire name.
+fn attention_text(a: Attention, t: &StatusTarget) -> String {
+    let count = |state: DriftState| t.drift.iter().filter(|d| d.state == state).count();
+    let addons = |n: usize| if n == 1 { "addon" } else { "addons" };
+    match a {
+        Attention::AddonModified => {
+            let n = count(DriftState::Modified);
+            format!("{n} {} modified", addons(n))
+        }
+        Attention::AddonFolderMissing => {
+            let n = count(DriftState::Missing);
+            format!("{n} {} missing folders", addons(n))
+        }
+        _ => wire(a),
+    }
+}
+
+/// `  Plater on retail: 2 files changed (Plater/Plater.lua, …)`: what drifted, with at
+/// most `DRIFT_PATHS_SHOWN` paths unless `verbose`.
+fn drift_line(target: &str, addon: &AddonDrift, verbose: bool) -> String {
+    let name = &addon.addon;
+    match addon.state {
+        DriftState::Missing => {
+            let gone: Vec<&str> = addon
+                .folders
+                .iter()
+                .filter(|f| !f.present)
+                .map(|f| f.folder.as_str())
+                .collect();
+            format!("  {name} on {target}: missing {}", gone.join(", "))
+        }
+        DriftState::Unindexed => format!("  {name} on {target}: not indexed, so not checked"),
+        DriftState::Modified | DriftState::Clean => {
+            let n = super::drift::files(addon);
+            let mut paths: Vec<String> = addon
+                .folders
+                .iter()
+                .flat_map(|f| {
+                    f.modified
+                        .iter()
+                        .chain(&f.deleted)
+                        .chain(&f.added)
+                        .map(move |p| format!("{}/{p}", f.folder.as_str()))
+                })
+                .collect();
+            paths.sort();
+            let more = if !verbose && paths.len() > DRIFT_PATHS_SHOWN {
+                paths.truncate(DRIFT_PATHS_SHOWN);
+                ", …"
+            } else {
+                ""
+            };
+            let files = if n == 1 { "file" } else { "files" };
+            format!(
+                "  {name} on {target}: {n} {files} changed ({}{more})",
+                paths.join(", ")
+            )
+        }
     }
 }
 
@@ -272,6 +361,15 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     let now = Timestamp::now();
     let mut catalog: Option<Catalog> = None;
     let mut check_due = false;
+    // `--cached` stays a presence check (M2-D15); plain `status` checks stat-first.
+    let drift_mode = if args.cached {
+        DriftMode::Presence
+    } else if args.deep {
+        DriftMode::Deep
+    } else {
+        DriftMode::Stat
+    };
+    let mut drift_lines = Vec::new();
 
     let mut targets = Vec::new();
     for d in &selected {
@@ -306,6 +404,25 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         if addons.degraded > 0 {
             attention.push(Attention::AddonDegraded);
         }
+        let report = record
+            .as_ref()
+            .map(|l| super::drift::report(&world.paths, t, &l.value, drift_mode));
+        let drifted: Vec<&AddonDrift> = report
+            .iter()
+            .flat_map(|r| &r.addons)
+            .filter(|a| match drift_mode {
+                DriftMode::Presence => a.state == DriftState::Missing,
+                _ => a.state != DriftState::Clean,
+            })
+            .collect();
+        if drifted.iter().any(|a| a.state == DriftState::Modified) {
+            attention.push(Attention::AddonModified);
+        }
+        if drifted.iter().any(|a| a.state == DriftState::Missing) {
+            attention.push(Attention::AddonFolderMissing);
+        }
+        drift_lines.extend(drifted.iter().map(|a| drift_line(&t.id, a, verbose)));
+        let drift: Vec<DriftItem> = drifted.iter().map(|a| DriftItem::of(a, verbose)).collect();
         let (updates, due) = record
             .as_ref()
             .map_or((UpdateCounts::default(), false), |l| {
@@ -341,6 +458,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             folders: inv.counts,
             addons,
             updates,
+            drift,
             adoptable,
             attention,
             client_dir: verbose.then(|| t.client_dir.clone()),
@@ -376,8 +494,9 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             missing: true,
             folders: Counts::default(),
             addons: counts(&record),
-            // A missing client's fix is `targets rm`, not an update.
+            // A missing client's fix is `targets rm`, not an update or a reinstall.
             updates: UpdateCounts::default(),
+            drift: Vec::new(),
             adoptable: 0,
             attention,
             client_dir: verbose.then(|| e.client_dir.clone()),
@@ -406,6 +525,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         commands,
         check: args.check,
         first_fix,
+        drift_lines,
         discovery: world.discovery,
         notes,
     })
@@ -545,7 +665,16 @@ fn recommendations(
     check_due: bool,
 ) -> (Vec<CommandHint>, Option<(String, Suggestion)>) {
     let (fixes, first) = attention_fixes(targets);
-    let mut commands = Vec::new();
+    let mut commands: Vec<CommandHint> = targets
+        .iter()
+        .flat_map(|t| {
+            t.drift
+                .iter()
+                .filter(|d| needs_reinstall(d.state))
+                .map(|d| reinstall_hint(&d.addon, &t.id))
+        })
+        .take(REINSTALL_HINTS_MAX)
+        .collect();
     let with_updates: Vec<&StatusTarget> =
         targets.iter().filter(|t| t.updates.available > 0).collect();
     match with_updates.as_slice() {
@@ -609,6 +738,25 @@ fn attention_fixes(targets: &[StatusTarget]) -> (Vec<CommandHint>, Option<(Strin
                         format!("{} has {} degraded addon(s)", t.id, t.addons.degraded),
                         Suggestion::command(argv),
                         Some(CommandHint::new("inspect", argv, false)),
+                    )
+                }
+                // Their `reinstall` hints come first among the recommendations.
+                Attention::AddonModified | Attention::AddonFolderMissing => {
+                    let (state, what) = if matches!(a, Attention::AddonModified) {
+                        (DriftState::Modified, "modified")
+                    } else {
+                        (DriftState::Missing, "missing folders")
+                    };
+                    let drifted: Vec<&DriftItem> =
+                        t.drift.iter().filter(|d| d.state == state).collect();
+                    let fix = drifted.first().map_or_else(
+                        || Suggestion::command(["omaddons", "status", "-t", t.id.as_str()]),
+                        |d| Suggestion::command(reinstall_hint(&d.addon, &t.id).argv().to_vec()),
+                    );
+                    (
+                        format!("{}: {} addon(s) {what}", t.id, drifted.len()),
+                        fix,
+                        None,
                     )
                 }
             };
@@ -703,6 +851,7 @@ mod tests {
                 available,
                 ..UpdateCounts::default()
             },
+            drift: Vec::new(),
             adoptable: 0,
             attention: attention.to_vec(),
             client_dir: None,
@@ -750,5 +899,39 @@ mod tests {
         );
         let (commands, first) = recommendations(&[target("retail", 0, &[], 0)], false);
         assert!(commands.is_empty() && first.is_none());
+    }
+
+    #[test]
+    fn reinstalls_come_first_and_at_most_five() {
+        let item = |addon: &str, state| DriftItem {
+            addon: addon.to_owned(),
+            state,
+            files: 1,
+            folders: None,
+        };
+        let mut retail = target("retail", 1, &[Attention::AddonModified], 0);
+        retail.drift = (0..6)
+            .map(|i| item(&format!("A{i}"), DriftState::Modified))
+            .chain([item("Z", DriftState::Unindexed)])
+            .collect();
+        let (commands, first) = recommendations(&[retail], false);
+        assert_eq!(
+            actions(&commands),
+            [
+                "reinstall",
+                "reinstall",
+                "reinstall",
+                "reinstall",
+                "reinstall",
+                "update"
+            ]
+        );
+        assert_eq!(
+            commands[0].argv(),
+            ["omaddons", "install", "A0", "-t", "retail", "--reinstall"]
+        );
+        let (message, fix) = first.unwrap();
+        assert_eq!(message, "retail: 6 addon(s) modified");
+        assert_eq!(fix.argv().unwrap(), commands[0].argv());
     }
 }

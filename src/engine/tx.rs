@@ -804,6 +804,21 @@ fn locked(
         },
     };
     warnings.extend(swap_warnings);
+    // Files changed by hand were replaced: undoing this transaction brings them back
+    // (M2-D17); `-v` names where its snapshot keeps them.
+    let snapshots = ClientPaths::new(&target.client_dir).snapshots(tx);
+    for work in &works {
+        if let Some(changes) = work.local_changes() {
+            warnings.push(plan::local_changes_warning(&work.addon, changes, Some(*tx)));
+            for folder in &changes.folders {
+                notes.push(format!(
+                    "{}'s replaced files are kept in {}",
+                    work.addon,
+                    snapshots.join("AddOns").join(folder.as_str()).display()
+                ));
+            }
+        }
+    }
     let held = millis(&guard);
     drop(guard);
     failpoint::hit("engine.unlocked").map_err(fail)?;

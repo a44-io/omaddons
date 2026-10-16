@@ -645,6 +645,47 @@ pub struct FolderWork {
     pub handed_over: Vec<FolderName>,
     /// What the installed folders require (empty for removes).
     pub deps: DepFacts,
+    /// Files of the folders it replaces that changed on disk since they were indexed,
+    /// found at plan time (M2-D17): the commit warns `local_changes_replaced`.
+    pub local_changes: Option<LocalChanges>,
+}
+
+/// Changed files of the folders a work replaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalChanges {
+    /// `Folder/relative/path`, sorted, at most `LOCAL_CHANGES_SHOWN`.
+    pub paths: Vec<String>,
+    /// Every changed file: modified, deleted or added.
+    pub count: u64,
+    /// The replaced folders that changed, by key.
+    pub folders: Vec<FolderName>,
+}
+
+/// Changed paths a `local_changes_replaced` warning names.
+const LOCAL_CHANGES_SHOWN: usize = 10;
+
+/// `local_changes_replaced` for `addon`: its replaced folders held files changed by
+/// hand. Committed as `tx`, the fix is `omaddons undo <tx>`; planned only (a dry run),
+/// where the files are kept.
+pub fn local_changes_warning(addon: &str, changes: &LocalChanges, tx: Option<TxId>) -> Warning {
+    let n = changes.count;
+    let files = if n == 1 { "file" } else { "files" };
+    let more = if (changes.paths.len() as u64) < n {
+        ", …"
+    } else {
+        ""
+    };
+    let message = format!(
+        "{addon}: replaced {n} locally changed {files} ({}{more})",
+        changes.paths.join(", ")
+    );
+    let fix = match tx {
+        Some(tx) => Suggestion::command(["omaddons".to_owned(), "undo".to_owned(), tx.to_string()]),
+        None => Suggestion::text(
+            "the replaced files are kept in the transaction snapshot; `omaddons undo` restores them",
+        ),
+    };
+    Warning::new(WarningCode::LocalChangesReplaced, message).with_fix(fix)
 }
 
 /// A change to the record alone.
@@ -694,6 +735,14 @@ impl AddonWork {
         match &self.mode {
             WorkMode::Folders(f) => &f.swap,
             WorkMode::Records(_) => &[],
+        }
+    }
+
+    /// Files changed by hand in the folders it replaces.
+    pub fn local_changes(&self) -> Option<&LocalChanges> {
+        match &self.mode {
+            WorkMode::Folders(f) => f.local_changes.as_ref(),
+            WorkMode::Records(_) => None,
         }
     }
 
@@ -1988,6 +2037,16 @@ pub fn rejudge(
             )?;
             if let WorkMode::Folders(f) = &mut rebuilt.work.mode {
                 f.deps = folders.deps.clone();
+                // What planning found changed, while the work still replaces it.
+                let replaced = |folder: &FolderName| {
+                    f.swap.iter().any(
+                        |op| matches!(op, SwapOp::Replace { live, .. } if live.key() == folder.key()),
+                    )
+                };
+                f.local_changes = folders
+                    .local_changes
+                    .clone()
+                    .filter(|c| c.folders.iter().any(replaced));
             }
             Ok(Planned::change(rebuilt))
         }
@@ -2737,8 +2796,64 @@ impl TargetPlanner<'_> {
         )?;
         if let WorkMode::Folders(f) = &mut planned.work.mode {
             f.deps = b.deps;
+            // Here, never in `build_install`: the walk stays out of the commit window
+            // that `rejudge` holds the lock for.
+            f.local_changes = self.local_changes(&f.swap);
+            if let Some(changes) = &f.local_changes {
+                planned
+                    .warnings
+                    .push(local_changes_warning(&planned.work.addon, changes, None));
+            }
         }
         Ok(planned)
+    }
+
+    /// The files of the folders `swap` replaces that changed on disk since they were
+    /// indexed (a stat-first drift check of each); `None` when none did. An unindexed
+    /// folder has nothing to compare.
+    fn local_changes(&self, swap: &[SwapOp]) -> Option<LocalChanges> {
+        let index = self.index?;
+        let addons = self.target.addons_dir();
+        let mut changes = LocalChanges {
+            paths: Vec::new(),
+            count: 0,
+            folders: Vec::new(),
+        };
+        for op in swap {
+            let SwapOp::Replace { live, .. } = op else {
+                continue;
+            };
+            let Some(entry) = index.folders.get(live.key()) else {
+                continue;
+            };
+            let walked = crate::drift::check_folder(
+                &addons,
+                live,
+                Some(entry),
+                index.recorded_at_ns(entry),
+                crate::drift::DriftMode::Stat,
+            );
+            let d = walked.drift;
+            if d.changed == 0 {
+                continue;
+            }
+            changes.count += d.changed;
+            changes.folders.push(live.clone());
+            changes.paths.extend(
+                d.modified
+                    .iter()
+                    .chain(&d.deleted)
+                    .chain(&d.added)
+                    .map(|p| format!("{}/{p}", live.as_str())),
+            );
+        }
+        if changes.count == 0 {
+            return None;
+        }
+        changes.paths.sort();
+        changes.paths.truncate(LOCAL_CHANGES_SHOWN);
+        changes.folders.sort_by(|a, b| a.key().cmp(b.key()));
+        Some(changes)
     }
 
     /// `folder` has an entry in AddOns.
@@ -2957,6 +3072,7 @@ impl TargetPlanner<'_> {
                     edits: edits.to_vec(),
                     handed_over: Vec::new(),
                     deps: DepFacts::default(),
+                    local_changes: None,
                 })),
             },
         })
@@ -3018,6 +3134,7 @@ impl TargetPlanner<'_> {
                     edits: Vec::new(),
                     handed_over: Vec::new(),
                     deps: DepFacts::default(),
+                    local_changes: None,
                 })),
             },
         })

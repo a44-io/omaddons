@@ -62,6 +62,8 @@ mod support {
         "use an archive built for this client",
         // adopt: the ref to fill in
         "omaddons adopt --ref <ref>",
+        // local_changes_replaced under --dry-run
+        "the replaced files are kept in the transaction snapshot",
         // missing_dependency
         "no keyless source ships",
         "install the one you use",

@@ -77,6 +77,14 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
             addon.r#ref = r.clone();
             addon.release_id = set.releases.last().map(|rel| rel.release_id.clone());
             addon.folders = vec![FolderName::try_from(addon.name.clone()).unwrap()];
+            // On disk too: `--cached` checks each managed folder's presence.
+            let folder = home.addons("_retail_").join(&addon.name);
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(
+                folder.join(format!("{}.toc", addon.name)),
+                toc("120105", &[]),
+            )
+            .unwrap();
             record.addons.insert(
                 omaddons::state::records::TargetRecord::addon_key(&addon.name),
                 addon,
@@ -101,6 +109,11 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
     let check = home.run(&["status", "--cached"]).expect(0);
     let updates = &check["data"]["targets"][0]["updates"];
     assert!(updates["checked_at"].is_string(), "{updates}");
+    assert_eq!(
+        check["data"]["targets"][0]["drift"],
+        serde_json::json!([]),
+        "every managed folder is present"
+    );
     let mut times: Vec<Duration> = (0..21)
         .map(|_| {
             let start = Instant::now();

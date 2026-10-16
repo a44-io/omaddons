@@ -1,6 +1,7 @@
-//! `omaddons list [-t T] [--unmanaged] [--protected]`: the managed addons of each target
-//! and counts of every folder class; on request the unmanaged (plus linked and invalid)
-//! and protected folders. Read-only: no lock, no writes, no network.
+//! `omaddons list [-t T] [--unmanaged] [--protected] [--deep]`: the managed addons of
+//! each target and counts of every folder class; on request the unmanaged (plus linked
+//! and invalid) and protected folders. With `-v` (stat-first) or `--deep` (every file
+//! re-hashed), each addon's drift. Read-only: no lock, no writes, no network.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -8,10 +9,12 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::drift::DriftSummary;
 use super::status::Remembered;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
+use crate::drift::{DriftMode, DriftState};
 use crate::error::{Result, Warning};
 use crate::inventory::{Depth, FolderClass, FolderEntry, Inventory, inventory};
 use crate::model::{AddonRecord, AddonState, Channel, TargetKey, VersionConfidence};
@@ -30,6 +33,9 @@ pub struct ListArgs {
     /// Also list protected (Blizzard_*) folders
     #[arg(long)]
     pub protected: bool,
+    /// Check each managed addon's files by content, not size and time (shows drift)
+    #[arg(long)]
+    pub deep: bool,
 }
 
 /// `list`'s data.
@@ -80,6 +86,9 @@ pub struct ListAddon {
     pub folders: Folders,
     /// Record folders that are not on disk.
     pub missing_folders: Vec<String>,
+    /// `-v` or `--deep`: whether its files changed on disk, with paths under `-v`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drift: Option<DriftSummary>,
     /// `-v`: each folder's TOC.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folder_tocs: Option<Vec<FolderInfo>>,
@@ -203,7 +212,7 @@ pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
             .as_ref()
             .map(|r| remembered.statuses(&d.target, r, &world.table))
             .unwrap_or_default();
-        targets.push(list_target(
+        let mut listed = list_target(
             d,
             record
                 .as_ref()
@@ -214,7 +223,24 @@ pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
             args,
             verbose,
             &world.table,
-        ));
+        );
+        // Drift only on request: a plain `list` stays as cheap as the inventory.
+        if let (true, Some(record)) = (verbose || args.deep, &record) {
+            let mode = if args.deep {
+                DriftMode::Deep
+            } else {
+                DriftMode::Stat
+            };
+            let report = super::drift::report(&world.paths, &d.target, record, mode);
+            for a in &mut listed.addons {
+                a.drift = report
+                    .addons
+                    .iter()
+                    .find(|r| r.addon.eq_ignore_ascii_case(&a.name))
+                    .map(|r| DriftSummary::of(r, verbose));
+            }
+        }
+        targets.push(listed);
     }
     Ok(ListOutcome {
         data: ListData { targets },
@@ -271,6 +297,7 @@ fn list_target(
                     .filter(|f| on_disk(f.key()).is_none())
                     .map(|f| f.as_str().to_owned())
                     .collect(),
+                drift: None,
                 folder_tocs: verbose
                     .then(|| keys.iter().filter_map(|k| on_disk(k)).map(info).collect()),
             }
@@ -386,6 +413,14 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
             }
             if !a.missing_folders.is_empty() {
                 flags.push(style.warn(&format!("missing {}", a.missing_folders.join(", "))));
+            }
+            match a.drift.as_ref().map(|d| (d.state, d.files)) {
+                Some((DriftState::Modified, n)) => {
+                    let files = if n == 1 { "file" } else { "files" };
+                    flags.push(style.warn(&format!("{n} {files} changed")));
+                }
+                Some((DriftState::Unindexed, _)) => flags.push("not indexed".into()),
+                _ => {}
             }
             // The newest known release; blank when unchecked or static.
             let latest = a.latest.version.clone().unwrap_or_default();

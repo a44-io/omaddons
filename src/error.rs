@@ -279,6 +279,8 @@ warning_codes! {
     ExportMissingTarget         = "export_missing_target";
     /// `export`: an addon from a local file or directory was not exported.
     ExportLocalSource           = "export_local_source";
+    /// Files of a replaced folder had changed on disk; undo brings them back.
+    LocalChangesReplaced        = "local_changes_replaced";
 }
 
 impl fmt::Display for WarningCode {
@@ -760,7 +762,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 29);
+        assert_eq!(WarningCode::ALL.len(), 30);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

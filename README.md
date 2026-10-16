@@ -568,22 +568,25 @@ Every global option works before or after the command, except `-V`/`--version`, 
 
 ### `status`
 
-Triage: every client, its addon and folder counts, whether it is running, and what needs attention (a missing client, a pending journal, a degraded addon, a newer state version).
+Triage: every client, its addon and folder counts, whether it is running, and what needs attention (a missing client, a pending journal, a degraded addon, a newer state version, managed files changed on disk or managed folders gone).
 
 ```bash
-omaddons status               # scan, then report
+omaddons status               # scan, then report (managed files checked stat-first)
 omaddons status --cached      # no scan: the cached clients, re-checked on disk (fast; the widget's view)
+omaddons status --deep        # re-hash every managed file, not only those whose size or time changed
 omaddons status --check       # exit 6 when anything needs attention
-omaddons status -v --json     # adds client_dir, install_root and exe_name
+omaddons status -v --json     # adds client_dir, install_root and exe_name, and changed paths
 ```
 
 Each client also shows:
 
 - **`updates`.** Its pending update counts (`available`, `pinned`, `blocked`, `failed`, `unchecked`) and `checked_at`, the oldest check. They come from what earlier `outdated`, `update` and `install` runs remembered, never from a request, so `status` stays offline. `stale` is true when that check is older than `check_interval_hours` (default 6).
+- **`drift`.** Each managed addon whose files changed on disk since omaddons installed them (`modified`), whose folder is gone or replaced by a symlink (`missing`), or that has no file index to check against (`unindexed`), with its changed-file count (`files`; the paths with `-v`). A file whose size or time changed is re-hashed, so one merely touched is not reported; `--deep` re-hashes every file. `--cached` checks only that the folders are there. Drift is computed on every run and never stored. `modified` raises the attention `addon_modified`, `missing` raises `addon_folder_missing`.
 - **`adoptable`.** How many unmanaged folders a catalog entry names that is not installed on that client.
 
 Pending updates never count as attention: `status --check` stays a health check, and `outdated --check` is the update check. The recommendations:
 
+- `omaddons install <addon> -t <id> --reinstall`, for each modified or missing addon (at most 5);
 - `omaddons update`, or `-t <id>` when only one client has updates;
 - `omaddons outdated`, when a client was never checked or its check is stale;
 - the attention fixes;
@@ -662,6 +665,8 @@ When an addon's new release starts requiring another project, `update` installs 
 What to update comes from the same statuses `outdated` shows, fetched once per ref (free inside 15 minutes; `--refresh` asks again). Each client with updates commits its own transaction, all under one run, so `omaddons undo` reverts every client and `omaddons undo <tx>` one of them. A failure on one client does not roll back another.
 
 Some addons are left alone and say why (`skipped`, with `skip_reason`): `pinned` (by `pin` or `install --version`; naming it adds an `addon_pinned` warning whose fix is `omaddons unpin <addon> -t <target>`), `ahead`, `static` (a local file or URL), `unchecked`, and `blocked`. A newer release that turns out not to load on a client is `blocked`, not a failure; the verdict is remembered, so `outdated` shows it too. A fetch that fails fails its addons (`update` never installs from stale metadata) and makes the run `partial`. `unchanged` addons are counted in `summary` and listed with `-v`.
+
+Files you changed in an addon's folders do not stop its update: they are replaced like the rest, and a `local_changes_replaced` warning names them, with `omaddons undo <tx>` as its fix, because the transaction snapshot keeps them (at least 24 hours). The same goes for `install` and `sync`. `-v` names the snapshot folder.
 
 There is no `--version` and no `--force`: a given version is an install (`omaddons install <addon> --version V` or `omaddons pin <addon> --version V`, which pin it), and taking over another addon's folder is `omaddons install <addon> --force -t <target>`, which an `ownership_conflict` names as its fix.
 
@@ -823,9 +828,11 @@ The addons in each target's AddOns folder.
 omaddons list                              # every target: managed addons with version, ref, channel
 omaddons list -t forever --unmanaged       # also unmanaged, linked and invalid folders, with title, version and load verdict
 omaddons list -t wotlk --protected         # also Blizzard_* folders
+omaddons list -v                           # also each addon's drift (files changed on disk), with paths
+omaddons list --deep                       # drift by content: every managed file re-hashed
 ```
 
-Each addon also carries `latest {version, status}`: the newest release remembered from earlier checks and its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`). `list` never asks a source; the column is blank when the addon is unchecked or static.
+Each addon also carries `latest {version, status}`: the newest release remembered from earlier checks and its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`). `list` never asks a source; the column is blank when the addon is unchecked or static. With `-v` or `--deep` each addon carries `drift {state, files}` too (as in [`status`](#status); the paths with `-v`); a plain `list` checks no file.
 
 ### `outdated`
 
@@ -943,7 +950,7 @@ WeakAuras  gh:WeakAuras/WeakAuras2
   latest: not checked (offline)
 ```
 
-The newest release comes through the [release memo](#files-and-state): a check made in the last 15 minutes is reused without a request, and `--refresh` checks again anyway. With `--offline`, `latest` is the remembered answer whatever its age, with a `stale_check` warning, or `null` (as above) when nothing is remembered. A missing repository is remembered too, so asking again within the window costs nothing; a network or server error never is.
+The newest release comes through the [release memo](#files-and-state): a check made in the last 15 minutes is reused without a request, and `--refresh` checks again anyway. With `--offline`, `latest` is the remembered answer whatever its age, with a `stale_check` warning, or `null` (as above) when nothing is remembered. A missing repository is remembered too, so asking again within the window costs nothing; a network or server error never is. Each installed record carries its `drift {state, files}` (as in [`status`](#status), with the paths under `-v`), checked locally, so `--offline` shows it too.
 
 ### `config`
 
@@ -1123,6 +1130,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `adopt_name_changed` | an adopted addon's name was taken on its client; it is recorded as `<name> (<primary folder>)` |
 | `export_missing_target` | `export`: a registered client whose directory is gone was exported from its records |
 | `export_local_source` | `export`: an addon installed from a local file or folder was left out |
+| `local_changes_replaced` | an install or update replaced folders whose files had changed on disk (it names up to 10 and counts them all); the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that the snapshot keeps them |
 
 </details>
 

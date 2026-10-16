@@ -15,11 +15,13 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::drift::DriftSummary;
 use super::history::TargetRef;
 use super::resolve_args::parse_ref;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
+use crate::drift::{DriftMode, DriftState};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{AddonState, Channel, FolderName, Ref, ReleaseSet, TxId, VersionConfidence};
 use crate::net::{NetConfig, NetLog, stack};
@@ -77,6 +79,8 @@ pub struct InstalledInfo {
     pub pinned: bool,
     pub state: AddonState,
     pub folders: Vec<FolderName>,
+    /// Whether its files changed on disk (stat-first, local), with paths under `-v`.
+    pub drift: DriftSummary,
     #[schemars(with = "String")]
     pub installed_at: jiff::Timestamp,
     pub tx: TxId,
@@ -157,9 +161,18 @@ impl Outcome for InfoOutcome {
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_owned))
                 .unwrap_or_default();
+            let drift = match i.drift.state {
+                DriftState::Modified => {
+                    let files = if i.drift.files == 1 { "file" } else { "files" };
+                    format!(" · {} {files} changed on disk", i.drift.files)
+                }
+                DriftState::Missing => " · a folder is missing".to_owned(),
+                DriftState::Unindexed => " · not indexed".to_owned(),
+                DriftState::Clean => String::new(),
+            };
             writeln!(
                 w,
-                "  {}: {} ({confidence}, {channel}) installed {}",
+                "  {}: {} ({confidence}, {channel}) installed {}{drift}",
                 i.target.id,
                 i.version,
                 super::history::local_time(i.installed_at)
@@ -220,7 +233,23 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
             continue;
         };
         let Some(key) = d.target.key else { continue };
+        let mut report = None;
         for a in record.addons.values().filter(|a| a.r#ref == r) {
+            let report = report.get_or_insert_with(|| {
+                super::drift::report(&world.paths, &d.target, record, DriftMode::Stat)
+            });
+            let drift = report
+                .addons
+                .iter()
+                .find(|r| r.addon.eq_ignore_ascii_case(&a.name))
+                .map_or(
+                    DriftSummary {
+                        state: DriftState::Clean,
+                        files: 0,
+                        folders: None,
+                    },
+                    |r| DriftSummary::of(r, verbose),
+                );
             installed.push(InstalledInfo {
                 target: TargetRef {
                     id: d.target.id.clone(),
@@ -232,6 +261,7 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
                 pinned: a.pinned,
                 state: a.state,
                 folders: a.folders.clone(),
+                drift,
                 installed_at: a.installed_at,
                 tx: a.tx_id,
                 record_path: verbose.then(|| world.paths.target_record(&key)),

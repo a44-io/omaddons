@@ -21,6 +21,7 @@ expression: s.stable(&c.envelope)
         "adoptable": 0,
         "attention": [],
         "default": false,
+        "drift": [],
         "family": "mists",
         "folders": {
           "invalid": 0,
@@ -66,6 +67,7 @@ expression: s.stable(&c.envelope)
           "journal_pending"
         ],
         "default": false,
+        "drift": [],
         "family": "mainline",
         "folders": {
           "invalid": 0,
