@@ -53,6 +53,9 @@ pub struct UpdateArgs {
     /// Exit 6 when only some of the addons update
     #[arg(long)]
     pub strict: bool,
+    /// Update only the named addons, not the ones their TOCs require
+    #[arg(long)]
+    pub no_deps: bool,
 }
 
 /// `update`'s outcome: the shared multi-target outcome, with `--strict`.
@@ -319,7 +322,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
             reason: ctx.reason.clone(),
             kind: None,
             run,
-            no_deps: false,
+            no_deps: args.no_deps,
         };
         match engine.run(&req, Some(&cache)) {
             Ok(done) => Some(done),
@@ -336,6 +339,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
 
     let mut data = match &done {
         Some(done) => {
+            requested.extend(dependency_failures(done));
             let mut data = TargetsData::build(done, run, &requested);
             settle_failures(&mut data, done);
             for o in &done.outcomes {
@@ -558,9 +562,33 @@ fn failed(s: &InScope<'_>, error: ItemError) -> ItemResult {
     }
 }
 
-/// What the engine's failures mean for `update`: a release that does not load here is
-/// skipped as blocked (M2-D41); a fix that takes over a folder with `--force` says how
-/// with `install`, since `update` has no `--force`.
+/// A dependency that resolved but failed to plan, as a request of its own, so it is a
+/// failed item (M2-D9): named by the folder its requester required, once per ref.
+fn dependency_failures(done: &TxOutcomes) -> Vec<ItemRequest> {
+    let mut out: Vec<ItemRequest> = Vec::new();
+    for tp in &done.plan.targets {
+        for (folder, r) in tp.dependencies.values().flat_map(|d| &d.failed) {
+            let seen = out
+                .iter()
+                .any(|q| q.target == tp.target && q.r#ref.as_ref() == Some(r));
+            if !seen {
+                out.push(ItemRequest {
+                    request: folder.to_string(),
+                    target: tp.target.clone(),
+                    addon: None,
+                    r#ref: Some(r.clone()),
+                    version: None,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// What the engine's failures mean for `update`: a release of an addon it was asked
+/// to update that does not load here is skipped as blocked (M2-D41), never a
+/// dependency's, which is a failure (M2-D9); a fix that takes over a folder with
+/// `--force` says how with `install`, since `update` has no `--force`.
 fn settle_failures(data: &mut TargetsData, done: &TxOutcomes) {
     for t in &mut data.targets {
         let id = t.target.id.clone();
@@ -575,7 +603,10 @@ fn settle_failures(data: &mut TargetsData, done: &TxOutcomes) {
                             i.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(a))
                         }))
             });
-            if failure.is_some_and(|f| blocked(&f.error)) {
+            let dependency = |f: &&crate::engine::plan::PlanFailure| {
+                f.error.details.get("required_by").is_some()
+            };
+            if failure.is_some_and(|f| blocked(&f.error) && !dependency(&f)) {
                 i.status = ItemStatus::Skipped;
                 i.skip_reason = Some(SkipReason::Blocked);
                 i.error = None;

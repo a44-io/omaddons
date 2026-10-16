@@ -633,7 +633,10 @@ omaddons update dbm plater -t retail
 omaddons update dbm --channel beta  # switch to beta and install its newest release
 omaddons update --dry-run           # what would change, per client
 omaddons update --strict            # exit 6 when only some addons update
+omaddons update --no-deps           # not what the new releases' TOCs start requiring
 ```
+
+When an addon's new release starts requiring another project, `update` installs that project in the same transaction, as `install` does: recorded as a dependency, from `default_channel`, undone with the update. A dependency that resolves but fails to install is a failed item named by the folder required (never `blocked`), and the addon itself still updates.
 
 What to update comes from the same statuses `outdated` shows, fetched once per ref (free inside 15 minutes; `--refresh` asks again). Each client with updates commits its own transaction, all under one run, so `omaddons undo` reverts every client and `omaddons undo <tx>` one of them. A failure on one client does not roll back another.
 

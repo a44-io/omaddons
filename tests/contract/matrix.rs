@@ -127,6 +127,8 @@ fn update() {
     let c = s.json(&["update", "--refresh"], 0);
     assert_eq!(c.envelope["data"]["summary"]["changed"], 1);
     insta::assert_json_snapshot!("update_ok", s.stable(&c.envelope));
+    let c = s.json(&["update", "--no-deps"], 0);
+    assert_eq!(c.envelope["data"]["summary"]["changed"], 0);
     let c = s.json(&["update", "--channel", "beta"], 2);
     insta::assert_json_snapshot!("update_channel_without_names", s.stable(&c.envelope));
     let c = s.json(&["upgrade", "nosuch"], 3);

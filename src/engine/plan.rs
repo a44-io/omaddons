@@ -47,8 +47,8 @@ use crate::output::{Phase, ProgressSink};
 use crate::resolve::cache::{Origin, ReleaseCache};
 use crate::resolve::catalog::Catalog;
 use crate::resolve::deps::{
-    AmbiguityReason, DepLookups, DepResolution, DepView, MissingReason, Satisfier, ViewFolder,
-    is_satisfied, needed_folders, resolve,
+    AmbiguityReason, BridgeDependency, DepLookups, DepResolution, DepView, MissingReason,
+    Satisfier, ViewFolder, bridge_dependencies, is_satisfied, needed_folders, resolve,
 };
 use crate::resolve::select::{EmptyReason, select};
 use crate::rules::RulesTable;
@@ -421,6 +421,11 @@ pub struct DepReport {
     pub unresolved: Vec<Unresolved>,
     /// Resolved, but the dependency failed to plan: (folder, its ref).
     pub failed: Vec<(FolderName, Ref)>,
+    /// What its other folders (bridges, plugins) require and nothing provides once the
+    /// transaction is done: reported, never installed (M2-D7). Sorted.
+    pub bridge_dependencies: Vec<BridgeDependency>,
+    /// The target had no addon with this ref before the transaction.
+    pub first_install: bool,
 }
 
 /// A required folder nothing was installed for.
@@ -460,6 +465,9 @@ pub struct DepFacts {
     pub requires: Vec<FolderName>,
     /// Installed folders that verified out of date on this client.
     pub out_of_date: BTreeSet<FolderName>,
+    /// What the other installed folders require outside the archive, before anything is
+    /// judged satisfied.
+    pub bridges: Vec<BridgeDependency>,
 }
 
 /// One addon changing.
@@ -878,6 +886,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         settle_handovers(&mut tp.work, &mut tp.changes, Some(&mut tp.ops));
         planner.dependency_rounds(&mut tp, &mut failures, &tr.dependency_locks);
         settle_handovers(&mut tp.work, &mut tp.changes, Some(&mut tp.ops));
+        planner.bridges(&mut tp);
         tp.kind = target_kind(&tp.changes, req.kind, tp.default_kind);
         tp.creates_addons_dir =
             live.addons_dir_missing && tp.work.iter().any(|w| w.inspected().is_some());
@@ -1387,6 +1396,47 @@ impl TargetPlanner<'_> {
                 candidates: vec![dep.r#ref.clone()],
             };
             self.unresolved(tp, requester, unresolved, detail);
+        }
+    }
+
+    /// The bridge pass, after the last round: each planned install's bridge requirements
+    /// that the final working view leaves unsatisfied (not the client's, not its own
+    /// archive's, not in AddOns in any class, not installed by this transaction) go on
+    /// its report with `first_install`. Nothing is resolved, fetched or installed.
+    fn bridges(&self, tp: &mut TargetPlan) {
+        let view = self.view.borrow();
+        let plan_view = PlanView {
+            view: &view,
+            live: self.live,
+        };
+        for w in &tp.work {
+            let WorkMode::Folders(f) = &w.mode else {
+                continue;
+            };
+            let (Some(inspected), Some(record)) = (&f.inspected, &f.record) else {
+                continue;
+            };
+            let archive: Vec<FolderName> =
+                inspected.folders.iter().map(|x| x.name.clone()).collect();
+            let open: Vec<BridgeDependency> = f
+                .deps
+                .bridges
+                .iter()
+                .filter(|b| is_satisfied(&b.requires, &archive, &plan_view).is_none())
+                .cloned()
+                .collect();
+            let reported = tp.dependencies.contains_key(&w.addon);
+            if open.is_empty() && !reported {
+                continue;
+            }
+            let first_install = !self
+                .record
+                .addons
+                .values()
+                .any(|a| a.r#ref.identity() == record.r#ref.identity());
+            let report = tp.dependencies.entry(w.addon.clone()).or_default();
+            report.bridge_dependencies = open;
+            report.first_install = first_install;
         }
     }
 
@@ -2860,6 +2910,7 @@ impl TargetPlanner<'_> {
         }
         let deps = DepFacts {
             requires,
+            bridges: bridge_dependencies(&needed, &installed),
             out_of_date: installed
                 .iter()
                 .filter(|v| matches!(v.report.verdict, Verdict::Compatible { out_of_date: true }))

@@ -136,6 +136,21 @@ mod support {
         envelope["data"]["items"].as_array().unwrap()
     }
 
+    /// `(request, status)` of the first target's items (`update`'s shape).
+    pub fn update_items(envelope: &Value) -> Vec<(String, String)> {
+        envelope["data"]["targets"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                (
+                    i["request"].as_str().unwrap().to_owned(),
+                    i["status"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    }
+
     /// The warnings with `code`, as messages.
     pub fn warnings_with(envelope: &Value, code: &str) -> Vec<String> {
         envelope["warnings"]
@@ -621,6 +636,204 @@ fn a_transaction_installs_at_most_the_addon_limit_of_dependencies() {
     assert!(missing[0].contains("Dep32") && missing[0].contains("DEPENDENCY_MAX_ADDONS"));
 }
 
+/// Retail with LittleWigs v1 (requiring nothing) installed, BigWigs v1 out, both named
+/// by the catalog; then `extra` releases of LittleWigs at v2.
+fn wigs_v2(requires: &[&str], extra: &[Node<'_>]) -> Home {
+    let home = Home::new(&["wow"]);
+    release_graph(
+        &home.http,
+        &[
+            node(
+                "https://github.com/o/littlewigs",
+                &[folder("LittleWigs", &[])],
+            ),
+            node("https://github.com/o/bigwigs", &[folder("BigWigs", &[])]),
+        ],
+    );
+    catalog(
+        &home,
+        &[
+            ("LittleWigs", "littlewigs", &["LittleWigs"]),
+            ("BigWigs", "bigwigs", &["BigWigs"]),
+        ],
+    );
+    home.run(&["install", "littlewigs"]).expect(0);
+    assert!(record_of(&home, "BigWigs").is_none());
+    let v2 = [folder("LittleWigs", requires)];
+    release_graph(
+        &home.http,
+        &[Node {
+            base: "https://github.com/o/littlewigs",
+            tag: "v2",
+            folders: &v2,
+        }],
+    );
+    release_graph(&home.http, extra);
+    home
+}
+
+/// `(request, status)` of the update's items on retail.
+fn update_items(envelope: &Value) -> Vec<(String, String)> {
+    support::update_items(envelope)
+}
+
+fn pair(request: &str, status: &str) -> (String, String) {
+    (request.to_owned(), status.to_owned())
+}
+
+#[test]
+fn an_update_whose_new_release_requires_a_dependency_installs_it_and_undo_reverts_both() {
+    let home = wigs_v2(&["BigWigs"], &[]);
+    let addons = home.addons("_retail_");
+    let before = tree_hash(&addons);
+    let latest_before = fetches(&home, "bigwigs");
+    let r = home.run(&["update", "--refresh"]);
+    let envelope = r.expect(0);
+    // Items by name, as `update` lists them.
+    assert_eq!(
+        update_items(&envelope),
+        [pair("BigWigs", "installed"), pair("LittleWigs", "updated")],
+        "{}",
+        r.context()
+    );
+    let lw = record_of(&home, "LittleWigs").unwrap();
+    let bw = record_of(&home, "BigWigs").unwrap();
+    assert_eq!(lw.version, "v2");
+    assert_eq!(
+        (bw.reason, names(&bw.required_by), bw.tx_id),
+        (AddonReason::Dependency, vec!["LittleWigs"], lw.tx_id)
+    );
+    assert_eq!(
+        common::state::history(&home).len(),
+        2,
+        "one line for the update"
+    );
+    assert_eq!(fetches(&home, "bigwigs") - latest_before, 1, "fetched once");
+
+    let r = home.run(&["undo"]);
+    r.expect(0);
+    assert_eq!(tree_hash(&addons), before, "{}", r.context());
+    assert!(record_of(&home, "BigWigs").is_none());
+    assert_eq!(record_of(&home, "LittleWigs").unwrap().version, "v1");
+}
+
+#[test]
+fn a_removed_dependency_comes_back_with_its_requesters_update() {
+    let home = wigs();
+    home.run(&["install", "littlewigs"]).expect(0);
+    home.run(&["remove", "bigwigs", "-t", "retail"]).expect(0);
+    assert!(record_of(&home, "BigWigs").is_none());
+    release_graph(
+        &home.http,
+        &[Node {
+            base: "https://github.com/o/littlewigs",
+            tag: "v2",
+            folders: &[folder("LittleWigs", &["BigWigs"])],
+        }],
+    );
+    let r = home.run(&["update", "--refresh"]);
+    r.expect(0);
+    let bw = record_of(&home, "BigWigs").unwrap();
+    assert_eq!(
+        (bw.reason, names(&bw.required_by)),
+        (AddonReason::Dependency, vec!["LittleWigs"]),
+        "{}",
+        r.context()
+    );
+}
+
+#[test]
+fn update_no_deps_updates_only_the_requester_and_warns() {
+    let home = wigs_v2(&["BigWigs"], &[]);
+    let r = home.run(&["update", "--refresh", "--no-deps"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        update_items(&envelope),
+        [pair("LittleWigs", "updated")],
+        "{}",
+        r.context()
+    );
+    assert!(record_of(&home, "BigWigs").is_none());
+    let missing = warnings_with(&envelope, "missing_dependency");
+    assert_eq!(missing.len(), 1, "{}", r.context());
+    assert!(missing[0].contains("BigWigs"));
+}
+
+#[test]
+fn a_dependency_without_a_compatible_release_during_update_is_a_failed_item() {
+    let vanilla = [common::graph::Folder {
+        name: "DepB",
+        interface: "11509",
+        deps: &[],
+        optional: &[],
+    }];
+    let home = wigs_v2(&["DepB"], &[node("https://github.com/o/depb", &vanilla)]);
+    catalog(
+        &home,
+        &[
+            ("LittleWigs", "littlewigs", &["LittleWigs"]),
+            ("DepB", "depb", &["DepB"]),
+        ],
+    );
+    let r = home.run(&["update", "--refresh"]);
+    let envelope = r.expect(0);
+    assert_eq!(envelope["partial"], true, "{}", r.context());
+    assert_eq!(
+        update_items(&envelope),
+        [pair("DepB", "failed"), pair("LittleWigs", "updated")],
+        "{}",
+        r.context()
+    );
+    let failed = &envelope["data"]["targets"][0]["items"][0];
+    assert_eq!(failed["ref"], "gh:o/depb");
+    assert!(failed["skip_reason"].is_null(), "never skipped/blocked");
+    assert_eq!(record_of(&home, "LittleWigs").unwrap().version, "v2");
+    home.run(&["undo"]).expect(0);
+    home.run(&["update", "--refresh", "--strict"]).expect(6);
+}
+
+#[test]
+fn a_beta_update_takes_its_dependencies_from_the_default_channel() {
+    let home = wigs_v2(&[], &[]);
+    // The API lists a newer prerelease of LittleWigs that requires BigWigs.
+    let beta = [folder("LittleWigs", &["BigWigs"])];
+    let toc = common::graph::folder_toc(&beta[0], "v3-beta");
+    let assets: [common::http::Asset<'_>; 1] = [(
+        "littlewigs.zip",
+        &[],
+        vec![("LittleWigs/LittleWigs.toc", toc.as_str())],
+    )];
+    let base = "https://github.com/o/littlewigs";
+    common::http::gh_release_v(&home.http, base, "v3-beta", &assets);
+    let list = json!([
+        {"tag_name": "v3-beta", "prerelease": true, "draft": false,
+         "published_at": "2026-10-15T00:00:00Z",
+         "assets": [{"name": "littlewigs.zip",
+                     "browser_download_url": format!("{base}/releases/download/v3-beta/littlewigs.zip")}]},
+        {"tag_name": "v2", "prerelease": false, "draft": false,
+         "published_at": "2026-10-01T00:00:00Z", "assets": []}
+    ])
+    .to_string();
+    common::http::fixture(
+        &home.http,
+        "api-releases-littlewigs",
+        "https://api.github.com/repos/o/littlewigs/releases?per_page=20",
+        200,
+        &[("content-type", "application/json")],
+        Some(&list),
+    );
+    let r = home.run(&["update", "littlewigs", "--channel", "beta"]);
+    r.expect(0);
+    let lw = record_of(&home, "LittleWigs").unwrap();
+    let bw = record_of(&home, "BigWigs").unwrap();
+    assert_eq!(
+        (lw.channel, lw.version.as_str(), bw.channel),
+        (Channel::Beta, "v3-beta", Channel::Stable),
+        "{}",
+        r.context()
+    );
+}
+
 /// The engine API: dependency locks and the failure's `details.required_by`.
 #[cfg(test)]
 mod engine_api {
@@ -642,13 +855,36 @@ mod engine_api {
     use omaddons::state::registry::load_registry;
     use serde_json::json;
 
+    use omaddons::resolve::deps::BridgeDependency;
+
     use super::common::graph::{Node, release_graph};
     use super::common::home::Home;
     use super::common::http::{paths, replay};
+    use super::common::netlog::net_log;
     use super::support::{catalog, folder, record_of};
+
+    /// A user's plain install of `r`.
+    fn installing(r: &str) -> RequestedChange {
+        RequestedChange::Install {
+            r#ref: r.parse().unwrap(),
+            channel: Channel::Stable,
+            channel_explicit: false,
+            version: None,
+            file: None,
+            name: None,
+            pin: PinIntent::Keep,
+            reason: AddonReason::Explicit,
+            reinstall: false,
+        }
+    }
 
     /// Installs `r` on retail through the engine with `locks`.
     fn install(home: &Home, r: &str, locks: BTreeMap<Ref, String>) -> TxOutcomes {
+        run(home, vec![installing(r)], locks)
+    }
+
+    /// Runs `changes` on retail through the engine with `locks`.
+    fn run(home: &Home, changes: Vec<RequestedChange>, locks: BTreeMap<Ref, String>) -> TxOutcomes {
         let paths = paths(&home.env);
         let table = RulesTable::builtin();
         let (found, _) = discover_root(
@@ -667,17 +903,7 @@ mod engine_api {
         let req = TxRequest {
             targets: vec![TxTarget {
                 discovered: retail,
-                changes: vec![RequestedChange::Install {
-                    r#ref: r.parse().unwrap(),
-                    channel: Channel::Stable,
-                    channel_explicit: false,
-                    version: None,
-                    file: None,
-                    name: None,
-                    pin: PinIntent::Keep,
-                    reason: AddonReason::Explicit,
-                    reinstall: false,
-                }],
+                changes,
                 default_kind: TxKind::Install,
                 dependency_locks: locks,
             }],
@@ -780,5 +1006,109 @@ mod engine_api {
         assert!(record_of(&home, "DepA").is_some());
         let report = &done.plan.targets[0].dependencies["DepA"];
         assert_eq!(report.failed.len(), 1);
+    }
+
+    /// Foo (primary) ships `Foo_Masque`, which requires Masque; the catalog knows
+    /// Masque, so following the bridge would fetch it.
+    fn bridged() -> Home {
+        let home = Home::new(&["wow"]);
+        release_graph(
+            &home.http,
+            &[
+                Node {
+                    base: "https://github.com/o/foo",
+                    tag: "v1",
+                    folders: &[folder("Foo", &[]), folder("Foo_Masque", &["Masque"])],
+                },
+                Node {
+                    base: "https://github.com/o/masque",
+                    tag: "v1",
+                    folders: &[folder("Masque", &[])],
+                },
+            ],
+        );
+        catalog(&home, &[("Masque", "masque", &["Masque"])]);
+        home
+    }
+
+    fn bridges(done: &TxOutcomes) -> Option<(Vec<BridgeDependency>, bool)> {
+        let report = done.plan.targets[0].dependencies.get("Foo")?;
+        Some((report.bridge_dependencies.clone(), report.first_install))
+    }
+
+    fn masque_requests(home: &Home) -> usize {
+        net_log(home)
+            .entries
+            .iter()
+            .filter(|e| e.path.starts_with("/o/masque/"))
+            .count()
+    }
+
+    #[test]
+    fn a_bridge_requirement_is_reported_never_installed() {
+        let home = bridged();
+        let done = install(&home, "gh:o/foo", BTreeMap::new());
+        let want = vec![BridgeDependency {
+            folder: omaddons::model::FolderName::try_from("Foo_Masque".to_owned()).unwrap(),
+            requires: omaddons::model::FolderName::try_from("Masque".to_owned()).unwrap(),
+        }];
+        assert_eq!(
+            bridges(&done),
+            Some((want.clone(), true)),
+            "{:?}",
+            done.failures
+        );
+        assert_eq!(masque_requests(&home), 0, "never fetched");
+        assert!(record_of(&home, "Masque").is_none());
+
+        // An update reports it again, not as a first install.
+        release_graph(
+            &home.http,
+            &[Node {
+                base: "https://github.com/o/foo",
+                tag: "v2",
+                folders: &[folder("Foo", &[]), folder("Foo_Masque", &["Masque"])],
+            }],
+        );
+        let update = RequestedChange::Update {
+            addon: "Foo".into(),
+            installed_primary_interface: None,
+        };
+        let done = run(&home, vec![update], BTreeMap::new());
+        assert_eq!(record_of(&home, "Foo").unwrap().version, "v2");
+        assert_eq!(bridges(&done), Some((want, false)));
+        assert_eq!(masque_requests(&home), 0);
+    }
+
+    #[test]
+    fn a_bridge_requirement_met_on_disk_or_in_the_transaction_is_not_reported() {
+        // On disk, unmanaged.
+        let home = bridged();
+        super::addon_folder(
+            &home.addons("_retail_"),
+            "Masque",
+            &[("Masque.toc", &super::toc(super::RETAIL, &[]))],
+            &[],
+        );
+        let done = install(&home, "gh:o/foo", BTreeMap::new());
+        assert!(
+            bridges(&done).is_none_or(|(b, _)| b.is_empty()),
+            "{:?}",
+            bridges(&done)
+        );
+
+        // Installed by the same transaction, after Foo.
+        let home = bridged();
+        let done = run(
+            &home,
+            vec![installing("gh:o/foo"), installing("gh:o/masque")],
+            BTreeMap::new(),
+        );
+        assert!(record_of(&home, "Masque").is_some());
+        assert!(
+            bridges(&done).is_none_or(|(b, _)| b.is_empty()),
+            "{:?}",
+            bridges(&done)
+        );
     }
 }
