@@ -137,7 +137,7 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | `update` (alias `upgrade`): every client's updates in one run, undone with one `undo` | ✅ Done (milestone 2) |
 | `pin` and `unpin`: hold an addon at its release through updates | ✅ Done (milestone 2) |
 | Dependencies: what a TOC requires installs with it, from the catalog | ✅ Done (milestone 2; more sources to come) |
-| `sync`: every client made to match `addons.toml`, idempotently; `--locked` reproduces exact versions | ✅ Done (milestone 2; `--prune` to come) |
+| `sync`: every client made to match `addons.toml`, idempotently; `--locked` reproduces exact versions, `--prune` removes what the file drops | ✅ Done (milestone 2) |
 | `export`: every client's addon set as one `addons.toml`, printed or written with a backup | ✅ Done (milestone 2) |
 | WoWInterface: `wowi:` refs and links, keyless, every download checked against its MD5 | ✅ Done (milestone 2) |
 | Tukui (ElvUI and Tukui): `tukui:` refs and links, keyless, every download checked against its `ETag` MD5 | ✅ Done (milestone 2) |
@@ -719,6 +719,7 @@ addons = ["DBM"]
 | `--strict` | Exit 6 when only some of the addons sync |
 | `--no-deps` | Install only the listed addons, not the ones their TOCs require |
 | `--locked` | Install the version each entry records, from the download cache when it is still there |
+| `--prune` | Also remove managed addons the file does not list (see below) |
 
 **The file.**
 
@@ -753,6 +754,14 @@ So a second `sync` changes nothing and sends no request. Each client with change
 - A version its source no longer serves fails its entry (`not_found`), with `sync` without `--locked` as the fix.
 - Entries without a version install the newest release, with one `not_locked` warning per client.
 - `dependency = true` entries fix the version of a dependency that `sync --locked` installs; one that matches nothing is ignored.
+
+**`--prune`** also removes the managed addons the file does not list, in the same transaction, so `omaddons undo` brings them back. It keeps:
+
+- every addon an entry names, or may name: entries that fail as duplicates or ambiguous names keep every addon they could mean;
+- every addon a `dependency = true` lock names;
+- every addon a kept one requires, through any chain, whatever its `reason`.
+
+It touches only clients the file has a section for (others report `no_section`), and never an unmanaged folder: it reads records, not folders. A `[target."<id>"]` section naming no known client may be a typo whose client would be emptied, so `--prune` refuses the whole file (`desired_state_invalid`, `reason: "unknown_target_section"`, fix `omaddons targets`); `sync` without it proceeds. An empty section (`addons = []`) removes every managed addon there: try `--dry-run` first.
 
 ### `export`
 
@@ -1066,7 +1075,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 |---|---|---|---|
 | `usage` | 2 | no | bad flag, value, `--since`, `--limit`, `--actor`, `--reason`, config key or id |
 | `ref_invalid` | 2 | no | malformed ref: `gh:owner`, `git:` without https, `http://` |
-| `desired_state_invalid` | 2 | no | `sync`'s `addons.toml` cannot be read: broken TOML, a bad value, an unknown family, an entry listed twice, or a newer schema (`details: {path, line, key, reason}`); also a failed `sync` item when two entries name the same addon, and `export --write` refusing a file edited since it was written (`reason: "edited"`) or an empty export (`reason: "empty"`) |
+| `desired_state_invalid` | 2 | no | `sync`'s `addons.toml` cannot be read: broken TOML, a bad value, an unknown family, an entry listed twice, or a newer schema (`details: {path, line, key, reason}`); also a failed `sync` item when two entries name the same addon, and `export --write` refusing a file edited since it was written (`reason: "edited"`) or an empty export (`reason: "empty"`), and `sync --prune` refusing a file with a section for no known client (`reason: "unknown_target_section"`) |
 | `target_not_found` | 3 | no | no target matches the selector; a known game mode whose client is missing |
 | `target_ambiguous` | 3 | no | several targets fit; one alternative per candidate |
 | `ref_ambiguous` | 3 | no | a name matches several addons or a local path |
@@ -1582,7 +1591,7 @@ Journals are recovered by the next command that commits a change, not by read co
 |---|---|---|
 | Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing; WoWInterface and Tukui lookups, bridge folders and the dependency items in output are on the way | M2 |
 | Adopting addons installed by other managers | ✅ `adopt`; other `status`, `outdated` and `install` hints point to it soon | M2 |
-| `addons.toml`, `export`, `sync`, `copy` between clients | ⚠️ `sync`, `sync --locked` and `export` work; `sync --prune` and `copy` are on the way | M2 |
+| `addons.toml`, `export`, `sync`, `copy` between clients | ⚠️ `sync` (with `--locked` and `--prune`) and `export` work; `copy` is on the way | M2 |
 | `search` | ❌ catalog names and links only | M2 |
 | Progress output | ⚠️ `install`, `update` and `outdated` report progress; the other long commands arrive with M2 | M2 |
 | The Omarchy bar widget | ❌ the help text mentions it, the code does not exist yet | M3 |

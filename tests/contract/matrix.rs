@@ -117,6 +117,11 @@ fn sync() {
     insta::assert_json_snapshot!("sync_locked", s.stable(&c.envelope));
     let c = s.json(&["sync", "--locked", "-t", "retail"], 0);
     assert_eq!(c.envelope["data"]["summary"]["changed"], 0);
+    // --prune refuses a section for no known client.
+    s.home
+        .write_desired("[target.\"retial\"]\naddons = [\"gh:o/foo\"]\n");
+    let c = s.json(&["sync", "--prune"], 2);
+    insta::assert_json_snapshot!("sync_prune_refused", s.stable(&c.envelope));
 }
 
 #[test]

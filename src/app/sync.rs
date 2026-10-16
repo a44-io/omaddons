@@ -11,7 +11,7 @@
 //! changes commits one transaction of kind `sync`, all under one run, so `omaddons undo`
 //! reverts the whole sync.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
@@ -53,6 +53,10 @@ pub struct SyncArgs {
     /// Install the versions the file records, from the blob cache when cached
     #[arg(long)]
     pub locked: bool,
+    /// Also remove managed addons the file does not list (never one a listed addon
+    /// requires or a lock names; refused while a target section names no known client)
+    #[arg(long)]
+    pub prune: bool,
 }
 
 /// `sync`'s outcome: the shared multi-target outcome, with `--strict`.
@@ -218,6 +222,75 @@ pub fn diff<'s, 'r>(
         .collect()
 }
 
+/// The records `--prune` keeps on a target (by record key): those whose ref one of
+/// `refs` names (desired entries, locks, and every ref a failed entry may mean), then,
+/// to a fixpoint, every record a kept one requires, whatever its `reason`.
+pub fn keep_set(record: &TargetRecord, refs: &[Ref]) -> BTreeSet<String> {
+    let named: BTreeSet<String> = refs.iter().map(Ref::identity).collect();
+    let mut keep: BTreeSet<String> = record
+        .addons
+        .iter()
+        .filter(|(_, a)| named.contains(&a.r#ref.identity()))
+        .map(|(key, _)| key.clone())
+        .collect();
+    loop {
+        let required: Vec<String> = record
+            .addons
+            .iter()
+            .filter(|(key, _)| !keep.contains(*key))
+            .filter(|(_, a)| {
+                a.required_by
+                    .iter()
+                    .any(|by| keep.contains(&TargetRecord::addon_key(by)))
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        if required.is_empty() {
+            return keep;
+        }
+        keep.extend(required);
+    }
+}
+
+/// `--prune` refuses a file with a `[target."<id>"]` section naming no known client: a
+/// typo there would leave that client's addons out of its desired set.
+fn unknown_section(state: &DesiredState, known: &[&str], path: &Path) -> Option<Error> {
+    let (id, section) = state
+        .targets
+        .iter()
+        .find(|(id, _)| !known.iter().any(|k| k.eq_ignore_ascii_case(id)))?;
+    Some(
+        Error::new(
+            ErrorCode::DesiredStateInvalid,
+            format!(
+                "{} line {}: [target.\"{id}\"] names no known client, so --prune is refused (it could remove what that section meant to keep); sync without --prune is allowed",
+                path.display(),
+                section.line
+            ),
+            Suggestion::command(["omaddons", "targets"]),
+        )
+        .details(json!({
+            "path": path.display().to_string(),
+            "line": section.line,
+            "key": format!("target.{id}"),
+            "reason": "unknown_target_section",
+        })),
+    )
+}
+
+/// Every ref a `ref_ambiguous` error lists.
+fn ambiguous_refs(error: &Error) -> Vec<Ref> {
+    if error.code != ErrorCode::RefAmbiguous {
+        return Vec::new();
+    }
+    error.details["candidates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["ref"].as_str()?.parse().ok())
+        .collect()
+}
+
 /// The positions of entries that resolve to a ref another entry resolves to: they may
 /// disagree, so neither is synced.
 fn resolved_duplicates(wants: &[Want<'_>]) -> BTreeMap<usize, usize> {
@@ -335,7 +408,8 @@ struct TargetWork {
     locked: Vec<String>,
 }
 
-/// Resolves, checks and diffs `target`'s entries.
+/// Resolves, checks and diffs `target`'s entries; with `--prune`, removes the records
+/// nothing keeps ([`keep_set`]).
 fn target_work(
     state: &DesiredState,
     d: &DiscoveredTarget,
@@ -343,8 +417,11 @@ fn target_work(
     catalog: &Catalog,
     world: &World,
     path: &Path,
-    locked: bool,
+    args: &SyncArgs,
 ) -> TargetWork {
+    let locked = args.locked;
+    // What the file names, or may name, on this target: never pruned.
+    let mut named: Vec<Ref> = Vec::new();
     let t = &d.target;
     let base = path.parent().unwrap_or_else(|| Path::new("/"));
     let git_hosts = &world.config.git_hosts;
@@ -358,12 +435,19 @@ fn target_work(
         // Locks are not requests: `--locked` fixes the version of a dependency it
         // installs; one that resolves to nothing is ignored.
         if d.entry.dependency {
+            if let Ok(r) = &d.resolved {
+                named.push(r.clone());
+            }
             if let (true, Ok(r), Some(version)) = (locked, &d.resolved, &d.entry.version) {
                 work.locks.insert(r.clone(), version.clone());
             }
             continue;
         }
         work.order.push(label(d.entry));
+        match &d.resolved {
+            Ok(r) => named.push(r.clone()),
+            Err(error) => named.extend(ambiguous_refs(error)),
+        }
         match d.resolved {
             Ok(r) => wants.push(Want {
                 entry: d.entry,
@@ -464,6 +548,30 @@ fn target_work(
             }
         }
     }
+    // `--prune`: every record nothing keeps goes, by name, after the entries' changes.
+    if let (true, Some(record)) = (args.prune, record) {
+        let keep = keep_set(record, &named);
+        let mut gone: Vec<&AddonRecord> = record
+            .addons
+            .iter()
+            .filter(|(key, _)| !keep.contains(*key))
+            .map(|(_, a)| a)
+            .collect();
+        gone.sort_by_key(|a| a.name.to_ascii_lowercase());
+        for a in gone {
+            work.changes.push(RequestedChange::Remove {
+                addon: a.name.clone(),
+            });
+            work.requested.push(ItemRequest {
+                request: a.name.clone(),
+                target: t.id.clone(),
+                addon: Some(a.name.clone()),
+                r#ref: Some(a.r#ref.clone()),
+                version: Some(a.version.clone()),
+            });
+            work.order.push(a.name.clone());
+        }
+    }
     work
 }
 
@@ -478,7 +586,15 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     // A file that cannot be read as desired state changes nothing.
     let (state, parsed) = desired::parse(&text, &path)?;
     warnings.extend(parsed);
-    warnings.extend(desired::validate(&state, &world.resolved.known_ids()));
+    let known = world.resolved.known_ids();
+    // Before anything is resolved: a section for no known client may be a typo whose
+    // client --prune would empty.
+    if args.prune
+        && let Some(error) = unknown_section(&state, &known, &path)
+    {
+        return Err(error);
+    }
+    warnings.extend(desired::validate(&state, &known));
     let (catalog, catalog_warnings) = Catalog::load(&world.paths);
     warnings.extend(catalog_warnings);
     let mut targets: Vec<&DiscoveredTarget> = world.select_many(ctx)?;
@@ -502,7 +618,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
             continue;
         }
         matching += 1;
-        let work = target_work(&state, d, &records, &catalog, &world, &path, args.locked);
+        let work = target_work(&state, d, &records, &catalog, &world, &path, args);
         if !work.unlocked.is_empty() {
             warnings.push(not_locked(&d.target.id, &work.unlocked, &path));
         }
@@ -816,6 +932,41 @@ mod tests {
             Some(_) => ("other", None, String::new(), String::new()),
             None => ("none", None, String::new(), String::new()),
         }
+    }
+
+    #[test]
+    fn prune_keeps_what_the_file_names_and_everything_that_requires() {
+        use Channel::Stable;
+        let mut rec = record(&[
+            ("Little", "gh:o/little", "1", Stable, false),
+            ("Big", "gh:o/big", "1", Stable, false),
+            ("Lib", "gh:o/lib", "1", Stable, false),
+            ("Orphan", "gh:o/orphan", "1", Stable, false),
+            ("Other", "gh:o/other", "1", Stable, false),
+            ("Locked", "gh:o/locked", "1", Stable, false),
+            ("Dup", "gh:o/dup", "1", Stable, false),
+            ("Amb", "gh:o/amb", "1", Stable, false),
+        ]);
+        let requires = |rec: &mut TargetRecord, addon: &str, by: &str| {
+            rec.addons
+                .get_mut(&TargetRecord::addon_key(addon))
+                .unwrap()
+                .required_by = vec![by.to_owned()];
+        };
+        // A chain Little → Big → Lib; a stale requester; one required only by a pruned one.
+        requires(&mut rec, "Big", "little");
+        requires(&mut rec, "Lib", "Big");
+        requires(&mut rec, "Orphan", "Gone");
+        requires(&mut rec, "Other", "Orphan");
+        let refs: Vec<Ref> = ["gh:O/Little", "gh:o/locked", "gh:o/dup", "gh:o/amb"]
+            .iter()
+            .map(|r| r.parse().unwrap())
+            .collect();
+        let keep = keep_set(&rec, &refs);
+        assert_eq!(
+            keep.into_iter().collect::<Vec<_>>(),
+            ["amb", "big", "dup", "lib", "little", "locked"]
+        );
     }
 
     #[test]

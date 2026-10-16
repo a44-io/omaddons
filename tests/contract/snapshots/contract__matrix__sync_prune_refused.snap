@@ -1,0 +1,30 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "sync",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "desired_state_invalid",
+    "details": {
+      "key": "target.retial",
+      "line": 1,
+      "path": "<root>/config/omaddons/addons.toml",
+      "reason": "unknown_target_section"
+    },
+    "fix": "omaddons targets",
+    "fix_argv": [
+      "omaddons",
+      "targets"
+    ],
+    "message": "<root>/config/omaddons/addons.toml line 1: [target.\"retial\"] names no known client, so --prune is refused (it could remove what that section meant to keep); sync without --prune is allowed",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

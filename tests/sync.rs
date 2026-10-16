@@ -15,7 +15,7 @@ use common::netlog::net_log;
 use common::trees::tree_hash;
 use omaddons::model::{Channel, TxKind};
 use serde_json::{Value, json};
-use support::{ON_BOTH, exported, items, record_of, statuses, target};
+use support::{ON_BOTH, exported, items, prune_home, record_of, statuses, target};
 
 #[cfg(test)]
 mod support {
@@ -26,6 +26,39 @@ mod support {
 
     /// Loads on retail (12.1.5) and the PTR (12.1.0).
     pub const ON_BOTH: &str = "120105, 120100";
+
+    /// Retail and the PTR, with LittleWigs (requiring BigWigs), BigWigs, Foo, Bar and Baz
+    /// released, BigWigs named by the catalog.
+    pub fn prune_home() -> Home {
+        use super::common::graph::{Node, release_graph};
+        let home = Home::new(&["wow", "wowt"]);
+        let node = |base, folders| Node {
+            base,
+            tag: "v1",
+            folders,
+        };
+        release_graph(
+            &home.http,
+            &[
+                node(
+                    "https://github.com/o/littlewigs",
+                    &[folder("LittleWigs", &["BigWigs"])],
+                ),
+                node("https://github.com/o/bigwigs", &[folder("BigWigs", &[])]),
+                node("https://github.com/o/foo", &[folder("Foo", &[])]),
+                node("https://github.com/o/bar", &[folder("Bar", &[])]),
+                node("https://github.com/o/baz", &[folder("Baz", &[])]),
+            ],
+        );
+        let catalog_d = home.env.config().join("omaddons/catalog.d");
+        std::fs::create_dir_all(&catalog_d).unwrap();
+        std::fs::write(
+            catalog_d.join("50-wigs.toml"),
+            "schema_version = \"1.0\"\n\n[[addon]]\nname = \"BigWigs\"\nref = \"gh:o/bigwigs\"\nfolders = [\"BigWigs\"]\n",
+        )
+        .unwrap();
+        home
+    }
 
     /// `export`'s document on `home`, written to `<root>/<name>.toml`.
     pub fn exported(home: &Home, name: &str) -> String {
@@ -961,5 +994,182 @@ fn a_dependency_lock_fixes_the_version_it_installs() {
     assert!(
         record_of(&home, "retail", "Nothing").is_none(),
         "an unmatched lock is ignored"
+    );
+}
+
+#[test]
+fn prune_removes_only_unlisted_managed_addons() {
+    let home = prune_home();
+    for (r, t) in [
+        ("gh:o/littlewigs", "retail"),
+        ("gh:o/foo", "retail"),
+        ("gh:o/bar", "retail"),
+        ("gh:o/foo", "ptr"),
+    ] {
+        home.run(&["install", r, "-t", t]).expect(0);
+    }
+    assert!(
+        record_of(&home, "retail", "BigWigs").is_some(),
+        "the dependency"
+    );
+    let addons = home.addons("_retail_");
+    common::addons::unpack(&addons, &[("Mine/Mine.toc", "## Interface: 120105\n")]);
+    let mine = tree_hash(&addons.join("Mine"));
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/littlewigs\", \"gh:o/foo\"]\n");
+
+    let r = home.run(&["sync", "--prune"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        statuses(&envelope, "retail"),
+        [pair("Bar", "removed")],
+        "{}",
+        r.context()
+    );
+    for kept in ["LittleWigs", "BigWigs", "Foo"] {
+        assert!(record_of(&home, "retail", kept).is_some(), "{kept}");
+    }
+    assert!(record_of(&home, "retail", "Bar").is_none());
+    assert_eq!(
+        tree_hash(&addons.join("Mine")),
+        mine,
+        "unmanaged: untouched"
+    );
+    assert_eq!(target(&envelope, "ptr")["no_section"], true);
+    assert!(
+        record_of(&home, "ptr", "Foo").is_some(),
+        "no section: untouched"
+    );
+
+    // Nothing left to prune: no request, nothing committed.
+    let (before, txs) = (net_log(&home).len(), common::state::history(&home).len());
+    let r = home.run(&["sync", "--prune"]);
+    assert_eq!(r.expect(0)["data"]["summary"]["changed"], 0);
+    assert_eq!(net_log(&home).len(), before);
+    assert_eq!(common::state::history(&home).len(), txs);
+}
+
+#[test]
+fn prune_refuses_a_file_with_a_section_for_no_known_client() {
+    let home = prune_home();
+    home.run(&["install", "gh:o/bar", "-t", "retail"]).expect(0);
+    home.write_desired(
+        "[family.mainline]\naddons = [\"gh:o/foo\"]\n\n[target.\"retial\"]\naddons = [\"gh:o/baz\"]\n",
+    );
+    let tree = tree_hash(&home.addons("_retail_"));
+    for args in [&["sync", "--prune"][..], &["sync", "--prune", "-t", "ptr"]] {
+        let r = home.run(args);
+        let envelope = r.expect(2);
+        let error = &envelope["error"];
+        assert_eq!(
+            (
+                &error["code"],
+                &error["details"]["reason"],
+                &error["details"]["key"]
+            ),
+            (
+                &json!("desired_state_invalid"),
+                &json!("unknown_target_section"),
+                &json!("target.retial")
+            ),
+            "{}",
+            r.context()
+        );
+        assert_eq!(error["fix_argv"], json!(["omaddons", "targets"]));
+    }
+    assert_eq!(tree_hash(&home.addons("_retail_")), tree, "nothing changed");
+    assert!(record_of(&home, "retail", "Bar").is_some());
+    // Without --prune the same file syncs, with a warning.
+    let r = home.run(&["sync"]);
+    let envelope = r.expect(0);
+    assert!(
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["code"] == "desired_unknown_target"),
+        "{}",
+        r.context()
+    );
+}
+
+#[test]
+fn one_sync_installs_removes_and_unpins_and_undo_restores_it_all() {
+    let home = prune_home();
+    for r in ["gh:o/foo", "gh:o/bar"] {
+        home.run(&["install", r, "-t", "retail"]).expect(0);
+    }
+    home.run(&["pin", "Foo"]).expect(0);
+    let addons = home.addons("_retail_");
+    let (tree, before) = (tree_hash(&addons), common::state::record(&home, "retail"));
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\", \"gh:o/baz\"]\n");
+
+    // A dry run lists it and changes nothing.
+    let r = home.run(&["sync", "--prune", "--dry-run"]);
+    assert!(
+        statuses(&r.expect(0), "retail").contains(&pair("Bar", "removed")),
+        "{}",
+        r.context()
+    );
+    assert_eq!(tree_hash(&addons), tree);
+
+    let r = home.run(&["sync", "--prune"]);
+    let envelope = r.expect(0);
+    let t = target(&envelope, "retail");
+    assert_eq!(t["kind"], "sync", "{}", r.context());
+    let mut got = statuses(&envelope, "retail");
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            pair("Bar", "removed"),
+            pair("gh:o/baz", "installed"),
+            pair("gh:o/foo", "unpinned")
+        ]
+    );
+    let line = common::state::history(&home).pop().unwrap();
+    let ops: std::collections::BTreeSet<String> =
+        line.ops.iter().map(|o| format!("{:?}", o.op)).collect();
+    assert_eq!(
+        ops.into_iter().collect::<Vec<_>>(),
+        ["Add", "Record", "Remove"]
+    );
+    home.run(&["undo"]).expect(0);
+    assert_eq!(tree_hash(&addons), tree, "the folders as they were");
+    let after = common::state::record(&home, "retail");
+    assert_eq!(
+        after.addons.keys().collect::<Vec<_>>(),
+        before.addons.keys().collect::<Vec<_>>()
+    );
+    assert!(after.addons["foo"].pinned, "the pin is back");
+}
+
+#[test]
+fn pruning_a_record_whose_folder_is_gone_forgets_it_undoably() {
+    let home = prune_home();
+    for r in ["gh:o/foo", "gh:o/bar"] {
+        home.run(&["install", r, "-t", "retail"]).expect(0);
+    }
+    common::drift::delete_managed(&home.addons("_retail_").join("Bar"));
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
+    let r = home.run(&["sync", "--prune"]);
+    assert_eq!(
+        statuses(&r.expect(0), "retail"),
+        [pair("Bar", "removed")],
+        "{}",
+        r.context()
+    );
+    let line = common::state::history(&home).pop().unwrap();
+    assert!(
+        line.ops
+            .iter()
+            .all(|o| o.op == omaddons::state::history::FolderOp::Record),
+        "{:?}",
+        line.ops
+    );
+    assert!(record_of(&home, "retail", "Bar").is_none());
+    home.run(&["undo"]).expect(0);
+    assert!(
+        record_of(&home, "retail", "Bar").is_some(),
+        "the record is back"
     );
 }

@@ -353,7 +353,10 @@ The file (default: addons.toml in omaddons' config directory):
 sync installs what is missing and sets pins and channels; it never updates an installed
 addon (omaddons update does). A second run changes nothing. With --locked it installs
 the version each entry records (from the download cache when it is still there), so
-`omaddons export` on one machine and `sync --locked` on another reproduce the set.";
+`omaddons export` on one machine and `sync --locked` on another reproduce the set.
+With --prune it also removes managed addons the file does not list, never one a listed
+addon requires or a lock names, and never on a client the file has no section for; a
+section for no known client refuses it.";
 
 // ---------------------------------------------------------------------------------------
 // Usage errors.
