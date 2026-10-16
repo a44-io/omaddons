@@ -61,6 +61,44 @@ fn offline_refuses_the_network() {
 }
 
 #[test]
+fn a_usage_error_reports_an_offline_run_as_offline() {
+    let s = Scene::new();
+    let offline = |args: &[&str], env: &[(&str, &str)]| {
+        let c = s.json_env(args, env, 2);
+        assert_eq!(c.envelope["error"]["code"], "usage", "{args:?}");
+        c.envelope["meta"]["offline"].clone()
+    };
+    assert_eq!(offline(&["nosuch"], &[("OMADDONS_OFFLINE", "1")]), true);
+    assert_eq!(offline(&["nosuch", "--offline"], &[]), true);
+    assert_eq!(offline(&["status", "--frobnicate", "--offline"], &[]), true);
+    assert_eq!(offline(&["nosuch"], &[("OMADDONS_OFFLINE", "yes")]), false);
+    assert_eq!(offline(&["nosuch"], &[]), false);
+}
+
+#[test]
+fn an_http_ref_is_fixed_to_https_keeping_every_other_argument() {
+    let s = Scene::new();
+    let c = s.json(&["install", "http://github.com/o/foo", "-t", "retail"], 2);
+    assert_eq!(c.envelope["error"]["code"], "ref_invalid");
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        serde_json::json!([
+            "omaddons",
+            "install",
+            "https://github.com/o/foo",
+            "-t",
+            "retail"
+        ])
+    );
+    let c = s.json(&["info", "http://github.com/o/foo"], 2);
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "info", "https://github.com/o/foo"]),
+        "the command that ran, not install"
+    );
+}
+
+#[test]
 fn ci_and_dumb_terminals_get_ndjson_stderr() {
     let s = Scene::new();
     for env in [("CI", "1"), ("TERM", "dumb")] {

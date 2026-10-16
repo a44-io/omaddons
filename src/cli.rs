@@ -219,7 +219,7 @@ impl Context {
             stdin_is_tty,
         )
         .map_err(|err| {
-            let fix = if err.origin == "--actor" {
+            let fix = if matches!(err.origin, "--actor") {
                 Suggestion::command(fix_argv(&without_flag(argv, "--actor")))
             } else {
                 Suggestion::text("unset OMADDONS_ACTOR, or set it to human, agent or widget")
@@ -282,12 +282,9 @@ fn run_with(
     started: Instant,
 ) -> Exit {
     let argv = normalize_argv(raw);
-    let early = output::resolve_output_mode_from_argv(raw, term);
-    let fallback = OutputConfig {
-        output: early,
-        ..output::resolve(&OutputFlags::default(), term)
-    };
-    set_panic_state(fallback, "omaddons", started);
+    let fallback = fallback_output(raw, term);
+    let early_offline = output::offline_from_argv(raw, env);
+    set_panic_state(fallback, "omaddons", started, early_offline);
     let cli = match Cli::try_parse_from(raw) {
         Ok(cli) => cli,
         // `-h` on a command with required arguments: help, not a usage error.
@@ -296,22 +293,31 @@ fn run_with(
             let name = (!path.is_empty()).then_some(path.as_str());
             let result = crate::app::help::for_command(name, &argv);
             let mut reporter = Reporter::stderr(&fallback);
-            return output::emit(&fallback, &mut reporter, "help", started, false, result);
+            return output::emit(
+                &fallback,
+                &mut reporter,
+                "help",
+                started,
+                early_offline,
+                result,
+            );
         }
         Err(err) => {
             let error = usage_error(&err, &argv);
-            return render_error(&fallback, command_of(&argv), started, error);
+            return render_error(&fallback, command_of(&argv), started, early_offline, error);
         }
     };
     let output = output::resolve(&cli.global.output_flags(), term);
     let command = crate::app::command_name(cli.command.as_ref());
-    set_panic_state(output, command, started);
+    let offline = cli.global.offline || env("OMADDONS_OFFLINE").as_deref() == Some("1");
+    set_panic_state(output, command, started, offline);
     if let Err(err) = crate::fsx::failpoint::hit("cli.panic") {
-        return render_error(&output, command, started, Error::internal(err.to_string()));
+        let error = Error::internal(err.to_string());
+        return render_error(&output, command, started, offline, error);
     }
     let mut ctx = match Context::new(&cli.global, output, &argv, env, stdin_is_tty, started) {
         Ok(ctx) => ctx,
-        Err(error) => return render_error(&output, command, started, error),
+        Err(error) => return render_error(&output, command, started, offline, error),
     };
     // One reporter for the whole run: the command's progress and the outcome's output.
     let reporter = output::shared_stderr(&output);
@@ -319,15 +325,27 @@ fn run_with(
     crate::app::dispatch(&cli, &ctx, &reporter)
 }
 
+/// The output configuration until argv parses: its presentation flags read token by
+/// token, so a usage error renders as asked (`--json`, `--no-color`, `--quiet`, …).
+fn fallback_output(raw: &[OsString], term: &TermEnv) -> OutputConfig {
+    output::resolve(&output::flags_from_argv(raw), term)
+}
+
 /// Renders an error that has no outcome (usage errors, a failed failpoint).
-fn render_error(cfg: &OutputConfig, command: &'static str, started: Instant, error: Error) -> Exit {
+fn render_error(
+    cfg: &OutputConfig,
+    command: &'static str,
+    started: Instant,
+    offline: bool,
+    error: Error,
+) -> Exit {
     let mut reporter = Reporter::stderr(cfg);
     output::emit::<crate::app::help::HelpOutcome, _>(
         cfg,
         &mut reporter,
         command,
         started,
-        false,
+        offline,
         Err(error),
     )
 }
@@ -535,8 +553,15 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
         ErrorKind::UnknownArgument => invalid(ContextKind::InvalidArg)
             .and_then(|bad| {
                 let bad_flag = bad.split('=').next().unwrap_or(&bad).to_owned();
+                // `status --version`: the program's version is asked before any command.
+                if subcommand.is_some() && matches!(bad_flag.as_str(), "--version" | "-V") {
+                    let (help, _) = help_fix();
+                    return Some((Suggestion::command(["omaddons", "--version"]), vec![help]));
+                }
+                // Under a subcommand, only the global flags of the root apply.
                 let mut longs: Vec<String> = cmd
                     .get_arguments()
+                    .filter(|a| subcommand.is_none() || a.is_global_set())
                     .filter_map(|a| a.get_long())
                     .map(|l| format!("--{l}"))
                     .collect();
@@ -552,8 +577,16 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
             .unwrap_or_else(help_fix),
         _ => help_fix(),
     };
+    // Never the failing command itself.
+    let failing = fix_argv(argv);
+    let fails = |s: &Suggestion| s.argv() == Some(failing.as_slice());
+    let (fix, alternatives) = if fails(&fix) {
+        help_fix()
+    } else {
+        (fix, alternatives)
+    };
     let mut error = Error::new(ErrorCode::Usage, message, fix);
-    for alternative in alternatives {
+    for alternative in alternatives.into_iter().filter(|a| !fails(a)) {
         error = error.alternative(alternative);
     }
     error
@@ -666,6 +699,17 @@ fn wants_help(argv: &[String]) -> bool {
 /// `argv` without presentation flags.
 pub fn fix_argv(argv: &[String]) -> Vec<String> {
     fix_argv_keeping(argv, None)
+}
+
+/// `argv` (without presentation flags) with its first `old` argument after the program
+/// name replaced by `new`, every other argument kept; `None` when no argument is `old`.
+pub fn fix_argv_replacing(argv: &[String], old: &str, new: &str) -> Option<Vec<String>> {
+    let position = argv.iter().skip(1).position(|a| a == old)? + 1;
+    let mut argv = argv.to_vec();
+    if let Some(slot) = argv.get_mut(position) {
+        new.clone_into(slot);
+    }
+    Some(fix_argv_keeping(&argv, Some(position)))
 }
 
 /// `argv` without presentation flags, except the one at `keep` (a corrected token).
@@ -781,17 +825,19 @@ struct PanicState {
     output: OutputConfig,
     command: &'static str,
     started: Instant,
+    offline: bool,
 }
 
 static PANIC_STATE: Mutex<Option<PanicState>> = Mutex::new(None);
 static PANIC_RENDERED: AtomicBool = AtomicBool::new(false);
 
-fn set_panic_state(output: OutputConfig, command: &'static str, started: Instant) {
+fn set_panic_state(output: OutputConfig, command: &'static str, started: Instant, offline: bool) {
     if let Ok(mut state) = PANIC_STATE.lock() {
         *state = Some(PanicState {
             output,
             command,
             started,
+            offline,
         });
     }
 }
@@ -814,15 +860,15 @@ fn install_panic_hook() {
             .map(|l| format!(" at {}:{}", l.file(), l.line()))
             .unwrap_or_default();
         let error = Error::internal(format!("internal error: {payload}{at}"));
-        let (cfg, command, started) =
+        let (cfg, command, started, offline) =
             match PANIC_STATE.lock().ok().as_deref().and_then(Option::as_ref) {
-                Some(state) => (state.output, state.command, state.started),
-                None => (OutputConfig::machine(), "omaddons", Instant::now()),
+                Some(state) => (state.output, state.command, state.started, state.offline),
+                None => (OutputConfig::machine(), "omaddons", Instant::now(), false),
             };
         if output::stdout_written() {
             Reporter::stderr(&cfg).error(&error);
         } else {
-            render_error(&cfg, command, started, error);
+            render_error(&cfg, command, started, offline, error);
         }
     }));
 }
@@ -882,6 +928,83 @@ mod tests {
         let raw = argv(&["help", "--frobnicate"]);
         let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
         assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help", "help"]);
+    }
+
+    #[test]
+    fn a_usage_error_never_suggests_itself() {
+        // A root-only flag under a command: the program's version, else that help.
+        for flag in ["--version", "-V"] {
+            let raw = argv(&["status", flag]);
+            let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+            assert_eq!(err.fix.argv().unwrap(), ["omaddons", "--version"], "{flag}");
+            assert_eq!(
+                err.alternatives[0].argv().unwrap(),
+                ["omaddons", "help", "status"]
+            );
+        }
+        // Every command with each of a spread of bad tokens: no fix is the argv itself.
+        let commands: Vec<String> = Cli::command()
+            .get_subcommands()
+            .map(|c| c.get_name().to_owned())
+            .chain([String::new()])
+            .collect();
+        let tokens = [
+            "--version",
+            "-V",
+            "--jsno",
+            "--dry-rn",
+            "--frobnicate",
+            "--target",
+            "--json=1",
+            "stray",
+        ];
+        let mut checked = 0;
+        for command in &commands {
+            for token in tokens {
+                let args: Vec<&str> = [command.as_str(), token, "--json"]
+                    .into_iter()
+                    .filter(|a| !a.is_empty())
+                    .collect();
+                let raw = argv(&args);
+                let Err(e) = Cli::try_parse_from(&raw) else {
+                    continue;
+                };
+                let err = usage_error(&e, &raw);
+                let own = fix_argv(&raw);
+                assert_ne!(err.fix.argv(), Some(own.as_slice()), "{args:?}");
+                for alternative in &err.alternatives {
+                    assert_ne!(alternative.argv(), Some(own.as_slice()), "{args:?}");
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "{checked}");
+    }
+
+    #[test]
+    fn a_usage_error_renders_as_its_argv_asks() {
+        let tty = TermEnv {
+            stdout_tty: true,
+            stderr_tty: true,
+            ..TermEnv::default()
+        };
+        let raw = |args: &[&str]| -> Vec<OsString> {
+            argv(args).into_iter().map(OsString::from).collect()
+        };
+        let colored = |cfg: OutputConfig| cfg.style.color || cfg.stderr_color;
+        assert!(colored(fallback_output(&raw(&["nosuch"]), &tty)));
+        assert!(!colored(fallback_output(
+            &raw(&["nosuch", "--no-color"]),
+            &tty
+        )));
+        let no_color = TermEnv {
+            no_color: Some("1".into()),
+            ..tty.clone()
+        };
+        assert!(!colored(fallback_output(&raw(&["nosuch"]), &no_color)));
+        let quiet = fallback_output(&raw(&["nosuch", "--quiet", "--json"]), &tty);
+        assert_eq!(quiet.output, output::OutputMode::Json);
+        assert!(quiet.style.quiet);
     }
 
     #[test]

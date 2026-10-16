@@ -1780,7 +1780,6 @@ Journals are recovered by the next command that commits a change, not by read co
 
 These are bugs, found while this README was written:
 
-- Usage errors ignore `--no-color` and report `meta.offline: false` even when offline. `install http://github.com/a/b -t retail` suggests an https fix without the `-t`, and `status --version` suggests itself.
 - `install --dry-run` creates empty `inflight/` and `trash/` directories in the state directory.
 
 ---

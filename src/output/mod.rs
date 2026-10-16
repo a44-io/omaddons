@@ -22,8 +22,8 @@ pub use envelope::{Envelope, Meta, SCHEMA_VERSION};
 pub use human::{count, table};
 pub use stderr::{LogLevel, Phase, ProgressSink, Reporter, SharedReporter, lock, shared_stderr};
 pub use term::{
-    OutputConfig, OutputFlags, OutputMode, ProgressMode, StderrMode, Style, TermEnv, resolve,
-    resolve_output_mode_from_argv,
+    OutputConfig, OutputFlags, OutputMode, ProgressMode, StderrMode, Style, TermEnv,
+    flags_from_argv, offline_from_argv, resolve, resolve_output_mode_from_argv,
 };
 
 use crate::error::{CommandHint, Error, Exit, Warning};

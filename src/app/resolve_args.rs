@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, Suggestion};
 use crate::model::Ref;
 use crate::resolve::catalog::Catalog;
 use crate::sources::refs::{CatalogMatch, InstalledMatch, ParsedRef, RefContext, parse_user_ref};
@@ -25,6 +25,29 @@ pub fn parse_ref(
 ) -> std::result::Result<ParsedRef, Error> {
     let all: Vec<(&str, &TargetRecord)> = records.iter().map(|(k, v)| (k.as_str(), v)).collect();
     parse_among(git_hosts, &all, catalog, cwd, request)
+}
+
+/// `error`, from parsing the argument `request` of the command `argv`, with each
+/// `omaddons install <ref>` fix the parser suggests (the https form, each ambiguity
+/// candidate) aimed at the command that ran: `argv` with `request` replaced by `<ref>`,
+/// every other argument (`-t` included) kept.
+pub fn aimed_at(mut error: Error, argv: &[String], request: &str) -> Error {
+    let aim = |s: &mut Suggestion| {
+        let aimed = s.argv().and_then(|a| match a {
+            [_, command, r] if command == "install" => {
+                crate::cli::fix_argv_replacing(argv, request, r)
+            }
+            _ => None,
+        });
+        if let Some(aimed) = aimed {
+            *s = Suggestion::command(aimed);
+        }
+    };
+    aim(&mut error.fix);
+    for alternative in &mut error.alternatives {
+        aim(alternative);
+    }
+    error
 }
 
 /// What a desired-state entry names on the target `target_id`: its `ref`, else its

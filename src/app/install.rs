@@ -22,7 +22,7 @@ use super::outcome::{
     DepItem, ItemDeps, addon_identity, dependency_items, dependency_suffix, sorted,
 };
 pub use super::outcome::{ItemError, ItemStatus, ModeNote, SkipReason, TargetRef};
-use super::resolve_args::{catalog_name, parse_ref};
+use super::resolve_args::{aimed_at, catalog_name, parse_ref};
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -422,7 +422,8 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         .iter()
         .map(|request| Item {
             request: request.clone(),
-            parsed: parse_ref(&world.config.git_hosts, &records, &catalog, &cwd, request),
+            parsed: parse_ref(&world.config.git_hosts, &records, &catalog, &cwd, request)
+                .map_err(|e| aimed_at(e, &ctx.argv, request)),
         })
         .collect();
     // clap admits only these three.

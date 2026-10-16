@@ -174,8 +174,14 @@ fn output_mode(format: Option<&str>, json_flag: bool, env: &TermEnv) -> OutputMo
 /// The output mode from raw argv, for when the CLI cannot parse its arguments but must
 /// still answer in the right format. Arguments after `--` are ignored.
 pub fn resolve_output_mode_from_argv(argv: &[OsString], env: &TermEnv) -> OutputMode {
-    let mut format = None;
-    let mut json_flag = false;
+    let flags = flags_from_argv(argv);
+    output_mode(flags.format.as_deref(), flags.json || flags.robot, env)
+}
+
+/// The presentation flags in a raw argv that did not parse, read token by token up to
+/// `--`, so a usage error renders as asked (`--json`, `--no-color`, `--quiet`, …).
+pub fn flags_from_argv(argv: &[OsString]) -> OutputFlags {
+    let mut flags = OutputFlags::default();
     let mut args = argv
         .iter()
         .skip(1)
@@ -183,16 +189,42 @@ pub fn resolve_output_mode_from_argv(argv: &[OsString], env: &TermEnv) -> Output
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--" => break,
-            "--json" | "--robot" => json_flag = true,
-            "--format" => format = args.next(),
+            "--json" => flags.json = true,
+            "--robot" => flags.robot = true,
+            "--format" => flags.format = args.next(),
+            "--progress" => flags.progress = args.next(),
+            "--no-color" => flags.no_color = true,
+            "--no-progress" => flags.no_progress = true,
+            "--quiet" => flags.quiet = true,
+            "--verbose" => flags.verbose = flags.verbose.saturating_add(1),
             other => {
                 if let Some(value) = other.strip_prefix("--format=") {
-                    format = Some(value.to_owned());
+                    flags.format = Some(value.to_owned());
+                } else if let Some(value) = other.strip_prefix("--progress=") {
+                    flags.progress = Some(value.to_owned());
+                } else if let Some(vs) = other
+                    .strip_prefix('-')
+                    .filter(|s| !s.is_empty() && s.bytes().all(|b| b == b'v'))
+                {
+                    let count = u8::try_from(vs.len()).unwrap_or(u8::MAX);
+                    flags.verbose = flags.verbose.saturating_add(count);
                 }
             }
         }
     }
-    output_mode(format.as_deref(), json_flag, env)
+    flags
+}
+
+/// Whether a raw argv that did not parse asks for an offline run: `--offline` before
+/// `--`, or `OMADDONS_OFFLINE` set to exactly `1`.
+pub fn offline_from_argv(argv: &[OsString], env: &dyn Fn(&str) -> Option<String>) -> bool {
+    env("OMADDONS_OFFLINE").as_deref() == Some("1")
+        || argv
+            .iter()
+            .skip(1)
+            .map(|a| a.to_string_lossy())
+            .take_while(|a| a != "--")
+            .any(|a| a == "--offline")
 }
 
 #[cfg(test)]
@@ -468,5 +500,40 @@ mod tests {
             resolve_output_mode_from_argv(&argv(&[]), &env_json),
             OutputMode::Json
         );
+    }
+
+    #[test]
+    fn raw_argv_finds_every_presentation_flag_and_offline() {
+        let argv = |args: &[&str]| -> Vec<OsString> {
+            std::iter::once("omaddons")
+                .chain(args.iter().copied())
+                .map(OsString::from)
+                .collect()
+        };
+        let flags = flags_from_argv(&argv(&[
+            "nosuch",
+            "--no-color",
+            "--quiet",
+            "-vv",
+            "--verbose",
+            "--progress=json",
+            "--no-progress",
+        ]));
+        assert!(flags.no_color && flags.quiet && flags.no_progress);
+        assert_eq!(
+            (flags.verbose, flags.progress.as_deref()),
+            (3, Some("json"))
+        );
+        assert!(!resolve(&flags, &tty()).style.color);
+        let after = flags_from_argv(&argv(&["x", "--", "--no-color", "-v"]));
+        assert!(!after.no_color && after.verbose == 0);
+
+        let none = |_: &str| None;
+        let one = |name: &str| (name == "OMADDONS_OFFLINE").then(|| "1".to_owned());
+        let yes = |name: &str| (name == "OMADDONS_OFFLINE").then(|| "yes".to_owned());
+        assert!(offline_from_argv(&argv(&["nosuch", "--offline"]), &none));
+        assert!(!offline_from_argv(&argv(&["x", "--", "--offline"]), &none));
+        assert!(offline_from_argv(&argv(&["nosuch"]), &one));
+        assert!(!offline_from_argv(&argv(&["nosuch"]), &yes), "exactly 1");
     }
 }

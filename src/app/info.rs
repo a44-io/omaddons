@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use super::drift::DriftSummary;
 use super::history::TargetRef;
-use super::resolve_args::parse_ref;
+use super::resolve_args::{aimed_at, parse_ref};
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -256,7 +256,7 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
         if matches!(e.code, ErrorCode::NotFound) {
             not_found(&args.query)
         } else {
-            e
+            aimed_at(e, &ctx.argv, &args.query)
         }
     })?;
     let r = parsed.r#ref.clone();
