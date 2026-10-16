@@ -283,6 +283,89 @@ fn a_pin_that_commits_while_an_update_plans_wins() {
     assert_eq!(s.history(), ["install", "update"], "two commits, none by A");
 }
 
+/// Which side of the records-only race pauses.
+#[derive(Debug, Clone, Copy)]
+enum Sleeper {
+    /// The pin, once planned; the install runs to completion meanwhile.
+    Pin,
+    /// The install, once staged; the pin runs to completion meanwhile.
+    Install,
+}
+
+/// Pins Foo while Bar is installed on the same target, `sleeper` paused in the middle,
+/// and checks the final state only: both commit, neither goes stale.
+fn pin_races_an_install(sleeper: Sleeper) {
+    let s = Scene::new();
+    s.install("gh:o/foo", "v1");
+    let (folders, before) = (s.folders(), s.record("foo"));
+    let (generation, history) = (s.generation(), s.history());
+    let pin = ["pin", "Foo", "-t", "retail", "--offline"];
+    let bar = s.zip("bar");
+    let install = [
+        "install",
+        "gh:o/bar",
+        "--file",
+        bar.as_str(),
+        "-t",
+        "retail",
+        "--offline",
+    ];
+    let inflight = s.home.state().join("inflight");
+    let stage = s.home.client("_retail_").join("Interface/.omaddons/stage");
+    let busy = |dir: &std::path::Path| fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some());
+    let (pinned, installed) = match sleeper {
+        Sleeper::Pin => {
+            let child = s.home.spawn(
+                &pin,
+                &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:1500")],
+            );
+            poll("the pin to plan", || busy(&inflight));
+            let installed = s.home.run(&install);
+            (wait(child, &pin), installed)
+        }
+        Sleeper::Install => {
+            let child = s.home.spawn(
+                &install,
+                &[("OMADDONS_FAILPOINTS", "engine.stage.synced=sleep:1500")],
+            );
+            poll("the install to stage", || busy(&stage));
+            let pinned = s.home.run(&pin);
+            (pinned, wait(child, &install))
+        }
+    };
+    // install reports its transaction in `data.tx`, pin per target.
+    for (r, tx) in [
+        (&pinned, &["data", "targets", "0", "tx"][..]),
+        (&installed, &["data", "tx"][..]),
+    ] {
+        let envelope = r.expect(0);
+        let tx = tx.iter().fold(&envelope, |v, k| match k.parse::<usize>() {
+            Ok(i) => &v[i],
+            Err(_) => &v[*k],
+        });
+        assert!(tx.is_string(), "{sleeper:?}: both commit\n{}", r.context());
+    }
+    let now = s.record("foo");
+    assert_eq!(
+        (&now["pinned"], &now["release_id"]),
+        (&Value::Bool(true), &before["release_id"]),
+        "{sleeper:?}: {now}"
+    );
+    assert!(!s.record("bar").is_null() && s.addons().join("Bar").is_dir());
+    assert_eq!(s.generation(), generation + 2, "{sleeper:?}");
+    let mut added = s.history().split_off(history.len());
+    added.sort();
+    assert_eq!(added, ["install", "pin"], "{sleeper:?}");
+    assert_eq!(s.folders(), folders, "{sleeper:?}: Foo's folders untouched");
+    assert!(s.journals().is_empty(), "{sleeper:?}");
+}
+
+#[test]
+fn a_pin_and_an_install_of_another_addon_both_commit_either_way() {
+    pin_races_an_install(Sleeper::Pin);
+    pin_races_an_install(Sleeper::Install);
+}
+
 #[test]
 fn every_commit_holds_the_lock_under_50_ms() {
     let s = Scene::new();

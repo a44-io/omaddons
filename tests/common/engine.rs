@@ -100,22 +100,95 @@ impl Scene {
 
     /// The target record's generation; 0 before the first commit.
     pub fn generation(&self) -> u64 {
-        let dir = self.home.state().join("targets");
-        let Ok(listing) = fs::read_dir(&dir) else {
-            return 0;
-        };
-        listing
-            .map(|e| e.unwrap().path())
-            .filter(|p| {
-                let name = p.file_name().unwrap().to_string_lossy().into_owned();
-                name.ends_with(".json") && !name.ends_with(".files.json")
-            })
+        self.record_file()
             .map(|p| {
                 let value: Value = serde_json::from_slice(&fs::read(p).unwrap()).unwrap();
                 value["generation"].as_u64().unwrap()
             })
-            .next()
             .unwrap_or(0)
+    }
+
+    /// The retail target's record file, once it exists.
+    fn record_file(&self) -> Option<PathBuf> {
+        fs::read_dir(self.home.state().join("targets"))
+            .ok()?
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                name.ends_with(".json") && !name.ends_with(".files.json")
+            })
+    }
+
+    /// The record of `addon` (its key), `null` when it has none.
+    pub fn record(&self, addon: &str) -> Value {
+        self.record_file()
+            .map(|p| {
+                let value: Value = serde_json::from_slice(&fs::read(p).unwrap()).unwrap();
+                value["addons"][addon].clone()
+            })
+            .unwrap_or(Value::Null)
+    }
+
+    /// The folder keys the files index holds.
+    pub fn indexed(&self) -> Vec<String> {
+        let Some(record) = self.record_file() else {
+            return Vec::new();
+        };
+        let index = record.with_extension("files.json");
+        fs::read(&index)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|v| {
+                v["folders"]
+                    .as_object()
+                    .map(|m| m.keys().cloned().collect())
+            })
+            .unwrap_or_default()
+    }
+
+    /// Each history line's kind and its ops as `(op, folder)`, oldest first (torn lines
+    /// skipped).
+    pub fn history_ops(&self) -> Vec<(String, Vec<(String, String)>)> {
+        fs::read_to_string(self.home.state().join("history.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .map(|v| {
+                let ops = v["ops"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|o| {
+                        (
+                            o["op"].as_str().unwrap_or_default().to_owned(),
+                            o["folder"].as_str().unwrap_or_default().to_owned(),
+                        )
+                    })
+                    .collect();
+                (v["kind"].as_str().unwrap_or_default().to_owned(), ops)
+            })
+            .collect()
+    }
+
+    /// AddOns entries other than `allowed`.
+    pub fn stray(&self, allowed: &[&str]) -> Vec<String> {
+        let mut stray: Vec<String> = fs::read_dir(self.addons())
+            .map(|l| {
+                l.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        stray.retain(|n| !allowed.contains(&n.as_str()));
+        stray
+    }
+
+    /// The argv (with `--json`) of `omaddons <args> -t retail --offline`.
+    pub fn args(&self, args: &[&str]) -> Vec<String> {
+        args.iter()
+            .copied()
+            .chain(["-t", "retail", "--offline", "--json"])
+            .map(str::to_owned)
+            .collect()
     }
 
     /// The kinds in history.jsonl, oldest first (torn lines skipped).
