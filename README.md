@@ -37,7 +37,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their dependencies (from the catalog, Tukui or WoWInterface), WoWInterface and Tukui (ElvUI) addons install and update, `search` and `auth github` work, and `adopt` brings addons installed by hand or by other managers under management. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are done, and omaddons runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their dependencies (from the catalog, Tukui or WoWInterface), WoWInterface and Tukui (ElvUI) addons install and update, `search` and `auth github` work, and `adopt` brings addons installed by hand or by other managers under management. Milestone 3, the Omarchy widget, is next. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -121,7 +121,7 @@ omaddons install plater -t forever --json --actor agent --reason "user asked for
 
 ## What works today
 
-Milestone 1 (the working slice) is complete. Everything in this README describes code that exists and is tested, unless it is marked as planned.
+Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are complete. Everything in this README describes code that exists and is tested, unless it is marked as planned.
 
 | Area | State |
 |---|---|
@@ -178,7 +178,7 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | Private-server clients 1.12.1 to 5.4.8 as first-class targets | ✅ | ❌ | ❌ | ❌ | ⚠️ by hand |
 | Checks the archive's TOCs against the client's load rules before writing | ✅ | ⚠️ host metadata | ⚠️ host metadata | ⚠️ host metadata | ❌ |
 | Undo installs and removals byte for byte, SavedVariables included | ✅ | ❌ | ❌ | ⚠️ `rollback` of updates | ❌ |
-| Update everything in one command | ⚠️ re-run `install`; `update` in M2 | ✅ | ✅ | ✅ | ❌ |
+| Update everything in one command | ✅ `update`, every client in one run | ✅ | ✅ | ✅ | ❌ |
 | GitHub releases | ✅ keyless | ✅ | ❌ | ✅ | ⚠️ |
 | WoWInterface, Tukui | ✅ keyless | ✅ | ❌ | ✅ | ⚠️ |
 | CurseForge | 🗓️ M5, opt-in | ✅ WowUp-CF build | ✅ | ✅ | ⚠️ |
@@ -200,7 +200,6 @@ This comparison is from each project's own documentation as of October 2026. Cor
 
 - you depend on CurseForge-only or Wago-only addons today (CurseForge app, WowUp-CF, WowUp);
 - you want a graphical app (WowUp, the CurseForge app, or [strongbox](https://github.com/ogri-la/strongbox), which covers WoWInterface, GitHub and GitLab);
-- you want one command that updates everything today, before milestone 2 (instawow, WowUp);
 - you play on Windows or macOS (omaddons is Linux only, by design).
 
 ---
@@ -1791,7 +1790,7 @@ None open. The bugs found while this README was written are fixed.
 |---|---|---|
 | **M1: working slice** | Discovery, ClientRules and the TOC engine, fsx and the transaction engine with undo, keyless GitHub/git/url/local sources, the core CLI contract | ✅ Done (2026-10-15) |
 | Follow-up: Classic and Forever gaps | Multi-flavor archives, never-launched clients, game modes, real-machine tests for every live client, the catalog × flavor probe | 🔄 One check remains, to run during the Forever stress test on 2026-10-19: do the installed addons actually load in the live client? |
-| **M2: updates and adoption** | `outdated`, `update`, `pin`/`unpin`; WoWInterface and Tukui; changelogs; dependencies; drift detection; tiered `adopt`; `addons.toml` with `export`, `sync` and `copy`; `search`; `auth github` | 🗓️ Planned and decomposed into 75 beads |
+| **M2: updates and adoption** | `outdated`, `update`, `pin`/`unpin`; WoWInterface and Tukui; changelogs; dependencies; drift detection; tiered `adopt`; `addons.toml` with `export`, `sync` and `copy`; `search`; `auth github` | ✅ Done (2026-10-16) |
 | **M3: the widget** | The Omarchy bar widget (QML, embedded in the binary, installed by `omaddons omarchy install`), `errors` (BugGrabber), `backup` of `WTF/` | 🗓️ Planned |
 | **M4: the agent surface** | `capabilities`, `robot-docs`, `install-skill`, intent inference, the full `doctor`, stored plans (`--dry-run` then `apply`), `completions`, wire-name golden tests; **the first tag freezes the contract** | 🗓️ Planned |
 | **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: versioning, CHANGELOG, a local PKGBUILD, packaged completions and a man page | 🗓️ Planned |
@@ -1915,9 +1914,11 @@ Core loop
   omaddons status --json                         # every client (target), running state, attention
   omaddons install <ref>... -t <target> --dry-run --json
   omaddons install <ref>... -t <target> --json --actor agent --reason "<why>"
+  omaddons outdated --json                       # what has updates, on every client
+  omaddons update --all --dry-run --json         # then without --dry-run
   omaddons undo --last-by agent --json           # the escape hatch
 
-Refs     catalog name | gh:Owner/Repo | git:https://…#rev | url:https://… | ./zip-or-folder
+Refs     catalog name | gh:Owner/Repo | wowi:<id> | tukui:<slug> | git:https://…#rev | url:https://… | ./zip-or-folder
 Targets  -t retail | era | sod | hardcore | classic | anniversary | forever | wotlk | <key> | <path>
 
 Read the envelope
@@ -1933,7 +1934,7 @@ Rules
   - --dry-run first for anything destructive; --force only after reading the refusal.
   - Never write into Interface/AddOns yourself; every change must go through omaddons to stay undoable.
   - --offline for read-only work; net-log shows every request that reached the network.
-  - Re-running install updates an addon (not url: refs, not pinned ones: addon_pinned); there is no update command before milestone 2.
+  - update installs the newest releases on every client in one run (pinned ones stay: addon_pinned); one undo reverts it.
   - Only install falls back to a default target; pass -t everywhere else when more than one client matches.
 
 State   ~/.config/omaddons/config.toml · ~/.local/state/omaddons/ · ~/.cache/omaddons/
