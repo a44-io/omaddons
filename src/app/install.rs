@@ -423,11 +423,13 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         targets: vec![TxTarget {
             discovered: target.clone(),
             changes: parsed.iter().map(|p| change_for(p, target)).collect(),
+            default_kind: TxKind::Install,
         }],
         force: args.force,
         while_running: ctx.while_running,
         dry_run: ctx.dry_run,
         reason: ctx.reason.clone(),
+        kind: None,
     };
     let done = engine.run(&req)?;
     let record = target
@@ -612,12 +614,14 @@ fn choose_target<'w>(
             .map(|d| TxTarget {
                 discovered: (*d).clone(),
                 changes: parsed.iter().map(|p| change_for(p, d)).collect(),
+                default_kind: TxKind::Install,
             })
             .collect(),
         force: false,
         while_running: true,
         dry_run: true,
         reason: None,
+        kind: None,
     };
     let probed = engine.run(&probe)?;
     let failure = |d: &DiscoveredTarget, r: &Ref| {
@@ -812,7 +816,7 @@ fn build_items(
                 .targets
                 .iter()
                 .flat_map(|t| &t.work)
-                .find_map(|w| w.record.as_ref().filter(|r| r.r#ref == p.r#ref));
+                .find_map(|w| w.record().filter(|r| r.r#ref == p.r#ref));
             let installed = record.and_then(|r| r.addons.values().find(|a| a.r#ref == p.r#ref));
             match change {
                 Some(change) => {
@@ -901,6 +905,7 @@ fn sorted(folders: &FolderSummary) -> FolderSummary {
         replaced: sort(&folders.replaced),
         removed: sort(&folders.removed),
         skipped,
+        recorded: sort(&folders.recorded),
     }
 }
 
@@ -1157,9 +1162,11 @@ mod tests {
             replaced: Vec::new(),
             removed: vec![f("Z"), f("y")],
             skipped: vec![skip("m"), skip("K")],
+            recorded: vec![f("Q"), f("p")],
         });
         assert_eq!(s.added, [f("A"), f("b"), f("c")]);
         assert_eq!(s.removed, [f("y"), f("Z")]);
         assert_eq!(s.skipped, [skip("K"), skip("m")]);
+        assert_eq!(s.recorded, [f("p"), f("Q")]);
     }
 }

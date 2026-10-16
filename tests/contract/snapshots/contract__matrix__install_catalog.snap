@@ -28,6 +28,7 @@ expression: s.stable(&c.envelope)
           "added": [
             "WeakAuras"
           ],
+          "recorded": [],
           "removed": [],
           "replaced": [],
           "skipped": []

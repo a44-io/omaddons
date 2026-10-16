@@ -15,6 +15,7 @@ use common::netlog::{assert_each_url_once, read_net_log};
 use common::targets::battlenet;
 use common::trees::tree_hash;
 use omaddons::engine::blobs::BlobCache;
+use omaddons::engine::edit::RecordEdit;
 use omaddons::engine::inspect::ArchiveLimits;
 use omaddons::engine::plan::{
     ChangeKind, OpKind, PinIntent, Plan, PlanCtx, PlanRequest, RequestedChange, TargetRequest, plan,
@@ -22,7 +23,7 @@ use omaddons::engine::plan::{
 use omaddons::fsx::{InflightLock, ScopeTable, WriteSession, Writer};
 use omaddons::model::{
     Actor, AddonReason, AddonRecord, AddonState, Channel, FolderName, Target, TargetKey, TxId,
-    VersionConfidence,
+    TxKind, VersionConfidence,
 };
 use omaddons::net::Http;
 use omaddons::rules::RulesTable;
@@ -32,7 +33,8 @@ use omaddons::state::paths::Paths;
 use omaddons::state::records::TargetRecord;
 use omaddons::state::store;
 use support::{
-    Env, chosen, folders, foo_v1_with_v2_out, install, release, toc, update_foo, user_install,
+    Env, chosen, folders, foo_v1_with_v2_out, install, release, request, toc, update_foo,
+    user_install,
 };
 
 const BASE: &str = "https://github.com/o/foo";
@@ -115,6 +117,7 @@ mod support {
                 force,
                 while_running: false,
                 dry_run: true,
+                kind: None,
             };
             plan(&req, &ctx).unwrap()
         }
@@ -171,9 +174,19 @@ mod support {
 
     /// Install gh:o/foo into `target`.
     pub fn install(target: &Target) -> TargetRequest {
+        request(target, vec![user_install("gh:o/foo")], TxKind::Install)
+    }
+
+    /// `changes` on `target` for a command of `default_kind`.
+    pub fn request(
+        target: &Target,
+        changes: Vec<RequestedChange>,
+        default_kind: TxKind,
+    ) -> TargetRequest {
         TargetRequest {
             target: target.clone(),
-            changes: vec![user_install("gh:o/foo")],
+            changes,
+            default_kind,
         }
     }
 
@@ -194,12 +207,10 @@ mod support {
 
     /// Update the installed Foo on `target`.
     pub fn update_foo(target: &Target) -> TargetRequest {
-        TargetRequest {
-            target: target.clone(),
-            changes: vec![RequestedChange::Update {
-                addon: "foo".into(),
-            }],
-        }
+        let update = RequestedChange::Update {
+            addon: "foo".into(),
+        };
+        request(target, vec![update], TxKind::Update)
     }
 
     /// Foo installed at v1 on retail (its folder on disk), its record edited by `edit`,
@@ -231,15 +242,14 @@ mod support {
     /// The blob the target's first addon installs from.
     pub fn chosen(plan: &Plan, target: usize) -> String {
         plan.targets[target].work[0]
-            .blob
-            .as_ref()
+            .blob()
             .map(|b| b.display().to_string())
             .unwrap_or_default()
     }
 
     /// The TOC files of the target's first addon.
     pub fn folders(plan: &Plan, target: usize) -> Vec<String> {
-        let inspected = plan.targets[target].work[0].inspected.as_ref().unwrap();
+        let inspected = plan.targets[target].work[0].inspected().unwrap();
         inspected
             .folders
             .iter()
@@ -503,18 +513,15 @@ fn refusals_surface_at_plan_time_and_nothing_is_written_outside_the_cache() {
     let mut retail = env.retail.clone();
     env.register(&mut retail, &[("Kept", "v1", &["Kept"])]);
     env.running.insert(retail.client_dir.clone());
-    let remove = TargetRequest {
-        target: retail.clone(),
-        changes: vec![
-            RequestedChange::Remove {
-                addon: "kept".into(),
-            },
-            RequestedChange::Remove {
-                addon: "Nope".into(),
-            },
-        ],
-    };
-    let plan = env.plan(vec![remove], false);
+    let removes = vec![
+        RequestedChange::Remove {
+            addon: "kept".into(),
+        },
+        RequestedChange::Remove {
+            addon: "Nope".into(),
+        },
+    ];
+    let plan = env.plan(vec![request(&retail, removes, TxKind::Remove)], false);
     let codes: Vec<&str> = plan
         .failures
         .iter()
@@ -608,14 +615,15 @@ fn local_and_url_sources_fetch_without_requests() {
     assert!(read_net_log(&env.paths).is_empty(), "no request");
 
     let plan = env.plan(
-        vec![TargetRequest {
-            target: env.retail.clone(),
-            changes: vec![user_install(&format!("file:{}", dir.display()))],
-        }],
+        vec![request(
+            &env.retail,
+            vec![user_install(&format!("file:{}", dir.display()))],
+            TxKind::Install,
+        )],
         false,
     );
     assert!(plan.failures.is_empty(), "{:?}", plan.failures);
-    let record = plan.targets[0].work[0].record.as_ref().unwrap();
+    let record = plan.targets[0].work[0].record().unwrap();
     assert_eq!(
         (
             record.version.as_str(),
@@ -640,7 +648,7 @@ fn an_update_keeps_a_dependency_and_its_requirers() {
         (t.changes[0].kind, t.changes[0].to_version.as_deref()),
         (ChangeKind::Update, Some("v2"))
     );
-    let record = t.work[0].record.as_ref().unwrap();
+    let record = t.work[0].record().unwrap();
     assert_eq!(
         (record.reason, record.pinned, record.channel),
         (AddonReason::Dependency, false, Channel::Stable),
@@ -655,7 +663,7 @@ fn an_update_keeps_a_dependency_and_its_requirers() {
     // An explicit install of the same dependency promotes it.
     let (env, retail) = foo_v1_with_v2_out(|r| r.reason = AddonReason::Dependency);
     let plan = env.plan(vec![install(&retail)], false);
-    let record = plan.targets[0].work[0].record.as_ref().unwrap();
+    let record = plan.targets[0].work[0].record().unwrap();
     assert_eq!(record.reason, AddonReason::Explicit);
 }
 
@@ -687,7 +695,7 @@ fn an_update_of_a_pinned_addon_is_a_no_op_without_a_fetch() {
     }
     let plan = env.plan(vec![versioned], false);
     assert!(plan.failures.is_empty(), "{:?}", plan.failures);
-    let record = plan.targets[0].work[0].record.as_ref().unwrap();
+    let record = plan.targets[0].work[0].record().unwrap();
     assert_eq!((record.version.as_str(), record.pinned), ("v2", true));
 }
 
@@ -720,4 +728,46 @@ fn a_record_only_difference_is_unchanged_with_a_note() {
     });
     let plan = env.plan(vec![install(&retail)], false);
     assert!(plan.targets[0].notes.is_empty() && plan.targets[0].work.is_empty());
+}
+
+#[test]
+fn a_records_only_edit_plans_as_an_edit_with_its_fields_and_recorded_folders() {
+    let (env, retail) = foo_v1_with_v2_out(|_| {});
+    let edit = |edit| RequestedChange::Edit {
+        addon: "foo".into(),
+        edit,
+    };
+    let pin = edit(RecordEdit::SetPinned(true));
+    let plan = env.plan(vec![request(&retail, vec![pin], TxKind::Install)], false);
+    assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+    let value = serde_json::to_value(&plan).unwrap();
+    let target = &value["targets"][0];
+    assert_eq!(target["kind"], "pin", "a pinned-only edit");
+    assert_eq!(
+        target["changes"][0],
+        serde_json::json!({
+            "addon": "Foo",
+            "ref": "gh:o/foo",
+            "kind": "edit",
+            "fields": ["pinned"],
+            "from_version": "1",
+            "to_version": "1",
+            "folders": {"added": [], "replaced": [], "removed": [], "skipped": [], "recorded": ["Foo"]},
+        })
+    );
+    assert_eq!(target["ops"], serde_json::json!([]), "no folder moves");
+    assert!(
+        read_net_log(&env.paths).is_empty(),
+        "an edit needs no network"
+    );
+
+    // Other fields: the command's kind.
+    let channel = edit(RecordEdit::SetChannel(Channel::Beta));
+    let plan = env.plan(vec![request(&retail, vec![channel], TxKind::Update)], false);
+    let value = serde_json::to_value(&plan).unwrap();
+    assert_eq!(value["targets"][0]["kind"], "update");
+    assert_eq!(
+        value["targets"][0]["changes"][0]["fields"],
+        serde_json::json!(["channel"])
+    );
 }

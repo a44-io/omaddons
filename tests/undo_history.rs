@@ -376,7 +376,7 @@ fn history_filters_orders_and_truncates() {
         ),
         (
             &Value::from("first"),
-            &serde_json::json!({"added": 1, "replaced": 0, "removed": 0}),
+            &serde_json::json!({"added": 1, "replaced": 0, "removed": 0, "recorded": 0}),
             &Value::from("retail"),
             &Value::from("committed")
         )

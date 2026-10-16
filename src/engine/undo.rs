@@ -28,6 +28,7 @@ use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::edit::changed_fields;
 use super::journal::{
     self, CommitPayload, IndexChanges, Journal, Prepared, RecoveryAction, recover_all, recover_tx,
 };
@@ -713,7 +714,7 @@ impl FolderPlan {
                 Some(SwapOp::Add { name }) => summary.added.push(name.clone()),
                 Some(SwapOp::Replace { live, .. }) => summary.replaced.push(live.clone()),
                 Some(SwapOp::Remove { live, .. }) => summary.removed.push(live.clone()),
-                None => {}
+                None => summary.recorded.push(folder.clone()),
             }
             plan.swap.extend(swap);
             plan.policy.extend(policy);
@@ -785,23 +786,33 @@ fn restored_state(
     let mut changes = Vec::new();
     for addon_key in &direct {
         let (now, then) = (current.addons.get(addon_key), before.addons.get(addon_key));
-        let kind = match (now, then) {
-            (Some(_), None) => ChangeKind::Remove,
-            (None, Some(_)) => ChangeKind::Install,
-            (Some(_), Some(_)) => ChangeKind::Update,
-            (None, None) => continue,
-        };
-        let Some(addon) = then.or(now) else { continue };
         let summary = folders
             .summaries
             .iter()
             .find(|(a, _)| TargetRecord::addon_key(a) == *addon_key)
             .map(|(_, s)| s.clone())
             .unwrap_or_default();
+        let swapped = !(summary.added.is_empty()
+            && summary.replaced.is_empty()
+            && summary.removed.is_empty());
+        let kind = match (now, then) {
+            (Some(_), None) => ChangeKind::Remove,
+            (None, Some(_)) => ChangeKind::Install,
+            // Reverting a records-only change (a pin) moves no folder.
+            (Some(_), Some(_)) if !swapped => ChangeKind::Edit,
+            (Some(_), Some(_)) => ChangeKind::Update,
+            (None, None) => continue,
+        };
+        let Some(addon) = then.or(now) else { continue };
+        let fields = match kind {
+            ChangeKind::Edit => changed_fields(now, then),
+            _ => Vec::new(),
+        };
         changes.push(Change {
             addon: addon.name.clone(),
             r#ref: addon.r#ref.clone(),
             kind,
+            fields,
             from_version: now.map(|a| a.version.clone()),
             to_version: then.map(|a| a.version.clone()),
             folders: summary,

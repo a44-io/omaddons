@@ -15,6 +15,7 @@ expression: s.stable(&c.envelope)
         "error": null,
         "folders": {
           "added": [],
+          "recorded": [],
           "removed": [],
           "replaced": [],
           "skipped": []

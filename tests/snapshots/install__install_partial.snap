@@ -29,6 +29,7 @@ expression: "support::stable(&envelope)"
             "Foo",
             "FooOptions"
           ],
+          "recorded": [],
           "removed": [],
           "replaced": [],
           "skipped": []
@@ -51,6 +52,7 @@ expression: "support::stable(&envelope)"
         },
         "folders": {
           "added": [],
+          "recorded": [],
           "removed": [],
           "replaced": [],
           "skipped": []

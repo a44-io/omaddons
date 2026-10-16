@@ -15,6 +15,7 @@ expression: "support::stable(&envelope)"
         "error": null,
         "folders": {
           "added": [],
+          "recorded": [],
           "removed": [],
           "replaced": [],
           "skipped": []

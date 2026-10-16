@@ -24,7 +24,7 @@ use crate::engine::plan::RequestedChange;
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::inventory::{Depth, FolderClass, inventory};
-use crate::model::{AddonRecord, FolderName, Ref, ReloadRequired, TxId};
+use crate::model::{AddonRecord, FolderName, Ref, ReloadRequired, TxId, TxKind};
 use crate::output::{Outcome, Style};
 use crate::state::records::TargetRecord;
 
@@ -231,11 +231,13 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
                     addon: (*n).to_owned(),
                 })
                 .collect(),
+            default_kind: TxKind::Remove,
         }],
         force: false,
         while_running: ctx.while_running,
         dry_run: ctx.dry_run,
         reason: ctx.reason.clone(),
+        kind: None,
     };
     let done = Engine::new(ctx, &world, "remove")?.run(&req)?;
     let built: Vec<(RemoveItem, Option<Error>)> =

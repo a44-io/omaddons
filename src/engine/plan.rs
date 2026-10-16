@@ -22,6 +22,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::blobs::{BlobCache, Storage};
+use super::edit::{
+    EditField, RecordEdit, RecordGuard, apply_edit, apply_edits, changed_fields, sorted_names,
+};
 use super::inspect::{
     ArchiveLimits, Inspected, SkippedFolder, accepts, inspect, inspect_dir, partition, verify,
 };
@@ -41,7 +44,7 @@ use crate::resolve::select::{EmptyReason, select};
 use crate::rules::RulesTable;
 use crate::sources::{SourceRegistry, Wanted, fetch_once};
 use crate::state::config::RunningPolicy;
-use crate::state::files_index::FilesIndex;
+use crate::state::files_index::{FilesIndex, FolderIndex};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::store;
@@ -57,6 +60,8 @@ pub struct PlanRequest {
     pub force: bool,
     pub while_running: bool,
     pub dry_run: bool,
+    /// The transaction kind, whatever the changes are (`adopt`, `pin`, `sync`).
+    pub kind: Option<TxKind>,
 }
 
 /// The changes for one target.
@@ -64,6 +69,8 @@ pub struct PlanRequest {
 pub struct TargetRequest {
     pub target: Target,
     pub changes: Vec<RequestedChange>,
+    /// What the command means when only records change (see [`target_kind`]).
+    pub default_kind: TxKind,
 }
 
 /// One requested change.
@@ -100,6 +107,11 @@ pub enum RequestedChange {
     /// and reason: a pinned addon stays where it is (`addon_pinned`).
     Update {
         addon: String,
+    },
+    /// A change to the record alone (an adoption names its addon in its spec).
+    Edit {
+        addon: String,
+        edit: RecordEdit,
     },
 }
 
@@ -193,12 +205,16 @@ pub fn carry_over(
 ) -> AddonRecord {
     let mut record = chosen.clone();
     record.state = AddonState::Ok;
-    let mut required_by: BTreeSet<String> = existing
-        .map(|e| e.required_by.iter().cloned().collect())
-        .unwrap_or_default();
-    required_by.extend(intent.required_by_add.iter().cloned());
-    required_by.retain(|n| !intent.required_by_remove.contains(n));
-    record.required_by = required_by.into_iter().collect();
+    let recorded = existing.map(|e| e.required_by.clone()).unwrap_or_default();
+    let removed: BTreeSet<String> = intent
+        .required_by_remove
+        .iter()
+        .map(|n| TargetRecord::addon_key(n))
+        .collect();
+    record.required_by = sorted_names(recorded.into_iter().chain(intent.required_by_add.clone()))
+        .into_iter()
+        .filter(|n| !removed.contains(&TargetRecord::addon_key(n)))
+        .collect();
     match existing {
         None => {
             record.pinned = intent.pin == PinIntent::Pin;
@@ -225,39 +241,19 @@ pub fn carry_over(
     record
 }
 
-/// A record field a request can change without changing the release.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RecordField {
-    Pinned,
-    Channel,
-    Reason,
-}
-
-impl RecordField {
-    pub const fn wire(self) -> &'static str {
-        match self {
-            Self::Pinned => "pinned",
-            Self::Channel => "channel",
-            Self::Reason => "reason",
-        }
-    }
-}
-
-/// The fields `carried` changes in `existing`, in field order: what a request that
-/// chose the installed release would still record (records-only work, A4.3).
-pub fn record_differences(existing: &AddonRecord, carried: &AddonRecord) -> Vec<RecordField> {
-    let mut fields = Vec::new();
-    if existing.pinned != carried.pinned {
-        fields.push(RecordField::Pinned);
-    }
-    if existing.channel != carried.channel {
-        fields.push(RecordField::Channel);
-    }
-    if existing.reason != carried.reason {
-        fields.push(RecordField::Reason);
-    }
-    fields
+/// The fields among `pinned`, `channel` and `reason` that `carried` changes in
+/// `existing`, sorted: what a request that chose the installed release would still
+/// record (records-only work, A4.3). `required_by` is never carried by a request.
+pub fn record_differences(existing: &AddonRecord, carried: &AddonRecord) -> Vec<EditField> {
+    changed_fields(Some(existing), Some(carried))
+        .into_iter()
+        .filter(|f| {
+            matches!(
+                f,
+                EditField::Pinned | EditField::Channel | EditField::Reason
+            )
+        })
+        .collect()
 }
 
 /// `addon_pinned`: a pinned addon was left where it is. Its fix shows the pin and the
@@ -354,6 +350,9 @@ pub struct TargetPlan {
     /// change although its release is current.
     #[serde(skip)]
     pub notes: Vec<String>,
+    /// The command's kind when only records change (see [`target_kind`]).
+    #[serde(skip)]
+    pub default_kind: TxKind,
 }
 
 /// One addon changing.
@@ -363,6 +362,9 @@ pub struct Change {
     #[serde(rename = "ref")]
     pub r#ref: Ref,
     pub kind: ChangeKind,
+    /// The record fields an `edit` changes, sorted; omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<EditField>,
     pub from_version: Option<String>,
     pub to_version: Option<String>,
     pub folders: FolderSummary,
@@ -374,6 +376,10 @@ pub enum ChangeKind {
     Install,
     Update,
     Remove,
+    /// Unmanaged folders brought under management, unchanged.
+    Adopt,
+    /// The record alone changed (`fields` names what).
+    Edit,
 }
 
 /// Folders by what happens to them (live spellings for replaced and removed ones).
@@ -384,6 +390,9 @@ pub struct FolderSummary {
     pub removed: Vec<FolderName>,
     /// Folders of the archive this client does not load: never written or recorded.
     pub skipped: Vec<SkippedFolder>,
+    /// Folders whose record changed without a swap (a pin, an adoption, a forgotten
+    /// addon whose folders were gone).
+    pub recorded: Vec<FolderName>,
 }
 
 /// One folder operation.
@@ -424,10 +433,27 @@ pub struct PlanFailure {
     pub cause: Option<Error>,
 }
 
-/// Everything the commit needs for one addon.
+/// Everything the commit needs for one addon. A transaction has one work per addon: a
+/// second change to the same addon is folded into the first ([`Planned::merge_into`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddonWork {
     pub addon: String,
+    pub mode: WorkMode,
+}
+
+/// What a work changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkMode {
+    /// Folders staged and swapped: an install, update or remove.
+    Folders(Box<FolderWork>),
+    /// The record alone: nothing is staged or swapped, the running policy does not
+    /// apply, and the client may run.
+    Records(Box<RecordsWork>),
+}
+
+/// An install, update or remove.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderWork {
     /// The record after the change; `None` when the addon is removed.
     pub record: Option<AddonRecord>,
     /// The zip staging reads; `None` for directory inputs (their files name sources).
@@ -443,6 +469,76 @@ pub struct AddonWork {
     /// The install's intent, which the commit applies again to the current record;
     /// `None` for removes.
     pub intent: Option<InstallIntent>,
+    /// Records-only edits folded into this work, applied after [`carry_over`] at plan
+    /// time and again under the lock.
+    pub edits: Vec<RecordEdit>,
+}
+
+/// A change to the record alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordsWork {
+    /// The record as planned against; `None` for an adoption.
+    pub before: Option<AddonRecord>,
+    /// The record after `edits`; `None` when it is forgotten.
+    pub after: Option<AddonRecord>,
+    /// Applied again under the lock to the record as it is then, so a concurrent change
+    /// to another field survives.
+    pub edits: Vec<RecordEdit>,
+    /// Files index entries the edits add (an adoption's folders).
+    pub index_upserts: Vec<(FolderName, FolderIndex)>,
+    /// Files index entries the edits drop (a forgotten addon's folders).
+    pub index_removals: Vec<FolderName>,
+    pub guard: RecordGuard,
+}
+
+impl AddonWork {
+    /// The record after the change; `None` when the addon goes.
+    pub fn record(&self) -> Option<&AddonRecord> {
+        match &self.mode {
+            WorkMode::Folders(f) => f.record.as_ref(),
+            WorkMode::Records(r) => r.after.as_ref(),
+        }
+    }
+
+    /// The archive's folders to stage, for an install or update.
+    pub fn inspected(&self) -> Option<&Inspected> {
+        match &self.mode {
+            WorkMode::Folders(f) => f.inspected.as_ref(),
+            WorkMode::Records(_) => None,
+        }
+    }
+
+    /// The zip staging reads.
+    pub fn blob(&self) -> Option<&std::path::Path> {
+        match &self.mode {
+            WorkMode::Folders(f) => f.blob.as_deref(),
+            WorkMode::Records(_) => None,
+        }
+    }
+
+    /// The folder renames.
+    pub fn swap(&self) -> &[SwapOp] {
+        match &self.mode {
+            WorkMode::Folders(f) => &f.swap,
+            WorkMode::Records(_) => &[],
+        }
+    }
+
+    /// Folders taken from other addons (`--force`).
+    pub fn transfers(&self) -> &[Transfer] {
+        match &self.mode {
+            WorkMode::Folders(f) => &f.transfers,
+            WorkMode::Records(_) => &[],
+        }
+    }
+
+    /// Addon keys that become degraded.
+    pub fn degraded(&self) -> &[String] {
+        match &self.mode {
+            WorkMode::Folders(f) => &f.degraded,
+            WorkMode::Records(_) => &[],
+        }
+    }
 }
 
 /// A change after its ref is known, before fetching.
@@ -456,6 +552,10 @@ enum Want {
     },
     Remove {
         addon: String,
+    },
+    Edit {
+        addon: String,
+        edit: RecordEdit,
     },
     Failed {
         r#ref: Option<Ref>,
@@ -514,6 +614,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             work: Vec::new(),
             unchanged_warnings: Vec::new(),
             notes: Vec::new(),
+            default_kind: tr.default_kind,
         };
         let live = match inventory(target, Some(&record), ctx.table, Depth::Classes) {
             Ok(live) => live,
@@ -530,7 +631,9 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                         Want::Install { name, wanted, .. } => {
                             (Some(wanted.r#ref), name, error.clone())
                         }
-                        Want::Remove { addon } => (None, Some(addon), error.clone()),
+                        Want::Remove { addon } | Want::Edit { addon, .. } => {
+                            (None, Some(addon), error.clone())
+                        }
                     };
                     failures.push(failure(r, addon, target, error));
                 }
@@ -573,15 +676,19 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                     let result = planner.remove(&addon).map(Planned::change);
                     (None, Some(addon), result)
                 }
+                Want::Edit { addon, edit } => {
+                    let result = planner.edit(&addon, &edit, &tp.work);
+                    (None, Some(addon), result)
+                }
             };
-            match result {
-                Ok(planned) => planned.merge_into(&mut tp),
+            match result.and_then(|planned| planned.merge_into(&mut tp, &target.id)) {
+                Ok(()) => {}
                 Err(error) => failures.push(failure(r, addon, target, error)),
             }
         }
-        tp.kind = target_kind(&tp.changes);
+        tp.kind = target_kind(&tp.changes, req.kind, tp.default_kind);
         tp.creates_addons_dir =
-            live.addons_dir_missing && tp.work.iter().any(|w| w.inspected.is_some());
+            live.addons_dir_missing && tp.work.iter().any(|w| w.inspected().is_some());
         targets.push(tp);
     }
     failpoint::hit("engine.plan.done").map_err(|e| fail(ctx, &e))?;
@@ -616,16 +723,22 @@ fn target_state(paths: &Paths, target: &Target) -> Result<(TargetRecord, Option<
 
 /// Re-checks one planned addon under the lock against the target's current record,
 /// files index, inventory and running state (`ctx.running`), without network: the
-/// archive is already inspected and staged. The install's intent is applied again to
-/// the current record ([`carry_over`]). [`Planned::Unchanged`] when the change is no
-/// longer needed: a concurrent transaction installed the same release, removed the
-/// addon, or pinned it (with `addon_pinned`, never `plan_stale`). A refusal is the
-/// caller's `plan_stale`.
+/// archive is already inspected and staged. The install's intent and folded edits are
+/// applied again to the current record ([`carry_over`]). [`Planned::Unchanged`] when the
+/// change is no longer needed: a concurrent transaction installed the same release,
+/// removed the addon, or pinned it (with `addon_pinned`, never `plan_stale`). A refusal
+/// is the caller's `plan_stale`.
+///
+/// A records-only work re-checks its [`RecordGuard`]. When it fails, an adoption is
+/// `plan_stale` whatever the generation; another edit is the caller's `plan_stale` when
+/// the record's generation moved since `generation` (planning's), and is dropped as no
+/// longer needed when it did not (a forgotten addon's folder put back by hand).
 pub fn rejudge(
     req: &PlanRequest,
     ctx: &PlanCtx<'_>,
     target: &Target,
     work: &AddonWork,
+    generation: u64,
 ) -> Result<Planned> {
     let (record, index) = target_state(ctx.paths, target)?;
     let live = inventory(target, Some(&record), ctx.table, Depth::Classes)?;
@@ -638,9 +751,17 @@ pub fn rejudge(
         live: &live,
         created_at: Timestamp::now(),
     };
-    match (&work.record, &work.inspected) {
+    let folders = match &work.mode {
+        WorkMode::Folders(folders) => folders,
+        WorkMode::Records(records) => {
+            // ubs:ignore — comparing record generations, not secrets
+            let changed = record.generation != generation;
+            return planner.rejudge_records(&work.addon, records, changed);
+        }
+    };
+    match (&folders.record, &folders.inspected) {
         (Some(template), Some(inspected)) => {
-            let Some(intent) = &work.intent else {
+            let Some(intent) = &folders.intent else {
                 return Err(Error::internal(format!(
                     "{} was planned without its intent",
                     work.addon
@@ -662,11 +783,12 @@ pub fn rejudge(
                     existing,
                     template.clone(),
                     intent,
+                    &folders.edits,
                     Loadable {
                         inspected: inspected.clone(),
-                        skipped: work.skipped.clone(),
+                        skipped: folders.skipped.clone(),
                     },
-                    work.blob.clone(),
+                    folders.blob.clone(),
                     None,
                     Vec::new(),
                 )
@@ -714,6 +836,10 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
         },
         RequestedChange::Remove { addon } => Want::Remove {
             addon: addon.clone(),
+        },
+        RequestedChange::Edit { addon, edit } => Want::Edit {
+            addon: addon.clone(),
+            edit: edit.clone(),
         },
         RequestedChange::Update { addon } => {
             match record.addons.get(&TargetRecord::addon_key(addon)) {
@@ -786,13 +912,35 @@ fn fail(ctx: &PlanCtx<'_>, e: &std::io::Error) -> Error {
     )
 }
 
-/// The transaction kind for a target's changes.
-pub fn target_kind(changes: &[Change]) -> Option<TxKind> {
+/// The transaction kind for a target's changes, in order:
+/// 1. no changes, no transaction;
+/// 2. the command's override (`adopt`, `pin`, `sync`) wins;
+/// 3. edits that change only `pinned` are a `pin`;
+/// 4. edits and adoptions alone are what the command means (`default_kind`);
+/// 5. otherwise edits and adoptions are ignored, and the folder changes decide: all
+///    removes are a `remove` (a remove plus a `RemoveRequiredBy` on another addon
+///    too), any update an `update`, else an `install`.
+pub fn target_kind(
+    changes: &[Change],
+    kind: Option<TxKind>,
+    default_kind: TxKind,
+) -> Option<TxKind> {
+    let records_only = |c: &&Change| matches!(c.kind, ChangeKind::Edit | ChangeKind::Adopt);
+    let folders: Vec<&Change> = changes.iter().filter(|c| !records_only(c)).collect();
     if changes.is_empty() {
         None
-    } else if changes.iter().all(|c| c.kind == ChangeKind::Remove) {
+    } else if kind.is_some() {
+        kind
+    } else if changes
+        .iter()
+        .all(|c| c.kind == ChangeKind::Edit && c.fields == [EditField::Pinned])
+    {
+        Some(TxKind::Pin)
+    } else if folders.is_empty() {
+        Some(default_kind)
+    } else if folders.iter().all(|c| c.kind == ChangeKind::Remove) {
         Some(TxKind::Remove)
-    } else if changes.iter().any(|c| c.kind == ChangeKind::Update) {
+    } else if folders.iter().any(|c| c.kind == ChangeKind::Update) {
         Some(TxKind::Update)
     } else {
         Some(TxKind::Install)
@@ -844,24 +992,179 @@ impl Planned {
         }
     }
 
-    fn merge_into(self, tp: &mut TargetPlan) {
-        match self {
-            Self::Change(planned) => {
-                let planned = *planned;
-                tp.changes.push(planned.change);
-                tp.ops.extend(planned.ops);
-                tp.releases.extend(planned.release);
-                tp.reload_required = tp.reload_required.max(planned.reload_required);
-                push_new(&mut tp.warnings, planned.warnings);
-                tp.work.push(planned.work);
-            }
+    /// Adds this addon's result to its target's plan, folding it into the work the addon
+    /// already has there, so a transaction keeps one work per addon:
+    /// - edits join a folder work, applied after its carry-over (moot on a remove);
+    /// - a folder work absorbs the edits planned before it and replaces their work;
+    /// - edits join earlier edits, under both guards.
+    ///
+    /// Folding is order-independent. Two folder works for one addon stay two (M1).
+    fn merge_into(self, tp: &mut TargetPlan, target: &str) -> Result<()> {
+        let planned = match self {
             Self::Unchanged { warnings, notes } => {
                 push_new(&mut tp.warnings, warnings.clone());
                 push_new(&mut tp.unchanged_warnings, warnings);
                 tp.notes.extend(notes);
+                return Ok(());
+            }
+            Self::Change(planned) => *planned,
+        };
+        let key = TargetRecord::addon_key(&planned.work.addon);
+        let at = tp
+            .work
+            .iter()
+            .position(|w| TargetRecord::addon_key(&w.addon) == key);
+        let Some(at) = at else {
+            planned.push(tp);
+            return Ok(());
+        };
+        // `changes` and `work` are pushed together, so they share indices.
+        let addon = tp.work[at].addon.clone();
+        match (&mut tp.work[at].mode, planned.work.mode) {
+            (WorkMode::Folders(_), mode @ WorkMode::Folders(_)) => {
+                PlannedAddon {
+                    work: AddonWork {
+                        addon: planned.work.addon,
+                        mode,
+                    },
+                    ..planned
+                }
+                .push(tp);
+            }
+            (WorkMode::Folders(folders), WorkMode::Records(records)) => {
+                folders.fold(records.edits, &addon, target)?;
+            }
+            (WorkMode::Records(records), WorkMode::Folders(mut folders)) => {
+                folders.fold(records.edits.clone(), &addon, target)?;
+                tp.work.remove(at);
+                tp.changes.remove(at);
+                PlannedAddon {
+                    work: AddonWork {
+                        addon: planned.work.addon,
+                        mode: WorkMode::Folders(folders),
+                    },
+                    ..planned
+                }
+                .push(tp);
+            }
+            (WorkMode::Records(earlier), WorkMode::Records(later)) => {
+                let after = apply_edits(earlier.after.clone(), &later.edits, &addon, target)?;
+                let mut edits = earlier.edits.clone();
+                edits.extend(later.edits);
+                let guard = earlier.guard.clone().and(later.guard);
+                let before = earlier.before.clone();
+                tp.work.remove(at);
+                tp.changes.remove(at);
+                if let Some(merged) = records_change(&addon, before, after, edits, guard) {
+                    merged.push(tp);
+                }
             }
         }
+        Ok(())
     }
+}
+
+impl PlannedAddon {
+    fn push(self, tp: &mut TargetPlan) {
+        tp.changes.push(self.change);
+        tp.ops.extend(self.ops);
+        tp.releases.extend(self.release);
+        tp.reload_required = tp.reload_required.max(self.reload_required);
+        push_new(&mut tp.warnings, self.warnings);
+        tp.work.push(self.work);
+    }
+}
+
+impl FolderWork {
+    /// Folds records-only `edits` into this work: applied to its record after the
+    /// carry-over, and again under the lock. A remove makes them moot.
+    fn fold(&mut self, edits: Vec<RecordEdit>, addon: &str, target: &str) -> Result<()> {
+        if self.record.is_none() {
+            return Ok(());
+        }
+        let after = apply_edits(self.record.clone(), &edits, addon, target)?;
+        if after.is_none() {
+            return Err(Error::new(
+                ErrorCode::Usage,
+                format!("{addon} cannot be forgotten by the command that installs it"),
+                Suggestion::command(["omaddons", "list", "-t", target]),
+            ));
+        }
+        self.record = after;
+        self.edits.extend(edits);
+        Ok(())
+    }
+}
+
+/// A records-only change of `addon` from `before` to `after` through `edits`, or `None`
+/// when nothing changes. Its change is an `adopt` when a record appears, a `remove`
+/// when one goes (its index entries go too), else an `edit` naming its `fields`; every
+/// folder of either record is `recorded`.
+pub fn records_change(
+    addon: &str,
+    before: Option<AddonRecord>,
+    after: Option<AddonRecord>,
+    edits: Vec<RecordEdit>,
+    guard: RecordGuard,
+) -> Option<PlannedAddon> {
+    if before == after {
+        return None;
+    }
+    let shown = after.as_ref().or(before.as_ref())?;
+    let kind = match (&before, &after) {
+        (None, _) => ChangeKind::Adopt,
+        (_, None) => ChangeKind::Remove,
+        _ => ChangeKind::Edit,
+    };
+    let mut recorded: Vec<FolderName> = Vec::new();
+    for folder in before.iter().chain(after.iter()).flat_map(|r| &r.folders) {
+        if !recorded.contains(folder) {
+            recorded.push(folder.clone());
+        }
+    }
+    recorded.sort_by(|a, b| a.key().cmp(b.key()));
+    let index_upserts = edits
+        .iter()
+        .filter_map(|e| match e {
+            RecordEdit::Adopt(spec) => Some(spec.folders.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let index_removals = match (&before, &after) {
+        (Some(before), None) => before.folders.clone(),
+        _ => Vec::new(),
+    };
+    let change = Change {
+        addon: shown.name.clone(),
+        r#ref: shown.r#ref.clone(),
+        kind,
+        fields: changed_fields(before.as_ref(), after.as_ref()),
+        from_version: before.as_ref().map(|r| r.version.clone()),
+        to_version: after.as_ref().map(|r| r.version.clone()),
+        folders: FolderSummary {
+            recorded,
+            ..FolderSummary::default()
+        },
+    };
+    Some(PlannedAddon {
+        change,
+        ops: Vec::new(),
+        release: None,
+        reload_required: ReloadRequired::None,
+        warnings: Vec::new(),
+        work: AddonWork {
+            addon: addon.to_owned(),
+            mode: WorkMode::Records(Box::new(RecordsWork {
+                before,
+                after,
+                edits,
+                index_upserts,
+                index_removals,
+                guard,
+            })),
+        },
+    })
 }
 
 /// Appends the warnings `list` does not have yet.
@@ -1075,6 +1378,7 @@ impl TargetPlanner<'_> {
             existing,
             template,
             intent,
+            &[],
             winner.loadable,
             winner.blob,
             Some(release),
@@ -1083,12 +1387,91 @@ impl TargetPlanner<'_> {
         .map(Planned::change)
     }
 
+    /// `folder` has an entry in AddOns.
+    fn present(&self, folder: &FolderName) -> bool {
+        self.live.folders.iter().any(|e| e.key == folder.key())
+    }
+
     /// Every folder `existing` records is in AddOns.
     fn all_present(&self, existing: &AddonRecord) -> bool {
-        existing
-            .folders
+        existing.folders.iter().all(|f| self.present(f))
+    }
+
+    /// A records-only edit of `addon` (an adoption's addon is its spec's), against the
+    /// record as the works already planned on this target leave it, else as recorded.
+    /// An edit that changes nothing plans nothing.
+    fn edit(&self, addon: &str, edit: &RecordEdit, planned: &[AddonWork]) -> Result<Planned> {
+        let target = &self.target.id;
+        let name = match edit {
+            RecordEdit::Adopt(spec) => spec.record.name.as_str(),
+            _ => addon,
+        };
+        let key = TargetRecord::addon_key(name);
+        let base = match planned
             .iter()
-            .all(|f| self.live.folders.iter().any(|e| e.key == f.key()))
+            .find(|w| TargetRecord::addon_key(&w.addon) == key)
+        {
+            Some(work) => work.record().cloned(),
+            None => self.record.addons.get(&key).cloned(),
+        };
+        if let (RecordEdit::Forget, Some(recorded)) = (edit, &base)
+            && let Some(here) = recorded.folders.iter().find(|f| self.present(f))
+        {
+            return Err(Error::new(
+                ErrorCode::Usage,
+                format!(
+                    "{} is still in AddOns, so {} cannot be forgotten; remove it instead",
+                    here.as_str(),
+                    recorded.name
+                ),
+                Suggestion::command(["omaddons", "remove", recorded.name.as_str(), "-t", target]),
+            ));
+        }
+        let guard = edit.guard(base.as_ref());
+        if guard.adopt {
+            guard
+                .check(
+                    name,
+                    target,
+                    base.as_ref(),
+                    self.live,
+                    &self.target.addons_dir(),
+                    std::slice::from_ref(edit),
+                )
+                .map_err(|f| f.cause)?;
+        }
+        let after = apply_edit(base.clone(), edit, name, target)?;
+        Ok(records_change(name, base, after, vec![edit.clone()], guard)
+            .map_or_else(Planned::nothing, Planned::change))
+    }
+
+    /// Re-checks a records-only work under the lock (see [`rejudge`]), then applies its
+    /// edits to the record as it is now.
+    fn rejudge_records(&self, addon: &str, work: &RecordsWork, changed: bool) -> Result<Planned> {
+        let target = &self.target.id;
+        let current = self.record.addons.get(&TargetRecord::addon_key(addon));
+        let checked = work.guard.check(
+            addon,
+            target,
+            current,
+            self.live,
+            &self.target.addons_dir(),
+            &work.edits,
+        );
+        match checked {
+            Err(failure) if failure.adopt => Err(super::tx::stale(&failure.cause)),
+            Err(failure) if changed => Err(failure.cause),
+            Err(_) => Ok(Planned::nothing()),
+            Ok(()) => {
+                let after = apply_edits(current.cloned(), &work.edits, addon, target)?;
+                let before = current.cloned();
+                let guard = work.guard.clone();
+                Ok(
+                    records_change(addon, before, after, work.edits.clone(), guard)
+                        .map_or_else(Planned::nothing, Planned::change),
+                )
+            }
+        }
     }
 
     /// An installed addon that keeps its release: unchanged, with a `-v` note when some
@@ -1130,14 +1513,21 @@ impl TargetPlanner<'_> {
         existing: Option<&AddonRecord>,
         template: AddonRecord,
         intent: &InstallIntent,
+        edits: &[RecordEdit],
         loadable: Loadable,
         blob: Option<PathBuf>,
         release: Option<PlannedRelease>,
         mut warnings: Vec<Warning>,
     ) -> Result<PlannedAddon> {
         // Against whatever `existing` holds now: the snapshot at plan time, the current
-        // record under the lock.
-        let mut template = carry_over(existing, intent, &template);
+        // record under the lock. Folded edits apply after the carry-over.
+        let carried = carry_over(existing, intent, &template);
+        let name = carried.name.clone();
+        let Some(mut template) = apply_edits(Some(carried), edits, &name, &self.target.id)? else {
+            return Err(Error::internal(format!(
+                "a folded edit dropped the record of {name}"
+            )));
+        };
         let Loadable { inspected, skipped } = loadable;
         let new_folders: Vec<FolderName> =
             inspected.folders.iter().map(|f| f.name.clone()).collect();
@@ -1189,6 +1579,7 @@ impl TargetPlanner<'_> {
                 addon: template.name.clone(),
                 r#ref: template.r#ref.clone(),
                 kind,
+                fields: Vec::new(),
                 from_version: existing.map(|e| e.version.clone()),
                 to_version: Some(template.version.clone()),
                 folders: summary,
@@ -1199,22 +1590,40 @@ impl TargetPlanner<'_> {
             warnings,
             work: AddonWork {
                 addon: template.name.clone(),
-                record: Some(template),
-                blob,
-                swap: self.swap_ops(&judged.allowed),
-                inspected: Some(inspected),
-                skipped,
-                transfers: judged.transfers,
-                degraded: judged.degraded,
-                intent: Some(intent.clone()),
+                mode: WorkMode::Folders(Box::new(FolderWork {
+                    record: Some(template),
+                    blob,
+                    swap: self.swap_ops(&judged.allowed),
+                    inspected: Some(inspected),
+                    skipped,
+                    transfers: judged.transfers,
+                    degraded: judged.degraded,
+                    intent: Some(intent.clone()),
+                    edits: edits.to_vec(),
+                })),
             },
         })
     }
 
+    /// Removes an installed addon's folders. When every one of them is already gone
+    /// from AddOns, only its record and index entries go: a records-only work, which
+    /// the running policy does not judge.
     fn remove(&self, addon: &str) -> Result<PlannedAddon> {
         let Some(installed) = self.record.addons.get(&TargetRecord::addon_key(addon)) else {
             return Err(not_managed(addon));
         };
+        if installed.folders.iter().all(|f| !self.present(f)) {
+            let forget = RecordEdit::Forget;
+            let guard = forget.guard(Some(installed));
+            return records_change(
+                &installed.name,
+                Some(installed.clone()),
+                None,
+                vec![forget],
+                guard,
+            )
+            .ok_or_else(|| Error::internal("forgetting a record changed nothing"));
+        }
         let changes: Vec<FolderChange> = installed
             .folders
             .iter()
@@ -1229,6 +1638,7 @@ impl TargetPlanner<'_> {
                 addon: installed.name.clone(),
                 r#ref: installed.r#ref.clone(),
                 kind: ChangeKind::Remove,
+                fields: Vec::new(),
                 from_version: Some(installed.version.clone()),
                 to_version: None,
                 folders: summary,
@@ -1239,14 +1649,17 @@ impl TargetPlanner<'_> {
             warnings: judged.warnings,
             work: AddonWork {
                 addon: installed.name.clone(),
-                record: None,
-                blob: None,
-                inspected: None,
-                skipped: Vec::new(),
-                swap: self.swap_ops(&judged.allowed),
-                transfers: judged.transfers,
-                degraded: judged.degraded,
-                intent: None,
+                mode: WorkMode::Folders(Box::new(FolderWork {
+                    record: None,
+                    blob: None,
+                    inspected: None,
+                    skipped: Vec::new(),
+                    swap: self.swap_ops(&judged.allowed),
+                    transfers: judged.transfers,
+                    degraded: judged.degraded,
+                    intent: None,
+                    edits: Vec::new(),
+                })),
             },
         })
     }
@@ -1983,15 +2396,15 @@ mod tests {
         for (record, field) in [
             (
                 carried(PinIntent::Pin, Channel::Stable, AddonReason::Dependency),
-                RecordField::Pinned,
+                EditField::Pinned,
             ),
             (
                 carried(PinIntent::Keep, Channel::Beta, AddonReason::Dependency),
-                RecordField::Channel,
+                EditField::Channel,
             ),
             (
                 carried(PinIntent::Keep, Channel::Stable, AddonReason::Explicit),
-                RecordField::Reason,
+                EditField::Reason,
             ),
         ] {
             assert_eq!(record_differences(&existing, &record), [field]);
@@ -1999,15 +2412,12 @@ mod tests {
         let all = carried(PinIntent::Pin, Channel::Alpha, AddonReason::Explicit);
         assert_eq!(
             record_differences(&existing, &all),
-            [
-                RecordField::Pinned,
-                RecordField::Channel,
-                RecordField::Reason
-            ]
+            [EditField::Channel, EditField::Pinned, EditField::Reason],
+            "sorted by wire name"
         );
         assert_eq!(
-            serde_json::to_value(RecordField::Pinned).unwrap(),
-            RecordField::Pinned.wire()
+            serde_json::to_value(EditField::RequiredBy).unwrap(),
+            EditField::RequiredBy.wire()
         );
     }
 
@@ -2054,10 +2464,15 @@ mod tests {
             argv: &argv,
         };
         let req = PlanRequest {
-            targets: vec![TargetRequest { target, changes }],
+            targets: vec![TargetRequest {
+                target,
+                changes,
+                default_kind: TxKind::Install,
+            }],
             force: false,
             while_running: false,
             dry_run: false,
+            kind: None,
         };
         let plan = plan(&req, &ctx).unwrap();
         f(&req, &ctx, &plan)
@@ -2086,14 +2501,19 @@ mod tests {
             vec![scene.install("gh:o/foo", &v2)],
             |req, ctx, plan| {
                 let work = &plan.targets[0].work[0];
-                assert_eq!(work.intent.as_ref().map(|i| i.pin), Some(PinIntent::Keep));
+                let intent = match &work.mode {
+                    WorkMode::Folders(f) => f.intent.as_ref().map(|i| i.pin),
+                    WorkMode::Records(_) => None,
+                };
+                assert_eq!(intent, Some(PinIntent::Keep));
                 // Meanwhile: pinned at 3.
                 let pinned = scene
                     .run(vec![scene.install_pinned("gh:o/foo", &v3, "3")])
                     .unwrap();
                 assert!(pinned.failures.is_empty(), "{:?}", pinned.failures);
                 let target = scene.current_target().target;
-                let rejudged = rejudge(req, ctx, &target, work).unwrap();
+                let generation = plan.targets[0].generation;
+                let rejudged = rejudge(req, ctx, &target, work, generation).unwrap();
                 assert!(
                     matches!(rejudged, Planned::Unchanged { .. }),
                     "the update survived the pin: {rejudged:?}"
@@ -2110,26 +2530,106 @@ mod tests {
 
     #[test]
     fn target_kinds() {
-        let change = |kind| Change {
+        let change = |kind, fields: &[EditField]| Change {
             addon: "a".into(),
             r#ref: "gh:o/r".parse().unwrap(),
             kind,
+            fields: fields.to_vec(),
             from_version: None,
             to_version: None,
             folders: FolderSummary::default(),
         };
-        assert_eq!(target_kind(&[]), None);
-        assert_eq!(
-            target_kind(&[change(ChangeKind::Remove)]),
-            Some(TxKind::Remove)
-        );
-        assert_eq!(
-            target_kind(&[change(ChangeKind::Install), change(ChangeKind::Remove)]),
-            Some(TxKind::Install)
-        );
-        assert_eq!(
-            target_kind(&[change(ChangeKind::Install), change(ChangeKind::Update)]),
-            Some(TxKind::Update)
-        );
+        use ChangeKind::{Adopt, Edit, Install, Remove, Update};
+        let kind = |changes: &[Change], over: Option<TxKind>, default: TxKind| {
+            target_kind(changes, over, default)
+        };
+        let pin = change(Edit, &[EditField::Pinned]);
+        let required = change(Edit, &[EditField::RequiredBy]);
+        let both = change(Edit, &[EditField::Channel, EditField::Pinned]);
+        /// Changes, the override, the default kind, and the kind expected.
+        type Case = (Vec<Change>, Option<TxKind>, TxKind, Option<TxKind>);
+        let cases: [Case; 13] = [
+            // 1. nothing changes
+            (vec![], Some(TxKind::Pin), TxKind::Install, None),
+            // 2. an override wins
+            (
+                vec![change(Install, &[])],
+                Some(TxKind::Sync),
+                TxKind::Install,
+                Some(TxKind::Sync),
+            ),
+            (
+                vec![change(Adopt, &[])],
+                Some(TxKind::Adopt),
+                TxKind::Install,
+                Some(TxKind::Adopt),
+            ),
+            // 3. pinned-only edits are a pin
+            (vec![pin.clone()], None, TxKind::Install, Some(TxKind::Pin)),
+            (
+                vec![pin.clone(), pin.clone()],
+                None,
+                TxKind::Update,
+                Some(TxKind::Pin),
+            ),
+            // 4. edits and adoptions alone are the command's kind
+            (
+                vec![both.clone()],
+                None,
+                TxKind::Update,
+                Some(TxKind::Update),
+            ),
+            (
+                vec![pin.clone(), required.clone()],
+                None,
+                TxKind::Install,
+                Some(TxKind::Install),
+            ),
+            (
+                vec![change(Adopt, &[])],
+                None,
+                TxKind::Install,
+                Some(TxKind::Install),
+            ),
+            // 5. otherwise the folder changes decide
+            (
+                vec![change(Remove, &[]), required.clone()],
+                None,
+                TxKind::Remove,
+                Some(TxKind::Remove),
+            ),
+            (
+                vec![change(Remove, &[]), pin.clone()],
+                None,
+                TxKind::Install,
+                Some(TxKind::Remove),
+            ),
+            (
+                vec![change(Install, &[]), change(Remove, &[])],
+                None,
+                TxKind::Install,
+                Some(TxKind::Install),
+            ),
+            (
+                vec![change(Install, &[]), change(Update, &[]), pin],
+                None,
+                TxKind::Install,
+                Some(TxKind::Update),
+            ),
+            (
+                vec![change(Remove, &[])],
+                None,
+                TxKind::Install,
+                Some(TxKind::Remove),
+            ),
+        ];
+        for (changes, over, default, expected) in cases {
+            let kinds: Vec<ChangeKind> = changes.iter().map(|c| c.kind).collect();
+            assert_eq!(
+                kind(&changes, over, default),
+                expected,
+                "{kinds:?} {over:?} {default:?}"
+            );
+        }
     }
 }

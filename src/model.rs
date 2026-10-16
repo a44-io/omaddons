@@ -416,6 +416,8 @@ pub enum TxKind {
     Repair,
     /// WTF backup creation (M3): recorded in history, never undone.
     Backup,
+    /// Pins or unpins addons: a records-only change, undoable like any other.
+    Pin,
 }
 
 impl TxKind {
@@ -1220,10 +1222,12 @@ mod tests {
             TxKind::Sync,
             TxKind::Restore,
             TxKind::Repair,
+            TxKind::Pin,
         ] {
             assert!(kind.is_undoable(), "{kind:?}");
         }
         assert!(!TxKind::Backup.is_undoable());
+        assert_eq!(serde_json::to_value(TxKind::Pin).unwrap(), "pin");
     }
 
     // ---- Refs ----------------------------------------------------------------------

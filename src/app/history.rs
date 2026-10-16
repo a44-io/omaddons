@@ -77,6 +77,8 @@ pub struct ChangeCounts {
     pub added: usize,
     pub replaced: usize,
     pub removed: usize,
+    /// Folders whose record changed without a swap (a pin, an adoption).
+    pub recorded: usize,
 }
 
 impl ChangeCounts {
@@ -87,10 +89,19 @@ impl ChangeCounts {
                 FolderOp::Add => counts.added += 1,
                 FolderOp::Replace => counts.replaced += 1,
                 FolderOp::Remove => counts.removed += 1,
-                FolderOp::Record => {}
+                FolderOp::Record => counts.recorded += 1,
             }
         }
         counts
+    }
+
+    /// `+added ~replaced -removed`, then the recorded folders when there are any.
+    pub fn human(&self) -> String {
+        let swapped = format!("+{} ~{} -{}", self.added, self.replaced, self.removed);
+        match self.recorded {
+            0 => swapped,
+            n => format!("{swapped} ={n}"),
+        }
     }
 }
 
@@ -136,7 +147,7 @@ impl Outcome for HistoryOutcome {
                     e.actor.as_str().to_owned(),
                     kind_name(e.kind),
                     e.target.id.clone(),
-                    format!("+{} ~{} -{}", c.added, c.replaced, c.removed),
+                    c.human(),
                     e.reason
                         .as_ref()
                         .map(|r| format!("{r:?}"))
@@ -332,9 +343,13 @@ mod tests {
             ChangeCounts {
                 added: 2,
                 replaced: 0,
-                removed: 1
+                removed: 1,
+                recorded: 1
             }
         );
+        let pin = ChangeCounts::of(&[op(FolderOp::Record), op(FolderOp::Record)]);
+        assert_eq!(pin.human(), "+0 ~0 -0 =2", "recorded folders are counted");
+        assert_eq!(ChangeCounts::of(&[op(FolderOp::Add)]).human(), "+1 ~0 -0");
         let tx: TxId = "01JB8Q2VA00000000000000000".parse().unwrap();
         assert_eq!(short_tx(&tx), "01JB8Q2VA0…");
         assert_eq!(kind_name(TxKind::Undo), "undo");

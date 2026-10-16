@@ -28,6 +28,7 @@ expression: s.stable(&c.envelope)
           "added": [
             "Foo"
           ],
+          "recorded": [],
           "removed": [],
           "replaced": [],
           "skipped": []

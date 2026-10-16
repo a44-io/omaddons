@@ -35,7 +35,8 @@ expression: plan
             ],
             "replaced": [],
             "removed": [],
-            "skipped": []
+            "skipped": [],
+            "recorded": []
           }
         }
       ],

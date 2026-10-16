@@ -26,14 +26,14 @@ use super::journal::{
 };
 use super::plan::{
     self, AddonWork, Change, Plan, PlanCtx, PlanFailure, PlanRequest, Planned, RequestedChange,
-    TargetPlan, TargetRequest, one_addons_dir, push_new, rejudge, target_kind,
+    TargetPlan, TargetRequest, WorkMode, one_addons_dir, push_new, rejudge, target_kind,
 };
 use super::stage::{Staged, stage};
 use super::swap::{SwapOp, snapshot_saved_variables, snapshot_state, swap};
 use crate::discover::registry::LockedRegistry;
 use crate::discover::running::detect_running;
 use crate::discover::target::DiscoveredTarget;
-use crate::error::{Error, ErrorBody, PlanStaleSource, Result, Suggestion, Warning};
+use crate::error::{Error, ErrorBody, ErrorCode, PlanStaleSource, Result, Suggestion, Warning};
 use crate::fsx::{
     self, GlobalLock, GlobalLockGuard, InflightLock, LockUse, PruneReason, ScopeTable,
     SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint,
@@ -89,6 +89,8 @@ pub struct TxRequest {
     pub dry_run: bool,
     /// `--reason`, recorded verbatim in history.
     pub reason: Option<String>,
+    /// The transaction kind, whatever the changes are (`adopt`, `pin`, `sync`).
+    pub kind: Option<TxKind>,
 }
 
 /// One target and its changes; unregistered targets are registered at commit.
@@ -96,6 +98,9 @@ pub struct TxRequest {
 pub struct TxTarget {
     pub discovered: DiscoveredTarget,
     pub changes: Vec<RequestedChange>,
+    /// What the command means when only records change: install for install, remove
+    /// for remove, update for update.
+    pub default_kind: TxKind,
 }
 
 /// What the engine reads.
@@ -174,11 +179,13 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
             .map(|t| TargetRequest {
                 target: t.discovered.target.clone(),
                 changes: t.changes.clone(),
+                default_kind: t.default_kind,
             })
             .collect(),
         force: req.force,
         while_running: req.while_running,
         dry_run: req.dry_run,
+        kind: req.kind,
     };
     let plan_ctx = PlanCtx {
         paths: ctx.paths,
@@ -390,8 +397,8 @@ fn stage_all(
         folders: Vec::new(),
     };
     for w in work {
-        if let Some(inspected) = &w.inspected {
-            let staged = stage(inflight, scopes, target, w.blob.as_deref(), inspected)?;
+        if let Some(inspected) = w.inspected() {
+            let staged = stage(inflight, scopes, target, w.blob(), inspected)?;
             merged.folders.extend(staged.folders);
         }
     }
@@ -467,7 +474,7 @@ fn locked(
     let mut warnings = tp.unchanged_warnings.clone();
     let mut notes = tp.notes.clone();
     for planned in &tp.work {
-        match rejudge(plan_req, &plan_ctx, &target, planned) {
+        match rejudge(plan_req, &plan_ctx, &target, planned, tp.generation) {
             Ok(Planned::Change(p)) => {
                 let p = *p;
                 reload_required = reload_required.max(p.reload_required);
@@ -483,12 +490,15 @@ fn locked(
                 push_new(&mut warnings, dropped);
                 notes.extend(noted);
             }
+            // An adoption whose folders changed is stale whatever the generation.
+            // ubs:ignore — comparing error codes, not secrets
+            Err(error) if error.code == ErrorCode::PlanStale => return Err(error),
             Err(error) if changed => return Err(stale(&error)),
             Err(error) => return Err(error),
         }
     }
     failpoint::hit("engine.revalidated").map_err(fail)?;
-    let kind = target_kind(&changes);
+    let kind = target_kind(&changes, plan_req.kind, tp.default_kind);
     let Some(kind) = kind else {
         // Everything became unnecessary (a concurrent transaction did it).
         return Ok((
@@ -512,8 +522,9 @@ fn locked(
 
     let now = Timestamp::now();
     let record = next_record(&current.value, &works, tx, now);
-    let swap_ops: Vec<SwapOp> = works.iter().flat_map(|w| w.swap.clone()).collect();
-    let index_changes = index_changes(&swap_ops, staged);
+    let swap_ops: Vec<SwapOp> = works.iter().flat_map(|w| w.swap().to_vec()).collect();
+    let mut index_changes = index_changes(&swap_ops, staged);
+    records_index_changes(&works, &mut index_changes);
     // A client that has never been launched has no AddOns folder yet. The transaction
     // creates it once `prepared` records that it will; a case variant already there
     // (`interface/addons`) is used instead.
@@ -663,7 +674,9 @@ pub(super) fn stale(cause: &Error) -> Error {
 }
 
 /// The record after `works`: changed addons in, removed ones out, transferred folders
-/// taken from and degraded on their previous owners, generation + 1.
+/// taken from and degraded on their previous owners, generation + 1. A folder change
+/// stamps `installed_at`; a records-only change keeps it, except an adoption, which
+/// takes the commit time.
 fn next_record(
     current: &TargetRecord,
     works: &[AddonWork],
@@ -672,11 +685,14 @@ fn next_record(
 ) -> TargetRecord {
     let mut record = current.clone();
     for w in works {
-        match &w.record {
+        match w.record() {
             Some(new) => {
                 let mut new = new.clone();
                 new.tx_id = *tx;
-                new.installed_at = now;
+                match &w.mode {
+                    WorkMode::Records(r) if r.before.is_some() => {}
+                    _ => new.installed_at = now,
+                }
                 record
                     .addons
                     .insert(TargetRecord::addon_key(&new.name), new);
@@ -685,12 +701,12 @@ fn next_record(
                 record.addons.remove(&TargetRecord::addon_key(&w.addon));
             }
         }
-        for t in &w.transfers {
+        for t in w.transfers() {
             if let Some(previous) = record.addons.get_mut(&TargetRecord::addon_key(&t.from)) {
                 previous.folders.retain(|f| f != &t.folder);
             }
         }
-        for key in &w.degraded {
+        for key in w.degraded() {
             if let Some(previous) = record.addons.get_mut(key) {
                 previous.state = AddonState::Degraded;
             }
@@ -698,6 +714,21 @@ fn next_record(
     }
     record.bump();
     record
+}
+
+/// Records-only works' index changes: an adoption's folders in, a forgotten addon's
+/// out. They ride in the journal payload with the swaps'.
+fn records_index_changes(works: &[AddonWork], changes: &mut IndexChanges) {
+    for w in works {
+        if let WorkMode::Records(r) = &w.mode {
+            changes
+                .upsert
+                .extend(r.index_upserts.iter().map(|(_, index)| index.clone()));
+            changes
+                .remove
+                .extend(r.index_removals.iter().map(|f| f.key().to_owned()));
+        }
+    }
 }
 
 /// Files index changes: staged indexes under their on-disk spelling in, removed out.
@@ -726,24 +757,40 @@ fn index_changes(ops: &[SwapOp], staged: &Staged) -> IndexChanges {
     changes
 }
 
+/// One op per folder swapped, and one `record` op per folder of a records-only work's
+/// record before or after: what undo and its conflict check read.
 fn history_ops(works: &[AddonWork]) -> Vec<HistoryOp> {
-    works
-        .iter()
-        .flat_map(|w| {
-            w.swap.iter().map(move |op| {
-                let (kind, folder) = match op {
-                    SwapOp::Add { name } => (FolderOp::Add, name.clone()),
-                    SwapOp::Replace { live, .. } => (FolderOp::Replace, live.clone()),
-                    SwapOp::Remove { live, .. } => (FolderOp::Remove, live.clone()),
-                };
-                HistoryOp {
-                    op: kind,
-                    folder,
-                    addon: w.addon.clone(),
+    let mut ops = Vec::new();
+    for w in works {
+        let op = |op, folder: &FolderName| HistoryOp {
+            op,
+            folder: folder.clone(),
+            addon: w.addon.clone(),
+        };
+        match &w.mode {
+            WorkMode::Folders(f) => ops.extend(f.swap.iter().map(|swap| match swap {
+                SwapOp::Add { name } => op(FolderOp::Add, name),
+                SwapOp::Replace { live, .. } => op(FolderOp::Replace, live),
+                SwapOp::Remove { live, .. } => op(FolderOp::Remove, live),
+            })),
+            WorkMode::Records(r) => {
+                let mut folders: Vec<&FolderName> = Vec::new();
+                for folder in r
+                    .before
+                    .iter()
+                    .chain(r.after.iter())
+                    .flat_map(|a| &a.folders)
+                {
+                    if !folders.contains(&folder) {
+                        folders.push(folder);
+                    }
                 }
-            })
-        })
-        .collect()
+                folders.sort_by(|a, b| a.key().cmp(b.key()));
+                ops.extend(folders.into_iter().map(|f| op(FolderOp::Record, f)));
+            }
+        }
+    }
+    ops
 }
 
 fn touched_folder(op: &SwapOp) -> FolderName {
@@ -1142,5 +1189,410 @@ mod tests {
         }
         let listed: BTreeSet<String> = FAILPOINTS.iter().map(|s| (*s).to_owned()).collect();
         assert_eq!(found, listed);
+    }
+
+    // ---- Records-only work -----------------------------------------------------------
+
+    use crate::engine::edit::{EditField, RecordEdit};
+    use crate::engine::plan::ChangeKind;
+    use crate::engine::undo::{SvPolicy, UndoSelector};
+
+    fn names(list: &[FolderName]) -> Vec<&str> {
+        list.iter().map(FolderName::as_str).collect()
+    }
+
+    fn pin(scene: &TxScene) -> Result<TxOutcomes> {
+        scene.run(vec![scene.edit("Foo", RecordEdit::SetPinned(true))])
+    }
+
+    /// The last history line's ops as `(op, folder)`.
+    fn last_ops(scene: &TxScene) -> Vec<(FolderOp, String)> {
+        let entries = history(scene);
+        entries
+            .last()
+            .unwrap()
+            .ops
+            .iter()
+            .map(|o| (o.op, o.folder.as_str().to_owned()))
+            .collect()
+    }
+
+    fn records(folders: &[&str]) -> Vec<(FolderOp, String)> {
+        folders
+            .iter()
+            .map(|f| (FolderOp::Record, (*f).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn a_pin_is_a_records_only_transaction_that_undo_reverts() {
+        let scene = with_v1();
+        let tree = scene.addons();
+        let before = scene.record().addons["foo"].clone();
+        let done = pin(&scene).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let outcome = &done.outcomes[0];
+        assert_eq!(
+            (outcome.kind, outcome.reload_required, outcome.tx.is_some()),
+            (Some(TxKind::Pin), ReloadRequired::None, true)
+        );
+        let change = &outcome.changes[0];
+        assert_eq!(
+            (change.kind, change.fields.as_slice()),
+            (ChangeKind::Edit, &[EditField::Pinned][..])
+        );
+        assert_eq!(names(&change.folders.recorded), ["Foo", "FooOld"]);
+        assert_eq!(
+            (change.from_version.as_deref(), change.to_version.as_deref()),
+            (Some(before.version.as_str()), Some(before.version.as_str()))
+        );
+        let after = scene.record().addons["foo"].clone();
+        assert!(after.pinned);
+        assert_eq!(
+            (after.installed_at, after.release_id.as_ref()),
+            (before.installed_at, before.release_id.as_ref()),
+            "a records-only change keeps installed_at and the release"
+        );
+        assert_eq!(after.tx_id, outcome.tx.unwrap());
+        assert_eq!(scene.addons(), tree, "AddOns untouched");
+        assert_eq!(last_ops(&scene), records(&["Foo", "FooOld"]));
+        assert_eq!(history(&scene).last().unwrap().kind, TxKind::Pin);
+        assert_eq!(generation(&scene), 2);
+        assert!(leftovers(&scene).is_empty(), "{:?}", leftovers(&scene));
+
+        let undone = scene
+            .undo(UndoSelector::Latest, SvPolicy::Auto)
+            .unwrap()
+            .outcome;
+        assert!(!scene.record().addons["foo"].pinned, "unpinned");
+        assert_eq!(generation(&scene), 3);
+        assert_eq!(scene.addons(), tree, "AddOns untouched by the undo too");
+        assert_eq!(
+            (undone.changes[0].kind, undone.changes[0].fields.as_slice()),
+            (ChangeKind::Edit, &[EditField::Pinned][..])
+        );
+        assert_eq!(
+            names(&undone.changes[0].folders.recorded),
+            ["Foo", "FooOld"]
+        );
+        assert_eq!(last_ops(&scene), records(&["Foo", "FooOld"]));
+    }
+
+    #[test]
+    fn an_edit_that_changes_nothing_commits_nothing() {
+        let scene = with_v1();
+        let unpin = || scene.edit("Foo", RecordEdit::SetPinned(false));
+        let done = scene.run(vec![unpin()]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        assert_eq!((done.outcomes[0].tx, done.outcomes[0].kind), (None, None));
+        let pin_then_unpin = vec![scene.edit("Foo", RecordEdit::SetPinned(true)), unpin()];
+        let done = scene.run(pin_then_unpin).unwrap();
+        assert_eq!(
+            (done.outcomes[0].tx, done.outcomes[0].kind),
+            (None, None),
+            "folded edits that cancel out"
+        );
+        assert_eq!(generation(&scene), 1);
+        let done = scene
+            .run(vec![scene.edit("Nope", RecordEdit::SetPinned(true))])
+            .unwrap();
+        let error = done.failures[0].cause.as_ref().unwrap();
+        assert_eq!(error.code, ErrorCode::NotManaged);
+    }
+
+    #[test]
+    fn an_update_and_an_edit_of_one_addon_fold_into_one_work_in_either_order() {
+        for edit_first in [false, true] {
+            let scene = with_v1();
+            let old_release = scene.record().addons["foo"].release_id.clone();
+            let v2 = scene.zip("v2.zip", V2);
+            let update = scene.install("gh:o/foo", &v2);
+            let edit = scene.edit("Foo", RecordEdit::AddRequiredBy("Bar".into()));
+            let changes = if edit_first {
+                vec![edit, update]
+            } else {
+                vec![update, edit]
+            };
+            let done = scene.run(changes).unwrap();
+            assert!(
+                done.failures.is_empty(),
+                "{edit_first}: {:?}",
+                done.failures
+            );
+            let outcome = &done.outcomes[0];
+            assert_eq!(outcome.changes.len(), 1, "{edit_first}: one change");
+            assert_eq!(
+                (outcome.kind, outcome.changes[0].kind),
+                (Some(TxKind::Update), ChangeKind::Update)
+            );
+            let foo = scene.record().addons["foo"].clone();
+            assert_eq!(foo.required_by, ["Bar"], "{edit_first}");
+            assert_ne!(foo.release_id, old_release, "{edit_first}: the new release");
+            assert!(scene.client.addons().join("Foo/new.lua").is_file());
+            assert_eq!(
+                last_ops(&scene),
+                [
+                    (FolderOp::Replace, "Foo".to_owned()),
+                    (FolderOp::Remove, "FooOld".to_owned())
+                ],
+                "{edit_first}: the folder work's ops only"
+            );
+        }
+    }
+
+    #[test]
+    fn removing_an_addon_whose_folders_are_gone_forgets_it_and_undo_restores_it() {
+        let scene = with_v1();
+        let index = scene.index();
+        for folder in ["Foo", "FooOld"] {
+            std::fs::remove_dir_all(scene.client.addons().join(folder)).unwrap();
+        }
+        let tree = scene.addons();
+        let done = scene
+            .run_as(vec![scene.remove("Foo")], None, TxKind::Remove)
+            .unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let outcome = &done.outcomes[0];
+        let change = &outcome.changes[0];
+        assert_eq!(
+            (outcome.kind, change.kind),
+            (Some(TxKind::Remove), ChangeKind::Remove)
+        );
+        assert!(change.folders.removed.is_empty() && change.fields.is_empty());
+        assert_eq!(names(&change.folders.recorded), ["Foo", "FooOld"]);
+        assert!(!scene.record().addons.contains_key("foo"));
+        assert!(scene.index().folders.is_empty(), "its index entries go");
+        assert_eq!(last_ops(&scene), records(&["Foo", "FooOld"]));
+
+        scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
+        let foo = &scene.record().addons["foo"];
+        assert_eq!(names(&foo.folders), ["Foo", "FooOld"], "the record is back");
+        assert_eq!(
+            scene.index().folders,
+            index.folders,
+            "and its index entries"
+        );
+        assert_eq!(scene.addons(), tree, "no folder comes back: none was there");
+    }
+
+    #[test]
+    fn records_only_work_commits_while_the_client_runs() {
+        let mut scene = with_v1();
+        scene
+            .running
+            .insert(scene.client.client_dir().to_path_buf());
+        let done = pin(&scene).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        assert_eq!(
+            (done.outcomes[0].kind, done.outcomes[0].reload_required),
+            (Some(TxKind::Pin), ReloadRequired::None)
+        );
+        let removed = scene.run(vec![scene.remove("Foo")]).unwrap();
+        let error = removed.failures[0].cause.as_ref().unwrap();
+        assert_eq!(error.code, ErrorCode::GameRunning, "folders still wait");
+    }
+
+    #[test]
+    fn an_adoption_records_folders_as_they_are_and_undo_forgets_them() {
+        let scene = with_v1();
+        crate::engine::testing::folder(&scene.client.addons().join("Baz"), "mine");
+        let tree = scene.addons();
+        let adopt = scene.adopt("Baz");
+        let done = scene
+            .run_as(vec![adopt], Some(TxKind::Adopt), TxKind::Install)
+            .unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let outcome = &done.outcomes[0];
+        assert_eq!(
+            (outcome.kind, outcome.changes[0].kind),
+            (Some(TxKind::Adopt), ChangeKind::Adopt)
+        );
+        assert_eq!(names(&outcome.changes[0].folders.recorded), ["Baz"]);
+        let baz = scene.record().addons["baz"].clone();
+        assert_eq!(names(&baz.folders), ["Baz"]);
+        assert_ne!(
+            baz.installed_at,
+            "2000-01-01T00:00:00Z".parse::<Timestamp>().unwrap(),
+            "an adoption takes the commit time"
+        );
+        assert_eq!(scene.index().folders["baz"].files.len(), 1);
+        assert_eq!(scene.addons(), tree, "adopted as they are");
+        assert_eq!(last_ops(&scene), records(&["Baz"]));
+
+        scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
+        assert!(!scene.record().addons.contains_key("baz"));
+        assert!(!scene.index().folders.contains_key("baz"));
+        assert_eq!(scene.addons(), tree, "the folder stays, unmanaged again");
+    }
+
+    #[test]
+    fn edits_survive_concurrent_changes_their_guards_allow() {
+        // A pin, while another addon is installed.
+        let scene = with_v1();
+        let bar = scene.zip("bar.zip", &[("Bar/Bar.toc", "## Interface: 120105\n")]);
+        std::thread::scope(|s| {
+            let slow =
+                s.spawn(|| failpoint::with_spec("engine.plan.done=sleep:400", || pin(&scene)));
+            std::thread::sleep(Duration::from_millis(150));
+            scene.run(vec![scene.install("gh:o/bar", &bar)]).unwrap();
+            let slow = slow.join().unwrap().unwrap();
+            assert!(slow.failures.is_empty(), "{:?}", slow.failures);
+            assert_eq!(slow.outcomes[0].kind, Some(TxKind::Pin));
+        });
+        let record = scene.record();
+        assert!(record.addons["foo"].pinned && record.addons.contains_key("bar"));
+
+        // A RemoveRequiredBy, while its addon is updated: it keeps the new release.
+        let scene = with_v1();
+        let add = scene.edit("Foo", RecordEdit::AddRequiredBy("Bar".into()));
+        scene.run(vec![add]).unwrap();
+        let v2 = scene.zip("v2.zip", V2);
+        let updated = std::thread::scope(|s| {
+            let slow = s.spawn(|| {
+                failpoint::with_spec("engine.plan.done=sleep:400", || {
+                    let drop = scene.edit("Foo", RecordEdit::RemoveRequiredBy("Bar".into()));
+                    scene.run(vec![drop])
+                })
+            });
+            std::thread::sleep(Duration::from_millis(150));
+            scene.run(vec![scene.install("gh:o/foo", &v2)]).unwrap();
+            let updated = scene.record().addons["foo"].release_id.clone();
+            let slow = slow.join().unwrap().unwrap();
+            assert!(slow.failures.is_empty(), "{:?}", slow.failures);
+            assert!(slow.outcomes[0].tx.is_some());
+            updated
+        });
+        let foo = &scene.record().addons["foo"];
+        assert!(foo.required_by.is_empty());
+        assert_eq!(foo.release_id, updated, "the update stands");
+    }
+
+    #[test]
+    fn a_concurrent_update_breaking_a_pin_guard_is_plan_stale() {
+        let scene = with_v1();
+        let v2 = scene.zip("v2.zip", V2);
+        std::thread::scope(|s| {
+            let slow =
+                s.spawn(|| failpoint::with_spec("engine.plan.done=sleep:400", || pin(&scene)));
+            std::thread::sleep(Duration::from_millis(150));
+            scene.run(vec![scene.install("gh:o/foo", &v2)]).unwrap();
+            let slow = slow.join().unwrap().unwrap();
+            let error = slow.failures[0].cause.as_ref().unwrap();
+            assert_eq!((error.code, error.retryable), (ErrorCode::PlanStale, true));
+            assert_eq!(error.details["cause"], "not_found");
+        });
+        assert!(!scene.record().addons["foo"].pinned);
+    }
+
+    #[test]
+    fn a_changed_adopted_file_is_plan_stale_even_at_an_unchanged_generation() {
+        let scene = with_v1();
+        let baz = scene.client.addons().join("Baz");
+        crate::engine::testing::folder(&baz, "mine");
+        let adopt = scene.adopt("Baz");
+        std::thread::scope(|s| {
+            let slow = s.spawn(|| {
+                failpoint::with_spec("engine.plan.done=sleep:400", || {
+                    scene.run_as(vec![adopt.clone()], Some(TxKind::Adopt), TxKind::Install)
+                })
+            });
+            std::thread::sleep(Duration::from_millis(150));
+            std::fs::write(baz.join("extra.lua"), "-- added after indexing").unwrap();
+            let slow = slow.join().unwrap().unwrap();
+            let error = slow.failures[0].cause.as_ref().unwrap();
+            assert_eq!((error.code, error.retryable), (ErrorCode::PlanStale, true));
+            assert_eq!(error.details["cause"], "hash_mismatch");
+        });
+        assert_eq!(generation(&scene), 1, "nothing else committed");
+        assert!(!scene.record().addons.contains_key("baz"));
+    }
+
+    #[test]
+    fn a_forget_whose_folder_came_back_by_hand_is_dropped() {
+        let scene = with_v1();
+        for folder in ["Foo", "FooOld"] {
+            std::fs::remove_dir_all(scene.client.addons().join(folder)).unwrap();
+        }
+        std::thread::scope(|s| {
+            let slow = s.spawn(|| {
+                failpoint::with_spec("engine.plan.done=sleep:400", || {
+                    scene.run_as(vec![scene.remove("Foo")], None, TxKind::Remove)
+                })
+            });
+            std::thread::sleep(Duration::from_millis(150));
+            crate::engine::testing::folder(&scene.client.addons().join("FooOld"), "back");
+            let slow = slow.join().unwrap().unwrap();
+            assert!(slow.failures.is_empty(), "{:?}", slow.failures);
+            assert_eq!(
+                (slow.outcomes[0].tx, slow.outcomes[0].kind),
+                (None, None),
+                "no longer needed at an unchanged generation"
+            );
+        });
+        assert!(scene.record().addons.contains_key("foo"));
+    }
+
+    #[test]
+    fn an_error_at_any_failpoint_leaves_the_pin_iff_its_history_line() {
+        let (mut failed, mut rolled_forward) = (Vec::new(), Vec::new());
+        for name in FAILPOINTS {
+            let scene = with_v1();
+            let tree = scene.addons();
+            let result = failpoint::with_spec(&format!("{name}=error"), || pin(&scene));
+            if result
+                .as_ref()
+                .map_or(true, |done| !done.failures.is_empty())
+            {
+                failed.push(*name);
+            }
+            let pinned = scene.record().addons["foo"].pinned;
+            if pinned {
+                rolled_forward.push(*name);
+            }
+            let entries = history(&scene);
+            let logged = entries.iter().any(|e| e.kind == TxKind::Pin);
+            assert_eq!(
+                pinned, logged,
+                "{name}: pinned iff logged, after {result:?}"
+            );
+            assert_eq!(
+                generation(&scene),
+                entries.len() as u64,
+                "{name}: one generation per commit"
+            );
+            assert_eq!(scene.addons(), tree, "{name}: folders untouched");
+            let rerun = pin(&scene).unwrap();
+            assert!(rerun.failures.is_empty(), "{name}: {:?}", rerun.failures);
+            assert!(scene.record().addons["foo"].pinned, "{name}: converges");
+            assert!(
+                leftovers(&scene).is_empty(),
+                "{name}: {:?}",
+                leftovers(&scene)
+            );
+        }
+        // The commit window's failpoints are on a records-only path too: before
+        // `swapped` the error surfaces and nothing changes, after it the journal rolls
+        // the edit forward in process.
+        for name in [
+            "engine.lock.acquired",
+            "engine.revalidated",
+            "engine.journal.prepared",
+            "engine.snapshot.sv",
+            "engine.snapshot.state",
+            "engine.swap.after_exchange",
+        ] {
+            assert!(failed.contains(&name), "{name} never failed: {failed:?}");
+            assert!(!rolled_forward.contains(&name), "{name}");
+        }
+        for name in [
+            "engine.swapped",
+            "engine.record.written",
+            "engine.history.appended",
+        ] {
+            assert!(
+                rolled_forward.contains(&name),
+                "{name} did not roll forward: {rolled_forward:?}"
+            );
+        }
     }
 }

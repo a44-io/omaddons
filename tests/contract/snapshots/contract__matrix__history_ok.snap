@@ -22,6 +22,7 @@ expression: s.stable(&c.envelope)
         "at": "<time>",
         "changes": {
           "added": 1,
+          "recorded": 0,
           "removed": 0,
           "replaced": 0
         },

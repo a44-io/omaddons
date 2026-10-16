@@ -230,6 +230,44 @@ pub fn install_change(
     }
 }
 
+/// The files index entry of the live folder `dir`: every regular file's path, size,
+/// mtime and SHA-256.
+pub fn live_index(dir: &Path) -> crate::state::files_index::FolderIndex {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::MetadataExt;
+    fn walk(dir: &Path, prefix: &str, out: &mut Vec<crate::state::files_index::FileEntry>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let meta = std::fs::symlink_metadata(entry.path()).unwrap();
+            if meta.is_dir() {
+                walk(&entry.path(), &path, out);
+            } else {
+                let bytes = std::fs::read(entry.path()).unwrap();
+                out.push(crate::state::files_index::FileEntry {
+                    path,
+                    size: meta.size(),
+                    mtime_ns: i128::from(meta.mtime()) * 1_000_000_000
+                        + i128::from(meta.mtime_nsec()),
+                    sha256: Sha256::digest(&bytes)
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect(),
+                });
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir, "", &mut files);
+    let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+    crate::state::files_index::FolderIndex::new(name, files)
+}
+
 /// Fails every request: `--file` installs never touch the network.
 pub struct NoNetwork;
 
@@ -387,22 +425,91 @@ impl TxScene {
         install_change(r, Some(zip), Some(version))
     }
 
-    /// Runs `changes` on the target as currently registered.
+    /// Runs `changes` on the target as currently registered, as an install.
     pub fn run(
         &self,
         changes: Vec<super::plan::RequestedChange>,
+    ) -> crate::error::Result<super::tx::TxOutcomes> {
+        self.run_as(changes, None, TxKind::Install)
+    }
+
+    /// Runs `changes` with the kind override `kind` and the command's `default_kind`.
+    pub fn run_as(
+        &self,
+        changes: Vec<super::plan::RequestedChange>,
+        kind: Option<TxKind>,
+        default_kind: TxKind,
     ) -> crate::error::Result<super::tx::TxOutcomes> {
         let req = super::tx::TxRequest {
             targets: vec![super::tx::TxTarget {
                 discovered: self.current_target(),
                 changes,
+                default_kind,
             }],
             force: self.force,
             while_running: self.while_running,
             dry_run: false,
             reason: Some("testing".into()),
+            kind,
         };
         self.with_ctx("install", |ctx| super::tx::run(&req, ctx))
+    }
+
+    /// A records-only edit of the installed addon `addon`.
+    pub fn edit(&self, addon: &str, edit: super::edit::RecordEdit) -> super::plan::RequestedChange {
+        super::plan::RequestedChange::Edit {
+            addon: addon.to_owned(),
+            edit,
+        }
+    }
+
+    /// The target's record now.
+    pub fn record(&self) -> TargetRecord {
+        let key = crate::discover::registry::read_marker(self.client.client_dir()).unwrap();
+        crate::state::records::load_record(&self.paths, &key)
+            .unwrap()
+            .value
+    }
+
+    /// An adoption of the unmanaged folder `folder` as the addon of the same name, its
+    /// files indexed as they are now.
+    pub fn adopt(&self, folder: &str) -> super::plan::RequestedChange {
+        let name = crate::model::FolderName::new(folder).unwrap();
+        let index = live_index(&self.client.addons().join(folder));
+        let record = crate::model::AddonRecord {
+            r#ref: format!("gh:o/{}", folder.to_ascii_lowercase())
+                .parse()
+                .unwrap(),
+            name: folder.to_owned(),
+            version: "unknown".into(),
+            version_confidence: crate::model::VersionConfidence::Toc,
+            release_id: None,
+            channel: crate::model::Channel::Stable,
+            pinned: false,
+            reason: crate::model::AddonReason::Explicit,
+            required_by: Vec::new(),
+            folders: vec![name.clone()],
+            state: crate::model::AddonState::Ok,
+            installed_at: "2000-01-01T00:00:00Z".parse().unwrap(),
+            tx_id: TxId::new(),
+            blob_sha256: None,
+        };
+        let spec = super::edit::AdoptSpec {
+            record,
+            folders: vec![(name, index)],
+        };
+        self.edit(folder, super::edit::RecordEdit::Adopt(Box::new(spec)))
+    }
+
+    /// The target's files index now.
+    pub fn index(&self) -> crate::state::files_index::FilesIndex {
+        let key = crate::discover::registry::read_marker(self.client.client_dir()).unwrap();
+        crate::state::store::load::<crate::state::files_index::FilesIndex>(
+            &self.paths.files_index(&key),
+        )
+        .unwrap()
+        .unwrap()
+        .value
     }
 
     /// The AddOns tree's digest.

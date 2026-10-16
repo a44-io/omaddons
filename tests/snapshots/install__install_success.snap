@@ -29,6 +29,7 @@ expression: "support::stable(&envelope)"
             "Foo",
             "FooOptions"
           ],
+          "recorded": [],
           "removed": [],
           "replaced": [],
           "skipped": []

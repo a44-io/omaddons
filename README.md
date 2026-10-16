@@ -603,6 +603,8 @@ omaddons remove gh:BigWigsMods/BigWigs -t era
 
 Unmanaged, linked (symlinked) and `Blizzard_*` folders, and names that match no managed addon, are refused with `not_managed`.
 
+An addon whose folders were all deleted by hand is forgotten: its record and index entries go, in a transaction that records each folder (`record` ops) and that `undo` reverts. Such a remove changes no folder, so it also goes through while the game runs.
+
 ### `undo [TX]`
 
 Revert a transaction as a new transaction, SavedVariables included.
@@ -634,6 +636,8 @@ omaddons history -t retail -v --json       # each folder operation (ops) instead
 ```
 
 `--since` takes `30m`, `12h`, `1d`, `2w` or an RFC 3339 time.
+
+Each line counts the folders added (`+`), replaced (`~`) and removed (`-`). A transaction that changed records without moving a folder, such as forgetting an addon whose folders were gone, also shows `=N` for the folders it recorded (`changes.recorded` in JSON).
 
 ### `list`
 
@@ -716,7 +720,7 @@ omaddons targets add --help    # subcommands: --help, or omaddons help "targets 
  "data":{"dry_run":false,"target":{"id":"retail","key":"01M51EX04HHWM46XE9F2B9JXED"},"tx":"01M51EX645RCVFN6Z4ZV5GRWVS","kind":"install",
    "items":[{"request":"./Bar-2.1.0.zip","ref":"file:/home/me/src/./Bar-2.1.0.zip","name":"Bar","status":"installed",
      "from_version":null,"to_version":"2.1.0","version_confidence":"toc","channel":"stable",
-     "folders":{"added":["Bar"],"replaced":[],"removed":[],"skipped":[]},"error":null}],
+     "folders":{"added":["Bar"],"replaced":[],"removed":[],"skipped":[],"recorded":[]},"error":null}],
    "reload_required":"none","atomic_swap":true,"creates_addons_dir":false},
  "warnings":[],
  "commands":[{"action":"undo","command":"omaddons undo 01M51EX645RCVFN6Z4ZV5GRWVS","argv":["omaddons","undo","01M51EX645RCVFN6Z4ZV5GRWVS"],"destructive":false}],
