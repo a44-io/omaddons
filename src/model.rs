@@ -966,13 +966,17 @@ pub enum FlavorHint {
     MistsLegacy,
 }
 
-/// A hash a source promises for an asset. SHA-256 only in M1; MD5 (WoWInterface) and
-/// SHA-1 (CurseForge) arrive with those sources.
+/// A hash a source promises for an asset, checked as the download streams. SHA-1
+/// (CurseForge) arrives with that source.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ExpectedHash {
     /// Lowercase hex.
     Sha256(String),
+    /// Lowercase hex (WoWInterface's `UIMD5`, Tukui's `ETag`). It catches corruption
+    /// and a changed upstream file, nothing more: MD5 is not a security check, and
+    /// SHA-256 stays the blob's identity.
+    Md5(String),
 }
 
 impl ExpectedHash {
@@ -981,6 +985,36 @@ impl ExpectedHash {
         (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
             .then(|| Self::Sha256(hex.to_ascii_lowercase()))
     }
+
+    /// An MD5 hash from 32 hex digits in either case, stored lowercase.
+    pub fn md5(hex: &str) -> Option<Self> {
+        (hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| Self::Md5(hex.to_ascii_lowercase()))
+    }
+
+    /// The algorithm's name, as messages say it.
+    pub const fn algorithm(&self) -> &'static str {
+        match self {
+            Self::Sha256(_) => "SHA-256",
+            Self::Md5(_) => "MD5",
+        }
+    }
+
+    /// The hex digits, lowercase.
+    pub fn hex(&self) -> &str {
+        match self {
+            Self::Sha256(hex) | Self::Md5(hex) => hex,
+        }
+    }
+}
+
+/// A hash a source does not declare but its download response carries in a header.
+/// Like [`ExpectedHash::Md5`], a corruption check, never a security one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HashFromHeader {
+    /// A quoted, strong, 32-hex `ETag` on the 200 response is the body's MD5 (Tukui).
+    EtagMd5,
 }
 
 /// One concrete asset proposed for one target, in selection order.
@@ -1475,6 +1509,39 @@ mod tests {
         );
         json["folders"][0] = "../x".into();
         assert!(serde_json::from_value::<AddonRecord>(json).is_err());
+    }
+
+    #[test]
+    fn md5_hashes_normalize_and_tag_on_the_wire() {
+        let upper = "AB".repeat(16);
+        assert_eq!(
+            ExpectedHash::md5(&upper),
+            Some(ExpectedHash::Md5("ab".repeat(16)))
+        );
+        assert_eq!(
+            ExpectedHash::md5(&"ab".repeat(32)),
+            None,
+            "a SHA-256 length"
+        );
+        assert_eq!(ExpectedHash::md5("abc"), None);
+        assert_eq!(ExpectedHash::md5(&"zz".repeat(16)), None);
+        for (hash, wire) in [
+            (
+                ExpectedHash::Md5("0f".repeat(16)),
+                serde_json::json!({"md5": "0f".repeat(16)}),
+            ),
+            (
+                ExpectedHash::Sha256("0f".repeat(32)),
+                serde_json::json!({"sha256": "0f".repeat(32)}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&hash).unwrap(), wire);
+            assert_eq!(serde_json::from_value::<ExpectedHash>(wire).unwrap(), hash);
+        }
+        assert_eq!(
+            serde_json::to_value(HashFromHeader::EtagMd5).unwrap(),
+            "etag_md5"
+        );
     }
 
     #[test]

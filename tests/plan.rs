@@ -91,21 +91,30 @@ mod support {
         }
 
         pub fn plan(&self, targets: Vec<TargetRequest>, force: bool) -> Plan {
+            self.plan_with(targets, force, &SourceRegistry::builtin())
+        }
+
+        /// [`Env::plan`] fetching through `registry`.
+        pub fn plan_with(
+            &self,
+            targets: Vec<TargetRequest>,
+            force: bool,
+            registry: &SourceRegistry,
+        ) -> Plan {
             let http = self.http();
-            let registry = SourceRegistry::builtin();
             let blobs = BlobCache::new(&self.paths);
             let table = RulesTable::builtin();
             let argv: Vec<String> = ["omaddons", "install", "gh:o/foo"]
                 .iter()
                 .map(|s| (*s).to_owned())
                 .collect();
-            let cache = ReleaseCache::transient(http.as_ref(), &registry);
+            let cache = ReleaseCache::transient(http.as_ref(), registry);
             let catalog = omaddons::resolve::catalog::Catalog::default();
             let ctx = PlanCtx {
                 paths: &self.paths,
                 scopes: &self.scopes,
                 http: http.as_ref(),
-                registry: &registry,
+                registry,
                 cache: &cache,
                 progress: &omaddons::output::ProgressSink::none(),
                 blobs: &blobs,
@@ -814,5 +823,107 @@ fn a_records_only_edit_plans_as_an_edit_with_its_fields_and_recorded_folders() {
     assert_eq!(
         value["targets"][0]["changes"][0]["fields"],
         serde_json::json!(["channel"])
+    );
+}
+
+/// Where the stand-in source's one asset is served.
+const WOWI_ZIP: &str = "https://cdn.wowinterface.com/downloads/file5995/Foo.zip";
+
+/// A WoWInterface stand-in: release 1 of any `wowi:` ref is `Foo.zip` at [`WOWI_ZIP`],
+/// published with `hash`.
+struct HashSource {
+    hash: Option<omaddons::model::ExpectedHash>,
+}
+
+impl omaddons::sources::Source for HashSource {
+    fn id(&self) -> omaddons::sources::SourceId {
+        omaddons::sources::SourceId::Wowi
+    }
+
+    fn fetch(
+        &self,
+        wanted: &[omaddons::sources::Wanted],
+        _: &dyn Http,
+    ) -> Vec<omaddons::error::Result<omaddons::model::ReleaseSet>> {
+        wanted
+            .iter()
+            .map(|w| {
+                Ok(omaddons::model::ReleaseSet {
+                    r#ref: w.r#ref.clone(),
+                    releases: vec![omaddons::model::Release {
+                        release_id: format!("{}@1", w.r#ref),
+                        version: "1".to_owned(),
+                        channel: Channel::Stable,
+                        published_at: None,
+                        assets: vec![omaddons::model::Asset {
+                            filename: "Foo.zip".to_owned(),
+                            location: omaddons::model::AssetLocation::Url(WOWI_ZIP.to_owned()),
+                            size: None,
+                            expected_hash: self.hash.clone(),
+                            flavors: Vec::new(),
+                            name_flavors: Vec::new(),
+                            nolib: false,
+                        }],
+                        changelog_url: None,
+                    }],
+                })
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_published_hash_of_either_algorithm_is_checked_and_shown_in_the_plan() {
+    use md5::{Digest, Md5};
+    use omaddons::model::ExpectedHash;
+
+    let body = zip_text(&[("Foo/Foo.toc", &toc("120105"))]);
+    let hex = |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
+    let md5 = hex(&Md5::digest(&body));
+    let sha = hex(&sha2::Sha256::digest(&body));
+    let plan_with = |hash: Option<ExpectedHash>| {
+        let env = Env::new();
+        common::http::fixture_bytes(&env.scenario, "wowi-foo", WOWI_ZIP, 200, &[], Some(&body));
+        let mut registry = SourceRegistry::new();
+        registry.register(Box::new(HashSource { hash }));
+        let changes = vec![user_install("wowi:5995")];
+        let plan = env.plan_with(
+            vec![request(&env.retail, changes, TxKind::Install)],
+            false,
+            &registry,
+        );
+        (env, plan)
+    };
+
+    for (hash, wire) in [
+        (ExpectedHash::md5(&md5), serde_json::json!({"md5": md5})),
+        (
+            ExpectedHash::sha256(&sha),
+            serde_json::json!({"sha256": sha}),
+        ),
+    ] {
+        let (_env, plan) = plan_with(hash);
+        assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+        let value = serde_json::to_value(&plan).unwrap();
+        assert_eq!(value["targets"][0]["releases"][0]["expected_hash"], wire);
+        assert_eq!(value["targets"][0]["changes"][0]["kind"], "install");
+    }
+
+    // A tampered download (the source published another MD5): the candidate is refused
+    // after its retry, as any candidate that fails, and nothing is kept.
+    let (env, plan) = plan_with(ExpectedHash::md5(&hex(&Md5::digest(b"other"))));
+    assert_eq!(plan.failures.len(), 1, "{plan:?}");
+    let error = &plan.failures[0].error;
+    let reason = error.details["tried"][0]["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("hash_mismatch: the download's MD5 is"),
+        "{reason}"
+    );
+    assert!(plan.targets[0].changes.is_empty());
+    assert!(!env.paths.blob(&sha).exists());
+    assert_eq!(
+        read_net_log(&env.paths).len(),
+        2,
+        "downloaded twice: the mismatch is retried once"
     );
 }

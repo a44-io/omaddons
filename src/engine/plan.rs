@@ -22,7 +22,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::blobs::{BlobCache, BlobRef, Storage};
+use super::blobs::{BlobCache, BlobRef};
 use super::edit::{
     EditField, RecordEdit, RecordGuard, apply_edit, apply_edits, changed_fields, sorted_names,
 };
@@ -42,7 +42,7 @@ use crate::model::{
     FolderName, RankReason, Ref, ReleaseSet, ReloadRequired, Target, TargetKey, TxId, TxKind,
     VersionConfidence,
 };
-use crate::net::{Http, Request};
+use crate::net::Http;
 use crate::output::{Phase, ProgressSink};
 use crate::resolve::cache::{Origin, ReleaseCache};
 use crate::resolve::catalog::Catalog;
@@ -531,7 +531,8 @@ pub enum OpKind {
 pub struct PlannedRelease {
     pub release_id: String,
     pub url: Option<String>,
-    pub expected_hash: Option<String>,
+    /// `{"sha256": …}` or `{"md5": …}`; `null` when the source declares none.
+    pub expected_hash: Option<ExpectedHash>,
     pub blob_sha256: Option<String>,
 }
 
@@ -793,6 +794,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             facts: RefCell::new(Vec::new()),
             candidate_items,
             view: RefCell::new(WorkingView::default()),
+            notes: RefCell::new(Vec::new()),
         };
         // First pass, in argument order: inspect every install; a second request for a
         // ref collapses into the first (the command reports it as a duplicate).
@@ -890,6 +892,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         tp.kind = target_kind(&tp.changes, req.kind, tp.default_kind);
         tp.creates_addons_dir =
             live.addons_dir_missing && tp.work.iter().any(|w| w.inspected().is_some());
+        tp.notes.extend(planner.notes.take());
         targets.push(tp);
         for fact in planner.facts.into_inner() {
             merge_fact(&mut facts, fact);
@@ -1679,6 +1682,7 @@ pub fn rejudge(
         facts: RefCell::new(Vec::new()),
         candidate_items: 0,
         view: RefCell::new(view.clone()),
+        notes: RefCell::new(Vec::new()),
     };
     let folders = match &work.mode {
         WorkMode::Folders(folders) => folders,
@@ -2131,6 +2135,8 @@ struct TargetPlanner<'a> {
     candidate_items: u64,
     /// What the works judged so far in this transaction claim and release (M2-D6).
     view: RefCell<WorkingView>,
+    /// `-v` notes from downloading (a header hash that could not be checked).
+    notes: RefCell<Vec<String>>,
 }
 
 /// What ownership and the running policy allow.
@@ -2348,12 +2354,7 @@ impl TargetPlanner<'_> {
         let (url, expected_hash) = match &winner.candidate.asset.location {
             AssetLocation::Url(url) => (
                 Some(url.clone()),
-                winner
-                    .candidate
-                    .asset
-                    .expected_hash
-                    .as_ref()
-                    .map(|ExpectedHash::Sha256(h)| h.clone()),
+                winner.candidate.asset.expected_hash.clone(),
             ),
             _ => (None, None),
         };
@@ -3000,7 +3001,11 @@ impl TargetPlanner<'_> {
     ) -> Result<BlobRef> {
         let ctx = self.ctx;
         let expected = asset.expected_hash.as_ref();
-        let expected_sha = expected.map(|ExpectedHash::Sha256(sha)| sha.to_ascii_lowercase());
+        // The blob cache is keyed by SHA-256: an MD5 source's fast path is its facts.
+        let expected_sha = match expected {
+            Some(ExpectedHash::Sha256(sha)) => Some(sha.to_ascii_lowercase()),
+            Some(ExpectedHash::Md5(_)) | None => None,
+        };
         if let Some(sha) = &expected_sha
             && let Some(blob) = ctx.blobs.get(ctx.scopes, sha)?
         {
@@ -3013,31 +3018,21 @@ impl TargetPlanner<'_> {
         {
             return Ok(blob);
         }
-        let mut attempt = 1;
-        loop {
-            let resp = ctx
-                .http
-                .send(Request::get(url, "asset").download())?
-                .error_for_status("asset")?;
-            match ctx.blobs.store_stream(
-                ctx.scopes,
-                &ctx.tx,
-                resp.into_reader(),
-                expected,
-                &Storage::Cache,
-            ) {
-                Ok(blob) => {
-                    failpoint::hit("engine.plan.downloaded").map_err(|e| fail(ctx, &e))?;
-                    let item = format!("{release_id} on {}", self.target.id);
-                    ctx.progress
-                        .event(Phase::Download, self.candidate_items, &item);
-                    return Ok(blob);
-                }
-                Err(e) if e.code == ErrorCode::HashMismatch && attempt == 1 => attempt += 1,
-                Err(e) if e.code == ErrorCode::HashMismatch => return Err(e.retryable(false)),
-                Err(e) => return Err(e),
-            }
-        }
+        // No source asks for a header-derived hash yet (Tukui's ETag, with A8).
+        let blob = ctx.blobs.download(
+            ctx.scopes,
+            &ctx.tx,
+            ctx.http,
+            url,
+            expected,
+            None,
+            &mut self.notes.borrow_mut(),
+        )?;
+        failpoint::hit("engine.plan.downloaded").map_err(|e| fail(ctx, &e))?;
+        let item = format!("{release_id} on {}", self.target.id);
+        ctx.progress
+            .event(Phase::Download, self.candidate_items, &item);
+        Ok(blob)
     }
 
     fn no_release(&self, wanted: &Wanted, tried: &[Value], why: &str) -> Error {

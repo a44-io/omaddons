@@ -21,6 +21,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use md5::Md5;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -31,7 +32,8 @@ use crate::fsx::{
     WriteSession, Writer, ensure_dir_all, mutate,
 };
 use crate::limits::DOWNLOAD_MAX_BYTES;
-use crate::model::{ExpectedHash, TxId};
+use crate::model::{ExpectedHash, HashFromHeader, TxId};
+use crate::net::{Http, Request};
 use crate::state::paths::Paths;
 
 /// A stored archive.
@@ -117,12 +119,34 @@ impl BlobCache {
         expected: Option<&ExpectedHash>,
         storage: &Storage,
     ) -> Result<BlobRef> {
+        let expected: Vec<ExpectedHash> = expected.into_iter().cloned().collect();
+        self.store_checked(scopes, tx, reader, &expected, storage)
+    }
+
+    /// [`BlobCache::store_stream`] checking every hash in `expected`. SHA-256 is always
+    /// computed (it names the blob); MD5 only when one is expected.
+    pub fn store_checked(
+        &self,
+        scopes: &ScopeTable,
+        tx: &TxId,
+        reader: impl Read,
+        expected: &[ExpectedHash],
+        storage: &Storage,
+    ) -> Result<BlobRef> {
+        let wants_md5 = expected.iter().any(|e| matches!(e, ExpectedHash::Md5(_)));
         let mut guard = Guard {
             inner: reader,
             hasher: Sha256::new(),
+            md5: wants_md5.then(Md5::new),
             len: 0,
             max: self.max_download,
-            expected: expected.map(|ExpectedHash::Sha256(hex)| hex.to_ascii_lowercase()),
+            expected: expected
+                .iter()
+                .map(|e| match e {
+                    ExpectedHash::Sha256(hex) => ExpectedHash::Sha256(hex.to_ascii_lowercase()),
+                    ExpectedHash::Md5(hex) => ExpectedHash::Md5(hex.to_ascii_lowercase()),
+                })
+                .collect(),
             failure: None,
         };
         let (written_to, writer) = match storage {
@@ -165,6 +189,42 @@ impl BlobCache {
             }
         };
         Ok(BlobRef { sha256, size, path })
+    }
+
+    /// Downloads `url` into the cache, checking `declared` and, when `from_header` says
+    /// so and no MD5 is declared, the MD5 the response's header carries. A hash
+    /// mismatch is retried once; a second one is not retryable. A header that cannot be
+    /// used is no check, said in `notes` (for `-v`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn download(
+        &self,
+        scopes: &ScopeTable,
+        tx: &TxId,
+        http: &dyn Http,
+        url: &str,
+        declared: Option<&ExpectedHash>,
+        from_header: Option<HashFromHeader>,
+        notes: &mut Vec<String>,
+    ) -> Result<BlobRef> {
+        let declared_md5 = matches!(declared, Some(ExpectedHash::Md5(_)));
+        let mut attempt = 1;
+        loop {
+            let resp = http
+                .send(Request::get(url, "asset").download())?
+                .error_for_status("asset")?;
+            let mut expected: Vec<ExpectedHash> = declared.into_iter().cloned().collect();
+            if let (Some(HashFromHeader::EtagMd5), false) = (from_header, declared_md5) {
+                match etag_md5(resp.header("etag")) {
+                    Ok(md5) => expected.push(md5),
+                    Err(why) => notes.push(format!("{url}: {why}; its MD5 is not checked")),
+                }
+            }
+            match self.store_checked(scopes, tx, resp.into_reader(), &expected, &Storage::Cache) {
+                Err(e) if e.code == ErrorCode::HashMismatch && attempt == 1 => attempt += 1,
+                Err(e) if e.code == ErrorCode::HashMismatch => return Err(e.retryable(false)),
+                done => return done,
+            }
+        }
     }
 
     /// The cached blob with this hash, marking it used.
@@ -325,19 +385,29 @@ impl BlobCache {
 }
 
 /// Hashes and counts the stream, failing past `max` bytes or, at its end, on a hash
-/// other than `expected`; the failure is kept for the caller.
+/// other than one `expected`; the failure is kept for the caller.
 struct Guard<R> {
     inner: R,
     hasher: Sha256,
+    /// Only when an MD5 is expected.
+    md5: Option<Md5>,
     len: u64,
     max: u64,
-    expected: Option<String>,
+    expected: Vec<ExpectedHash>,
     failure: Option<Error>,
 }
 
 impl<R> Guard<R> {
     fn hex(&self) -> String {
         hex(&self.hasher.clone().finalize())
+    }
+
+    /// What the stream hashed to in `expected`'s algorithm.
+    fn actual(&self, expected: &ExpectedHash) -> Option<String> {
+        match expected {
+            ExpectedHash::Sha256(_) => Some(self.hex()),
+            ExpectedHash::Md5(_) => self.md5.as_ref().map(|m| hex(&m.clone().finalize())),
+        }
     }
 
     fn fail(&mut self, error: Error) -> io::Error {
@@ -351,17 +421,19 @@ impl<R: Read> Read for Guard<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.inner.read(buf)?;
         if n == 0 {
-            if let Some(expected) = self.expected.clone() {
-                let actual = self.hex();
+            for expected in self.expected.clone() {
+                let actual = self.actual(&expected).unwrap_or_default();
+                let published = expected.hex();
                 // ubs:ignore — comparing a download's digest with its published one, not a secret
-                if actual != expected {
+                if actual != published {
+                    let algorithm = expected.algorithm();
                     return Err(self.fail(
                         Error::hash_mismatch(
                             1,
-                            format!("the download's SHA-256 is {actual}, but the source published {expected}"),
+                            format!("the download's {algorithm} is {actual}, but the source published {published}"),
                             Suggestion::text("retry once; if it persists, the upstream file changed or is corrupt"),
                         )
-                        .details(json!({ "expected": expected, "actual": actual })),
+                        .details(json!({ "expected": published, "actual": actual })),
                     ));
                 }
             }
@@ -381,9 +453,29 @@ impl<R: Read> Read for Guard<R> {
                 .details(json!({ "limit": max, "config_key": "limits.download_max_bytes" })),
             ));
         }
-        self.hasher.update(buf.get(..n).unwrap_or_default());
+        let chunk = buf.get(..n).unwrap_or_default();
+        self.hasher.update(chunk);
+        if let Some(md5) = &mut self.md5 {
+            md5.update(chunk);
+        }
         Ok(n)
     }
+}
+
+/// The MD5 a strong, quoted, 32-hex `ETag` carries; otherwise why there is none to
+/// check (absent, weak, unquoted, or not an MD5).
+fn etag_md5(etag: Option<&str>) -> std::result::Result<ExpectedHash, String> {
+    let Some(etag) = etag.map(str::trim) else {
+        return Err("no ETag".to_owned());
+    };
+    if etag.starts_with("W/") {
+        return Err(format!("a weak ETag ({etag})"));
+    }
+    let quoted = etag
+        .strip_prefix('"')
+        .and_then(|e| e.strip_suffix('"'))
+        .ok_or_else(|| format!("an unquoted ETag ({etag})"))?;
+    ExpectedHash::md5(quoted).ok_or_else(|| format!("an ETag that is not an MD5 ({etag})"))
 }
 
 fn is_sha256(name: &str) -> bool {
@@ -576,6 +668,148 @@ mod tests {
         assert_eq!(err.details["actual"], sha(b"def"));
         assert!(files(&f.paths.cache_dir().join("tmp")).is_empty());
         assert!(!f.paths.blob(&sha(b"def")).exists());
+    }
+
+    fn md5(bytes: &[u8]) -> String {
+        hex(&Md5::digest(bytes))
+    }
+
+    #[test]
+    fn md5_expectations_are_checked_and_blobs_stay_keyed_by_sha256() {
+        let f = fixture();
+        let cache = BlobCache::new(&f.paths);
+        let good = ExpectedHash::md5(&md5(b"abc").to_uppercase()).unwrap();
+        let blob = cache
+            .store_stream(
+                &f.scopes,
+                &TxId::new(),
+                Cursor::new(b"abc".to_vec()),
+                Some(&good),
+                &Storage::Cache,
+            )
+            .unwrap();
+        assert_eq!(blob.sha256, sha(b"abc"));
+        assert!(f.paths.blob(&sha(b"abc")).is_file());
+
+        let bad = ExpectedHash::md5(&md5(b"xyz")).unwrap();
+        let err = cache
+            .store_stream(
+                &f.scopes,
+                &TxId::new(),
+                Cursor::new(b"def".to_vec()),
+                Some(&bad),
+                &Storage::Cache,
+            )
+            .unwrap_err();
+        assert_eq!((err.code, err.retryable), (ErrorCode::HashMismatch, true));
+        assert!(err.message.contains("MD5"), "{}", err.message);
+        assert_eq!(
+            (&err.details["expected"], &err.details["actual"]),
+            (&json!(md5(b"xyz")), &json!(md5(b"def")))
+        );
+        assert!(!f.paths.blob(&sha(b"def")).exists());
+
+        // Both algorithms at once: each is checked.
+        let both = [
+            ExpectedHash::sha256(&sha(b"ghi")).unwrap(),
+            ExpectedHash::md5(&md5(b"nope")).unwrap(),
+        ];
+        let err = cache
+            .store_checked(
+                &f.scopes,
+                &TxId::new(),
+                Cursor::new(b"ghi".to_vec()),
+                &both,
+                &Storage::Cache,
+            )
+            .unwrap_err();
+        assert!(err.message.contains("MD5"), "{}", err.message);
+    }
+
+    /// Serves `body` with `etag`, counting requests.
+    struct Serve {
+        body: Vec<u8>,
+        etag: Option<String>,
+        sent: AtomicU64,
+    }
+
+    impl Serve {
+        fn new(body: &[u8], etag: Option<&str>) -> Self {
+            Self {
+                body: body.to_vec(),
+                etag: etag.map(str::to_owned),
+                sent: AtomicU64::new(0),
+            }
+        }
+    }
+
+    impl Http for Serve {
+        fn send(&self, req: Request) -> Result<crate::net::Response> {
+            self.sent.fetch_add(1, Ordering::Relaxed);
+            let headers = self
+                .etag
+                .iter()
+                .map(|e| ("ETag".to_owned(), e.clone()))
+                .collect();
+            Ok(crate::net::Response::new(
+                200,
+                headers,
+                req.url,
+                Box::new(Cursor::new(self.body.clone())),
+            ))
+        }
+    }
+
+    #[test]
+    fn a_strong_etag_md5_is_checked_and_an_unusable_one_is_noted() {
+        let f = fixture();
+        let cache = BlobCache::new(&f.paths);
+        let url = "https://www.tukui.org/download/elvui.zip";
+        let download = |http: &Serve, declared: Option<&ExpectedHash>| {
+            let mut notes = Vec::new();
+            let got = cache.download(
+                &f.scopes,
+                &TxId::new(),
+                http,
+                url,
+                declared,
+                Some(HashFromHeader::EtagMd5),
+                &mut notes,
+            );
+            (got, notes)
+        };
+        // A matching ETag verifies.
+        let quoted = format!("\"{}\"", md5(b"elvui"));
+        let (got, notes) = download(&Serve::new(b"elvui", Some(&quoted)), None);
+        assert_eq!(got.unwrap().sha256, sha(b"elvui"));
+        assert!(notes.is_empty(), "{notes:?}");
+
+        // A wrong one fails, retried once; the second failure is not retryable.
+        let wrong = format!("\"{}\"", md5(b"other"));
+        let http = Serve::new(b"elvui", Some(&wrong));
+        let (got, _) = download(&http, None);
+        let err = got.unwrap_err();
+        assert_eq!((err.code, err.retryable), (ErrorCode::HashMismatch, false));
+        assert_eq!(http.sent.load(Ordering::Relaxed), 2);
+
+        // Weak, absent, unquoted or not an MD5: no check, and a note says so.
+        let plain = md5(b"elvui");
+        for etag in [
+            Some("W/\"abc\""),
+            None,
+            Some(plain.as_str()),
+            Some("\"abc\""),
+        ] {
+            let (got, notes) = download(&Serve::new(b"elvui", etag), None);
+            assert!(got.is_ok(), "{etag:?}");
+            assert_eq!(notes.len(), 1, "{etag:?}: {notes:?}");
+            assert!(notes[0].contains("not checked"), "{notes:?}");
+        }
+
+        // A declared MD5 wins; the header is not consulted.
+        let declared = ExpectedHash::md5(&md5(b"elvui")).unwrap();
+        let (got, notes) = download(&Serve::new(b"elvui", Some(&wrong)), Some(&declared));
+        assert!(got.is_ok() && notes.is_empty());
     }
 
     #[test]
