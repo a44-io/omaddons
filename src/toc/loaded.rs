@@ -328,6 +328,41 @@ pub fn verdict(
     ))
 }
 
+/// The highest of `interfaces` that lies in `family`'s range or, for a family without
+/// one, in the client's own `major.minor` (from `target_interface`; unknown when 0).
+/// `None` when none does. The interface a verdict judges by.
+pub fn best_in_family(
+    interfaces: &[u32],
+    family: Family,
+    target_interface: u32,
+    table: &RulesTable,
+) -> Option<u32> {
+    let mut in_family = interfaces
+        .iter()
+        .copied()
+        .filter(|i| match table.family_range(family) {
+            Some(range) => range.contains(*i),
+            None => target_interface != 0 && i / 100 == target_interface / 100,
+        });
+    in_family
+        .next()
+        .map(|first| in_family.fold(first, u32::max))
+}
+
+/// The interface the client judges `loaded` by: the highest of its interfaces (as
+/// `rules` reads them) in the client's family, as [`judge`] computes it. The planner
+/// records it for a candidate, and the update status reads it for an installed folder.
+pub fn primary_interface(
+    loaded: &LoadedToc,
+    rules: &ClientRules,
+    family: Family,
+    target_interface: u32,
+    table: &RulesTable,
+) -> Option<u32> {
+    let (interfaces, _) = effective_interfaces(&loaded.toc, rules);
+    best_in_family(&interfaces, family, target_interface, table)
+}
+
 /// [`verdict`] on a TOC already loaded from `folder` (`None`: there is none), for
 /// callers that also keep the TOC.
 pub fn judge(
@@ -364,22 +399,10 @@ pub fn judge(
         if interfaces.is_empty() {
             break 'v wrong(WrongFlavorReason::NoInterface);
         }
-        let in_range: Vec<u32> = match table.family_range(family) {
-            Some(range) => interfaces
-                .iter()
-                .copied()
-                .filter(|i| range.contains(*i))
-                .collect(),
-            None if target_interface == 0 => {
-                break 'v wrong(WrongFlavorReason::TargetInterfaceUnknown);
-            }
-            None => interfaces
-                .iter()
-                .copied()
-                .filter(|i| i / 100 == target_interface / 100)
-                .collect(),
-        };
-        let Some(best) = in_range.iter().copied().max() else {
+        if table.family_range(family).is_none() && target_interface == 0 {
+            break 'v wrong(WrongFlavorReason::TargetInterfaceUnknown);
+        }
+        let Some(best) = best_in_family(&interfaces, family, target_interface, table) else {
             break 'v wrong(WrongFlavorReason::InterfaceNotInFamily { interfaces, family });
         };
         let out_of_date = best < target_interface;
@@ -511,6 +534,45 @@ mod tests {
 
     fn reason(report: &VerdictReport) -> serde_json::Value {
         serde_json::to_value(&report.verdict).unwrap()
+    }
+
+    #[test]
+    fn the_primary_interface_is_the_one_the_verdict_judges_by() {
+        let table = RulesTable::builtin();
+        let retail = bnet("12.1.5");
+        let primary = |toc: &str| {
+            let view = Memory::new("Foo", &[("Foo.toc", toc)]);
+            let loaded = loaded_toc(&view, &retail.rules).unwrap().unwrap();
+            let report = judge(&view, &retail);
+            let interface = primary_interface(
+                &loaded,
+                &retail.rules,
+                retail.family,
+                retail.interface,
+                &table,
+            );
+            (report.verdict, interface)
+        };
+        // In range, current: the highest in-family value.
+        assert_eq!(
+            primary("## Interface: 11509, 120105, 120001\n"),
+            (Verdict::Compatible { out_of_date: false }, Some(120_105))
+        );
+        // In range, older: out of date, and that interface.
+        assert_eq!(
+            primary("## Interface: 120000\n"),
+            (Verdict::Compatible { out_of_date: true }, Some(120_000))
+        );
+        // Out of family: none.
+        let (verdict, interface) = primary("## Interface: 11509\n");
+        assert!(matches!(verdict, Verdict::WrongFlavor { .. }));
+        assert_eq!(interface, None);
+        // A family without a range compares major.minor, and an unknown client none.
+        assert_eq!(
+            best_in_family(&[30_405, 30_300], Family::Unknown, 30_400, &table),
+            Some(30_405)
+        );
+        assert_eq!(best_in_family(&[30_405], Family::Unknown, 0, &table), None);
     }
 
     #[test]

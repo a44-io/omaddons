@@ -35,6 +35,7 @@ use crate::resolve::cache::{Freshness, ReleaseCache};
 use crate::resolve::catalog::Catalog;
 use crate::rules::{RulesTable, TargetKind};
 use crate::sources::refs::{CatalogMatch, InstalledMatch, ParsedRef, RefContext, parse_user_ref};
+use crate::state::memo::CandidateFact;
 use crate::state::records::{TargetRecord, load_record};
 
 /// `install`'s own flags.
@@ -463,11 +464,22 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         Freshness::Revalidate
     };
     let cache = engine.cache(freshness);
-    let target = match choose_target(ctx, &world, &engine, &cache, &items, &change_for) {
+    // What both engine runs learned by downloading candidates.
+    let mut facts = Vec::new();
+    let chosen = choose_target(
+        ctx,
+        &world,
+        &engine,
+        &cache,
+        &mut facts,
+        &items,
+        &change_for,
+    );
+    let target = match chosen {
         Ok(target) => target,
         Err(error) => {
             // What the probe fetched is still worth remembering.
-            cache.remember(&[]);
+            cache.remember(&facts);
             return Err(error);
         }
     };
@@ -486,7 +498,10 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
     };
     let done = engine.run(&req, Some(&cache));
     // The command's last engine run: remember what it fetched, even when it failed.
-    let remembered = cache.remember(&[]);
+    if let Ok(done) = &done {
+        facts.extend(done.plan.facts.iter().cloned());
+    }
+    let remembered = cache.remember(&facts);
     let done = done?;
     warnings.extend(remembered.warnings);
     let record = target
@@ -639,6 +654,7 @@ fn choose_target<'w>(
     world: &'w World,
     engine: &Engine,
     cache: &ReleaseCache<'_>,
+    facts: &mut Vec<CandidateFact>,
     items: &[Item],
     change_for: &dyn Fn(&ParsedRef, &DiscoveredTarget) -> RequestedChange,
 ) -> Result<&'w DiscoveredTarget> {
@@ -688,6 +704,7 @@ fn choose_target<'w>(
     };
     // The same cache as the real run: each ref is fetched once across both.
     let probed = engine.run(&probe, Some(cache))?;
+    facts.extend(probed.plan.facts.iter().cloned());
     let failure = |d: &DiscoveredTarget, r: &Ref| {
         probed
             .failures

@@ -13,6 +13,7 @@
 //! A failure for one change on one target is recorded in `failures` and the rest still
 //! plans; the command layer turns that into `partial` (or `--strict` exit 6).
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -21,12 +22,13 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::blobs::{BlobCache, Storage};
+use super::blobs::{BlobCache, BlobRef, Storage};
 use super::edit::{
     EditField, RecordEdit, RecordGuard, apply_edit, apply_edits, changed_fields, sorted_names,
 };
 use super::inspect::{
-    ArchiveLimits, Inspected, SkippedFolder, accepts, inspect, inspect_dir, partition, verify,
+    ArchiveLimits, FolderVerdict, Inspected, SkippedFolder, accepts, inspect, inspect_dir,
+    partition, verify,
 };
 use super::ownership::{self, AllowedOp, FolderChange, Transfer};
 use super::running::{self, PolicyContext, PolicyOp};
@@ -46,6 +48,7 @@ use crate::rules::RulesTable;
 use crate::sources::{SourceRegistry, Wanted};
 use crate::state::config::RunningPolicy;
 use crate::state::files_index::{FilesIndex, FolderIndex};
+use crate::state::memo::{CandidateFact, VerdictFact, merge_fact};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::store;
@@ -327,6 +330,10 @@ pub struct Plan {
     pub generations: BTreeMap<String, u64>,
     pub targets: Vec<TargetPlan>,
     pub failures: Vec<PlanFailure>,
+    /// What downloading candidates taught, one fact per release and asset, for the
+    /// release memo (dry runs included: their downloads are real).
+    #[serde(skip)]
+    pub facts: Vec<CandidateFact>,
 }
 
 impl Plan {
@@ -615,6 +622,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
 
     let mut targets = Vec::with_capacity(prepared.len());
     let mut failures = Vec::new();
+    let mut facts = Vec::new();
     for (tr, record, index, wants) in prepared {
         let target = &tr.target;
         let mut tp = TargetPlan {
@@ -666,6 +674,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             index: index.as_ref(),
             live: &live,
             created_at,
+            facts: RefCell::new(Vec::new()),
         };
         for w in wants {
             let (r, addon, result) = match w {
@@ -707,6 +716,9 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         tp.creates_addons_dir =
             live.addons_dir_missing && tp.work.iter().any(|w| w.inspected().is_some());
         targets.push(tp);
+        for fact in planner.facts.into_inner() {
+            merge_fact(&mut facts, fact);
+        }
     }
     failpoint::hit("engine.plan.done").map_err(|e| fail(ctx, &e))?;
     Ok(Plan {
@@ -720,6 +732,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         generations,
         targets,
         failures,
+        facts,
     })
 }
 
@@ -767,6 +780,8 @@ pub fn rejudge(
         index: index.as_ref(),
         live: &live,
         created_at: Timestamp::now(),
+        // Re-judging downloads nothing, so it learns nothing.
+        facts: RefCell::new(Vec::new()),
     };
     let folders = match &work.mode {
         WorkMode::Folders(folders) => folders,
@@ -1204,6 +1219,8 @@ struct TargetPlanner<'a> {
     index: Option<&'a FilesIndex>,
     live: &'a Inventory,
     created_at: Timestamp,
+    /// What downloading candidates for this target taught.
+    facts: RefCell<Vec<CandidateFact>>,
 }
 
 /// What ownership and the running policy allow.
@@ -1810,13 +1827,16 @@ impl TargetPlanner<'_> {
         candidate: &Candidate,
     ) -> Result<std::result::Result<Winner, String>> {
         let ctx = self.ctx;
+        let mut downloaded = None;
         let (inspected, blob) = match &candidate.asset.location {
             AssetLocation::Url(url) => {
                 let blob = self
-                    .download(url, candidate.asset.expected_hash.as_ref())
+                    .download(&candidate.release_id, &candidate.asset, url)
                     .map_err(|e| missing_git_rev(e, candidate, url))?;
-                let inspected = inspect(&blob, &ctx.limits, ctx.table)?;
-                (inspected, Some(blob))
+                let inspected = inspect(&blob.path, &ctx.limits, ctx.table)?;
+                let path = blob.path.clone();
+                downloaded = Some(blob);
+                (inspected, Some(path))
             }
             AssetLocation::LocalZip(path) => {
                 (inspect(path, &ctx.limits, ctx.table)?, Some(path.clone()))
@@ -1836,7 +1856,12 @@ impl TargetPlanner<'_> {
             candidate.rank,
             RankReason::MetadataInterface | RankReason::MetadataFlavor
         );
-        if !primary.is_some_and(|p| accepts(&split, declared, p)) {
+        let loads = primary.is_some_and(|p| accepts(&split, declared, p));
+        if let Some(blob) = &downloaded {
+            let verdict = verdicts.iter().find(|v| Some(&v.folder) == primary);
+            self.learn(candidate, blob, loads, verdict);
+        }
+        if !loads {
             let why: Vec<String> = verdicts
                 .iter()
                 .map(|v| {
@@ -1905,14 +1930,59 @@ impl TargetPlanner<'_> {
         Ok(dir)
     }
 
-    /// The blob for `url`: the cached one when the expected hash is known and present,
-    /// else a download (retried once on a hash mismatch).
-    fn download(&self, url: &str, expected: Option<&ExpectedHash>) -> Result<PathBuf> {
+    /// Remembers what downloading `candidate` (into `blob`) taught: its hash, and whether
+    /// it `loads` on this client, judged by its primary folder's `verdict`.
+    fn learn(
+        &self,
+        candidate: &Candidate,
+        blob: &BlobRef,
+        loads: bool,
+        verdict: Option<&FolderVerdict>,
+    ) {
+        let out_of_date = verdict
+            .is_some_and(|v| matches!(v.report.verdict, Verdict::Compatible { out_of_date: true }));
+        let fact = CandidateFact {
+            release_id: candidate.release_id.clone(),
+            asset: candidate.asset.filename.clone(),
+            sha256: blob.sha256.clone(),
+            size: blob.size,
+            verdicts: vec![VerdictFact {
+                rules: self.target.rules.name.clone(),
+                interface: self.target.interface,
+                loads,
+                out_of_date: loads && out_of_date,
+                primary_interface: verdict.and_then(|v| v.interface),
+                at: Timestamp::now(),
+            }],
+        };
+        merge_fact(&mut self.facts.borrow_mut(), fact);
+    }
+
+    /// The blob of `asset` of `release_id`, at `url`, in this order: the cached blob of
+    /// its expected hash; the cached blob of the hash an earlier download remembered,
+    /// unless the source now declares another hash or size (a fact never stands in for
+    /// the blob: eviction makes facts stale); else a download, retried once on a hash
+    /// mismatch.
+    fn download(
+        &self,
+        release_id: &str,
+        asset: &crate::model::Asset,
+        url: &str,
+    ) -> Result<BlobRef> {
         let ctx = self.ctx;
-        if let Some(ExpectedHash::Sha256(sha)) = expected
+        let expected = asset.expected_hash.as_ref();
+        let expected_sha = expected.map(|ExpectedHash::Sha256(sha)| sha.to_ascii_lowercase());
+        if let Some(sha) = &expected_sha
             && let Some(blob) = ctx.blobs.get(ctx.scopes, sha)?
         {
-            return Ok(blob.path);
+            return Ok(blob);
+        }
+        if let Some((sha, size)) = ctx.cache.facts().hash(release_id, &asset.filename)
+            && expected_sha.as_ref().is_none_or(|e| e == sha)
+            && asset.size.is_none_or(|declared| declared == size)
+            && let Some(blob) = ctx.blobs.get(ctx.scopes, sha)?
+        {
+            return Ok(blob);
         }
         let mut attempt = 1;
         loop {
@@ -1929,7 +1999,7 @@ impl TargetPlanner<'_> {
             ) {
                 Ok(blob) => {
                     failpoint::hit("engine.plan.downloaded").map_err(|e| fail(ctx, &e))?;
-                    return Ok(blob.path);
+                    return Ok(blob);
                 }
                 Err(e) if e.code == ErrorCode::HashMismatch && attempt == 1 => attempt += 1,
                 Err(e) if e.code == ErrorCode::HashMismatch => return Err(e.retryable(false)),

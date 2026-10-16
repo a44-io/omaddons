@@ -33,7 +33,8 @@ use crate::limits::{
 use crate::model::{FolderName, Target};
 use crate::rules::RulesTable;
 use crate::toc::{
-    FolderView, Verdict, VerdictReport, WrongFlavorReason, judge, loaded_toc, read_bounded,
+    FolderView, Verdict, VerdictReport, WrongFlavorReason, judge, loaded_toc, primary_interface,
+    read_bounded,
 };
 
 /// The archive limits in force.
@@ -844,6 +845,10 @@ pub struct FolderVerdict {
     /// `RequiredDeps`, `Dep*`).
     #[serde(skip)]
     pub dependencies: Vec<FolderName>,
+    /// The in-family interface the client judges the folder by
+    /// (`toc::primary_interface`).
+    #[serde(skip)]
+    pub interface: Option<u32>,
 }
 
 /// Each folder judged by the target client's TOC load rules.
@@ -873,12 +878,16 @@ pub fn verify(
                     reason: WrongFlavorReason::NoLoadableToc,
                 };
             }
+            let interface = loaded.as_ref().and_then(|l| {
+                primary_interface(l, &target.rules, target.family, target.interface, table)
+            });
             Ok(FolderVerdict {
                 folder: folder.name.clone(),
                 report,
                 dependencies: loaded
                     .map(|l| l.toc.dependency_folders())
                     .unwrap_or_default(),
+                interface,
             })
         })
         .collect()
@@ -1228,6 +1237,7 @@ mod tests {
                 warnings: Vec::new(),
             },
             dependencies: deps.iter().map(|d| name(d)).collect(),
+            interface: None,
         }
     }
 

@@ -397,12 +397,13 @@ fn without_metadata_only_gated_folders_are_skipped() {
     );
     let reason = envelope["error"]["details"]["tried"][0]["reason"].to_string();
     assert!(reason.contains("interface_not_in_family"), "{reason}");
-    // The same holds when the addon's own folder is gated.
+    // The same holds when the addon's own folder is gated. Each scenario is a release of
+    // its own: a tag's archive is remembered by its hash.
     let scenario = home.scenario("gated-addon");
     release(
         &scenario,
         FOO,
-        "v1",
+        "v2",
         "Foo.zip",
         &[],
         &library(&["## AllowLoadGameType: standard"]),
@@ -414,7 +415,7 @@ fn without_metadata_only_gated_folders_are_skipped() {
     let scenario = home.scenario("ungated-sibling");
     let mut files = folder("Foo", EVERY, &[]);
     files.extend(folder("FooRetail", RETAIL, &[]));
-    release(&scenario, FOO, "v1", "Foo.zip", &[], &files);
+    release(&scenario, FOO, "v3", "Foo.zip", &[], &files);
     let r = home.run(&["install", "gh:o/foo", "-t", "era", "--dry-run"]);
     assert_eq!(r.expect(3)["error"]["code"], "no_compatible_release");
 
@@ -431,7 +432,7 @@ fn without_metadata_only_gated_folders_are_skipped() {
         EVERY,
         &["## Dependencies: Foo, FooRetail"],
     ));
-    release(&scenario, FOO, "v1", "Foo.zip", &[], &files);
+    release(&scenario, FOO, "v4", "Foo.zip", &[], &files);
     let r = home.run(&["install", "gh:o/foo", "-t", "era"]);
     let envelope = r.expect(0);
     let folders = &envelope["data"]["items"][0]["folders"];

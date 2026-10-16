@@ -20,7 +20,7 @@ use crate::limits::RELEASE_MEMO_MAX_ENTRIES;
 use crate::model::{Channel, Ref, ReleaseSet};
 use crate::net::Http;
 use crate::sources::{SourceId, SourceRegistry, Wanted, fetch_once};
-use crate::state::memo::{self, CandidateFact, MemoEntry, ReleaseMemo};
+use crate::state::memo::{self, CandidateFact, FactIndex, MemoEntry, ReleaseMemo};
 use crate::state::paths::Paths;
 
 /// How far a command trusts remembered metadata.
@@ -94,6 +94,8 @@ pub struct ReleaseCache<'a> {
     /// `None` for a transient cache, which reads and writes no memo.
     paths: Option<Paths>,
     memo: ReleaseMemo,
+    /// The memo's candidate facts, for skipping downloads.
+    facts: FactIndex,
     http: &'a dyn Http,
     registry: &'a SourceRegistry,
     policy: Freshness,
@@ -123,6 +125,7 @@ impl<'a> ReleaseCache<'a> {
         let (memo, note) = memo::load(paths);
         Self {
             paths: Some(paths.clone()),
+            facts: FactIndex::new(&memo.candidates),
             memo,
             http,
             registry,
@@ -141,6 +144,7 @@ impl<'a> ReleaseCache<'a> {
         Self {
             paths: None,
             memo: ReleaseMemo::default(),
+            facts: FactIndex::default(),
             http,
             registry,
             policy: Freshness::Refresh,
@@ -258,6 +262,11 @@ impl<'a> ReleaseCache<'a> {
             origin: Origin::StaleFallback,
             fetched_at: entry.fetched_at,
         })
+    }
+
+    /// What earlier commands learned by downloading candidates.
+    pub fn facts(&self) -> &FactIndex {
+        &self.facts
     }
 
     /// The memo entry of `r` on `channel` as this run knows it: fetched in this run,

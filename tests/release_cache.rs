@@ -11,7 +11,7 @@ use common::home::{Home, wait};
 use common::http::{Asset, fixture, gh_release};
 use common::memo;
 use serde_json::Value;
-use support::{foo, requests};
+use support::{facts, foo, requests, verdicts};
 
 #[cfg(test)]
 mod support {
@@ -43,6 +43,29 @@ mod support {
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
             .filter(|e| e["path"].as_str().is_some_and(|p| p.ends_with(suffix)))
             .count()
+    }
+
+    /// The memo's candidate facts.
+    pub fn facts(home: &Home) -> Vec<Value> {
+        let memo: Value = serde_json::from_slice(&fs::read(home.memo()).unwrap()).unwrap();
+        memo["candidates"].as_array().cloned().unwrap_or_default()
+    }
+
+    /// The verdicts remembered for interface `interface`, as `(loads, out_of_date,
+    /// primary_interface)`.
+    pub fn verdicts(home: &Home, interface: u32) -> Vec<(bool, bool, Value)> {
+        facts(home)
+            .iter()
+            .flat_map(|f| f["verdicts"].as_array().cloned().unwrap_or_default())
+            .filter(|v| v["interface"] == interface)
+            .map(|v| {
+                (
+                    v["loads"].as_bool().unwrap(),
+                    v["out_of_date"].as_bool().unwrap(),
+                    v["primary_interface"].clone(),
+                )
+            })
+            .collect()
     }
 }
 
@@ -286,4 +309,77 @@ fn an_offline_install_plans_from_the_memo_but_downloads_nothing() {
         r.context()
     );
     assert_eq!(requests(&home), before, "no request either time");
+}
+
+#[test]
+fn a_cached_archive_is_never_downloaded_again_while_its_blob_is_kept() {
+    let home = Home::new(&["wow"]);
+    foo(&home, "v1");
+    home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+    assert_eq!(support::requested(&home, "/Foo.zip"), 1);
+    let fact = &facts(&home)[0];
+    assert_eq!(
+        (&fact["release_id"], &fact["asset"]),
+        (&Value::from("gh:o/foo@v1"), &Value::from("Foo.zip"))
+    );
+    let sha256 = fact["sha256"].as_str().unwrap().to_owned();
+    assert!(verdicts(&home, 120_105)[0].0, "loads on retail");
+
+    home.run(&["remove", "Foo", "-t", "retail"]).expect(0);
+    let r = home.run(&["install", "gh:o/foo", "-t", "retail"]);
+    assert_eq!(r.expect(0)["data"]["items"][0]["status"], "installed");
+    assert_eq!(
+        support::requested(&home, "/Foo.zip"),
+        1,
+        "the remembered blob, no second download\n{}",
+        r.context()
+    );
+
+    // Evicted: downloaded again, once, and remembered again.
+    let blob = home.env.cache().join("omaddons/blobs").join(&sha256);
+    assert!(blob.is_file(), "{}", blob.display());
+    fs::remove_file(&blob).unwrap();
+    home.run(&["remove", "Foo", "-t", "retail"]).expect(0);
+    home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+    assert_eq!(support::requested(&home, "/Foo.zip"), 2);
+    assert!(blob.is_file(), "back in the cache");
+    assert_eq!(facts(&home).len(), 1, "the same fact, refreshed");
+}
+
+#[test]
+fn verdicts_remember_what_loads_and_how_current_it_is() {
+    let home = Home::new(&["wow"]);
+    // Only a Classic Era build: wrong flavor on retail.
+    let assets: [Asset<'_>; 1] = [(
+        "Era.zip",
+        &[],
+        vec![("Era/Era.toc", "## Interface: 11509\n")],
+    )];
+    gh_release(&home.http, "https://github.com/o/era", "v1", &assets);
+    let r = home.run(&["install", "gh:o/era", "-t", "retail"]);
+    assert_eq!(r.expect(3)["error"]["code"], "no_compatible_release");
+    assert_eq!(
+        verdicts(&home, 120_105),
+        [(false, false, Value::Null)],
+        "it does not load on retail\n{}",
+        r.context()
+    );
+
+    // An older retail interface: it loads, out of date, at that interface; a dry run
+    // learns it too.
+    let home = Home::new(&["wow"]);
+    let assets: [Asset<'_>; 1] = [(
+        "Old.zip",
+        &[("mainline", 120_000)],
+        vec![("Old/Old.toc", "## Interface: 120000, 11509\n")],
+    )];
+    gh_release(&home.http, "https://github.com/o/old", "v1", &assets);
+    let r = home.run(&["install", "gh:o/old", "-t", "retail", "--dry-run"]);
+    r.expect(0);
+    assert_eq!(
+        verdicts(&home, 120_105),
+        [(true, true, Value::from(120_000))],
+        "{}",
+        r.context()
+    );
 }

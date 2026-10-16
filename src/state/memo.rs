@@ -260,6 +260,86 @@ impl CandidateFact {
     }
 }
 
+/// Adds `fact` to `facts`, one fact per release and asset: the hash and size of the one
+/// added, and the later verdict per rules row and interface.
+pub fn merge_fact(facts: &mut Vec<CandidateFact>, fact: CandidateFact) {
+    let same = facts
+        .iter_mut()
+        .find(|f| f.release_id == fact.release_id && f.asset == fact.asset);
+    let Some(kept) = same else {
+        facts.push(fact);
+        return;
+    };
+    kept.sha256 = fact.sha256;
+    kept.size = fact.size;
+    for verdict in fact.verdicts {
+        let at = kept
+            .verdicts
+            .iter_mut()
+            .find(|v| v.rules == verdict.rules && v.interface == verdict.interface);
+        match at {
+            Some(old) if old.at > verdict.at => {}
+            Some(old) => *old = verdict,
+            None => kept.verdicts.push(verdict),
+        }
+    }
+}
+
+/// Lookups over candidate facts: the hash of a release's asset, and whether it loads on
+/// a rules row at an interface.
+#[derive(Debug, Clone, Default)]
+pub struct FactIndex {
+    hashes: BTreeMap<(String, String), (String, u64)>,
+    verdicts: BTreeMap<(String, String, String, u32), VerdictFact>,
+}
+
+impl FactIndex {
+    pub fn new(facts: &[CandidateFact]) -> Self {
+        let mut index = Self::default();
+        for fact in facts {
+            let asset = (fact.release_id.clone(), fact.asset.clone());
+            index
+                .hashes
+                .insert(asset.clone(), (fact.sha256.clone(), fact.size));
+            for verdict in &fact.verdicts {
+                let key = (
+                    asset.0.clone(),
+                    asset.1.clone(),
+                    verdict.rules.clone(),
+                    verdict.interface,
+                );
+                index.verdicts.insert(key, verdict.clone());
+            }
+        }
+        index
+    }
+
+    /// The SHA-256 (lowercase hex) and size of `asset` of `release_id`, when downloaded.
+    pub fn hash(&self, release_id: &str, asset: &str) -> Option<(&str, u64)> {
+        self.hashes
+            .get(&(release_id.to_owned(), asset.to_owned()))
+            .map(|(sha256, size)| (sha256.as_str(), *size))
+    }
+
+    /// Whether `asset` of `release_id` loads on the rules row `rules` at `interface`, when
+    /// a plan verified it there.
+    pub fn verdict(
+        &self,
+        release_id: &str,
+        asset: &str,
+        rules: &str,
+        interface: u32,
+    ) -> Option<&VerdictFact> {
+        let key = (
+            release_id.to_owned(),
+            asset.to_owned(),
+            rules.to_owned(),
+            interface,
+        );
+        self.verdicts.get(&key)
+    }
+}
+
 impl ReleaseMemo {
     /// Merges `newer` in: an entry fetched later wins its key; candidate facts union by
     /// release and asset, the later verdict winning per rules row and interface; the
@@ -274,27 +354,7 @@ impl ReleaseMemo {
             }
         }
         for fact in newer.candidates {
-            let same = self
-                .candidates
-                .iter_mut()
-                .find(|f| f.release_id == fact.release_id && f.asset == fact.asset);
-            let Some(kept) = same else {
-                self.candidates.push(fact);
-                continue;
-            };
-            kept.sha256 = fact.sha256;
-            kept.size = fact.size;
-            for verdict in fact.verdicts {
-                let at = kept
-                    .verdicts
-                    .iter_mut()
-                    .find(|v| v.rules == verdict.rules && v.interface == verdict.interface);
-                match at {
-                    Some(old) if old.at > verdict.at => {}
-                    Some(old) => *old = verdict,
-                    None => kept.verdicts.push(verdict),
-                }
-            }
+            merge_fact(&mut self.candidates, fact);
         }
         if let Some(list) = newer.tukui_list
             && self
@@ -584,6 +644,65 @@ mod tests {
         assert_eq!(
             memo.tukui_list.as_ref().unwrap().fetched_at,
             at("2026-10-15T12:00:00Z")
+        );
+    }
+
+    #[test]
+    fn facts_merge_per_asset_and_the_index_finds_hashes_and_verdicts() {
+        let verdict = |rules: &str, interface, loads, when| VerdictFact {
+            rules: rules.into(),
+            interface,
+            loads,
+            out_of_date: false,
+            primary_interface: Some(interface),
+            at: at(when),
+        };
+        let fact = |asset: &str, sha: &str, verdicts| CandidateFact {
+            release_id: "gh:o/foo@1".into(),
+            asset: asset.into(),
+            sha256: sha.into(),
+            size: 7,
+            verdicts,
+        };
+        let mut facts = Vec::new();
+        merge_fact(
+            &mut facts,
+            fact(
+                "Foo.zip",
+                "aa",
+                vec![verdict("mainline", 120_105, true, "2026-10-15T10:00:00Z")],
+            ),
+        );
+        merge_fact(
+            &mut facts,
+            fact(
+                "Foo.zip",
+                "bb",
+                vec![
+                    verdict("mainline", 120_105, false, "2026-10-15T11:00:00Z"),
+                    verdict("mainline", 120_200, true, "2026-10-15T11:00:00Z"),
+                ],
+            ),
+        );
+        merge_fact(&mut facts, fact("Foo-nolib.zip", "cc", Vec::new()));
+        assert_eq!(facts.len(), 2, "one fact per release and asset");
+        assert_eq!(
+            facts[0].verdicts.len(),
+            2,
+            "one verdict per rules row and interface"
+        );
+
+        let index = FactIndex::new(&facts);
+        assert_eq!(index.hash("gh:o/foo@1", "Foo.zip"), Some(("bb", 7)));
+        assert_eq!(index.hash("gh:o/foo@1", "Foo-nolib.zip"), Some(("cc", 7)));
+        assert_eq!(index.hash("gh:o/foo@2", "Foo.zip"), None);
+        let found = index.verdict("gh:o/foo@1", "Foo.zip", "mainline", 120_105);
+        assert_eq!(found.map(|v| v.loads), Some(false), "the later verdict");
+        assert!(
+            index
+                .verdict("gh:o/foo@1", "Foo.zip", "mainline", 120_000)
+                .is_none(),
+            "another interface is another verdict"
         );
     }
 
