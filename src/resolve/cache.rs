@@ -18,8 +18,8 @@ use serde::Serialize;
 use crate::error::{Result, Suggestion, Warning, WarningCode};
 use crate::limits::RELEASE_MEMO_MAX_ENTRIES;
 use crate::model::{Channel, Ref, ReleaseSet};
-use crate::net::Http;
-use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
+use crate::net::{Http, run_bounded};
+use crate::politeness::{MAX_CONCURRENT_REQUESTS, SOURCE_RECHECK_MIN_INTERVAL};
 use crate::sources::{SourceId, SourceRegistry, Wanted, fetch_once};
 use crate::state::memo::{self, CandidateFact, FactIndex, MemoEntry, ReleaseMemo, TukuiList};
 use crate::state::paths::Paths;
@@ -74,6 +74,8 @@ pub struct Remembered {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Decision {
     Answer(Origin),
+    /// Ask the source's cheap probe whether the remembered set still holds.
+    Probe,
     Fetch,
 }
 
@@ -83,6 +85,13 @@ fn decide(entry: Option<&MemoEntry>, policy: Freshness, now: Timestamp) -> Decis
         (Freshness::OfflineOnly, Some(_)) => Decision::Answer(Origin::StaleFallback),
         (Freshness::Window(window), Some(entry)) if entry.fresh(now, window) => {
             Decision::Answer(Origin::Memo)
+        }
+        // A stale (or revalidated) set may be confirmed by a probe; a stored failure,
+        // or nothing remembered, is fetched (the fetch asks what a probe would anyway).
+        (Freshness::Window(_) | Freshness::Revalidate, Some(entry))
+            if entry.set.is_some() && entry.probe.is_some() =>
+        {
+            Decision::Probe
         }
         // Offline with nothing remembered: the network guard refuses the fetch with
         // `offline`, and nothing reaches the network.
@@ -197,10 +206,14 @@ impl<'a> ReleaseCache<'a> {
     pub fn get(&self, wanted: &[Wanted]) -> BTreeMap<Wanted, Fetched> {
         let mut answers = BTreeMap::new();
         let mut to_fetch: Vec<Wanted> = Vec::new();
+        let mut to_probe: Vec<(Wanted, MemoEntry)> = Vec::new();
         {
             let run = lock(&self.run);
             for w in wanted {
-                if answers.contains_key(w) || to_fetch.contains(w) {
+                if answers.contains_key(w)
+                    || to_fetch.contains(w)
+                    || to_probe.iter().any(|(p, _)| p == w)
+                {
                     continue;
                 }
                 if let Some(known) = run.get(w) {
@@ -223,10 +236,12 @@ impl<'a> ReleaseCache<'a> {
                         };
                         answers.insert(w.clone(), answer);
                     }
+                    (Decision::Probe, Some(entry)) => to_probe.push((w.clone(), entry.clone())),
                     _ => to_fetch.push(w.clone()),
                 }
             }
         }
+        to_fetch.extend(self.probe(to_probe, &mut answers));
         if !to_fetch.is_empty() {
             let fetched_at = Timestamp::now();
             let results = fetch_once(to_fetch, self.registry, self.http);
@@ -252,6 +267,61 @@ impl<'a> ReleaseCache<'a> {
             run.entry(w.clone()).or_insert_with(|| answer.clone());
         }
         answers
+    }
+
+    /// Probes each remembered entry (in bounded parallel, through the same network
+    /// stack): an equal token answers with the remembered set and refreshes its
+    /// `fetched_at` (`Probed`); a probe error is the fetch's (remembered only when a
+    /// fetch error would be); a different token, or a source without a probe, is
+    /// returned to be fetched.
+    fn probe(
+        &self,
+        entries: Vec<(Wanted, MemoEntry)>,
+        answers: &mut BTreeMap<Wanted, Fetched>,
+    ) -> Vec<Wanted> {
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        let (registry, http) = (self.registry, self.http);
+        let probed = run_bounded(entries, MAX_CONCURRENT_REQUESTS, |(w, entry)| {
+            let token = registry
+                .get(SourceId::of(&w.r#ref))
+                .and_then(|source| source.probe(&w, http));
+            (w, entry, token)
+        });
+        let now = Timestamp::now();
+        let mut learned = lock(&self.learned);
+        let mut to_fetch = Vec::new();
+        for (w, mut entry, token) in probed {
+            let key = memo::key(&w.r#ref, w.channel);
+            match token {
+                // ubs:ignore — a probe token is a public release id, not a secret
+                Some(Ok(token)) if entry.probe.as_deref() == Some(token.as_str()) => {
+                    entry.fetched_at = now;
+                    let answer = Fetched {
+                        set: entry.result(),
+                        origin: Origin::Probed,
+                        fetched_at: now,
+                    };
+                    learned.entries.insert(key, entry);
+                    answers.insert(w, answer);
+                }
+                Some(Err(error)) => {
+                    let set = Err(error);
+                    if let Some(entry) = MemoEntry::of(&w.r#ref, w.channel, &set, now) {
+                        learned.entries.insert(key, entry);
+                    }
+                    let answer = Fetched {
+                        set,
+                        origin: Origin::Fetched,
+                        fetched_at: now,
+                    };
+                    answers.insert(w, answer);
+                }
+                _ => to_fetch.push(w),
+            }
+        }
+        to_fetch
     }
 
     /// The remembered answer for `wanted` whatever its age, for a read-only command whose
@@ -373,16 +443,39 @@ mod tests {
     use crate::model::Release;
     use crate::sources::Source;
 
-    /// Answers every wish with release 1, or fails with `fail`; counts its calls.
+    /// What a test source's probe answers.
+    #[derive(Clone, Copy)]
+    enum Probe {
+        /// No probe.
+        Without,
+        /// The newest release is `<ref>@<this>`.
+        Tag(&'static str),
+        Fail(ErrorCode),
+    }
+
+    /// Answers every wish with release 1, or fails with `fail`; counts its calls, and
+    /// its probes.
     struct Counting {
         id: SourceId,
         calls: Arc<AtomicUsize>,
         fail: Option<ErrorCode>,
+        probe: Probe,
+        probes: Arc<AtomicUsize>,
     }
 
     impl Source for Counting {
         fn id(&self) -> SourceId {
             self.id
+        }
+
+        fn probe(&self, wanted: &Wanted, _: &dyn Http) -> Option<Result<String>> {
+            let answer = match self.probe {
+                Probe::Without => return None,
+                Probe::Tag(tag) => Ok(format!("{}@{tag}", wanted.r#ref)),
+                Probe::Fail(code) => Err(Error::new(code, "probe failed", Suggestion::text("x"))),
+            };
+            self.probes.fetch_add(1, Ordering::SeqCst);
+            Some(answer)
         }
 
         fn fetch(&self, wanted: &[Wanted], _: &dyn Http) -> Vec<Result<ReleaseSet>> {
@@ -413,29 +506,54 @@ mod tests {
         _dir: tempfile::TempDir,
         paths: Paths,
         calls: Arc<AtomicUsize>,
+        probes: Arc<AtomicUsize>,
         registry: SourceRegistry,
     }
 
     impl Scene {
         fn new(fail: Option<ErrorCode>) -> Self {
+            Self::with(fail, Probe::Without)
+        }
+
+        fn with(fail: Option<ErrorCode>, probe: Probe) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let base = dir.path().to_path_buf();
             let paths = Paths::with_roots(&base, base.join("c"), base.join("s"), base.join("k"));
             let calls = Arc::new(AtomicUsize::new(0));
+            let probes = Arc::new(AtomicUsize::new(0));
             let mut registry = SourceRegistry::new();
             for id in [SourceId::Github, SourceId::Local] {
                 registry.register(Box::new(Counting {
                     id,
                     calls: calls.clone(),
                     fail,
+                    probe,
+                    probes: probes.clone(),
                 }));
             }
             Self {
                 _dir: dir,
                 paths,
                 calls,
+                probes,
                 registry,
             }
+        }
+
+        fn probes(&self) -> usize {
+            self.probes.load(Ordering::SeqCst)
+        }
+
+        /// [`Scene::once`] as of `minutes` from now.
+        fn later(&self, minutes: i64, policy: Freshness, wanted: &Wanted) -> Fetched {
+            let at = Timestamp::now() + jiff::SignedDuration::from_mins(minutes);
+            let cache = self.cache(policy).at(at);
+            let answer = cache
+                .get(std::slice::from_ref(wanted))
+                .remove(wanted)
+                .unwrap();
+            cache.remember(&[]);
+            answer
         }
 
         fn cache(&self, policy: Freshness) -> ReleaseCache<'_> {
@@ -491,6 +609,111 @@ mod tests {
             (Freshness::OfflineOnly, None, Fetch),
         ] {
             assert_eq!(decide(e, policy, now), expected, "{policy:?}");
+        }
+    }
+
+    #[test]
+    fn a_remembered_set_is_probed_once_stale_or_revalidated() {
+        let now: Timestamp = "2026-10-15T12:00:00Z".parse().unwrap();
+        let r: Ref = "gh:o/foo".parse().unwrap();
+        let entry = |minutes: i64, result: &Result<ReleaseSet>| {
+            let at = now - jiff::SignedDuration::from_mins(minutes);
+            MemoEntry::of(&r, Channel::Stable, result, at).unwrap()
+        };
+        let set = Ok(ReleaseSet {
+            r#ref: r.clone(),
+            releases: vec![Release {
+                release_id: "gh:o/foo@1".into(),
+                version: "1".into(),
+                channel: Channel::Stable,
+                published_at: None,
+                assets: Vec::new(),
+                changelog_url: None,
+                notes: None,
+                name_hint: None,
+            }],
+        });
+        let gone = Err(Error::new(
+            ErrorCode::NotFound,
+            "gone",
+            Suggestion::text("x"),
+        ));
+        let (fresh, stale, failed) = (entry(5, &set), entry(20, &set), entry(20, &gone));
+        use Decision::{Answer, Fetch, Probe};
+        for (policy, e, expected) in [
+            (WINDOW, Some(&fresh), Answer(Origin::Memo)),
+            (WINDOW, Some(&stale), Probe),
+            (Freshness::Revalidate, Some(&fresh), Probe),
+            (WINDOW, Some(&failed), Fetch),
+            (Freshness::Refresh, Some(&stale), Fetch),
+            (
+                Freshness::OfflineOnly,
+                Some(&stale),
+                Answer(Origin::StaleFallback),
+            ),
+        ] {
+            assert_eq!(decide(e, policy, now), expected, "{policy:?}");
+        }
+    }
+
+    #[test]
+    fn an_equal_token_reuses_the_set_and_a_different_one_fetches() {
+        let scene = Scene::with(None, Probe::Tag("1"));
+        assert_eq!(scene.once(WINDOW, &foo()).origin, Origin::Fetched);
+        assert_eq!(
+            (scene.calls(), scene.probes()),
+            (1, 0),
+            "a cold check fetches"
+        );
+        let fetched_at = |scene: &Scene| {
+            memo::load(&scene.paths).0.entries[&memo::key(&foo().r#ref, Channel::Stable)].fetched_at
+        };
+        let first = fetched_at(&scene);
+        // Twenty minutes on: probed, confirmed, its fetch time moved to the probe's.
+        let answer = scene.later(20, WINDOW, &foo());
+        assert_eq!(
+            (answer.origin, scene.calls(), scene.probes()),
+            (Origin::Probed, 1, 1)
+        );
+        assert_eq!(answer.set.unwrap().releases[0].version, "1");
+        assert!(fetched_at(&scene) > first, "fetched_at bumped");
+        assert_eq!(scene.once(WINDOW, &foo()).origin, Origin::Memo);
+        assert_eq!(scene.probes(), 1);
+        // Revalidate probes even a fresh entry.
+        assert_eq!(
+            scene.once(Freshness::Revalidate, &foo()).origin,
+            Origin::Probed
+        );
+        // Offline never probes.
+        scene.later(60, Freshness::OfflineOnly, &foo());
+        assert_eq!(scene.probes(), 2);
+
+        let moved = Scene::with(None, Probe::Tag("2"));
+        moved.once(WINDOW, &foo());
+        let answer = moved.later(20, WINDOW, &foo());
+        assert_eq!(
+            (answer.origin, moved.calls(), moved.probes()),
+            (Origin::Fetched, 2, 1)
+        );
+    }
+
+    #[test]
+    fn a_probe_error_is_the_fetchs_and_remembered_as_one_would_be() {
+        for (code, remembered) in [(ErrorCode::NotFound, true), (ErrorCode::Network, false)] {
+            let scene = Scene::with(None, Probe::Fail(code));
+            scene.once(WINDOW, &foo());
+            let answer = scene.later(20, WINDOW, &foo());
+            assert_eq!(answer.set.unwrap_err().code, code);
+            assert_eq!(scene.calls(), 1, "no fetch after a failed probe");
+            // A not_found replaces the remembered set; a network error leaves it.
+            let entry = memo::load(&scene.paths).0.entries
+                [&memo::key(&foo().r#ref, Channel::Stable)]
+                .clone();
+            assert_eq!(
+                (entry.set.is_none(), entry.failure.is_some()),
+                (remembered, remembered),
+                "{code:?}"
+            );
         }
     }
 

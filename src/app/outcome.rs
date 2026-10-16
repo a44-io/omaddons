@@ -143,15 +143,21 @@ pub struct ItemError {
     pub fix: String,
     pub fix_argv: Option<Vec<String>>,
     /// Only for a conflict between two works of one transaction
-    /// (`within_transaction: true`, with each folder and its claimant), and for an
-    /// `adopt` item refused before the engine (`folder`, and `owner`, `class` or `refs`).
+    /// (`within_transaction: true`, with each folder and its claimant), an `adopt` item
+    /// refused before the engine (`folder`, and `owner`, `class` or `refs`), and a rate
+    /// limit (`reset_at`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }
 
 /// The details an item error carries: a within-transaction conflict's, else none.
 fn item_details(details: &serde_json::Value) -> Option<serde_json::Value> {
-    (details["within_transaction"] == true).then(|| details.clone())
+    if details["within_transaction"] == true {
+        return Some(details.clone());
+    }
+    // A rate limit says when it lifts.
+    let reset_at = details.get("reset_at")?;
+    Some(serde_json::json!({ "reset_at": reset_at }))
 }
 
 impl From<&Error> for ItemError {

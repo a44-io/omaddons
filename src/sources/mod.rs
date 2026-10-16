@@ -171,6 +171,14 @@ pub trait Source: Send + Sync {
     /// Result `i` belongs to `wanted[i]`.
     fn fetch(&self, wanted: &[Wanted], http: &dyn Http) -> Vec<Result<ReleaseSet>>;
 
+    /// A cheap freshness token for `wanted`, when one costs less than a fetch: the
+    /// newest release's id, compared with the memo's (`MemoEntry.probe`). `None` when the
+    /// source has no probe for this wish. A probe's error is the fetch's for that wish.
+    fn probe(&self, wanted: &Wanted, http: &dyn Http) -> Option<Result<String>> {
+        let _ = (wanted, http);
+        None
+    }
+
     /// The concrete URL and hash rule of a `Deferred` asset this source made for `key`,
     /// fetched right before each download attempt. Only sources whose assets are
     /// deferred implement it.
@@ -191,6 +199,10 @@ impl<S: Source> Source for std::sync::Arc<S> {
 
     fn fetch(&self, wanted: &[Wanted], http: &dyn Http) -> Vec<Result<ReleaseSet>> {
         S::fetch(self, wanted, http)
+    }
+
+    fn probe(&self, wanted: &Wanted, http: &dyn Http) -> Option<Result<String>> {
+        S::probe(self, wanted, http)
     }
 
     fn resolve_asset(&self, key: &str, http: &dyn Http) -> Result<ResolvedAsset> {
@@ -252,9 +264,9 @@ impl SourceRegistry {
     pub fn builtin(config: &SourceConfigView) -> Self {
         let tukui = std::sync::Arc::new(tukui::TukuiSource::default());
         let shipped: [Box<dyn Source>; 6] = [
-            Box::new(github::GithubSource {
-                rest: Some(Box::new(github_rest::GithubRest::from_env())),
-            }),
+            Box::new(github::GithubSource::with_rest(Box::new(
+                github_rest::GithubRest::from_env(),
+            ))),
             Box::new(git::GitSource::default()),
             Box::new(local::LocalSource),
             Box::new(url::UrlSource::new()),

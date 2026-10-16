@@ -122,13 +122,12 @@ impl Http for Validating {
         match (resp.status, cached) {
             (304, Some((meta, body))) => {
                 let final_url = resp.final_url.clone();
+                // The stored headers, refreshed by the 304's own (as HTTP caches do), so
+                // `X-RateLimit-*` are the server's current numbers, not the stored 200's.
+                let headers = merge_headers(meta.headers, &resp.headers);
                 drop(resp);
-                let mut revalidated = Response::new(
-                    meta.status,
-                    meta.headers,
-                    final_url,
-                    Box::new(Cursor::new(body)),
-                );
+                let mut revalidated =
+                    Response::new(meta.status, headers, final_url, Box::new(Cursor::new(body)));
                 revalidated.cache = CacheState::Revalidated;
                 Ok(revalidated)
             }
@@ -154,6 +153,20 @@ impl Http for Validating {
             _ => Ok(resp),
         }
     }
+}
+
+/// `stored` with every field `fresh` carries replaced by `fresh`'s (names compared
+/// ignoring ASCII case), and `fresh`'s other fields added.
+fn merge_headers(
+    stored: Vec<(String, String)>,
+    fresh: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut merged: Vec<(String, String)> = stored
+        .into_iter()
+        .filter(|(name, _)| !fresh.iter().any(|(f, _)| f.eq_ignore_ascii_case(name)))
+        .collect();
+    merged.extend(fresh.iter().cloned());
+    merged
 }
 
 #[cfg(test)]
@@ -245,6 +258,39 @@ mod tests {
             .unwrap()
             .collect();
         assert_eq!(stored.len(), 2, "metadata and body");
+    }
+
+    #[test]
+    fn a_304_refreshes_the_stored_headers() {
+        let (_dir, validating, _) = setup(|n| match n {
+            1 => (
+                200,
+                vec![
+                    ("ETag", "\"v1\""),
+                    ("X-RateLimit-Remaining", "50"),
+                    ("Content-Type", "application/json"),
+                ],
+                "[]",
+            ),
+            _ => (304, vec![("x-ratelimit-remaining", "3")], ""),
+        });
+        validating.send(feed()).unwrap().bytes().unwrap();
+        let second = validating.send(feed()).unwrap();
+        assert_eq!(second.cache, CacheState::Revalidated);
+        assert_eq!(header(&second.headers, "x-ratelimit-remaining"), Some("3"));
+        assert_eq!(
+            header(&second.headers, "content-type"),
+            Some("application/json"),
+            "fields the 304 lacks are kept"
+        );
+        assert_eq!(
+            second
+                .headers
+                .iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("x-ratelimit-remaining"))
+                .count(),
+            1
+        );
     }
 
     #[test]

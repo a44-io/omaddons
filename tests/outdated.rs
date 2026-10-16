@@ -219,9 +219,10 @@ fn lists_updates_across_three_clients_from_one_fetch_per_ref() {
         &json!({"update_available": 6, "current": 4, "pinned": 1, "ahead": 0, "blocked": 0,
                 "failed": 0, "unchecked": 0, "static": 0})
     );
+    // The two refs whose tag did not move are confirmed by their probe alone (M2-D2).
     assert_eq!(
         envelope["data"]["requests"],
-        json!({"fetched": 5, "probed": 0, "reused": 0})
+        json!({"fetched": 3, "probed": 2, "reused": 0})
     );
     assert_eq!(envelope["partial"], false);
     let pin = &envelope["data"]["targets"][2]["items"][2];
@@ -230,7 +231,8 @@ fn lists_updates_across_three_clients_from_one_fetch_per_ref() {
         (&Value::Bool(true), &Value::from("v2"))
     );
 
-    // One fetch per distinct ref, none of it through the GitHub REST API.
+    // One `releases/latest` per distinct ref, a manifest only for the moved tags, none of
+    // it through the GitHub REST API.
     let log = only_new(net_log(&home), before);
     assert_eq!(
         log.count("github.com", "release-latest"),
@@ -238,6 +240,7 @@ fn lists_updates_across_three_clients_from_one_fetch_per_ref() {
         "{}",
         log.context()
     );
+    assert_eq!(log.count_purpose("release-json"), 3, "{}", log.context());
     assert_eq!(log.count_purpose("asset"), 0, "{}", log.context());
     common::netlog::assert_each_url_once(&log.entries);
     assert_no_github_rest(&log.entries);

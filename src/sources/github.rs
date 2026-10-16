@@ -10,6 +10,13 @@
 //! beta and alpha channels (only the API knows which releases are prereleases), go to
 //! the [`GithubRestFallback`] seam; without one they fail with exact next steps.
 //! `releases.atom` is decoded for [`GithubSource::recent_tags`]; installs do not need it.
+//!
+//! Step 1 alone is the probe (M2-D2, tag-first): an unchanged tag lets the release memo
+//! answer with one request. A changed one is fetched without asking `releases/latest`
+//! again: the probe's answer is kept for the run.
+
+use std::collections::BTreeMap;
+use std::sync::{Mutex, PoisonError};
 
 use super::release_json::{self, Manifest};
 use super::{Source, SourceId, Wanted, atom};
@@ -37,6 +44,10 @@ pub trait GithubRestFallback: Send + Sync {
 #[derive(Default)]
 pub struct GithubSource {
     pub rest: Option<Box<dyn GithubRestFallback>>,
+    /// What this run's probes found, `(repository URL, tag)` by ref identity: a fetch
+    /// after a probe reuses it instead of asking `releases/latest` again (the registry,
+    /// and so this, lives one command).
+    probed: Mutex<BTreeMap<String, (String, String)>>,
 }
 
 /// A recent release from `releases.atom`.
@@ -64,11 +75,39 @@ impl Source for GithubSource {
             self.fetch_one(&w, http)
         })
     }
+
+    /// The stable channel's newest release id from `releases/latest` alone (one request,
+    /// no REST); `None` for prereleases and pinned versions.
+    fn probe(&self, wanted: &Wanted, http: &dyn Http) -> Option<Result<String>> {
+        let Ref::GitHub { owner, repo } = &wanted.r#ref else {
+            return None;
+        };
+        if wanted.channel != Channel::Stable || wanted.version.is_some() {
+            return None;
+        }
+        let base = format!("https://github.com/{owner}/{repo}");
+        Some(latest_tag(wanted, &base, http).map(|(base, tag)| {
+            let token = format!("{}@{tag}", wanted.r#ref);
+            self.probed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(wanted.r#ref.identity(), (base, tag));
+            token
+        }))
+    }
 }
 
 impl GithubSource {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// With the API path for what the web path cannot answer.
+    pub fn with_rest(rest: Box<dyn GithubRestFallback>) -> Self {
+        Self {
+            rest: Some(rest),
+            ..Self::default()
+        }
     }
 
     fn fetch_one(&self, w: &Wanted, http: &dyn Http) -> Result<ReleaseSet> {
@@ -85,7 +124,16 @@ impl GithubSource {
         if w.channel != Channel::Stable {
             return self.fallback(w, RestReason::Prerelease, http);
         }
-        let (base, tag) = latest_tag(w, &base, http)?;
+        // A probe of this run already asked `releases/latest`.
+        let probed = self
+            .probed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&w.r#ref.identity());
+        let (base, tag) = match probed {
+            Some(found) => found,
+            None => latest_tag(w, &base, http)?,
+        };
         match release_json(&base, &tag, http)? {
             Ok(manifest) => Ok(release_set(w, &base, &tag, &manifest)),
             Err(why) => self.fallback(w, RestReason::NoReleaseJson { tag, why }, http),
@@ -524,6 +572,71 @@ mod tests {
     }
 
     #[test]
+    fn the_probe_is_the_tag_and_a_fetch_after_it_asks_no_second_time() {
+        let http = Canned::default()
+            .on(
+                "https://github.com/old/a/releases/latest",
+                301,
+                Some("https://github.com/new/a/releases/latest"),
+                "",
+            )
+            .on(
+                "https://github.com/new/a/releases/latest",
+                302,
+                Some("https://github.com/new/a/releases/tag/1.2.3"),
+                "",
+            )
+            .on(
+                "https://github.com/new/a/releases/download/1.2.3/release.json",
+                200,
+                None,
+                MANIFEST,
+            );
+        let source = GithubSource::new();
+        let w = wanted("gh:old/a");
+        let token = source.probe(&w, &http).unwrap().unwrap();
+        assert_eq!(
+            token, "gh:old/a@1.2.3",
+            "the release id, through the rename"
+        );
+        let set = source
+            .fetch(std::slice::from_ref(&w), &http)
+            .pop()
+            .unwrap()
+            .unwrap();
+        assert_eq!(set.releases[0].release_id, token);
+        let latest = http
+            .seen()
+            .iter()
+            .filter(|u| u.ends_with("/releases/latest"))
+            .count();
+        assert_eq!(latest, 2, "the old and the renamed one, once each");
+        assert!(
+            http.seen()
+                .iter()
+                .any(|u| u.starts_with("https://github.com/new/a/releases/download")),
+            "fetched from the renamed repository"
+        );
+        // Prereleases and pinned versions have no probe.
+        for w in [
+            Wanted {
+                channel: Channel::Beta,
+                ..wanted("gh:o/a")
+            },
+            Wanted {
+                channel: Channel::Alpha,
+                ..wanted("gh:o/a")
+            },
+            Wanted {
+                version: Some("1.0".into()),
+                ..wanted("gh:o/a")
+            },
+        ] {
+            assert!(source.probe(&w, &http).is_none(), "{w:?}");
+        }
+    }
+
+    #[test]
     fn no_releases_and_prerelease_only() {
         let err = fetch(&Canned::default(), wanted("gh:o/none")).unwrap_err();
         assert_eq!((err.code, err.exit().code()), (ErrorCode::NotFound, 3));
@@ -654,9 +767,7 @@ mod tests {
                 })
             }
         }
-        let source = GithubSource {
-            rest: Some(Box::new(Fallback)),
-        };
+        let source = GithubSource::with_rest(Box::new(Fallback));
         let w = Wanted {
             channel: Channel::Alpha,
             ..wanted("gh:o/a")

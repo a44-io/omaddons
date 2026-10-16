@@ -40,6 +40,9 @@ const PER_PAGE: u32 = 20;
 pub struct GithubRest {
     token: Option<String>,
     budget: Mutex<Budget>,
+    /// Held across each request, so the next one sees the budget this one's answer
+    /// left (parallel fetches would otherwise all pass an unknown budget).
+    gate: Mutex<()>,
 }
 
 impl std::fmt::Debug for GithubRest {
@@ -91,6 +94,7 @@ impl GithubRest {
         Self {
             token,
             budget: Mutex::new(Budget::default()),
+            gate: Mutex::new(()),
         }
     }
 
@@ -111,8 +115,14 @@ impl GithubRest {
         req
     }
 
-    /// Sends an API request unless the budget is spent, then records the new budget.
+    /// Sends an API request unless the budget is spent, then records the new budget (a
+    /// 304's own rate-limit headers, which `Validating` merges into the cached answer's).
+    /// One request at a time.
     fn send(&self, req: Request, http: &dyn Http) -> Result<Response> {
+        let _gate = self
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let budget = self.budget();
         if !budget.allows() {
             let reset = budget.reset.unwrap_or_else(Timestamp::now);

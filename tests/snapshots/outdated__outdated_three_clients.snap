@@ -18,8 +18,8 @@ expression: stable(&envelope)
   "data": {
     "checked_at": "<checked_at>",
     "requests": {
-      "fetched": 5,
-      "probed": 0,
+      "fetched": 3,
+      "probed": 2,
       "reused": 0
     },
     "summary": {

@@ -7,9 +7,10 @@ mod common;
 
 use std::fs;
 
+use common::archives::zip_text;
 use common::env::TestEnv;
 use common::home::Home;
-use common::http::{fixture, paths, record, replay, scenario};
+use common::http::{Resp, fixture, fixture_bytes, fixture_seq, paths, record, replay, scenario};
 use common::netlog::{count_host, read_net_log};
 use common::trees::CustomRoot;
 use omaddons::error::ErrorCode;
@@ -257,4 +258,102 @@ fn a_zip_only_legacy_release_installs_into_a_335_client() {
         fs::read_to_string(root.join("Interface/AddOns/GroupBulletinBoard/GroupBulletinBoard.toc"))
             .unwrap();
     assert!(toc.contains("## Interface: 30300"), "{toc}");
+}
+
+/// The release list of `o/<name>` with one beta release (its zip served too), answering
+/// with the rate-limit headers `limits`.
+fn beta_listing(dir: &std::path::Path, name: &str, limits: &[(&str, &str)]) -> String {
+    let upper = name.to_uppercase();
+    let zip_url = format!("https://github.com/o/{name}/releases/download/v1-beta/{upper}.zip");
+    let zip = zip_text(&[(&format!("{upper}/{upper}.toc"), "## Interface: 120105\n")]);
+    let listing = format!(
+        r#"[{{"tag_name": "v1-beta", "prerelease": true, "published_at": "2026-10-01T00:00:00Z",
+            "assets": [{{"name": "{upper}.zip", "browser_download_url": "{zip_url}", "size": {}}}]}}]"#,
+        zip.len()
+    );
+    fixture(
+        dir,
+        name,
+        &format!("https://api.github.com/repos/o/{name}/releases?per_page=20"),
+        200,
+        limits,
+        Some(&listing),
+    );
+    fixture_bytes(dir, &format!("{name}-zip"), &zip_url, 200, &[], Some(&zip));
+    listing
+}
+
+#[test]
+fn a_304_on_the_release_list_takes_the_budget_from_its_own_headers() {
+    let env = TestEnv::new();
+    let dir = env.root().join("revalidated");
+    let listing = beta_listing(&dir, "a", &[]);
+    fixture_seq(
+        &dir,
+        "a",
+        "https://api.github.com/repos/o/a/releases?per_page=20",
+        &[
+            Resp::ok(listing.into_bytes())
+                .header("etag", "\"list-1\"")
+                .header("x-ratelimit-remaining", "50")
+                .header("x-ratelimit-reset", "1800000000"),
+            Resp::status(304)
+                .header("x-ratelimit-remaining", "3")
+                .header("x-ratelimit-reset", "1800000000"),
+        ],
+    );
+    let http = replay(&env, &dir);
+    let rest = GithubRest::with_token(None);
+    let beta = |r: &str| {
+        let mut w = Wanted::stable(r.parse().unwrap());
+        w.channel = Channel::Beta;
+        w
+    };
+    rest.fetch(&beta("gh:o/a"), &RestReason::Prerelease, http.as_ref())
+        .unwrap();
+    assert_eq!(rest.budget().remaining, Some(50));
+    let again = rest
+        .fetch(&beta("gh:o/a"), &RestReason::Prerelease, http.as_ref())
+        .unwrap();
+    assert_eq!(again.releases[0].version, "v1-beta", "the cached list");
+    assert_eq!(rest.budget().remaining, Some(3), "the 304's own number");
+    let err = rest
+        .fetch(&beta("gh:o/b"), &RestReason::Prerelease, http.as_ref())
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::RateLimited);
+    let log = read_net_log(&paths(&env));
+    assert_eq!(count_host(&log, "api.github.com"), 2);
+}
+
+#[test]
+fn two_beta_refs_in_one_command_share_one_budget() {
+    let home = Home::new(&["wow"]);
+    let limits = [
+        ("x-ratelimit-remaining", "5"),
+        ("x-ratelimit-reset", "1800000000"),
+    ];
+    for name in ["a", "b"] {
+        beta_listing(&home.http, name, &limits);
+    }
+    let r = home.run(&[
+        "install",
+        "gh:o/a",
+        "gh:o/b",
+        "--channel",
+        "beta",
+        "-t",
+        "retail",
+    ]);
+    let envelope = r.expect(0);
+    let items = envelope["data"]["items"].as_array().unwrap();
+    let failed: Vec<&Value> = items.iter().filter(|i| i["status"] == "failed").collect();
+    assert_eq!(failed.len(), 1, "{}", r.context());
+    assert_eq!(failed[0]["error"]["code"], "rate_limited");
+    assert_eq!(
+        failed[0]["error"]["details"]["reset_at"],
+        "2027-01-15T08:00:00Z"
+    );
+    assert!(items.iter().any(|i| i["status"] == "installed"));
+    let log = read_net_log(&paths(&home.env));
+    assert_eq!(count_host(&log, "api.github.com"), 1, "{log:#?}");
 }

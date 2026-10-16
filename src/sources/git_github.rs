@@ -107,7 +107,11 @@ fn head(owner: &str, repo: &str, rev: Option<&str>, http: &dyn Http) -> Result<O
         ),
         None => format!("https://github.com/{owner}/{repo}/commits.atom"),
     };
-    let resp = http.send(Request::get(url, "commits-atom"))?;
+    // Conditional: an unchanged branch whose feed carries an ETag comes back as a 304,
+    // answered from the HTTP cache.
+    let mut req = Request::get(url, "commits-atom");
+    req.validators = true;
+    let resp = http.send(req)?;
     if resp.status == 404 {
         return Ok(None);
     }

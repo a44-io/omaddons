@@ -378,3 +378,36 @@ fn a_rev_that_names_nothing_is_not_found() {
         r.context()
     );
 }
+
+#[test]
+fn an_unchanged_commits_feed_is_answered_through_a_304() {
+    let env = TestEnv::new();
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let atom = format!(
+        "<?xml version=\"1.0\"?><feed><entry><id>tag:github.com,2008:Grit::Commit/{head}</id><title>x</title></entry></feed>"
+    );
+    let feed = "https://github.com/o/r/commits/main.atom";
+    // The first run stores the feed and its ETag; the second is told it did not change.
+    let first = env.root().join("first");
+    fixture(
+        &first,
+        "main",
+        feed,
+        200,
+        &[("etag", "\"feed-1\"")],
+        Some(&atom),
+    );
+    let second = env.root().join("second");
+    fixture(&second, "main", feed, 304, &[], None);
+    let r = "git:https://github.com/o/r#main";
+    let a = fetch_with(&env, &first, r, None).unwrap();
+    let b = fetch_with(&env, &second, r, None).unwrap();
+    assert_eq!(a, b, "the same set from the cached feed");
+    let log = read_net_log(&paths(&env));
+    let statuses: Vec<Option<u16>> = log
+        .iter()
+        .filter(|e| e.purpose == "commits-atom")
+        .map(|e| e.status)
+        .collect();
+    assert_eq!(statuses, [Some(200), Some(304)]);
+}

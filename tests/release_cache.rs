@@ -11,7 +11,7 @@ use common::home::{Home, wait};
 use common::http::{Asset, fixture, gh_release};
 use common::memo;
 use serde_json::Value;
-use support::{facts, foo, requests, verdicts};
+use support::{facts, fetched_at, foo, requests, verdicts};
 
 #[cfg(test)]
 mod support {
@@ -43,6 +43,12 @@ mod support {
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
             .filter(|e| e["path"].as_str().is_some_and(|p| p.ends_with(suffix)))
             .count()
+    }
+
+    /// The memo's `fetched_at` of gh:o/`name` on stable.
+    pub fn fetched_at(home: &Home, name: &str) -> Value {
+        let memo: Value = serde_json::from_slice(&fs::read(home.memo()).unwrap()).unwrap();
+        memo["entries"][format!("gh:o/{name}|stable")]["fetched_at"].clone()
     }
 
     /// The memo's candidate facts.
@@ -381,5 +387,136 @@ fn verdicts_remember_what_loads_and_how_current_it_is() {
         [(true, true, Value::from(120_000))],
         "{}",
         r.context()
+    );
+}
+
+/// The `net.log` lines after the first `before`, as `(host, purpose)`.
+fn lines_after(home: &Home, before: usize) -> Vec<(String, String)> {
+    common::netlog::net_log(home)
+        .entries
+        .into_iter()
+        .skip(before)
+        .map(|e| (e.host, e.purpose))
+        .collect()
+}
+
+#[test]
+fn reinstalling_unchanged_refs_costs_one_request_each() {
+    let home = Home::new(&["wow"]);
+    let names = ["foo", "bar", "baz"];
+    for name in names {
+        let folder = format!("{}/{}.toc", name.to_uppercase(), name.to_uppercase());
+        let assets: [Asset<'_>; 1] = [(
+            "A.zip",
+            &[("mainline", 120_105)],
+            vec![(folder.as_str(), "## Interface: 120105\n")],
+        )];
+        gh_release(
+            &home.http,
+            &format!("https://github.com/o/{name}"),
+            "v1",
+            &assets,
+        );
+    }
+    let args = [
+        "install", "gh:o/foo", "gh:o/bar", "gh:o/baz", "-t", "retail",
+    ];
+    home.run(&args).expect(0);
+    let before = requests(&home);
+    let r = home.run(&args);
+    r.expect(0);
+    let lines = lines_after(&home, before);
+    assert_eq!(
+        lines,
+        vec![("github.com".to_owned(), "release-latest".to_owned()); 3],
+        "{}",
+        r.context()
+    );
+}
+
+#[test]
+fn an_aged_entry_is_confirmed_by_one_request_and_fresh_again() {
+    let home = Home::new(&["wow"]);
+    foo(&home, "v1");
+    home.seed_memo(&memo::of(vec![memo::entry(
+        "gh:o/foo",
+        "v1",
+        memo::ago(20),
+    )]));
+    let seeded = fetched_at(&home, "foo");
+    let r = home.run(&["info", "gh:o/foo"]);
+    assert_eq!(r.expect(0)["data"]["latest"]["version"], "v1");
+    assert_eq!(
+        lines_after(&home, 0),
+        [("github.com".to_owned(), "release-latest".to_owned())],
+        "{}",
+        r.context()
+    );
+    assert_ne!(fetched_at(&home, "foo"), seeded, "fetched_at bumped");
+    home.run(&["info", "gh:o/foo"]).expect(0);
+    assert_eq!(requests(&home), 1, "fresh again: no request");
+
+    // A moved tag: one manifest, and `releases/latest` still once.
+    home.seed_memo(&memo::of(vec![memo::entry(
+        "gh:o/foo",
+        "v0",
+        memo::ago(20),
+    )]));
+    let before = requests(&home);
+    let r = home.run(&["info", "gh:o/foo"]);
+    assert_eq!(r.expect(0)["data"]["latest"]["version"], "v1");
+    assert_eq!(
+        lines_after(&home, before),
+        [
+            ("github.com".to_owned(), "release-latest".to_owned()),
+            ("github.com".to_owned(), "release-json".to_owned())
+        ],
+        "{}",
+        r.context()
+    );
+}
+
+#[test]
+fn a_probe_404_is_remembered_and_a_probe_5xx_is_not() {
+    let home = Home::new(&["wow"]);
+    fixture(
+        &home.http,
+        "missing",
+        "https://github.com/o/missing/releases/latest",
+        404,
+        &[],
+        None,
+    );
+    fixture(
+        &home.http,
+        "down",
+        "https://github.com/o/down/releases/latest",
+        503,
+        &[("retry-after", "0")],
+        None,
+    );
+    home.seed_memo(&memo::of(vec![
+        memo::entry("gh:o/missing", "v1", memo::ago(20)),
+        memo::entry("gh:o/down", "v1", memo::ago(20)),
+    ]));
+    let seeded = fetched_at(&home, "down");
+    let r = home.run(&["info", "gh:o/missing"]);
+    assert_eq!(r.expect(3)["error"]["code"], "not_found", "{}", r.context());
+    let memo: Value = serde_json::from_slice(&fs::read(home.memo()).unwrap()).unwrap();
+    let missing = &memo["entries"]["gh:o/missing|stable"];
+    assert_eq!(
+        (&missing["set"], &missing["failure"]["code"]),
+        (&Value::Null, &Value::from("not_found")),
+        "{memo}"
+    );
+    let before = requests(&home);
+    home.run(&["info", "gh:o/missing"]).expect(3);
+    assert_eq!(requests(&home), before, "remembered");
+
+    home.run(&["info", "gh:o/down"]);
+    assert_eq!(
+        fetched_at(&home, "down"),
+        seeded,
+        "a 5xx probe is never stored"
     );
 }

@@ -9,6 +9,7 @@ use common::http::{fixture, paths, record, replay, scenario};
 use common::netlog::{assert_each_url_once, assert_no_github_rest, count_host, read_net_log};
 use omaddons::error::ErrorCode;
 use omaddons::model::{AssetLocation, ReleaseSet};
+use omaddons::resolve::cache::{Freshness, Origin, ReleaseCache};
 use omaddons::sources::github::GithubSource;
 use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use support::{fetch_one, want};
@@ -267,4 +268,49 @@ fn recent_tags_revalidate() {
     );
     let lines = read_net_log(&paths(&env));
     assert_eq!(lines[0].purpose, "releases-atom");
+}
+
+#[test]
+fn a_moved_tag_costs_one_manifest_through_its_assets_redirect() {
+    let env = TestEnv::new();
+    let paths = paths(&env);
+    // WeakAuras remembered at an older tag, twenty minutes ago.
+    let memo = common::memo::of(vec![common::memo::entry(
+        "gh:WeakAuras/WeakAuras2",
+        "5.22.0",
+        common::memo::ago(20),
+    )]);
+    std::fs::create_dir_all(paths.release_memo().parent().unwrap()).unwrap();
+    std::fs::write(
+        paths.release_memo(),
+        omaddons::state::store::encode(&memo).unwrap(),
+    )
+    .unwrap();
+    let http = replay(&env, &scenario("github-stable"));
+    let registry = SourceRegistry::builtin(&SourceConfigView::all_enabled());
+    let window = Freshness::Window(std::time::Duration::from_secs(15 * 60));
+    let cache = ReleaseCache::new(&paths, http.as_ref(), &registry, window);
+    let w = want("gh:WeakAuras/WeakAuras2");
+    let answer = cache.get(std::slice::from_ref(&w)).remove(&w).unwrap();
+    assert_eq!(answer.origin, Origin::Fetched);
+    assert_eq!(answer.set.unwrap().releases[0].version, "5.22.1");
+    let log = read_net_log(&paths);
+    let lines: Vec<(&str, &str)> = log
+        .iter()
+        .map(|e| (e.host.as_str(), e.purpose.as_str()))
+        .collect();
+    assert_eq!(
+        lines.iter().filter(|(_, p)| *p == "release-latest").count(),
+        1,
+        "the probe's answer is the fetch's: {lines:?}"
+    );
+    assert_eq!(
+        (
+            count_host(&log, "github.com"),
+            count_host(&log, "release-assets.githubusercontent.com")
+        ),
+        (2, 1),
+        "the probe, then the manifest and its redirect: {lines:?}"
+    );
+    assert_no_github_rest(&log);
 }

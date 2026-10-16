@@ -858,7 +858,7 @@ omaddons outdated --refresh       # ask every source now, even inside the 15-min
 omaddons outdated --verify        # download and verify each update not yet known to load
 ```
 
-Each distinct ref and channel is fetched at most once, through the [release memo](#files-and-state). A check from the last 15 minutes is reused without a request, so a second run is free. `--offline` answers from the memo whatever its age, with a `stale_check` warning. Addons installed from a local file, a URL or `--file` have nothing upstream to compare and make no request (`static`).
+Each distinct ref and channel is fetched at most once, through the [release memo](#files-and-state). A check from the last 15 minutes is reused without a request, so a second run is free. After that, a GitHub release on the stable channel is first probed: one `releases/latest` request (no GitHub API), and when its tag has not moved the remembered release stands (counted as `probed`); a moved tag costs its `release.json` too. `git:` refs on GitHub revalidate their commits feed, so an unchanged branch comes back as a 304. `--offline` answers from the memo whatever its age, with a `stale_check` warning. Addons installed from a local file, a URL or `--file` have nothing upstream to compare and make no request (`static`).
 
 The listing shows only what needs a decision; `-v` lists everything, and the summary always counts every status:
 
