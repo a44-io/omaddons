@@ -73,6 +73,31 @@ pub struct HistoryOp {
     pub op: FolderOp,
     pub folder: FolderName,
     pub addon: String,
+    /// A `record` op that only changed who requires the addon: undone in place, without
+    /// a conflict or a snapshot restore (M2-D35). Absent on every other op.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<HistoryEdit>,
+}
+
+/// An in-place record edit an op stands for.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryEdit {
+    /// The requester was added to the addon's `required_by`.
+    RequiredByAdd(String),
+    /// The requester was removed from it.
+    RequiredByRemove(String),
+}
+
+impl HistoryEdit {
+    /// The edit that undoes this one.
+    #[must_use]
+    pub fn inverse(&self) -> Self {
+        match self {
+            Self::RequiredByAdd(name) => Self::RequiredByRemove(name.clone()),
+            Self::RequiredByRemove(name) => Self::RequiredByAdd(name.clone()),
+        }
+    }
 }
 
 /// What happened to a folder. `record` is a record-only change (adoption, an
@@ -242,6 +267,7 @@ mod tests {
                 op: FolderOp::Add,
                 folder: FolderName::new("WeakAuras").unwrap(),
                 addon: "WeakAuras".into(),
+                edit: None,
             }],
             result: TxResult::Committed,
             reverts: None,
@@ -249,6 +275,36 @@ mod tests {
             created_addons_dir: false,
             run: None,
         }
+    }
+
+    #[test]
+    fn in_place_edits_ride_on_record_ops() {
+        let mut op = HistoryOp {
+            op: FolderOp::Record,
+            folder: FolderName::new("BigWigs").unwrap(),
+            addon: "BigWigs".into(),
+            edit: Some(HistoryEdit::RequiredByAdd("LittleWigs".into())),
+        };
+        assert_eq!(
+            serde_json::to_string(&op).unwrap(),
+            r#"{"op":"record","folder":"BigWigs","addon":"BigWigs","edit":{"required_by_add":"LittleWigs"}}"#
+        );
+        op.edit = Some(HistoryEdit::RequiredByRemove("LittleWigs".into()));
+        let line = serde_json::to_string(&op).unwrap();
+        assert!(
+            line.ends_with(r#""edit":{"required_by_remove":"LittleWigs"}}"#),
+            "{line}"
+        );
+        assert_eq!(serde_json::from_str::<HistoryOp>(&line).unwrap(), op);
+        assert_eq!(
+            op.edit.as_ref().map(HistoryEdit::inverse),
+            Some(HistoryEdit::RequiredByAdd("LittleWigs".into()))
+        );
+        // An M1 op: no edit, and none written back.
+        let m1 = r#"{"op":"add","folder":"Foo","addon":"Foo"}"#;
+        let parsed: HistoryOp = serde_json::from_str(m1).unwrap();
+        assert_eq!(parsed.edit, None);
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), m1);
     }
 
     #[test]

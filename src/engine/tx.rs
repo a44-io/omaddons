@@ -20,6 +20,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::blobs::BlobCache;
+use super::edit::RecordEdit;
 use super::inspect::ArchiveLimits;
 use super::journal::{
     self, CommitPayload, IndexChanges, Journal, Prepared, RecoveryAction, recover_all, recover_tx,
@@ -48,7 +49,7 @@ use crate::rules::RulesTable;
 use crate::sources::SourceRegistry;
 use crate::state::config::RunningPolicy;
 use crate::state::files_index::{FilesIndex, FolderIndex};
-use crate::state::history::{self, FolderOp, HistoryEntry, HistoryOp, TxResult};
+use crate::state::history::{self, FolderOp, HistoryEdit, HistoryEntry, HistoryOp, TxResult};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::status::{StatusFile, TargetMeta, write_monotonic};
@@ -803,6 +804,7 @@ fn history_ops(works: &[AddonWork]) -> Vec<HistoryOp> {
             op,
             folder: folder.clone(),
             addon: w.addon.clone(),
+            edit: None,
         };
         match &w.mode {
             WorkMode::Folders(f) => ops.extend(f.swap.iter().map(|swap| match swap {
@@ -823,7 +825,34 @@ fn history_ops(works: &[AddonWork]) -> Vec<HistoryOp> {
                     }
                 }
                 folders.sort_by(|a, b| a.key().cmp(b.key()));
-                ops.extend(folders.into_iter().map(|f| op(FolderOp::Record, f)));
+                // Only `required_by` changed: one op per folder and edit, undone in place
+                // (M2-D35). Any other edit keeps plain ops and snapshot-restore undo.
+                let in_place: Option<Vec<HistoryEdit>> = r
+                    .edits
+                    .iter()
+                    .map(|e| match e {
+                        RecordEdit::AddRequiredBy(by) => {
+                            Some(HistoryEdit::RequiredByAdd(by.clone()))
+                        }
+                        RecordEdit::RemoveRequiredBy(by) => {
+                            Some(HistoryEdit::RequiredByRemove(by.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                match in_place.filter(|edits| !edits.is_empty()) {
+                    Some(edits) => {
+                        for f in folders {
+                            for edit in &edits {
+                                ops.push(HistoryOp {
+                                    edit: Some(edit.clone()),
+                                    ..op(FolderOp::Record, f)
+                                });
+                            }
+                        }
+                    }
+                    None => ops.extend(folders.into_iter().map(|f| op(FolderOp::Record, f))),
+                }
             }
         }
     }

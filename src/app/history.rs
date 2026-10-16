@@ -438,6 +438,7 @@ mod tests {
             op,
             folder: crate::model::FolderName::new("Foo").unwrap(),
             addon: "Foo".into(),
+            edit: None,
         };
         assert_eq!(
             ChangeCounts::of(&[

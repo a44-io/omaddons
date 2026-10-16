@@ -28,7 +28,7 @@ use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::edit::changed_fields;
+use super::edit::{EditField, changed_fields};
 use super::journal::{
     self, CommitPayload, IndexChanges, Journal, Prepared, RecoveryAction, recover_all, recover_tx,
 };
@@ -47,7 +47,9 @@ use crate::fsx::{
 };
 use crate::model::{Actor, FolderName, ReloadRequired, RunId, Target, TxId, TxKind};
 use crate::state::files_index::FilesIndex;
-use crate::state::history::{self, FolderOp, HistoryEntry, HistoryFilter, HistoryOp, TxResult};
+use crate::state::history::{
+    self, FolderOp, HistoryEdit, HistoryEntry, HistoryFilter, HistoryOp, TxResult,
+};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::store;
@@ -425,7 +427,12 @@ fn plan(
     };
     let (record, index, changes) = match sv_only {
         Some(_) => (current.clone(), IndexChanges::default(), Vec::new()),
-        None => restored_state(paths, &current, reverted, &folders)?,
+        None => {
+            let (record, index, changes, edit_ops) =
+                restored_state(paths, &current, reverted, &folders)?;
+            folders.history.extend(edit_ops);
+            (record, index, changes)
+        }
     };
 
     let policy_ctx = PolicyContext {
@@ -508,15 +515,27 @@ fn select(entries: &[HistoryEntry], selector: UndoSelector) -> Result<usize> {
 }
 
 /// `undo_conflict` when a transaction after `entries[at]` (or after the deferred undo
-/// `sv_only`, for a SavedVariables follow-up) touched one of its folders on its target.
+/// `sv_only`, for a SavedVariables follow-up) touched one of its folders on its target,
+/// or already undid it. Ops carrying an in-place `required_by` edit count on neither
+/// side: they are undone in place (M2-D35).
 fn check_conflicts(entries: &[HistoryEntry], at: usize, sv_only: Option<usize>) -> Result<()> {
     let reverted = &entries[at];
-    let keys: BTreeSet<&str> = reverted.ops.iter().map(|o| o.folder.key()).collect();
+    let keys: BTreeSet<&str> = reverted
+        .ops
+        .iter()
+        .filter(|o| o.edit.is_none())
+        .map(|o| o.folder.key())
+        .collect();
     let after = sv_only.unwrap_or(at) + 1;
     let conflicting: Vec<&HistoryEntry> = entries[after..]
         .iter()
         .filter(|e| {
-            e.target == reverted.target && e.ops.iter().any(|o| keys.contains(o.folder.key()))
+            let touches = e
+                .ops
+                .iter()
+                .any(|o| o.edit.is_none() && keys.contains(o.folder.key()));
+            let undid = e.kind == TxKind::Undo && e.reverts == Some(reverted.tx);
+            e.target == reverted.target && (touches || undid)
         })
         .collect();
     let Some(newest) = conflicting.last() else {
@@ -612,17 +631,18 @@ impl FolderPlan {
     /// No folder changes: the SavedVariables follow-up of a deferred undo. Its history
     /// still names the folders, so later undos see it touched them.
     fn record_only(reverted: &HistoryEntry) -> Self {
+        // In-place edits were undone with the folders; they claim no folder now.
+        let ops = || reverted.ops.iter().filter(|o| o.edit.is_none());
         Self {
-            history: reverted
-                .ops
-                .iter()
+            history: ops()
                 .map(|o| HistoryOp {
                     op: FolderOp::Record,
                     folder: o.folder.clone(),
                     addon: o.addon.clone(),
+                    edit: None,
                 })
                 .collect(),
-            touched: reverted.ops.iter().map(|o| o.folder.clone()).collect(),
+            touched: ops().map(|o| o.folder.clone()).collect(),
             ..Self::default()
         }
     }
@@ -638,7 +658,9 @@ impl FolderPlan {
                 .and_then(|view| loaded_toc(&view, &target.rules).ok().flatten())
                 .map(|l| l.file)
         };
-        for op in &reverted.ops {
+        // In-place `required_by` edits move no folder and touch nothing: `restored_state`
+        // reverses them on the record.
+        for op in reverted.ops.iter().filter(|o| o.edit.is_none()) {
             let folder = &op.folder;
             plan.touched.push(folder.clone());
             let live = live_name(&addons, folder);
@@ -725,6 +747,7 @@ impl FolderPlan {
                 op: history,
                 folder: folder.clone(),
                 addon: op.addon.clone(),
+                edit: None,
             });
         }
         Ok(plan)
@@ -754,16 +777,22 @@ fn toc_names(dir: &Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// The record after the undo, its index changes, the per-addon changes and the history
+/// ops of in-place edits.
+type Restored = (TargetRecord, IndexChanges, Vec<Change>, Vec<HistoryOp>);
+
 /// The record and index after the undo, and the per-addon changes: every addon the
 /// reverted transaction changed comes back as it was before it (or goes, if it was not
 /// there); an owner it took folders from (`--force`) gets them back with its old state;
-/// everything else stays as it is now. The generation goes up.
+/// an in-place `required_by` edit is reversed on the addon as it is now, its index left
+/// alone (M2-D35); everything else stays as it is now. A record restored from the
+/// snapshot keeps only `required_by` names still recorded. The generation goes up.
 fn restored_state(
     paths: &Paths,
     current: &TargetRecord,
     reverted: &HistoryEntry,
     folders: &FolderPlan,
-) -> Result<(TargetRecord, IndexChanges, Vec<Change>)> {
+) -> Result<Restored> {
     let key = reverted.target;
     let snapshot = paths.state_snapshot(&reverted.tx);
     let named = |path: PathBuf| path.file_name().map(|n| snapshot.join(n));
@@ -779,12 +808,15 @@ fn restored_state(
 
     let touched: BTreeSet<&str> = folders.touched.iter().map(FolderName::key).collect();
     let mut direct: Vec<String> = Vec::new();
-    for op in &reverted.ops {
+    for op in reverted.ops.iter().filter(|o| o.edit.is_none()) {
         let addon_key = TargetRecord::addon_key(&op.addon);
         if !direct.contains(&addon_key) {
             direct.push(addon_key);
         }
     }
+    // Records that come back from the snapshot, whose `required_by` may name addons
+    // gone since.
+    let mut restored: Vec<String> = Vec::new();
     let mut record = current.clone();
     let mut changes = Vec::new();
     for addon_key in &direct {
@@ -823,6 +855,7 @@ fn restored_state(
         match then {
             Some(then) => {
                 record.addons.insert(addon_key.clone(), then.clone());
+                restored.push(addon_key.clone());
             }
             None => {
                 record.addons.remove(addon_key);
@@ -848,8 +881,19 @@ fn restored_state(
                 }
             }
             now.state = old.state;
+            restored.push(addon_key.clone());
         }
     }
+    // A restored record forgets requesters that are no longer recorded.
+    let recorded: BTreeSet<String> = record.addons.keys().cloned().collect();
+    for addon_key in &restored {
+        if let Some(addon) = record.addons.get_mut(addon_key) {
+            addon
+                .required_by
+                .retain(|by| recorded.contains(&TargetRecord::addon_key(by)));
+        }
+    }
+    let edit_ops = reverse_edits(reverted, &mut record, &mut changes);
     record.bump();
 
     let mut index = IndexChanges::default();
@@ -859,7 +903,82 @@ fn restored_state(
             None => index.remove.push((*key).to_owned()),
         }
     }
-    Ok((record, index, changes))
+    Ok((record, index, changes, edit_ops))
+}
+
+/// Reverses the in-place `required_by` edits of `reverted`, newest first, on each addon
+/// still recorded, and returns the undo's ops for them (the inverse edit on each folder
+/// the reverted ops named). One `edit` change per addon edited.
+fn reverse_edits(
+    reverted: &HistoryEntry,
+    record: &mut TargetRecord,
+    changes: &mut Vec<Change>,
+) -> Vec<HistoryOp> {
+    // Each distinct (addon, edit), newest first, with the folders its ops named.
+    let mut edits: Vec<(String, HistoryEdit, Vec<FolderName>)> = Vec::new();
+    for op in reverted.ops.iter().rev() {
+        let Some(edit) = &op.edit else { continue };
+        let key = TargetRecord::addon_key(&op.addon);
+        match edits.iter_mut().find(|(k, e, _)| *k == key && e == edit) {
+            Some((_, _, folders)) => folders.push(op.folder.clone()),
+            None => edits.push((key, edit.clone(), vec![op.folder.clone()])),
+        }
+    }
+    let mut ops = Vec::new();
+    for (key, edit, mut folders) in edits {
+        let Some(addon) = record.addons.get_mut(&key) else {
+            continue;
+        };
+        let inverse = edit.inverse();
+        match &inverse {
+            HistoryEdit::RequiredByRemove(by) => {
+                let by = TargetRecord::addon_key(by);
+                addon
+                    .required_by
+                    .retain(|n| TargetRecord::addon_key(n) != by);
+            }
+            HistoryEdit::RequiredByAdd(by) => {
+                if !addon
+                    .required_by
+                    .iter()
+                    .any(|n| TargetRecord::addon_key(n) == TargetRecord::addon_key(by))
+                {
+                    addon.required_by.push(by.clone());
+                }
+                addon
+                    .required_by
+                    .sort_by_key(|n| TargetRecord::addon_key(n));
+            }
+        }
+        folders.sort_by(|a, b| a.key().cmp(b.key()));
+        folders.dedup();
+        for folder in &folders {
+            ops.push(HistoryOp {
+                op: FolderOp::Record,
+                folder: folder.clone(),
+                addon: addon.name.clone(),
+                edit: Some(inverse.clone()),
+            });
+        }
+        if !changes
+            .iter()
+            .any(|c| TargetRecord::addon_key(&c.addon) == key && c.kind == ChangeKind::Edit)
+        {
+            changes.push(Change {
+                addon: addon.name.clone(),
+                r#ref: addon.r#ref.clone(),
+                kind: ChangeKind::Edit,
+                fields: vec![EditField::RequiredBy],
+                from_version: Some(addon.version.clone()),
+                to_version: Some(addon.version.clone()),
+                folders: FolderSummary {
+                    recorded: folders,
+                    ..FolderSummary::default()
+                },
+            });
+        }
+    }
+    ops
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1610,5 +1729,174 @@ mod tests {
         assert_eq!(f("Account/A/SavedVariables/.lua"), None);
         assert!(relative("../x").is_err() && relative("/x").is_err() && relative("").is_err());
         assert!(relative("Account/A/SavedVariables/Foo.lua").is_ok());
+    }
+
+    /// `required_by` edits, undone in place (M2-D35): D is a dependency, R requires it.
+    mod required_by {
+        use super::*;
+        use crate::engine::edit::RecordEdit;
+
+        const D1: &[(&str, &str)] = &[("Dep/Dep.toc", "## Interface: 120105\n## Version: 1\n")];
+        const D2: &[(&str, &str)] = &[
+            ("Dep/Dep.toc", "## Interface: 120105\n## Version: 2\n"),
+            ("Dep/new.lua", "--"),
+        ];
+        const R: &[(&str, &str)] = &[("Req/Req.toc", "## Interface: 120105\n")];
+
+        fn ok(scene: &TxScene, changes: Vec<crate::engine::plan::RequestedChange>) -> TxId {
+            let done = scene.run(changes).unwrap();
+            assert!(done.failures.is_empty(), "{:?}", done.failures);
+            done.outcomes[0].tx.unwrap()
+        }
+
+        fn undo(scene: &TxScene, tx: TxId) -> TxId {
+            scene
+                .undo(UndoSelector::Tx(tx), SvPolicy::Auto)
+                .unwrap()
+                .outcome
+                .tx
+                .unwrap()
+        }
+
+        fn required_by(scene: &TxScene) -> Vec<String> {
+            record(scene).addons["dep"].required_by.clone()
+        }
+
+        fn dep_index(scene: &TxScene) -> String {
+            serde_json::to_string(&scene.index().folders["dep"]).unwrap()
+        }
+
+        /// The ops of `tx` as (op, folder, edit).
+        fn ops(scene: &TxScene, tx: TxId) -> Vec<(FolderOp, String, Option<HistoryEdit>)> {
+            history(scene)
+                .into_iter()
+                .find(|e| e.tx == tx)
+                .unwrap()
+                .ops
+                .into_iter()
+                .map(|o| (o.op, o.folder.as_str().to_owned(), o.edit))
+                .collect()
+        }
+
+        /// D installed; then tx1 installs R and adds R to D's `required_by`.
+        fn scene_with_requirement() -> (TxScene, TxId) {
+            let scene = TxScene::new();
+            install_as(&scene, "gh:o/dep", "d1.zip", D1);
+            let zip = scene.zip("r.zip", R);
+            let tx1 = ok(
+                &scene,
+                vec![
+                    scene.install("gh:o/req", &zip),
+                    scene.edit("Dep", RecordEdit::AddRequiredBy("Req".into())),
+                ],
+            );
+            (scene, tx1)
+        }
+
+        #[test]
+        fn an_install_is_undone_after_its_dependency_updates() {
+            let (scene, tx1) = scene_with_requirement();
+            let tx1_ops = ops(&scene, tx1);
+            assert_eq!(tx1_ops.len(), 2, "{tx1_ops:?}");
+            assert!(tx1_ops.contains(&(FolderOp::Add, "Req".into(), None)));
+            assert!(tx1_ops.contains(&(
+                FolderOp::Record,
+                "Dep".into(),
+                Some(HistoryEdit::RequiredByAdd("Req".into()))
+            )));
+            assert_eq!(required_by(&scene), ["Req"]);
+            let tx2 = install_as(&scene, "gh:o/dep", "d2.zip", D2);
+            let index = dep_index(&scene);
+
+            let undo1 = undo(&scene, tx1);
+            let after = record(&scene);
+            assert!(!after.addons.contains_key("req"), "R is gone");
+            assert_eq!(after.addons["dep"].version, "2", "D keeps its update");
+            assert!(after.addons["dep"].required_by.is_empty());
+            assert!(!scene.client.addons().join("Req").exists());
+            assert!(scene.client.addons().join("Dep/new.lua").exists());
+            assert_eq!(dep_index(&scene), index, "D's index entry is untouched");
+            let undo_ops = ops(&scene, undo1);
+            assert!(undo_ops.contains(&(FolderOp::Remove, "Req".into(), None)));
+            assert!(undo_ops.contains(&(
+                FolderOp::Record,
+                "Dep".into(),
+                Some(HistoryEdit::RequiredByRemove("Req".into()))
+            )));
+
+            // Undoing D's update brings v1 back without the stale requester.
+            undo(&scene, tx2);
+            let dep = &record(&scene).addons["dep"];
+            assert_eq!(dep.version, "1");
+            assert!(dep.required_by.is_empty(), "{:?}", dep.required_by);
+
+            // Undoing the undo of tx1 re-installs R and re-adds it.
+            undo(&scene, undo1);
+            assert!(record(&scene).addons.contains_key("req"));
+            assert_eq!(required_by(&scene), ["Req"]);
+        }
+
+        #[test]
+        fn a_remove_that_dropped_a_requirement_is_undone_exactly() {
+            let (scene, _) = scene_with_requirement();
+            let before = required_by(&scene);
+            let tx = ok(
+                &scene,
+                vec![
+                    scene.remove("Req"),
+                    scene.edit("Dep", RecordEdit::RemoveRequiredBy("Req".into())),
+                ],
+            );
+            assert!(required_by(&scene).is_empty());
+            undo(&scene, tx);
+            assert!(record(&scene).addons.contains_key("req"));
+            assert_eq!(required_by(&scene), before);
+        }
+
+        #[test]
+        fn a_requirement_beside_another_edit_undoes_by_snapshot() {
+            let (scene, _) = scene_with_requirement();
+            let before = record(&scene).addons["dep"].clone();
+            let tx = ok(
+                &scene,
+                vec![
+                    scene.edit("Dep", RecordEdit::SetPinned(true)),
+                    scene.edit("Dep", RecordEdit::RemoveRequiredBy("Req".into())),
+                ],
+            );
+            assert!(ops(&scene, tx).iter().all(|(_, _, edit)| edit.is_none()));
+            undo(&scene, tx);
+            let dep = &record(&scene).addons["dep"];
+            assert_eq!(
+                (dep.pinned, &dep.required_by),
+                (before.pinned, &before.required_by)
+            );
+        }
+
+        #[test]
+        fn conflicts_ignore_in_place_edits_on_both_sides() {
+            let (scene, tx1) = scene_with_requirement();
+            // A later in-place edit on D does not conflict with undoing tx1.
+            let later = ok(
+                &scene,
+                vec![scene.edit("Dep", RecordEdit::AddRequiredBy("Other".into()))],
+            );
+            assert!(ops(&scene, later).iter().all(|(_, _, e)| e.is_some()));
+            let entries = history(&scene);
+            let at = entries.iter().position(|e| e.tx == tx1).unwrap();
+            assert!(check_conflicts(&entries, at, None).is_ok());
+            // A later change to R's folder does.
+            install_as(
+                &scene,
+                "gh:o/req",
+                "r2.zip",
+                &[("Req/Req.toc", "## Interface: 120105\n## Version: 2\n")],
+            );
+            let entries = history(&scene);
+            assert_eq!(
+                check_conflicts(&entries, at, None).unwrap_err().code,
+                ErrorCode::UndoConflict
+            );
+        }
     }
 }
