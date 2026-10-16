@@ -361,12 +361,17 @@ pub fn core_stack_with(config: &NetConfig, log: NetLog, transport: Box<dyn Http>
     Box::new(Redirecting::new(guarded))
 }
 
-/// `scheme://host/path` of a URL, without userinfo, query or fragment, for messages.
+/// `scheme://host/path` of a URL, without userinfo, query, fragment or download token
+/// ([`redact_path`]), for messages.
 pub(crate) fn redact(url: &str) -> String {
     let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
     let rest = rest.split(['?', '#']).next().unwrap_or("");
     let rest = match rest.split_once('/') {
-        Some((authority, path)) => format!("{}/{path}", strip_userinfo(authority)),
+        Some((authority, path)) => {
+            let authority = strip_userinfo(authority);
+            let host = authority.split(':').next().unwrap_or(authority);
+            format!("{authority}{}", redact_path(host, &format!("/{path}")))
+        }
         None => strip_userinfo(rest).to_owned(),
     };
     if scheme.is_empty() {
@@ -380,4 +385,17 @@ fn strip_userinfo(authority: &str) -> &str {
     authority
         .rsplit_once('@')
         .map_or(authority, |(_, host)| host)
+}
+
+/// A URL path on `host` without its secret: a Tukui download token
+/// (`/v1/download/<slug>/<token>` on `api.tukui.org`) becomes `/v1/download/<slug>/…`.
+/// Messages ([`redact`]) and `net.log` both use it.
+pub(crate) fn redact_path(host: &str, path: &str) -> String {
+    if host.eq_ignore_ascii_case("api.tukui.org")
+        && let Some(rest) = path.strip_prefix("/v1/download/")
+        && let Some((slug, _token)) = rest.split_once('/')
+    {
+        return format!("/v1/download/{slug}/…");
+    }
+    path.to_owned()
 }

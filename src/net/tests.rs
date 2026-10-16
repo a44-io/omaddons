@@ -504,6 +504,23 @@ fn targets_and_redaction() {
         "https://github.com/a"
     );
     assert_eq!(redact("https://github.com"), "https://github.com");
+
+    // Tukui download tokens never reach net.log or a message.
+    let link = "https://api.tukui.org/v1/download/elvui/SYNTHETIC-not-a-real-one";
+    assert_eq!(parse_target(link, 0).unwrap().path, "/v1/download/elvui/…");
+    assert_eq!(redact(link), "https://api.tukui.org/v1/download/elvui/…");
+    assert_eq!(
+        redact("https://API.tukui.org:443/v1/download/elvui/x/y"),
+        "https://API.tukui.org:443/v1/download/elvui/…"
+    );
+    // Other paths, and other hosts, are kept.
+    for kept in [
+        "https://api.tukui.org/v1/addon/elvui",
+        "https://api.tukui.org/v1/download/elvui",
+        "https://example.org/v1/download/elvui/abc",
+    ] {
+        assert_eq!(redact(kept), kept);
+    }
 }
 
 #[test]

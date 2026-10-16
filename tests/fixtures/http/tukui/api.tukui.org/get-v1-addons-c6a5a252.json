@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://api.tukui.org/v1/addons"
+  },
+  "responses": [
+    {
+      "status": 200,
+      "headers": [
+        [
+          "date",
+          "Fri, 16 Oct 2026 13:12:39 GMT"
+        ],
+        [
+          "content-type",
+          "application/json; charset=utf-8"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "cache-control",
+          "private, no-store"
+        ],
+        [
+          "strict-transport-security",
+          "max-age=15552000; includeSubDomains; preload"
+        ],
+        [
+          "x-content-type-options",
+          "nosniff"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "report-to",
+          "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=LHC3hjKOhMJAuQ7n3sevF%2BEVfOE2l90jNlSiUH96aQqGA8JNj9MxrkQ0kY3S%2F2dgaDHBdg5KNdfIJHzr2PU4PwvtQtW0HgmGdgguMuBnXSNhum7bSIbe3pde8GOWuB0PgmxeyN2sGD6Yx0A%3D\"}]}"
+        ],
+        [
+          "nel",
+          "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}"
+        ],
+        [
+          "content-encoding",
+          "gzip"
+        ],
+        [
+          "server",
+          "cloudflare"
+        ],
+        [
+          "cf-ray",
+          "a4b751017985ab5e-ATL"
+        ],
+        [
+          "alt-svc",
+          "h3=\":443\"; ma=86400"
+        ]
+      ],
+      "body_file": "get-v1-addons-c6a5a252.body"
+    }
+  ]
+}

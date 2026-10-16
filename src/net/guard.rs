@@ -41,9 +41,11 @@ pub(crate) fn parse_target(url: &str, hop: usize) -> Result<Target> {
     if authority.port_u16().is_some_and(|port| port != 443) {
         return Err(blocked("only the default https port is allowed"));
     }
+    let host = authority.host().to_ascii_lowercase();
     Ok(Target {
-        host: authority.host().to_ascii_lowercase(),
-        path: uri.path().to_owned(),
+        // What `net.log` keeps: never a download token.
+        path: super::redact_path(&host, uri.path()),
+        host,
     })
 }
 

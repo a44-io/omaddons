@@ -4,7 +4,7 @@
 //! [`fetch_once`] deduplicates refs (D28: requests never multiply by target count),
 //! groups them by [`SourceId`], and calls each registered source's [`Source::fetch`]
 //! exactly once, groups in parallel. Errors are per ref. Refs of sources this build does
-//! not have (Tukui arrives in M2, CurseForge and Wago in M5), or that config.toml turns
+//! not have (CurseForge and Wago arrive in M5), or that config.toml turns
 //! off (`[sources.<id>] enabled = false`), fail with `source_disabled` without touching
 //! the network (DEC-12).
 
@@ -17,6 +17,7 @@ pub mod github_rest;
 pub mod local;
 pub mod refs;
 pub mod release_json;
+pub mod tukui;
 pub mod url;
 pub mod wowi;
 
@@ -129,9 +130,8 @@ impl SourceId {
     /// The milestone a source this build lacks arrives in.
     const fn later(self) -> Option<&'static str> {
         match self {
-            Self::Tukui => Some("M2"),
             Self::Curseforge | Self::Wago => Some("M5"),
-            Self::Github | Self::Git | Self::Url | Self::Local | Self::Wowi => None,
+            Self::Github | Self::Git | Self::Url | Self::Local | Self::Wowi | Self::Tukui => None,
         }
     }
 }
@@ -183,6 +183,21 @@ pub trait Source: Send + Sync {
     }
 }
 
+/// A shared source is the source (the registry keeps a typed handle to Tukui's list).
+impl<S: Source> Source for std::sync::Arc<S> {
+    fn id(&self) -> SourceId {
+        S::id(self)
+    }
+
+    fn fetch(&self, wanted: &[Wanted], http: &dyn Http) -> Vec<Result<ReleaseSet>> {
+        S::fetch(self, wanted, http)
+    }
+
+    fn resolve_asset(&self, key: &str, http: &dyn Http) -> Result<ResolvedAsset> {
+        S::resolve_asset(self, key, http)
+    }
+}
+
 /// Where a `Deferred` asset's bytes are now. Used for one download attempt and never
 /// stored: plans show `canonical_url` instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +237,8 @@ pub struct SourceRegistry {
     /// The git runner, when the command layer provides one: the git source resolves
     /// non-GitHub hosts with it and the engine checks them out with it.
     git: Option<std::sync::Arc<git_hosts::GitRunner>>,
+    /// The Tukui source, when registered: its list serves `ReleaseCache::tukui_list`.
+    tukui: Option<std::sync::Arc<tukui::TukuiSource>>,
     /// Sources this build has that config.toml turned off.
     off: BTreeSet<SourceId>,
 }
@@ -233,7 +250,8 @@ impl SourceRegistry {
 
     /// Every source this build ships that `config` leaves on.
     pub fn builtin(config: &SourceConfigView) -> Self {
-        let shipped: [Box<dyn Source>; 5] = [
+        let tukui = std::sync::Arc::new(tukui::TukuiSource::default());
+        let shipped: [Box<dyn Source>; 6] = [
             Box::new(github::GithubSource {
                 rest: Some(Box::new(github_rest::GithubRest::from_env())),
             }),
@@ -241,6 +259,7 @@ impl SourceRegistry {
             Box::new(local::LocalSource),
             Box::new(url::UrlSource::new()),
             Box::new(wowi::WowiSource),
+            Box::new(std::sync::Arc::clone(&tukui)),
         ];
         let mut registry = Self::new();
         for source in shipped {
@@ -250,7 +269,15 @@ impl SourceRegistry {
                 registry.off.insert(source.id());
             }
         }
+        if config.enabled(SourceId::Tukui) {
+            registry.tukui = Some(tukui);
+        }
         registry
+    }
+
+    /// The Tukui source, if registered.
+    pub fn tukui(&self) -> Option<&tukui::TukuiSource> {
+        self.tukui.as_deref()
     }
 
     /// With `runner` for `git:` refs to configured non-GitHub hosts; unchanged when
@@ -601,18 +628,22 @@ mod tests {
                 SourceId::Git,
                 SourceId::Url,
                 SourceId::Local,
-                SourceId::Wowi
+                SourceId::Wowi,
+                SourceId::Tukui
             ]
             .into(),
-            "curseforge, wago and tukui are not in this build"
+            "curseforge and wago are not in this build"
         );
+        assert!(all.tukui().is_some());
         // Turning a source this build lacks off changes nothing.
         let view = config(&[
             ("wowi", Some(false)),
             ("git", Some(false)),
+            ("tukui", Some(false)),
             ("curseforge", Some(false)),
         ]);
         let some = SourceRegistry::builtin(&view);
+        assert!(some.tukui().is_none());
         assert_eq!(
             some.enabled(),
             [SourceId::Github, SourceId::Url, SourceId::Local].into()
@@ -649,10 +680,14 @@ mod tests {
 
     #[test]
     fn a_disabled_source_is_refused_without_the_network() {
-        let view = config(&[("wowi", Some(false))]);
+        let view = config(&[("wowi", Some(false)), ("tukui", Some(false))]);
         let registry = SourceRegistry::builtin(&view);
         let http = NoNetwork::default();
-        let results = fetch_once([w("wowi:5995"), w("tukui:elvui")], &registry, &http);
+        let results = fetch_once(
+            [w("wowi:5995"), w("tukui:elvui"), w("wago:aNDmy96o")],
+            &registry,
+            &http,
+        );
         let wowi = results[&w("wowi:5995")].as_ref().unwrap_err();
         assert!(
             wowi.message.contains("disabled in config.toml"),
@@ -660,7 +695,12 @@ mod tests {
             wowi.message
         );
         let tukui = results[&w("tukui:elvui")].as_ref().unwrap_err();
-        assert_eq!(tukui.message, "tukui:elvui: Tukui arrives in M2");
+        assert_eq!(
+            tukui.message,
+            "tukui:elvui: the Tukui source is disabled in config.toml"
+        );
+        let wago = results[&w("wago:aNDmy96o")].as_ref().unwrap_err();
+        assert_eq!(wago.message, "wago:aNDmy96o: Wago arrives in M5");
         assert_eq!(http.0.load(Ordering::SeqCst), 0);
     }
 }

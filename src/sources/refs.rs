@@ -117,11 +117,14 @@ fn canonical(input: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
             check_github(input, &owner, &repo)?;
             Ref::GitHub { owner, repo }
         }
-        Ref::Tukui { slug } if !is_slug(&slug) => {
-            return Err(invalid(
-                input,
-                "a tukui slug is lowercase letters, digits and '-'",
-            ));
+        Ref::Tukui { slug } => {
+            // Slugs compare ignoring case, as the link forms do: `tukui:ElvUI` is
+            // `tukui:elvui`.
+            let slug = slug.to_ascii_lowercase();
+            if !is_slug(&slug) {
+                return Err(invalid(input, "a tukui slug is letters, digits and '-'"));
+            }
+            Ref::Tukui { slug }
         }
         Ref::File { path } => Ref::File {
             path: absolute(&ctx.cwd, &path),
@@ -527,7 +530,8 @@ mod tests {
         ("wowi:abc", "ref_invalid", None, None, None),
         ("cf:61284", "cf:61284", Some(MatchKind::Canonical), None, None),
         ("tukui:elvui", "tukui:elvui", Some(MatchKind::Canonical), None, None),
-        ("tukui:ElvUI", "ref_invalid", None, None, None),
+        ("tukui:ElvUI", "tukui:elvui", Some(MatchKind::Canonical), None, None),
+        ("tukui:elv_ui", "ref_invalid", None, None, None),
         ("wago:abcd", "wago:abcd", Some(MatchKind::Canonical), None, None),
         ("git:https://codeberg.org/a/b.git#main", "git:https://codeberg.org/a/b.git#main", Some(MatchKind::Canonical), None, None),
         ("git:https://codeberg.org/a/b.git#", "ref_invalid", None, None, None),

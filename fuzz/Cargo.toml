@@ -114,3 +114,10 @@ path = "fuzz_targets/wowi_details.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "tukui_addons"
+path = "fuzz_targets/tukui_addons.rs"
+test = false
+doc = false
+bench = false

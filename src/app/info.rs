@@ -344,6 +344,11 @@ fn latest(set: &ReleaseSet, targets: &[&DiscoveredTarget], verbose: bool) -> Opt
             .iter()
             .filter_map(|a| match &a.location {
                 crate::model::AssetLocation::Url(url) => Some(url.clone()),
+                // A token URL exists only at download time: show where it comes from.
+                crate::model::AssetLocation::Deferred {
+                    source: crate::sources::SourceId::Tukui,
+                    key,
+                } => Some(crate::sources::tukui::canonical_url(key)),
                 _ => None,
             })
             .collect()

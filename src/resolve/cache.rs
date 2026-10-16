@@ -19,8 +19,9 @@ use crate::error::{Result, Suggestion, Warning, WarningCode};
 use crate::limits::RELEASE_MEMO_MAX_ENTRIES;
 use crate::model::{Channel, Ref, ReleaseSet};
 use crate::net::Http;
+use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::sources::{SourceId, SourceRegistry, Wanted, fetch_once};
-use crate::state::memo::{self, CandidateFact, FactIndex, MemoEntry, ReleaseMemo};
+use crate::state::memo::{self, CandidateFact, FactIndex, MemoEntry, ReleaseMemo, TukuiList};
 use crate::state::paths::Paths;
 
 /// How far a command trusts remembered metadata.
@@ -269,6 +270,39 @@ impl<'a> ReleaseCache<'a> {
         &self.facts
     }
 
+    /// The Tukui list, for callers without a `tukui:` ref (dependencies, adoption,
+    /// search): the one this command already decoded; else the memo's while it is
+    /// younger than `SOURCE_RECHECK_MIN_INTERVAL`, with no request (always fetched under
+    /// `--refresh`); else one `tukui-list` request, which `fetch` then shares. Offline,
+    /// the memo's at any age, with `stale_check`; without one, the network guard's
+    /// `offline`. `source_disabled` when Tukui is off.
+    pub fn tukui_list(&self) -> Result<TukuiList> {
+        let Some(source) = self.registry.tukui() else {
+            return Err(self.registry.unavailable(SourceId::Tukui, "the Tukui list"));
+        };
+        if let Some(decoded) = source.decoded() {
+            return Ok(decoded.memo());
+        }
+        if let Some(list) = &self.memo.tukui_list {
+            match self.policy {
+                Freshness::OfflineOnly => {
+                    let mut oldest = lock(&self.stale);
+                    if oldest.is_none_or(|o| list.fetched_at < o) {
+                        *oldest = Some(list.fetched_at);
+                    }
+                    return Ok(list.clone());
+                }
+                Freshness::Refresh => {}
+                Freshness::Window(_) | Freshness::Revalidate => {
+                    if list.fresh(self.now, SOURCE_RECHECK_MIN_INTERVAL) {
+                        return Ok(list.clone());
+                    }
+                }
+            }
+        }
+        source.list(self.http).map(|decoded| decoded.memo())
+    }
+
     /// The memo entry of `r` on `channel` as this run knows it: fetched in this run,
     /// else remembered.
     pub fn entry(&self, r: &Ref, channel: Channel) -> Option<MemoEntry> {
@@ -313,6 +347,12 @@ impl<'a> ReleaseCache<'a> {
             .into_inner()
             .unwrap_or_else(PoisonError::into_inner);
         learned.candidates.extend(facts.iter().cloned());
+        // A list decoded in this command replaces the memo's.
+        learned.tukui_list = self
+            .registry
+            .tukui()
+            .and_then(crate::sources::tukui::TukuiSource::decoded)
+            .map(|decoded| decoded.memo());
         if learned != ReleaseMemo::default() {
             remembered
                 .notes
@@ -569,5 +609,109 @@ mod tests {
         let remembered = cache.remember(&[]);
         assert!(remembered.warnings.is_empty() && remembered.notes.is_empty());
         assert!(!scene.paths.release_memo().exists());
+    }
+
+    /// Tukui's list (ElvUI), counting requests; refused as the guard refuses offline.
+    #[derive(Default)]
+    struct TukuiApi {
+        sent: AtomicUsize,
+        offline: bool,
+    }
+
+    impl Http for TukuiApi {
+        fn send(&self, req: crate::net::Request) -> Result<crate::net::Response> {
+            if self.offline {
+                return Err(Error::new(
+                    ErrorCode::Offline,
+                    "offline",
+                    Suggestion::text("x"),
+                ));
+            }
+            self.sent.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(req.purpose, "tukui-list");
+            let body = br#"[{"id":-2,"slug":"elvui","name":"ElvUI","version":"16.00","patch":["12.1.0"],"directories":["ElvUI"],"last_update":"2026-10-13","url":"https://api.tukui.org/v1/download/elvui/T"}]"#;
+            Ok(crate::net::Response::new(
+                200,
+                Vec::new(),
+                req.url,
+                Box::new(std::io::Cursor::new(body.to_vec())),
+            ))
+        }
+    }
+
+    #[test]
+    fn the_tukui_list_is_one_request_per_command_and_remembered() {
+        use crate::sources::SourceConfigView;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        let paths = Paths::with_roots(&base, base.join("c"), base.join("s"), base.join("k"));
+        let all = SourceConfigView::all_enabled();
+        let api = TukuiApi::default();
+        let sent = || api.sent.load(Ordering::SeqCst);
+
+        // Nothing remembered: one request, shared with fetch, then remembered.
+        let registry = SourceRegistry::builtin(&all);
+        let cache = ReleaseCache::new(&paths, &api, &registry, Freshness::Revalidate);
+        assert_eq!(cache.tukui_list().unwrap().entries[0].slug, "elvui");
+        let elvui = Wanted::stable("tukui:elvui".parse().unwrap());
+        assert!(cache.get(std::slice::from_ref(&elvui))[&elvui].set.is_ok());
+        assert_eq!(sent(), 1, "fetch shares the list");
+        let remembered = cache.remember(&[]);
+        assert!(remembered.notes.is_empty(), "{:?}", remembered.notes);
+        let (memo, _) = memo::load(&paths);
+        assert_eq!(memo.tukui_list.unwrap().entries.len(), 1);
+
+        // A new command inside the window: the memo answers.
+        let registry = SourceRegistry::builtin(&all);
+        let cache = ReleaseCache::new(&paths, &api, &registry, Freshness::Revalidate);
+        assert!(cache.tukui_list().is_ok());
+        assert_eq!(sent(), 1);
+
+        // Past the window: fetched once, however often asked.
+        let later = Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let registry = SourceRegistry::builtin(&all);
+        let cache = ReleaseCache::new(&paths, &api, &registry, Freshness::Revalidate).at(later);
+        assert!(cache.tukui_list().is_ok() && cache.tukui_list().is_ok());
+        assert_eq!(sent(), 2);
+
+        // Offline: the memo's list at any age, said with stale_check.
+        let offline = TukuiApi {
+            offline: true,
+            ..TukuiApi::default()
+        };
+        let much_later = later + jiff::SignedDuration::from_hours(240);
+        let registry = SourceRegistry::builtin(&all);
+        let cache =
+            ReleaseCache::new(&paths, &offline, &registry, Freshness::OfflineOnly).at(much_later);
+        assert!(cache.tukui_list().is_ok());
+        let codes: Vec<WarningCode> = cache
+            .remember(&[])
+            .warnings
+            .iter()
+            .map(|w| w.code)
+            .collect();
+        assert_eq!(codes, [WarningCode::StaleCheck]);
+        // Offline with nothing remembered: offline.
+        let empty = tempfile::tempdir().unwrap();
+        let nowhere = Paths::with_roots(empty.path(), empty.path(), empty.path(), empty.path());
+        let cache = ReleaseCache::new(&nowhere, &offline, &registry, Freshness::OfflineOnly);
+        assert_eq!(cache.tukui_list().unwrap_err().code, ErrorCode::Offline);
+
+        // Tukui turned off: source_disabled.
+        let sources = [(
+            "tukui".to_owned(),
+            crate::state::config::SourceConfig {
+                enabled: Some(false),
+                credential: None,
+            },
+        )]
+        .into();
+        let off = SourceRegistry::builtin(&SourceConfigView::from_config(&sources));
+        let cache = ReleaseCache::new(&paths, &api, &off, Freshness::Revalidate);
+        assert_eq!(
+            cache.tukui_list().unwrap_err().code,
+            ErrorCode::SourceDisabled
+        );
     }
 }

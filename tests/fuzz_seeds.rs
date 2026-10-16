@@ -29,6 +29,7 @@ const TARGETS: &[&str] = &[
     "html_text",
     "bbcode_text",
     "wowi_details",
+    "tukui_addons",
 ];
 
 fn fuzz_dir() -> PathBuf {
@@ -326,6 +327,31 @@ fn write_fuzz_seeds() {
         "wowi_details",
         "malformed.json",
         br#"[{"UID":-1,"UIMD5":"ABCDEF0123456789abcdef012345678Z","UIDate":1e30,"UIChangeLog":"[url=<\u0000b]x"},{"UID":"7"},"#,
+    );
+
+    // tukui_addons: the list as the API writes it, one project, a broken body.
+    let tukui = common::tukui::entry(
+        -1,
+        "tukui",
+        "Tukui",
+        "20.463",
+        &["11.1.7", "5.5.0", "1.15.7"],
+        &["Tukui"],
+    );
+    write(
+        "tukui_addons",
+        "list.json",
+        &serde_json::to_vec(&[common::tukui::elvui(), tukui]).unwrap(),
+    );
+    write(
+        "tukui_addons",
+        "addon.json",
+        &serde_json::to_vec(&common::tukui::elvui()).unwrap(),
+    );
+    write(
+        "tukui_addons",
+        "malformed.json",
+        br#"[{"id":"x","slug":"Elv UI","patch":["12..1",null,7],"url":"http://x"},{"slug":"a","version":1e400},"#,
     );
 
     // wowi_filelist: entries as the API writes them, an empty list, a broken body.

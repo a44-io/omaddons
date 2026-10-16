@@ -655,8 +655,8 @@ impl Ref {
         }
     }
 
-    /// The canonical string with GitHub owner and repo lowercased: the identity behind
-    /// `Eq`, `Hash` and `Ord`, and the release memo's key.
+    /// The canonical string with GitHub owner and repo, and Tukui slugs, lowercased: the
+    /// identity behind `Eq`, `Hash` and `Ord`, and the release memo's key.
     pub(crate) fn identity(&self) -> String {
         match self {
             Self::GitHub { owner, repo } => format!(
@@ -664,6 +664,7 @@ impl Ref {
                 owner.to_ascii_lowercase(),
                 repo.to_ascii_lowercase()
             ),
+            Self::Tukui { slug } => format!("tukui:{}", slug.to_ascii_lowercase()),
             _ => self.to_string(),
         }
     }
@@ -1370,7 +1371,11 @@ mod tests {
         assert_eq!(a.cmp(&b), Ordering::Equal);
         assert_eq!(HashSet::from([a.clone(), b]).len(), 1);
         assert_eq!(a.to_string(), "gh:WeakAuras/WeakAuras2");
-        assert_ne!(r("tukui:elvui"), r("tukui:ElvUI"));
+        // Tukui slugs too: one addon, one memo key.
+        let (elv, elv_upper) = (r("tukui:elvui"), r("tukui:ElvUI"));
+        assert_eq!(elv, elv_upper);
+        assert_eq!(HashSet::from([elv.clone(), elv_upper.clone()]).len(), 1);
+        assert_eq!(elv.identity(), elv_upper.identity());
         assert_ne!(r("wowi:1"), r("cf:1"));
     }
 

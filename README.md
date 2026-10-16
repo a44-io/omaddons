@@ -37,7 +37,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated`, `update`, `pin` and `sync` work, installs bring their catalog dependencies, and WoWInterface addons install and update; Tukui is on the way. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated`, `update`, `pin` and `sync` work, installs bring their catalog dependencies, and WoWInterface and Tukui (ElvUI) addons install and update. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -138,7 +138,8 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | Dependencies: what a TOC requires installs with it, from the catalog | ✅ Done (milestone 2; more sources to come) |
 | `sync`: every client made to match `addons.toml`, idempotently | ✅ Done (milestone 2; `--locked` and `--prune` to come) |
 | WoWInterface: `wowi:` refs and links, keyless, every download checked against its MD5 | ✅ Done (milestone 2) |
-| Tukui, adopting other managers' addons, `export`, `search` | 🗓️ Milestone 2 (decomposed into 75 beads) |
+| Tukui (ElvUI and Tukui): `tukui:` refs and links, keyless, every download checked against its `ETag` MD5 | ✅ Done (milestone 2) |
+| Adopting other managers' addons, `export`, `search` | 🗓️ Milestone 2 (decomposed into 75 beads) |
 | The Omarchy bar widget, Lua error capture, `WTF/` backups | 🗓️ Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
@@ -173,7 +174,7 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | Undo installs and removals byte for byte, SavedVariables included | ✅ | ❌ | ❌ | ⚠️ `rollback` of updates | ❌ |
 | Update everything in one command | ⚠️ re-run `install`; `update` in M2 | ✅ | ✅ | ✅ | ❌ |
 | GitHub releases | ✅ keyless | ✅ | ❌ | ✅ | ⚠️ |
-| WoWInterface, Tukui | ✅ WoWInterface, keyless; Tukui in M2 | ✅ | ❌ | ✅ | ⚠️ |
+| WoWInterface, Tukui | ✅ keyless | ✅ | ❌ | ✅ | ⚠️ |
 | CurseForge | 🗓️ M5, opt-in | ✅ WowUp-CF build | ✅ | ✅ | ⚠️ |
 | Wago Addons | 🗓️ M5, opt-in | ✅ | ❌ | ✅ | ⚠️ |
 | Documented machine contract for agents | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -476,7 +477,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 | `url:https://…/addon.zip` | a direct download | only from the always-allowed hosts (GitHub's, WoWInterface's and Tukui's); not `git_hosts` |
 | `./addon.zip`, `./AddonFolder`, `file:path` | local | a zip (a typed path must end in `.zip`, and the magic bytes are checked) or a folder, read in place |
 | `wowi:<id>`; WoWInterface links: `…/downloads/info<id>-Name.html`, `…/downloads/fileinfo.php?id=<id>`, and the download link `cdn.wowinterface.com/downloads/getfile.php?id=<id>&…` | WoWInterface | keyless: one `filedetails` request to `api.mmoui.com` per 50 addons, then the file from `cdn.wowinterface.com`, checked against the MD5 the API publishes. WoWInterface serves only a project's current file, so `--version` matches only its current version. A release is its file: the same bytes uploaded again are no update, and any new file is one. Its compatibility tags lag behind patches, so they never rule a file out; the TOCs decide |
-| `tukui:<slug>` and Tukui links | Tukui | parsed and refused with `source_disabled` ("arrives in M2"), with no network call, unless `--file` supplies the archive |
+| `tukui:<slug>` (`tukui:elvui`, any case); Tukui links: `tukui.org/addon/<slug>`, `download.php?ui=<name>` | Tukui | keyless: one list request to `api.tukui.org` per command, and right before each download a fresh download link, which expires within seconds and is never stored or logged (`net.log` shows `/v1/download/<slug>/…`). The download must match the MD5 in its `ETag`. The list's supported patches only rank the file; the TOCs decide, so ElvUI also installs where its TOCs load but the list says nothing (Forever) |
 | `cf:<id>`, `wago:<id>`, CurseForge and Wago links | CurseForge, Wago | parsed and refused with `source_disabled` ("arrives in M5"), unless `--file` supplies the archive |
 | an `https://` link to a `git_hosts` host, or ending in `.git` | `git:` | as `git:` above (`#fragment` becomes the rev) |
 | any other `https://` link | `url:` | refused at plan time unless its host is allowlisted |
@@ -1002,7 +1003,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `offline` | 1 | no | `--offline` blocked a request |
 | `bad_archive` | 1 | no | malformed, encrypted, or not Stored/Deflate |
 | `distribution_disabled` | 1 | no | reserved for CurseForge (M5) |
-| `source_disabled` | 1 | no | a source turned off in `config.toml` (the fix turns it back on); Tukui (M2), CurseForge or Wago (M5); a `git:` ref on another host when `git` is missing or older than 2.32 |
+| `source_disabled` | 1 | no | a source turned off in `config.toml` (the fix turns it back on); CurseForge or Wago (M5); a `git:` ref on another host when `git` is missing or older than 2.32 |
 | `auth_required` | 1 | no | reserved for credentialed sources |
 | `auth_rejected` | 1 | no | reserved for credentialed sources |
 | `state_corrupt` | 1 | no | an unreadable state or config file (with line and column) |
@@ -1156,7 +1157,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 | `codeload.github.com` | zips of exact commits for `git:` refs | used |
 | `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | release asset downloads | used |
 | `api.mmoui.com`, `cdn.wowinterface.com` | WoWInterface: project details, downloads | used (also allowed for `url:`) |
-| `api.tukui.org` | Tukui | allowed for `url:` today; the source arrives in M2 |
+| `api.tukui.org` | Tukui: the project list, download links, downloads | used (also allowed for `url:`); responses are never cached (`no-store`) |
 | `api.curseforge.com`, `edge.forgecdn.net`, `mediafilez.forgecdn.net` | CurseForge | off until enabled (M5) |
 | `addons.wago.io` | Wago | off until enabled (M5) |
 | every host in `git_hosts` | `git:` refs through the git binary | only when you list them |
@@ -1244,7 +1245,7 @@ label = "my 3.3.5a server"
 | `limits.tx_retention_days` | `7` | The retention window |
 | `limits.snapshot_max_bytes` | `2GiB` | Snapshot total per target beyond 24 hours |
 | `limits.blob_cache_max_bytes` | `1GiB` | Download cache (installed releases are pinned) |
-| `sources.<id>.enabled` | `true` | `false` turns a source off (`github`, `git`, `url`, `local`, `wowi`): its refs fail with `source_disabled` and make no request, and `outdated` reports its addons `unchecked` |
+| `sources.<id>.enabled` | `true` | `false` turns a source off (`github`, `git`, `url`, `local`, `wowi`, `tukui`): its refs fail with `source_disabled` and make no request, and `outdated` reports its addons `unchecked` |
 
 ### Per-target overrides
 
@@ -1466,7 +1467,7 @@ omaddons config set git_hosts '["codeberg.org", "gitlab.com"]'
 
 ### `source_disabled`
 
-A source turned off in `config.toml` (`[sources.wowi] enabled = false`) refuses its refs with this error, and its `fix_argv` turns it back on (`omaddons config set sources.wowi.enabled true`). Tukui refs arrive in milestone 2, and CurseForge and Wago in milestone 5. Many popular addons also publish GitHub releases, so try `gh:Owner/Repo`. Otherwise, download the zip in a browser and install it as a local path (`./Addon.zip`). The same error for a `git:` ref on another host means `git` is missing or older than 2.32.
+A source turned off in `config.toml` (`[sources.wowi] enabled = false`) refuses its refs with this error, and its `fix_argv` turns it back on (`omaddons config set sources.wowi.enabled true`). CurseForge and Wago refs arrive in milestone 5. Many popular addons also publish GitHub releases, so try `gh:Owner/Repo`. Otherwise, download the zip in a browser and install it as a local path (`./Addon.zip`). The same error for a `git:` ref on another host means `git` is missing or older than 2.32.
 
 ### `journal_pending` that does not clear
 
@@ -1480,7 +1481,6 @@ Journals are recovered by the next command that commits a change, not by read co
 
 | Capability | State | Planned |
 |---|---|---|
-| Tukui | ❌ refs parse and are refused | M2 |
 | Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing; WoWInterface and Tukui lookups, bridge folders and the dependency items in output are on the way | M2 |
 | Adopting addons installed by other managers | ❌ they show as unmanaged | M2 |
 | `addons.toml`, `export`, `sync`, `copy` between clients | ⚠️ `sync` works; `sync --locked`, `sync --prune`, `export` and `copy` are on the way | M2 |

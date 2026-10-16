@@ -246,11 +246,23 @@ impl MemoEntry {
     /// Fetched less than `window` before `now`. A `fetched_at` in the future (a clock
     /// that moved back) is stale.
     pub fn fresh(&self, now: Timestamp, window: Duration) -> bool {
-        let Ok(window) = jiff::SignedDuration::try_from(window) else {
-            return false;
-        };
-        self.fetched_at <= now && now.duration_since(self.fetched_at) < window
+        fresh(self.fetched_at, now, window)
     }
+}
+
+impl TukuiList {
+    /// Fetched less than `window` before `now`, as [`MemoEntry::fresh`].
+    pub fn fresh(&self, now: Timestamp, window: Duration) -> bool {
+        fresh(self.fetched_at, now, window)
+    }
+}
+
+/// `fetched_at` is less than `window` before `now`, and not in the future.
+fn fresh(fetched_at: Timestamp, now: Timestamp, window: Duration) -> bool {
+    let Ok(window) = jiff::SignedDuration::try_from(window) else {
+        return false;
+    };
+    fetched_at <= now && now.duration_since(fetched_at) < window
 }
 
 impl CandidateFact {

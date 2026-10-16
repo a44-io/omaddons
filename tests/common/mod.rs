@@ -27,4 +27,5 @@ pub mod product_db;
 pub mod state;
 pub mod targets;
 pub mod trees;
+pub mod tukui;
 pub mod wowi;

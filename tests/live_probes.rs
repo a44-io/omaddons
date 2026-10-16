@@ -731,3 +731,68 @@ fn wowi_details_decode_and_the_file_has_its_md5() {
         .collect();
     assert_eq!(purposes, ["wowi-details", "asset"]);
 }
+
+/// Tukui: the list decodes, `/v1/addon/elvui` hands out a token that downloads ElvUI at
+/// once, its `ETag` is the MD5 of the bytes (M2-D13), and the zip holds ElvUI's three
+/// folders, each with one TOC. No token reaches `net.log`.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn tukui_resolves_downloads_and_its_etag_is_the_md5() {
+    use md5::{Digest, Md5};
+    use omaddons::engine::inspect::{ArchiveLimits, inspect};
+    use omaddons::sources::tukui::TukuiSource;
+
+    let Some((env, http)) = live() else { return };
+    let source = TukuiSource::default();
+    let wanted = Wanted::stable("tukui:elvui".parse().unwrap());
+    let set = source
+        .fetch(&[wanted], http.as_ref())
+        .pop()
+        .unwrap()
+        .unwrap();
+    let release = &set.releases[0];
+    assert!(!release.assets[0].flavors.is_empty(), "{release:?}");
+    let resolved = source.resolve_asset("elvui", http.as_ref()).unwrap();
+    let resp = http
+        .send(Request::get(resolved.url.clone(), "asset").download())
+        .unwrap()
+        .error_for_status("asset")
+        .unwrap();
+    let etag = resp.header("etag").map(|e| e.trim_matches('"').to_owned());
+    let body = resp.bytes().unwrap();
+    let md5: String = Md5::digest(&body)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(etag.as_deref(), Some(md5.as_str()), "the ETag is the MD5");
+
+    let zip = env.root().join("elvui.zip");
+    std::fs::write(&zip, &body).unwrap();
+    let inspected = inspect(&zip, &ArchiveLimits::default(), &RulesTable::builtin()).unwrap();
+    let mut folders: Vec<(String, usize)> = inspected
+        .folders
+        .iter()
+        .map(|f| {
+            let tocs = f
+                .files
+                .iter()
+                .filter(|file| !file.rel_path.contains('/') && file.rel_path.ends_with(".toc"))
+                .count();
+            (f.name.as_str().to_owned(), tocs)
+        })
+        .collect();
+    folders.sort();
+    assert_eq!(
+        folders,
+        [
+            ("ElvUI".to_owned(), 1),
+            ("ElvUI_Libraries".to_owned(), 1),
+            ("ElvUI_Options".to_owned(), 1)
+        ]
+    );
+    let log = read_net_log(&paths(&env));
+    let purposes: Vec<&str> = log.iter().map(|e| e.purpose.as_str()).collect();
+    assert_eq!(purposes, ["tukui-list", "tukui-addon", "asset"]);
+    let token = resolved.url.rsplit('/').next().unwrap();
+    assert!(log.iter().all(|e| !e.path.contains(token)), "{log:#?}");
+}

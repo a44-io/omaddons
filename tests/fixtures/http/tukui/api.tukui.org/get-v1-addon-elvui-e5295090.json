@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://api.tukui.org/v1/addon/elvui"
+  },
+  "responses": [
+    {
+      "status": 200,
+      "headers": [
+        [
+          "date",
+          "Fri, 16 Oct 2026 13:12:40 GMT"
+        ],
+        [
+          "content-type",
+          "application/json; charset=utf-8"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "cache-control",
+          "private, no-store"
+        ],
+        [
+          "strict-transport-security",
+          "max-age=15552000; includeSubDomains; preload"
+        ],
+        [
+          "x-content-type-options",
+          "nosniff"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "report-to",
+          "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=0KaETtwDu68yJtQ%2BYD7aQ4uVHklA8xgAIvdBugQ9Dj9FbdQMYM%2F7gf9gTXT1Wous3QdJ2qm4qhRypHPsXykRDsT5f5acMnj62kFXWo4CBLGH1RhEl1c%2BHBwbsD%2Fgg6QWKeE4g3iEXuhaoWg%3D\"}]}"
+        ],
+        [
+          "nel",
+          "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}"
+        ],
+        [
+          "content-encoding",
+          "gzip"
+        ],
+        [
+          "server",
+          "cloudflare"
+        ],
+        [
+          "cf-ray",
+          "a4b751056db0ab5e-ATL"
+        ],
+        [
+          "alt-svc",
+          "h3=\":443\"; ma=86400"
+        ]
+      ],
+      "body_file": "get-v1-addon-elvui-e5295090.body"
+    }
+  ]
+}
