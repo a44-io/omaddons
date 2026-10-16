@@ -3,9 +3,58 @@
 use omaddons::net::{NetLog, NetLogEntry};
 use omaddons::state::paths::Paths;
 
+use super::home::Home;
+use super::http::paths;
+
 /// Every line of `<state>/omaddons/net.log`.
 pub fn read_net_log(paths: &Paths) -> Vec<NetLogEntry> {
     NetLog::new(paths).unwrap().read(None).unwrap()
+}
+
+/// The home's `net.log` so far.
+pub fn net_log(home: &Home) -> NetLogView {
+    NetLogView {
+        entries: read_net_log(&paths(&home.env)),
+    }
+}
+
+/// `net.log` entries, counted the way request-economy assertions need. (Not `NetLog`:
+/// that is `omaddons::net::NetLog`.)
+#[derive(Debug, Clone)]
+pub struct NetLogView {
+    pub entries: Vec<NetLogEntry>,
+}
+
+impl NetLogView {
+    /// Requests to `host` for `purpose` (`("github.com", "release-latest")`).
+    pub fn count(&self, host: &str, purpose: &str) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| e.host == host && e.purpose == purpose)
+            .count()
+    }
+
+    /// Requests for `purpose` (`"asset"`) to any host.
+    pub fn count_purpose(&self, purpose: &str) -> usize {
+        self.entries.iter().filter(|e| e.purpose == purpose).count()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// One line per request, for assertion messages.
+    pub fn context(&self) -> String {
+        self.entries
+            .iter()
+            .map(|e| format!("{} {}{} ({})", e.method, e.host, e.path, e.purpose))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 /// How many requests went to `host`.

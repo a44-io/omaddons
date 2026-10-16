@@ -3,13 +3,14 @@
 //! (`OMADDONS_PROC_ROOT`) with a running client.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use super::env::TestEnv;
+use super::http::{Asset, gh_latest, gh_release_v, paths};
 use super::procfs::FakeProc;
-use super::trees::{BattlenetRoot, Prefix};
+use super::trees::{BattlenetRoot, CustomRoot, Prefix};
 
 /// Synthetic clients in one Wine prefix, a fixture scenario and, optionally, a fake
 /// `/proc`.
@@ -74,6 +75,65 @@ impl Home {
         self.http = self.env.root().join(name);
         fs::create_dir_all(&self.http).unwrap();
         self.http.clone()
+    }
+
+    /// Installs `old` (a tag and its assets) of the repository at `base`
+    /// (`https://github.com/o/r`, installed as `gh:o/r`) on each target id with the
+    /// binary, then switches to a fresh scenario where both tags exist and
+    /// `releases/latest` points at `new`; returns its directory. Each scenario starts as
+    /// a copy of the current one, so earlier fixtures (other addons) keep answering.
+    /// The release memo is then aged by a day, as if the install had happened
+    /// yesterday, so the next check asks the source again (candidate facts are kept).
+    pub fn installed_behind(
+        &mut self,
+        base: &str,
+        old: (&str, &[Asset<'_>]),
+        new: (&str, &[Asset<'_>]),
+        targets: &[&str],
+    ) -> PathBuf {
+        let r = format!("gh:{}", base.trim_start_matches("https://github.com/"));
+        let installing = self.next_scenario();
+        gh_release_v(&installing, base, old.0, old.1);
+        gh_latest(&installing, base, old.0);
+        for target in targets {
+            self.run(&["install", &r, "-t", target]).expect(0);
+        }
+        let behind = self.next_scenario();
+        gh_release_v(&behind, base, new.0, new.1);
+        gh_latest(&behind, base, new.0);
+        let (mut memo, _) = omaddons::state::memo::load(&paths(&self.env));
+        for entry in memo.entries.values_mut() {
+            entry.fetched_at -= jiff::SignedDuration::from_hours(24);
+        }
+        self.seed_memo(&memo);
+        behind
+    }
+
+    /// Builds the custom client `root` and registers it with `omaddons targets add`;
+    /// returns its client dir. Build it under this home's tempdir
+    /// (`CustomRoot::at(home.env.root().join("pserver"))`).
+    pub fn with_custom(&mut self, root: CustomRoot) -> PathBuf {
+        let dir = root.build();
+        assert!(
+            dir.starts_with(self.env.root()),
+            "{} is outside the home",
+            dir.display()
+        );
+        self.run(&["targets", "add", &dir.display().to_string()])
+            .expect(0);
+        dir
+    }
+
+    /// A fresh scenario holding a copy of the current one's fixtures.
+    fn next_scenario(&mut self) -> PathBuf {
+        let mut n = 1;
+        while self.env.root().join(format!("http-{n}")).exists() {
+            n += 1;
+        }
+        let dir = self.env.root().join(format!("http-{n}"));
+        copy_dir(&self.http, &dir);
+        self.http = dir.clone();
+        dir
     }
 
     /// A retail client process in the fake `/proc`.
@@ -143,6 +203,20 @@ impl Home {
         }
         cmd.args(args);
         cmd
+    }
+}
+
+/// Copies the tree at `from` to `to` (which must not exist yet).
+fn copy_dir(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for item in fs::read_dir(from).unwrap() {
+        let item = item.unwrap();
+        let target = to.join(item.file_name());
+        if item.file_type().unwrap().is_dir() {
+            copy_dir(&item.path(), &target);
+        } else {
+            fs::copy(item.path(), target).unwrap();
+        }
     }
 }
 

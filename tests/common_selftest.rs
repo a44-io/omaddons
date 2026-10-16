@@ -482,3 +482,350 @@ fn the_binary_never_touches_the_real_home() {
         listing(&state)
     );
 }
+
+/// The M2 helpers: HTTP sequences and releases, homes behind, drift, state readers,
+/// `net.log` counts and release graphs.
+mod m2 {
+    use std::fs;
+    use std::io::Read;
+
+    use omaddons::sources::github::GithubSource;
+    use omaddons::toc::parse_toc;
+    use support::{FOO, foo_asset, foo_assets, get, newest};
+
+    use super::common::addons::addon_folder;
+    use super::common::drift::{add_stray_file, delete_managed, edit_managed, touch_identical};
+    use super::common::env::TestEnv;
+    use super::common::graph::{Folder, Node, release_graph};
+    use super::common::home::Home;
+    use super::common::http::{
+        Resp, fixture_seq, gh_feed, gh_latest, gh_release, gh_release_v, paths, replay,
+    };
+    use super::common::netlog::net_log;
+    use super::common::state::{files_index, history, key_of, record};
+    use super::common::trees::{CustomRoot, tree_hash};
+
+    #[cfg(test)]
+    mod support {
+        use omaddons::net::{Http, Request};
+        use omaddons::sources::{SourceRegistry, Wanted, fetch_once};
+
+        use super::super::common::addons::toc;
+        use super::super::common::http::Asset;
+
+        pub const FOO: &str = "https://github.com/o/foo";
+
+        pub fn get(http: &dyn Http, url: &str) -> (u16, Vec<u8>) {
+            let resp = http.send(Request::get(url, "selftest")).unwrap();
+            (resp.status, resp.bytes().unwrap())
+        }
+
+        /// The newest release id of `r` through the production GitHub source.
+        pub fn newest(http: &dyn Http, r: &str) -> String {
+            let w = Wanted::stable(r.parse().unwrap());
+            let mut results = fetch_once([w], &SourceRegistry::builtin(), http);
+            let set = results.pop_first().unwrap().1.unwrap();
+            set.releases[0].release_id.clone()
+        }
+
+        /// The TOC text and core.lua contents of gh:o/foo at `version`.
+        pub fn foo_assets(version: &str) -> (String, String) {
+            let text = toc(
+                "120105",
+                &["## Title: Foo", &format!("## Version: {version}")],
+            );
+            (text, version.to_owned())
+        }
+
+        /// One mainline asset of gh:o/foo from [`foo_assets`].
+        pub fn foo_asset<'a>(text: &'a str, version: &'a str) -> [Asset<'a>; 1] {
+            const MAINLINE: &[(&str, u32)] = &[("mainline", 120_105)];
+            [(
+                "Foo.zip",
+                MAINLINE,
+                vec![("Foo/Foo.toc", text), ("Foo/core.lua", version)],
+            )]
+        }
+    }
+
+    #[test]
+    fn fixture_seq_serves_in_order_with_the_last_repeating() {
+        let env = TestEnv::new();
+        let scenario = env.root().join("http");
+        let url = "https://github.com/o/foo/releases/download/v1/notes.txt";
+        fixture_seq(
+            &scenario,
+            "notes",
+            url,
+            &[
+                Resp::ok("one"),
+                Resp::status(404),
+                Resp::ok("two").header("ETag", "\"2\""),
+            ],
+        );
+        let http = replay(&env, &scenario);
+        let served: Vec<(u16, Vec<u8>)> = (0..4).map(|_| get(http.as_ref(), url)).collect();
+        assert_eq!(
+            served,
+            [
+                (200, b"one".to_vec()),
+                (404, Vec::new()),
+                (200, b"two".to_vec()),
+                (200, b"two".to_vec()),
+            ]
+        );
+        // A new process (a new replay) starts the sequence again.
+        assert_eq!(get(replay(&env, &scenario).as_ref(), url).1, b"one");
+    }
+
+    #[test]
+    fn two_tags_of_one_repo_coexist_and_latest_is_repointed() {
+        let env = TestEnv::new();
+        let scenario = env.root().join("http");
+        let (one, two) = (foo_assets("1.0"), foo_assets("2.0"));
+        gh_release(&scenario, FOO, "v1", &foo_asset(&one.0, &one.1));
+        gh_release_v(&scenario, FOO, "v2", &foo_asset(&two.0, &two.1));
+        let http = replay(&env, &scenario);
+        assert_eq!(newest(http.as_ref(), "gh:o/foo"), "gh:o/foo@v1");
+
+        gh_latest(&scenario, FOO, "v2");
+        let http = replay(&env, &scenario);
+        assert_eq!(newest(http.as_ref(), "gh:o/foo"), "gh:o/foo@v2");
+        for tag in ["v1", "v2"] {
+            let url = format!("{FOO}/releases/download/{tag}/release.json");
+            assert_eq!(get(http.as_ref(), &url).0, 200, "{tag}");
+        }
+        let latest = fs::read_dir(scenario.join("github.com"))
+            .unwrap()
+            .filter(|f| {
+                let name = f.as_ref().unwrap().file_name();
+                name.to_string_lossy().starts_with("latest-")
+            })
+            .count();
+        assert_eq!(latest, 1, "one releases/latest fixture");
+    }
+
+    #[test]
+    fn gh_feed_decodes_and_answers_a_conditional_request_with_304() {
+        let env = TestEnv::new();
+        let scenario = env.root().join("http");
+        let notes = [("bundle/v2+1", "<h2>Two</h2>"), ("v1", "<p>One & only</p>")];
+        gh_feed(&scenario, FOO, &notes, Some("\"feed-1\""));
+        let http = replay(&env, &scenario);
+        let first = GithubSource::recent_tags("o", "foo", http.as_ref()).unwrap();
+        let tags: Vec<&str> = first.tags.iter().map(|t| t.tag.as_str()).collect();
+        assert_eq!(tags, ["bundle/v2+1", "v1"]);
+        assert!(!first.revalidated);
+        assert!(
+            first.tags[0].updated > first.tags[1].updated,
+            "newest first"
+        );
+        let again = GithubSource::recent_tags("o", "foo", http.as_ref()).unwrap();
+        assert!(again.revalidated, "the 304 answered");
+        assert_eq!(again.tags, first.tags);
+
+        // A new process starts the sequence again: the 200 and its body.
+        let body = get(
+            replay(&env, &scenario).as_ref(),
+            &format!("{FOO}/releases.atom"),
+        )
+        .1;
+        let xml = String::from_utf8(body).unwrap();
+        assert!(
+            xml.contains("<content type=\"html\">&lt;p&gt;One &amp; only&lt;/p&gt;</content>"),
+            "{xml}"
+        );
+        let entries = omaddons::sources::atom::parse(&xml);
+        assert_eq!(entries[1].title, "v1");
+    }
+
+    #[test]
+    fn installed_behind_records_the_old_release_while_the_new_is_latest() {
+        let mut home = Home::new(&["wow", "wow_classic_era"]);
+        let (one, two) = (foo_assets("1.0"), foo_assets("2.0"));
+        let behind = home.installed_behind(
+            FOO,
+            ("v1", &foo_asset(&one.0, &one.1)),
+            ("v2", &foo_asset(&two.0, &two.1)),
+            &["retail"],
+        );
+        assert_eq!(home.http, behind);
+        let foo = &record(&home, "retail").addons["foo"];
+        assert_eq!(foo.release_id.as_deref(), Some("gh:o/foo@v1"));
+        let http = replay(&home.env, &behind);
+        assert_eq!(newest(http.as_ref(), "gh:o/foo"), "gh:o/foo@v2");
+        let (memo, _) = omaddons::state::memo::load(&paths(&home.env));
+        assert!(!memo.entries.is_empty());
+        for entry in memo.entries.values() {
+            let age = jiff::Timestamp::now().duration_since(entry.fetched_at);
+            assert!(age >= jiff::SignedDuration::from_hours(23), "{age:?}");
+        }
+    }
+
+    #[test]
+    fn drift_mutators_change_exactly_what_they_say() {
+        let env = TestEnv::new();
+        let addons = env.root().join("AddOns");
+        let foo = addon_folder(
+            &addons,
+            "Foo",
+            &[("Foo.toc", "## Interface: 120105\n")],
+            &[("core.lua", b"a"), ("libs/lib.lua", b"b")],
+        );
+        let bar = addon_folder(
+            &addons,
+            "Bar",
+            &[("Bar.toc", "## Interface: 120105\n")],
+            &[],
+        );
+
+        let toc = foo.join("Foo.toc");
+        let mtime = |p: &std::path::Path| fs::metadata(p).unwrap().modified().unwrap();
+        let (before, hash) = (mtime(&toc), tree_hash(&addons));
+        touch_identical(&toc);
+        assert_eq!(tree_hash(&addons), hash, "same bytes");
+        let moved = mtime(&toc).duration_since(before).unwrap();
+        assert!(moved >= std::time::Duration::from_secs(1), "{moved:?}");
+
+        edit_managed(&foo.join("core.lua"), b"edited");
+        assert_eq!(fs::read(foo.join("core.lua")).unwrap(), b"edited");
+        assert_eq!(
+            fs::read(foo.join("libs/lib.lua")).unwrap(),
+            b"b",
+            "nothing else"
+        );
+
+        add_stray_file(&foo, "extra/stray.lua", b"stray");
+        assert_eq!(fs::read(foo.join("extra/stray.lua")).unwrap(), b"stray");
+
+        delete_managed(&foo.join("libs/lib.lua"));
+        assert!(!foo.join("libs/lib.lua").exists() && foo.join("libs").is_dir());
+        delete_managed(&bar);
+        assert!(!bar.exists() && foo.is_dir());
+    }
+
+    #[test]
+    fn state_readers_and_net_log_view_see_one_install() {
+        let home = Home::new(&["wow"]);
+        let one = foo_assets("1.0");
+        gh_release(&home.http, FOO, "v1", &foo_asset(&one.0, &one.1));
+        let envelope = home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+        let tx = envelope["data"]["tx"].as_str().unwrap().to_owned();
+
+        let key = key_of(&home, "retail");
+        let rec = record(&home, "retail");
+        assert_eq!(rec.key, key);
+        assert_eq!(rec.addons["foo"].tx_id.to_string(), tx);
+        let index = files_index(&home, "retail");
+        assert_eq!(index.key, key);
+        let folders: Vec<String> = index.folders.keys().map(ToString::to_string).collect();
+        assert_eq!(folders, ["foo"], "keyed by the case-folded folder name");
+        let entries = history(&home);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tx.to_string(), tx);
+
+        let log = net_log(&home);
+        assert_eq!(
+            log.count("github.com", "release-latest"),
+            1,
+            "{}",
+            log.context()
+        );
+        assert_eq!(
+            log.count("github.com", "release-json"),
+            1,
+            "{}",
+            log.context()
+        );
+        assert_eq!(log.count_purpose("asset"), 1, "{}", log.context());
+        assert_eq!(log.count("api.github.com", "release-latest"), 0);
+        assert_eq!(log.len(), 3, "{}", log.context());
+    }
+
+    #[test]
+    fn release_graph_tocs_declare_their_dependencies() {
+        let env = TestEnv::new();
+        let scenario = env.root().join("http");
+        let a = [
+            Folder {
+                name: "A",
+                interface: "120105",
+                deps: &["B", "A_Lib"],
+                optional: &["C"],
+            },
+            Folder {
+                name: "A_Lib",
+                interface: "120105",
+                deps: &[],
+                optional: &[],
+            },
+        ];
+        let b = [Folder {
+            name: "B",
+            interface: "120105",
+            deps: &["A"],
+            optional: &[],
+        }];
+        let nodes = [
+            Node {
+                base: "https://github.com/o/a",
+                tag: "v1",
+                folders: &a,
+            },
+            Node {
+                base: "https://github.com/o/b",
+                tag: "v3",
+                folders: &b,
+            },
+        ];
+        release_graph(&scenario, &nodes);
+        let http = replay(&env, &scenario);
+        assert_eq!(newest(http.as_ref(), "gh:o/b"), "gh:o/b@v3");
+
+        let zip = get(
+            http.as_ref(),
+            "https://github.com/o/a/releases/download/v1/a.zip",
+        )
+        .1;
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip)).unwrap();
+        let mut toc_of = |path: &str| {
+            let mut bytes = Vec::new();
+            archive
+                .by_name(path)
+                .unwrap()
+                .read_to_end(&mut bytes)
+                .unwrap();
+            parse_toc(&bytes)
+        };
+        let parsed = toc_of("A/A.toc");
+        assert_eq!(parsed.dependencies, ["B", "A_Lib"]);
+        assert_eq!(parsed.optional_deps, ["C"]);
+        assert_eq!(parsed.version.as_deref(), Some("v1"));
+        let lib = toc_of("A_Lib/A_Lib.toc");
+        assert!(lib.dependencies.is_empty() && lib.optional_deps.is_empty());
+        assert_eq!(lib.interfaces, [120_105]);
+    }
+
+    #[test]
+    fn with_custom_registers_a_discovered_target() {
+        let mut home = Home::new(&["wow_classic_era"]);
+        let root = CustomRoot::at(home.env.root().join("pserver")).version(1, 12, 1, 5875);
+        let dir = home.with_custom(root);
+        assert!(dir.join("Interface/AddOns").is_dir());
+        let envelope = home.run(&["targets"]).expect(0);
+        let dirs: Vec<&str> = envelope["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["client_dir"].as_str())
+            .collect();
+        assert!(
+            dirs.iter().any(|d| std::path::Path::new(d) == dir),
+            "{dirs:?}"
+        );
+        assert!(
+            dirs.len() >= 2,
+            "the Battle.net client is still there: {dirs:?}"
+        );
+    }
+}
