@@ -279,6 +279,11 @@ impl Paths {
         self.cache.join("discovery.json")
     }
 
+    /// The release memo: what each fetch learned, for answering without the network.
+    pub fn release_memo(&self) -> PathBuf {
+        self.cache.join("releases.json")
+    }
+
     /// One transaction's temp dir (git clones, partial downloads).
     pub fn cache_tmp(&self, tx: &TxId) -> PathBuf {
         self.cache.join("tmp").join(tx.to_string())

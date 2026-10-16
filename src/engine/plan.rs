@@ -40,9 +40,10 @@ use crate::model::{
     VersionConfidence,
 };
 use crate::net::{Http, Request};
+use crate::resolve::cache::ReleaseCache;
 use crate::resolve::select::{EmptyReason, select};
 use crate::rules::RulesTable;
-use crate::sources::{SourceRegistry, Wanted, fetch_once};
+use crate::sources::{SourceRegistry, Wanted};
 use crate::state::config::RunningPolicy;
 use crate::state::files_index::{FilesIndex, FolderIndex};
 use crate::state::paths::{ClientPaths, Paths};
@@ -295,6 +296,8 @@ pub struct PlanCtx<'a> {
     pub scopes: &'a ScopeTable,
     pub http: &'a dyn Http,
     pub registry: &'a SourceRegistry,
+    /// Release metadata: every fetch goes through it, once per wish per command.
+    pub cache: &'a ReleaseCache<'a>,
     pub blobs: &'a BlobCache,
     pub table: &'a RulesTable,
     /// The transaction whose in-flight lock the caller holds (temp downloads).
@@ -607,7 +610,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             _ => None,
         })
         .collect();
-    let fetched = fetch_once(to_fetch, ctx.registry, ctx.http);
+    let fetched = ctx.cache.get(&to_fetch);
     failpoint::hit("engine.plan.fetched").map_err(|e| fail(ctx, &e))?;
 
     let mut targets = Vec::with_capacity(prepared.len());
@@ -680,7 +683,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                     // A pinned addon, or one whose release is kept, was not fetched.
                     let set = match &file {
                         Some(_) => None,
-                        None => fetched.get(&wanted).cloned(),
+                        None => fetched.get(&wanted).map(|f| f.set.clone()),
                     };
                     let result =
                         planner.install(name.as_deref(), &wanted, file.as_deref(), set, &intent);
@@ -1328,9 +1331,11 @@ impl TargetPlanner<'_> {
                 )
                 .details(json!({ "ref": wanted.r#ref.to_string(), "target": self.target.id, "tried": tried })));
             }
-            // A release that does not exist at all (a git rev naming nothing) is not a
-            // question of flavor.
-            if let Some(error) = unreadable.filter(|e| e.code == ErrorCode::NotFound) {
+            // A release that does not exist at all (a git rev naming nothing), or one
+            // whose archive cannot be downloaded offline, is not a question of flavor.
+            if let Some(error) =
+                unreadable.filter(|e| matches!(e.code, ErrorCode::NotFound | ErrorCode::Offline))
+            {
                 return Err(error);
             }
             return Err(self.no_release(wanted, &tried, "no candidate loads on this client"));
@@ -2511,11 +2516,13 @@ mod tests {
         let registry = SourceRegistry::new();
         let table = RulesTable::builtin();
         let argv = ["omaddons".to_owned(), "install".to_owned()];
+        let cache = ReleaseCache::transient(&crate::engine::testing::NoNetwork, &registry);
         let ctx = PlanCtx {
             paths: &scene.paths,
             scopes: &scopes,
             http: &crate::engine::testing::NoNetwork,
             registry: &registry,
+            cache: &cache,
             blobs: &blobs,
             table: &table,
             tx: TxId::new(),

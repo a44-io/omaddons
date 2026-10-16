@@ -357,6 +357,7 @@ impl TxScene {
             argv: &argv,
             command,
             running: Some(&self.running),
+            cache: None,
         };
         f(&ctx)
     }

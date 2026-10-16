@@ -264,6 +264,8 @@ warning_codes! {
     CredentialFileMode          = "credential_file_mode";
     /// A pinned addon was left at its pinned release; nothing was installed.
     AddonPinned                 = "addon_pinned";
+    /// An answer came from remembered release metadata, not from the source now.
+    StaleCheck                  = "stale_check";
 }
 
 impl fmt::Display for WarningCode {
@@ -745,7 +747,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 23);
+        assert_eq!(WarningCode::ALL.len(), 24);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

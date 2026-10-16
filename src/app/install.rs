@@ -31,6 +31,7 @@ use crate::model::{
     VersionConfidence,
 };
 use crate::output::{Outcome, Style};
+use crate::resolve::cache::{Freshness, ReleaseCache};
 use crate::resolve::catalog::Catalog;
 use crate::rules::{RulesTable, TargetKind};
 use crate::sources::refs::{CatalogMatch, InstalledMatch, ParsedRef, RefContext, parse_user_ref};
@@ -62,6 +63,9 @@ pub struct InstallArgs {
     /// Exit 6 when only some of the addons install
     #[arg(long)]
     pub strict: bool,
+    /// Fetch every release from its source, never from remembered metadata
+    #[arg(long)]
+    pub refresh: bool,
 }
 
 /// `install`'s data.
@@ -450,7 +454,23 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             .collect();
         return Err(all_failed(&errors));
     }
-    let target = choose_target(ctx, &world, &engine, &items, &change_for)?;
+    // Someone installing now expects now's release; --offline answers from the memo.
+    let freshness = if ctx.offline {
+        Freshness::OfflineOnly
+    } else if args.refresh {
+        Freshness::Refresh
+    } else {
+        Freshness::Revalidate
+    };
+    let cache = engine.cache(freshness);
+    let target = match choose_target(ctx, &world, &engine, &cache, &items, &change_for) {
+        Ok(target) => target,
+        Err(error) => {
+            // What the probe fetched is still worth remembering.
+            cache.remember(&[]);
+            return Err(error);
+        }
+    };
 
     let req = TxRequest {
         targets: vec![TxTarget {
@@ -464,7 +484,11 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         reason: ctx.reason.clone(),
         kind: None,
     };
-    let done = engine.run(&req)?;
+    let done = engine.run(&req, Some(&cache));
+    // The command's last engine run: remember what it fetched, even when it failed.
+    let remembered = cache.remember(&[]);
+    let done = done?;
+    warnings.extend(remembered.warnings);
     let record = target
         .target
         .key
@@ -540,7 +564,12 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         commands,
         strict: args.strict,
         lock_held_ms: outcome.and_then(|o| o.lock_held_ms),
-        notes: outcome.map(|o| o.notes.clone()).unwrap_or_default(),
+        notes: outcome
+            .map(|o| o.notes.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .chain(remembered.notes)
+            .collect(),
     })
 }
 
@@ -609,6 +638,7 @@ fn choose_target<'w>(
     ctx: &Context,
     world: &'w World,
     engine: &Engine,
+    cache: &ReleaseCache<'_>,
     items: &[Item],
     change_for: &dyn Fn(&ParsedRef, &DiscoveredTarget) -> RequestedChange,
 ) -> Result<&'w DiscoveredTarget> {
@@ -656,7 +686,8 @@ fn choose_target<'w>(
         reason: None,
         kind: None,
     };
-    let probed = engine.run(&probe)?;
+    // The same cache as the real run: each ref is fetched once across both.
+    let probed = engine.run(&probe, Some(cache))?;
     let failure = |d: &DiscoveredTarget, r: &Ref| {
         probed
             .failures

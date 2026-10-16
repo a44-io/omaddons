@@ -129,6 +129,14 @@ pub const KINDS: &[(&str, SchemaVersion)] = &[
         <crate::discover::cache::DiscoveryCache as Versioned>::KIND,
         <crate::discover::cache::DiscoveryCache as Versioned>::CURRENT,
     ),
+    (
+        <crate::net::validators::CachedMeta as Versioned>::KIND,
+        <crate::net::validators::CachedMeta as Versioned>::CURRENT,
+    ),
+    (
+        <super::memo::ReleaseMemo as Versioned>::KIND,
+        <super::memo::ReleaseMemo as Versioned>::CURRENT,
+    ),
     ("history", super::history::CURRENT),
 ];
 
@@ -313,6 +321,49 @@ mod tests {
     use proptest::prelude::*;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    /// Every `impl Versioned for T` outside tests, as `T`.
+    fn versioned_impls(dir: &std::path::Path, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                versioned_impls(&path, found);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let code = text.split("#[cfg(test)]").next().unwrap_or_default();
+            for (at, _) in code.match_indices("impl Versioned for ") {
+                let rest = &code[at + "impl Versioned for ".len()..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                found.push(name);
+            }
+        }
+    }
+
+    #[test]
+    fn every_persisted_format_has_a_kinds_row() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found = Vec::new();
+        versioned_impls(&src, &mut found);
+        let rows = std::fs::read_to_string(src.join("state/store.rs")).unwrap();
+        let rows = rows.split("pub const KINDS").nth(1).unwrap_or_default();
+        let rows = rows.split("];").next().unwrap_or_default();
+        for name in &found {
+            assert!(
+                rows.contains(&format!("::{name} as Versioned>::KIND")),
+                "{name} implements Versioned but has no KINDS row"
+            );
+        }
+        assert_eq!(found.len() + 1, KINDS.len(), "every row but history's");
+        let kinds: Vec<&str> = KINDS.iter().map(|(kind, _)| *kind).collect();
+        assert!(kinds.contains(&"release_memo") && kinds.contains(&"http_validators"));
+    }
 
     /// Version 1.1; 1.0 called `name` `title`.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

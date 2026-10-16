@@ -4,6 +4,7 @@
 pub mod config;
 pub mod files_index;
 pub mod history;
+pub mod memo;
 pub mod paths;
 pub mod records;
 pub mod registry;

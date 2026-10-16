@@ -16,6 +16,7 @@ pub mod env;
 pub mod home;
 pub mod http;
 pub mod launchers;
+pub mod memo;
 pub mod netlog;
 pub mod pe;
 pub mod procfs;

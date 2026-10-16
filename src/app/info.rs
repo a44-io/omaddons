@@ -3,8 +3,11 @@
 //! release with the targets that have a candidate for it (metadata only: nothing is
 //! downloaded or verified; `install` verifies). No changelog until M2.
 //!
-//! `--offline` skips the fetch (`latest: null`, `offline: true`). A failed fetch for an
-//! addon known locally is a partial success; for one known nowhere, the command's error.
+//! Release metadata comes through the release memo: a check from the last 15 minutes is
+//! reused (`--refresh` fetches anyway). `--offline` answers from the memo whatever its
+//! age, with `stale_check`, or with `latest: null` when nothing is remembered; it never
+//! makes a request. A failed fetch for an addon known locally is a partial success; for
+//! one known nowhere, the command's error.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -22,11 +25,13 @@ use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{AddonState, Channel, FolderName, Ref, ReleaseSet, TxId, VersionConfidence};
 use crate::net::{NetConfig, NetLog, stack};
 use crate::output::{Outcome, Style};
+use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
+use crate::resolve::cache::{Freshness, ReleaseCache};
 use crate::resolve::catalog::Catalog;
 use crate::resolve::select::{newest, select};
 use crate::rules::Family;
 use crate::sources::git_hosts::GitRunner;
-use crate::sources::{SourceRegistry, Wanted, fetch_once};
+use crate::sources::{SourceRegistry, Wanted};
 
 /// `info`'s own arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -34,6 +39,9 @@ pub struct InfoArgs {
     /// The addon: a catalog name, an installed addon's name, or a ref or link
     #[arg(value_name = "REF")]
     pub query: String,
+    /// Fetch the newest release from its source, even if it was checked recently
+    #[arg(long)]
+    pub refresh: bool,
 }
 
 /// `info`'s data.
@@ -100,6 +108,8 @@ pub struct InfoOutcome {
     warnings: Vec<Warning>,
     /// The fetch failed for an addon known locally.
     partial: bool,
+    /// For `-v` log lines: the release memo ignored or not written.
+    pub notes: Vec<String>,
 }
 
 impl Outcome for InfoOutcome {
@@ -255,17 +265,43 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
         .or_else(|| catalog_info.as_ref().map(|c| c.name.clone()));
 
     let known_locally = !installed.is_empty() || catalog_info.is_some();
-    let (latest, partial) = if ctx.offline {
-        (None, false)
+    let net = NetConfig {
+        offline: ctx.offline,
+        git_hosts: world.config.git_hosts.clone(),
+        ..NetConfig::default()
+    };
+    let log = NetLog::new(&world.paths)?;
+    let http = stack(&net, log.clone(), &world.paths);
+    let registry = SourceRegistry::builtin().with_git(GitRunner::new(&net, log));
+    // Read-only: an answer from the last 15 minutes is good enough.
+    let freshness = if ctx.offline {
+        Freshness::OfflineOnly
+    } else if args.refresh {
+        Freshness::Refresh
     } else {
-        match fetch(&world, ctx, &r) {
-            Ok(set) => (Some(latest(&set, &targets, verbose)), false),
-            Err(error) if known_locally => {
-                warnings.push(Warning::item(&error));
-                (None, true)
-            }
-            Err(error) => return Err(error),
+        Freshness::Window(SOURCE_RECHECK_MIN_INTERVAL)
+    };
+    let cache = ReleaseCache::new(&world.paths, http.as_ref(), &registry, freshness);
+    let wanted = Wanted::stable(r.clone());
+    let fetched = cache
+        .get(std::slice::from_ref(&wanted))
+        .remove(&wanted)
+        .map_or_else(
+            || Err(Error::internal("the fetch returned nothing for the ref")),
+            |f| f.set,
+        );
+    // Before any error return: a remembered failure is worth keeping too.
+    let remembered = cache.remember(&[]);
+    warnings.extend(remembered.warnings);
+    let (latest, partial) = match fetched {
+        Ok(set) => (Some(latest(&set, &targets, verbose)), false),
+        // Offline with nothing remembered: the local part only, as in M1.
+        Err(_) if ctx.offline => (None, false),
+        Err(error) if known_locally => {
+            warnings.push(Warning::item(&error));
+            (None, true)
         }
+        Err(error) => return Err(error),
     };
     Ok(InfoOutcome {
         data: InfoData {
@@ -279,23 +315,8 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
         },
         warnings,
         partial,
+        notes: remembered.notes,
     })
-}
-
-/// One fetch of `r`'s releases.
-fn fetch(world: &World, ctx: &Context, r: &Ref) -> Result<ReleaseSet> {
-    let net = NetConfig {
-        offline: ctx.offline,
-        git_hosts: world.config.git_hosts.clone(),
-        ..NetConfig::default()
-    };
-    let log = NetLog::new(&world.paths)?;
-    let http = stack(&net, log.clone(), &world.paths);
-    let registry = SourceRegistry::builtin().with_git(GitRunner::new(&net, log));
-    let wanted = Wanted::stable(r.clone());
-    fetch_once([wanted.clone()], &registry, http.as_ref())
-        .remove(&wanted)
-        .unwrap_or_else(|| Err(Error::internal("the fetch returned nothing for the ref")))
 }
 
 /// The newest stable release and the targets with a candidate for it; `None` when the

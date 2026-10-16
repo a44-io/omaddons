@@ -65,6 +65,12 @@ pub const QUICK_DETECTOR_BUDGET: Duration = Duration::from_millis(5);
 pub const DISCOVERY_FILE_MAX_BYTES: u64 = MIB;
 /// How long a credential `command` may run before it is killed.
 pub const CREDENTIAL_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Most entries (and most candidate facts) the release memo keeps; past it, the oldest
+/// go.
+pub const RELEASE_MEMO_MAX_ENTRIES: usize = 4_096;
+/// Most other releases a memo entry remembers beside the newest, for telling an
+/// installed release that is ahead of the source's newest.
+pub const MEMO_KNOWN_RELEASES: usize = 10;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -262,6 +268,20 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "A credential command is killed after this long",
     ),
+    limit(
+        "RELEASE_MEMO_MAX_ENTRIES",
+        LimitValue::Count(RELEASE_MEMO_MAX_ENTRIES as u64),
+        "count",
+        None,
+        "Release memo entries and candidate facts; the oldest go first",
+    ),
+    limit(
+        "MEMO_KNOWN_RELEASES",
+        LimitValue::Count(MEMO_KNOWN_RELEASES as u64),
+        "count",
+        None,
+        "Other releases a memo entry remembers beside the newest",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -431,7 +451,8 @@ mod tests {
         "ARCHIVE_RATIO_FLOOR", "DOWNLOAD_MAX_BYTES", "LOCK_ACQUIRE_TIMEOUT", "TX_RETENTION", "SNAPSHOT_MAX_BYTES",
         "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
-        "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT",
+        "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",
+        "MEMO_KNOWN_RELEASES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

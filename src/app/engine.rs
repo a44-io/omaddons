@@ -11,6 +11,7 @@ use crate::engine::{EngineCtx, TxOutcomes, TxRequest, UndoOutcome, UndoRequest};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::Actor;
 use crate::net::{Http, NetConfig, NetLog, stack};
+use crate::resolve::cache::{Freshness, ReleaseCache};
 use crate::rules::RulesTable;
 use crate::sources::SourceRegistry;
 use crate::sources::git_hosts::GitRunner;
@@ -63,7 +64,7 @@ impl Engine {
         })
     }
 
-    fn ctx(&self) -> EngineCtx<'_> {
+    fn ctx<'a>(&'a self, cache: Option<&'a ReleaseCache<'a>>) -> EngineCtx<'a> {
         EngineCtx {
             paths: &self.paths,
             http: self.http.as_ref(),
@@ -76,16 +77,23 @@ impl Engine {
             argv: &self.argv,
             command: self.command,
             running: None,
+            cache,
         }
     }
 
-    /// Plans and commits `req`.
-    pub fn run(&self, req: &TxRequest) -> Result<TxOutcomes> {
-        crate::engine::run(req, &self.ctx())
+    /// The command's release metadata over this engine's network and sources, one per
+    /// command so that its engine runs fetch each ref once.
+    pub fn cache(&self, freshness: Freshness) -> ReleaseCache<'_> {
+        ReleaseCache::new(&self.paths, self.http.as_ref(), &self.registry, freshness)
+    }
+
+    /// Plans and commits `req`, fetching through `cache` (`None`: no memo).
+    pub fn run(&self, req: &TxRequest, cache: Option<&ReleaseCache<'_>>) -> Result<TxOutcomes> {
+        crate::engine::run(req, &self.ctx(cache))
     }
 
     /// Reverts the transaction `req` selects.
     pub fn undo(&self, req: &UndoRequest) -> Result<UndoOutcome> {
-        crate::engine::undo(req, &self.ctx())
+        crate::engine::undo(req, &self.ctx(None))
     }
 }

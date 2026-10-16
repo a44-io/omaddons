@@ -26,6 +26,7 @@ use omaddons::model::{
     TxKind, VersionConfidence,
 };
 use omaddons::net::Http;
+use omaddons::resolve::cache::ReleaseCache;
 use omaddons::rules::RulesTable;
 use omaddons::sources::SourceRegistry;
 use omaddons::state::config::RunningPolicy;
@@ -98,11 +99,13 @@ mod support {
                 .iter()
                 .map(|s| (*s).to_owned())
                 .collect();
+            let cache = ReleaseCache::transient(http.as_ref(), &registry);
             let ctx = PlanCtx {
                 paths: &self.paths,
                 scopes: &self.scopes,
                 http: http.as_ref(),
                 registry: &registry,
+                cache: &cache,
                 blobs: &blobs,
                 table: &table,
                 tx: self.tx,

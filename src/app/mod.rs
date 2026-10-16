@@ -164,14 +164,15 @@ pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
             }
             output::emit(cfg, &mut reporter, name, started, offline, result)
         }
-        Some(Command::Info(args)) => output::emit(
-            cfg,
-            &mut reporter,
-            name,
-            started,
-            offline,
-            info::run(ctx, args),
-        ),
+        Some(Command::Info(args)) => {
+            let result = info::run(ctx, args);
+            if let Ok(outcome) = &result {
+                for note in &outcome.notes {
+                    reporter.log(output::LogLevel::Debug, note);
+                }
+            }
+            output::emit(cfg, &mut reporter, name, started, offline, result)
+        }
         Some(Command::NetLog(args)) => output::emit(
             cfg,
             &mut reporter,

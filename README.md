@@ -578,6 +578,7 @@ Install or update addons in one target. Each ref is fetched once and verified ag
 | `--file <ZIP>` | Use this downloaded archive as the release of the one given ref |
 | `--force` | Take over a folder another addon owns, or replace an unmanaged folder (both undoable) |
 | `--strict` | Exit 6 when only some of the addons install |
+| `--refresh` | Fetch every release from its source, never from remembered metadata |
 | `--no-deps` | Accepted; dependencies arrive in milestone 2 |
 
 ```bash
@@ -666,7 +667,7 @@ An id you choose (`--name`, `rename`) must match `^[a-z0-9][a-z0-9._-]*$`, be at
 
 ### `info <REF>`
 
-What an addon is: installed records on every target, the catalog entry, and the newest release (online).
+What an addon is: installed records on every target, the catalog entry, and the newest release.
 
 ```text
 $ omaddons info weakauras --offline
@@ -674,6 +675,8 @@ WeakAuras  gh:WeakAuras/WeakAuras2
   catalog: folders WeakAuras, WeakAurasArchive, WeakAurasModelPaths, WeakAurasOptions, WeakAurasTemplates · families vanilla, tbc, cata, mists, titan
   latest: not checked (offline)
 ```
+
+The newest release comes through the [release memo](#files-and-state): a check made in the last 15 minutes is reused without a request, and `--refresh` checks again anyway. With `--offline`, `latest` is the remembered answer whatever its age, with a `stale_check` warning, or `null` (as above) when nothing is remembered. A missing repository is remembered too, so asking again within the window costs nothing; a network or server error never is.
 
 ### `config`
 
@@ -819,7 +822,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 </details>
 
 <details>
-<summary><strong>Every warning code (23)</strong></summary>
+<summary><strong>Every warning code (24)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -846,6 +849,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `ownership_transferred` | `--force` moved a folder from one addon to another |
 | `credential_file_mode` | reserved for credential files other users can read (no command reads credentials yet) |
 | `addon_pinned` | a pinned addon was left at its release; the fix shows it with `info`, and `--version` moves it |
+| `stale_check` | an offline answer came from the release memo, whatever its age; it names the oldest remembered check |
 
 </details>
 
@@ -978,7 +982,9 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 
 Production purposes are `release-latest`, `release-json`, `rest-releases`, `commits-atom` and `asset` for HTTP. git lines have `"method":"GIT"`, `"via":"git"`, the exit code as `status`, and a purpose of `ls-remote`, `clone`, `init`, `fetch`, `checkout` or `rev-parse`.
 
-**Offline.** `--offline` or `OMADDONS_OFFLINE=1` refuses all network access, git included. Local installs, `remove`, `undo` and every read command work offline.
+**Offline.** `--offline` or `OMADDONS_OFFLINE=1` refuses all network access, git included. Local installs, `remove`, `undo` and every read command work offline. Release metadata a command fetched is remembered in the release memo; offline, `info` answers from it with a `stale_check` warning.
+
+**Fetch once.** Within one command each ref is fetched once, however many targets and engine runs need it: `install` without `-t` probes every live client and then installs with the same answer. `install` always asks the source for the newest release; `info` reuses an answer up to 15 minutes old (`SOURCE_RECHECK_MIN_INTERVAL`) unless `--refresh` is given.
 
 **Also:** TLS uses rustls with the bundled Mozilla root store (webpki-roots), not the system store. HTTP proxies are not supported. There is no telemetry.
 
@@ -1092,6 +1098,7 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_HTTP_FIXTURES`, `OMADDON
 | `~/.local/state/omaddons/status.json` | A derived summary for the future widget | Yes |
 | `~/.local/state/omaddons/net.log`, `net.log.1` | The request log | Yes |
 | `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `trash/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, staged deletions | Yes when no command is running; reinstalls then download again |
+| `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), and failures retrying cannot change | Yes; the next commands fetch again |
 | `<client>/Interface/.omaddons/target.json` | The client's identity, so a moved install keeps its id | Loses identity |
 | `<client>/Interface/.omaddons/snapshots/<tx>/` | `AddOns/` (replaced and removed folders) and `WTF/` (SavedVariables copies with a manifest): most of the undo data | Loses undo |
 | `<client>/Interface/.omaddons/stage/`, `trash/` | Staging (same filesystem as AddOns) and staged deletions | No |

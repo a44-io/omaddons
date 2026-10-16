@@ -42,6 +42,7 @@ use crate::model::{
     Actor, AddonState, FolderName, ReloadRequired, Target, TargetKey, TxId, TxKind,
 };
 use crate::net::Http;
+use crate::resolve::cache::ReleaseCache;
 use crate::rules::RulesTable;
 use crate::sources::SourceRegistry;
 use crate::state::config::RunningPolicy;
@@ -119,6 +120,9 @@ pub struct EngineCtx<'a> {
     pub command: &'a str,
     /// Running client dirs; `None` detects them live (production).
     pub running: Option<&'a BTreeSet<PathBuf>>,
+    /// The command's release metadata, shared by its engine runs; `None` fetches
+    /// without a memo.
+    pub cache: Option<&'a ReleaseCache<'a>>,
 }
 
 /// One target's result: the `data` core of install, remove and undo.
@@ -187,11 +191,20 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         dry_run: req.dry_run,
         kind: req.kind,
     };
+    let transient;
+    let cache = match ctx.cache {
+        Some(cache) => cache,
+        None => {
+            transient = ReleaseCache::transient(ctx.http, ctx.registry);
+            &transient
+        }
+    };
     let plan_ctx = PlanCtx {
         paths: ctx.paths,
         scopes: &scopes,
         http: ctx.http,
         registry: ctx.registry,
+        cache,
         blobs: &blobs,
         table: ctx.table,
         tx: plan_tx,
@@ -452,11 +465,14 @@ fn locked(
     // ubs:ignore — comparing record generations, not secrets
     let changed = current.value.generation != tp.generation;
     let running = running_now(ctx, std::slice::from_ref(&target));
+    // Re-judging is offline: it never fetches, so it needs no memo.
+    let offline = ReleaseCache::transient(ctx.http, ctx.registry);
     let plan_ctx = PlanCtx {
         paths,
         scopes,
         http: ctx.http,
         registry: ctx.registry,
+        cache: &offline,
         blobs,
         table: ctx.table,
         tx: *tx,

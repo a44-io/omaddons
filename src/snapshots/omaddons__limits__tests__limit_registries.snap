@@ -355,6 +355,24 @@ expression: "(politeness, REGISTRY)"
       "unit": "ms",
       "config_key": null,
       "notes": "A credential command is killed after this long"
+    },
+    {
+      "name": "RELEASE_MEMO_MAX_ENTRIES",
+      "value": {
+        "count": 4096
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Release memo entries and candidate facts; the oldest go first"
+    },
+    {
+      "name": "MEMO_KNOWN_RELEASES",
+      "value": {
+        "count": 10
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Other releases a memo entry remembers beside the newest"
     }
   ]
 ]

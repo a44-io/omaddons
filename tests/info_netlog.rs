@@ -77,18 +77,44 @@ fn info_reports_the_catalog_latest_and_installed() {
         )
     );
 
-    // Offline: the local part only, and no request.
+    // Offline: the latest release as remembered, said to be unchecked, and no request.
     let log = net_log(&home);
     let r = home.run(&["info", "weakauras", "--offline"]);
     let envelope = r.expect(0);
     assert_eq!(
-        (&envelope["data"]["latest"], &envelope["data"]["offline"]),
-        (&Value::Null, &Value::Bool(true)),
+        (
+            &envelope["data"]["latest"]["version"],
+            &envelope["data"]["offline"]
+        ),
+        (&Value::from("5.19.2"), &Value::Bool(true)),
+        "{}",
+        r.context()
+    );
+    let warning = &envelope["warnings"][0];
+    assert_eq!(
+        (&warning["code"], &warning["fix"]),
+        (
+            &Value::from("stale_check"),
+            &Value::from("run without --offline and with OMADDONS_OFFLINE unset")
+        ),
         "{}",
         r.context()
     );
     assert_eq!(envelope["data"]["installed"].as_array().unwrap().len(), 1);
     assert_eq!(net_log(&home), log, "net.log unchanged");
+
+    // Nothing remembered: the local part only.
+    let fresh = Home::new(&["wow"]);
+    weakauras(&fresh);
+    let r = fresh.run(&["info", "weakauras", "--offline"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        (&envelope["data"]["latest"], &envelope["warnings"]),
+        (&Value::Null, &serde_json::json!([])),
+        "{}",
+        r.context()
+    );
+    assert_eq!(net_log(&fresh), "", "no request");
 }
 
 #[test]

@@ -56,6 +56,19 @@ impl Home {
         self.env.state().join("omaddons")
     }
 
+    /// `<cache>/omaddons/releases.json`, the release memo.
+    pub fn memo(&self) -> PathBuf {
+        self.env.cache().join("omaddons/releases.json")
+    }
+
+    /// Writes `memo` as the release memo (built with `common::memo`, whose entries carry
+    /// chosen `fetched_at` times).
+    pub fn seed_memo(&self, memo: &omaddons::state::memo::ReleaseMemo) {
+        let path = self.memo();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, omaddons::state::store::encode(memo).unwrap()).unwrap();
+    }
+
     /// A fresh fixture scenario; later runs replay it.
     pub fn scenario(&mut self, name: &str) -> PathBuf {
         self.http = self.env.root().join(name);

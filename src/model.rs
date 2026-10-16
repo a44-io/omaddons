@@ -650,8 +650,8 @@ impl Ref {
     }
 
     /// The canonical string with GitHub owner and repo lowercased: the identity behind
-    /// `Eq`, `Hash` and `Ord`.
-    fn identity(&self) -> String {
+    /// `Eq`, `Hash` and `Ord`, and the release memo's key.
+    pub(crate) fn identity(&self) -> String {
         match self {
             Self::GitHub { owner, repo } => format!(
                 "gh:{}/{}",

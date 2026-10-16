@@ -239,7 +239,8 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         reason: ctx.reason.clone(),
         kind: None,
     };
-    let done = Engine::new(ctx, &world, "remove")?.run(&req)?;
+    // A remove fetches nothing.
+    let done = Engine::new(ctx, &world, "remove")?.run(&req, None)?;
     let built: Vec<(RemoveItem, Option<Error>)> =
         requests.iter().map(|r| item(r, target_id, &done)).collect();
     let errors: Vec<(String, Error)> = built
