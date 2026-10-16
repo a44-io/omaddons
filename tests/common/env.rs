@@ -11,21 +11,49 @@ const CLEARED: &[&str] = &["CI", "NO_COLOR", "TERM", "XDG_DATA_DIRS", "XDG_CONFI
 
 /// A tempdir holding `home/`, `config/`, `state/`, `cache/` and `home/.local/share`.
 pub struct TestEnv {
-    dir: tempfile::TempDir,
+    /// `None` for an environment at a fixed directory, which is kept.
+    dir: Option<tempfile::TempDir>,
+    root: PathBuf,
 }
 
 impl TestEnv {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        for sub in ["home/.local/share", "config", "state", "cache"] {
-            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+        let root = dir.path().to_path_buf();
+        Self::layout(&root);
+        Self {
+            dir: Some(dir),
+            root,
         }
-        Self { dir }
+    }
+
+    /// An environment at `root`, which outlives it (`argc bench`'s home).
+    pub fn at(root: &Path) -> Self {
+        Self::layout(root);
+        Self {
+            dir: None,
+            root: root.to_path_buf(),
+        }
+    }
+
+    fn layout(root: &Path) {
+        for sub in ["home/.local/share", "config", "state", "cache"] {
+            std::fs::create_dir_all(root.join(sub)).unwrap();
+        }
     }
 
     /// The tempdir itself.
     pub fn root(&self) -> &Path {
-        self.dir.path()
+        &self.root
+    }
+
+    /// The variables every child gets, as `KEY=value` lines (for running the binary
+    /// outside a test, as `argc bench` does).
+    pub fn env_lines(&self) -> Vec<String> {
+        self.vars()
+            .iter()
+            .map(|(key, value)| format!("{key}={}", value.display()))
+            .collect()
     }
 
     /// `HOME`.

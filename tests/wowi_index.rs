@@ -5,7 +5,6 @@
 mod common;
 
 use std::fs;
-use std::time::{Duration, Instant};
 
 use common::env::TestEnv;
 use common::http::{fixture_bytes, paths, replay};
@@ -239,42 +238,4 @@ fn an_unreadable_or_newer_store_is_absent() {
     .unwrap();
     let load = s.load(IndexPolicy::Offline);
     assert!(load.index.is_none() && load.warnings.is_empty());
-}
-
-/// Loading the stored index (8,218 entries, as on WoWInterface) stays under 40 ms.
-#[test]
-#[ignore = "a release-build budget: cargo test --release --test wowi_index -- --ignored"]
-fn a_full_index_loads_under_40_ms() {
-    let s = Setup::new(&[]);
-    let entries: Vec<WowiEntry> = (0..8218u64)
-        .map(|uid| WowiEntry {
-            uid,
-            name: format!("Project {uid}"),
-            author: format!("Author {}", uid % 900),
-            version: format!("v{}.{}", uid % 13, uid % 7),
-            date_ms: 1_700_000_000_000 + uid,
-            downloads: uid * 31,
-            monthly: uid % 500,
-            favorites: uid % 90,
-            cat: uid % 40,
-            dirs: (0..(1 + uid % 74).min(if uid % 50 == 0 { 74 } else { 3 }))
-                .map(|i| f(&format!("Project{uid}_Module{i}")))
-                .collect(),
-            compat: Vec::new(),
-        })
-        .collect();
-    s.store(entries, SignedDuration::from_mins(1));
-    let bytes = fs::metadata(s.paths.wowi_index()).unwrap().len();
-    let mut times: Vec<Duration> = (0..11)
-        .map(|_| {
-            let start = Instant::now();
-            let load = s.load(IndexPolicy::Offline);
-            assert_eq!(load.index.unwrap().entries().len(), 8218);
-            start.elapsed()
-        })
-        .collect();
-    times.sort();
-    let median = times[times.len() / 2];
-    eprintln!("WoWInterface index: {bytes} bytes, median load {median:?}");
-    assert!(median < Duration::from_millis(40), "{median:?} ({times:?})");
 }

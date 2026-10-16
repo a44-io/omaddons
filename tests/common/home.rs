@@ -25,7 +25,15 @@ pub struct Home {
 impl Home {
     /// A Battle.net root holding `products` (product codes).
     pub fn new(products: &[&str]) -> Self {
-        let env = TestEnv::new();
+        Self::in_env(TestEnv::new(), products)
+    }
+
+    /// [`Home::new`] at `root`, which is kept (`argc bench`'s home).
+    pub fn at(root: &Path, products: &[&str]) -> Self {
+        Self::in_env(TestEnv::at(root), products)
+    }
+
+    fn in_env(env: TestEnv, products: &[&str]) -> Self {
         let prefix = Prefix::new(&env, "battlenet");
         let mut root = BattlenetRoot::at(prefix.wow_root());
         for code in products {

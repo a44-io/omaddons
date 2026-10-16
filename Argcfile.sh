@@ -15,6 +15,12 @@ gate() {
     scripts/gate.sh ${argc_all:+--all}
 }
 
+# @cmd Benchmark the checkpoint's timing targets with hyperfine on a synthetic home (never part of the gate)
+# @meta require-tools hyperfine,jq
+bench() {
+    scripts/bench.sh
+}
+
 # @cmd Format the code in place
 fmt() {
     cargo fmt

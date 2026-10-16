@@ -1727,11 +1727,14 @@ Recorded HTTP fixtures live in `tests/fixtures/http/<scenario>/`. Debug builds r
 
 ```bash
 argc fuzz-all --time 600                                   # every fuzz target, 10 minutes each
+argc bench                                                 # hyperfine medians on a synthetic home (needs hyperfine, jq)
+cargo test --release --test perf -- --ignored              # the time budgets
 OMADDONS_LIVE=1 cargo test --test live_probes -- --ignored  # the real endpoints
 OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 \
   cargo test --test real_machine -- --ignored --test-threads=1   # this machine's clients; every addon change is undone
 ```
 
+- **Benchmarks.** `argc bench` (`scripts/bench.sh`) builds a home of three synthetic clients with 30 addons and 5,040 managed files, one release behind, and times `status --cached`, `status` (the drift check), `outdated` cold and warm, `update --all --dry-run` warm and `update --all` cold. Each line names its binary: the release binary for what needs no network, and for cold runs a `bench-fixtures` build (release with debug assertions), because release builds never replay fixtures. Warm runs must add no `net.log` line, and a missed target exits 1. The budgets in `tests/perf.rs` check the same targets in-process.
 - **Live probes.** They include `catalog_matches_declared_flavors`, which builds a synthetic client for every live product and every legacy version and dry-runs each catalog addon on each. An addon must install exactly where its publisher declares it and nowhere else, with zero REST calls. The probe prints the addon × client matrix, and publishers whose `release.json` disagrees with their own TOCs are listed in it with a date.
 - **Real-machine tests.** They run against the real home and undo every addon change they make. Target registrations and `target.json` markers written on the first change stay, by design.
 - **Fuzzing.** There are nine cargo-fuzz targets: `archive`, `bottles`, `bpsv`, `heroic`, `lutris`, `product_db`, `ref_parse`, `steam_vdf` and `toc`. Each has committed seeds under `fuzz/seeds/`. They need `cargo-fuzz` and a nightly toolchain at least as new as the crate's `rust-version` (pick one with `--toolchain`). A crash input becomes a regression unit test in the owning parser.

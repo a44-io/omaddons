@@ -57,3 +57,9 @@ print_stderr = "deny"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# `argc bench` only: an optimised binary that still replays HTTP fixtures (debug
+# assertions on), for the cold runs that need the network to be repeatable.
+[profile.bench-fixtures]
+inherits = "release"
+debug-assertions = true
