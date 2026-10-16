@@ -128,8 +128,8 @@ fn declared_families_map_by_interface_first() {
 /// (omad-classic-forever-gaps-xud.7), on synthetic copies of every live client and every
 /// legacy generation: a GitHub entry installs exactly on the families its release.json
 /// declares (interface first, then flavor name) and is refused with
-/// `no_compatible_release` everywhere else; a legacy git entry likewise against its
-/// catalog `families`. Prints the matrix (✓ installs as declared, · refused as declared,
+/// `no_compatible_release` everywhere else; a Tukui entry (live) and a legacy git entry
+/// likewise against their catalog `families`. Prints the matrix (✓ installs as declared, · refused as declared,
 /// ✗ mismatch, ~ known publisher mismatch, - no release.json), then asserts no mismatch
 /// and zero REST. A standing milestone-checkpoint check.
 #[test]
@@ -252,13 +252,18 @@ fn catalog_matches_declared_flavors() {
                     });
                 rows.push((entry.name.clone(), false, declared, listed.join(", ")));
             }
+            // Live entries whose TOCs are the only declaration (Tukui's patch[] lags):
+            // judged by their catalog families, read from those TOCs.
+            Ref::Tukui { .. } => {
+                let declared: BTreeSet<Family> = entry.families.iter().copied().collect();
+                let listed: Vec<&str> = entry.families.iter().map(|f| f.as_str()).collect();
+                rows.push((entry.name.clone(), false, Some(declared), listed.join(", ")));
+            }
             Ref::Git { .. } => {
                 let declared: BTreeSet<Family> = entry.families.iter().copied().collect();
                 let listed: Vec<&str> = entry.families.iter().map(|f| f.as_str()).collect();
                 rows.push((entry.name.clone(), true, Some(declared), listed.join(", ")));
             }
-            // Tukui entries declare by their TOCs alone; omad-m2-updates-adoption-2hp.8.4
-            // probes them.
             _ => {}
         }
     }
@@ -728,6 +733,11 @@ fn wowi_details_decode_and_the_file_has_its_md5() {
         .map(|b| format!("{b:02x}"))
         .collect();
     assert_eq!(got, md5, "the file's MD5 is UIMD5");
+    let notes = release.notes.as_deref().unwrap_or_default();
+    assert!(
+        !notes.is_empty() && !omaddons::text::has_markup(notes),
+        "UIChangeLog as text: {notes:?}"
+    );
     let purposes: Vec<String> = read_net_log(&paths(&env))
         .into_iter()
         .map(|e| e.purpose)
@@ -796,6 +806,277 @@ fn tukui_resolves_downloads_and_its_etag_is_the_md5() {
     let log = read_net_log(&paths(&env));
     let purposes: Vec<&str> = log.iter().map(|e| e.purpose.as_str()).collect();
     assert_eq!(purposes, ["tukui-list", "tukui-addon", "asset"]);
+    // Tukui answers HEAD with 404: never sent.
+    assert!(log.iter().all(|e| e.method == "GET"), "{log:#?}");
     let token = resolved.url.rsplit('/').next().unwrap();
     assert!(log.iter().all(|e| !e.path.contains(token)), "{log:#?}");
+}
+
+/// WoWInterface's file list (M2-D12): one request, gzipped on the wire, still without an
+/// `ETag` or `Last-Modified` and with an hour's `max-age` (the index is cached by age
+/// alone because of that; a change here is recorded on the vision bead), decoding to more
+/// than 5,000 projects whose folders are sanitised.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn wowi_filelist_decodes_gzipped_and_without_validators() {
+    use omaddons::model::FolderName;
+    use omaddons::sources::wowi::index::{FILELIST_URL, decode_filelist};
+
+    let Some((env, http)) = live() else { return };
+    let resp = http
+        .send(Request::get(FILELIST_URL, "wowi-filelist"))
+        .unwrap()
+        .error_for_status("the file list")
+        .unwrap();
+    assert_eq!(
+        (resp.header("etag"), resp.header("last-modified")),
+        (None, None),
+        "WoWInterface now sends validators: reconsider conditional requests (M2-D12)"
+    );
+    let cache_control = resp.header("cache-control").unwrap_or_default().to_owned();
+    assert!(cache_control.contains("max-age=3600"), "{cache_control}");
+    let body = resp.bytes().unwrap();
+    let (entries, _) = decode_filelist(&body).unwrap();
+    assert!(entries.len() > 5_000, "{} projects", entries.len());
+    for e in &entries {
+        let mut seen = BTreeSet::new();
+        for dir in &e.dirs {
+            let name = dir.as_str();
+            let lower = name.to_ascii_lowercase();
+            assert!(
+                !name.is_empty()
+                    && !name.starts_with('.')
+                    && !["__macosx", "interface", "wtf"].contains(&lower.as_str())
+                    && FolderName::new(name).is_ok()
+                    && seen.insert(lower),
+                "{}: {:?}",
+                e.uid,
+                e.dirs
+            );
+        }
+    }
+    let log = read_net_log(&paths(&env));
+    let [line] = log.as_slice() else {
+        unreachable!("one request: {log:#?}")
+    };
+    let (bytes, wire) = (line.bytes.unwrap_or(0), line.wire_bytes.unwrap_or(u64::MAX));
+    assert!(
+        wire < bytes / 3,
+        "gzip on the wire: {wire} of {bytes} bytes"
+    );
+}
+
+/// GitHub's releases feed carries each release's notes as HTML `<content>`, which a
+/// changelog renders as plain text (D6), with no REST request.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn release_notes_decode_from_the_releases_feed() {
+    use omaddons::limits::CHANGELOG_MAX_CHARS;
+    use omaddons::text::{has_markup, html_to_text};
+
+    let Some((env, http)) = live() else { return };
+    let feed = GithubSource::recent_tags("WeakAuras", "WeakAuras2", http.as_ref()).unwrap();
+    let notes: Vec<String> = feed
+        .tags
+        .iter()
+        .filter_map(|t| t.notes.as_deref())
+        .map(|n| html_to_text(n, CHANGELOG_MAX_CHARS))
+        .collect();
+    assert!(
+        !notes.is_empty(),
+        "no <content> in {} entries",
+        feed.tags.len()
+    );
+    for text in &notes {
+        assert!(
+            !text.trim().is_empty() && !has_markup(text),
+            "notes as text: {text:?}"
+        );
+    }
+    let log = read_net_log(&paths(&env));
+    let purposes: Vec<&str> = log.iter().map(|e| e.purpose.as_str()).collect();
+    assert_eq!(purposes, ["releases-atom"]);
+    assert_no_github_rest(&log);
+}
+
+/// GitHub's repository search, unauthenticated: one request (10 a minute are allowed),
+/// counted against the `search` budget, answering the fields the decoder reads (G1).
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn github_search_is_one_request_on_its_own_budget() {
+    use omaddons::sources::github_search::GithubSearch;
+
+    let Some((env, http)) = live() else { return };
+    let resp = http
+        .send(GithubSearch::with_token(None).request("weakauras"))
+        .unwrap();
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.header("x-ratelimit-resource"), Some("search"));
+    let page: Value = serde_json::from_slice(&resp.bytes().unwrap()).unwrap();
+    let items = page["items"].as_array().cloned().unwrap_or_default();
+    assert!(!items.is_empty(), "{page:#}");
+    for item in &items {
+        assert!(
+            item["name"].is_string()
+                && item["owner"]["login"].is_string()
+                && item["stargazers_count"].is_u64()
+                && (item["pushed_at"].is_string() || item["pushed_at"].is_null())
+                && (item["description"].is_string() || item["description"].is_null()),
+            "{item:#}"
+        );
+    }
+    let log = read_net_log(&paths(&env));
+    let lines: Vec<(&str, &str)> = log
+        .iter()
+        .map(|e| (e.host.as_str(), e.purpose.as_str()))
+        .collect();
+    assert_eq!(lines, [("api.github.com", "github-search")]);
+}
+
+/// `outdated` over every GitHub catalog entry on three live clients (B2, B5): the first
+/// run never calls the REST API; a second inside 15 minutes asks nothing; once the memo
+/// is a day old, each ref whose tag did not move costs one `releases/latest` and no
+/// `release.json`. The records are seeded beside one local install per client, so
+/// nothing is downloaded.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn outdated_over_the_catalog_asks_little_then_nothing() {
+    use omaddons::model::TargetKey;
+    use omaddons::state::records::{TargetRecord, load_record};
+    use omaddons::state::store::encode;
+
+    let Some((env, _http)) = live() else { return };
+    let mut root = BattlenetRoot::at(Prefix::new(&env, "battlenet").wow_root());
+    for code in ["wow", "wow_classic_era", "wow_classic"] {
+        root = root.product(code);
+    }
+    root.build();
+    let run = |args: &[&str]| -> Value {
+        let out = env.command().args(args).arg("--json").output().unwrap();
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let p = paths(&env);
+    let ids = |targets: &Value| -> Vec<String> {
+        targets["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let targets = run(&["targets"]);
+    assert_eq!(ids(&targets).len(), 3, "{targets:#}");
+    let zip = env.root().join("seed.zip");
+    std::fs::write(
+        &zip,
+        common::archives::zip_text(&[("Seed/Seed.toc", "## Interface: 11509, 50504, 120105\n")]),
+    )
+    .unwrap();
+    let zip = zip.display().to_string();
+    let (catalog, _) = Catalog::load(&p);
+    let github: Vec<&omaddons::resolve::catalog::Entry> = catalog
+        .entries()
+        .iter()
+        .filter(|e| matches!(e.r#ref, Ref::GitHub { .. }))
+        .collect();
+    for id in ids(&targets) {
+        let seeded = run(&[
+            "install",
+            "gh:probe/seed",
+            "--file",
+            &zip,
+            "-t",
+            &id,
+            "--offline",
+        ]);
+        assert_eq!(seeded["exit_code"], 0, "{seeded:#}");
+    }
+    // Registered now, by their first install.
+    let registered = run(&["targets"]);
+    for t in registered["data"]["targets"].as_array().unwrap() {
+        let key: TargetKey = t["key"].as_str().unwrap().parse().unwrap();
+        let mut record = load_record(&p, &key).unwrap().value;
+        let seed = record.addons.values().next().unwrap().clone();
+        for e in &github {
+            let mut addon = seed.clone();
+            addon.name = e.name.clone();
+            addon.r#ref = e.r#ref.clone();
+            addon.version = "0".to_owned();
+            addon.release_id = Some(format!("{}@0", e.r#ref));
+            addon.folders = e.folders.clone();
+            record
+                .addons
+                .insert(TargetRecord::addon_key(&e.name), addon);
+        }
+        std::fs::write(p.target_record(&key), encode(&record).unwrap()).unwrap();
+    }
+    // Latest version per ref, as `outdated -v` lists it.
+    let latest = |envelope: &Value| -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for t in envelope["data"]["targets"].as_array().unwrap() {
+            for i in t["items"].as_array().unwrap() {
+                if let Some(v) = i["latest"]["version"].as_str() {
+                    out.insert(i["ref"].as_str().unwrap().to_owned(), v.to_owned());
+                }
+            }
+        }
+        out
+    };
+
+    let first = run(&["outdated", "-v"]);
+    assert_eq!(first["exit_code"], 0, "{first:#}");
+    let log = read_net_log(&p);
+    assert_no_github_rest(&log);
+    let after_first = log.len();
+    let second = run(&["outdated", "-v"]);
+    assert_eq!(second["exit_code"], 0);
+    assert_eq!(
+        read_net_log(&p).len(),
+        after_first,
+        "inside 15 minutes: no request"
+    );
+
+    // A day later, by the memo.
+    let (mut memo, _) = omaddons::state::memo::load(&p);
+    for entry in memo.entries.values_mut() {
+        entry.fetched_at -= jiff::SignedDuration::from_hours(24);
+    }
+    std::fs::write(p.release_memo(), encode(&memo).unwrap()).unwrap();
+    let third = run(&["outdated", "-v"]);
+    assert_eq!(third["exit_code"], 0, "{third:#}");
+    let log = read_net_log(&p);
+    let aged = &log[after_first..];
+    assert_no_github_rest(aged);
+    let (before, after) = (latest(&first), latest(&third));
+    let mut counts = Vec::new();
+    for e in &github {
+        let Ref::GitHub { owner, repo } = &e.r#ref else {
+            continue;
+        };
+        let prefix = format!("/{owner}/{repo}/");
+        let of = |purpose: &str| {
+            aged.iter()
+                .filter(|l| l.purpose == purpose && l.path.starts_with(&prefix))
+                .count()
+        };
+        let moved = before.get(&e.r#ref.to_string()) != after.get(&e.r#ref.to_string());
+        counts.push(format!(
+            "{}: release-latest {} release-json {}{}",
+            e.name,
+            of("release-latest"),
+            of("release-json"),
+            if moved { " (moved)" } else { "" }
+        ));
+        assert_eq!(of("release-latest"), 1, "{}: {aged:#?}", e.name);
+        if !moved {
+            assert_eq!(of("release-json"), 0, "{}: {aged:#?}", e.name);
+        }
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "outdated over {} refs: first run {after_first} requests, second 0, aged {}:\n{}",
+        github.len(),
+        aged.len(),
+        counts.join("\n")
+    );
 }
