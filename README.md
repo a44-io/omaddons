@@ -37,7 +37,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their catalog dependencies, WoWInterface and Tukui (ElvUI) addons install and update, and `adopt` brings addons installed by hand or by other managers under management. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their dependencies (from the catalog, Tukui or WoWInterface), WoWInterface and Tukui (ElvUI) addons install and update, `search` and `auth github` work, and `adopt` brings addons installed by hand or by other managers under management. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -136,6 +136,7 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | `adopt`: where unmanaged addons come from, whether they are exactly a release, and bringing them under management as they are (undoable) | ✅ Done (milestone 2) |
 | `update` (alias `upgrade`): every client's updates in one run, undone with one `undo` | ✅ Done (milestone 2) |
 | `pin` and `unpin`: hold an addon at its release through updates | ✅ Done (milestone 2) |
+| Drift: `status`, `list` and `info` name managed addons whose files changed or went missing; `install --reinstall` repairs one from the download cache | ✅ Done (milestone 2) |
 | Dependencies: what a TOC requires installs with it, from the catalog, Tukui or WoWInterface; `required_by` kept true on update and remove, orphans reported | ✅ Done (milestone 2) |
 | `sync`: every client made to match `addons.toml`, idempotently; `--locked` reproduces exact versions, `--prune` removes what the file drops | ✅ Done (milestone 2) |
 | `export`: every client's addon set as one `addons.toml`, printed or written with a backup | ✅ Done (milestone 2) |
@@ -576,7 +577,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--no-color` | No ANSI color (also `NO_COLOR`) |
 | `--quiet` | Only errors on stderr |
 | `-v, --verbose` | More detail: paths, and debug `log` events on stderr (repeatable) |
-| `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install`, `update`, `outdated`, `adopt` and `copy` today). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
+| `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install`, `update`, `outdated`, `adopt`, `sync`, `copy` and `search`). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
 | `-h, --help` | Help |
 | `-V, --version` | Version (`omaddons -V` only; after a command, `--version` is that command's flag or a usage error) |
 
@@ -1194,10 +1195,10 @@ omaddons targets add --help    # subcommands: --help, or omaddons help "targets 
 | `data` | object | the command's result (success, and `check_failed`) |
 | `error` | object | `code`, `message`, `fix` (display string), `fix_argv` (argv array, or `null` when the fix is prose), `alternatives` (`[{display, argv}]`), `retryable`, `details` (always an object) |
 | `warnings` | array | `{code, message, fix, fix_argv}`. On a partial run, each failed item is mirrored here |
-| `commands` | array | suggested next steps: `{action, command, argv, destructive}`, e.g. `undo` after a change, `list_unmanaged`, `forget_target` (destructive) |
+| `commands` | array | suggested next steps: `{action, command, argv, destructive}`, e.g. `undo <tx>` after a change and `undo --run <run>` (action `undo_run`) after a change on several clients, `update`, `check_updates`, `adopt`, `reinstall`, `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive) |
 | `meta` | object | `elapsed_ms`, `offline` (always `false` on usage errors; see Known issues) |
 
-`check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status.
+`check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status. Long commands also stream NDJSON `progress` events on stderr with `--progress json` (see [stderr events](#stderr-events)); stdout stays one envelope.
 
 ### Exit codes
 
@@ -1205,11 +1206,11 @@ omaddons targets add --help    # subcommands: --help, or omaddons help "targets 
 |---|---|---|
 | 0 | `ok` | Success, including partial success (`partial: true`, each failed item in `data`) |
 | 1 | `failed` | Runtime failure: network, source, archive integrity, I/O, state, internal. `error.retryable` says whether to retry |
-| 2 | `usage` | Unknown command or flag, bad argument, bad ref syntax |
+| 2 | `usage` | Unknown command or flag, bad argument, bad ref syntax, an unreadable `addons.toml` (`desired_state_invalid`) |
 | 3 | `not_found` | Target, ref, addon, plan or transaction not found, or ambiguous |
 | 4 | `refused` | Safety refusal: running client, protected folder, ownership or case conflict, unsafe archive, wrong flavor, undo conflict, blocked host |
 | 5 | `locked` | Another omaddons process held the lock past the 5-second timeout; retryable |
-| 6 | `check_failed` | An opt-in assertion failed: `status --check` or `install --strict` |
+| 6 | `check_failed` | An opt-in assertion failed: `status --check` (drift or attention), `outdated --check` (an update is available), or `--strict` on `install`, `update`, `sync` and `copy` (a partial success). `data` is kept |
 
 A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 
@@ -1312,7 +1313,7 @@ When stderr is not a terminal, or `CI` is set, or `TERM=dumb`, stderr carries ND
 {"event":"log","level":"debug","message":"discovery: scanned yes, roots reused 2, parsed 0, cache written no"}
 ```
 
-Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. `progress` events come from long commands (`install`, `update`, `outdated`, `adopt` and `copy` today) when progress is on: `{"event":"progress","phase":"download","message":"gh:o/foo@v1 on retail","current":1,"total":2}`. The phases are `fetch`, `download`, `verify`, `stage` and `commit`. Within a phase, `current` counts up to a fixed `total`, and each item appears once. On a terminal in human mode, progress is one line that is rewritten in place.
+Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. `progress` events come from long commands (`install`, `update`, `outdated`, `adopt`, `sync`, `copy` and `search`) when progress is on: `{"event":"progress","phase":"download","message":"gh:o/foo@v1 on retail","current":1,"total":2}`. The phases are `fetch`, `download`, `verify`, `stage` and `commit`. Within a phase, `current` counts up to a fixed `total`, and each item appears once. On a terminal in human mode, progress is one line that is rewritten in place.
 
 ### Stability
 
@@ -1348,6 +1349,9 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
 - **No atomic rename.** On filesystems without `renameat2` exchange (NTFS through ntfs-3g, some FUSE mounts), omaddons falls back to two journaled renames per folder and reports `atomic_swap: false` with an `atomic_swap_unavailable` warning. A cross-device rename is an error, never a fallback, and the staging area must be on the same filesystem as AddOns.
 - **Concurrency.** Planning and staging take no lock, so a terminal and an agent (and later the widget) can work at once. The global lock (`~/.local/state/omaddons/lock`, an flock that is never renamed or deleted) is held for the commit window, and briefly for retention, `config set` and `targets` changes. Tests assert each commit holds it under 50 ms, and the M1 checkpoint measured at most 2 ms. A second run waits up to 5 seconds, then fails with `locked` (exit 5, retryable, `details.holder`).
 - **Crash testing.** All 24 engine failpoints are armed as a real `abort` in a child process for first installs, installs, updates and removes. The state afterwards must be wholly old or wholly new, and at least ten of them must actually crash a scene. A failpoint off a scene's path has to let it succeed.
+- **Records-only changes.** `adopt`, `pin` (without `--version`, which installs that release) and `unpin`, and a dependency's `required_by` bookkeeping, are transactions that change records only: no folder is touched, and each is undoable like any other.
+- **Your local changes.** Files you edited in a managed addon are replaced by an update or a reinstall, with a `local_changes_replaced` warning naming them; the transaction snapshot keeps them, so `omaddons undo` brings them back.
+- **Your `addons.toml`.** `export --write` keeps the previous file as `addons.toml.bak`, refuses to replace a file edited by hand since it last wrote it (without `--overwrite`), and never writes an empty export.
 
 ### Undo
 
@@ -1432,7 +1436,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 {"time":"2026-10-14T21:00:00Z","method":"GET","host":"github.com","path":"/WeakAuras/WeakAuras2/releases/latest","status":302,"bytes":0,"duration_ms":34,"purpose":"release-latest","via":"http","error":null}
 ```
 
-Production purposes are `release-latest`, `release-json`, `rest-releases`, `commits-atom` and `asset` for HTTP. git lines have `"method":"GIT"`, `"via":"git"`, the exit code as `status`, and a purpose of `ls-remote`, `clone`, `init`, `fetch`, `checkout` or `rev-parse`.
+Production purposes for HTTP are `release-latest`, `release-json`, `releases-atom` (release notes), `rest-releases`, `commits-atom`, `asset` (every download, WoWInterface's and Tukui's included), `wowi-filelist`, `wowi-details`, `tukui-list`, `tukui-addon`, `tukui-changelog`, `github-search` and `rate-limit`. `wire_bytes` is what crossed the network when it differs from `bytes` (WoWInterface's file list arrives gzipped). A Tukui download link carries a token: its path is logged as `/v1/download/<slug>/…`, never with the token. git lines have `"method":"GIT"`, `"via":"git"`, the exit code as `status`, and a purpose of `ls-remote`, `clone`, `init`, `fetch`, `checkout` or `rev-parse`.
 
 **Offline.** `--offline` or `OMADDONS_OFFLINE=1` refuses all network access, git included. Local installs, `remove`, `undo` and every read command work offline. Release metadata a command fetched is remembered in the release memo; offline, `info` answers from it with a `stale_check` warning.
 
@@ -1547,6 +1551,8 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_HTTP_FIXTURES`, `OMADDON
 |---|---|---|
 | `~/.config/omaddons/config.toml` | Settings | Yes (defaults apply) |
 | `~/.config/omaddons/catalog.d/*.toml` | Your catalog overrides | Yes |
+| `~/.config/omaddons/addons.toml`, `addons.toml.bak` | The desired state `sync` reads and `export --write` writes, and the previous file | Yes (yours) |
+| `~/.config/omaddons/credentials/github` | The GitHub token `auth github set` stores (mode 0600, in a 0700 directory) | Yes (forgets the token) |
 | `~/.local/state/omaddons/registry.json` | Registered targets and the default | Loses ids and registrations |
 | `~/.local/state/omaddons/targets/<key>.json`, `<key>.files.json` | Per-target addon records, and every managed file's size and hash | Loses management |
 | `~/.local/state/omaddons/history.jsonl` | One line per committed transaction | Loses history |
@@ -1556,6 +1562,8 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_HTTP_FIXTURES`, `OMADDON
 | `~/.local/state/omaddons/net.log`, `net.log.1` | The request log | Yes |
 | `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `trash/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, staged deletions | Yes when no command is running; reinstalls then download again |
 | `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), failures retrying cannot change, and what downloading candidates taught (each archive's hash, and whether it loads on a client) | Yes; the next commands fetch and download again |
+| `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim (refreshed after its hour) | Yes; the next search or dependency lookup fetches it again |
+| `~/.cache/omaddons/export.json` | The hash of the `addons.toml` `export --write` last wrote, so a hand-edited file is not overwritten | Yes; the next `--write` then needs `--overwrite` |
 | `<client>/Interface/.omaddons/target.json` | The client's identity, so a moved install keeps its id | Loses identity |
 | `<client>/Interface/.omaddons/snapshots/<tx>/` | `AddOns/` (replaced and removed folders) and `WTF/` (SavedVariables copies with a manifest): most of the undo data | Loses undo |
 | `<client>/Interface/.omaddons/stage/`, `trash/` | Staging (same filesystem as AddOns) and staged deletions | No |
@@ -1745,11 +1753,7 @@ Journals are recovered by the next command that commits a change, not by read co
 
 | Capability | State | Planned |
 |---|---|---|
-| Dependency resolution (`## Dependencies`) | ✅ resolved from the catalog, the Tukui list and the WoWInterface index when installing and updating, with dependency items, bridge requirements and unresolved folders in the output | M2 |
-| Adopting addons installed by other managers | ✅ `adopt`; other `status`, `outdated` and `install` hints point to it soon | M2 |
-| `addons.toml`, `export`, `sync`, `copy` between clients | ✅ `sync` (with `--locked` and `--prune`), `export` and `copy` | M2 |
-| `search` | ✅ the catalog, the WoWInterface index, the Tukui list and GitHub's search | M2 |
-| Progress output | ⚠️ `install`, `update`, `outdated`, `adopt` and `copy` report progress; the other long commands arrive with M2 | M2 |
+| Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
 | The Omarchy bar widget | ❌ the help text mentions it, the code does not exist yet | M3 |
 | Lua error capture (BugGrabber), `WTF/` backups | ❌ | M3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, agent skill | ❌ | M4 |
@@ -1770,6 +1774,7 @@ Journals are recovered by the next command that commits a change, not by read co
 - The download cache reuses an asset whose SHA-256 is known: from the source (GitHub REST assets carry a digest) or remembered from an earlier download of that release's asset in the release memo. A release's assets are taken to be immutable, so a publisher re-uploading different bytes under the same tag and file name is not noticed while the old blob is cached (unless the source declares a different size or hash). Within one command, the same asset is still downloaded once per target that tries it. An unchanged release is never downloaded.
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
 - Private GitHub repositories and HTTP proxies are not supported.
+- Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) are not detected: each client's records are its own, so the other sees the shared folders as unmanaged, and `adopt` there would manage them twice.
 - The legacy running behavior and several upstream file layouts (product.db, Steam and Bottles Flatpak paths) are marked UNVERIFIED in the code.
 
 ### Known issues

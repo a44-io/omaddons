@@ -133,25 +133,23 @@ pub enum Command {
     )]
     Install(crate::app::install::InstallArgs),
     /// Update every managed addon on every client, or the ones named (undo with one undo)
-    #[command(
-        visible_alias = "upgrade",
-        after_long_help = "A given version is an install, which pins it:\n  omaddons install <addon> --version V\n  omaddons pin <addon> --version V"
-    )]
+    #[command(visible_alias = "upgrade", after_long_help = UPDATE_HELP)]
     Update(crate::app::update::UpdateArgs),
     /// Hold an addon at its release through updates (undoable)
+    #[command(after_long_help = PIN_HELP)]
     Pin(crate::app::pin::PinArgs),
     /// Let a pinned addon update again
+    #[command(after_long_help = UNPIN_HELP)]
     Unpin(crate::app::pin::UnpinArgs),
     /// Bring addons installed by hand or by other managers under management, as they are
     /// (records only, undoable); alone, report where they come from
+    #[command(after_long_help = ADOPT_HELP)]
     Adopt(crate::app::adopt::AdoptArgs),
     /// Make every client match addons.toml: install what is missing, set pins and channels
     #[command(after_long_help = SYNC_HELP)]
     Sync(crate::app::sync::SyncArgs),
     /// Install one client's addons on another, where builds exist (undoable)
-    #[command(
-        after_long_help = "Copies every addon installed explicitly on --from (or the ones named) to\n--to, in one transaction, unpinned. Dependencies resolve on --to from its own\nTOCs. An addon already there, a local file and an addon with no build for --to\nare skipped, never failed."
-    )]
+    #[command(after_long_help = COPY_HELP)]
     Copy(crate::app::copy::CopyArgs),
     /// Remove managed addons from one target (undoable)
     Remove(crate::app::remove::RemoveArgs),
@@ -160,17 +158,15 @@ pub enum Command {
     /// Show what changed, when, by whom and why
     History(crate::app::history::HistoryArgs),
     /// Which managed addons have updates, on every client (changes nothing)
-    #[command(visible_alias = "check")]
+    #[command(visible_alias = "check", after_long_help = OUTDATED_HELP)]
     Outdated(crate::app::outdated::OutdatedArgs),
     /// What an addon is: installed records, catalog entry and newest release
     Info(crate::app::info::InfoArgs),
     /// Find addons by name in the catalog, WoWInterface, Tukui and GitHub
-    #[command(
-        visible_alias = "find",
-        after_long_help = "Only GitHub's search receives the query; the catalog, the WoWInterface index and\nthe Tukui list are searched on this machine. Compatibility per client is a hint:\ninstall verifies each addon's TOC."
-    )]
+    #[command(visible_alias = "find", after_long_help = SEARCH_HELP)]
     Search(crate::app::search::SearchArgs),
     /// Every client's addon set as one addons.toml for sync (stdout, or --write)
+    #[command(after_long_help = EXPORT_HELP)]
     Export(crate::app::export::ExportArgs),
     /// Every network request omaddons made
     NetLog(crate::app::net_log::NetLogArgs),
@@ -181,9 +177,7 @@ pub enum Command {
     /// Show or change config.toml
     Config(crate::app::config::ConfigArgs),
     /// Store, check or clear the opt-in GitHub token (5,000 REST requests an hour)
-    #[command(
-        after_long_help = "auth github           which token is used, and the hour's REST budget left\necho \"$TOKEN\" | omaddons auth github set\n                      store a token (standard input only, never argv)\nauth github --from-gh store the token gh auth token prints\nauth github clear     forget the stored token\n\nThe main GitHub path needs no token. A token goes only to api.github.com, never\nGITHUB_TOKEN or gh's credentials unless you ask with --from-gh."
-    )]
+    #[command(after_long_help = AUTH_HELP)]
     Auth(crate::app::auth::AuthArgs),
 }
 
@@ -355,8 +349,91 @@ fn command_of(argv: &[String]) -> &'static str {
     crate::app::canonical(&path.join(" "))
 }
 
+/// `outdated`'s long help.
+const OUTDATED_HELP: &str = "\
+Examples:
+  omaddons outdated                 what has updates, on every client
+  omaddons outdated -t retail -v    one client, every addon whatever its status
+  omaddons outdated --changelog     each update's release notes since the installed one
+  omaddons outdated --check         exit 6 when any update is available";
+
+/// `update`'s long help.
+const UPDATE_HELP: &str = "\
+Examples:
+  omaddons update                   every addon on every client; one undo reverts it all
+  omaddons update DBM -t retail     one addon on one client
+  omaddons update --dry-run         what would change
+  omaddons update WeakAuras --channel beta
+
+A given version is an install, which pins it:
+  omaddons install <addon> --version V
+  omaddons pin <addon> --version V";
+
+/// `pin`'s long help.
+const PIN_HELP: &str = "\
+Examples:
+  omaddons pin WeakAuras                          hold it at its installed release
+  omaddons pin DBM --version 12.1.14 -t retail    install that release and hold it there";
+
+/// `unpin`'s long help.
+const UNPIN_HELP: &str = "\
+Examples:
+  omaddons unpin WeakAuras          let it update again (nothing is installed now)";
+
+/// `adopt`'s long help.
+const ADOPT_HELP: &str = "\
+Examples:
+  omaddons adopt                                  where each unmanaged folder comes from
+  omaddons adopt --apply -t retail                adopt what is identified, folders unchanged
+  omaddons adopt MyFoo --ref gh:o/foo -t retail   say which ref a folder is";
+
+/// `export`'s long help.
+const EXPORT_HELP: &str = "\
+Examples:
+  omaddons export > addons.toml     every client's addon set, for sync elsewhere
+  omaddons export -t vanilla        only these clients
+  omaddons export --write           to omaddons' config directory, the old file kept as .bak";
+
+/// `copy`'s long help.
+const COPY_HELP: &str = "\
+Examples:
+  omaddons copy --from era --to anniversary             every explicitly installed addon
+  omaddons copy --from era --to anniversary Questie     only the ones named
+  omaddons copy --from era --to anniversary --dry-run   what would install, what is skipped
+
+Copies every addon installed explicitly on --from (or the ones named) to --to, in one
+transaction, unpinned. Dependencies resolve on --to from its own TOCs. An addon already
+there, a local file and an addon with no build for --to are skipped, never failed.";
+
+/// `search`'s long help.
+const SEARCH_HELP: &str = "\
+Examples:
+  omaddons search details           the catalog, WoWInterface, Tukui and GitHub at once
+  omaddons find elvui --source tukui
+  omaddons search bags --offline    what this machine already knows
+
+Only GitHub's search receives the query; the catalog, the WoWInterface index and
+the Tukui list are searched on this machine. Compatibility per client is a hint:
+install verifies each addon's TOC.";
+
+/// `auth`'s long help.
+const AUTH_HELP: &str = "\
+Examples:
+  omaddons auth github                        which token is used, and the hour's REST budget
+  echo \"$TOKEN\" | omaddons auth github set    store a token (standard input only, never argv)
+  omaddons auth github --from-gh              store the token gh auth token prints
+  omaddons auth github clear                  forget the stored token
+
+The main GitHub path needs no token. A token goes only to api.github.com; GITHUB_TOKEN
+and gh's credentials are never read unless you ask with --from-gh.";
+
 /// `sync`'s long help: the file it reads.
 const SYNC_HELP: &str = "\
+Examples:
+  omaddons sync --dry-run                         what the file would change
+  omaddons sync                                   install what is missing, set pins and channels
+  omaddons sync dotfiles/addons.toml --locked     the exact versions the file records
+
 The file (default: addons.toml in omaddons' config directory):
 
   schema_version = \"1.0\"
