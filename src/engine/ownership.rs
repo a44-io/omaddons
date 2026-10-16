@@ -388,7 +388,8 @@ fn refusal(violations: &[Violation], argv: &[String], adopt: Option<AdoptFix<'_>
         return Error::internal("an ownership refusal without violations");
     };
     let forced = || {
-        let mut retry = argv.to_vec();
+        // Runnable as is: without the failing run's presentation flags.
+        let mut retry = crate::cli::fix_argv(argv);
         retry.push("--force".to_owned());
         Suggestion::command(retry)
     };
@@ -640,6 +641,20 @@ mod tests {
         );
         assert_eq!(outcome.degraded, ["other"], "record keys");
         assert_eq!(outcome.warnings[0].code, WarningCode::OwnershipTransferred);
+    }
+
+    #[test]
+    fn a_forced_retry_drops_the_failing_runs_presentation_flags() {
+        let shown: Vec<String> = ["omaddons", "install", "gh:o/me", "--json", "--no-color"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        let change = FolderChange::Install(FolderName::new("Theirs").unwrap());
+        let err = check(&[change], &live(), "Me", false, &shown, None).unwrap_err();
+        assert_eq!(
+            err.fix.argv().unwrap(),
+            ["omaddons", "install", "gh:o/me", "--force"]
+        );
     }
 
     #[test]

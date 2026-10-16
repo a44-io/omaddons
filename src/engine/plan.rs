@@ -2450,7 +2450,8 @@ fn is_local(r: &Ref) -> bool {
 /// Installing `new` would replace `other`, an addon of the same name from another ref:
 /// `ownership_conflict`, fixed by the same command with `--force`, or by removing it.
 fn takeover_refused(other: &AddonRecord, new: &Ref, argv: &[String], target: &str) -> Error {
-    let mut forced = argv.to_vec();
+    // Runnable as is: without the failing run's presentation flags.
+    let mut forced = crate::cli::fix_argv(argv);
     forced.push("--force".to_owned());
     let folders: Vec<Value> = other
         .folders

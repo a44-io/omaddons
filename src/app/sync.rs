@@ -807,6 +807,8 @@ fn unlock_fixes(data: &mut TargetsData, locked: &BTreeMap<String, Vec<String>>, 
 /// A fix that reruns this `sync` with `--force` (which `sync` does not have) says how
 /// with `install`. (A dependency that failed is a failed item of its own already.)
 fn settle_failures(data: &mut TargetsData, argv: &[String]) {
+    // The engine's retry is this run's argv without its presentation flags.
+    let argv = crate::cli::fix_argv(argv);
     for t in &mut data.targets {
         let id = t.target.id.clone();
         for i in &mut t.items {

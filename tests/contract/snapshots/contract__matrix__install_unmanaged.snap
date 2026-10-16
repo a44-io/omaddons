@@ -1,5 +1,6 @@
 ---
 source: tests/contract/matrix.rs
+assertion_line: 518
 expression: s.stable(&c.envelope)
 ---
 {
@@ -16,10 +17,9 @@ expression: s.stable(&c.envelope)
           "<root>/dl/foo.zip",
           "-t",
           "retail",
-          "--json",
           "--force"
         ],
-        "display": "omaddons install gh:o/foo --file <root>/dl/foo.zip -t retail --json --force"
+        "display": "omaddons install gh:o/foo --file <root>/dl/foo.zip -t retail --force"
       }
     ],
     "code": "unmanaged_folder",

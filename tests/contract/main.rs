@@ -199,6 +199,7 @@ mod support {
             let argv = strings(&command["argv"]);
             assert_eq!(argv.first().map(String::as_str), Some("omaddons"), "{ctx}");
             assert_eq!(command["command"], shell_words::join(&argv), "{ctx}");
+            no_presentation_flags(&argv, &ctx);
             assert!(
                 command["action"].is_string() && command["destructive"].is_boolean(),
                 "{ctx}"
@@ -249,6 +250,31 @@ mod support {
             shell_words::join(&argv),
             display,
             "fix argv round trip\n{ctx}"
+        );
+        no_presentation_flags(&argv, ctx);
+    }
+
+    /// A suggested argv runs as is: none of the failing run's presentation flags.
+    fn no_presentation_flags(argv: &[String], ctx: &str) {
+        let flags = [
+            "--json",
+            "--robot",
+            "--format",
+            "--progress",
+            "--no-color",
+            "--no-progress",
+        ];
+        let carried: Vec<&String> = argv
+            .iter()
+            .filter(|a| {
+                flags
+                    .iter()
+                    .any(|f| *a == f || a.starts_with(&format!("{f}=")))
+            })
+            .collect();
+        assert!(
+            carried.is_empty(),
+            "a suggestion carries {carried:?}: {argv:?}\n{ctx}"
         );
     }
 

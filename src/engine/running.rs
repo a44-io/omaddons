@@ -150,7 +150,8 @@ pub fn evaluate(
                     .join(", ")
             ),
         };
-        let mut retry = ctx.argv.to_vec();
+        // Runnable as is: without the failing run's presentation flags.
+        let mut retry = crate::cli::fix_argv(ctx.argv);
         retry.push("--while-running".to_owned());
         return Err(Error::new(
             ErrorCode::GameRunning,
@@ -350,6 +351,31 @@ mod tests {
             }
         }
         assert!(run(RunningPolicy::Safe, false, false, &[restore], false).is_ok());
+    }
+
+    #[test]
+    fn a_while_running_retry_drops_the_failing_runs_presentation_flags() {
+        let shown: Vec<String> = ["omaddons", "remove", "Foo", "--json", "--format", "json"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        let ctx = PolicyContext {
+            target_id: "retail",
+            argv: &shown,
+        };
+        let err = evaluate(
+            &ctx,
+            RunningPolicy::Safe,
+            true,
+            &rules(false),
+            &[add(), remove(true)],
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.fix.argv().unwrap(),
+            ["omaddons", "remove", "Foo", "--while-running"]
+        );
     }
 
     #[test]
