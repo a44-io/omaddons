@@ -142,6 +142,15 @@ pub struct ItemError {
     pub message: String,
     pub fix: String,
     pub fix_argv: Option<Vec<String>>,
+    /// Only for a conflict between two works of one transaction
+    /// (`within_transaction: true`, with each folder and its claimant).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+/// The details an item error carries: a within-transaction conflict's, else none.
+fn item_details(details: &serde_json::Value) -> Option<serde_json::Value> {
+    (details["within_transaction"] == true).then(|| details.clone())
 }
 
 impl From<&Error> for ItemError {
@@ -151,6 +160,7 @@ impl From<&Error> for ItemError {
             message: e.message.clone(),
             fix: e.fix.display().to_owned(),
             fix_argv: e.fix.argv().map(<[String]>::to_vec),
+            details: item_details(&e.details),
         }
     }
 }
@@ -162,6 +172,7 @@ impl From<&ErrorBody> for ItemError {
             message: e.message.clone(),
             fix: e.fix.clone(),
             fix_argv: e.fix_argv.clone(),
+            details: item_details(&e.details),
         }
     }
 }
@@ -218,6 +229,9 @@ pub struct ItemResult {
     pub r#ref: Option<Ref>,
     pub status: ItemStatus,
     pub skip_reason: Option<SkipReason>,
+    /// A duplicate's first request, which it collapsed into.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duplicate_of: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<AddonReason>,
     pub from_version: Option<String>,
@@ -466,6 +480,14 @@ impl TargetResult {
     }
 }
 
+/// How an item without a ref is identified: its addon's record key.
+fn addon_identity(name: &str) -> String {
+    format!(
+        "addon:{}",
+        crate::state::records::TargetRecord::addon_key(name)
+    )
+}
+
 /// One planned target's result: requested items first, in request order, then changes
 /// nobody asked for by name (dependencies).
 fn target_result(
@@ -486,7 +508,31 @@ fn target_result(
     };
     let mut used: BTreeSet<usize> = BTreeSet::new();
     let mut items = Vec::new();
+    // Each ref's (or named addon's) first request: a later one collapsed into it.
+    let mut seen: Vec<(String, String)> = Vec::new();
     for req in requested.iter().filter(|r| r.target == p.target) {
+        let identity = req.r#ref.as_ref().map_or_else(
+            || addon_identity(req.addon.as_deref().unwrap_or(&req.request)),
+            Ref::identity,
+        );
+        if let Some((_, first)) = seen.iter().find(|(i, _)| *i == identity) {
+            items.push(ItemResult {
+                request: req.request.clone(),
+                name: req.addon.clone(),
+                r#ref: req.r#ref.clone(),
+                status: ItemStatus::Skipped,
+                skip_reason: Some(SkipReason::Duplicate),
+                duplicate_of: Some(first.clone()),
+                reason: None,
+                from_version: None,
+                to_version: None,
+                folders: None,
+                required_by: None,
+                error: None,
+            });
+            continue;
+        }
+        seen.push((identity, req.request.clone()));
         if let Some(f) = mine.iter().find(|f| {
             (f.r#ref.is_some() || f.addon.is_some())
                 && req.names(f.addon.as_deref(), f.r#ref.as_ref())
@@ -523,6 +569,7 @@ fn target_result(
                 r#ref: req.r#ref.clone(),
                 status: ItemStatus::Unchanged,
                 skip_reason: None,
+                duplicate_of: None,
                 reason: None,
                 from_version: req.version.clone(),
                 to_version: req.version.clone(),
@@ -567,6 +614,7 @@ fn failed_item(
         r#ref: r.or_else(|| req.r#ref.clone()),
         status: ItemStatus::Failed,
         skip_reason: None,
+        duplicate_of: None,
         reason: None,
         from_version: req.version.clone(),
         to_version: None,
@@ -599,6 +647,7 @@ fn change_item(request: String, change: &Change, pinned_after: Option<bool>) -> 
         r#ref: Some(change.r#ref.clone()),
         status,
         skip_reason: None,
+        duplicate_of: None,
         reason: None,
         from_version: change.from_version.clone(),
         to_version: change.to_version.clone(),
@@ -1021,6 +1070,7 @@ mod tests {
                 r#ref: None,
                 status: ItemStatus::Skipped,
                 skip_reason: Some(SkipReason::Pinned),
+                duplicate_of: None,
                 reason: None,
                 from_version: Some("1".into()),
                 to_version: None,

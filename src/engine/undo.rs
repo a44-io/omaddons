@@ -1731,6 +1731,48 @@ mod tests {
         assert!(relative("Account/A/SavedVariables/Foo.lua").is_ok());
     }
 
+    /// Removing an addon whose only folder another work of the same transaction takes
+    /// over (a handover): its record still reaches history, so undo restores it.
+    #[test]
+    fn a_remove_whose_only_folder_is_handed_over_undoes() {
+        let scene = TxScene::new();
+        let toc = "## Interface: 120105\n";
+        install_as(&scene, "gh:o/old", "old.zip", &[("Old/Old.toc", toc)]);
+        let before = tree(&scene);
+        let zip = scene.zip(
+            "b.zip",
+            &[
+                ("B/B.toc", toc),
+                ("Old/Old.toc", "## Interface: 120105\n## Version: 2\n"),
+            ],
+        );
+        let done = scene
+            .run(vec![scene.remove("Old"), scene.install("gh:o/b", &zip)])
+            .unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let tx = done.outcomes[0].tx.unwrap();
+        let line = history(&scene).into_iter().find(|e| e.tx == tx).unwrap();
+        let ops: Vec<(FolderOp, &str, &str)> = line
+            .ops
+            .iter()
+            .map(|o| (o.op, o.folder.as_str(), o.addon.as_str()))
+            .collect();
+        assert!(ops.contains(&(FolderOp::Replace, "Old", "B")), "{ops:?}");
+        assert!(ops.contains(&(FolderOp::Record, "Old", "Old")), "{ops:?}");
+        assert!(
+            !ops.iter().any(|(op, ..)| *op == FolderOp::Remove),
+            "{ops:?}"
+        );
+        let after = record(&scene);
+        assert!(!after.addons.contains_key("old"));
+        assert_eq!(after.addons["b"].state, crate::model::AddonState::Ok);
+
+        scene.undo(UndoSelector::Tx(tx), SvPolicy::Auto).unwrap();
+        assert_eq!(tree(&scene), before);
+        let restored = record(&scene);
+        assert!(restored.addons.contains_key("old") && !restored.addons.contains_key("b"));
+    }
+
     /// `required_by` edits, undone in place (M2-D35): D is a dependency, R requires it.
     mod required_by {
         use super::*;

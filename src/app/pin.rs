@@ -217,6 +217,7 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
                     r#ref: Some(a.r#ref.clone()),
                     status: ItemStatus::Unchanged,
                     skip_reason: None,
+                    duplicate_of: None,
                     reason: None,
                     from_version: Some(a.version.clone()),
                     to_version: Some(a.version.clone()),

@@ -19,7 +19,7 @@ use serde_json::json;
 
 use super::engine::Engine;
 use super::outcome::sorted;
-pub use super::outcome::{ItemError, ItemStatus, ModeNote, TargetRef};
+pub use super::outcome::{ItemError, ItemStatus, ModeNote, SkipReason, TargetRef};
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -100,6 +100,12 @@ pub struct InstallItem {
     pub r#ref: Option<Ref>,
     pub name: Option<String>,
     pub status: ItemStatus,
+    /// `skipped` items only: why (`duplicate`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<SkipReason>,
+    /// A duplicate's first request, which it collapsed into.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duplicate_of: Option<String>,
     /// The record fields an `edited` item changed, sorted; omitted when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<EditField>,
@@ -240,13 +246,20 @@ impl Outcome for InstallOutcome {
                         item.to_version.as_deref().unwrap_or("?")
                     )?;
                 }
-                // Install reports adoptions and removals as installs; it never skips.
+                ItemStatus::Skipped => {
+                    let first = item.duplicate_of.as_deref().unwrap_or("?");
+                    writeln!(
+                        w,
+                        "{id}: skipped {}: the same addon as {first}",
+                        item.request
+                    )?;
+                }
+                // Install reports adoptions and removals as installs.
                 ItemStatus::Pinned
                 | ItemStatus::Unpinned
                 | ItemStatus::Edited
                 | ItemStatus::Removed
-                | ItemStatus::Adopted
-                | ItemStatus::Skipped => {
+                | ItemStatus::Adopted => {
                     let verb = item.status.wire();
                     let verb = if d.dry_run {
                         format!("would be {verb}")
@@ -796,6 +809,8 @@ fn build_items(
             .url
             .clone()
     };
+    // Each ref's first request, by identity: a later one collapsed into it.
+    let mut seen: Vec<(String, String)> = Vec::new();
     items
         .iter()
         .map(|item| {
@@ -805,6 +820,8 @@ fn build_items(
                     r#ref: r,
                     name: None,
                     status: ItemStatus::Failed,
+                    skip_reason: None,
+                    duplicate_of: None,
                     fields: Vec::new(),
                     from_version: None,
                     to_version: None,
@@ -820,6 +837,27 @@ fn build_items(
                 Ok(p) => p,
                 Err(error) => return failed(None, error),
             };
+            let identity = p.r#ref.identity();
+            if let Some((_, first)) = seen.iter().find(|(i, _)| *i == identity) {
+                let duplicate = InstallItem {
+                    request: item.request.clone(),
+                    r#ref: Some(p.r#ref.clone()),
+                    name: None,
+                    status: ItemStatus::Skipped,
+                    skip_reason: Some(SkipReason::Duplicate),
+                    duplicate_of: Some(first.clone()),
+                    fields: Vec::new(),
+                    from_version: None,
+                    to_version: None,
+                    version_confidence: None,
+                    channel: None,
+                    folders: FolderSummary::default(),
+                    error: None,
+                    asset_url: None,
+                };
+                return (duplicate, None);
+            }
+            seen.push((identity, item.request.clone()));
             if let Some(error) = done
                 .failures
                 .iter()
@@ -880,6 +918,8 @@ fn build_items(
                         r#ref: Some(p.r#ref.clone()),
                         name: Some(change.addon.clone()),
                         status,
+                        skip_reason: None,
+                        duplicate_of: None,
                         fields,
                         from_version: change.from_version.clone(),
                         to_version: change.to_version.clone(),
@@ -897,6 +937,8 @@ fn build_items(
                         r#ref: Some(p.r#ref.clone()),
                         name: installed.map(|a| a.name.clone()),
                         status: ItemStatus::Unchanged,
+                        skip_reason: None,
+                        duplicate_of: None,
                         fields: Vec::new(),
                         from_version: installed.map(|a| a.version.clone()),
                         to_version: installed.map(|a| a.version.clone()),
@@ -979,6 +1021,8 @@ mod tests {
             r#ref: None,
             name: (!failed).then(|| request.to_owned()),
             status,
+            skip_reason: None,
+            duplicate_of: None,
             fields: Vec::new(),
             from_version: None,
             to_version: version.map(str::to_owned),

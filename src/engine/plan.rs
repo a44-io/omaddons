@@ -30,7 +30,7 @@ use super::inspect::{
     ArchiveLimits, FolderVerdict, Inspected, SkippedFolder, accepts, inspect, inspect_dir,
     partition, verify,
 };
-use super::ownership::{self, AllowedOp, FolderChange, Transfer};
+use super::ownership::{self, AllowedOp, FolderChange, Transfer, WorkingView};
 use super::running::{self, PolicyContext, PolicyOp};
 use super::swap::SwapOp;
 use crate::error::{Error, ErrorBody, ErrorCode, Result, Suggestion, Warning, WarningCode};
@@ -506,6 +506,9 @@ pub struct FolderWork {
     /// Records-only edits folded into this work, applied after [`carry_over`] at plan
     /// time and again under the lock.
     pub edits: Vec<RecordEdit>,
+    /// Folders this addon stopped shipping that another work of the transaction took
+    /// over (a handover): their removal is that work's replacement.
+    pub handed_over: Vec<FolderName>,
 }
 
 /// A change to the record alone.
@@ -705,43 +708,98 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             created_at,
             facts: RefCell::new(Vec::new()),
             candidate_items,
+            view: RefCell::new(WorkingView::default()),
         };
+        // First pass, in argument order: inspect every install; a second request for a
+        // ref collapses into the first (the command reports it as a duplicate).
+        let mut seen: Vec<String> = Vec::new();
+        let mut steps = Vec::with_capacity(wants.len());
         for w in wants {
-            let (r, addon, result) = match w {
+            steps.push(match w {
                 Want::Failed {
                     r#ref,
                     addon,
                     error,
-                } => (r#ref, addon, Err(error)),
+                } => Step::Ready(r#ref, addon, Err(error)),
                 Want::Install {
                     name,
                     wanted,
                     file,
                     intent,
                 } => {
+                    let identity = wanted.r#ref.identity();
+                    if seen.contains(&identity) {
+                        continue;
+                    }
+                    seen.push(identity);
                     // A pinned addon, or one whose release is kept, was not fetched.
                     let set = match &file {
                         Some(_) => None,
                         None => fetched.get(&wanted).map(|f| f.set.clone()),
                     };
-                    let result =
-                        planner.install(name.as_deref(), &wanted, file.as_deref(), set, &intent);
-                    (Some(wanted.r#ref.clone()), name, result)
+                    let r = Some(wanted.r#ref.clone());
+                    match planner.prepare_install(
+                        name.as_deref(),
+                        &wanted,
+                        file.as_deref(),
+                        set,
+                        &intent,
+                    ) {
+                        Ok(Prepared::Build(build)) => Step::Build(r, name, build),
+                        Ok(Prepared::Done(planned)) => Step::Ready(r, name, Ok(planned)),
+                        Err(error) => Step::Ready(r, name, Err(error)),
+                    }
                 }
-                Want::Remove { addon } => {
+                Want::Remove { addon } => Step::Remove(addon),
+                Want::Edit { addon, edit } => Step::Edit(addon, edit),
+            });
+        }
+        // Before any claim is judged: the folders an owner's own work stops shipping.
+        for step in &steps {
+            let mut view = planner.view.borrow_mut();
+            match step {
+                Step::Build(_, _, build) => {
+                    if let Some(existing) = &build.existing {
+                        for folder in build.released() {
+                            view.release(&folder, &existing.name);
+                        }
+                    }
+                }
+                Step::Remove(addon) => {
+                    if let Some(installed) = record.addons.get(&TargetRecord::addon_key(addon)) {
+                        for folder in &installed.folders {
+                            view.release(folder, &installed.name);
+                        }
+                    }
+                }
+                Step::Ready(..) | Step::Edit(..) => {}
+            }
+        }
+        // Second pass, in argument order: judge each against the working view.
+        for step in steps {
+            let (r, addon, result) = match step {
+                Step::Ready(r, addon, result) => (r, addon, result),
+                Step::Build(r, addon, build) => {
+                    (r, addon, planner.build(*build).map(Planned::change))
+                }
+                Step::Remove(addon) => {
                     let result = planner.remove(&addon).map(Planned::change);
                     (None, Some(addon), result)
                 }
-                Want::Edit { addon, edit } => {
+                Step::Edit(addon, edit) => {
                     let result = planner.edit(&addon, &edit, &tp.work);
                     (None, Some(addon), result)
                 }
             };
+            if let Ok(Planned::Change(p)) = &result {
+                claim_work(&mut planner.view.borrow_mut(), &p.work);
+            }
             match result.and_then(|planned| planned.merge_into(&mut tp, &target.id)) {
                 Ok(()) => {}
                 Err(error) => failures.push(failure(r, addon, target, error)),
             }
         }
+        settle_handovers(&mut tp.work, &mut tp.changes, Some(&mut tp.ops));
         tp.kind = target_kind(&tp.changes, req.kind, tp.default_kind);
         tp.creates_addons_dir =
             live.addons_dir_missing && tp.work.iter().any(|w| w.inspected().is_some());
@@ -764,6 +822,120 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         failures,
         facts,
     })
+}
+
+/// One request of a target after the first planning pass.
+enum Step {
+    /// Settled (pinned, kept, failed): (ref, addon, result).
+    Ready(Option<Ref>, Option<String>, Result<Planned>),
+    /// A verified install to judge.
+    Build(Option<Ref>, Option<String>, Box<PendingBuild>),
+    Remove(String),
+    Edit(String, RecordEdit),
+}
+
+/// Claims in `view` the folders `work` installs, under its addon.
+fn claim_work(view: &mut WorkingView, work: &AddonWork) {
+    for op in work.swap() {
+        match op {
+            SwapOp::Add { name } | SwapOp::Replace { name, .. } => view.claim(name, &work.addon),
+            SwapOp::Remove { .. } => {}
+        }
+    }
+}
+
+/// Releases in `view` the folders `work` stops shipping, under its addon.
+fn release_work(view: &mut WorkingView, work: &AddonWork) {
+    if let WorkMode::Folders(f) = &work.mode {
+        for op in &f.swap {
+            if let SwapOp::Remove { live, .. } = op {
+                view.release(live, &work.addon);
+            }
+        }
+        for folder in &f.handed_over {
+            view.release(folder, &work.addon);
+        }
+    }
+}
+
+/// Merges each handover (M2-D6): the claimant's replacement takes the folder, so the
+/// releasing addon's removal of it goes from its swap ops, its planned ops and its
+/// change's folder summary, and is remembered as handed over.
+pub fn settle_handovers(
+    works: &mut [AddonWork],
+    changes: &mut [Change],
+    mut ops: Option<&mut Vec<PlannedOp>>,
+) {
+    let handovers: Vec<(FolderName, String)> = works
+        .iter()
+        .flat_map(|w| w.transfers().iter())
+        .filter(|t| t.handover)
+        .map(|t| (t.folder.clone(), TargetRecord::addon_key(&t.from)))
+        .collect();
+    for (folder, from) in handovers {
+        let gone = |live: &FolderName| live.key() == folder.key();
+        for w in works
+            .iter_mut()
+            .filter(|w| TargetRecord::addon_key(&w.addon) == from)
+        {
+            if let WorkMode::Folders(f) = &mut w.mode {
+                let before = f.swap.len();
+                f.swap
+                    .retain(|op| !matches!(op, SwapOp::Remove { live, .. } if gone(live)));
+                if f.swap.len() != before && !f.handed_over.contains(&folder) {
+                    f.handed_over.push(folder.clone());
+                }
+            }
+        }
+        if let Some(ops) = ops.as_deref_mut() {
+            ops.retain(|o| {
+                !(o.op == OpKind::Remove
+                    && gone(&o.folder)
+                    && TargetRecord::addon_key(&o.addon) == from)
+            });
+        }
+        for c in changes
+            .iter_mut()
+            .filter(|c| TargetRecord::addon_key(&c.addon) == from)
+        {
+            c.folders.removed.retain(|f| !gone(f));
+        }
+    }
+}
+
+/// A target as it is now: its record, files index and AddOns inventory.
+#[derive(Debug, Clone)]
+pub struct TargetState {
+    pub record: TargetRecord,
+    pub index: Option<FilesIndex>,
+    pub live: Inventory,
+}
+
+impl TargetState {
+    /// Reads `target` now.
+    pub fn now(ctx: &PlanCtx<'_>, target: &Target) -> Result<Self> {
+        let (record, index) = target_state(ctx.paths, target)?;
+        let live = inventory(target, Some(&record), ctx.table, Depth::Classes)?;
+        Ok(Self {
+            record,
+            index,
+            live,
+        })
+    }
+}
+
+/// The view a replay of `works` starts from: every folder their addons stop shipping.
+pub fn released_view(works: &[AddonWork]) -> WorkingView {
+    let mut view = WorkingView::default();
+    for w in works {
+        release_work(&mut view, w);
+    }
+    view
+}
+
+/// Claims `work`'s folders in `view` (the replay's step after each rejudged work).
+pub fn claim(view: &mut WorkingView, work: &AddonWork) {
+    claim_work(view, work);
 }
 
 /// A target's record and files index; an unregistered target has an empty record.
@@ -793,26 +965,32 @@ fn target_state(paths: &Paths, target: &Target) -> Result<(TargetRecord, Option<
 /// `plan_stale` whatever the generation; another edit is the caller's `plan_stale` when
 /// the record's generation moved since `generation` (planning's), and is dropped as no
 /// longer needed when it did not (a forgotten addon's folder put back by hand).
+///
+/// The works of a target are replayed in planning order over one [`TargetState`], read
+/// once under the lock, and one `view` of what the earlier works claim and release, so a
+/// handover is judged again and a concurrent transaction is seen the same way.
 pub fn rejudge(
     req: &PlanRequest,
     ctx: &PlanCtx<'_>,
     target: &Target,
+    state: &TargetState,
     work: &AddonWork,
     generation: u64,
+    view: &WorkingView,
 ) -> Result<Planned> {
-    let (record, index) = target_state(ctx.paths, target)?;
-    let live = inventory(target, Some(&record), ctx.table, Depth::Classes)?;
+    let record = &state.record;
     let planner = TargetPlanner {
         req,
         ctx,
         target,
-        record: &record,
-        index: index.as_ref(),
-        live: &live,
+        record,
+        index: state.index.as_ref(),
+        live: &state.live,
         created_at: Timestamp::now(),
         // Re-judging downloads nothing, so it learns and reports nothing.
         facts: RefCell::new(Vec::new()),
         candidate_items: 0,
+        view: RefCell::new(view.clone()),
     };
     let folders = match &work.mode {
         WorkMode::Folders(folders) => folders,
@@ -1261,6 +1439,8 @@ struct TargetPlanner<'a> {
     /// Install wishes across the plan that try candidates: the download and verify
     /// progress total.
     candidate_items: u64,
+    /// What the works judged so far in this transaction claim and release (M2-D6).
+    view: RefCell<WorkingView>,
 }
 
 /// What ownership and the running policy allow.
@@ -1289,15 +1469,54 @@ struct Loadable {
     skipped: Vec<SkippedFolder>,
 }
 
+/// An install after its first pass: settled, or a verified winner still to judge
+/// against the working view.
+enum Prepared {
+    Done(Planned),
+    Build(Box<PendingBuild>),
+}
+
+/// A verified release of an addon, not yet judged for ownership and policy.
+struct PendingBuild {
+    existing: Option<AddonRecord>,
+    template: AddonRecord,
+    intent: InstallIntent,
+    loadable: Loadable,
+    blob: Option<PathBuf>,
+    release: Option<PlannedRelease>,
+    warnings: Vec<Warning>,
+}
+
+impl PendingBuild {
+    /// The installed folders this release no longer ships (an update's drops).
+    fn released(&self) -> Vec<FolderName> {
+        let new: Vec<&FolderName> = self
+            .loadable
+            .inspected
+            .folders
+            .iter()
+            .map(|f| &f.name)
+            .collect();
+        self.existing
+            .iter()
+            .flat_map(|e| &e.folders)
+            .filter(|f| !new.contains(f))
+            .cloned()
+            .collect()
+    }
+}
+
 impl TargetPlanner<'_> {
-    fn install(
+    /// The first pass of an install: resolve, select, download, inspect and verify,
+    /// without judging ownership.
+    fn prepare_install(
         &self,
         name: Option<&str>,
         wanted: &Wanted,
         file: Option<&std::path::Path>,
         set: Option<Result<ReleaseSet>>,
         intent: &InstallIntent,
-    ) -> Result<Planned> {
+    ) -> Result<Prepared> {
         one_addons_dir(&ClientPaths::new(&self.target.client_dir))?;
         let existing = self
             .record
@@ -1307,10 +1526,10 @@ impl TargetPlanner<'_> {
         // Before any candidate is looked at: these never move an installed release.
         if let Some(existing) = existing {
             if intent.pinned_noop(existing) {
-                return Ok(Planned::pinned(existing, &self.target.id));
+                return Ok(Prepared::Done(Planned::pinned(existing, &self.target.id)));
             }
             if intent.keeps_release() {
-                return self.current(existing, intent);
+                return self.current(existing, intent).map(Prepared::Done);
             }
         }
         let candidates = match (file, set) {
@@ -1351,7 +1570,7 @@ impl TargetPlanner<'_> {
             && existing.release_id.as_deref() == Some(first.release_id.as_str())
             && self.all_present(existing)
         {
-            return self.current(existing, intent);
+            return self.current(existing, intent).map(Prepared::Done);
         }
 
         let user_supplied =
@@ -1452,17 +1671,29 @@ impl TargetPlanner<'_> {
             expected_hash,
             blob_sha256: winner.loadable.inspected.blob_sha256.clone(),
         };
-        self.build_install(
-            existing,
+        Ok(Prepared::Build(Box::new(PendingBuild {
+            existing: existing.cloned(),
             template,
-            intent,
+            intent: intent.clone(),
+            loadable: winner.loadable,
+            blob: winner.blob,
+            release: Some(release),
+            warnings: winner.warnings,
+        })))
+    }
+
+    /// The second pass of an install: ownership and policy against the working view.
+    fn build(&self, b: PendingBuild) -> Result<PlannedAddon> {
+        self.build_install(
+            b.existing.as_ref(),
+            b.template,
+            &b.intent,
             &[],
-            winner.loadable,
-            winner.blob,
-            Some(release),
-            winner.warnings,
+            b.loadable,
+            b.blob,
+            b.release,
+            b.warnings,
         )
-        .map(Planned::change)
     }
 
     /// `folder` has an entry in AddOns.
@@ -1679,6 +1910,7 @@ impl TargetPlanner<'_> {
                     degraded: judged.degraded,
                     intent: Some(intent.clone()),
                     edits: edits.to_vec(),
+                    handed_over: Vec::new(),
                 })),
             },
         })
@@ -1738,6 +1970,7 @@ impl TargetPlanner<'_> {
                     degraded: judged.degraded,
                     intent: None,
                     edits: Vec::new(),
+                    handed_over: Vec::new(),
                 })),
             },
         })
@@ -1751,7 +1984,14 @@ impl TargetPlanner<'_> {
         toc_after: impl Fn(&FolderName) -> BTreeSet<String>,
     ) -> Result<Judged> {
         let ctx = self.ctx;
-        let owned = ownership::check(changes, self.live, addon, self.req.force, ctx.argv)?;
+        let owned = ownership::check_in(
+            changes,
+            self.live,
+            addon,
+            self.req.force,
+            ctx.argv,
+            &self.view.borrow(),
+        )?;
         let addons_dir = self.target.addons_dir();
         let loaded = |live: &FolderName| {
             DiskFolder::new(addons_dir.join(live.as_str()))
@@ -2757,7 +2997,9 @@ mod tests {
                 assert!(pinned.failures.is_empty(), "{:?}", pinned.failures);
                 let target = scene.current_target().target;
                 let generation = plan.targets[0].generation;
-                let rejudged = rejudge(req, ctx, &target, work, generation).unwrap();
+                let state = TargetState::now(ctx, &target).unwrap();
+                let view = released_view(std::slice::from_ref(work));
+                let rejudged = rejudge(req, ctx, &target, &state, work, generation, &view).unwrap();
                 assert!(
                     matches!(rejudged, Planned::Unchanged { .. }),
                     "the update survived the pin: {rejudged:?}"

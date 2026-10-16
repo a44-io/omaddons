@@ -27,7 +27,8 @@ use super::journal::{
 };
 use super::plan::{
     self, AddonWork, Change, Plan, PlanCtx, PlanFailure, PlanRequest, Planned, RequestedChange,
-    TargetPlan, TargetRequest, WorkMode, one_addons_dir, push_new, rejudge, target_kind,
+    TargetPlan, TargetRequest, TargetState, WorkMode, claim, one_addons_dir, push_new, rejudge,
+    released_view, target_kind,
 };
 use super::stage::{Staged, stage};
 use super::swap::{SwapOp, snapshot_saved_variables, snapshot_state, swap};
@@ -510,10 +511,23 @@ fn locked(
     // judged again.
     let mut warnings = tp.unchanged_warnings.clone();
     let mut notes = tp.notes.clone();
+    // One fresh look at the target, and the planned works replayed over it in order:
+    // releases first, then each claim (M2-D6).
+    let state = TargetState::now(&plan_ctx, &target)?;
+    let mut view = released_view(&tp.work);
     for planned in &tp.work {
-        match rejudge(plan_req, &plan_ctx, &target, planned, tp.generation) {
+        match rejudge(
+            plan_req,
+            &plan_ctx,
+            &target,
+            &state,
+            planned,
+            tp.generation,
+            &view,
+        ) {
             Ok(Planned::Change(p)) => {
                 let p = *p;
+                claim(&mut view, &p.work);
                 reload_required = reload_required.max(p.reload_required);
                 push_new(&mut warnings, p.warnings);
                 changes.push(p.change);
@@ -534,6 +548,7 @@ fn locked(
             Err(error) => return Err(error),
         }
     }
+    plan::settle_handovers(&mut works, &mut changes, None);
     failpoint::hit("engine.revalidated").map_err(fail)?;
     let kind = target_kind(&changes, plan_req.kind, tp.default_kind);
     let Some(kind) = kind else {
@@ -807,6 +822,13 @@ fn history_ops(works: &[AddonWork]) -> Vec<HistoryOp> {
             edit: None,
         };
         match &w.mode {
+            // A work whose every folder was handed over still changed its record (a
+            // removed addon): its folders as record ops, so undo restores it.
+            WorkMode::Folders(f) if f.swap.is_empty() && !f.handed_over.is_empty() => ops.extend(
+                f.handed_over
+                    .iter()
+                    .map(|folder| op(FolderOp::Record, folder)),
+            ),
             WorkMode::Folders(f) => ops.extend(f.swap.iter().map(|swap| match swap {
                 SwapOp::Add { name } => op(FolderOp::Add, name),
                 SwapOp::Replace { live, .. } => op(FolderOp::Replace, live),

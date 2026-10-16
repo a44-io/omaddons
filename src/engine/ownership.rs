@@ -16,9 +16,17 @@
 //!    keeps it undoable);
 //! 6. otherwise a replacement of the addon's own folder, or an add.
 //!
+//! Within one transaction (M2-D6) a [`WorkingView`] says what the works judged before
+//! did: a folder another work already claims is an `ownership_conflict` that `--force`
+//! never overrides (`details.within_transaction`); a folder another addon's work stops
+//! shipping is handed over: a replacement with a `handover` transfer, which degrades
+//! nobody.
+//!
 //! Every violation is reported in one error (`details.folders`), whose code is the
 //! most serious one: protected > linked > case_collision > ownership_conflict >
 //! unmanaged.
+
+use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
@@ -63,12 +71,48 @@ pub enum Previous {
     Unmanaged,
 }
 
-/// A folder moved between addons by `--force`.
+/// A folder moved between addons: by `--force`, or handed over within a transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transfer {
     pub folder: FolderName,
     pub from: String,
     pub to: String,
+    /// The previous owner's own work in the same transaction dropped the folder: no
+    /// degraded state, no warning.
+    pub handover: bool,
+}
+
+/// What the works already judged in one target's transaction do to its folders: the
+/// folders they install (claims) and the folders their addons stop shipping (releases).
+/// Keyed by folder key.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkingView {
+    claimed: BTreeMap<String, String>,
+    released: BTreeMap<String, String>,
+}
+
+impl WorkingView {
+    /// `addon`'s work installs `folder`.
+    pub fn claim(&mut self, folder: &FolderName, addon: &str) {
+        self.claimed
+            .insert(folder.key().to_owned(), addon.to_owned());
+    }
+
+    /// `addon`'s work stops shipping `folder`.
+    pub fn release(&mut self, folder: &FolderName, addon: &str) {
+        self.released
+            .insert(folder.key().to_owned(), addon.to_owned());
+    }
+
+    /// The addon whose work in this transaction installs `folder`.
+    pub fn owner_of(&self, folder: &FolderName) -> Option<&str> {
+        self.claimed.get(folder.key()).map(String::as_str)
+    }
+
+    /// The addon whose work in this transaction stops shipping `folder`.
+    pub fn released_by(&self, folder: &FolderName) -> Option<&str> {
+        self.released.get(folder.key()).map(String::as_str)
+    }
 }
 
 /// What ownership allows.
@@ -101,7 +145,7 @@ fn rank(code: ErrorCode, reason: &str) -> u8 {
     }
 }
 
-/// Judges `changes` for the addon `installing` against `inventory`. `argv` is the
+/// Judges `changes` for the addon `installing` against `inventory` alone. `argv` is the
 /// command line, repeated with `--force` in fixes.
 pub fn check(
     changes: &[FolderChange],
@@ -110,7 +154,57 @@ pub fn check(
     force: bool,
     argv: &[String],
 ) -> Result<OwnershipOutcome> {
+    check_in(
+        changes,
+        inventory,
+        installing,
+        force,
+        argv,
+        &WorkingView::default(),
+    )
+}
+
+/// [`check`], within a transaction whose other works did what `view` says.
+pub fn check_in(
+    changes: &[FolderChange],
+    inventory: &Inventory,
+    installing: &str,
+    force: bool,
+    argv: &[String],
+    view: &WorkingView,
+) -> Result<OwnershipOutcome> {
     let me = TargetRecord::addon_key(installing);
+    // Another work of this transaction installs it: the two releases disagree, and
+    // nothing on disk could make room, so `--force` does not help.
+    let claimed: Vec<(&FolderName, &str)> = changes
+        .iter()
+        .filter_map(|c| match c {
+            FolderChange::Install(name) => view
+                .owner_of(name)
+                .filter(|owner| TargetRecord::addon_key(owner) != me)
+                .map(|owner| (name, owner)),
+            FolderChange::Remove(_) => None,
+        })
+        .collect();
+    if let Some((first, owner)) = claimed.first() {
+        let names: Vec<&str> = claimed.iter().map(|(f, _)| f.as_str()).collect();
+        let folders: Vec<Value> = claimed
+            .iter()
+            .map(|(f, o)| json!({ "folder": f.as_str(), "owner": o }))
+            .collect();
+        return Err(Error::new(
+            ErrorCode::OwnershipConflict,
+            format!(
+                "{owner} and {installing} both ship {} in this transaction",
+                names.join(", ")
+            ),
+            Suggestion::text(format!(
+                "choose one of {owner} and {installing}: both ship {}",
+                first.as_str()
+            )),
+        )
+        .details(json!({ "within_transaction": true, "folders": folders })));
+    }
     let mut outcome = OwnershipOutcome::default();
     let mut violations: Vec<Violation> = Vec::new();
     let mut refuse = |folder: &str, code, reason, extra| {
@@ -174,6 +268,28 @@ pub fn check(
         let others: Vec<&String> = entry.owners.iter().filter(|o| !is_me(o)).collect();
         let mine = entry.owners.iter().any(is_me);
         let respelled = entry.name != name.as_str();
+        // Its owner's own work in this transaction stops shipping it: handed over.
+        let handed = view.released_by(name).filter(|by| {
+            others
+                .iter()
+                .any(|o| TargetRecord::addon_key(o) == TargetRecord::addon_key(by))
+        });
+        if let (Some(from), false) = (handed, respelled) {
+            outcome.transfers.push(Transfer {
+                folder: live_name.clone(),
+                from: from.to_owned(),
+                to: installing.to_owned(),
+                handover: true,
+            });
+            outcome.allowed.push(AllowedOp::Replace {
+                name: name.clone(),
+                live: live_name,
+                previous: Previous::Transferred {
+                    from: from.to_owned(),
+                },
+            });
+            continue;
+        }
         let previous = match (mine, others.first()) {
             (true, None) => Previous::Same,
             // A new spelling of another addon's or an unmanaged folder: the client would
@@ -223,6 +339,7 @@ pub fn check(
                 folder: live_name.clone(),
                 from: from.clone(),
                 to: installing.to_owned(),
+                handover: false,
             });
             let from_key = TargetRecord::addon_key(from);
             if !outcome.degraded.contains(&from_key) {
@@ -496,7 +613,8 @@ mod tests {
             [Transfer {
                 folder: FolderName::new("Theirs").unwrap(),
                 from: "Other".into(),
-                to: "Me".into()
+                to: "Me".into(),
+                handover: false,
             }]
         );
         assert_eq!(outcome.degraded, ["other"], "record keys");
@@ -634,6 +752,73 @@ mod tests {
             (err.code, err.fix.argv()),
             (ErrorCode::CaseCollision, None),
             "--force cannot pick between two spellings"
+        );
+    }
+
+    fn install_in(
+        name: &str,
+        as_addon: &str,
+        force: bool,
+        view: &WorkingView,
+    ) -> Result<OwnershipOutcome> {
+        let change = FolderChange::Install(FolderName::new(name).unwrap());
+        check_in(&[change], &live(), as_addon, force, &argv(), view)
+    }
+
+    #[test]
+    fn a_folder_another_work_claims_conflicts_whatever_force() {
+        let mut view = WorkingView::default();
+        view.claim(&FolderName::new("Shared").unwrap(), "First");
+        for force in [false, true] {
+            let err = install_in("shared", "Second", force, &view).unwrap_err();
+            assert_eq!(err.code, ErrorCode::OwnershipConflict);
+            assert_eq!(err.details["within_transaction"], true);
+            assert_eq!(err.details["folders"][0]["owner"], "First");
+            assert!(
+                err.fix.argv().is_none(),
+                "a text fix: {}",
+                err.fix.display()
+            );
+            assert!(err.message.contains("First") && err.message.contains("Second"));
+        }
+        assert!(
+            install_in("Shared", "First", false, &view).is_ok(),
+            "its own claim"
+        );
+    }
+
+    #[test]
+    fn a_folder_its_owner_releases_is_handed_over() {
+        let mut view = WorkingView::default();
+        view.release(&FolderName::new("Theirs").unwrap(), "Other");
+        let outcome = install_in("Theirs", "Me", false, &view).unwrap();
+        assert_eq!(
+            outcome.transfers,
+            [Transfer {
+                folder: FolderName::new("Theirs").unwrap(),
+                from: "Other".into(),
+                to: "Me".into(),
+                handover: true,
+            }]
+        );
+        assert!(outcome.degraded.is_empty() && outcome.warnings.is_empty());
+        assert!(matches!(
+            outcome.allowed.as_slice(),
+            [AllowedOp::Replace {
+                previous: Previous::Transferred { .. },
+                ..
+            }]
+        ));
+        // A second claimant after the first took it: a conflict in the transaction.
+        view.claim(&FolderName::new("Theirs").unwrap(), "Me");
+        let err = install_in("Theirs", "Third", false, &view).unwrap_err();
+        assert_eq!(err.details["within_transaction"], true);
+        // Released by someone who does not own it: the usual rules.
+        let mut wrong = WorkingView::default();
+        wrong.release(&FolderName::new("Theirs").unwrap(), "Nobody");
+        assert_eq!(
+            install_in("Theirs", "Me", false, &wrong).unwrap_err().code,
+            ErrorCode::OwnershipConflict
         );
     }
 }
