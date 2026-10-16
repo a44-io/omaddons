@@ -373,6 +373,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Other releases a memo entry remembers beside the newest"
+    },
+    {
+      "name": "DEPENDENCY_SOURCE_MAX_AGE",
+      "value": {
+        "millis": 63072000000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "A WoWInterface project unchanged this long is not chosen on its own for a dependency"
     }
   ]
 ]

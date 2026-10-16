@@ -57,7 +57,7 @@ mod support {
     pub fn verdicts(inspected: &Inspected, target: &Target) -> (Vec<(String, Verdict)>, bool) {
         let verdicts = verify(inspected, target, &RulesTable::builtin()).unwrap();
         let names: Vec<FolderName> = verdicts.iter().map(|v| v.folder.clone()).collect();
-        let primary = primary_folder(&"gh:o/r".parse().unwrap(), &names).unwrap();
+        let primary = primary_folder(&"gh:o/r".parse().unwrap(), &names, None).unwrap();
         let ok = accepts(&partition(&verdicts), false, primary);
         let list = verdicts
             .into_iter()

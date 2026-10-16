@@ -71,6 +71,9 @@ pub const RELEASE_MEMO_MAX_ENTRIES: usize = 4_096;
 /// Most other releases a memo entry remembers beside the newest, for telling an
 /// installed release that is ahead of the source's newest.
 pub const MEMO_KNOWN_RELEASES: usize = 10;
+/// A WoWInterface project unchanged for longer is never chosen on its own to satisfy a
+/// dependency (`wowi_abandoned`); `search` calls it abandoned.
+pub const DEPENDENCY_SOURCE_MAX_AGE: Duration = Duration::from_secs(730 * 24 * 60 * 60);
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -282,6 +285,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Other releases a memo entry remembers beside the newest",
     ),
+    limit(
+        "DEPENDENCY_SOURCE_MAX_AGE",
+        LimitValue::Millis(ms(DEPENDENCY_SOURCE_MAX_AGE)),
+        "ms",
+        None,
+        "A WoWInterface project unchanged this long is not chosen on its own for a dependency",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -452,7 +462,7 @@ mod tests {
         "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",
-        "MEMO_KNOWN_RELEASES",
+        "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

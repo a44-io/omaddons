@@ -402,7 +402,7 @@ pub fn installed_primary_interface(
     record: &AddonRecord,
     table: &RulesTable,
 ) -> Option<u32> {
-    let primary = crate::engine::plan::primary_folder(&record.r#ref, &record.folders)?;
+    let primary = crate::engine::plan::primary_folder(&record.r#ref, &record.folders, None)?;
     let view = DiskFolder::new(target.addons_dir().join(primary.as_str())).ok()?;
     let loaded = loaded_toc(&view, &target.rules).ok().flatten()?;
     primary_interface(

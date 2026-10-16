@@ -1895,7 +1895,7 @@ impl TargetPlanner<'_> {
             .event(Phase::Verify, self.candidate_items, &item);
         let split = partition(&verdicts);
         let all: Vec<FolderName> = inspected.folders.iter().map(|f| f.name.clone()).collect();
-        let primary = primary_folder(r#ref, &all);
+        let primary = primary_folder(r#ref, &all, None);
         // The publisher's release.json names this client for this very file.
         let declared = matches!(
             candidate.rank,
@@ -2232,13 +2232,27 @@ fn local_identity(file: &std::path::Path) -> String {
 /// A new addon's name: its [`primary_folder`], else the ref.
 pub fn addon_name(r#ref: &Ref, inspected: &Inspected) -> String {
     let folders: Vec<FolderName> = inspected.folders.iter().map(|f| f.name.clone()).collect();
-    primary_folder(r#ref, &folders).map_or_else(|| r#ref.to_string(), |f| f.as_str().to_owned())
+    primary_folder(r#ref, &folders, None)
+        .map_or_else(|| r#ref.to_string(), |f| f.as_str().to_owned())
 }
 
-/// The folder an archive is the addon of: the folder named like the repository, else
-/// the folder the others extend (`WeakAuras` for `WeakAurasOptions`), else the one core
-/// folder (`DBM-Core` beside `DBM-GUI`), else the shortest.
-pub fn primary_folder<'a>(r#ref: &Ref, folders: &'a [FolderName]) -> Option<&'a FolderName> {
+/// The folder an archive is the addon of: the folder named like `name_hint` (a catalog
+/// name, a WoWInterface `UIName` or a Tukui slug; normalised), else the folder named
+/// like the repository, else the folder the others extend (`WeakAuras` for
+/// `WeakAurasOptions`), else the one core folder (`DBM-Core` beside `DBM-GUI`), else the
+/// shortest.
+pub fn primary_folder<'a>(
+    r#ref: &Ref,
+    folders: &'a [FolderName],
+    name_hint: Option<&str>,
+) -> Option<&'a FolderName> {
+    if let Some(hint) = name_hint.map(crate::resolve::deps::normalized)
+        && let Some(named) = folders
+            .iter()
+            .find(|f| crate::resolve::deps::normalized(f.as_str()) == hint)
+    {
+        return Some(named);
+    }
     if let Ref::GitHub { repo, .. } = r#ref
         && let Some(same) = folders
             .iter()
@@ -2328,6 +2342,32 @@ mod tests {
             "Zeta",
             "no core folder: the shortest, then by name"
         );
+    }
+
+    #[test]
+    fn a_name_hint_names_the_primary_folder() {
+        let folders = |names: &[&str]| -> Vec<FolderName> {
+            names.iter().map(|n| FolderName::new(n).unwrap()).collect()
+        };
+        let pick = |names: &[&str], hint: Option<&str>| {
+            let list = folders(names);
+            primary_folder(&"wowi:1".parse().unwrap(), &list, hint).map(|f| f.as_str().to_owned())
+        };
+        assert_eq!(
+            pick(&["BugSack", "BugSack_Extras"], Some("BugSack")),
+            Some("BugSack".into())
+        );
+        assert_eq!(
+            pick(&["Lib", "MyAddon"], None),
+            Some("Lib".into()),
+            "the shortest"
+        );
+        assert_eq!(
+            pick(&["Lib", "MyAddon"], Some("My Addon")),
+            Some("MyAddon".into()),
+            "a hint, normalised, overrides the order"
+        );
+        assert_eq!(pick(&["Lib", "MyAddon"], Some("Other")), Some("Lib".into()));
     }
 
     fn names(list: &[&str]) -> BTreeSet<String> {
