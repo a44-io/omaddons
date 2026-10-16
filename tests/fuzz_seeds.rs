@@ -196,7 +196,12 @@ fn write_fuzz_seeds() {
 
     // toc: the parser fixtures and a hostile one.
     let tocs = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/toc/parser");
-    for name in ["modern.toc", "unreplaced.toc", "wotlk.toc"] {
+    for name in [
+        "modern.toc",
+        "unreplaced.toc",
+        "wotlk.toc",
+        "conditional.toc",
+    ] {
         write("toc", name, &fs::read(tocs.join(name)).unwrap());
     }
     write(

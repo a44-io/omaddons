@@ -507,6 +507,9 @@ pub struct DepFacts {
     /// its own archive it requires, transitively), each once, in folder order. Optional
     /// dependencies are never here.
     pub requires: Vec<FolderName>,
+    /// What those folders require under a condition of a kind this build does not
+    /// read: reported `unknown_condition`, never installed.
+    pub unknown_condition: Vec<FolderName>,
     /// Installed folders that verified out of date on this client.
     pub out_of_date: BTreeSet<FolderName>,
     /// What the other installed folders require outside the archive, before anything is
@@ -1205,7 +1208,8 @@ impl TargetPlanner<'_> {
         failures: &mut Vec<PlanFailure>,
         rounds: &mut Rounds<'_>,
     ) {
-        let pending: Vec<(String, Vec<FolderName>, Vec<FolderName>)> = tp
+        type Pending = (String, Vec<FolderName>, Vec<FolderName>, Vec<FolderName>);
+        let pending: Vec<Pending> = tp
             .work
             .iter()
             .filter_map(|w| {
@@ -1215,14 +1219,40 @@ impl TargetPlanner<'_> {
                 let inspected = f.inspected.as_ref()?;
                 let archive = inspected.folders.iter().map(|x| x.name.clone()).collect();
                 let key = TargetRecord::addon_key(&w.addon);
-                (!rounds.collected.contains(&key))
-                    .then(|| (w.addon.clone(), archive, f.deps.requires.clone()))
+                (!rounds.collected.contains(&key)).then(|| {
+                    (
+                        w.addon.clone(),
+                        archive,
+                        f.deps.requires.clone(),
+                        f.deps.unknown_condition.clone(),
+                    )
+                })
             })
             .collect();
-        for (requester, archive, requires) in pending {
+        for (requester, archive, requires, unknown) in pending {
             rounds.collected.insert(TargetRecord::addon_key(&requester));
             for dep in requires {
                 self.collect_one(tp, failures, rounds, &requester, &archive, dep);
+            }
+            // Required under a condition this build cannot read: reported unless
+            // something already provides it, never resolved or installed.
+            for dep in unknown {
+                let satisfied = {
+                    let view = self.view.borrow();
+                    let plan_view = PlanView {
+                        view: &view,
+                        live: self.live,
+                    };
+                    is_satisfied(&dep, &archive, &plan_view)
+                };
+                if satisfied.is_none() {
+                    let u = Unresolved {
+                        folder: dep,
+                        reason: UnresolvedReason::UnknownCondition,
+                        candidates: Vec::new(),
+                    };
+                    self.unresolved(tp, &requester, u, None);
+                }
             }
         }
     }
@@ -2990,15 +3020,23 @@ impl TargetPlanner<'_> {
             None => installed.iter().map(|v| v.folder.clone()).collect(),
         };
         let mut requires: Vec<FolderName> = Vec::new();
+        let mut unknown_condition: Vec<FolderName> = Vec::new();
         for v in installed.iter().filter(|v| needed.contains(&v.folder)) {
-            for dep in &v.dependencies {
+            for dep in &v.dependencies.required {
                 if !requires.contains(dep) {
                     requires.push(dep.clone());
                 }
             }
+            for dep in &v.dependencies.unknown_condition {
+                if !unknown_condition.contains(dep) {
+                    unknown_condition.push(dep.clone());
+                }
+            }
         }
+        unknown_condition.retain(|dep| !requires.contains(dep));
         let deps = DepFacts {
             requires,
+            unknown_condition,
             bridges: bridge_dependencies(&needed, &installed),
             out_of_date: installed
                 .iter()

@@ -33,8 +33,8 @@ use crate::limits::{
 use crate::model::{FolderName, Target};
 use crate::rules::RulesTable;
 use crate::toc::{
-    FolderView, Verdict, VerdictReport, WrongFlavorReason, judge, loaded_toc, primary_interface,
-    read_bounded,
+    DepList, FolderView, Verdict, VerdictReport, WrongFlavorReason, judge, loaded_toc,
+    primary_interface, read_bounded,
 };
 
 /// The archive limits in force.
@@ -841,10 +841,10 @@ fn wrapped_names(dir: &str) -> Vec<&str> {
 pub struct FolderVerdict {
     pub folder: FolderName,
     pub report: VerdictReport,
-    /// The required dependencies of the TOC the client loads (`Dependencies`,
-    /// `RequiredDeps`, `Dep*`).
+    /// The dependencies of the TOC the client loads, on this client
+    /// ([`crate::toc::Toc::dependencies_for`]): conditional variants evaluated.
     #[serde(skip)]
-    pub dependencies: Vec<FolderName>,
+    pub dependencies: DepList,
     /// The in-family interface the client judges the folder by
     /// (`toc::primary_interface`).
     #[serde(skip)]
@@ -885,7 +885,7 @@ pub fn verify(
                 folder: folder.name.clone(),
                 report,
                 dependencies: loaded
-                    .map(|l| l.toc.dependency_folders())
+                    .map(|l| l.toc.dependencies_for(&target.rules))
                     .unwrap_or_default(),
                 interface,
             })
@@ -933,6 +933,7 @@ pub fn partition(verdicts: &[FolderVerdict]) -> Partition {
     // FolderName equality is the case-folded key, as the client resolves names.
     while let Some((at, folder)) = install.iter().enumerate().find_map(|(at, v)| {
         v.dependencies
+            .required
             .iter()
             .find_map(|dep| skip.iter().find(|s| s.name == *dep))
             .map(|s| (at, s.name.clone()))
@@ -1236,7 +1237,10 @@ mod tests {
                 verdict,
                 warnings: Vec::new(),
             },
-            dependencies: deps.iter().map(|d| name(d)).collect(),
+            dependencies: DepList {
+                required: deps.iter().map(|d| name(d)).collect(),
+                ..DepList::default()
+            },
             interface: None,
         }
     }
@@ -1281,6 +1285,41 @@ mod tests {
             accepts(&p, true, &primary),
             accepts(&p, false, &primary),
         )
+    }
+
+    #[test]
+    fn a_conditional_dependency_skips_only_where_it_applies() {
+        let table = RulesTable::builtin();
+        let client = tempfile::tempdir().unwrap();
+        let retail = crate::engine::testing::target(client.path());
+        let split_with = |condition: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let write = |path: &str, text: &str| {
+                let path = dir.path().join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            };
+            write(
+                "Foo/Foo.toc",
+                &format!("## Interface: 120105\n## Dependencies {condition}: FooClassic\n"),
+            );
+            write("FooClassic/FooClassic.toc", "## Interface: 11509\n");
+            let inspected = inspect_dir(dir.path(), &ArchiveLimits::default(), &table).unwrap();
+            let p = partition(&verify(&inspected, &retail, &table).unwrap());
+            let install: Vec<String> = p.install.iter().map(|f| f.as_str().to_owned()).collect();
+            let skip: Vec<String> = p.skip.iter().map(|s| s.name.as_str().to_owned()).collect();
+            (install, skip)
+        };
+        // Required on vanilla only: retail installs Foo without the classic folder.
+        assert_eq!(
+            split_with("[AllowLoadGameType vanilla]"),
+            (vec!["Foo".to_owned()], vec!["FooClassic".to_owned()])
+        );
+        // Required on mainline: Foo needs a folder retail skips, so it goes too.
+        assert_eq!(
+            split_with("[AllowLoadGameType mainline]"),
+            (Vec::new(), vec!["FooClassic".to_owned(), "Foo".to_owned()])
+        );
     }
 
     #[test]
@@ -1428,7 +1467,7 @@ mod tests {
             all.sort_by(|a, b| a.key().cmp(b.key()));
             prop_assert_eq!(seen, all);
             for v in verdicts.iter().filter(|v| p.install.contains(&v.folder)) {
-                prop_assert!(v.dependencies.iter().all(|d| !p.skip.iter().any(|s| s.name == *d)));
+                prop_assert!(v.dependencies.required.iter().all(|d| !p.skip.iter().any(|s| s.name == *d)));
             }
         }
 

@@ -16,12 +16,17 @@ expression: inv
       "toc": {
         "file": "Blizzard_Console.toc",
         "title": "Console",
+        "title_plain": "Console",
         "version": null,
         "author": null,
         "interfaces": [
           120105
         ],
-        "x_ids": {}
+        "x_ids": {},
+        "website": null,
+        "dependencies": [],
+        "optional_deps": [],
+        "tukui_project_folders": []
       },
       "verdict": {
         "loaded": {
@@ -51,6 +56,7 @@ expression: inv
       "toc": {
         "file": "Details.toc",
         "title": "Details!",
+        "title_plain": "Details!",
         "version": "2.3",
         "author": null,
         "interfaces": [
@@ -59,7 +65,11 @@ expression: inv
         ],
         "x_ids": {
           "X-Curse-Project-ID": "61284"
-        }
+        },
+        "website": null,
+        "dependencies": [],
+        "optional_deps": [],
+        "tukui_project_folders": []
       },
       "verdict": {
         "loaded": {
@@ -104,12 +114,17 @@ expression: inv
       "toc": {
         "file": "OldThing.toc",
         "title": "Old",
+        "title_plain": "Old",
         "version": null,
         "author": null,
         "interfaces": [
           110200
         ],
-        "x_ids": {}
+        "x_ids": {},
+        "website": null,
+        "dependencies": [],
+        "optional_deps": [],
+        "tukui_project_folders": []
       },
       "verdict": {
         "loaded": {

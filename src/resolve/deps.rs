@@ -47,7 +47,7 @@ pub fn needed_folders(primary: &FolderName, folders: &[FolderVerdict]) -> BTreeS
         let Some(v) = folders.iter().find(|v| v.folder == folder) else {
             continue;
         };
-        for dep in &v.dependencies {
+        for dep in &v.dependencies.required {
             if in_archive(dep) && needed.insert(dep.clone()) {
                 todo.push(dep.clone());
             }
@@ -77,6 +77,7 @@ pub fn bridge_dependencies(
         .filter(|v| !needed.contains(&v.folder))
         .flat_map(|v| {
             v.dependencies
+                .required
                 .iter()
                 .filter(|d| !in_archive(d))
                 .map(|d| BridgeDependency {
@@ -428,7 +429,10 @@ mod tests {
                 verdict: Verdict::Compatible { out_of_date: false },
                 warnings: Vec::new(),
             },
-            dependencies: deps.iter().map(|d| f(d)).collect(),
+            dependencies: crate::toc::DepList {
+                required: deps.iter().map(|d| f(d)).collect(),
+                ..crate::toc::DepList::default()
+            },
             interface: Some(120_105),
         }
     }

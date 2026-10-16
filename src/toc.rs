@@ -24,12 +24,18 @@ use serde::Serialize;
 
 use crate::limits::TOC_LINE_MAX;
 use crate::model::FolderName;
+use crate::rules::ClientRules;
 
 /// A parsed TOC.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Toc {
-    /// Keyed by the lowercased key; the first occurrence of a key wins.
+    /// The unconditional directives, keyed by the lowercased key; the first occurrence
+    /// of a key wins.
     pub directives: BTreeMap<String, Directive>,
+    /// Every directive with a condition (`## Key [AllowLoadGameType x]: Value`, 12.0.7+),
+    /// in line order: they never displace an unconditional one nor count as duplicates.
+    /// [`Toc::dependencies_for`] and [`Toc::title_for`] evaluate them for a client.
+    pub conditional: Vec<Directive>,
     /// The `## Interface` value as written (never `Interface-Vanilla` and the like).
     pub interface_raw: Option<String>,
     /// Every number in the comma list (clients since 10.2.7).
@@ -41,8 +47,9 @@ pub struct Toc {
     pub version: Option<String>,
     pub author: Option<String>,
     pub notes: Option<String>,
-    /// `RequiredDeps`, `Dependencies` and every `Dep*` key, in file order, without
-    /// case-insensitive duplicates.
+    /// The unconditional `RequiredDeps`, `Dependencies` and every `Dep*` key, in file
+    /// order, without case-insensitive duplicates. A caller that knows the client uses
+    /// [`Toc::dependencies_for`], which adds the conditional variants that apply.
     pub dependencies: Vec<String>,
     pub optional_deps: Vec<String>,
     pub load_with: Vec<String>,
@@ -67,11 +74,92 @@ pub struct Directive {
     /// As written.
     pub key: String,
     pub value: String,
-    /// Bracketed text between the key and the colon, kept raw and never evaluated
-    /// (directive conditionals, 12.0.7+; syntax unverified).
+    /// Bracketed text between the key and the colon, kept raw for display (directive
+    /// conditionals, 12.0.7+).
     pub condition: Option<String>,
+    /// The condition, parsed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parsed_condition: Option<Condition>,
     /// 1-based.
     pub line: u32,
+}
+
+/// A directive's condition: `[AllowLoadGameType mainline, vanilla]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Condition {
+    pub kind: ConditionKind,
+    /// Lowercased; split on commas and whitespace.
+    pub values: Vec<String>,
+}
+
+/// What a condition tests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConditionKind {
+    /// The client is one of the values.
+    AllowLoadGameType,
+    /// The client is none of the values.
+    ExcludeLoadGameType,
+    /// Anything else, raw (an unknown keyword, `[Game:Mainline]`, an empty bracket):
+    /// never evaluated as true or false.
+    Other(String),
+}
+
+impl Condition {
+    /// The bracketed text of a directive (`[AllowLoadGameType mainline]`), parsed. The
+    /// first whitespace-separated token, ignoring ASCII case, is the kind; the rest are
+    /// the values. A known kind without values is `Other`.
+    pub fn parse(raw: &str) -> Self {
+        let other = || Self {
+            kind: ConditionKind::Other(raw.to_owned()),
+            values: Vec::new(),
+        };
+        let inner = raw.trim();
+        let inner = inner.strip_prefix('[').unwrap_or(inner);
+        let inner = inner.strip_suffix(']').unwrap_or(inner).trim();
+        let (keyword, rest) = inner.split_once(char::is_whitespace).unwrap_or((inner, ""));
+        let kind = if keyword.eq_ignore_ascii_case("AllowLoadGameType") {
+            ConditionKind::AllowLoadGameType
+        } else if keyword.eq_ignore_ascii_case("ExcludeLoadGameType") {
+            ConditionKind::ExcludeLoadGameType
+        } else {
+            return other();
+        };
+        let values: Vec<String> = rest
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|v| !v.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect();
+        if values.is_empty() {
+            return other();
+        }
+        Self { kind, values }
+    }
+
+    /// Whether the condition holds on a client named `names` (its game types and
+    /// family-level names, lowercased: [`loaded::client_names`]); `None` for a kind
+    /// this build does not know.
+    pub fn admits(&self, names: &[String]) -> Option<bool> {
+        let named = self.values.iter().any(|v| names.contains(v));
+        match self.kind {
+            ConditionKind::AllowLoadGameType => Some(named),
+            ConditionKind::ExcludeLoadGameType => Some(!named),
+            ConditionKind::Other(_) => None,
+        }
+    }
+}
+
+/// A folder's dependencies on one client.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct DepList {
+    /// Unconditional, plus the conditional variants that admit the client, in line
+    /// order.
+    pub required: Vec<FolderName>,
+    /// `OptionalDeps`, the same way: never installed.
+    pub optional: Vec<FolderName>,
+    /// Required under a condition of a kind this build does not know: reported, never
+    /// installed.
+    pub unknown_condition: Vec<FolderName>,
 }
 
 /// A file reference line.
@@ -124,6 +212,10 @@ pub fn parse_toc(bytes: &[u8]) -> Toc {
         }
         if let Some(rest) = trimmed.strip_prefix("##") {
             if let Some(directive) = directive(rest, line) {
+                if directive.condition.is_some() {
+                    toc.conditional.push(directive);
+                    continue;
+                }
                 match toc.directives.entry(directive.key.to_ascii_lowercase()) {
                     std::collections::btree_map::Entry::Occupied(_) => {
                         toc.issues.push(TocIssue::DuplicateDirective {
@@ -192,6 +284,7 @@ fn directive(rest: &str, line: u32) -> Option<Directive> {
     Some(Directive {
         key: key.to_owned(),
         value: value.trim().to_owned(),
+        parsed_condition: condition.as_deref().map(Condition::parse),
         condition,
         line,
     })
@@ -294,6 +387,51 @@ fn derive_fields(toc: &mut Toc) {
     toc.dependencies = dependencies;
 }
 
+/// A title without its UI escapes: colour codes (`|cAARRGGBB` … `|r`), textures
+/// (`|T…|t`) and atlases (`|A…|a`) removed, `||` read as `|`, whitespace runs collapsed
+/// and trimmed. Infallible: an escape that is malformed or never closed stays as text.
+/// `plain_title("|cff33ff99Details!|r Damage Meter")` is `Details! Damage Meter`.
+pub fn plain_title(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while let Some(&c) = chars.get(i) {
+        if c == '|' {
+            let next = chars.get(i + 1).copied();
+            // The end of a `|T…|t` or `|A…|a` escape, past its closing pair.
+            let closing = |close: char| {
+                (i + 2..chars.len().saturating_sub(1))
+                    .find(|&j| chars.get(j) == Some(&'|') && chars.get(j + 1) == Some(&close))
+                    .map(|j| j + 2)
+            };
+            let skip = match next {
+                Some('c' | 'C')
+                    if chars
+                        .get(i + 2..i + 10)
+                        .is_some_and(|hex| hex.iter().all(char::is_ascii_hexdigit)) =>
+                {
+                    Some(i + 10)
+                }
+                Some('r' | 'R') => Some(i + 2),
+                Some('T') => closing('t'),
+                Some('A') => closing('a'),
+                Some('|') => {
+                    out.push('|');
+                    Some(i + 2)
+                }
+                _ => None,
+            };
+            if let Some(end) = skip {
+                i = end;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// A comma list, trimmed, without empty entries.
 fn list(value: Option<String>) -> Vec<String> {
     value
@@ -319,12 +457,76 @@ impl Toc {
             .map(|d| d.value.as_str())
     }
 
-    /// The dependencies that are valid folder names (others are in [`Toc::issues`]).
+    /// The unconditional dependencies that are valid folder names (others are in
+    /// [`Toc::issues`]).
     pub fn dependency_folders(&self) -> Vec<FolderName> {
         self.dependencies
             .iter()
             .filter_map(|name| FolderName::new(name).ok())
             .collect()
+    }
+
+    /// The dependencies on the client of `rules`: required (`RequiredDeps`,
+    /// `Dependencies`, `Dep*`) and optional (`OptionalDeps`), unconditional lines and
+    /// the conditional variants whose condition admits the client, in line order and
+    /// without case-insensitive duplicates; invalid names left out. A required name
+    /// under a condition of unknown kind goes to `unknown_condition` (an optional one
+    /// is dropped: never installed anyway).
+    ///
+    /// Several variants of one directive are read as the union of those that apply,
+    /// as inline file conditionals behave. UNVERIFIED against the client. A legacy
+    /// client (`rules.legacy`) predates directive conditions and reads such a line's key
+    /// as another key, so no conditional variant applies there.
+    pub fn dependencies_for(&self, rules: &ClientRules) -> DepList {
+        let names = loaded::client_names(rules);
+        let conditional: &[Directive] = if rules.legacy { &[] } else { &self.conditional };
+        let mut lines: Vec<&Directive> = self.directives.values().chain(conditional).collect();
+        lines.sort_by_key(|d| d.line);
+        let mut deps = DepList::default();
+        let push = |into: &mut Vec<FolderName>, value: &str| {
+            for name in list(Some(value.to_owned())) {
+                if let Ok(name) = FolderName::new(&name)
+                    && !into.contains(&name)
+                {
+                    into.push(name);
+                }
+            }
+        };
+        for d in lines {
+            let key = d.key.to_ascii_lowercase();
+            let required = key == "requireddeps" || key.starts_with("dep");
+            if !required && key != "optionaldeps" {
+                continue;
+            }
+            let admits = d.parsed_condition.as_ref().map(|c| c.admits(&names));
+            match (admits, required) {
+                (None | Some(Some(true)), true) => push(&mut deps.required, &d.value),
+                (None | Some(Some(true)), false) => push(&mut deps.optional, &d.value),
+                (Some(None), true) => push(&mut deps.unknown_condition, &d.value),
+                (Some(None), false) | (Some(Some(false)), _) => {}
+            }
+        }
+        deps.unknown_condition
+            .retain(|name| !deps.required.contains(name));
+        deps
+    }
+
+    /// The title the client of `rules` shows: the first conditional `Title` variant
+    /// that admits it, else the unconditional one. Which one the client shows when both
+    /// exist is UNVERIFIED.
+    pub fn title_for(&self, rules: &ClientRules) -> Option<&str> {
+        let names = loaded::client_names(rules);
+        self.conditional
+            .iter()
+            .filter(|d| !rules.legacy && d.key.eq_ignore_ascii_case("title"))
+            .find(|d| {
+                d.parsed_condition
+                    .as_ref()
+                    .and_then(|c| c.admits(&names))
+                    .unwrap_or(false)
+            })
+            .map(|d| d.value.as_str())
+            .or(self.title.as_deref())
     }
 
     fn x(&self, key: &str) -> Option<&str> {
@@ -484,17 +686,45 @@ mod tests {
         let toc = parse(
             "## Title [AllowLoadGameType standard]: Conditional\n## Notes [Game:Mainline]: colon inside\n",
         );
-        let title = &toc.directives["title"];
+        assert!(toc.directives.is_empty(), "conditional lines live apart");
+        let [title, notes] = toc.conditional.as_slice() else {
+            unreachable!("{:?}", toc.conditional)
+        };
         assert_eq!(
             (title.value.as_str(), title.condition.as_deref()),
             ("Conditional", Some("[AllowLoadGameType standard]"))
         );
-        let notes = &toc.directives["notes"];
+        assert_eq!(
+            title.parsed_condition,
+            Some(Condition {
+                kind: ConditionKind::AllowLoadGameType,
+                values: vec!["standard".into()]
+            })
+        );
         assert_eq!(
             (notes.key.as_str(), notes.value.as_str()),
             ("Notes", "colon inside")
         );
         assert_eq!(notes.condition.as_deref(), Some("[Game:Mainline]"));
+        assert_eq!(
+            notes.parsed_condition.as_ref().map(|c| &c.kind),
+            Some(&ConditionKind::Other("[Game:Mainline]".into()))
+        );
+        assert_eq!(toc.title, None, "only a conditional title");
+
+        // Conditional variants never count as duplicates; an unconditional one does.
+        let toc = parse(
+            "## Title [AllowLoadGameType standard]: A\n## Title [AllowLoadGameType vanilla]: B\n## Title: C\n## Title: D\n",
+        );
+        assert_eq!(toc.conditional.len(), 2);
+        assert_eq!(toc.title.as_deref(), Some("C"));
+        assert_eq!(
+            toc.issues,
+            [TocIssue::DuplicateDirective {
+                key: "Title".into(),
+                line: 4
+            }]
+        );
         let url = parse("## X-Website: https://example.org/a:b\n");
         assert_eq!(url.website(), Some("https://example.org/a:b"));
     }
@@ -621,7 +851,197 @@ mod tests {
         text
     }
 
+    #[test]
+    fn conditions_parse_by_kind_and_values() {
+        let kinds = |raw: &str| {
+            let c = Condition::parse(raw);
+            (c.kind, c.values)
+        };
+        assert_eq!(
+            kinds("[AllowLoadGameType standard]"),
+            (
+                ConditionKind::AllowLoadGameType,
+                vec!["standard".to_owned()]
+            )
+        );
+        assert_eq!(
+            kinds("[allowloadgametype  Mainline, Vanilla tbc]"),
+            (
+                ConditionKind::AllowLoadGameType,
+                ["mainline", "vanilla", "tbc"].map(str::to_owned).to_vec()
+            )
+        );
+        assert_eq!(
+            kinds("[ExcludeLoadGameType camelot]").0,
+            ConditionKind::ExcludeLoadGameType
+        );
+        for raw in [
+            "[SomeFutureCondition x]",
+            "[Game:Mainline]",
+            "[]",
+            "[AllowLoadGameType]",
+        ] {
+            assert_eq!(
+                kinds(raw),
+                (ConditionKind::Other(raw.to_owned()), Vec::new()),
+                "{raw}"
+            );
+        }
+    }
+
+    /// The builtin rules of a Battle.net (or `custom`) client of `version`.
+    fn rules_of(version: &str, custom: bool) -> ClientRules {
+        let kind = if custom {
+            crate::rules::InstallKind::Custom
+        } else {
+            crate::rules::InstallKind::Battlenet
+        };
+        let version: crate::rules::ClientVersion = version.parse().unwrap();
+        crate::rules::RulesTable::builtin()
+            .rules_for(&version, kind)
+            .clone()
+    }
+
+    fn names(folders: &[FolderName]) -> Vec<&str> {
+        folders.iter().map(FolderName::as_str).collect()
+    }
+
+    #[test]
+    fn dependencies_are_evaluated_for_each_client() {
+        let retail = rules_of("12.1.5.70391", false);
+        let era = rules_of("1.15.9.64520", false);
+        let forever = rules_of("1.60.1.70245", false);
+        let titan = rules_of("3.80.0.65000", false);
+        let legacy = rules_of("1.12.1", true);
+        assert!(legacy.legacy, "a legacy row");
+
+        let toc = parse("## Dependencies [AllowLoadGameType mainline]: A\n## Dependencies: B\n");
+        assert_eq!(names(&toc.dependencies_for(&retail).required), ["A", "B"]);
+        assert_eq!(names(&toc.dependencies_for(&era).required), ["B"]);
+        assert_eq!(
+            names(&toc.dependencies_for(&forever).required),
+            ["A", "B"],
+            "Forever is named by its family suffix mainline"
+        );
+        assert_eq!(names(&toc.dependencies_for(&legacy).required), ["B"]);
+        assert_eq!(toc.dependencies, ["B"], "the unconditional field alone");
+
+        // The other order keeps both variants, in line order.
+        let toc = parse("## Dependencies: B\n## Dependencies [AllowLoadGameType mainline]: A\n");
+        assert_eq!(names(&toc.dependencies_for(&retail).required), ["B", "A"]);
+        assert!(toc.issues.is_empty(), "{:?}", toc.issues);
+
+        // Exclusion, RequiredDeps and Dep* keys, optional deps, and duplicates.
+        let toc = parse(
+            "## RequiredDeps [ExcludeLoadGameType vanilla, titan]: Ace3\n\
+             ## Dep-Lib: LibStub, ace3\n\
+             ## OptionalDeps [AllowLoadGameType vanilla]: Questie\n\
+             ## OptionalDeps: Details\n\
+             ## LoadWith: Other\n",
+        );
+        let on = |rules: &ClientRules| {
+            let d = toc.dependencies_for(rules);
+            (
+                names(&d.required)
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect::<Vec<_>>(),
+                names(&d.optional)
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            on(&retail),
+            (
+                vec!["Ace3".into(), "LibStub".into()],
+                vec!["Details".into()]
+            )
+        );
+        assert_eq!(
+            on(&era),
+            (
+                vec!["LibStub".into(), "ace3".into()],
+                vec!["Questie".into(), "Details".into()]
+            )
+        );
+        assert_eq!(
+            on(&titan),
+            (
+                vec!["LibStub".into(), "ace3".into()],
+                vec!["Details".into()]
+            )
+        );
+
+        // An unknown condition is never required; an optional one is dropped.
+        let toc = parse(
+            "## Dependencies [SomeFutureCondition x]: Future, B\n## Dependencies: B\n## OptionalDeps [Odd]: Opt\n",
+        );
+        let deps = toc.dependencies_for(&retail);
+        assert_eq!(names(&deps.required), ["B"]);
+        assert_eq!(
+            names(&deps.unknown_condition),
+            ["Future"],
+            "B is required anyway"
+        );
+        assert!(deps.optional.is_empty());
+    }
+
+    #[test]
+    fn a_title_may_exist_only_as_conditional_variants() {
+        let toc = parse(
+            "## Title [AllowLoadGameType standard]: |cff1784d1ElvUI|r\n## Title [AllowLoadGameType vanilla]: ElvUI Classic\n",
+        );
+        assert_eq!(toc.title, None);
+        let retail = rules_of("12.1.5.70391", false);
+        let era = rules_of("1.15.9.64520", false);
+        assert_eq!(toc.title_for(&retail), Some("|cff1784d1ElvUI|r"));
+        assert_eq!(toc.title_for(&era), Some("ElvUI Classic"));
+        assert_eq!(toc.title_for(&rules_of("1.12.1", true)), None);
+        let plain = parse("## Title: Plain\n## Title [AllowLoadGameType vanilla]: Era\n");
+        assert_eq!(plain.title_for(&retail), Some("Plain"));
+        assert_eq!(
+            plain.title_for(&era),
+            Some("Era"),
+            "a matching variant first"
+        );
+    }
+
+    #[test]
+    fn plain_titles_drop_ui_escapes() {
+        for (raw, plain) in [
+            ("|cff33ff99Details!|r Damage Meter", "Details! Damage Meter"),
+            ("|CFF00FF00Green|R", "Green"),
+            ("|TInterface\\Icons\\inv_misc:16:16|t Bags", "Bags"),
+            ("|A:raceicon-human-male:16:16|a  Human   UI", "Human UI"),
+            ("Pipes || kept", "Pipes | kept"),
+            ("|cff12zz Not a colour", "|cff12zz Not a colour"),
+            ("Unclosed |Ttexture", "Unclosed |Ttexture"),
+            ("Trailing |", "Trailing |"),
+            ("|", "|"),
+            ("", ""),
+            ("  spaced   out  ", "spaced out"),
+        ] {
+            assert_eq!(plain_title(raw), plain, "{raw:?}");
+        }
+    }
+
     proptest! {
+        #[test]
+        fn plain_titles_never_panic_or_grow(
+            parts in proptest::collection::vec(prop_oneof![
+                Just("|".to_owned()), Just("|c".to_owned()), Just("|r".to_owned()),
+                Just("|T".to_owned()), Just("|t".to_owned()), Just("|A".to_owned()),
+                Just("|a".to_owned()), Just("ff00ff00".to_owned()), Just("é".to_owned()),
+                "[a-zA-Z0-9 ]{0,6}",
+            ], 0..32),
+        ) {
+            let raw = parts.concat();
+            let plain = plain_title(&raw);
+            prop_assert!(plain.chars().count() <= raw.chars().count(), "{raw:?} -> {plain:?}");
+        }
+
         #[test]
         fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..4096)) {
             let _ = parse_toc(&bytes);

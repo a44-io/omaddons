@@ -83,12 +83,24 @@ pub enum FolderClass {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct TocSummary {
     pub file: String,
+    /// The title this client shows: a conditional `Title` variant that admits it, else
+    /// the plain `## Title`.
     pub title: Option<String>,
+    /// The title without colour codes, textures and atlases (`toc::plain_title`).
+    pub title_plain: Option<String>,
     pub version: Option<String>,
     pub author: Option<String>,
     pub interfaces: Vec<u32>,
     /// The source-identifying `X-…ID` fields (curse, wowi, wago, tukui), by key.
     pub x_ids: BTreeMap<String, String>,
+    /// `X-Website`, raw.
+    pub website: Option<String>,
+    /// What the TOC requires on this client (conditional variants evaluated).
+    pub dependencies: Vec<String>,
+    /// `OptionalDeps` on this client.
+    pub optional_deps: Vec<String>,
+    /// `X-Tukui-ProjectFolders`.
+    pub tukui_project_folders: Vec<String>,
 }
 
 /// A folder a record lists that is not on disk.
@@ -278,19 +290,30 @@ fn read_details(
     };
     match loaded_toc(&view, &target.rules) {
         Ok(loaded) => {
-            entry.toc = loaded.as_ref().map(|l| TocSummary {
-                file: l.file.clone(),
-                title: l.toc.title.clone(),
-                version: l.toc.version.clone(),
-                author: l.toc.author.clone(),
-                interfaces: l.toc.interfaces.clone(),
-                x_ids: l
-                    .toc
-                    .x_fields
-                    .iter()
-                    .filter(|(k, _)| k.to_ascii_lowercase().ends_with("id"))
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
+            entry.toc = loaded.as_ref().map(|l| {
+                let title = l.toc.title_for(&target.rules).map(str::to_owned);
+                let deps = l.toc.dependencies_for(&target.rules);
+                let strings =
+                    |names: &[FolderName]| names.iter().map(|n| n.as_str().to_owned()).collect();
+                TocSummary {
+                    file: l.file.clone(),
+                    title_plain: title.as_deref().map(crate::toc::plain_title),
+                    title,
+                    version: l.toc.version.clone(),
+                    author: l.toc.author.clone(),
+                    interfaces: l.toc.interfaces.clone(),
+                    x_ids: l
+                        .toc
+                        .x_fields
+                        .iter()
+                        .filter(|(k, _)| k.to_ascii_lowercase().ends_with("id"))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                    website: l.toc.website().map(str::to_owned),
+                    dependencies: strings(&deps.required),
+                    optional_deps: strings(&deps.optional),
+                    tukui_project_folders: l.toc.tukui_project_folders(),
+                }
             });
             entry.verdict = Some(judge(
                 &entry.name,

@@ -443,6 +443,38 @@ fn a_dependency_without_a_compatible_release_leaves_the_requester_installed_and_
 }
 
 #[test]
+fn conditional_dependencies_count_only_where_they_apply() {
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let foo = toc(
+        "120105",
+        &[
+            "## Dependencies [AllowLoadGameType vanilla]: ClassicOnly",
+            "## Dependencies [SomeFutureCondition x]: FutureLib",
+        ],
+    );
+    let zip = dl.join("Foo.zip");
+    fs::write(&zip, zip_text(&[("Foo/Foo.toc", &foo)])).unwrap();
+    let path = zip.display().to_string();
+    let r = home.run(&["install", "gh:o/foo", "--file", &path, "-t", "retail"]);
+    let envelope = r.expect(0);
+    let missing = warnings_with(&envelope, "missing_dependency");
+    assert_eq!(missing.len(), 1, "{}", r.context());
+    assert!(
+        missing[0].contains("FutureLib")
+            && missing[0].contains("under a condition omaddons does not read"),
+        "{}",
+        missing[0]
+    );
+    assert!(
+        !missing[0].contains("ClassicOnly"),
+        "a vanilla-only dependency does not apply on retail"
+    );
+    assert!(!home.addons("_retail_").join("FutureLib").exists());
+}
+
+#[test]
 fn no_deps_installs_only_the_requester_and_warns() {
     let home = wigs();
     let r = home.run(&["install", "littlewigs", "--no-deps"]);

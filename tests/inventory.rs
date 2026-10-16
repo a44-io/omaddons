@@ -82,6 +82,55 @@ mod support {
 }
 
 #[test]
+fn toc_summaries_carry_what_adoption_reads() {
+    let env = TestEnv::new();
+    let root = BattlenetRoot::at(env.root().join("wow"))
+        .product("wow")
+        .product("wow_classic_era")
+        .build();
+    let elvui = toc(
+        "11509, 120105",
+        &[
+            "## Title [AllowLoadGameType standard]: |cff1784d1ElvUI|r |TInterface\\Icons\\elv:16|t",
+            "## Title [AllowLoadGameType vanilla]: |cff1784d1ElvUI|r Classic",
+            "## X-Website: https://tukui.org",
+            "## X-Tukui-ProjectID: -2",
+            "## X-Tukui-ProjectFolders: ElvUI, ElvUI_Libraries, ElvUI_Options",
+            "## Dependencies: ElvUI_Libraries",
+            "## Dependencies [AllowLoadGameType vanilla]: ElvUI_ClassicBits",
+            "## OptionalDeps: Masque, BugSack",
+            "## LoadWith: Blizzard_Nothing",
+        ],
+    );
+    let summaries: Vec<(&str, omaddons::inventory::TocSummary)> =
+        [("_retail_", "retail"), ("_classic_era_", "era")]
+            .iter()
+            .map(|(folder, id)| {
+                let target = battlenet_target(&root, folder);
+                let addons = target.client_dir.join("Interface/AddOns");
+                addon_folder(&addons, "ElvUI", &[("ElvUI.toc", &elvui)], &[]);
+                let inv = inventory(&target, None, &RulesTable::builtin(), Depth::Full).unwrap();
+                (*id, entry(&inv, "ElvUI").toc.clone().unwrap())
+            })
+            .collect();
+    let (retail, era) = (&summaries[0].1, &summaries[1].1);
+    assert_eq!(
+        retail.title.as_deref(),
+        Some("|cff1784d1ElvUI|r |TInterface\\Icons\\elv:16|t")
+    );
+    assert_eq!(retail.title_plain.as_deref(), Some("ElvUI"));
+    assert_eq!(era.title_plain.as_deref(), Some("ElvUI Classic"));
+    assert_eq!(retail.website.as_deref(), Some("https://tukui.org"));
+    assert_eq!(
+        retail.tukui_project_folders,
+        ["ElvUI", "ElvUI_Libraries", "ElvUI_Options"]
+    );
+    assert_eq!(retail.dependencies, ["ElvUI_Libraries"]);
+    assert_eq!(era.dependencies, ["ElvUI_Libraries", "ElvUI_ClassicBits"]);
+    assert_eq!(retail.optional_deps, ["Masque", "BugSack"]);
+}
+
+#[test]
 fn a_private_server_client_is_all_protected() {
     let env = TestEnv::new();
     let root = CustomRoot::at(env.home().join("Games/wotlk"))

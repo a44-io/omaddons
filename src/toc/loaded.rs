@@ -438,15 +438,23 @@ pub fn verify_target(
     verdict(view, &target.rules, target.family, target.interface, table)
 }
 
-/// `AllowLoadGameType` names none of the client's game types or family-level names, or
-/// `ExcludeLoadGameType` names one.
-fn game_type_excluded(toc: &Toc, rules: &ClientRules) -> bool {
-    let names: Vec<String> = rules
+/// The names game-type rules match a client by: its game types and family-level names,
+/// lowercased (retail: `standard`, `mainline`; Classic Era: `vanilla`, `classic`;
+/// Forever: `camelot`, `forever`, `mainline`). `AllowLoadGameType` and directive
+/// conditions both read them, so the two never drift.
+pub(crate) fn client_names(rules: &ClientRules) -> Vec<String> {
+    rules
         .game_types
         .iter()
         .chain(&rules.family_suffixes)
         .map(|n| n.to_ascii_lowercase())
-        .collect();
+        .collect()
+}
+
+/// `AllowLoadGameType` names none of the client's game types or family-level names, or
+/// `ExcludeLoadGameType` names one.
+fn game_type_excluded(toc: &Toc, rules: &ClientRules) -> bool {
+    let names = client_names(rules);
     let named = |values: &[String]| values.iter().any(|v| names.contains(v));
     (!toc.allow_load_game_type.is_empty() && !named(&toc.allow_load_game_type))
         || named(&toc.exclude_load_game_type)
