@@ -375,6 +375,9 @@ fn commit_target(
             return Err(error);
         }
     };
+    // The index stamps taken under the lock must postdate every staged mtime by the
+    // racy slack.
+    staged.wait_out_racy_slack();
     let result = locked(
         req, ctx, scopes, plan_req, blobs, discovered, tp, &tx, &staged,
     );
@@ -613,7 +616,9 @@ fn locked(
     let now = Timestamp::now();
     let record = next_record(&current.value, &works, tx, now);
     let swap_ops: Vec<SwapOp> = works.iter().flat_map(|w| w.swap().to_vec()).collect();
-    let mut index_changes = index_changes(&swap_ops, staged);
+    // Stamped here, under the lock and after the racy wait, so the journal carries the
+    // stamps and roll-forward writes exactly these.
+    let mut index_changes = index_changes(&swap_ops, staged, now.as_nanosecond());
     records_index_changes(&works, &mut index_changes);
     // A client that has never been launched has no AddOns folder yet. The transaction
     // creates it once `prepared` records that it will; a case variant already there
@@ -862,8 +867,9 @@ fn records_index_changes(works: &[AddonWork], changes: &mut IndexChanges) {
     }
 }
 
-/// Files index changes: staged indexes under their on-disk spelling in, removed out.
-fn index_changes(ops: &[SwapOp], staged: &Staged) -> IndexChanges {
+/// Files index changes: staged indexes under their on-disk spelling in, each recorded at
+/// `stamp_ns`; removed folders out.
+pub(super) fn index_changes(ops: &[SwapOp], staged: &Staged, stamp_ns: i128) -> IndexChanges {
     let mut changes = IndexChanges::default();
     let staged_index = |name: &FolderName| {
         staged
@@ -874,12 +880,14 @@ fn index_changes(ops: &[SwapOp], staged: &Staged) -> IndexChanges {
     };
     for op in ops {
         match op {
-            SwapOp::Add { name } => changes.upsert.extend(staged_index(name)),
+            SwapOp::Add { name } => changes
+                .upsert
+                .extend(staged_index(name).map(|i| i.stamped(stamp_ns))),
             SwapOp::Replace { name, live, .. } => {
                 if let Some(index) = staged_index(name) {
                     changes
                         .upsert
-                        .push(FolderIndex::new(live.as_str(), index.files));
+                        .push(FolderIndex::new(live.as_str(), index.files).stamped(stamp_ns));
                 }
             }
             SwapOp::Remove { live, .. } => changes.remove.push(live.key().to_owned()),

@@ -86,6 +86,11 @@ pub const API_RESPONSE_MAX_BYTES: u64 = 64 * MIB;
 pub const DEPENDENCY_MAX_DEPTH: usize = 4;
 /// Most dependencies one transaction installs per target.
 pub const DEPENDENCY_MAX_ADDONS: usize = 32;
+/// How long after the newest staged file's mtime a commit stamps its folders' index
+/// entries (it waits out the rest before taking the lock): covers the kernel's coarse
+/// file-timestamp clock, so a file changed in the same tick is re-hashed, never
+/// trusted (M2-D16). Nanoseconds, to compare with `mtime_ns`.
+pub const RACY_SLACK_NS: i128 = 20_000_000;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -339,6 +344,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Dependencies one transaction installs per target",
     ),
+    limit(
+        "RACY_SLACK_NS",
+        LimitValue::Millis((RACY_SLACK_NS / 1_000_000) as u64),
+        "ms",
+        None,
+        "Covers the kernel's coarse file-timestamp clock: index entries are stamped this long after the newest staged mtime",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -513,6 +525,7 @@ mod tests {
         "CHANGELOG_MAX_ENTRIES", "API_RESPONSE_MAX_BYTES",
         "DEPENDENCY_MAX_DEPTH",
         "DEPENDENCY_MAX_ADDONS",
+        "RACY_SLACK_NS",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

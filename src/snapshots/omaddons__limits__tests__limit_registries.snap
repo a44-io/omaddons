@@ -427,6 +427,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Dependencies one transaction installs per target"
+    },
+    {
+      "name": "RACY_SLACK_NS",
+      "value": {
+        "millis": 20
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "Covers the kernel's coarse file-timestamp clock: index entries are stamped this long after the newest staged mtime"
     }
   ]
 ]

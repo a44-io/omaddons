@@ -28,6 +28,7 @@ use crate::fsx::{
     self, Content, Durability, InflightLock, MutateOpts, Op, ScopeTable, WriteSession, Writer,
     ensure_dir_all, failpoint, mutate, mutate_with,
 };
+use crate::limits::RACY_SLACK_NS;
 use crate::model::{FolderName, Target, TxId};
 use crate::state::files_index::{FileEntry, FolderIndex};
 use crate::state::paths::ClientPaths;
@@ -41,6 +42,36 @@ pub struct Staged {
     pub tx: TxId,
     pub stage_dir: PathBuf,
     pub folders: Vec<StagedFolder>,
+}
+
+impl Staged {
+    /// Waits until the newest staged file's mtime is at least `RACY_SLACK_NS` in the
+    /// past, so the stamps a commit takes under the lock never leave a fresh file
+    /// racily clean (M2-D16). At most `RACY_SLACK_NS`, usually nothing (staging takes
+    /// longer), and before the lock, so it costs no lock time. Skipped when no staged
+    /// mtime has a sub-second part: a coarse-mtime filesystem, whose files the drift
+    /// check re-hashes for its own longer slack.
+    pub fn wait_out_racy_slack(&self) {
+        let mtimes = || {
+            self.folders
+                .iter()
+                .flat_map(|f| &f.index.files)
+                .map(|e| e.mtime_ns)
+        };
+        if !mtimes().any(|m| m % 1_000_000_000 != 0) {
+            return;
+        }
+        let Some(newest) = mtimes().max() else {
+            return;
+        };
+        let now = jiff::Timestamp::now().as_nanosecond();
+        let wait = (newest + RACY_SLACK_NS - now).clamp(0, RACY_SLACK_NS);
+        if wait > 0 {
+            std::thread::sleep(std::time::Duration::from_nanos(
+                u64::try_from(wait).unwrap_or(0),
+            ));
+        }
+    }
 }
 
 /// One staged folder and its per-file index.

@@ -23,7 +23,6 @@ use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::journal::{Journal, Step, StepOp, StepPurpose};
 use super::stage::Staged;
@@ -504,12 +503,12 @@ fn fail(path: &Path, e: &std::io::Error) -> Error {
     Error::io(path, e, Suggestion::command(["omaddons", "status"]))
 }
 
+/// The lowercase hex SHA-256 of the file at `path`, streamed (SavedVariables reach
+/// 64 MiB, and undo staging hashes every restored file).
 pub(crate) fn sha256_file(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path).map_err(|e| fail(path, &e))?;
-    Ok(Sha256::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
+    crate::state::files_index::hash_file_streaming(path)
+        .map(|(_, sha256)| sha256)
+        .map_err(|e| fail(path, &e))
 }
 
 /// Directory names in `dir`, sorted; nothing when it cannot be read.

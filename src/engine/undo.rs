@@ -186,6 +186,9 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
             return Err(error);
         }
     };
+    // The index stamps taken under the lock must postdate every staged mtime by the
+    // racy slack.
+    staged.wait_out_racy_slack();
     let result = commit(ctx, req, &scopes, discovered, reverted.tx, &tx, &staged);
     cleanup(ctx.paths, &scopes, inflight, &tx, Some(&staged.stage_dir));
     let mut done = result?;
@@ -230,6 +233,14 @@ fn commit(
     let key = planned.key;
     let client = ClientPaths::new(&target.client_dir);
     let now = Timestamp::now();
+    // The folders swapped back in are the staged copies (new mtimes): record those
+    // entries, stamped now, rather than the reverted transaction's before entries.
+    let index_changes = undo_index(
+        &planned.index,
+        &planned.folders.swap,
+        staged,
+        now.as_nanosecond(),
+    );
     let history = HistoryEntry {
         schema_version: history::CURRENT,
         tx: *tx,
@@ -260,7 +271,7 @@ fn commit(
         creates_dirs: Vec::new(),
         commit: CommitPayload {
             record: planned.record.clone(),
-            index: planned.index.clone(),
+            index: index_changes.clone(),
             history: history.clone(),
             stage_dir: staged.stage_dir.clone(),
             sv_restore: sv_restore.clone(),
@@ -308,7 +319,7 @@ fn commit(
             },
             |l| l.value.clone(),
         );
-        planned.index.apply(&mut index);
+        index_changes.apply(&mut index);
         index.written_at_ns = Timestamp::now().as_nanosecond();
         store::save(
             &mut s,
@@ -780,6 +791,41 @@ fn toc_names(dir: &Path) -> BTreeSet<String> {
 /// The record after the undo, its index changes, the per-addon changes and the history
 /// ops of in-place edits.
 type Restored = (TargetRecord, IndexChanges, Vec<Change>, Vec<HistoryOp>);
+
+/// The undo commit's index changes: every folder it swaps in gets its staged entries
+/// (the restored copies' own mtimes), recorded at `stamp_ns`, under the spelling the
+/// swap leaves; folders it removes lose theirs. `restored` (the reverted transaction's
+/// before entries) still covers touched folders the undo does not swap: record-only
+/// ops, folders already gone.
+fn undo_index(
+    restored: &IndexChanges,
+    swap: &[SwapOp],
+    staged: &Staged,
+    stamp_ns: i128,
+) -> IndexChanges {
+    let mut changes = super::tx::index_changes(swap, staged, stamp_ns);
+    let swapped: BTreeSet<String> = changes
+        .upsert
+        .iter()
+        .map(|f| f.name.to_ascii_lowercase())
+        .chain(changes.remove.iter().cloned())
+        .collect();
+    changes.upsert.extend(
+        restored
+            .upsert
+            .iter()
+            .filter(|f| !swapped.contains(&f.name.to_ascii_lowercase()))
+            .cloned(),
+    );
+    changes.remove.extend(
+        restored
+            .remove
+            .iter()
+            .filter(|key| !swapped.contains(*key))
+            .cloned(),
+    );
+    changes
+}
 
 /// The record and index after the undo, and the per-addon changes: every addon the
 /// reverted transaction changed comes back as it was before it (or goes, if it was not
