@@ -156,11 +156,11 @@ fn check_github(input: &str, owner: &str, repo: &str) -> Result<()> {
     }
 }
 
-fn is_github_owner(s: &str) -> bool {
+pub(crate) fn is_github_owner(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-fn is_github_repo(s: &str) -> bool {
+pub(crate) fn is_github_repo(s: &str) -> bool {
     !s.is_empty()
         && s != "."
         && s != ".."
@@ -168,7 +168,7 @@ fn is_github_repo(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
-fn is_slug(s: &str) -> bool {
+pub(crate) fn is_slug(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
