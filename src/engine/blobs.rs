@@ -101,7 +101,8 @@ impl BlobCache {
         }
     }
 
-    /// A smaller download cap (tests; production uses `DOWNLOAD_MAX_BYTES`).
+    /// The download cap in force (`limits.download_max_bytes`; the engine passes the
+    /// configured value, raised or lowered).
     #[must_use]
     pub fn with_max_download(mut self, bytes: u64) -> Self {
         self.max_download = bytes;
@@ -668,6 +669,30 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(DOWNLOAD_MAX_BYTES, 512 << 20, "the production cap");
+    }
+
+    #[test]
+    fn a_raised_download_cap_from_config_is_honoured() {
+        use crate::engine::inspect::ArchiveLimits;
+        use crate::limits::EffectiveLimits;
+
+        // config.toml raised limits.download_max_bytes past what was the cap.
+        let raised = EffectiveLimits {
+            download_max_bytes: 2_000,
+            ..EffectiveLimits::default()
+        };
+        let limits = ArchiveLimits::from(&raised);
+        assert_eq!(limits.max_download, 2_000);
+        let f = fixture();
+        let cache = BlobCache::new(&f.paths).with_max_download(limits.max_download);
+        let stored =
+            cache.store_stream(&f.scopes, &TxId::new(), Zeros(1_500), None, &Storage::Cache);
+        assert!(stored.is_ok(), "{stored:?}");
+        let err = cache
+            .store_stream(&f.scopes, &TxId::new(), Zeros(2_001), None, &Storage::Cache)
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ArchiveTooLarge);
+        assert_eq!(ArchiveLimits::default().max_download, DOWNLOAD_MAX_BYTES);
     }
 
     #[test]

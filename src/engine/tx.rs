@@ -210,7 +210,7 @@ pub fn check_releases(jobs: &[CheckJob], ctx: &EngineCtx<'_>) -> Result<CheckedR
         return Ok(checked);
     }
     let scopes = ScopeTable::new(ctx.paths, &[], None)?;
-    let blobs = BlobCache::new(ctx.paths);
+    let blobs = BlobCache::new(ctx.paths).with_max_download(ctx.limits.max_download);
     let tx = TxId::new();
     let inflight = InflightLock::create(ctx.paths, &tx)?;
     let transient;
@@ -266,7 +266,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         .map(|t| t.discovered.target.client_dir.clone())
         .collect();
     let scopes = ScopeTable::new(ctx.paths, &client_dirs, None)?;
-    let blobs = BlobCache::new(ctx.paths);
+    let blobs = BlobCache::new(ctx.paths).with_max_download(ctx.limits.max_download);
     let plan_tx = TxId::new();
     let plan_inflight = InflightLock::create(ctx.paths, &plan_tx)?;
     let targets: Vec<Target> = req

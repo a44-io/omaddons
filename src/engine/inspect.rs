@@ -28,7 +28,7 @@ use zip::CompressionMethod;
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::limits::{
     ARCHIVE_MAX_ENTRIES, ARCHIVE_MAX_RATIO, ARCHIVE_MAX_UNCOMPRESSED, ARCHIVE_RATIO_FLOOR,
-    EffectiveLimits,
+    DOWNLOAD_MAX_BYTES, EffectiveLimits,
 };
 use crate::model::{FolderName, Target};
 use crate::rules::RulesTable;
@@ -43,6 +43,8 @@ pub struct ArchiveLimits {
     pub max_entries: u64,
     pub max_uncompressed: u64,
     pub max_ratio: u64,
+    /// The largest archive a download may store (`limits.download_max_bytes`).
+    pub max_download: u64,
 }
 
 impl Default for ArchiveLimits {
@@ -51,6 +53,7 @@ impl Default for ArchiveLimits {
             max_entries: ARCHIVE_MAX_ENTRIES,
             max_uncompressed: ARCHIVE_MAX_UNCOMPRESSED,
             max_ratio: ARCHIVE_MAX_RATIO,
+            max_download: DOWNLOAD_MAX_BYTES,
         }
     }
 }
@@ -61,6 +64,7 @@ impl From<&EffectiveLimits> for ArchiveLimits {
             max_entries: limits.archive_max_entries,
             max_uncompressed: limits.archive_max_uncompressed,
             max_ratio: limits.archive_max_ratio,
+            max_download: limits.download_max_bytes,
         }
     }
 }
