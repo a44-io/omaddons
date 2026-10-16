@@ -42,6 +42,7 @@ use crate::model::{
     Actor, AddonState, FolderName, ReloadRequired, Target, TargetKey, TxId, TxKind,
 };
 use crate::net::Http;
+use crate::output::{Phase, ProgressSink};
 use crate::resolve::cache::ReleaseCache;
 use crate::rules::RulesTable;
 use crate::sources::SourceRegistry;
@@ -123,6 +124,8 @@ pub struct EngineCtx<'a> {
     /// The command's release metadata, shared by its engine runs; `None` fetches
     /// without a memo.
     pub cache: Option<&'a ReleaseCache<'a>>,
+    /// Where the run's progress goes.
+    pub progress: &'a ProgressSink,
 }
 
 /// One target's result: the `data` core of install, remove and undo.
@@ -205,6 +208,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         http: ctx.http,
         registry: ctx.registry,
         cache,
+        progress: ctx.progress,
         blobs: &blobs,
         table: ctx.table,
         tx: plan_tx,
@@ -241,6 +245,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
                 plan.targets[*i].target.clone(),
             )
         });
+        let with_work = plan.targets.iter().filter(|t| !t.work.is_empty()).count() as u64;
         for i in order {
             let tp = &plan.targets[i];
             let Some(tt) = req.targets.get(i) else {
@@ -250,8 +255,15 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
                 outcomes.push(unchanged(tp, false));
                 continue;
             }
-            match commit_target(req, ctx, &scopes, &plan_req, &blobs, &tt.discovered, tp) {
+            let discovered = &tt.discovered;
+            match commit_target(
+                req, ctx, &scopes, &plan_req, &blobs, discovered, tp, with_work,
+            ) {
                 Ok((outcome, recovered)) => {
+                    if outcome.tx.is_some() {
+                        ctx.progress
+                            .event(Phase::Commit, with_work, &outcome.target);
+                    }
                     outcomes.push(outcome);
                     warnings.extend(recovered);
                 }
@@ -309,6 +321,7 @@ pub(super) fn running_now(ctx: &EngineCtx<'_>, targets: &[Target]) -> BTreeSet<P
 }
 
 /// One target's transaction, from staging to cleanup.
+#[allow(clippy::too_many_arguments)]
 fn commit_target(
     req: &TxRequest,
     ctx: &EngineCtx<'_>,
@@ -317,12 +330,16 @@ fn commit_target(
     blobs: &BlobCache,
     discovered: &DiscoveredTarget,
     tp: &TargetPlan,
+    with_work: u64,
 ) -> Result<(TxOutcome, Vec<Warning>)> {
     let tx = TxId::new();
     let inflight = InflightLock::create(ctx.paths, &tx)?;
     let target = &discovered.target;
     let staged = match stage_all(&inflight, scopes, target, &tp.work) {
-        Ok(staged) => staged,
+        Ok(staged) => {
+            ctx.progress.event(Phase::Stage, with_work, &target.id);
+            staged
+        }
         Err(error) => {
             cleanup(
                 ctx.paths,
@@ -473,6 +490,7 @@ fn locked(
         http: ctx.http,
         registry: ctx.registry,
         cache: &offline,
+        progress: ctx.progress,
         blobs,
         table: ctx.table,
         tx: *tx,

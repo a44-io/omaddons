@@ -20,7 +20,7 @@ use serde::Serialize;
 
 use crate::cli::{Cli, Command, Context};
 use crate::error::Exit;
-use crate::output::{self, Reporter};
+use crate::output::{self, SharedReporter};
 use targets::TargetsAction;
 
 /// What a command is for: bare help lists the commands one line per group, so it stays
@@ -126,40 +126,82 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
     }
 }
 
-/// Runs the parsed command and renders its outcome.
-pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
-    let cfg = &ctx.output;
-    let mut reporter = Reporter::stderr(cfg);
-    let name = command_name(cli.command.as_ref());
-    if cli.global.version {
-        return output::emit(
-            cfg,
+/// The run's output: the shared reporter, locked only for each write, so a command
+/// reporting progress while it runs never waits on `dispatch`.
+struct Out<'a> {
+    cfg: &'a output::OutputConfig,
+    reporter: &'a SharedReporter,
+    name: &'static str,
+    started: std::time::Instant,
+    offline: bool,
+}
+
+impl Out<'_> {
+    fn emit<O: output::Outcome>(&self, result: crate::error::Result<O>) -> Exit {
+        self.emit_as(self.name, result)
+    }
+
+    fn emit_as<O: output::Outcome>(
+        &self,
+        name: &'static str,
+        result: crate::error::Result<O>,
+    ) -> Exit {
+        let mut reporter = output::lock(self.reporter);
+        output::emit(
+            self.cfg,
             &mut reporter,
-            "version",
-            ctx.started,
-            ctx.offline,
-            Ok(help::version()),
-        );
+            name,
+            self.started,
+            self.offline,
+            result,
+        )
+    }
+
+    fn log(&self, level: output::LogLevel, message: &str) {
+        output::lock(self.reporter).log(level, message);
+    }
+
+    fn lock_released(&self, held: Option<u64>, tx: Option<crate::model::TxId>) {
+        if let (Some(ms), Some(tx)) = (held, tx) {
+            self.log(
+                output::LogLevel::Debug,
+                &format!("lock released: tx {tx}, lock_held_ms {ms}"),
+            );
+        }
+    }
+}
+
+/// Runs the parsed command and renders its outcome through `reporter`, the run's one
+/// stderr reporter (also behind `ctx.progress`).
+pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
+    let name = command_name(cli.command.as_ref());
+    let out = Out {
+        cfg: &ctx.output,
+        reporter,
+        name,
+        started: ctx.started,
+        offline: ctx.offline,
+    };
+    if cli.global.version {
+        return out.emit_as("version", Ok(help::version()));
     }
     if cli.global.help {
         let result = match &cli.command {
             None => Ok(help::bare()),
             Some(_) => help::for_command(Some(name), &ctx.argv),
         };
-        return output::emit(cfg, &mut reporter, "help", ctx.started, ctx.offline, result);
+        return out.emit_as("help", result);
     }
-    let (started, offline) = (ctx.started, ctx.offline);
     match &cli.command {
-        None => output::emit(cfg, &mut reporter, name, started, offline, Ok(help::bare())),
+        None => out.emit(Ok(help::bare())),
         Some(Command::Help { command }) => {
-            let result = help::for_command(command.as_deref(), &ctx.argv);
-            output::emit(cfg, &mut reporter, name, started, offline, result)
+            out.emit(help::for_command(command.as_deref(), &ctx.argv))
         }
         Some(Command::Status(args)) => {
             let result = status::run(ctx, *args);
             if let Ok(outcome) = &result {
                 let d = outcome.discovery;
-                reporter.log(
+                out.log(
                     output::LogLevel::Debug,
                     &format!(
                         "discovery: scanned {}, roots reused {}, parsed {}, cache written {}",
@@ -170,135 +212,69 @@ pub fn dispatch(cli: &Cli, ctx: &Context) -> Exit {
                     ),
                 );
             }
-            output::emit(cfg, &mut reporter, name, started, offline, result)
+            out.emit(result)
         }
         Some(Command::Install(args)) => {
             let result = install::run(ctx, args);
             if let Ok(outcome) = &result {
                 for note in &outcome.notes {
-                    reporter.log(output::LogLevel::Debug, note);
+                    out.log(output::LogLevel::Debug, note);
                 }
-                if let (Some(ms), Some(tx)) =
-                    (outcome.lock_held_ms, output::Outcome::data(outcome).tx)
-                {
-                    reporter.log(
-                        output::LogLevel::Debug,
-                        &format!("lock released: tx {tx}, lock_held_ms {ms}"),
-                    );
-                }
+                out.lock_released(outcome.lock_held_ms, output::Outcome::data(outcome).tx);
             }
-            output::emit(cfg, &mut reporter, name, started, offline, result)
+            out.emit(result)
         }
         Some(Command::Remove(args)) => {
             let result = remove::run(ctx, args);
-            if let Ok(outcome) = &result
-                && let (Some(ms), Some(tx)) =
-                    (outcome.lock_held_ms, output::Outcome::data(outcome).tx)
-            {
-                reporter.log(
-                    output::LogLevel::Debug,
-                    &format!("lock released: tx {tx}, lock_held_ms {ms}"),
-                );
+            if let Ok(outcome) = &result {
+                out.lock_released(outcome.lock_held_ms, output::Outcome::data(outcome).tx);
             }
-            output::emit(cfg, &mut reporter, name, started, offline, result)
+            out.emit(result)
         }
         Some(Command::Undo(args)) => {
             let result = undo::run(ctx, args);
-            if let Ok(outcome) = &result
-                && let (Some(ms), Some(tx)) =
-                    (outcome.lock_held_ms, output::Outcome::data(outcome).tx)
-            {
-                reporter.log(
-                    output::LogLevel::Debug,
-                    &format!("lock released: tx {tx}, lock_held_ms {ms}"),
-                );
+            if let Ok(outcome) = &result {
+                out.lock_released(outcome.lock_held_ms, output::Outcome::data(outcome).tx);
             }
-            output::emit(cfg, &mut reporter, name, started, offline, result)
+            out.emit(result)
         }
         Some(Command::Info(args)) => {
             let result = info::run(ctx, args);
             if let Ok(outcome) = &result {
                 for note in &outcome.notes {
-                    reporter.log(output::LogLevel::Debug, note);
+                    out.log(output::LogLevel::Debug, note);
                 }
             }
-            output::emit(cfg, &mut reporter, name, started, offline, result)
+            out.emit(result)
         }
-        Some(Command::NetLog(args)) => output::emit(
-            cfg,
-            &mut reporter,
-            name,
-            started,
-            offline,
-            net_log::run(ctx, args),
-        ),
+        Some(Command::NetLog(args)) => out.emit(net_log::run(ctx, args)),
         Some(Command::History(args)) => {
             let result = history::run(ctx, args, cli.global.actor.as_deref());
             if result.as_ref().is_ok_and(|o| o.torn_tail) {
-                reporter.log(
+                out.log(
                     output::LogLevel::Info,
                     "history.jsonl ends with an incomplete line (an interrupted write); it was skipped",
                 );
             }
-            output::emit(cfg, &mut reporter, name, started, offline, result)
+            out.emit(result)
         }
-        Some(Command::List(args)) => output::emit(
-            cfg,
-            &mut reporter,
-            name,
-            started,
-            offline,
-            list::run(ctx, *args),
-        ),
-        Some(Command::Targets(args)) => {
-            let r = &mut reporter;
-            match &args.action {
-                None => output::emit(
-                    cfg,
-                    r,
-                    name,
-                    started,
-                    offline,
-                    targets::list(ctx, args.rescan),
-                ),
-                Some(TargetsAction::Add { path, name: id }) => output::emit(
-                    cfg,
-                    r,
-                    name,
-                    started,
-                    offline,
-                    targets::add(ctx, path, id.as_deref()),
-                ),
-                Some(TargetsAction::Rm { id }) => {
-                    output::emit(cfg, r, name, started, offline, targets::rm(ctx, id))
-                }
-                Some(TargetsAction::Rename { id, new }) => output::emit(
-                    cfg,
-                    r,
-                    name,
-                    started,
-                    offline,
-                    targets::rename(ctx, id, new),
-                ),
-                Some(TargetsAction::Default { id }) => {
-                    output::emit(cfg, r, name, started, offline, targets::default(ctx, id))
-                }
+        Some(Command::List(args)) => out.emit(list::run(ctx, *args)),
+        Some(Command::Targets(args)) => match &args.action {
+            None => out.emit(targets::list(ctx, args.rescan)),
+            Some(TargetsAction::Add { path, name: id }) => {
+                out.emit(targets::add(ctx, path, id.as_deref()))
             }
-        }
+            Some(TargetsAction::Rm { id }) => out.emit(targets::rm(ctx, id)),
+            Some(TargetsAction::Rename { id, new }) => out.emit(targets::rename(ctx, id, new)),
+            Some(TargetsAction::Default { id }) => out.emit(targets::default(ctx, id)),
+        },
         Some(Command::Config(args)) => {
             use config::ConfigAction;
-            let r = &mut reporter;
             match &args.action {
-                None => output::emit(cfg, r, name, started, offline, config::list()),
-                Some(ConfigAction::Get { key }) => {
-                    output::emit(cfg, r, name, started, offline, config::get(key))
-                }
-                Some(ConfigAction::Set { key, value }) => {
-                    output::emit(cfg, r, name, started, offline, config::set(ctx, key, value))
-                }
-                Some(ConfigAction::Path) => {
-                    output::emit(cfg, r, name, started, offline, config::path())
-                }
+                None => out.emit(config::list()),
+                Some(ConfigAction::Get { key }) => out.emit(config::get(key)),
+                Some(ConfigAction::Set { key, value }) => out.emit(config::set(ctx, key, value)),
+                Some(ConfigAction::Path) => out.emit(config::path()),
             }
         }
     }

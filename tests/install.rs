@@ -1129,3 +1129,100 @@ fn a_channel_switch_whose_release_is_installed_records_the_channel() {
         "an immediate repeat creates no transaction"
     );
 }
+
+/// The `progress` events of a run, as `(phase, message, current, total)`.
+fn progress(r: &Run) -> Vec<(String, String, u64, u64)> {
+    support::events(r)
+        .into_iter()
+        .filter(|e| e["event"] == "progress")
+        .map(|e| {
+            (
+                e["phase"].as_str().unwrap_or_default().to_owned(),
+                e["message"].as_str().unwrap_or_default().to_owned(),
+                e["current"].as_u64().unwrap_or_default(),
+                e["total"].as_u64().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_long_install_reports_progress_only_when_asked() {
+    let home = Home::new(&["wow"]);
+    foo_release(&home.http, "v1.0.0", mainline(), "120105");
+    let bar = toc("120105", &["## Title: Bar"]);
+    let assets: [Asset<'_>; 1] = [("Bar.zip", mainline(), vec![("Bar/Bar.toc", bar.as_str())])];
+    gh_release(&home.http, support::BAR, "v1", &assets);
+
+    let r = home.run(&[
+        "install",
+        "gh:o/foo",
+        "gh:o/bar",
+        "-t",
+        "retail",
+        "--progress",
+        "json",
+    ]);
+    let envelope = r.expect(0);
+    assert_eq!(envelope["data"]["kind"], "install", "{}", r.context());
+    assert!(
+        r.stderr
+            .lines()
+            .all(|l| serde_json::from_str::<Value>(l).is_ok_and(|e| e["event"].is_string())),
+        "stderr is NDJSON events only\n{}",
+        r.context()
+    );
+    let events = progress(&r);
+    let phases: std::collections::BTreeSet<&str> =
+        events.iter().map(|(p, ..)| p.as_str()).collect();
+    assert_eq!(
+        phases,
+        ["commit", "download", "fetch", "stage", "verify"].into(),
+        "{}",
+        r.context()
+    );
+    for phase in &phases {
+        let of: Vec<&(String, String, u64, u64)> =
+            events.iter().filter(|(p, ..)| p == phase).collect();
+        let total = of[0].3;
+        let mut items = std::collections::BTreeSet::new();
+        for (n, (_, item, current, t)) in of.iter().enumerate() {
+            assert_eq!(
+                (*current, *t),
+                (n as u64 + 1, total),
+                "{phase}: monotonic, fixed total"
+            );
+            assert!(*current <= total, "{phase}");
+            assert!(items.insert(item.clone()), "{phase}: {item} twice");
+        }
+    }
+    let fetched: Vec<&str> = events
+        .iter()
+        .filter(|(p, ..)| p == "fetch")
+        .map(|(_, item, ..)| item.as_str())
+        .collect();
+    assert_eq!(fetched, ["gh:o/bar", "gh:o/foo"]);
+
+    // Not asked for: --json alone, or --quiet even with --progress json.
+    let next = home.run(&["remove", "Foo", "Bar", "-t", "retail"]);
+    next.expect(0);
+    for extra in [&[][..], &["--quiet", "--progress", "json"][..]] {
+        let mut args = vec!["install", "gh:o/foo", "-t", "retail"];
+        args.extend_from_slice(extra);
+        let r = home.run(&args);
+        r.expect(0);
+        assert!(progress(&r).is_empty(), "{extra:?}\n{}", r.context());
+        home.run(&["remove", "Foo", "-t", "retail"]).expect(0);
+    }
+    // Human output with a stderr that is not a terminal (every test run): no progress.
+    let argv: Vec<String> = ["install", "gh:o/bar", "-t", "retail"]
+        .map(str::to_owned)
+        .to_vec();
+    let r = home.exec(&argv);
+    assert_eq!(r.code, 0, "{}", r.context());
+    assert!(
+        progress(&r).is_empty() && !r.stderr.contains('\r'),
+        "{}",
+        r.context()
+    );
+}

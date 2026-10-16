@@ -162,6 +162,8 @@ pub struct Context {
     /// The raw `-t` value; the registry resolves it.
     pub target: Option<String>,
     pub started: Instant,
+    /// Where long commands report progress (nothing when progress is off).
+    pub progress: crate::output::ProgressSink,
 }
 
 impl Context {
@@ -210,6 +212,7 @@ impl Context {
             while_running: global.while_running,
             target: global.target.clone(),
             started,
+            progress: crate::output::ProgressSink::none(),
         })
     }
 }
@@ -268,11 +271,14 @@ fn run_with(
     if let Err(err) = crate::fsx::failpoint::hit("cli.panic") {
         return render_error(&output, command, started, Error::internal(err.to_string()));
     }
-    let ctx = match Context::new(&cli.global, output, &argv, env, stdin_is_tty, started) {
+    let mut ctx = match Context::new(&cli.global, output, &argv, env, stdin_is_tty, started) {
         Ok(ctx) => ctx,
         Err(error) => return render_error(&output, command, started, error),
     };
-    crate::app::dispatch(&cli, &ctx)
+    // One reporter for the whole run: the command's progress and the outcome's output.
+    let reporter = output::shared_stderr(&output);
+    ctx.progress = output::ProgressSink::new(&reporter, &output);
+    crate::app::dispatch(&cli, &ctx, &reporter)
 }
 
 /// Renders an error that has no outcome (usage errors, a failed failpoint).

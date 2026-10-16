@@ -552,7 +552,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--no-color` | No ANSI color (also `NO_COLOR`) |
 | `--quiet` | Only errors on stderr |
 | `-v, --verbose` | More detail: paths, and debug `log` events on stderr (repeatable) |
-| `--progress json\|human\|none`, `--no-progress` | Accepted; no command emits progress yet (milestone 2) |
+| `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install` today). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
 | `-h, --help` | Help |
 | `-V, --version` | Version (`omaddons -V` only; after a command, `--version` is that command's flag or a usage error) |
 
@@ -863,7 +863,7 @@ When stderr is not a terminal, or `CI` is set, or `TERM=dumb`, stderr carries ND
 {"event":"log","level":"debug","message":"discovery: scanned yes, roots reused 2, parsed 0, cache written no"}
 ```
 
-Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. A `progress` event type is defined, but no command emits it yet (milestone 2).
+Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. `progress` events come from long commands (`install` today) when progress is on: `{"event":"progress","phase":"download","message":"gh:o/foo@v1 on retail","current":1,"total":2}`. The phases are `fetch`, `download`, `verify`, `stage` and `commit`. Within a phase, `current` counts up to a fixed `total`, and each item appears once. On a terminal in human mode, progress is one line that is rewritten in place.
 
 ### Stability
 
@@ -1288,7 +1288,7 @@ Journals are recovered by the next command that commits a change, not by read co
 | Adopting addons installed by other managers | ❌ they show as unmanaged | M2 |
 | `addons.toml`, `export`, `sync`, `copy` between clients | ❌ | M2 |
 | `search` | ❌ catalog names and links only | M2 |
-| Progress output | ❌ `--progress` is accepted, nothing is emitted | M2 |
+| Progress output | ⚠️ `install` reports progress; the other long commands arrive with M2 | M2 |
 | The Omarchy bar widget | ❌ the help text mentions it, the code does not exist yet | M3 |
 | Lua error capture (BugGrabber), `WTF/` backups | ❌ | M3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, agent skill | ❌ | M4 |

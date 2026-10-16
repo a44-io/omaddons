@@ -42,7 +42,8 @@ use crate::model::{
     VersionConfidence,
 };
 use crate::net::{Http, Request};
-use crate::resolve::cache::ReleaseCache;
+use crate::output::{Phase, ProgressSink};
+use crate::resolve::cache::{Origin, ReleaseCache};
 use crate::resolve::select::{EmptyReason, select};
 use crate::rules::RulesTable;
 use crate::sources::{SourceRegistry, Wanted};
@@ -301,6 +302,8 @@ pub struct PlanCtx<'a> {
     pub registry: &'a SourceRegistry,
     /// Release metadata: every fetch goes through it, once per wish per command.
     pub cache: &'a ReleaseCache<'a>,
+    /// Where fetch, download and verify progress goes.
+    pub progress: &'a ProgressSink,
     pub blobs: &'a BlobCache,
     pub table: &'a RulesTable,
     /// The transaction whose in-flight lock the caller holds (temp downloads).
@@ -618,7 +621,26 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         })
         .collect();
     let fetched = ctx.cache.get(&to_fetch);
+    let from_sources: Vec<&Wanted> = fetched
+        .iter()
+        .filter(|(_, f)| f.origin == Origin::Fetched)
+        .map(|(w, _)| w)
+        .collect();
+    for w in &from_sources {
+        let total = from_sources.len() as u64;
+        ctx.progress
+            .event(Phase::Fetch, total, &w.r#ref.to_string());
+    }
     failpoint::hit("engine.plan.fetched").map_err(|e| fail(ctx, &e))?;
+    // Each install wish is verified, and downloaded, at most once per target.
+    let candidate_items = prepared
+        .iter()
+        .flat_map(|(_, record, _, wants)| wants.iter().map(move |w| (record, w)))
+        .filter(|(record, w)| match w {
+            Want::Install { wanted, intent, .. } => !keeps_installed(record, &wanted.r#ref, intent),
+            _ => false,
+        })
+        .count() as u64;
 
     let mut targets = Vec::with_capacity(prepared.len());
     let mut failures = Vec::new();
@@ -675,6 +697,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             live: &live,
             created_at,
             facts: RefCell::new(Vec::new()),
+            candidate_items,
         };
         for w in wants {
             let (r, addon, result) = match w {
@@ -780,8 +803,9 @@ pub fn rejudge(
         index: index.as_ref(),
         live: &live,
         created_at: Timestamp::now(),
-        // Re-judging downloads nothing, so it learns nothing.
+        // Re-judging downloads nothing, so it learns and reports nothing.
         facts: RefCell::new(Vec::new()),
+        candidate_items: 0,
     };
     let folders = match &work.mode {
         WorkMode::Folders(folders) => folders,
@@ -1221,6 +1245,9 @@ struct TargetPlanner<'a> {
     created_at: Timestamp,
     /// What downloading candidates for this target taught.
     facts: RefCell<Vec<CandidateFact>>,
+    /// Install wishes across the plan that try candidates: the download and verify
+    /// progress total.
+    candidate_items: u64,
 }
 
 /// What ownership and the running policy allow.
@@ -1848,6 +1875,9 @@ impl TargetPlanner<'_> {
             }
         };
         let verdicts = verify(&inspected, self.target, ctx.table)?;
+        let item = format!("{} on {}", r#ref, self.target.id);
+        ctx.progress
+            .event(Phase::Verify, self.candidate_items, &item);
         let split = partition(&verdicts);
         let all: Vec<FolderName> = inspected.folders.iter().map(|f| f.name.clone()).collect();
         let primary = primary_folder(r#ref, &all);
@@ -1999,6 +2029,9 @@ impl TargetPlanner<'_> {
             ) {
                 Ok(blob) => {
                     failpoint::hit("engine.plan.downloaded").map_err(|e| fail(ctx, &e))?;
+                    let item = format!("{release_id} on {}", self.target.id);
+                    ctx.progress
+                        .event(Phase::Download, self.candidate_items, &item);
                     return Ok(blob);
                 }
                 Err(e) if e.code == ErrorCode::HashMismatch && attempt == 1 => attempt += 1,
@@ -2593,6 +2626,7 @@ mod tests {
             http: &crate::engine::testing::NoNetwork,
             registry: &registry,
             cache: &cache,
+            progress: &ProgressSink::none(),
             blobs: &blobs,
             table: &table,
             tx: TxId::new(),

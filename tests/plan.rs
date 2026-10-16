@@ -106,6 +106,7 @@ mod support {
                 http: http.as_ref(),
                 registry: &registry,
                 cache: &cache,
+                progress: &omaddons::output::ProgressSink::none(),
                 blobs: &blobs,
                 table: &table,
                 tx: self.tx,

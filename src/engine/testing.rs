@@ -358,6 +358,7 @@ impl TxScene {
             command,
             running: Some(&self.running),
             cache: None,
+            progress: &crate::output::ProgressSink::none(),
         };
         f(&ctx)
     }

@@ -11,6 +11,7 @@ use crate::engine::{EngineCtx, TxOutcomes, TxRequest, UndoOutcome, UndoRequest};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::Actor;
 use crate::net::{Http, NetConfig, NetLog, stack};
+use crate::output::ProgressSink;
 use crate::resolve::cache::{Freshness, ReleaseCache};
 use crate::rules::RulesTable;
 use crate::sources::SourceRegistry;
@@ -31,6 +32,8 @@ pub struct Engine {
     argv: Vec<String>,
     /// The command, recorded as the lock holder.
     command: &'static str,
+    /// The command's progress, which its engine runs report into.
+    progress: ProgressSink,
 }
 
 impl Engine {
@@ -61,6 +64,7 @@ impl Engine {
             actor: ctx.actor,
             argv: ctx.argv.clone(),
             command,
+            progress: ctx.progress.clone(),
         })
     }
 
@@ -78,6 +82,7 @@ impl Engine {
             command: self.command,
             running: None,
             cache,
+            progress: &self.progress,
         }
     }
 

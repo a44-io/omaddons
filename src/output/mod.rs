@@ -20,7 +20,7 @@ use serde::Serialize;
 
 pub use envelope::{Envelope, Meta, SCHEMA_VERSION};
 pub use human::table;
-pub use stderr::{LogLevel, Reporter};
+pub use stderr::{LogLevel, Phase, ProgressSink, Reporter, SharedReporter, lock, shared_stderr};
 pub use term::{
     OutputConfig, OutputFlags, OutputMode, ProgressMode, StderrMode, Style, TermEnv, resolve,
     resolve_output_mode_from_argv,

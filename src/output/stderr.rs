@@ -3,12 +3,129 @@
 //! `warning: …` and `error[<code>]: …` with their fixes. `--quiet` drops everything but
 //! errors. Write failures on stderr are ignored: there is nowhere left to report them.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
 
 use super::term::{OutputConfig, ProgressMode, StderrMode};
 use crate::error::{Error, Warning};
+
+/// The one stderr reporter of a run, shared by the command's progress and `dispatch`'s
+/// output, so a human progress line is always cleared before other output. Lock it
+/// only for one write.
+pub type SharedReporter = Arc<Mutex<Reporter<Box<dyn Write + Send>>>>;
+
+/// The shared reporter for `cfg`, writing to stderr.
+pub fn shared_stderr(cfg: &OutputConfig) -> SharedReporter {
+    let sink: Box<dyn Write + Send> = Box::new(std::io::stderr());
+    Arc::new(Mutex::new(Reporter::new(sink, cfg)))
+}
+
+/// The reporter, locked for one write (a poisoned lock is still usable: a reporter has
+/// no invariant a panic could break).
+pub fn lock(reporter: &SharedReporter) -> MutexGuard<'_, Reporter<Box<dyn Write + Send>>> {
+    reporter.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A phase of a long command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Phase {
+    /// Release metadata fetched from a source.
+    Fetch,
+    /// An archive downloaded.
+    Download,
+    /// An archive verified against a client's load rules.
+    Verify,
+    /// A target's folders staged.
+    Stage,
+    /// A target's transaction committed.
+    Commit,
+}
+
+impl Phase {
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::Fetch => "fetch",
+            Self::Download => "download",
+            Self::Verify => "verify",
+            Self::Stage => "stage",
+            Self::Commit => "commit",
+        }
+    }
+}
+
+/// A phase's count so far.
+#[derive(Debug, Default)]
+struct PhaseCount {
+    total: Option<u64>,
+    current: u64,
+    seen: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+struct SinkInner {
+    reporter: SharedReporter,
+    phases: Mutex<BTreeMap<Phase, PhaseCount>>,
+}
+
+/// Where a command and the engine report progress: a cheap handle on the run's shared
+/// reporter, or nothing when progress is off. Each phase is counted in one place, so
+/// `current` only grows, never passes `total`, `total` is the first one given, and an
+/// item is reported at most once per phase (a second engine run over the same items,
+/// such as `install`'s real run after its probe, adds nothing).
+#[derive(Debug, Clone, Default)]
+pub struct ProgressSink {
+    inner: Option<Arc<SinkInner>>,
+}
+
+impl std::fmt::Debug for Reporter<Box<dyn Write + Send>> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reporter")
+            .field("mode", &self.mode)
+            .field("progress", &self.progress)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ProgressSink {
+    /// No progress: every event is dropped without taking a lock.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Progress through `reporter`, when `cfg` asks for it (`--quiet` never shows it).
+    pub fn new(reporter: &SharedReporter, cfg: &OutputConfig) -> Self {
+        if cfg.progress == ProgressMode::None || cfg.style.quiet {
+            return Self::none();
+        }
+        Self {
+            inner: Some(Arc::new(SinkInner {
+                reporter: reporter.clone(),
+                phases: Mutex::new(BTreeMap::new()),
+            })),
+        }
+    }
+
+    /// Reports that `item` (a ref, an archive or a target id) is through `phase`, one of
+    /// `total` items expected in it.
+    pub fn event(&self, phase: Phase, total: u64, item: &str) {
+        let Some(inner) = &self.inner else {
+            return;
+        };
+        let mut phases = inner.phases.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = phases.entry(phase).or_default();
+        let total = *count.total.get_or_insert(total);
+        if count.current >= total || !count.seen.insert(item.to_owned()) {
+            return;
+        }
+        count.current += 1;
+        let current = count.current;
+        lock(&inner.reporter).progress(phase.wire(), item, Some(current), Some(total));
+    }
+}
 
 /// A `log` event's level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -261,6 +378,97 @@ mod tests {
     fn warning() -> Warning {
         Warning::new(WarningCode::ReloadRequired, "retail needs a /reload")
             .with_fix(Suggestion::text("/reload in game"))
+    }
+
+    /// A sink whose bytes a test can read while a shared reporter still owns it.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Captured {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    fn shared(cfg: &OutputConfig) -> (SharedReporter, Captured) {
+        let captured = Captured::default();
+        let sink: Box<dyn Write + Send> = Box::new(captured.clone());
+        (Arc::new(Mutex::new(Reporter::new(sink, cfg))), captured)
+    }
+
+    #[test]
+    fn progress_is_counted_once_per_item_up_to_a_fixed_total() {
+        let config = cfg(StderrMode::Ndjson, ProgressMode::Json, false);
+        let (reporter, captured) = shared(&config);
+        let sink = ProgressSink::new(&reporter, &config);
+        sink.event(Phase::Fetch, 2, "gh:o/foo");
+        sink.event(Phase::Fetch, 2, "gh:o/foo");
+        sink.event(Phase::Download, 1, "gh:o/foo@1 on retail");
+        sink.event(Phase::Fetch, 9, "gh:o/bar");
+        sink.event(Phase::Fetch, 9, "gh:o/baz");
+        let events: Vec<serde_json::Value> = captured
+            .text()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(
+            events,
+            [
+                serde_json::json!({"event": "progress", "phase": "fetch", "message": "gh:o/foo", "current": 1, "total": 2}),
+                serde_json::json!({"event": "progress", "phase": "download", "message": "gh:o/foo@1 on retail", "current": 1, "total": 1}),
+                serde_json::json!({"event": "progress", "phase": "fetch", "message": "gh:o/bar", "current": 2, "total": 2}),
+            ],
+            "an item once, the first total kept, never past it"
+        );
+        let wires: Vec<&str> = [
+            Phase::Fetch,
+            Phase::Download,
+            Phase::Verify,
+            Phase::Stage,
+            Phase::Commit,
+        ]
+        .iter()
+        .map(|p| p.wire())
+        .collect();
+        assert_eq!(wires, ["fetch", "download", "verify", "stage", "commit"]);
+    }
+
+    #[test]
+    fn no_progress_sink_when_progress_is_off_or_quiet() {
+        for config in [
+            cfg(StderrMode::Ndjson, ProgressMode::None, false),
+            cfg(StderrMode::Ndjson, ProgressMode::Json, true),
+        ] {
+            let (reporter, captured) = shared(&config);
+            let sink = ProgressSink::new(&reporter, &config);
+            sink.event(Phase::Fetch, 1, "gh:o/foo");
+            assert!(sink.inner.is_none() && captured.text().is_empty());
+        }
+        ProgressSink::none().event(Phase::Commit, 1, "retail");
+    }
+
+    #[test]
+    fn a_shared_human_progress_line_is_cleared_before_a_warning() {
+        let config = cfg(StderrMode::Human, ProgressMode::Human, false);
+        let (reporter, captured) = shared(&config);
+        let sink = ProgressSink::new(&reporter, &config);
+        sink.event(Phase::Download, 3, "WeakAuras");
+        lock(&reporter).warning(&warning());
+        let text = captured.text();
+        assert!(
+            text.starts_with("\r\u{1b}[2Kdownload: WeakAuras 1/3\r\u{1b}[2Kwarning: "),
+            "{text:?}"
+        );
     }
 
     fn run(cfg: &OutputConfig) -> String {
