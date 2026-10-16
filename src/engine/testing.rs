@@ -229,6 +229,7 @@ pub fn install_change(
         reason: crate::model::AddonReason::Explicit,
         reinstall: false,
         blob_sha256: None,
+        asset: None,
     }
 }
 

@@ -225,6 +225,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             reason: AddonReason::Explicit,
             reinstall: false,
             blob_sha256: None,
+            asset: None,
         });
         requested.push(ItemRequest {
             request: s.request.clone(),

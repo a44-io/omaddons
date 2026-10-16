@@ -888,6 +888,73 @@ fn verbose_adds_the_client_dir_and_asset_url() {
     );
 }
 
+/// A pasted release-asset link installs that asset or nothing: never another asset of
+/// the release, even one that ranks first and loads.
+#[test]
+fn an_asset_link_installs_that_asset_or_nothing() {
+    let home = Home::new(&["wow"]);
+    let retail = toc("120105", &["## Title: Foo"]);
+    let classic = toc("11509", &["## Title: Foo"]);
+    let assets: [Asset<'_>; 3] = [
+        (
+            "Foo.zip",
+            mainline(),
+            vec![("Foo/Foo.toc", retail.as_str()), ("Foo/which.txt", "full")],
+        ),
+        (
+            "Foo-nolib.zip",
+            mainline(),
+            vec![("Foo/Foo.toc", retail.as_str()), ("Foo/which.txt", "nolib")],
+        ),
+        (
+            "Foo-classic.zip",
+            &[("classic", 11_509)],
+            vec![
+                ("Foo/Foo.toc", classic.as_str()),
+                ("Foo/which.txt", "classic"),
+            ],
+        ),
+    ];
+    gh_release(&home.http, support::FOO, "v1.0.0", &assets);
+    let link = |file: &str| format!("{}/releases/download/v1.0.0/{file}", support::FOO);
+
+    // Not in the release: not_found naming what is.
+    let r = home.run(&["install", &link("Nope.zip"), "-t", "retail"]);
+    let envelope = r.expect(3);
+    assert_eq!(envelope["error"]["code"], "not_found", "{}", r.context());
+    assert_eq!(
+        envelope["error"]["details"]["assets"],
+        serde_json::json!(["Foo.zip", "Foo-nolib.zip", "Foo-classic.zip"])
+    );
+    // Another flavor's build: refused as install refuses any build that does not load
+    // here, with that asset the only one tried; never swapped for one that loads.
+    let r = home.run(&["install", &link("Foo-classic.zip"), "-t", "retail"]);
+    let envelope = r.expect(3);
+    assert_eq!(
+        envelope["error"]["code"],
+        "no_compatible_release",
+        "{}",
+        r.context()
+    );
+    let tried: Vec<&str> = envelope["error"]["details"]["tried"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["asset"].as_str())
+        .collect();
+    assert_eq!(tried, ["Foo-classic.zip"]);
+    assert!(!home.addons("_retail_").join("Foo").exists());
+    // The lower-ranked asset that loads: exactly it.
+    let r = home.run(&["install", &link("Foo-nolib.zip"), "-t", "retail"]);
+    r.expect(0);
+    assert_eq!(
+        fs::read_to_string(home.addons("_retail_").join("Foo/which.txt")).unwrap(),
+        "nolib",
+        "{}",
+        r.context()
+    );
+}
+
 /// A target whose AddOns cannot be read fails every item with the reason; nothing is
 /// reported unchanged.
 #[test]

@@ -171,6 +171,7 @@ pub fn diff<'s, 'r>(
                     reason: AddonReason::Explicit,
                     reinstall: false,
                     blob_sha256,
+                    asset: None,
                 })
             };
             // The version an install takes: pinned ones always, every one when locked.

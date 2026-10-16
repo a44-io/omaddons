@@ -478,7 +478,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 |---|---|---|
 | `weakauras`, `dbm`, `bw` | a catalog entry | [the built-in catalog](#the-built-in-catalog), by name or alias (case-insensitive); an installed addon's name also works |
 | `gh:Owner/Repo` or `Owner/Repo` | GitHub | the stable path reads `releases/latest` and its `release.json` from github.com, with **no REST API calls**. The REST API (60 requests an hour without a token) is used only for `--channel beta`/`alpha`, for releases without a usable `release.json` (their `.zip` assets become the candidates), and for pinned tags that lack one |
-| `https://github.com/o/r` | `gh:o/r` | as above. `/releases/tag/T` pins tag `T`, `/releases/download/T/F` pins tag `T`, and `/tree/branch` becomes a `git:` ref |
+| `https://github.com/o/r` | `gh:o/r` | as above. `/releases/tag/T` pins tag `T`, `/releases/download/T/F` pins tag `T` and installs exactly the asset `F` (or nothing: `not_found` naming the release's assets, or refused when it does not load), and `/tree/branch` becomes a `git:` ref |
 | `git:https://github.com/o/r#branch` | git on GitHub | the commits Atom feed resolves the branch or tag to a commit, and codeload serves a zip of that exact commit (a rev the feed does not serve is fetched as a tag by name). **No git binary.** A 40-hex sha is used as is. No `#rev` means the default branch |
 | `git:https://codeberg.org/o/r#tag` | git elsewhere | the `git` binary (2.32+), in a sandbox, only for hosts listed in `git_hosts`. Branches win over tags with the same name |
 | `url:https://…/addon.zip` | a direct download | only from the always-allowed hosts (GitHub's, WoWInterface's and Tukui's); not `git_hosts` |
@@ -1781,7 +1781,6 @@ Journals are recovered by the next command that commits a change, not by read co
 
 These are bugs, found while this README was written:
 
-- A pasted `/releases/download/<tag>/<file>` link pins the tag, but the named file is not used to pick the asset.
 - Usage errors ignore `--no-color` and report `meta.offline: false` even when offline. `install http://github.com/a/b -t retail` suggests an https fix without the `-t`, and `status --version` suggests itself.
 - `install --dry-run` creates empty `inflight/` and `trash/` directories in the state directory.
 

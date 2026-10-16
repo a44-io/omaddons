@@ -1527,6 +1527,7 @@ mod engine_api {
             reason: AddonReason::Explicit,
             reinstall: false,
             blob_sha256: None,
+            asset: None,
         }
     }
 

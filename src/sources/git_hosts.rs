@@ -990,6 +990,7 @@ mod tests {
             reason: crate::model::AddonReason::Explicit,
             reinstall: false,
             blob_sha256: None,
+            asset: None,
         };
         let done = scene.run(vec![change]).unwrap();
         assert!(done.failures.is_empty(), "{:?}", done.failures);

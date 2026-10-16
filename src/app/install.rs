@@ -486,6 +486,8 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             },
             reinstall: args.reinstall,
             blob_sha256: None,
+            // A pasted release-asset link names its one asset.
+            asset: p.asset_hint.clone(),
         }
     };
     let parsed: Vec<&ParsedRef> = items

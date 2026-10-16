@@ -121,6 +121,8 @@ pub enum RequestedChange {
         /// `sync --locked`: the archive the desired state recorded (its `sha256`), used
         /// from the blob cache while it is there and still hashes to it. Internal.
         blob_sha256: Option<String>,
+        /// A pasted release-asset link's file name: that asset or nothing.
+        asset: Option<String>,
     },
     Remove {
         addon: String,
@@ -174,6 +176,9 @@ pub struct InstallIntent {
     /// lock, a record that moved since (a concurrent update) refuses the reinstall
     /// instead of rolling it back. `None` for every other install.
     pub reinstall_of: Option<Option<String>>,
+    /// The one asset to install, by file name (a pasted release-asset link): never
+    /// another asset of the release.
+    pub asset: Option<String>,
 }
 
 impl InstallIntent {
@@ -197,6 +202,7 @@ impl InstallIntent {
             required_by_remove: BTreeSet::new(),
             floor_interface: None,
             reinstall_of: None,
+            asset: None,
         }
     }
 
@@ -863,7 +869,7 @@ enum Want {
         name: Option<String>,
         wanted: Wanted,
         file: Option<PathBuf>,
-        intent: InstallIntent,
+        intent: Box<InstallIntent>,
         /// A reinstall's recorded release from the blob cache ([`local_blob_candidate`]):
         /// the source is not asked.
         local: Option<Box<Candidate>>,
@@ -2360,6 +2366,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
             reason,
             reinstall,
             blob_sha256,
+            asset,
         } => {
             // A reinstall without a version asks for the recorded release exactly; the
             // intent keeps no version, so the pin stays as recorded.
@@ -2375,14 +2382,17 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                     version: version.clone().or(exact),
                 },
                 file: file.clone(),
-                intent: InstallIntent::requested(
-                    *channel,
-                    *channel_explicit,
-                    version.clone(),
-                    *pin,
-                    *reason,
-                    *reinstall,
-                ),
+                intent: Box::new(InstallIntent {
+                    asset: asset.clone(),
+                    ..InstallIntent::requested(
+                        *channel,
+                        *channel_explicit,
+                        version.clone(),
+                        *pin,
+                        *reason,
+                        *reinstall,
+                    )
+                }),
                 local: None,
                 cached: blob_sha256.clone(),
             }
@@ -2408,7 +2418,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                         version: None,
                     },
                     file: None,
-                    intent: InstallIntent {
+                    intent: Box::new(InstallIntent {
                         floor_interface: *installed_primary_interface,
                         ..InstallIntent::requested(
                             installed.channel,
@@ -2418,7 +2428,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                             installed.reason,
                             false,
                         )
-                    },
+                    }),
                     local: None,
                     cached: None,
                 },
@@ -2445,6 +2455,39 @@ fn keeps_installed(record: &TargetRecord, r#ref: &Ref, intent: &InstallIntent) -
 /// A local archive or directory (`file:`): a newer one of the same addon replaces it.
 fn is_local(r: &Ref) -> bool {
     matches!(r, Ref::File { .. })
+}
+
+/// The release has no asset `named` (a pasted asset link): `not_found`, naming the assets
+/// it has, fixed by installing that release and letting the client's TOCs choose.
+fn asset_not_found(wanted: &Wanted, release: Option<&crate::model::Release>, named: &str) -> Error {
+    let assets: Vec<&str> = release
+        .into_iter()
+        .flat_map(|r| &r.assets)
+        .map(|a| a.filename.as_str())
+        .collect();
+    let version = release.map_or("its newest release", |r| r.version.as_str());
+    let mut fix = vec![
+        "omaddons".to_owned(),
+        "install".to_owned(),
+        wanted.r#ref.to_string(),
+    ];
+    if let Some(r) = release {
+        fix.extend(["--version".to_owned(), r.version.clone()]);
+    }
+    Error::new(
+        ErrorCode::NotFound,
+        format!(
+            "{} {version} has no asset {named}; it has {}",
+            wanted.r#ref,
+            if assets.is_empty() {
+                "none".to_owned()
+            } else {
+                assets.join(", ")
+            }
+        ),
+        Suggestion::command(fix),
+    )
+    .details(json!({ "asset": named, "assets": assets }))
 }
 
 /// Installing `new` would replace `other`, an addon of the same name from another ref:
@@ -2976,15 +3019,21 @@ impl TargetPlanner<'_> {
                     }
                     Some(reason) => return Err(self.no_release(wanted, &[], reason_text(reason))),
                     None => {
-                        source_name = selection
-                            .candidates
-                            .first()
-                            .and_then(|c| {
-                                // ubs:ignore — matching release ids, not secrets
-                                set.releases.iter().find(|r| r.release_id == c.release_id)
-                            })
-                            .and_then(|r| r.name_hint.clone());
-                        selection.candidates
+                        let release = selection.candidates.first().and_then(|c| {
+                            // ubs:ignore — matching release ids, not secrets
+                            set.releases.iter().find(|r| r.release_id == c.release_id)
+                        });
+                        source_name = release.and_then(|r| r.name_hint.clone());
+                        let mut candidates = selection.candidates;
+                        // A named asset (a pasted asset link): that one or nothing; the
+                        // TOCs still judge whether it loads here.
+                        if let Some(named) = &intent.asset {
+                            candidates.retain(|c| c.asset.filename == *named);
+                            if candidates.is_empty() {
+                                return Err(asset_not_found(wanted, release, named));
+                            }
+                        }
+                        candidates
                     }
                 }
             }
