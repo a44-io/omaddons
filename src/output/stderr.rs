@@ -126,6 +126,21 @@ impl ProgressSink {
         lock(&inner.reporter).progress(phase.wire(), item, Some(current), Some(total));
     }
 
+    /// Announces `phase` before any of its `total` items: one event at `current: 0`
+    /// saying `message` (what is about to happen, e.g. how much will download).
+    pub fn announce(&self, phase: Phase, total: u64, message: &str) {
+        let Some(inner) = &self.inner else {
+            return;
+        };
+        let mut phases = inner.phases.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = phases.entry(phase).or_default();
+        if count.current > 0 {
+            return;
+        }
+        let total = *count.total.get_or_insert(total);
+        lock(&inner.reporter).progress(phase.wire(), message, Some(0), Some(total));
+    }
+
     /// `more` items join `phase` after its total was given (a dependency round): the
     /// total grows by them, or starts at them when no event came yet.
     pub fn grow(&self, phase: Phase, more: u64) {

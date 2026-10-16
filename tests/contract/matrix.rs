@@ -160,6 +160,36 @@ fn outdated() {
 }
 
 #[test]
+fn adopt() {
+    let s = Scene::new();
+    // Foo v1 unpacked by hand into retail, and a catalog entry naming its repository.
+    let addons = s.home.addons("_retail_");
+    std::fs::create_dir_all(addons.join("Foo")).unwrap();
+    std::fs::write(
+        addons.join("Foo/Foo.toc"),
+        "## Interface: 120105\n## Version: 1\n",
+    )
+    .unwrap();
+    let catalog = s.home.env.config().join("omaddons/catalog.d");
+    std::fs::create_dir_all(&catalog).unwrap();
+    std::fs::write(
+        catalog.join("50-foo.toml"),
+        "schema_version = \"1.0\"\n\n[[addon]]\nname = \"Foo\"\nref = \"gh:o/foo\"\nfolders = [\"Foo\"]\n",
+    )
+    .unwrap();
+    let c = s.json(&["adopt", "-t", "retail"], 0);
+    assert_eq!(
+        c.envelope["data"]["targets"][0]["groups"][0]["tier"],
+        "exact"
+    );
+    insta::assert_json_snapshot!("adopt_ok", s.stable(&c.envelope));
+    let c = s.json(&["adopt", "--no-verify"], 0);
+    assert_eq!(c.envelope["data"]["verify"], serde_json::Value::Null);
+    let c = s.json(&["adopt", "--apply"], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+}
+
+#[test]
 fn info() {
     let s = Scene::new();
     let c = s.json(&["info", "weakauras"], 0);

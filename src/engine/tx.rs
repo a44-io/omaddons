@@ -179,6 +179,81 @@ pub struct TxOutcomes {
     pub warnings: Vec<Warning>,
 }
 
+/// One release to check on one target ([`check_releases`]).
+#[derive(Debug, Clone)]
+pub struct CheckJob {
+    pub target: Target,
+    pub wanted: crate::sources::Wanted,
+    pub set: crate::model::ReleaseSet,
+    /// Names the primary folder (a catalog name, a source's name).
+    pub name_hint: Option<String>,
+}
+
+/// What [`check_releases`] found: one answer per job, in order, and what checking
+/// learned.
+#[derive(Debug, Default)]
+pub struct CheckedReleases {
+    pub results: Vec<Result<plan::Checked>>,
+    pub notes: plan::CheckNotes,
+}
+
+/// Checks each job's release on its target as installing it would, without ownership,
+/// the running policy, staging or the global lock ([`plan::check_release`]): downloads
+/// go through the blob cache under an in-flight lock removed afterwards. Writes nothing
+/// but the cache.
+pub fn check_releases(jobs: &[CheckJob], ctx: &EngineCtx<'_>) -> Result<CheckedReleases> {
+    let mut checked = CheckedReleases::default();
+    if jobs.is_empty() {
+        return Ok(checked);
+    }
+    let scopes = ScopeTable::new(ctx.paths, &[], None)?;
+    let blobs = BlobCache::new(ctx.paths);
+    let tx = TxId::new();
+    let inflight = InflightLock::create(ctx.paths, &tx)?;
+    let transient;
+    let cache = match ctx.cache {
+        Some(cache) => cache,
+        None => {
+            transient = ReleaseCache::transient(ctx.http, ctx.registry);
+            &transient
+        }
+    };
+    let no_catalog = Catalog::default();
+    let nothing_runs = BTreeSet::new();
+    let run_downloads = super::plan::DownloadMemo::default();
+    let plan_ctx = PlanCtx {
+        paths: ctx.paths,
+        scopes: &scopes,
+        http: ctx.http,
+        registry: ctx.registry,
+        cache,
+        progress: ctx.progress,
+        blobs: &blobs,
+        table: ctx.table,
+        tx,
+        running: &nothing_runs,
+        policy: ctx.policy,
+        limits: ctx.limits,
+        actor: ctx.actor,
+        argv: ctx.argv,
+        catalog: ctx.catalog.unwrap_or(&no_catalog),
+        default_channel: ctx.default_channel,
+        downloads: ctx.downloads.unwrap_or(&run_downloads),
+    };
+    for job in jobs {
+        checked.results.push(plan::check_release(
+            &plan_ctx,
+            &job.target,
+            &job.wanted,
+            &job.set,
+            job.name_hint.as_deref(),
+            &mut checked.notes,
+        ));
+    }
+    cleanup(ctx.paths, &scopes, inflight, &tx, None);
+    Ok(checked)
+}
+
 /// Runs a mutating request to the end.
 pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
     let client_dirs: Vec<PathBuf> = req

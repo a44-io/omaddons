@@ -1718,6 +1718,123 @@ fn target_state(paths: &Paths, target: &Target) -> Result<(TargetRecord, Option<
     })
 }
 
+/// The newest release of a ref judged on a target as installing it would, without
+/// ownership, the running policy, staging or the lock: adoption's exactness check.
+#[derive(Debug, Clone)]
+pub struct ReleaseCheck {
+    pub release_id: String,
+    pub version: String,
+    /// The folders the client loads, as inspected (each with its files).
+    pub install: Vec<crate::engine::inspect::InspectedFolder>,
+    /// The archive's folders the client does not load.
+    pub skipped: Vec<SkippedFolder>,
+    /// The archive's SHA-256; `None` for a directory.
+    pub blob_sha256: Option<String>,
+}
+
+/// What checking one release found.
+#[derive(Debug, Clone)]
+pub enum Checked {
+    /// A candidate loads here.
+    Loads(ReleaseCheck),
+    /// None loads here, or there is none: why.
+    Refused(String),
+}
+
+/// What [`check_release`] learned beside its answer.
+#[derive(Debug, Default)]
+pub struct CheckNotes {
+    /// Candidate facts, for the release memo.
+    pub facts: Vec<CandidateFact>,
+    /// `-v` notes from downloading.
+    pub notes: Vec<String>,
+}
+
+/// Selects `set`'s release for `wanted` on `target` and tries its candidates in order,
+/// downloading, inspecting and verifying each as an install would ([`TargetPlanner`]'s
+/// candidate step), until one loads. Judges no ownership, policy or dependencies and
+/// writes nothing but downloads. `Err` when no candidate could even be read and none was
+/// judged.
+pub fn check_release(
+    ctx: &PlanCtx<'_>,
+    target: &Target,
+    wanted: &Wanted,
+    set: &ReleaseSet,
+    name_hint: Option<&str>,
+    out: &mut CheckNotes,
+) -> Result<Checked> {
+    let req = PlanRequest {
+        targets: Vec::new(),
+        force: false,
+        while_running: true,
+        dry_run: true,
+        kind: None,
+        no_deps: true,
+    };
+    let record = TargetRecord::empty(TargetKey::from_ulid(ulid::Ulid::nil()));
+    let live = Inventory {
+        addons_dir_missing: false,
+        folders: Vec::new(),
+        missing: Vec::new(),
+        counts: crate::inventory::Counts::default(),
+        stray_files: 0,
+    };
+    let planner = TargetPlanner {
+        req: &req,
+        ctx,
+        target,
+        record: &record,
+        index: None,
+        live: &live,
+        created_at: Timestamp::now(),
+        facts: RefCell::new(Vec::new()),
+        candidate_items: 1,
+        view: RefCell::new(WorkingView::default()),
+        notes: RefCell::new(Vec::new()),
+    };
+    let selection = select(set, target, wanted.channel, wanted.version.as_deref());
+    let result = match selection.empty_reason {
+        Some(reason) => Ok(Checked::Refused(reason_text(reason).to_owned())),
+        None => {
+            let mut refused: Vec<String> = Vec::new();
+            let mut unreadable: Option<Error> = None;
+            let mut found = None;
+            for candidate in &selection.candidates {
+                match planner.try_candidate(&wanted.r#ref, candidate, name_hint, None) {
+                    Ok(Ok(winner)) => {
+                        found = Some(ReleaseCheck {
+                            release_id: winner.candidate.release_id,
+                            version: winner.candidate.version,
+                            blob_sha256: winner.loadable.inspected.blob_sha256,
+                            install: winner.loadable.inspected.folders,
+                            skipped: winner.loadable.skipped,
+                        });
+                        break;
+                    }
+                    Ok(Err(reason)) => {
+                        refused.push(format!("{}: {reason}", candidate.asset.filename))
+                    }
+                    Err(error) => {
+                        unreadable.get_or_insert(error);
+                    }
+                }
+            }
+            match (found, unreadable) {
+                (Some(check), _) => Ok(Checked::Loads(check)),
+                (None, Some(error)) if refused.is_empty() => Err(error),
+                (None, _) => Ok(Checked::Refused(if refused.is_empty() {
+                    "no candidate loads on this client".to_owned()
+                } else {
+                    refused.join("; ")
+                })),
+            }
+        }
+    };
+    out.facts.extend(planner.facts.into_inner());
+    out.notes.extend(planner.notes.into_inner());
+    result
+}
+
 /// Re-checks one planned addon under the lock against the target's current record,
 /// files index, inventory and running state (`ctx.running`), without network: the
 /// archive is already inspected and staged. The install's intent and folded edits are

@@ -1,6 +1,7 @@
 //! One module per command. Each command is a function that returns a typed outcome;
 //! rendering happens in `output`.
 
+pub mod adopt;
 pub mod config;
 pub mod engine;
 pub mod help;
@@ -81,6 +82,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("update", Group::Change),
     entry("pin", Group::Change),
     entry("unpin", Group::Change),
+    entry("adopt", Group::Change),
     entry("sync", Group::Change),
     entry("remove", Group::Change),
     entry("undo", Group::Change),
@@ -123,6 +125,7 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         Some(Command::Update(_)) => "update",
         Some(Command::Pin(_)) => "pin",
         Some(Command::Unpin(_)) => "unpin",
+        Some(Command::Adopt(_)) => "adopt",
         Some(Command::Sync(_)) => "sync",
         Some(Command::Remove(_)) => "remove",
         Some(Command::Undo(_)) => "undo",
@@ -300,6 +303,15 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         }
         Some(Command::Info(args)) => {
             let result = info::run(ctx, args);
+            if let Ok(outcome) = &result {
+                for note in &outcome.notes {
+                    out.log(output::LogLevel::Debug, note);
+                }
+            }
+            out.emit(result)
+        }
+        Some(Command::Adopt(args)) => {
+            let result = adopt::run(ctx, args);
             if let Ok(outcome) = &result {
                 for note in &outcome.notes {
                     out.log(output::LogLevel::Debug, note);

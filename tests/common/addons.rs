@@ -24,6 +24,17 @@ pub fn addon_folder(
     dir
 }
 
+/// Writes an archive's `entries` (`Folder/rel/path`, contents) into `addons_dir` as an
+/// unpacked zip would leave them, with no record: an addon installed by hand or by
+/// another manager.
+pub fn unpack(addons_dir: &Path, entries: &[(&str, &str)]) {
+    for (path, contents) in entries {
+        let dest = addons_dir.join(path);
+        fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        fs::write(dest, contents).unwrap();
+    }
+}
+
 /// A TOC: `## Interface: <interface>` (a number or a comma list), then each extra line
 /// verbatim (directives such as `## Title: X`, or file names).
 pub fn toc(interface: &str, extra: &[&str]) -> String {

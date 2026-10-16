@@ -37,7 +37,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated`, `update`, `pin` and `sync` work, installs bring their catalog dependencies, and WoWInterface and Tukui (ElvUI) addons install and update. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestone 1, the working slice, is done and runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). Milestone 2 has begun: `outdated`, `update`, `pin` and `sync` work, installs bring their catalog dependencies, WoWInterface and Tukui (ElvUI) addons install and update, and `adopt` reports where unmanaged addons come from. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -133,6 +133,7 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | The CLI contract: one JSON envelope, typed errors with fixes (an argv whenever the fix is a command), exit codes 0 to 6, contract snapshot tests | ✅ Done (freezes in M4) |
 | Commands: `status`, `install`, `remove`, `undo`, `history`, `list`, `targets`, `info`, `config`, `net-log`, `help` | ✅ Done |
 | `outdated` (alias `check`): what has updates, on every client | ✅ Done (milestone 2) |
+| `adopt` (report mode): where unmanaged addons come from, and whether they are exactly a release | ✅ Done (milestone 2; adopting them is on the way) |
 | `update` (alias `upgrade`): every client's updates in one run, undone with one `undo` | ✅ Done (milestone 2) |
 | `pin` and `unpin`: hold an addon at its release through updates | ✅ Done (milestone 2) |
 | Dependencies: what a TOC requires installs with it, from the catalog | ✅ Done (milestone 2; more sources to come) |
@@ -560,7 +561,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--no-color` | No ANSI color (also `NO_COLOR`) |
 | `--quiet` | Only errors on stderr |
 | `-v, --verbose` | More detail: paths, and debug `log` events on stderr (repeatable) |
-| `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install`, `update` and `outdated` today). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
+| `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install`, `update`, `outdated` and `adopt` today). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
 | `-h, --help` | Help |
 | `-V, --version` | Version (`omaddons -V` only; after a command, `--version` is that command's flag or a usage error) |
 
@@ -840,6 +841,37 @@ The listing shows only what needs a decision; `-v` lists everything, and the sum
 
 When a fetch fails, a remembered answer is used and the warning says so; with nothing remembered, the item is `failed`. Either way the run is `partial`. `--verify` downloads only the updates not yet verified, in a dry run that takes no lock, and remembers the verdicts: a candidate that does not load becomes `blocked` from then on. `outdated` writes only the release memo, the download cache and `net.log`.
 
+### `adopt`
+
+Which unmanaged folders (installed by hand or by another manager) come from where, and whether they are exactly a release. Report mode changes nothing; adopting them arrives next.
+
+```bash
+omaddons adopt                    # every client: identify, then check against the newest releases
+omaddons adopt -t retail --no-verify   # identify only: no download
+omaddons adopt --refresh          # ask every source (and the WoWInterface index) now
+```
+
+Each client's unmanaged folders are grouped into addons. The evidence, strongest first:
+
+1. a [catalog](#the-built-in-catalog) entry that ships the folder for the client's family (the source `install` would use);
+2. the TOC's `X-Tukui-ProjectID`, then `X-Website` (a GitHub repository, a WoWInterface page or a Tukui addon; any other site is ignored), then `X-WoWI-ID`;
+3. a WoWInterface project listing the folder, when its name or author matches the TOC's;
+4. a name alone.
+
+A folder that only requires another (`DBM-Extra` beside `DBM-Core`) joins its group. Each group gets a tier:
+
+| Tier | Meaning |
+|---|---|
+| `exact` | The folders are, file for file, what the newest release installs here (`version_confidence: release`) |
+| `identified` | Confident identification, not (or not yet) exact; `reason` says why: `files_differ`, `folder_set_differs`, `not_verified`, `not_verified_offline` or `source_error` |
+| `guess` | A name-only, contested or borrowed match: other candidates are in `alternatives` |
+| `cf_only` | Only a CurseForge or Wago id (those sources arrive in M5) |
+| `unknown` | No evidence |
+
+A TOC id that disagrees with stronger evidence is listed in `evidence` and `alternatives` and never chosen. Folders the release ships but this client does not load are listed in `unloaded_folders` and do not prevent `exact`. A folder whose addon is already managed (`already_managed`), or that holds a symlink (`unindexable`) or exceeds the archive limits (`limit_exceeded`), is listed in `failed`.
+
+Checking downloads each identified group's newest release once, through the download cache (announced first as `verify: {groups, downloads, bytes}`), so a second run downloads nothing. `--offline` checks only what the release memo and the cache already hold. `adopt` writes only the release memo, the download cache and `net.log`.
+
 ### `targets`
 
 List the clients, or add, remove, rename and choose them.
@@ -1056,7 +1088,7 @@ When stderr is not a terminal, or `CI` is set, or `TERM=dumb`, stderr carries ND
 {"event":"log","level":"debug","message":"discovery: scanned yes, roots reused 2, parsed 0, cache written no"}
 ```
 
-Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. `progress` events come from long commands (`install`, `update` and `outdated` today) when progress is on: `{"event":"progress","phase":"download","message":"gh:o/foo@v1 on retail","current":1,"total":2}`. The phases are `fetch`, `download`, `verify`, `stage` and `commit`. Within a phase, `current` counts up to a fixed `total`, and each item appears once. On a terminal in human mode, progress is one line that is rewritten in place.
+Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. `progress` events come from long commands (`install`, `update`, `outdated` and `adopt` today) when progress is on: `{"event":"progress","phase":"download","message":"gh:o/foo@v1 on retail","current":1,"total":2}`. The phases are `fetch`, `download`, `verify`, `stage` and `commit`. Within a phase, `current` counts up to a fixed `total`, and each item appears once. On a terminal in human mode, progress is one line that is rewritten in place.
 
 ### Stability
 
@@ -1113,7 +1145,7 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
 | Another managed addon's folder | `ownership_conflict`; `--force` transfers it and marks the old owner degraded |
 | An unmanaged folder | `unmanaged_folder`; `--force` replaces it, and the snapshot keeps the original for undo |
 
-Ownership comes only from omaddons' own records. Other managers' metadata is not read yet; adopting their addons is milestone 2.
+Ownership comes only from omaddons' own records. Other managers' metadata is not read; `adopt` reports where their folders come from, and adopting them is milestone 2.
 
 ### Hostile archives
 
@@ -1482,7 +1514,7 @@ Journals are recovered by the next command that commits a change, not by read co
 | Capability | State | Planned |
 |---|---|---|
 | Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing; WoWInterface and Tukui lookups, bridge folders and the dependency items in output are on the way | M2 |
-| Adopting addons installed by other managers | ❌ they show as unmanaged | M2 |
+| Adopting addons installed by other managers | ⚠️ `adopt` reports where they come from and whether they are exact; adopting them is on the way | M2 |
 | `addons.toml`, `export`, `sync`, `copy` between clients | ⚠️ `sync` works; `sync --locked`, `sync --prune`, `export` and `copy` are on the way | M2 |
 | `search` | ❌ catalog names and links only | M2 |
 | Progress output | ⚠️ `install`, `update` and `outdated` report progress; the other long commands arrive with M2 | M2 |

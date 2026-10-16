@@ -113,6 +113,32 @@ impl Engine {
         self.registry.enabled()
     }
 
+    /// The network stack this command's requests go through.
+    pub fn http(&self) -> &dyn Http {
+        self.http.as_ref()
+    }
+
+    /// The archive limits in force: inspection's, and a live folder's indexing.
+    pub fn archive_limits(&self) -> ArchiveLimits {
+        self.limits
+    }
+
+    /// The channel new installs (and dependencies) take.
+    pub fn default_channel(&self) -> Channel {
+        self.default_channel
+    }
+
+    /// Checks each job's release on its target as installing it would, without
+    /// ownership, the running policy, staging or the lock (`adopt`), fetching through
+    /// `cache` and downloading once per command.
+    pub fn check_releases(
+        &self,
+        jobs: &[crate::engine::tx::CheckJob],
+        cache: &ReleaseCache<'_>,
+    ) -> Result<crate::engine::tx::CheckedReleases> {
+        crate::engine::tx::check_releases(jobs, &self.ctx(Some(cache)))
+    }
+
     /// Plans and commits `req`, fetching through `cache` (`None`: no memo).
     pub fn run(&self, req: &TxRequest, cache: Option<&ReleaseCache<'_>>) -> Result<TxOutcomes> {
         crate::engine::run(req, &self.ctx(cache))

@@ -139,6 +139,9 @@ pub enum Command {
     Pin(crate::app::pin::PinArgs),
     /// Let a pinned addon update again
     Unpin(crate::app::pin::UnpinArgs),
+    /// Report which unmanaged addons come from where, and whether they are exactly a
+    /// release (changes nothing)
+    Adopt(crate::app::adopt::AdoptArgs),
     /// Make every client match addons.toml: install what is missing, set pins and channels
     #[command(after_long_help = SYNC_HELP)]
     Sync(crate::app::sync::SyncArgs),

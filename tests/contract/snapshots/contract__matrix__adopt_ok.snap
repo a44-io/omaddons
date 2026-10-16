@@ -1,0 +1,62 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "adopt",
+  "commands": [],
+  "data": {
+    "sources_skipped": [
+      {
+        "reason": "no_index",
+        "source": "tukui"
+      },
+      {
+        "reason": "no_index",
+        "source": "wowi"
+      }
+    ],
+    "targets": [
+      {
+        "failed": [],
+        "groups": [
+          {
+            "alternatives": [],
+            "evidence": [
+              "catalog_folder"
+            ],
+            "folders": [
+              "Foo"
+            ],
+            "name": "Foo",
+            "primary": "Foo",
+            "reason": null,
+            "ref": "gh:o/foo",
+            "release_id": "gh:o/foo@v1",
+            "strength": "catalog",
+            "tier": "exact",
+            "unloaded_folders": [],
+            "version": "v1",
+            "version_confidence": "release"
+          }
+        ],
+        "target": {
+          "id": "retail",
+          "key": null
+        },
+        "unmanaged": 1
+      }
+    ],
+    "verify": {
+      "bytes": 0,
+      "downloads": 1,
+      "groups": 1
+    }
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

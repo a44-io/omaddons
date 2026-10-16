@@ -72,6 +72,12 @@ expression: envelope
         "name": "unpin"
       },
       {
+        "about": "Report which unmanaged addons come from where, and whether they are exactly a release (changes nothing)",
+        "aliases": [],
+        "group": "change",
+        "name": "adopt"
+      },
+      {
         "about": "Make every client match addons.toml: install what is missing, set pins and channels",
         "aliases": [],
         "group": "change",
