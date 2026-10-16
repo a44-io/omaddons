@@ -6,8 +6,9 @@
 //! never break install or status. Loading reads files only.
 //!
 //! Entries are `{name, aliases[], ref, families[], folders[], notes}`. `families` says
-//! where an entry is known to work (it narrows target choice, never replaces TOC
-//! verification); `folders` feeds the folder index used by adoption and dependencies.
+//! where an entry is known to work: `info` shows it and `search` reports compatibility
+//! from it, but no target choice reads it and TOC verification alone decides an
+//! install. `folders` feeds the folder index used by adoption and dependencies.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

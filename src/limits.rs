@@ -127,7 +127,10 @@ pub struct LimitInfo {
     pub value: LimitValue,
     /// `bytes`, `ms`, `count`, `ratio`, `chars`, `text`, `list` or `retention`.
     pub unit: &'static str,
-    /// The `[limits]` key for "(config)" constants; `None` for every other.
+    /// For "(config)" constants, the override key `EffectiveLimits::apply` takes, which
+    /// is also the `[limits]` key of `config.toml` except for `tx_retention` and
+    /// `default_check_interval` (their notes give the `config.toml` keys); `None` for
+    /// every other.
     pub config_key: Option<&'static str>,
     pub notes: &'static str,
 }
@@ -224,7 +227,8 @@ pub const REGISTRY: &[LimitInfo] = &[
         },
         "retention",
         Some("tx_retention"),
-        "Always at least 24 h; beyond that, 10 transactions within 7 days per target",
+        "Always at least 24 h; beyond that, 10 transactions within 7 days per target \
+         (config.toml: limits.tx_retention_count, limits.tx_retention_days)",
     ),
     limit(
         "SNAPSHOT_MAX_BYTES",

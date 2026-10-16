@@ -1,6 +1,6 @@
 ---
 source: src/limits.rs
-assertion_line: 783
+assertion_line: 788
 expression: "(politeness, REGISTRY)"
 ---
 [
@@ -111,7 +111,7 @@ expression: "(politeness, REGISTRY)"
       },
       "unit": "ms",
       "config_key": "default_check_interval",
-      "notes": "Widget background check"
+      "notes": "Widget background check (config.toml: check_interval_hours)"
     },
     {
       "name": "WOWI_FILELIST_MIN_AGE",
@@ -265,7 +265,7 @@ expression: "(politeness, REGISTRY)"
       },
       "unit": "retention",
       "config_key": "tx_retention",
-      "notes": "Always at least 24 h; beyond that, 10 transactions within 7 days per target"
+      "notes": "Always at least 24 h; beyond that, 10 transactions within 7 days per target (config.toml: limits.tx_retention_count, limits.tx_retention_days)"
     },
     {
       "name": "SNAPSHOT_MAX_BYTES",

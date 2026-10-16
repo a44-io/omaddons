@@ -287,7 +287,7 @@ pub const KEYS: &[KeySpec] = &[
     spec(
         "limits.snapshot_max_bytes",
         KeyKind::Size,
-        "Largest snapshot",
+        "Snapshot bytes per target beyond the 24-hour window",
     ),
     spec(
         "limits.blob_cache_max_bytes",

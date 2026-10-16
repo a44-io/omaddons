@@ -3,9 +3,11 @@
 //! selection per target.
 //!
 //! Selection only orders. The engine downloads, inspects and verifies each candidate
-//! in turn; the first that verifies wins. Metadata is a hint, never a verdict (D5):
-//! WeakAuras' `release.json` lists no `mainline` entry although its zip runs on retail,
-//! so a metadata mismatch is ranked last, not dropped.
+//! in turn; the first that verifies wins. Metadata is a hint, never a verdict (D5): a
+//! publisher's `release.json` can omit a flavor its zip's TOCs support, so a metadata
+//! mismatch is ranked last, not dropped, and TOC verification decides. (WeakAuras
+//! 5.22.1 lists no `mainline` entry and its zip has no Mainline TOC either: there,
+//! verification refuses it.)
 //!
 //! The release: a pin (`--version` or a release URL's tag) picks it, `v` tolerated;
 //! otherwise the newest release the channel admits. Only that release's assets become

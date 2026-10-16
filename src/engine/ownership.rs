@@ -8,8 +8,8 @@
 //! 2. a symlinked folder (a developer's working copy) is never touched:
 //!    `unmanaged_folder` (class `linked`), never overridable;
 //! 3. a key whose live spelling differs from the incoming one: `case_collision` (Wine
-//!    would see one folder under two names); `--force` replaces under the live
-//!    spelling. The installing addon's own folder may change case freely;
+//!    would see one folder under two names), never overridable: `--force` does not
+//!    pick a spelling. The installing addon's own folder may change case freely;
 //! 4. another addon's folder: `ownership_conflict`; `--force` transfers it and marks
 //!    the previous owner degraded (`ownership_transferred`);
 //! 5. an unmanaged folder: `unmanaged_folder`; `--force` replaces it (its snapshot

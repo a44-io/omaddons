@@ -27,7 +27,8 @@ use crate::output::{self, OutputConfig, OutputFlags, Reporter, TermEnv};
 #[command(
     name = "omaddons",
     bin_name = "omaddons",
-    about = "World of Warcraft addon manager (CLI + Omarchy plugin)",
+    // The Omarchy widget joins the title when it ships (M3).
+    about = "World of Warcraft addon manager for Linux",
     color = clap::ColorChoice::Never,
     disable_help_flag = true,
     disable_version_flag = true,

@@ -5,8 +5,8 @@
 //! `version` and adds its own keys), so decoding is tolerant: unknown keys are ignored,
 //! entries without a usable file name are skipped and counted, and flavor names are
 //! lowercased and kept even when unknown (a future flavor simply matches nothing). The
-//! metadata is a hint: WeakAuras' manifest lists no `mainline` entry although its zip
-//! supports retail, so TOCs are what decides.
+//! metadata is a hint: a manifest can omit a flavor the zip supports, so the zip's TOCs
+//! are what decides.
 
 use serde_json::Value;
 

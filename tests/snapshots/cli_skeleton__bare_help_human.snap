@@ -1,9 +1,9 @@
 ---
 source: tests/cli_skeleton.rs
-assertion_line: 130
+assertion_line: 141
 expression: r.stdout
 ---
-World of Warcraft addon manager (CLI + Omarchy plugin)
+World of Warcraft addon manager for Linux
 
 Usage: omaddons [OPTIONS] <COMMAND>
 

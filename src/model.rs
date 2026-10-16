@@ -2,9 +2,9 @@
 //! plans, transactions and findings.
 //!
 //! Several safety invariants live in these types rather than in scattered checks
-//! (vision §3, D14, D27). A [`FolderName`] cannot escape `Interface/AddOns/`, folder
-//! identity is ASCII case-insensitive like Wine's lookup, and only a
-//! [`MutableFolderName`] (never a `blizzard_*` key) reaches an API that changes a folder.
+//! (vision §3, D14, D27). A [`FolderName`] cannot escape `Interface/AddOns/`, and folder
+//! identity is ASCII case-insensitive like Wine's lookup. A [`MutableFolderName`] is
+//! never a `blizzard_*` key, though the APIs that change folders do not take it yet.
 //! `Family`, `InstallKind`, `TargetKind`, `ClientVersion` and `ClientRules` live in
 //! [`crate::rules`] (DEC-13).
 
@@ -138,9 +138,11 @@ impl From<FolderName> for String {
     }
 }
 
-/// A folder name that is not protected. Every API that creates, replaces, renames or
-/// removes an AddOns folder takes this type, so a `blizzard_*` folder cannot reach one
-/// (D14). Only [`FolderName::into_mutable`] constructs it.
+/// A folder name that is not protected. Meant for every API that creates, replaces,
+/// renames or removes an AddOns folder, so a `blizzard_*` folder could not reach one
+/// (D14); none takes it yet (omad-wtwf). Today the ownership check refuses `blizzard_*`
+/// folders (`engine::ownership`, rule 1). Only [`FolderName::into_mutable`] constructs
+/// it.
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]

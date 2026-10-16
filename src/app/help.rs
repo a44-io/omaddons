@@ -173,7 +173,7 @@ fn render_groups(commands: &[(&str, Group)]) -> String {
 /// Bare help's text for `commands` (name and group, in display order).
 fn bare_text(usage: &str, commands: &[(&str, Group)]) -> String {
     let mut text = String::new();
-    text.push_str("World of Warcraft addon manager (CLI + Omarchy plugin)\n\n");
+    text.push_str("World of Warcraft addon manager for Linux\n\n");
     text.push_str(&format!("Usage: {usage}\n\n"));
     text.push_str(&render_groups(commands));
     text.push('\n');

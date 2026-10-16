@@ -10,7 +10,8 @@
 //! and concurrent stores of the same content end as one file.
 //!
 //! Least-recently-used eviction keeps the cache under `BLOB_CACHE_MAX_BYTES`, never
-//! touching pinned blobs (installed, retained or planned). Last use lives in
+//! touching pinned blobs: those the installed releases of every registered target came
+//! from (`engine::retention`). Last use lives in
 //! `blobs/index.json` (atime is often off); the index is derived and rebuilt from the
 //! directory when missing or corrupt. CurseForge and Wago archives (M5) must never be
 //! cached: [`Storage::Uncached`] writes them to the transaction's stage instead.

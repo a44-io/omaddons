@@ -52,7 +52,7 @@ pub const DISCOVERY_MAX_DEPTH: usize = 4;
 pub const DISCOVERY_SKIP_DIRS: &[&str] = &["windows", "users", "ProgramData"];
 /// Directories visited per scan before stopping with a warning.
 pub const DISCOVERY_MAX_DIRS: usize = 50_000;
-/// Redirect hops followed per request before failing with `http_status`; every hop is
+/// Redirect hops followed per request before failing with `network`; every hop is
 /// checked against the host allowlist.
 pub const MAX_REDIRECTS: usize = 5;
 /// Repositories one `search` asks GitHub's search API for (one request per run).
@@ -142,7 +142,7 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitValue::Millis(ms(DEFAULT_CHECK_INTERVAL)),
         "ms",
         Some("default_check_interval"),
-        "Widget background check",
+        "Widget background check (config.toml: check_interval_hours)",
     ),
     limit(
         "WOWI_FILELIST_MIN_AGE",
