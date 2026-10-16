@@ -684,6 +684,114 @@ fn installing_over_an_unmanaged_folder_offers_adopt_which_records_it_as_it_is() 
 }
 
 #[test]
+fn an_addon_of_the_same_name_from_another_ref_is_replaced_only_as_its_rule_says() {
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let zip = |version: &str| {
+        let path = dl.join(format!("Bar-{version}.zip"));
+        let toc = format!("## Interface: 120105\n## Version: {version}\n");
+        fs::write(&path, zip_text(&[("Bar/Bar.toc", &toc)])).unwrap();
+        path.display().to_string()
+    };
+    let (old, new) = (zip("2.1.0"), zip("2.2.0"));
+    let addons = home.addons("_retail_");
+    let bar = |home: &Home| {
+        common::state::record(home, "retail")
+            .addons
+            .get("bar")
+            .map(|a| (a.r#ref.to_string(), a.version.clone()))
+    };
+    home.run(&["install", &old, "-t", "retail"]).expect(0);
+    let first = bar(&home);
+    let tree = tree_hash(&addons);
+
+    // A newer local archive of a local install: the same addon, updated.
+    let r = home.run(&["install", &new, "-t", "retail"]);
+    let envelope = r.expect(0);
+    let item = &items(&envelope)[0];
+    assert_eq!(
+        (
+            &item["status"],
+            &item["from_version"],
+            &item["to_version"],
+            &item["folders"]["replaced"]
+        ),
+        (
+            &Value::from("updated"),
+            &Value::from("2.1.0"),
+            &Value::from("2.2.0"),
+            &serde_json::json!(["Bar"])
+        ),
+        "{}",
+        r.context()
+    );
+    assert!(warning_codes(&envelope).is_empty(), "{}", r.context());
+    assert_eq!(
+        bar(&home),
+        Some((format!("file:{new}"), "2.2.0".to_owned()))
+    );
+    home.run(&["undo"]).expect(0);
+    assert_eq!(
+        (bar(&home), tree_hash(&addons)),
+        (first.clone(), tree.clone())
+    );
+
+    // Another (not local) ref of the same name: a takeover, only with --force.
+    let takeover = [
+        "install",
+        "gh:demo/bar",
+        "--file",
+        &new,
+        "-t",
+        "retail",
+        "--offline",
+    ];
+    let r = home.run(&takeover);
+    let envelope = r.expect(4);
+    let error = &envelope["error"];
+    assert_eq!(error["code"], "ownership_conflict", "{}", r.context());
+    assert_eq!(argv_of(&error["fix_argv"]).last().unwrap(), "--force");
+    assert_eq!(
+        argv_of(&error["alternatives"][0]["argv"]),
+        ["omaddons", "remove", "Bar", "-t", "retail"]
+    );
+    assert_eq!(
+        (bar(&home), tree_hash(&addons)),
+        (first.clone(), tree.clone())
+    );
+
+    let forced: Vec<&str> = takeover.iter().copied().chain(["--force"]).collect();
+    let r = home.run(&forced);
+    let envelope = r.expect(0);
+    let item = &items(&envelope)[0];
+    assert_eq!(
+        (
+            &item["status"],
+            &item["from_version"],
+            &item["folders"]["replaced"]
+        ),
+        (
+            &Value::from("updated"),
+            &Value::from("2.1.0"),
+            &serde_json::json!(["Bar"])
+        ),
+        "{}",
+        r.context()
+    );
+    assert!(
+        warning_codes(&envelope).contains(&"ownership_transferred"),
+        "{}",
+        r.context()
+    );
+    assert_eq!(bar(&home).map(|(r, _)| r).as_deref(), Some("gh:demo/bar"));
+
+    // Undo restores the original record, ref and folder.
+    home.run(&["undo"]).expect(0);
+    assert_eq!((bar(&home), tree_hash(&addons)), (first, tree));
+}
+
+#[test]
 fn a_running_client_needs_a_reload() {
     let mut home = Home::new(&["wow"]);
     foo_release(&home.http, "v1.0.0", mainline(), "120105");

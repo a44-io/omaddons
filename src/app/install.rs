@@ -71,7 +71,8 @@ pub struct InstallArgs {
     /// Install only the named addons, not the ones their TOCs require
     #[arg(long)]
     pub no_deps: bool,
-    /// Take over a folder another addon owns, or replace an unmanaged folder
+    /// Take over a folder another addon owns, an addon of the same name from another ref,
+    /// or replace an unmanaged folder
     #[arg(long)]
     pub force: bool,
     /// Exit 6 when only some of the addons install

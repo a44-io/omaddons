@@ -128,6 +128,9 @@ pub enum Command {
     /// Triage: every client, its addons, running state and what needs attention
     Status(crate::app::status::StatusArgs),
     /// Install or update addons in one target, verified by its own TOC rules
+    #[command(
+        after_long_help = "An addon is installed from one ref at a time. Another local archive of a local\ninstall (./Bar-2.2.0.zip over ./Bar-2.1.0.zip) updates it; an addon of the same\nname from any other ref is a takeover, refused (ownership_conflict) unless --force."
+    )]
     Install(crate::app::install::InstallArgs),
     /// Update every managed addon on every client, or the ones named (undo with one undo)
     #[command(

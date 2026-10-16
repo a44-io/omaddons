@@ -494,6 +494,13 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 
 **A browser download.** `--file ZIP` installs an archive you downloaded as the release of one ref, so it is recorded against that addon.
 
+**Same name, another ref.** An addon is installed from one ref at a time. Installing an addon whose name is already managed on the client from another ref is:
+
+- **another local archive of a local install** (`./Bar-2.2.0.zip` over `./Bar-2.1.0.zip`): the same addon, `updated` from its version, now recorded from the new archive;
+- **any other ref** (`gh:demo/bar`, or `--file` under a ref, over a local install, or a second repository shipping the same addon): a takeover, refused with `ownership_conflict`. The fix adds `--force`, and the alternative removes the installed one. With `--force` the item is `updated` from the replaced version, an `ownership_transferred` warning says where it now comes from, and `undo` restores the original ref and folders.
+
+`gh:` and `git:` refs of one repository are different refs. To move an addon to another source on purpose, `omaddons adopt <folder> --ref <ref>` re-points it in place.
+
 **Ambiguity.** `owner/repo` that also exists as a local path, or a name that matches two addons, gives `ref_ambiguous` with every candidate as a runnable `omaddons install …` command.
 
 ---
@@ -1658,7 +1665,6 @@ These are bugs, found while this README was written:
 - `omaddons help targets add` (a nested command after `help`) is a usage error whose fix is `omaddons help help`. Use `omaddons targets add --help` or `omaddons help "targets add"`.
 - Some `--json` error fixes (`--force`, `--while-running`) repeat `--json` inside `fix_argv`.
 - Raising `limits.download_max_bytes` above 512 MiB has no effect; lowering it works.
-- Addon identity is the name. Installing an addon whose name matches an installed addon from a different ref (another zip, `--file`, another repository) replaces it without `--force`, reports it as a fresh install (`from_version: null`), and switches the record to the new ref.
 - A pasted `/releases/download/<tag>/<file>` link pins the tag, but the named file is not used to pick the asset.
 - Usage errors ignore `--no-color` and report `meta.offline: false` even when offline. `install http://github.com/a/b -t retail` suggests an https fix without the `-t`, and `status --version` suggests itself.
 - Human output says "1 folders", and `file:` refs keep a `./` component.

@@ -2400,6 +2400,66 @@ fn keeps_installed(record: &TargetRecord, r#ref: &Ref, intent: &InstallIntent) -
         .is_some_and(|e| intent.pinned_noop(e) || intent.keeps_release())
 }
 
+/// A local archive or directory (`file:`): a newer one of the same addon replaces it.
+fn is_local(r: &Ref) -> bool {
+    matches!(r, Ref::File { .. })
+}
+
+/// Installing `new` would replace `other`, an addon of the same name from another ref:
+/// `ownership_conflict`, fixed by the same command with `--force`, or by removing it.
+fn takeover_refused(other: &AddonRecord, new: &Ref, argv: &[String], target: &str) -> Error {
+    let mut forced = argv.to_vec();
+    forced.push("--force".to_owned());
+    let folders: Vec<Value> = other
+        .folders
+        .iter()
+        .map(|f| {
+            json!({
+                "folder": f.as_str(),
+                "code": ErrorCode::OwnershipConflict.wire(),
+                "reason": "same_name_other_ref",
+                "owner": other.name,
+                "ref": other.r#ref.to_string(),
+            })
+        })
+        .collect();
+    Error::new(
+        ErrorCode::OwnershipConflict,
+        format!(
+            "{} on {target} comes from {}; installing {new} would replace it",
+            other.name, other.r#ref
+        ),
+        Suggestion::command(forced),
+    )
+    .alternative(Suggestion::command([
+        "omaddons",
+        "remove",
+        other.name.as_str(),
+        "-t",
+        target,
+    ]))
+    .details(json!({ "folders": folders }))
+}
+
+/// `ownership_transferred` for a forced install of `new` over `other`, an addon of the
+/// same name from another ref: it now comes from `new` (undo brings `other` back).
+fn takeover_warning(other: &AddonRecord, new: &Ref, target: &str) -> Warning {
+    Warning::new(
+        WarningCode::OwnershipTransferred,
+        format!(
+            "{} on {target} now comes from {new} instead of {}",
+            other.name, other.r#ref
+        ),
+    )
+    .with_fix(Suggestion::command([
+        "omaddons",
+        "list",
+        "-t",
+        target,
+        "--verbose",
+    ]))
+}
+
 fn not_managed(addon: &str) -> Error {
     Error::new(
         ErrorCode::NotManaged,
@@ -3260,6 +3320,34 @@ impl TargetPlanner<'_> {
         release: Option<PlannedRelease>,
         mut warnings: Vec<Warning>,
     ) -> Result<PlannedAddon> {
+        // An addon of the same name from another ref is its record's to keep: a newer
+        // local archive of a local install replaces it as an update; any other ref takes
+        // it over only with `--force`, as an update that warns.
+        let namesake = existing
+            .is_none()
+            .then(|| {
+                self.record
+                    .addons
+                    .get(&TargetRecord::addon_key(&template.name))
+            })
+            .flatten()
+            .filter(|a| a.r#ref != template.r#ref);
+        let existing = match namesake {
+            Some(other) if is_local(&other.r#ref) && is_local(&template.r#ref) => Some(other),
+            Some(other) if !self.req.force => {
+                return Err(takeover_refused(
+                    other,
+                    &template.r#ref,
+                    self.ctx.argv,
+                    &self.target.id,
+                ));
+            }
+            Some(other) => {
+                warnings.push(takeover_warning(other, &template.r#ref, &self.target.id));
+                Some(other)
+            }
+            None => existing,
+        };
         // Against whatever `existing` holds now: the snapshot at plan time, the current
         // record under the lock. Folded edits apply after the carry-over.
         let carried = carry_over(existing, intent, &template);

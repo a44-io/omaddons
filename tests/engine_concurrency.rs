@@ -203,7 +203,14 @@ fn two_installs_of_the_same_addon_at_once() {
 #[test]
 fn two_installs_of_different_addons_at_once() {
     let s = Scene::new();
-    s.install("gh:o/baz", "bar"); // registers the target first
+    // Baz first, which registers the target (an addon of its own: another ref of Bar's
+    // archive would be a takeover of Bar).
+    fs::write(
+        s.dl.join("baz.zip"),
+        zip_text(&[("Baz/Baz.toc", "## Interface: 120105\n")]),
+    )
+    .unwrap();
+    s.install("gh:o/baz", "baz");
     let (a, b) = concurrently(&s, ("gh:o/foo", "v1"), ("gh:o/bar", "bar"));
     let (ea, eb) = (a.expect(0), b.expect(0));
     assert!(
