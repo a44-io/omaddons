@@ -412,6 +412,7 @@ mod tests {
     use crate::rules::RulesTable;
     use crate::state::paths::Paths;
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_failpoint_mid_staging_leaves_addons_untouched() {
         let dir = tempfile::tempdir().unwrap();

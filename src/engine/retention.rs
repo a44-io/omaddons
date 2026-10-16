@@ -487,6 +487,7 @@ mod tests {
         assert!(stage(&journaled).exists(), "journal recovery owns it");
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_retention_failure_never_fails_the_commit() {
         let scene = crate::engine::testing::TxScene::new();

@@ -416,6 +416,7 @@ mod tests {
         assert_eq!(read.skipped_lines, 1);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_failed_append_leaves_a_readable_log() {
         let f = fixture();

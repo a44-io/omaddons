@@ -515,6 +515,7 @@ mod tests {
         assert_eq!(result.sha256, sha256(&data));
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn write_atomic_failure_before_rename_keeps_the_old_content() {
         let dir = tempfile::tempdir().unwrap();
@@ -641,6 +642,7 @@ mod tests {
         assert!(matches!(err, RenameError::Io(_)), "{err}");
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn einval_failpoint_makes_flagged_renames_unsupported() {
         let dir = tempfile::tempdir().unwrap();
@@ -684,6 +686,7 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn clone_file_reflinks_where_it_can() {
         for (dir, kind) in dirs() {

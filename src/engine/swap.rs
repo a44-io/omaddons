@@ -696,6 +696,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn without_renameat2_flags_two_renames_under_the_journal() {
         let scene = Scene::new();
@@ -741,6 +742,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_crash_between_exchange_and_snapshot_move_rolls_back() {
         let mut scene = Scene::new();
@@ -770,6 +772,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn saved_variables_snapshot_counts_only() {
         let scene = Scene::new();

@@ -255,6 +255,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn an_nth_failpoint_fires_on_that_hit_only() {
         with_spec("t.nth=error@2,t.every=error", || {
@@ -268,6 +269,7 @@ mod tests {
         });
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn hit_and_enabled_follow_the_spec() {
         with_spec("t.err=error,t.sleep=sleep:1", || {
@@ -281,6 +283,7 @@ mod tests {
         assert!(hit("t.err").is_ok(), "the override ends with the closure");
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn panic_action_panics() {
         let result = std::panic::catch_unwind(|| with_spec("t.panic=panic", || hit("t.panic")));

@@ -4,6 +4,10 @@
 //! outcome through [`output`]. Commands never print. Every filesystem mutation goes
 //! through [`fsx`].
 
+// Release-mode unit tests skip the failpoint tests (failpoints are debug-only, DEC-7),
+// leaving their imports and helpers unused there.
+#![cfg_attr(all(test, not(debug_assertions)), allow(unused_imports, dead_code))]
+
 pub mod app;
 pub mod cli;
 pub mod discover;

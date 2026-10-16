@@ -1328,6 +1328,7 @@ mod tests {
 
     use crate::fsx::TreeDigest;
 
+    #[cfg(debug_assertions)]
     #[test]
     fn an_error_at_any_failpoint_leaves_folders_wholly_old_or_wholly_new() {
         let new_tree = updated_tree();
@@ -1385,6 +1386,7 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn the_lock_is_free_while_staging() {
         let scene = with_v1();
@@ -1416,6 +1418,7 @@ mod tests {
         });
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_concurrent_change_is_replanned_once() {
         // Same release committed meanwhile: a no-op.
@@ -1734,6 +1737,7 @@ mod tests {
         assert_eq!(scene.addons(), tree, "the folder stays, unmanaged again");
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn edits_survive_concurrent_changes_their_guards_allow() {
         // A pin, while another addon is installed.
@@ -1776,6 +1780,7 @@ mod tests {
         assert_eq!(foo.release_id, updated, "the update stands");
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_concurrent_update_breaking_a_pin_guard_is_plan_stale() {
         let scene = with_v1();
@@ -1793,6 +1798,7 @@ mod tests {
         assert!(!scene.record().addons["foo"].pinned);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_changed_adopted_file_is_plan_stale_even_at_an_unchanged_generation() {
         let scene = with_v1();
@@ -1816,6 +1822,7 @@ mod tests {
         assert!(!scene.record().addons.contains_key("baz"));
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_forget_whose_folder_came_back_by_hand_is_dropped() {
         let scene = with_v1();
@@ -1913,6 +1920,7 @@ mod tests {
         assert_eq!(scene.addons(), tree);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_pin_racing_an_install_of_the_same_release_still_records_itself() {
         let scene = TxScene::new();
@@ -1945,6 +1953,7 @@ mod tests {
         assert!(leftovers(&scene).is_empty(), "{:?}", leftovers(&scene));
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn an_error_at_any_failpoint_leaves_the_pin_iff_its_history_line() {
         let (mut failed, mut rolled_forward) = (Vec::new(), Vec::new());

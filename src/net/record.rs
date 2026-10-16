@@ -172,6 +172,8 @@ mod tests {
         }
     }
 
+    // Record mode exists only in debug builds (DEC-7).
+    #[cfg(debug_assertions)]
     #[test]
     fn record_writes_stripped_fixtures_that_replay() {
         let dir = tempfile::tempdir().unwrap();

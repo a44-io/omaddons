@@ -636,6 +636,7 @@ mod tests {
         assert!(!victim.exists());
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn without_renameat2_flags_victims_still_reach_the_trash() {
         let f = fixture();

@@ -881,6 +881,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_crash_between_replayed_steps_is_recovered_by_the_next_recovery() {
         use crate::fsx::GlobalLock;

@@ -1072,6 +1072,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_failed_execution_is_logged_with_ok_false() {
         let f = Fixture::new();

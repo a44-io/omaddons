@@ -1731,6 +1731,7 @@ mod tests {
         assert_eq!((tree(&scene), &addons), (installed.0, &installed.1));
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn an_error_at_any_failpoint_leaves_the_undo_wholly_done_or_not_done() {
         let after_swap = [
@@ -1798,6 +1799,7 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn roll_forward_finishes_an_interrupted_saved_variables_restore() {
         let scene = TxScene::new();
@@ -1817,6 +1819,7 @@ mod tests {
         assert_eq!(read(&scene, &format!("{ACCOUNT}/Foo.lua.bak")), None);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_failed_saved_variables_snapshot_names_no_account() {
         let scene = TxScene::new();
