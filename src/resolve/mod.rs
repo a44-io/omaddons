@@ -4,3 +4,4 @@
 pub mod cache;
 pub mod catalog;
 pub mod select;
+pub mod updates;

@@ -1,0 +1,78 @@
+---
+source: src/resolve/updates.rs
+expression: variants
+---
+{
+  "ahead": {
+    "status": "ahead",
+    "latest": {
+      "version": "2.0.0",
+      "release_id": "gh:o/foo@2.0.0",
+      "published_at": "2026-10-01T00:00:00Z",
+      "channel": "stable"
+    }
+  },
+  "blocked": {
+    "status": "blocked",
+    "latest": {
+      "version": "2.0.0",
+      "release_id": "gh:o/foo@2.0.0",
+      "published_at": "2026-10-01T00:00:00Z",
+      "channel": "stable"
+    },
+    "blocked_reason": "older_than_installed"
+  },
+  "current": {
+    "status": "current",
+    "latest": {
+      "version": "2.0.0",
+      "release_id": "gh:o/foo@2.0.0",
+      "published_at": "2026-10-01T00:00:00Z",
+      "channel": "stable"
+    }
+  },
+  "failed": {
+    "status": "failed",
+    "error": {
+      "code": "not_found",
+      "message": "gh:o/foo has no releases",
+      "fix": "omaddons remove Foo -t retail",
+      "fix_argv": [
+        "omaddons",
+        "remove",
+        "Foo",
+        "-t",
+        "retail"
+      ],
+      "alternatives": [],
+      "retryable": false,
+      "details": {}
+    }
+  },
+  "pinned": {
+    "status": "pinned",
+    "latest": {
+      "version": "2.0.0",
+      "release_id": "gh:o/foo@2.0.0",
+      "published_at": "2026-10-01T00:00:00Z",
+      "channel": "stable"
+    }
+  },
+  "static": {
+    "status": "static"
+  },
+  "unchecked": {
+    "status": "unchecked",
+    "unchecked_reason": "never_checked"
+  },
+  "update_available": {
+    "status": "update_available",
+    "latest": {
+      "version": "2.0.0",
+      "release_id": "gh:o/foo@2.0.0",
+      "published_at": "2026-10-01T00:00:00Z",
+      "channel": "stable"
+    },
+    "confidence": "declared"
+  }
+}
