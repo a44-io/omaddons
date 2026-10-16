@@ -10,57 +10,68 @@ expression: envelope
       {
         "about": "Triage: every client, its addons, running state and what needs attention",
         "aliases": [],
+        "group": "look",
         "name": "status"
-      },
-      {
-        "about": "Install or update addons in one target, verified by its own TOC rules",
-        "aliases": [],
-        "name": "install"
-      },
-      {
-        "about": "Remove managed addons from one target (undoable)",
-        "aliases": [],
-        "name": "remove"
-      },
-      {
-        "about": "Revert the last change (or one by id), SavedVariables included",
-        "aliases": [],
-        "name": "undo"
       },
       {
         "about": "List the addons in each target's AddOns folder",
         "aliases": [],
+        "group": "look",
         "name": "list"
-      },
-      {
-        "about": "List the WoW clients, or add, remove, rename and choose them",
-        "aliases": [],
-        "name": "targets"
       },
       {
         "about": "What an addon is: installed records, catalog entry and newest release",
         "aliases": [],
+        "group": "look",
         "name": "info"
       },
       {
         "about": "Show what changed, when, by whom and why",
         "aliases": [],
+        "group": "look",
         "name": "history"
+      },
+      {
+        "about": "Every network request omaddons made",
+        "aliases": [],
+        "group": "look",
+        "name": "net-log"
+      },
+      {
+        "about": "Install or update addons in one target, verified by its own TOC rules",
+        "aliases": [],
+        "group": "change",
+        "name": "install"
+      },
+      {
+        "about": "Remove managed addons from one target (undoable)",
+        "aliases": [],
+        "group": "change",
+        "name": "remove"
+      },
+      {
+        "about": "Revert the last change (or one by id), SavedVariables included",
+        "aliases": [],
+        "group": "change",
+        "name": "undo"
+      },
+      {
+        "about": "List the WoW clients, or add, remove, rename and choose them",
+        "aliases": [],
+        "group": "setup",
+        "name": "targets"
       },
       {
         "about": "Show or change config.toml",
         "aliases": [],
+        "group": "setup",
         "name": "config"
       },
       {
         "about": "Show help for omaddons or one command",
         "aliases": [],
+        "group": "setup",
         "name": "help"
-      },
-      {
-        "about": "Every network request omaddons made",
-        "aliases": [],
-        "name": "net-log"
       }
     ],
     "exit_codes": [

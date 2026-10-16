@@ -15,41 +15,92 @@ pub mod targets;
 pub mod undo;
 pub mod world;
 
+use schemars::JsonSchema;
+use serde::Serialize;
+
 use crate::cli::{Cli, Command, Context};
 use crate::error::Exit;
 use crate::output::{self, Reporter};
 use targets::TargetsAction;
 
-/// The canonical names of the subcommands this build has. Each command bead adds its
-/// own (DEC-1).
-const COMMANDS: &[&str] = &[
-    "help",
-    "status",
-    "install",
-    "remove",
-    "undo",
-    "history",
-    "info",
-    "net-log",
-    "list",
-    "targets",
-    "targets add",
-    "targets rm",
-    "targets rename",
-    "targets default",
-    "config",
-    "config get",
-    "config set",
-    "config path",
+/// What a command is for: bare help lists the commands one line per group, so it stays
+/// one screen as the command count grows (M2-D25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Group {
+    /// Read-only views.
+    Look,
+    /// Commands that change addons.
+    Change,
+    /// Clients, configuration and help.
+    Setup,
+}
+
+impl Group {
+    /// In bare help's order.
+    pub const ALL: [Self; 3] = [Self::Look, Self::Change, Self::Setup];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Look => "Look",
+            Self::Change => "Change",
+            Self::Setup => "Setup",
+        }
+    }
+}
+
+/// A subcommand this build has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandEntry {
+    /// Its canonical name; a nested one is its path (`targets add`).
+    pub name: &'static str,
+    pub group: Group,
+}
+
+const fn entry(name: &'static str, group: Group) -> CommandEntry {
+    CommandEntry { name, group }
+}
+
+/// Every subcommand this build has, one per line, in display order within its group (a
+/// nested one takes its parent's group). Each command bead adds its own line in the
+/// commit that adds its clap variant (DEC-1).
+pub const COMMANDS: &[CommandEntry] = &[
+    entry("status", Group::Look),
+    entry("list", Group::Look),
+    entry("info", Group::Look),
+    entry("history", Group::Look),
+    entry("net-log", Group::Look),
+    entry("install", Group::Change),
+    entry("remove", Group::Change),
+    entry("undo", Group::Change),
+    entry("targets", Group::Setup),
+    entry("targets add", Group::Setup),
+    entry("targets rm", Group::Setup),
+    entry("targets rename", Group::Setup),
+    entry("targets default", Group::Setup),
+    entry("config", Group::Setup),
+    entry("config get", Group::Setup),
+    entry("config set", Group::Setup),
+    entry("config path", Group::Setup),
+    entry("help", Group::Setup),
 ];
 
 /// The canonical (static) name for a subcommand name clap reported.
 pub fn canonical(name: &str) -> &'static str {
     COMMANDS
         .iter()
-        .copied()
+        .map(|c| c.name)
         .find(|c| *c == name)
         .unwrap_or("omaddons")
+}
+
+/// The group of the subcommand `name`, and its place in `COMMANDS`.
+pub fn group_of(name: &str) -> Option<(Group, usize)> {
+    COMMANDS
+        .iter()
+        .enumerate()
+        .find(|(_, c)| c.name == name)
+        .map(|(at, c)| (c.group, at))
 }
 
 /// The envelope `command` of a parsed invocation; bare `omaddons` is help.

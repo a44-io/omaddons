@@ -6,18 +6,9 @@ World of Warcraft addon manager (CLI + Omarchy plugin)
 
 Usage: omaddons [OPTIONS] <COMMAND>
 
-Commands:
-  status   Triage: every client, its addons, running state and what needs attention
-  install  Install or update addons in one target, verified by its own TOC rules
-  remove   Remove managed addons from one target (undoable)
-  undo     Revert the last change (or one by id), SavedVariables included
-  list     List the addons in each target's AddOns folder
-  targets  List the WoW clients, or add, remove, rename and choose them
-  info     What an addon is: installed records, catalog entry and newest release
-  history  Show what changed, when, by whom and why
-  config   Show or change config.toml
-  help     Show help for omaddons or one command
-  net-log  Every network request omaddons made
+Look      status  list  info  history  net-log
+Change    install  remove  undo
+Setup     targets  config  help
 
 Start with `omaddons status`. Run `omaddons help <command>` for details; add --json for one JSON envelope on stdout.
 

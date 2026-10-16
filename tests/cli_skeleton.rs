@@ -109,8 +109,10 @@ fn bare_omaddons_prints_help_and_exits_0() {
     assert_eq!(r.code, 0, "{}", r.context());
     assert!(r.stdout.contains("Usage: omaddons"), "{}", r.context());
     assert!(
-        r.stdout.contains("Commands:\n  status") && r.stdout.contains("\n  help "),
-        "common verbs first\n{}",
+        r.stdout.contains("\nLook      status")
+            && r.stdout.contains("\nChange    install")
+            && r.stdout.contains("\nSetup     targets  config  help\n"),
+        "one line per group\n{}",
         r.context()
     );
     for name in [
