@@ -34,6 +34,12 @@ expression: envelope
         "name": "info"
       },
       {
+        "about": "Every client's addon set as one addons.toml for sync (stdout, or --write)",
+        "aliases": [],
+        "group": "look",
+        "name": "export"
+      },
+      {
         "about": "Show what changed, when, by whom and why",
         "aliases": [],
         "group": "look",

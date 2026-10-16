@@ -1,0 +1,24 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "export",
+  "commands": [],
+  "data": {
+    "backup": null,
+    "content": "# Desired addon sets for omaddons. `omaddons sync` makes each client match this file.\nschema_version = \"1.0\"\n\n[[family.mainline.addon]]\nname = \"Foo\"\nref = \"gh:o/foo\"\n",
+    "entries": 1,
+    "path": null,
+    "targets": [
+      "classic",
+      "retail"
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

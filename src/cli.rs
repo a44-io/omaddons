@@ -156,6 +156,8 @@ pub enum Command {
     Outdated(crate::app::outdated::OutdatedArgs),
     /// What an addon is: installed records, catalog entry and newest release
     Info(crate::app::info::InfoArgs),
+    /// Every client's addon set as one addons.toml for sync (stdout, or --write)
+    Export(crate::app::export::ExportArgs),
     /// Every network request omaddons made
     NetLog(crate::app::net_log::NetLogArgs),
     /// List the addons in each target's AddOns folder

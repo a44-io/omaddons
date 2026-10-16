@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod desired;
+pub mod export_memo;
 pub mod files_index;
 pub mod history;
 pub mod memo;

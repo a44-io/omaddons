@@ -289,6 +289,11 @@ impl Paths {
         self.cache.join("releases.json")
     }
 
+    /// What `export --write` wrote: each file's hash, to protect hand edits.
+    pub fn export_memo(&self) -> PathBuf {
+        self.cache.join("export.json")
+    }
+
     /// One transaction's temp dir (git clones, partial downloads).
     pub fn cache_tmp(&self, tx: &TxId) -> PathBuf {
         self.cache.join("tmp").join(tx.to_string())

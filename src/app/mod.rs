@@ -4,6 +4,7 @@
 pub mod adopt;
 pub mod config;
 pub mod engine;
+pub mod export;
 pub mod help;
 pub mod history;
 pub mod info;
@@ -76,6 +77,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("list", Group::Look),
     entry("outdated", Group::Look),
     entry("info", Group::Look),
+    entry("export", Group::Look),
     entry("history", Group::Look),
     entry("net-log", Group::Look),
     entry("install", Group::Change),
@@ -131,6 +133,7 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         Some(Command::Undo(_)) => "undo",
         Some(Command::History(_)) => "history",
         Some(Command::Info(_)) => "info",
+        Some(Command::Export(_)) => "export",
         Some(Command::Outdated(_)) => "outdated",
         Some(Command::NetLog(_)) => "net-log",
         Some(Command::List(_)) => "list",
@@ -303,6 +306,15 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         }
         Some(Command::Info(args)) => {
             let result = info::run(ctx, args);
+            if let Ok(outcome) = &result {
+                for note in &outcome.notes {
+                    out.log(output::LogLevel::Debug, note);
+                }
+            }
+            out.emit(result)
+        }
+        Some(Command::Export(args)) => {
+            let result = export::run(ctx, args);
             if let Ok(outcome) = &result {
                 for note in &outcome.notes {
                     out.log(output::LogLevel::Debug, note);

@@ -1,0 +1,39 @@
+---
+source: tests/export.rs
+expression: text
+---
+# Desired addon sets for omaddons. `omaddons sync` makes each client match this file.
+schema_version = "1.0"
+
+[[family.mainline.addon]]
+name = "DBM"
+ref = "gh:o/dbm"
+version = "v1"
+pinned = true
+sha256 = "5fcf40a4eb797ecd0239b1f7c45499c8d83bfcb3dbf4413ed14cebe1dfaa7d02"
+
+[[family.mainline.addon]]
+name = "Plater"
+ref = "gh:o/plater"
+version = "v1"
+sha256 = "a03fb918458323ae28a8f3c2933208522429497bcdb034fbe98259d1c65fac93"
+
+[[target."ptr".addon]]
+name = "DBM"
+ref = "gh:o/dbm"
+version = "v1"
+pinned = true
+sha256 = "5fcf40a4eb797ecd0239b1f7c45499c8d83bfcb3dbf4413ed14cebe1dfaa7d02"
+
+[[target."retail".addon]]
+name = "Foo"
+ref = "gh:o/foo"
+version = "v1"
+sha256 = "9b69932dde02c670ab0f62142a081221f60972fe08820bb274980abeb90e35e4"
+
+[[target."retail".addon]]
+name = "Lib"
+ref = "gh:o/lib"
+version = "v1"
+dependency = true
+sha256 = "98990d814240c1d36c031cbfe829ad6470f1966b38d1f4ba8f7d929884c71a8c"

@@ -204,6 +204,23 @@ fn adopt() {
 }
 
 #[test]
+fn export() {
+    let s = Scene::new();
+    s.install_foo();
+    let c = s.json(&["export"], 0);
+    insta::assert_json_snapshot!("export_ok", s.stable(&c.envelope));
+    let c = s.json(&["export", "--write"], 0);
+    assert!(c.envelope["data"]["path"].is_string());
+    // Edited by hand since: refused until --overwrite.
+    let file = s.home.env.config().join("omaddons/addons.toml");
+    std::fs::write(&file, "# mine\n").unwrap();
+    let c = s.json(&["export", "--write"], 2);
+    insta::assert_json_snapshot!("export_edited", s.stable(&c.envelope));
+    let c = s.json(&["export", "--overwrite"], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+}
+
+#[test]
 fn info() {
     let s = Scene::new();
     let c = s.json(&["info", "weakauras"], 0);

@@ -275,6 +275,10 @@ warning_codes! {
     /// An adopted addon's name was taken on its target: it is recorded as
     /// `<name> (<primary folder>)`.
     AdoptNameChanged            = "adopt_name_changed";
+    /// `export`: a registered client whose dir is gone was exported from its records.
+    ExportMissingTarget         = "export_missing_target";
+    /// `export`: an addon from a local file or directory was not exported.
+    ExportLocalSource           = "export_local_source";
 }
 
 impl fmt::Display for WarningCode {
@@ -756,7 +760,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 27);
+        assert_eq!(WarningCode::ALL.len(), 29);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

@@ -19,7 +19,7 @@ use crate::state::paths::Paths;
 /// Who is writing, which decides the rows a session may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Writer {
-    /// `config set`.
+    /// `config set` and `export --write`.
     Config,
     /// `auth` (M5).
     Auth,

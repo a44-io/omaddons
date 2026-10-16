@@ -1,0 +1,30 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "export",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "desired_state_invalid",
+    "details": {
+      "path": "<root>/config/omaddons/addons.toml",
+      "reason": "edited"
+    },
+    "fix": "omaddons export --write --overwrite",
+    "fix_argv": [
+      "omaddons",
+      "export",
+      "--write",
+      "--overwrite"
+    ],
+    "message": "<root>/config/omaddons/addons.toml changed since omaddons last wrote it (or was not written by it); --overwrite replaces it, keeping it as addons.toml.bak",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

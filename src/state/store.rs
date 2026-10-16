@@ -141,6 +141,10 @@ pub const KINDS: &[(&str, SchemaVersion)] = &[
         <crate::sources::wowi::index::StoredIndex as Versioned>::KIND,
         <crate::sources::wowi::index::StoredIndex as Versioned>::CURRENT,
     ),
+    (
+        <super::export_memo::ExportMemo as Versioned>::KIND,
+        <super::export_memo::ExportMemo as Versioned>::CURRENT,
+    ),
     ("history", super::history::CURRENT),
 ];
 
