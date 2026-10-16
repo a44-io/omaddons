@@ -136,7 +136,7 @@ Milestone 1 (the working slice) is complete. Everything in this README describes
 | `adopt`: where unmanaged addons come from, whether they are exactly a release, and bringing them under management as they are (undoable) | ✅ Done (milestone 2) |
 | `update` (alias `upgrade`): every client's updates in one run, undone with one `undo` | ✅ Done (milestone 2) |
 | `pin` and `unpin`: hold an addon at its release through updates | ✅ Done (milestone 2) |
-| Dependencies: what a TOC requires installs with it, from the catalog; `required_by` kept true on update and remove, orphans reported | ✅ Done (milestone 2; more sources to come) |
+| Dependencies: what a TOC requires installs with it, from the catalog, Tukui or WoWInterface; `required_by` kept true on update and remove, orphans reported | ✅ Done (milestone 2) |
 | `sync`: every client made to match `addons.toml`, idempotently; `--locked` reproduces exact versions, `--prune` removes what the file drops | ✅ Done (milestone 2) |
 | `export`: every client's addon set as one `addons.toml`, printed or written with a backup | ✅ Done (milestone 2) |
 | WoWInterface: `wowi:` refs and links, keyless, every download checked against its MD5 | ✅ Done (milestone 2) |
@@ -640,7 +640,7 @@ Each item's `status` is `installed`, `updated`, `unchanged` or `failed`, or, whe
 
 **Reinstalling.** `--reinstall` installs the recorded release again, even when it is current, and replaces the addon's folders: files modified by hand come back as released, and deleted folders come back. The archive comes from the download cache when it is still there, with no request (offline too). Otherwise that exact release is fetched again, never a newer one. A pinned addon stays pinned, and a dependency stays a dependency. The item is `updated` from and to the same version, in an `update` transaction, so `undo` brings the replaced files back. Only an installed addon can be reinstalled (`not_managed`, fix `omaddons install <addon>`). `omaddons reinstall X` is a usage error whose fix is `omaddons install X --reinstall`.
 
-**Dependencies.** What an addon's TOC requires (`## Dependencies`, `## RequiredDeps`) installs in the same transaction when a keyless source ships it (today the catalog, including your `catalog.d` entries), from `default_channel` (never the requesting addon's channel). It is recorded as `reason: dependency` with `required_by`, and `undo` removes it with its requester. `## OptionalDeps` never installs anything. Some required folders install nothing:
+**Dependencies.** What an addon's TOC requires (`## Dependencies`, `## RequiredDeps`) installs in the same transaction when a keyless source ships it, from `default_channel` (never the requesting addon's channel). The folder is looked up locally, never sent to a service, in this order: the catalog (including your `catalog.d` entries); the Tukui list, when exactly one project ships it; then the WoWInterface index, whose best project wins only when it alone ships just that folder or is named like it, and changed in the last two years (otherwise its candidates are listed, and nothing installs). Each index is read at most once per command, and only when the catalog misses: the Tukui list from the release memo inside 15 minutes, the WoWInterface index from its stored copy while it is fresh (an hour). `--offline` reads what is stored, whatever its age, with one `stale_check`, and never downloads an index. A source turned off in `config.toml` is skipped, and the `missing_dependency` message names each source it could not consult and why. It is recorded as `reason: dependency` with `required_by`, and `undo` removes it with its requester. `## OptionalDeps` never installs anything. Some required folders install nothing:
 
 - `Blizzard_*` folders and folders of the same archive.
 - A folder that is already present. A managed owner gains the requester in `required_by`. For unmanaged ones, `commands` offers `omaddons adopt <folders…> -t <id>` (action `adopt`).
@@ -1731,7 +1731,7 @@ Journals are recovered by the next command that commits a change, not by read co
 
 | Capability | State | Planned |
 |---|---|---|
-| Dependency resolution (`## Dependencies`) | ⚠️ resolved from the catalog when installing and updating, with dependency items, bridge requirements and unresolved folders in the output; WoWInterface and Tukui lookups are on the way | M2 |
+| Dependency resolution (`## Dependencies`) | ✅ resolved from the catalog, the Tukui list and the WoWInterface index when installing and updating, with dependency items, bridge requirements and unresolved folders in the output | M2 |
 | Adopting addons installed by other managers | ✅ `adopt`; other `status`, `outdated` and `install` hints point to it soon | M2 |
 | `addons.toml`, `export`, `sync`, `copy` between clients | ✅ `sync` (with `--locked` and `--prune`), `export` and `copy` | M2 |
 | `search` | ✅ the catalog, the WoWInterface index, the Tukui list and GitHub's search | M2 |

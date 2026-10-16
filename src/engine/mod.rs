@@ -3,6 +3,7 @@
 
 pub mod blobs;
 pub mod edit;
+pub mod indexes;
 pub mod inspect;
 pub mod journal;
 pub mod ownership;

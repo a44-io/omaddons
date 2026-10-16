@@ -1098,6 +1098,12 @@ fn a_missing_dependency_without_candidates_gets_the_no_source_fix_and_no_hint() 
         )],
     );
     catalog(&home, &[("LittleWigs", "littlewigs", &["LittleWigs"])]);
+    // Tukui and WoWInterface are consulted, and neither ships it.
+    common::tukui::tukui_list(&home.http, &[common::tukui::elvui()]);
+    common::wowi::wowi_filelist(
+        &home.http,
+        &[common::wowi::FileEntry::new(5995, "BugSack", &["BugSack"])],
+    );
     let r = home.run(&["install", "littlewigs"]);
     let envelope = r.expect(0);
     assert_eq!(
@@ -1584,6 +1590,7 @@ mod engine_api {
             catalog: Some(&catalog),
             default_channel: Channel::Stable,
             downloads: None,
+            indexes: None,
         };
         omaddons::engine::run(&req, &ctx).unwrap()
     }
@@ -1756,6 +1763,281 @@ mod engine_api {
             bridges(&done).is_none_or(|(b, _)| b.is_empty()),
             "{:?}",
             bridges(&done)
+        );
+    }
+}
+
+/// After the catalog: Tukui's list, then WoWInterface's index, each loaded once per
+/// command and only when a lookup reaches it; offline from what is stored; skipped, and
+/// said so, when its source is off.
+#[cfg(test)]
+mod via_indexes {
+    use super::common::tukui::{elvui, etag, tukui_addon, tukui_download, tukui_list};
+    use super::common::wowi::{FileEntry, details, wowi_details, wowi_file, wowi_filelist};
+    use super::*;
+
+    /// A plugin requiring `requires`, from `gh:o/plug`, named by the catalog.
+    fn plugin(requires: &[&'static str]) -> Home {
+        let deps: &'static [&'static str] = Box::leak(requires.to_vec().into_boxed_slice());
+        let folders: &'static [common::graph::Folder<'static>] =
+            Box::leak(vec![folder("Plug", deps)].into_boxed_slice());
+        graph(&[node("https://github.com/o/plug", folders)])
+    }
+
+    /// Serves `wowi:<uid>` (one per details batch) with one retail folder each.
+    fn wowi_files(home: &Home, projects: &[(u64, &str)]) {
+        let mut all = Vec::new();
+        for (uid, folder_name) in projects {
+            let toc = toc(RETAIL, &[&format!("## Title: {folder_name}")]);
+            let zip = zip_text(&[(&format!("{folder_name}/{folder_name}.toc"), &toc)]);
+            let md5 = wowi_file(&home.http, *uid, &zip);
+            all.push(details(*uid, folder_name, "1.0", &md5));
+        }
+        let ids: Vec<u64> = projects.iter().map(|(uid, _)| *uid).collect();
+        wowi_details(&home.http, &ids, &all);
+    }
+
+    fn purpose(home: &Home, purpose: &str) -> usize {
+        net_log(home).count_purpose(purpose)
+    }
+
+    #[test]
+    fn a_folder_only_tukui_ships_installs_from_tukui() {
+        let home = plugin(&["ElvUI"]);
+        // ElvUI's own catalog entry would resolve it first.
+        fs::write(
+            home.env
+                .config()
+                .join("omaddons/catalog.d/60-no-elvui.toml"),
+            "schema_version = \"1.0\"\n\n[[addon]]\nname = \"ElvUI\"\nremove = true\n",
+        )
+        .unwrap();
+        let entry = elvui();
+        tukui_list(&home.http, std::slice::from_ref(&entry));
+        tukui_addon(&home.http, &entry, &["T1", "T2"]);
+        let toc = toc(RETAIL, &["## Title: ElvUI"]);
+        let zip = zip_text(&[
+            ("ElvUI/ElvUI.toc", &toc),
+            ("ElvUI_Libraries/ElvUI_Libraries.toc", &toc),
+            ("ElvUI_Options/ElvUI_Options.toc", &toc),
+        ]);
+        for token in ["T1", "T2"] {
+            tukui_download(&home.http, "elvui", token, &zip, Some(&etag(&zip)));
+        }
+        let r = home.run(&["install", "gh:o/plug"]);
+        let envelope = r.expect(0);
+        let elv = record_of(&home, "ElvUI");
+        assert!(elv.is_some(), "{}", r.context());
+        let elv = elv.unwrap();
+        assert_eq!(
+            (elv.r#ref.to_string(), elv.reason, elv.required_by.clone()),
+            (
+                "tukui:elvui".to_owned(),
+                AddonReason::Dependency,
+                vec!["Plug".to_owned()]
+            )
+        );
+        assert_eq!(envelope["partial"], false);
+        // Tukui answered: WoWInterface's index was never needed.
+        assert_eq!(purpose(&home, "wowi-filelist"), 0);
+    }
+
+    #[test]
+    fn a_folder_only_wowinterface_ships_installs_from_it_verified() {
+        let home = plugin(&["LibOnly"]);
+        tukui_list(&home.http, &[elvui()]);
+        wowi_filelist(
+            &home.http,
+            &[
+                FileEntry::new(4001, "LibOnly", &["LibOnly"]),
+                FileEntry::new(4002, "Bundle", &["LibOnly", "Other"]),
+            ],
+        );
+        wowi_files(&home, &[(4001, "LibOnly")]);
+        let r = home.run(&["install", "gh:o/plug"]);
+        let envelope = r.expect(0);
+        let lib = record_of(&home, "LibOnly");
+        assert!(lib.is_some(), "{}", r.context());
+        let lib = lib.unwrap();
+        assert_eq!(
+            (lib.r#ref.to_string(), lib.reason),
+            ("wowi:4001".to_owned(), AddonReason::Dependency)
+        );
+        assert!(
+            lib.release_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("wowi:4001@")),
+            "the content identity is the MD5: {lib:?}"
+        );
+        assert_eq!(envelope["partial"], false);
+        assert_eq!(purpose(&home, "wowi-filelist"), 1);
+    }
+
+    #[test]
+    fn an_abandoned_project_is_a_candidate_never_an_install() {
+        let home = plugin(&["OldLib"]);
+        tukui_list(&home.http, &[elvui()]);
+        let mut old = FileEntry::new(4003, "OldLib", &["OldLib"]);
+        old.date_ms = 1_500_000_000_000;
+        wowi_filelist(&home.http, &[old]);
+        let r = home.run(&["install", "gh:o/plug"]);
+        let envelope = r.expect(0);
+        assert!(record_of(&home, "OldLib").is_none());
+        assert_eq!(envelope["partial"], false, "{}", r.context());
+        let missing = warnings_with(&envelope, "missing_dependency");
+        assert_eq!(missing.len(), 1, "{}", r.context());
+        assert!(missing[0].contains("wowi:4003") && missing[0].contains("two years"));
+    }
+
+    #[test]
+    fn the_catalog_first_and_each_index_once_per_command() {
+        // A catalog dependency asks neither index.
+        let home = wigs();
+        home.run(&["install", "littlewigs"]).expect(0);
+        assert_eq!(
+            (
+                purpose(&home, "tukui-list"),
+                purpose(&home, "wowi-filelist")
+            ),
+            (0, 0)
+        );
+
+        // Two WoWInterface-only dependencies: one file list.
+        let home = plugin(&["LibA", "LibB"]);
+        tukui_list(&home.http, &[elvui()]);
+        wowi_filelist(
+            &home.http,
+            &[
+                FileEntry::new(4011, "LibA", &["LibA"]),
+                FileEntry::new(4012, "LibB", &["LibB"]),
+            ],
+        );
+        wowi_files(&home, &[(4011, "LibA"), (4012, "LibB")]);
+        let r = home.run(&["install", "gh:o/plug"]);
+        r.expect(0);
+        assert!(
+            record_of(&home, "LibA").is_some() && record_of(&home, "LibB").is_some(),
+            "{}",
+            r.context()
+        );
+        assert_eq!(
+            (
+                purpose(&home, "tukui-list"),
+                purpose(&home, "wowi-filelist")
+            ),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn offline_reads_the_stored_index_and_never_downloads_it() {
+        use omaddons::sources::wowi::index::StoredIndex;
+        use omaddons::state::store;
+
+        // Online once: the index is stored.
+        let home = plugin(&["LibOnly"]);
+        tukui_list(&home.http, &[elvui()]);
+        wowi_filelist(
+            &home.http,
+            &[
+                FileEntry::new(4001, "LibOnly", &["LibOnly"]),
+                FileEntry::new(4021, "LibLater", &["LibLater"]),
+            ],
+        );
+        wowi_files(&home, &[(4001, "LibOnly")]);
+        home.run(&["install", "gh:o/plug"]).expect(0);
+        // A day later, offline: a requester installed from a file needs LibLater.
+        let path = common::http::paths(&home.env).wowi_index();
+        let mut stored = store::load::<StoredIndex>(&path).unwrap().unwrap().value;
+        stored.fetched_at -= jiff::SignedDuration::from_hours(24);
+        fs::write(&path, store::encode(&stored).unwrap()).unwrap();
+        let zip = home.env.root().join("later.zip");
+        let later_toc = toc(RETAIL, &["## Dependencies: LibLater"]);
+        fs::write(&zip, zip_text(&[("Later/Later.toc", &later_toc)])).unwrap();
+        let before = net_log(&home).len();
+        let r = home.run(&[
+            "install",
+            "gh:o/later",
+            "--file",
+            &zip.display().to_string(),
+            "--offline",
+        ]);
+        let envelope = r.expect(0);
+        assert_eq!(net_log(&home).len(), before, "no request offline");
+        // The index says it is old once (the release memo says so for itself).
+        let stale: Vec<String> = warnings_with(&envelope, "stale_check")
+            .into_iter()
+            .filter(|w| w.contains("WoWInterface index"))
+            .collect();
+        assert_eq!(stale.len(), 1, "{}", r.context());
+        // Resolved from the stored index; installing it is the offline rules' call: with
+        // nothing remembered for it, an `offline` failure.
+        let dependency = envelope["data"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["ref"] == "wowi:4021");
+        assert_eq!(
+            dependency.map(|d| (&d["request"], &d["status"], &d["error"]["code"])),
+            Some((&json!("LibLater"), &json!("failed"), &json!("offline"))),
+            "{}",
+            r.context()
+        );
+
+        // With no stored index: nothing asked, and the warning says why.
+        fs::remove_file(&path).unwrap();
+        let before = net_log(&home).len();
+        let r = home.run(&[
+            "install",
+            "gh:o/later",
+            "--file",
+            &zip.display().to_string(),
+            "--offline",
+            "--reinstall",
+        ]);
+        let envelope = r.expect(0);
+        assert_eq!(net_log(&home).len(), before);
+        let missing = warnings_with(&envelope, "missing_dependency");
+        assert!(
+            missing
+                .iter()
+                .any(|m| m.contains("WoWInterface (offline, and no index is stored)")),
+            "{}",
+            r.context()
+        );
+    }
+
+    #[test]
+    fn a_disabled_source_is_skipped_and_named() {
+        let home = plugin(&["LibOnly"]);
+        tukui_list(&home.http, &[elvui()]);
+        wowi_filelist(&home.http, &[FileEntry::new(4001, "LibOnly", &["LibOnly"])]);
+        for source in ["wowi", "tukui"] {
+            home.run(&[
+                "config",
+                "set",
+                &format!("sources.{source}.enabled"),
+                "false",
+            ])
+            .expect(0);
+        }
+        let r = home.run(&["install", "gh:o/plug"]);
+        let envelope = r.expect(0);
+        assert!(record_of(&home, "LibOnly").is_none());
+        assert_eq!(
+            (
+                purpose(&home, "tukui-list"),
+                purpose(&home, "wowi-filelist")
+            ),
+            (0, 0)
+        );
+        let missing = warnings_with(&envelope, "missing_dependency");
+        assert!(
+            missing
+                .iter()
+                .any(|m| m.contains("not consulted: Tukui (disabled); WoWInterface (disabled)")),
+            "{}",
+            r.context()
         );
     }
 }

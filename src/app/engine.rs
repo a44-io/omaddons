@@ -5,6 +5,7 @@
 
 use super::world::World;
 use crate::cli::Context;
+use crate::engine::indexes::DepIndexes;
 use crate::engine::inspect::ArchiveLimits;
 use crate::engine::plan::DownloadMemo;
 use crate::engine::retention::RetentionLimits;
@@ -43,6 +44,9 @@ pub struct Engine {
     /// What the command downloaded, so its engine runs (`install`'s probe and real
     /// run, every target) download each archive once.
     downloads: DownloadMemo,
+    /// The Tukui list and WoWInterface index dependencies resolve from after the
+    /// catalog, each loaded at most once per command.
+    indexes: DepIndexes,
 }
 
 impl Engine {
@@ -78,6 +82,7 @@ impl Engine {
             catalog: Catalog::load(&world.paths).0,
             default_channel: world.config.default_channel.unwrap_or_default(),
             downloads: DownloadMemo::default(),
+            indexes: DepIndexes::default(),
         })
     }
 
@@ -99,6 +104,7 @@ impl Engine {
             catalog: Some(&self.catalog),
             default_channel: self.default_channel,
             downloads: Some(&self.downloads),
+            indexes: Some(&self.indexes),
         }
     }
 

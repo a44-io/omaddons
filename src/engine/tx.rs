@@ -143,6 +143,9 @@ pub struct EngineCtx<'a> {
     /// What the command downloaded, shared by its engine runs; `None` shares downloads
     /// within this run only.
     pub downloads: Option<&'a super::plan::DownloadMemo>,
+    /// The Tukui list and WoWInterface index dependencies resolve from after the catalog,
+    /// loaded once per command; `None`: the catalog only.
+    pub indexes: Option<&'a super::indexes::DepIndexes>,
 }
 
 /// One target's result: the `data` core of install, remove and undo.
@@ -239,6 +242,7 @@ pub fn check_releases(jobs: &[CheckJob], ctx: &EngineCtx<'_>) -> Result<CheckedR
         catalog: ctx.catalog.unwrap_or(&no_catalog),
         default_channel: ctx.default_channel,
         downloads: ctx.downloads.unwrap_or(&run_downloads),
+        indexes: ctx.indexes,
     };
     for job in jobs {
         checked.results.push(plan::check_release(
@@ -316,6 +320,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         catalog: ctx.catalog.unwrap_or(&no_catalog),
         default_channel: ctx.default_channel,
         downloads: ctx.downloads.unwrap_or(&run_downloads),
+        indexes: ctx.indexes,
     };
     let planned = plan::plan(&plan_req, &plan_ctx);
     let plan = match planned {
@@ -607,6 +612,7 @@ fn locked(
         catalog: &no_catalog,
         default_channel: ctx.default_channel,
         downloads: &no_downloads,
+        indexes: None,
     };
     let mut works = Vec::new();
     let mut changes = Vec::new();

@@ -133,6 +133,7 @@ mod support {
                 catalog: &catalog,
                 default_channel: Channel::Stable,
                 downloads: &downloads,
+                indexes: None,
             };
             let req = PlanRequest {
                 targets,

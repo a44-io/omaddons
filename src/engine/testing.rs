@@ -364,6 +364,7 @@ impl TxScene {
             catalog: None,
             default_channel: crate::model::Channel::Stable,
             downloads: None,
+            indexes: None,
         };
         f(&ctx)
     }

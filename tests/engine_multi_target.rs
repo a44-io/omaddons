@@ -131,6 +131,7 @@ mod support {
                 catalog: None,
                 default_channel: Channel::Stable,
                 downloads: None,
+                indexes: None,
             }
         }
 

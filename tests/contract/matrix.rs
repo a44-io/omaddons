@@ -334,6 +334,12 @@ fn install_with_dependencies() {
             node("https://github.com/o/masque", &[folder("Masque", &[])]),
         ],
     );
+    // Tukui and WoWInterface are consulted for Nowhere, and neither ships it.
+    common::tukui::tukui_list(&s.home.http, &[common::tukui::elvui()]);
+    common::wowi::wowi_filelist(
+        &s.home.http,
+        &[common::wowi::FileEntry::new(5995, "BugSack", &["BugSack"])],
+    );
     let catalog = s.home.env.config().join("omaddons/catalog.d");
     std::fs::create_dir_all(&catalog).unwrap();
     let mut text = String::from("schema_version = \"1.0\"\n");

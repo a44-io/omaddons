@@ -335,6 +335,11 @@ impl<'a> ReleaseCache<'a> {
         })
     }
 
+    /// How far this command trusts remembered metadata.
+    pub fn freshness(&self) -> Freshness {
+        self.policy
+    }
+
     /// What earlier commands learned by downloading candidates.
     pub fn facts(&self) -> &FactIndex {
         &self.facts

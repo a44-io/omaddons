@@ -26,6 +26,7 @@ use super::blobs::{BlobCache, BlobRef, DownloadTarget};
 use super::edit::{
     EditField, RecordEdit, RecordGuard, apply_edit, apply_edits, changed_fields, sorted_names,
 };
+use super::indexes::{DepIndexes, IndexLookups};
 use super::inspect::{
     ArchiveLimits, FolderVerdict, Inspected, SkippedFolder, accepts, inspect, inspect_dir,
     partition, verify,
@@ -48,7 +49,8 @@ use crate::resolve::cache::{Origin, ReleaseCache};
 use crate::resolve::catalog::Catalog;
 use crate::resolve::deps::{
     AmbiguityReason, BridgeDependency, DepLookups, DepResolution, DepView, MissingReason,
-    Satisfier, ViewFolder, bridge_dependencies, is_satisfied, needed_folders, resolve,
+    Satisfier, TukuiDirs, ViewFolder, WowiDirs, bridge_dependencies, is_satisfied, needed_folders,
+    resolve,
 };
 use crate::resolve::select::{EmptyReason, select};
 use crate::rules::RulesTable;
@@ -349,6 +351,8 @@ pub struct PlanCtx<'a> {
     pub default_channel: Channel,
     /// What the command downloaded so far, shared by its plans (M2-D28).
     pub downloads: &'a DownloadMemo,
+    /// Where dependencies resolve after the catalog; `None`: the catalog only.
+    pub indexes: Option<&'a super::indexes::DepIndexes>,
 }
 
 /// What a command downloaded, by `(release_id, asset file name)`: the blob, or the
@@ -1230,8 +1234,14 @@ fn missing_dependency(
         .collect();
     let (why, fix) = match unresolved.reason {
         UnresolvedReason::NoSource => (
-            "no keyless source ships it; it may only be on CurseForge or Wago, which arrive in M5"
-                .to_owned(),
+            match detail {
+                // The sources that could not be consulted, and why.
+                Some(skipped) => format!(
+                    "no keyless source consulted ships it (not consulted: {skipped}); it may only be on CurseForge or Wago, which arrive in M5"
+                ),
+                None => "no keyless source ships it; it may only be on CurseForge or Wago, which arrive in M5"
+                    .to_owned(),
+            },
             Suggestion::command(["omaddons", "search", folder]),
         ),
         UnresolvedReason::ManagedFolderMissing => (
@@ -1379,12 +1389,18 @@ impl TargetPlanner<'_> {
             .filter(|f| f.target == self.target.id)
             .filter_map(|f| f.r#ref.as_ref())
             .map(|r| (r.identity(), Settled::Failed));
+        // After the catalog: Tukui's list, then WoWInterface's index, each loaded only
+        // when a lookup reaches it.
+        let indexes = self.ctx.indexes.map(|indexes| IndexLookups {
+            indexes,
+            ctx: self.ctx,
+        });
         let mut rounds = Rounds {
             lookups: DepLookups {
                 managed: self.record,
                 catalog: self.ctx.catalog,
-                tukui: None,
-                wowi: None,
+                tukui: indexes.as_ref().map(|l| l as &dyn TukuiDirs),
+                wowi: indexes.as_ref().map(|l| l as &dyn WowiDirs),
                 now: Timestamp::now(),
             },
             locks,
@@ -1514,48 +1530,73 @@ impl TargetPlanner<'_> {
                 let u = unresolved(UnresolvedReason::NotRequested, Vec::new());
                 self.unresolved(tp, requester, u, None);
             }
-            None => match resolve(&dep, self.target, &rounds.lookups) {
-                DepResolution::Resolved { r#ref, name, .. } => {
-                    let id = r#ref.identity();
-                    if let Some(wanted) = rounds.wanted.get_mut(&id) {
-                        wanted.requesters.insert(requester.to_owned());
-                        return;
+            None => self.resolved(tp, rounds, requester, dep),
+        }
+    }
+
+    /// Plans the resolution of `dep`, a folder `requester` requires that nothing here has.
+    fn resolved(
+        &self,
+        tp: &mut TargetPlan,
+        rounds: &mut Rounds<'_>,
+        requester: &str,
+        dep: FolderName,
+    ) {
+        let unresolved = |reason, candidates| Unresolved {
+            folder: dep.clone(),
+            reason,
+            candidates,
+        };
+        let resolution = resolve(&dep, self.target, &rounds.lookups);
+        // An index read from what is stored says so (`stale_check`), once per command.
+        if let Some(indexes) = self.ctx.indexes {
+            let warnings = indexes.take_warnings();
+            push_new(&mut tp.warnings, warnings.clone());
+            push_new(&mut tp.unchanged_warnings, warnings);
+        }
+        match resolution {
+            DepResolution::Resolved { r#ref, name, .. } => {
+                let id = r#ref.identity();
+                if let Some(wanted) = rounds.wanted.get_mut(&id) {
+                    wanted.requesters.insert(requester.to_owned());
+                    return;
+                }
+                match rounds.settled.get(&id) {
+                    // Planned already, yet the folder is not there.
+                    Some(Settled::Planned) => {
+                        let u = unresolved(UnresolvedReason::NotShipped, vec![r#ref]);
+                        self.unresolved(tp, requester, u, None);
                     }
-                    match rounds.settled.get(&id) {
-                        // Planned already, yet the folder is not there.
-                        Some(Settled::Planned) => {
-                            let u = unresolved(UnresolvedReason::NotShipped, vec![r#ref]);
-                            self.unresolved(tp, requester, u, None);
-                        }
-                        Some(Settled::Skipped(reason, detail)) => {
-                            let u = unresolved(*reason, vec![r#ref]);
-                            self.unresolved(tp, requester, u, *detail);
-                        }
-                        Some(Settled::Failed) => {
-                            let report = tp.dependencies.entry(requester.to_owned()).or_default();
-                            report.failed.push((dep, r#ref));
-                        }
-                        None => {
-                            let wanted = RoundDep {
-                                r#ref,
-                                name,
-                                folder: dep.clone(),
-                                requesters: BTreeSet::from([requester.to_owned()]),
-                            };
-                            rounds.wanted.insert(id, wanted);
-                        }
+                    Some(Settled::Skipped(reason, detail)) => {
+                        let u = unresolved(*reason, vec![r#ref]);
+                        self.unresolved(tp, requester, u, *detail);
+                    }
+                    Some(Settled::Failed) => {
+                        let report = tp.dependencies.entry(requester.to_owned()).or_default();
+                        report.failed.push((dep, r#ref));
+                    }
+                    None => {
+                        let wanted = RoundDep {
+                            r#ref,
+                            name,
+                            folder: dep.clone(),
+                            requesters: BTreeSet::from([requester.to_owned()]),
+                        };
+                        rounds.wanted.insert(id, wanted);
                     }
                 }
-                DepResolution::Ambiguous { candidates, reason } => {
-                    let top = candidates.iter().take(3).map(|c| c.r#ref.clone()).collect();
-                    let u = unresolved(reason.into(), top);
-                    self.unresolved(tp, requester, u, None);
-                }
-                DepResolution::Missing { reason, owner } => {
-                    let u = unresolved(reason.into(), Vec::new());
-                    self.unresolved(tp, requester, u, owner.as_deref());
-                }
-            },
+            }
+            DepResolution::Ambiguous { candidates, reason } => {
+                let top = candidates.iter().take(3).map(|c| c.r#ref.clone()).collect();
+                let u = unresolved(reason.into(), top);
+                self.unresolved(tp, requester, u, None);
+            }
+            DepResolution::Missing { reason, owner } => {
+                // No source has it: say which could not be consulted.
+                let skipped = self.ctx.indexes.and_then(DepIndexes::skipped_note);
+                let u = unresolved(reason.into(), Vec::new());
+                self.unresolved(tp, requester, u, owner.as_deref().or(skipped.as_deref()));
+            }
         }
     }
 
@@ -1765,11 +1806,15 @@ impl TargetPlanner<'_> {
         let fix = if self.ctx.catalog.by_name(requires).is_some() {
             install(requires.to_owned())
         } else {
+            let indexes = self.ctx.indexes.map(|indexes| IndexLookups {
+                indexes,
+                ctx: self.ctx,
+            });
             let lookups = DepLookups {
                 managed: self.record,
                 catalog: self.ctx.catalog,
-                tukui: None,
-                wowi: None,
+                tukui: indexes.as_ref().map(|l| l as &dyn TukuiDirs),
+                wowi: indexes.as_ref().map(|l| l as &dyn WowiDirs),
                 now: Timestamp::now(),
             };
             match resolve(&bridge.requires, self.target, &lookups) {
@@ -4818,6 +4863,7 @@ mod tests {
             catalog: &catalog,
             default_channel: Channel::Stable,
             downloads: &downloads,
+            indexes: None,
         };
         let req = PlanRequest {
             targets: vec![TargetRequest {
