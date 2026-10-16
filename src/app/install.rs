@@ -18,6 +18,8 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::engine::Engine;
+use super::outcome::sorted;
+pub use super::outcome::{ItemError, ItemStatus, ModeNote, TargetRef};
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -27,8 +29,7 @@ use crate::engine::plan::{ChangeKind, FolderSummary, PinIntent, RequestedChange}
 use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{
-    AddonReason, Channel, FolderName, Ref, ReloadRequired, RunId, TargetKey, TxId, TxKind,
-    VersionConfidence,
+    AddonReason, Channel, Ref, ReloadRequired, RunId, TxId, TxKind, VersionConfidence,
 };
 use crate::output::{Outcome, Style};
 use crate::resolve::cache::{Freshness, ReleaseCache};
@@ -90,27 +91,6 @@ pub struct InstallData {
     pub client_dir: Option<PathBuf>,
 }
 
-/// The target acted on.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct TargetRef {
-    pub id: String,
-    /// `null` only under `--dry-run` on an unregistered target.
-    pub key: Option<TargetKey>,
-    /// Present when `-t` named a game mode of the client (`-t sod`) rather than the
-    /// target: the addons go to the client, which every mode in it shares.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<ModeNote>,
-}
-
-/// A game mode `-t` named, and the client's other modes, which share its addons.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct ModeNote {
-    pub id: String,
-    pub name: String,
-    /// The other modes' names, e.g. `["Classic Era", "Hardcore"]`.
-    pub shared_with: Vec<String>,
-}
-
 /// One requested addon.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct InstallItem {
@@ -132,41 +112,6 @@ pub struct InstallItem {
     /// `-v` only: where the installed release came from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asset_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ItemStatus {
-    Installed,
-    Updated,
-    Unchanged,
-    Failed,
-    /// The installed release is now pinned (only the record changed).
-    Pinned,
-    /// The installed release is no longer pinned.
-    Unpinned,
-    /// Other record fields changed (`fields` names them); the release stays.
-    Edited,
-}
-
-/// A failed item's error.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct ItemError {
-    pub code: ErrorCode,
-    pub message: String,
-    pub fix: String,
-    pub fix_argv: Option<Vec<String>>,
-}
-
-impl From<&Error> for ItemError {
-    fn from(e: &Error) -> Self {
-        Self {
-            code: e.code,
-            message: e.message.clone(),
-            fix: e.fix.display().to_owned(),
-            fix_argv: e.fix.argv().map(<[String]>::to_vec),
-        }
-    }
 }
 
 /// `install`'s outcome.
@@ -295,12 +240,14 @@ impl Outcome for InstallOutcome {
                         item.to_version.as_deref().unwrap_or("?")
                     )?;
                 }
-                ItemStatus::Pinned | ItemStatus::Unpinned | ItemStatus::Edited => {
-                    let verb = match item.status {
-                        ItemStatus::Pinned => "pinned",
-                        ItemStatus::Unpinned => "unpinned",
-                        _ => "edited",
-                    };
+                // Install reports adoptions and removals as installs; it never skips.
+                ItemStatus::Pinned
+                | ItemStatus::Unpinned
+                | ItemStatus::Edited
+                | ItemStatus::Removed
+                | ItemStatus::Adopted
+                | ItemStatus::Skipped => {
+                    let verb = item.status.wire();
                     let verb = if d.dry_run {
                         format!("would be {verb}")
                     } else {
@@ -994,24 +941,6 @@ fn mode_note(selector: &str, target: &DiscoveredTarget, table: &RulesTable) -> O
     })
 }
 
-/// Folder lists sorted by key.
-fn sorted(folders: &FolderSummary) -> FolderSummary {
-    let sort = |list: &Vec<FolderName>| {
-        let mut list = list.clone();
-        list.sort_by(|a, b| a.key().cmp(b.key()));
-        list
-    };
-    let mut skipped = folders.skipped.clone();
-    skipped.sort_by(|a, b| a.name.key().cmp(b.name.key()));
-    FolderSummary {
-        added: sort(&folders.added),
-        replaced: sort(&folders.replaced),
-        removed: sort(&folders.removed),
-        skipped,
-        recorded: sort(&folders.recorded),
-    }
-}
-
 /// Every item failed: the first item's error, with every item's error in details.
 pub(super) fn all_failed(errors: &[(String, Error)]) -> Error {
     let Some((_, first)) = errors.first() else {
@@ -1040,6 +969,7 @@ fn usage(message: &str) -> Error {
 mod tests {
     use super::*;
     use crate::engine::inspect::SkippedFolder;
+    use crate::model::FolderName;
     use crate::toc::WrongFlavorReason;
 
     fn item(request: &str, status: ItemStatus, version: Option<&str>) -> InstallItem {

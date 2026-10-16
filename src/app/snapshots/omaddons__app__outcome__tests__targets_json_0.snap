@@ -1,0 +1,16 @@
+---
+source: src/app/outcome.rs
+expression: none
+---
+{
+  "dry_run": false,
+  "run": null,
+  "targets": [],
+  "summary": {
+    "targets": 0,
+    "changed": 0,
+    "unchanged": 0,
+    "skipped": 0,
+    "failed": 0
+  }
+}

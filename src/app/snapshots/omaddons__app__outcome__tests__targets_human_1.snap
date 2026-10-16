@@ -1,0 +1,7 @@
+---
+source: src/app/outcome.rs
+expression: rendered(&one)
+---
+retail: updated 1 addon (tx 01JB8Q2VA0…) — /reload in game
+  DBM  1 → 2
+undo: omaddons undo 01JB8Q2VA00000000000000001

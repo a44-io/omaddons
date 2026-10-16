@@ -1,0 +1,5 @@
+---
+source: src/app/outcome.rs
+expression: rendered(&none)
+---
+Nothing to update.

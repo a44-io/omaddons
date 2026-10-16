@@ -15,7 +15,8 @@ use serde::Serialize;
 
 use super::engine::Engine;
 use super::history::TargetRef;
-use super::install::{ItemError, all_failed};
+use super::install::all_failed;
+use super::outcome::ItemError;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;

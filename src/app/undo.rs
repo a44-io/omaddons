@@ -21,7 +21,7 @@ use serde::Serialize;
 
 use super::engine::Engine;
 use super::history::{MIN_PREFIX, TargetRef, kind_name, local_time, resolve_run, short_tx};
-use super::install::ItemError;
+use super::outcome::ItemError;
 use super::world::World;
 use crate::cli::Context;
 use crate::engine::{SvPolicy, UndoOutcome as EngineUndo, UndoRequest, UndoSelector};

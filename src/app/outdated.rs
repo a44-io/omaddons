@@ -23,7 +23,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::engine::Engine;
-use super::install::TargetRef;
+use super::outcome::TargetRef;
 use super::status::modes_or_family;
 use super::world::World;
 use crate::cli::Context;

@@ -1,0 +1,52 @@
+---
+source: src/app/outcome.rs
+expression: one
+---
+{
+  "dry_run": false,
+  "run": "01JB8Q2VR00000000000000000",
+  "targets": [
+    {
+      "target": {
+        "id": "retail",
+        "key": "0000000000000000000344VW83"
+      },
+      "tx": "01JB8Q2VA00000000000000001",
+      "kind": "update",
+      "no_section": false,
+      "items": [
+        {
+          "request": "DBM",
+          "name": "DBM",
+          "ref": "gh:o/dbm",
+          "status": "updated",
+          "skip_reason": null,
+          "from_version": "1",
+          "to_version": "2",
+          "folders": {
+            "added": [],
+            "replaced": [
+              "DBM"
+            ],
+            "removed": [],
+            "skipped": [],
+            "recorded": []
+          },
+          "required_by": [],
+          "error": null
+        }
+      ],
+      "reload_required": "reload",
+      "atomic_swap": true,
+      "creates_addons_dir": false,
+      "error": null
+    }
+  ],
+  "summary": {
+    "targets": 1,
+    "changed": 1,
+    "unchanged": 1,
+    "skipped": 0,
+    "failed": 0
+  }
+}

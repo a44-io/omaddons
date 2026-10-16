@@ -1,0 +1,1164 @@
+//! The shared multi-target outcome: one data shape and one renderer for the commands
+//! that commit one transaction per target (`update`, `sync`, `adopt --apply`, `pin` and
+//! `unpin`, `copy`), so agents read `data.targets[].items[].status` the same way from all
+//! of them. Also the item vocabulary `install` shares (`ItemStatus`, `ItemError`,
+//! `TargetRef`).
+//!
+//! Targets commit in the engine's key order but are listed by id. Items keep request
+//! order within a target. `unchanged` items are counted in `summary` and listed only
+//! with `-v`. Any failed item or target error makes the run partial; when every item
+//! failed, the command fails with the first error.
+
+use std::collections::BTreeSet;
+use std::io::Write;
+
+use schemars::JsonSchema;
+use serde::Serialize;
+
+use crate::engine::TxOutcome;
+use crate::engine::TxOutcomes;
+use crate::engine::edit::EditField;
+use crate::engine::plan::{Change, ChangeKind, FolderSummary, PlanFailure};
+use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Suggestion, Warning};
+use crate::model::{AddonReason, Ref, ReloadRequired, RunId, TargetKey, TxId, TxKind};
+use crate::output::{Outcome, Style};
+
+/// The target acted on.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TargetRef {
+    pub id: String,
+    /// `null` only under `--dry-run` on an unregistered target.
+    pub key: Option<TargetKey>,
+    /// Present when `-t` named a game mode of the client (`-t sod`) rather than the
+    /// target: the addons go to the client, which every mode in it shares.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ModeNote>,
+}
+
+/// A game mode `-t` named, and the client's other modes, which share its addons.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ModeNote {
+    pub id: String,
+    pub name: String,
+    /// The other modes' names, e.g. `["Classic Era", "Hardcore"]`.
+    pub shared_with: Vec<String>,
+}
+
+/// What happened to one requested addon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemStatus {
+    Installed,
+    Updated,
+    Removed,
+    /// Unmanaged folders brought under management, unchanged.
+    Adopted,
+    /// The installed release is now pinned (only the record changed).
+    Pinned,
+    /// The installed release is no longer pinned.
+    Unpinned,
+    /// Other record fields changed (`fields` names them); the release stays.
+    Edited,
+    /// Planned, with nothing to do.
+    Unchanged,
+    /// Left alone on purpose (`skip_reason` says why).
+    Skipped,
+    Failed,
+}
+
+impl ItemStatus {
+    /// Counted as a change in `summary`.
+    pub const fn changed(self) -> bool {
+        matches!(
+            self,
+            Self::Installed
+                | Self::Updated
+                | Self::Removed
+                | Self::Adopted
+                | Self::Pinned
+                | Self::Unpinned
+                | Self::Edited
+        )
+    }
+
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Installed => "installed",
+            Self::Updated => "updated",
+            Self::Removed => "removed",
+            Self::Adopted => "adopted",
+            Self::Pinned => "pinned",
+            Self::Unpinned => "unpinned",
+            Self::Edited => "edited",
+            Self::Unchanged => "unchanged",
+            Self::Skipped => "skipped",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// Why an item was skipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipReason {
+    /// Pinned: left at its release.
+    Pinned,
+    /// The installed release is newer than the newest on its channel.
+    Ahead,
+    /// The newest release is known not to load here.
+    Blocked,
+    /// A local file, URL or given archive: nothing upstream.
+    Static,
+    /// Its status is not known (offline, never checked).
+    Unchecked,
+    AlreadyInstalled,
+    NoBuildForTarget,
+    LocalSource,
+    /// Another request named the same addon.
+    Duplicate,
+}
+
+impl SkipReason {
+    /// `Questie is pinned`, as a phrase after the name.
+    pub const fn phrase(self) -> &'static str {
+        match self {
+            Self::Pinned => "is pinned",
+            Self::Ahead => "is ahead of its newest release",
+            Self::Blocked => "has no release that loads here",
+            Self::Static => "has nothing upstream to check",
+            Self::Unchecked => "was not checked",
+            Self::AlreadyInstalled => "is already installed",
+            Self::NoBuildForTarget => "has no build for this client",
+            Self::LocalSource => "comes from a local source",
+            Self::Duplicate => "was requested twice",
+        }
+    }
+}
+
+/// A failed item's error.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ItemError {
+    pub code: ErrorCode,
+    pub message: String,
+    pub fix: String,
+    pub fix_argv: Option<Vec<String>>,
+}
+
+impl From<&Error> for ItemError {
+    fn from(e: &Error) -> Self {
+        Self {
+            code: e.code,
+            message: e.message.clone(),
+            fix: e.fix.display().to_owned(),
+            fix_argv: e.fix.argv().map(<[String]>::to_vec),
+        }
+    }
+}
+
+impl From<&ErrorBody> for ItemError {
+    fn from(e: &ErrorBody) -> Self {
+        Self {
+            code: e.code,
+            message: e.message.clone(),
+            fix: e.fix.clone(),
+            fix_argv: e.fix_argv.clone(),
+        }
+    }
+}
+
+impl ItemError {
+    /// Back to an error, with its code's exit code.
+    pub fn error(&self) -> Error {
+        let fix = match &self.fix_argv {
+            Some(argv) => Suggestion::command(argv.clone()),
+            None => Suggestion::text(self.fix.clone()),
+        };
+        Error::new(self.code, self.message.clone(), fix)
+    }
+}
+
+/// A multi-target command's data.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TargetsData {
+    pub dry_run: bool,
+    /// The command's run when at least one transaction committed, else `null`.
+    pub run: Option<RunId>,
+    /// Sorted by target id.
+    pub targets: Vec<TargetResult>,
+    /// Every item, listed or not.
+    pub summary: Summary,
+}
+
+/// One target's result.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TargetResult {
+    pub target: TargetRef,
+    /// `null` when nothing committed (and always under `--dry-run`).
+    pub tx: Option<TxId>,
+    pub kind: Option<TxKind>,
+    /// `sync`: the target has no section in the desired set.
+    pub no_section: bool,
+    /// In request order.
+    pub items: Vec<ItemResult>,
+    pub reload_required: ReloadRequired,
+    /// `null` when no swap happened.
+    pub atomic_swap: Option<bool>,
+    pub creates_addons_dir: bool,
+    /// Nothing of this target committed (its items say `failed` with this error).
+    pub error: Option<ErrorBody>,
+}
+
+/// One addon's result on one target.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ItemResult {
+    /// The user's argument (for a dependency, the folder required).
+    pub request: String,
+    pub name: Option<String>,
+    #[serde(rename = "ref")]
+    pub r#ref: Option<Ref>,
+    pub status: ItemStatus,
+    pub skip_reason: Option<SkipReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<AddonReason>,
+    pub from_version: Option<String>,
+    pub to_version: Option<String>,
+    /// Omitted for items that never got a planned record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folders: Option<FolderSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_by: Option<Vec<String>>,
+    pub error: Option<ItemError>,
+}
+
+/// Items by outcome.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Summary {
+    pub targets: usize,
+    /// Installed, updated, removed, adopted, pinned, unpinned or edited.
+    pub changed: usize,
+    pub unchanged: usize,
+    pub skipped: usize,
+    pub failed: usize,
+}
+
+/// One addon a command asked for on one target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemRequest {
+    /// The user's argument.
+    pub request: String,
+    /// The target's id.
+    pub target: String,
+    /// The installed addon it names, when it names one.
+    pub addon: Option<String>,
+    /// The ref it names, when it names one.
+    pub r#ref: Option<Ref>,
+    /// The installed version, shown for an `unchanged` item.
+    pub version: Option<String>,
+}
+
+impl ItemRequest {
+    fn names(&self, addon: Option<&str>, r: Option<&Ref>) -> bool {
+        let by_name =
+            matches!((&self.addon, addon), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b));
+        let by_ref = matches!((&self.r#ref, r), (Some(a), Some(b)) if a == b);
+        by_name || by_ref
+    }
+}
+
+/// A target as the engine planned it: its id, key and planned changes, and each
+/// planned record's pin (by addon name), which says which way a pin edit went.
+#[derive(Debug, Clone)]
+pub struct Planned<'a> {
+    pub target: &'a str,
+    pub key: Option<TargetKey>,
+    pub changes: &'a [Change],
+    pub pinned: Vec<(String, bool)>,
+}
+
+impl Planned<'_> {
+    fn pinned_after(&self, addon: &str) -> Option<bool> {
+        self.pinned
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(addon))
+            .map(|(_, pinned)| *pinned)
+    }
+}
+
+impl TargetsData {
+    /// The results of one engine run with run id `run`, for the items `requested`.
+    pub fn build(outcomes: &TxOutcomes, run: RunId, requested: &[ItemRequest]) -> Self {
+        let planned: Vec<Planned<'_>> = outcomes
+            .plan
+            .targets
+            .iter()
+            .map(|tp| Planned {
+                target: &tp.target,
+                key: tp.key,
+                changes: &tp.changes,
+                pinned: tp
+                    .work
+                    .iter()
+                    .filter_map(|w| w.record().map(|r| (r.name.clone(), r.pinned)))
+                    .collect(),
+            })
+            .collect();
+        Self::assemble(
+            &planned,
+            &outcomes.outcomes,
+            &outcomes.failures,
+            outcomes.plan.dry_run,
+            run,
+            requested,
+        )
+    }
+
+    /// [`TargetsData::build`] over the run's parts.
+    pub fn assemble(
+        planned: &[Planned<'_>],
+        outcomes: &[TxOutcome],
+        failures: &[PlanFailure],
+        dry_run: bool,
+        run: RunId,
+        requested: &[ItemRequest],
+    ) -> Self {
+        let mut targets: Vec<TargetResult> = planned
+            .iter()
+            .map(|p| target_result(p, outcomes, failures, requested))
+            .collect();
+        targets.sort_by(|a, b| a.target.id.cmp(&b.target.id));
+        let committed = targets.iter().any(|t| t.tx.is_some());
+        let mut data = Self {
+            dry_run,
+            run: (committed && !dry_run).then_some(run),
+            targets,
+            summary: Summary::default(),
+        };
+        data.recount();
+        data
+    }
+
+    /// Adds an item the command decided without the engine (a pinned addon `update`
+    /// leaves alone), creating the target's result when it has none.
+    pub fn push_item(&mut self, target: TargetRef, item: ItemResult) {
+        match self.targets.iter_mut().find(|t| t.target.id == target.id) {
+            Some(t) => t.items.push(item),
+            None => self.push_target(TargetResult {
+                items: vec![item],
+                ..TargetResult::empty(target)
+            }),
+        }
+        self.recount();
+    }
+
+    /// Adds a target that never reached the engine (a `sync` target without a section).
+    pub fn push_target(&mut self, target: TargetResult) {
+        self.targets.push(target);
+        self.targets.sort_by(|a, b| a.target.id.cmp(&b.target.id));
+        self.recount();
+    }
+
+    fn recount(&mut self) {
+        let mut summary = Summary {
+            targets: self.targets.len(),
+            ..Summary::default()
+        };
+        for item in self.targets.iter().flat_map(|t| &t.items) {
+            match item.status {
+                ItemStatus::Unchanged => summary.unchanged += 1,
+                ItemStatus::Skipped => summary.skipped += 1,
+                ItemStatus::Failed => summary.failed += 1,
+                _ => summary.changed += 1,
+            }
+        }
+        self.summary = summary;
+    }
+
+    /// Drops `unchanged` items unless `verbose` (`summary` keeps counting them).
+    #[must_use]
+    pub fn listing(mut self, verbose: bool) -> Self {
+        if !verbose {
+            for t in &mut self.targets {
+                t.items.retain(|i| i.status != ItemStatus::Unchanged);
+            }
+        }
+        self
+    }
+
+    /// Some item or target failed.
+    pub fn partial(&self) -> bool {
+        self.summary.failed > 0 || self.targets.iter().any(|t| t.error.is_some())
+    }
+
+    /// When every item failed (nothing changed, stayed unchanged or was skipped): the
+    /// first failure's error, with every item's error in `details.items`.
+    pub fn all_failed(&self) -> Option<Error> {
+        let s = &self.summary;
+        if s.failed == 0 || s.changed + s.unchanged + s.skipped > 0 {
+            return None;
+        }
+        let failed: Vec<(&TargetResult, &ItemResult)> = self
+            .targets
+            .iter()
+            .flat_map(|t| t.items.iter().map(move |i| (t, i)))
+            .filter(|(_, i)| i.status == ItemStatus::Failed)
+            .collect();
+        let first = failed.first().and_then(|(_, i)| i.error.as_ref())?;
+        let details: Vec<serde_json::Value> = failed
+            .iter()
+            .map(|(t, i)| {
+                serde_json::json!({
+                    "target": t.target.id,
+                    "request": i.request,
+                    "error": i.error,
+                })
+            })
+            .collect();
+        Some(
+            first
+                .error()
+                .details(serde_json::json!({ "items": details })),
+        )
+    }
+
+    /// The undo hints: `undo --run <run>` when more than one transaction committed, then
+    /// `undo <tx>` per transaction, by target id.
+    pub fn undo_commands(&self) -> Vec<CommandHint> {
+        let committed: Vec<TxId> = self.targets.iter().filter_map(|t| t.tx).collect();
+        let mut commands = Vec::new();
+        if let (true, Some(run)) = (committed.len() > 1, self.run) {
+            commands.push(CommandHint::new(
+                "undo_run",
+                [
+                    "omaddons".to_owned(),
+                    "undo".to_owned(),
+                    "--run".to_owned(),
+                    run.to_string(),
+                ],
+                false,
+            ));
+        }
+        for tx in committed {
+            commands.push(CommandHint::new(
+                "undo",
+                ["omaddons".to_owned(), "undo".to_owned(), tx.to_string()],
+                false,
+            ));
+        }
+        commands
+    }
+}
+
+impl TargetResult {
+    /// A target with nothing in it yet.
+    pub fn empty(target: TargetRef) -> Self {
+        Self {
+            target,
+            tx: None,
+            kind: None,
+            no_section: false,
+            items: Vec::new(),
+            reload_required: ReloadRequired::None,
+            atomic_swap: None,
+            creates_addons_dir: false,
+            error: None,
+        }
+    }
+}
+
+/// One planned target's result: requested items first, in request order, then changes
+/// nobody asked for by name (dependencies).
+fn target_result(
+    p: &Planned<'_>,
+    outcomes: &[TxOutcome],
+    failures: &[PlanFailure],
+    requested: &[ItemRequest],
+) -> TargetResult {
+    let outcome = outcomes.iter().find(|o| o.target == p.target);
+    let mine: Vec<&PlanFailure> = failures.iter().filter(|f| f.target == p.target).collect();
+    let target_error = mine
+        .iter()
+        .find(|f| f.r#ref.is_none() && f.addon.is_none())
+        .map(|f| f.error.clone());
+    let changes: &[Change] = match outcome {
+        Some(o) if target_error.is_none() => &o.changes,
+        _ => &[],
+    };
+    let mut used: BTreeSet<usize> = BTreeSet::new();
+    let mut items = Vec::new();
+    for req in requested.iter().filter(|r| r.target == p.target) {
+        if let Some(f) = mine.iter().find(|f| {
+            (f.r#ref.is_some() || f.addon.is_some())
+                && req.names(f.addon.as_deref(), f.r#ref.as_ref())
+        }) {
+            items.push(failed_item(req, f.addon.clone(), f.r#ref.clone(), &f.error));
+            continue;
+        }
+        if let Some((i, change)) = changes
+            .iter()
+            .enumerate()
+            .find(|(_, c)| req.names(Some(&c.addon), Some(&c.r#ref)))
+        {
+            used.insert(i);
+            let pinned = p.pinned_after(&change.addon);
+            items.push(change_item(req.request.clone(), change, pinned));
+            continue;
+        }
+        let planned = p
+            .changes
+            .iter()
+            .find(|c| req.names(Some(&c.addon), Some(&c.r#ref)));
+        match (planned, &target_error) {
+            (Some(c), Some(error)) => {
+                items.push(failed_item(
+                    req,
+                    Some(c.addon.clone()),
+                    Some(c.r#ref.clone()),
+                    error,
+                ));
+            }
+            _ => items.push(ItemResult {
+                request: req.request.clone(),
+                name: req.addon.clone(),
+                r#ref: req.r#ref.clone(),
+                status: ItemStatus::Unchanged,
+                skip_reason: None,
+                reason: None,
+                from_version: req.version.clone(),
+                to_version: req.version.clone(),
+                folders: None,
+                required_by: None,
+                error: None,
+            }),
+        }
+    }
+    for (i, change) in changes.iter().enumerate() {
+        if !used.contains(&i) {
+            let pinned = p.pinned_after(&change.addon);
+            items.push(change_item(change.addon.clone(), change, pinned));
+        }
+    }
+    TargetResult {
+        target: TargetRef {
+            id: p.target.to_owned(),
+            key: outcome.and_then(|o| o.key).or(p.key),
+            mode: None,
+        },
+        tx: outcome.and_then(|o| o.tx),
+        kind: outcome.and_then(|o| o.kind),
+        no_section: false,
+        items,
+        reload_required: outcome.map_or(ReloadRequired::None, |o| o.reload_required),
+        atomic_swap: outcome.and_then(|o| o.tx.map(|_| o.atomic_swap)),
+        creates_addons_dir: outcome.is_some_and(|o| o.creates_addons_dir),
+        error: target_error,
+    }
+}
+
+fn failed_item(
+    req: &ItemRequest,
+    name: Option<String>,
+    r: Option<Ref>,
+    error: &ErrorBody,
+) -> ItemResult {
+    ItemResult {
+        request: req.request.clone(),
+        name: name.or_else(|| req.addon.clone()),
+        r#ref: r.or_else(|| req.r#ref.clone()),
+        status: ItemStatus::Failed,
+        skip_reason: None,
+        reason: None,
+        from_version: req.version.clone(),
+        to_version: None,
+        folders: None,
+        required_by: None,
+        error: Some(ItemError::from(error)),
+    }
+}
+
+/// A change as an item. An edit of the pin alone is `pinned` or `unpinned` by the
+/// planned record's new value (`pinned_after`).
+fn change_item(request: String, change: &Change, pinned_after: Option<bool>) -> ItemResult {
+    let status = match change.kind {
+        ChangeKind::Install => ItemStatus::Installed,
+        ChangeKind::Update => ItemStatus::Updated,
+        ChangeKind::Remove => ItemStatus::Removed,
+        ChangeKind::Adopt => ItemStatus::Adopted,
+        ChangeKind::Edit if change.fields == [EditField::Pinned] => {
+            if pinned_after == Some(false) {
+                ItemStatus::Unpinned
+            } else {
+                ItemStatus::Pinned
+            }
+        }
+        ChangeKind::Edit => ItemStatus::Edited,
+    };
+    ItemResult {
+        request,
+        name: Some(change.addon.clone()),
+        r#ref: Some(change.r#ref.clone()),
+        status,
+        skip_reason: None,
+        reason: None,
+        from_version: change.from_version.clone(),
+        to_version: change.to_version.clone(),
+        folders: Some(sorted(&change.folders)),
+        required_by: Some(Vec::new()),
+        error: None,
+    }
+}
+
+/// Folder lists sorted by key.
+pub fn sorted(folders: &FolderSummary) -> FolderSummary {
+    let sort = |list: &Vec<crate::model::FolderName>| {
+        let mut list = list.clone();
+        list.sort_by(|a, b| a.key().cmp(b.key()));
+        list
+    };
+    let mut skipped = folders.skipped.clone();
+    skipped.sort_by(|a, b| a.name.key().cmp(b.name.key()));
+    FolderSummary {
+        added: sort(&folders.added),
+        replaced: sort(&folders.replaced),
+        removed: sort(&folders.removed),
+        skipped,
+        recorded: sort(&folders.recorded),
+    }
+}
+
+/// A multi-target command's outcome.
+#[derive(Debug)]
+pub struct TargetsOutcome {
+    pub command: &'static str,
+    pub data: TargetsData,
+    pub warnings: Vec<Warning>,
+    pub commands: Vec<CommandHint>,
+    /// Lines the command adds after the targets (`sync does not update; …`).
+    pub notes: Vec<String>,
+}
+
+impl Outcome for TargetsOutcome {
+    type Data = TargetsData;
+
+    fn command(&self) -> &'static str {
+        self.command
+    }
+
+    fn data(&self) -> &TargetsData {
+        &self.data
+    }
+
+    fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
+    fn commands(&self) -> &[CommandHint] {
+        &self.commands
+    }
+
+    fn partial(&self) -> bool {
+        self.data.partial()
+    }
+
+    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
+        render(w, self.command, &self.data, &self.notes)
+    }
+}
+
+/// The human rendering of `data` for `command`.
+pub fn render(
+    w: &mut dyn Write,
+    command: &str,
+    data: &TargetsData,
+    notes: &[String],
+) -> std::io::Result<()> {
+    if data.targets.is_empty() {
+        writeln!(w, "Nothing to {command}.")?;
+    }
+    for t in &data.targets {
+        writeln!(w, "{}", header(command, data.dry_run, t))?;
+        let width = t
+            .items
+            .iter()
+            .map(|i| item_name(i).chars().count())
+            .max()
+            .unwrap_or(0);
+        for i in &t.items {
+            writeln!(
+                w,
+                "  {:<width$}  {}",
+                item_name(i),
+                item_detail(i).trim_end()
+            )?;
+            if let Some(error) = &i.error {
+                writeln!(w, "  {:<width$}  fix: {}", "", error.fix)?;
+            }
+        }
+    }
+    let committed: Vec<TxId> = data.targets.iter().filter_map(|t| t.tx).collect();
+    match committed.as_slice() {
+        [] => {}
+        [tx] => writeln!(w, "undo: omaddons undo {tx}")?,
+        _ => writeln!(w, "Undo all of it with: omaddons undo")?,
+    }
+    for note in notes {
+        writeln!(w, "{note}")?;
+    }
+    Ok(())
+}
+
+fn item_name(i: &ItemResult) -> &str {
+    i.name.as_deref().unwrap_or(&i.request)
+}
+
+/// `retail: updated 2 addons (tx 01M5…) — /reload in game`.
+fn header(command: &str, dry_run: bool, t: &TargetResult) -> String {
+    let id = &t.target.id;
+    if let Some(error) = &t.error {
+        return format!("{id}: failed: {}: {}", error.code.wire(), error.message);
+    }
+    let changed: Vec<&ItemResult> = t.items.iter().filter(|i| i.status.changed()).collect();
+    if changed.is_empty() {
+        let skipped: Vec<String> = t
+            .items
+            .iter()
+            .filter_map(|i| {
+                i.skip_reason
+                    .map(|r| format!("{} {}", item_name(i), r.phrase()))
+            })
+            .collect();
+        let why = if skipped.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", skipped.join(", "))
+        };
+        let nothing = if t.no_section {
+            "no section in the desired set".to_owned()
+        } else {
+            format!("nothing to {command}")
+        };
+        return format!("{id}: {nothing}{why}");
+    }
+    let mut kinds: Vec<ItemStatus> = changed.iter().map(|i| i.status).collect();
+    kinds.sort();
+    kinds.dedup();
+    let n = changed.len();
+    let addons = if n == 1 { "addon" } else { "addons" };
+    let what = match kinds.as_slice() {
+        [only] => format!("{} {n} {addons}", only.wire()),
+        _ => {
+            let parts: Vec<String> = kinds
+                .iter()
+                .map(|k| {
+                    let count = changed.iter().filter(|i| i.status == *k).count();
+                    format!("{count} {}", k.wire())
+                })
+                .collect();
+            format!("changed {n} {addons} ({})", parts.join(", "))
+        }
+    };
+    let mut line = if dry_run {
+        format!("{id}: would be {what}")
+    } else {
+        format!("{id}: {what}")
+    };
+    if let Some(tx) = t.tx {
+        let full = tx.to_string();
+        line.push_str(&format!(" (tx {}…)", full.get(..10).unwrap_or(&full)));
+    }
+    match t.reload_required {
+        ReloadRequired::Reload => line.push_str(" — /reload in game"),
+        ReloadRequired::Restart => line.push_str(" — restart the game client"),
+        ReloadRequired::None => {}
+    }
+    line
+}
+
+/// What an item's line says after its name.
+fn item_detail(i: &ItemResult) -> String {
+    let from = i.from_version.as_deref().unwrap_or("?");
+    let to = i.to_version.as_deref().unwrap_or("?");
+    match i.status {
+        ItemStatus::Updated => format!("{from} → {to}"),
+        ItemStatus::Installed => format!("{to} (installed)"),
+        ItemStatus::Removed => format!("{from} (removed)"),
+        ItemStatus::Adopted => format!("{to} (adopted)"),
+        ItemStatus::Pinned => format!("pinned at {to}"),
+        ItemStatus::Unpinned => format!("unpinned at {to}"),
+        ItemStatus::Edited => format!("{to} (edited)"),
+        ItemStatus::Unchanged => format!("{to} (unchanged)"),
+        ItemStatus::Skipped => match i.skip_reason {
+            Some(reason) => format!("skipped: {}", reason.phrase()),
+            None => "skipped".to_owned(),
+        },
+        ItemStatus::Failed => match &i.error {
+            Some(e) => format!("failed: {}: {}", e.code.wire(), e.message),
+            None => "failed".to_owned(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::FolderName;
+
+    const RUN: &str = "01JB8Q2VR00000000000000000";
+
+    fn run() -> RunId {
+        RUN.parse().unwrap()
+    }
+
+    fn change(addon: &str, kind: ChangeKind, from: Option<&str>, to: Option<&str>) -> Change {
+        Change {
+            addon: addon.to_owned(),
+            r#ref: format!("gh:o/{}", addon.to_lowercase()).parse().unwrap(),
+            kind,
+            fields: Vec::new(),
+            from_version: from.map(str::to_owned),
+            to_version: to.map(str::to_owned),
+            folders: FolderSummary {
+                replaced: vec![FolderName::new(addon).unwrap()],
+                ..FolderSummary::default()
+            },
+        }
+    }
+
+    fn outcome(target: &str, tx: Option<&str>, changes: Vec<Change>) -> TxOutcome {
+        TxOutcome {
+            target: target.to_owned(),
+            key: Some(TargetKey::from_ulid(ulid(target))),
+            tx: tx.map(|t| t.parse().unwrap()),
+            kind: tx.map(|_| TxKind::Update),
+            dry_run: false,
+            changes,
+            atomic_swap: true,
+            reload_required: ReloadRequired::None,
+            warnings: Vec::new(),
+            creates_addons_dir: false,
+            lock_held_ms: None,
+            notes: Vec::new(),
+        }
+    }
+
+    /// A stable ULID per target name, for keys.
+    fn ulid(target: &str) -> ulid::Ulid {
+        let n = target
+            .bytes()
+            .fold(0u128, |acc, b| acc * 31 + u128::from(b));
+        ulid::Ulid::from(n)
+    }
+
+    fn request(target: &str, addon: &str) -> ItemRequest {
+        ItemRequest {
+            request: addon.to_owned(),
+            target: target.to_owned(),
+            addon: Some(addon.to_owned()),
+            r#ref: None,
+            version: Some("1".to_owned()),
+        }
+    }
+
+    fn failure(target: &str, addon: Option<&str>, code: ErrorCode) -> PlanFailure {
+        let error = Error::new(code, format!("{code:?} here"), Suggestion::text("wait"));
+        PlanFailure {
+            r#ref: None,
+            addon: addon.map(str::to_owned),
+            target: target.to_owned(),
+            error: ErrorBody::from(error.clone()),
+            cause: Some(error),
+        }
+    }
+
+    fn planned<'a>(target: &'a str, changes: &'a [Change]) -> Planned<'a> {
+        Planned {
+            target,
+            key: None,
+            changes,
+            pinned: Vec::new(),
+        }
+    }
+
+    /// Three targets: retail updated two addons and left one current, era failed one
+    /// addon and updated another, classic's commit failed.
+    fn three() -> TargetsData {
+        let retail = vec![
+            change("DBM", ChangeKind::Update, Some("1"), Some("2")),
+            change("Plater", ChangeKind::Update, Some("661"), Some("662")),
+        ];
+        let era = vec![change("Questie", ChangeKind::Update, Some("9"), Some("10"))];
+        let classic = vec![change("DBM", ChangeKind::Update, Some("1"), Some("2"))];
+        let outcomes = vec![
+            outcome("retail", Some("01JB8Q2VA00000000000000001"), retail.clone()),
+            outcome("era", Some("01JB8Q2VA00000000000000002"), era.clone()),
+        ];
+        let failures = vec![
+            failure("era", Some("Bartender4"), ErrorCode::OwnershipConflict),
+            failure("classic", None, ErrorCode::Locked),
+        ];
+        let requested = vec![
+            request("retail", "DBM"),
+            request("retail", "Details"),
+            request("retail", "Plater"),
+            request("era", "Questie"),
+            request("era", "Bartender4"),
+            request("classic", "DBM"),
+        ];
+        TargetsData::assemble(
+            &[
+                planned("retail", &retail),
+                planned("era", &era),
+                planned("classic", &classic),
+            ],
+            &outcomes,
+            &failures,
+            false,
+            run(),
+            &requested,
+        )
+    }
+
+    fn statuses(data: &TargetsData) -> Vec<(String, String, ItemStatus)> {
+        data.targets
+            .iter()
+            .flat_map(|t| {
+                t.items
+                    .iter()
+                    .map(|i| (t.target.id.clone(), i.request.clone(), i.status))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn builds_items_per_target_in_id_order() {
+        let data = three();
+        assert_eq!(
+            statuses(&data),
+            [
+                ("classic".into(), "DBM".into(), ItemStatus::Failed),
+                ("era".into(), "Questie".into(), ItemStatus::Updated),
+                ("era".into(), "Bartender4".into(), ItemStatus::Failed),
+                ("retail".into(), "DBM".into(), ItemStatus::Updated),
+                ("retail".into(), "Details".into(), ItemStatus::Unchanged),
+                ("retail".into(), "Plater".into(), ItemStatus::Updated),
+            ]
+        );
+        let classic = &data.targets[0];
+        assert_eq!(
+            classic.error.as_ref().map(|e| e.code),
+            Some(ErrorCode::Locked)
+        );
+        assert_eq!(
+            classic.items[0].error.as_ref().map(|e| e.code),
+            Some(ErrorCode::Locked)
+        );
+        assert_eq!(classic.tx, None);
+        assert_eq!(
+            data.summary,
+            Summary {
+                targets: 3,
+                changed: 3,
+                unchanged: 1,
+                skipped: 0,
+                failed: 2,
+            }
+        );
+        assert!(data.partial());
+        assert_eq!(data.run, Some(run()));
+        assert!(data.all_failed().is_none());
+        let hints: Vec<(String, String)> = data
+            .undo_commands()
+            .iter()
+            .map(|c| (c.action().to_owned(), c.command().to_owned()))
+            .collect();
+        assert_eq!(
+            hints,
+            [
+                ("undo_run".into(), format!("omaddons undo --run {RUN}")),
+                (
+                    "undo".into(),
+                    "omaddons undo 01JB8Q2VA00000000000000002".into()
+                ),
+                (
+                    "undo".into(),
+                    "omaddons undo 01JB8Q2VA00000000000000001".into()
+                ),
+            ]
+        );
+        // Unchanged items are counted but listed only with -v.
+        let listed = data.clone().listing(false);
+        assert_eq!(listed.summary, data.summary);
+        assert_eq!(statuses(&listed).len(), 5);
+        assert_eq!(statuses(&data.listing(true)).len(), 6);
+    }
+
+    #[test]
+    fn dry_runs_name_no_run_and_pushed_items_count() {
+        let retail = vec![change("DBM", ChangeKind::Install, None, Some("2"))];
+        let mut dry = outcome("retail", None, retail.clone());
+        dry.dry_run = true;
+        let mut data = TargetsData::assemble(
+            &[planned("retail", &retail)],
+            &[dry],
+            &[],
+            true,
+            run(),
+            &[request("retail", "DBM")],
+        );
+        assert_eq!((data.dry_run, data.run), (true, None));
+        assert_eq!(statuses(&data)[0].2, ItemStatus::Installed);
+        assert!(data.undo_commands().is_empty());
+        let forever = TargetRef {
+            id: "forever".into(),
+            key: None,
+            mode: None,
+        };
+        data.push_item(
+            forever,
+            ItemResult {
+                request: "Questie".into(),
+                name: Some("Questie".into()),
+                r#ref: None,
+                status: ItemStatus::Skipped,
+                skip_reason: Some(SkipReason::Pinned),
+                reason: None,
+                from_version: Some("1".into()),
+                to_version: None,
+                folders: None,
+                required_by: None,
+                error: None,
+            },
+        );
+        assert_eq!(data.targets[0].target.id, "forever", "kept in id order");
+        assert_eq!((data.summary.targets, data.summary.skipped), (2, 1));
+        assert!(!data.partial());
+    }
+
+    #[test]
+    fn every_item_failed_is_the_first_error() {
+        let failures = vec![
+            failure("retail", Some("DBM"), ErrorCode::GameRunning),
+            failure("retail", Some("Plater"), ErrorCode::OwnershipConflict),
+        ];
+        let data = TargetsData::assemble(
+            &[planned("retail", &[])],
+            &[outcome("retail", None, Vec::new())],
+            &failures,
+            false,
+            run(),
+            &[request("retail", "DBM"), request("retail", "Plater")],
+        );
+        let error = data.all_failed().unwrap();
+        assert_eq!(error.code, ErrorCode::GameRunning);
+        assert_eq!(error.details["items"].as_array().unwrap().len(), 2);
+        assert_eq!(data.run, None, "nothing committed");
+    }
+
+    #[test]
+    fn pin_edits_read_the_planned_record() {
+        let mut pin = change("DBM", ChangeKind::Edit, Some("1"), Some("1"));
+        pin.fields = vec![EditField::Pinned];
+        let changes = vec![pin];
+        let mut p = planned("retail", &changes);
+        for (pinned, status) in [(true, ItemStatus::Pinned), (false, ItemStatus::Unpinned)] {
+            p.pinned = vec![("DBM".into(), pinned)];
+            let data = TargetsData::assemble(
+                std::slice::from_ref(&p),
+                &[outcome(
+                    "retail",
+                    Some("01JB8Q2VA00000000000000001"),
+                    changes.clone(),
+                )],
+                &[],
+                false,
+                run(),
+                &[request("retail", "DBM")],
+            );
+            assert_eq!(statuses(&data)[0].2, status);
+        }
+    }
+
+    #[test]
+    fn wire_keys_keep_their_order() {
+        let data = three();
+        // Each object on its own, so a nested key never stands in for its parent's.
+        let order = |json: String, keys: &[&str]| {
+            let at: Vec<usize> = keys
+                .iter()
+                .map(|k| json.find(&format!("\"{k}\":")).unwrap())
+                .collect();
+            assert!(at.is_sorted(), "{keys:?}\n{json}");
+        };
+        let mut empty = data.clone();
+        empty.targets.clear();
+        order(
+            serde_json::to_string(&empty).unwrap(),
+            &["dry_run", "run", "targets", "summary"],
+        );
+        let mut target = data.targets[2].clone();
+        let item = target.items.remove(0);
+        target.items.clear();
+        order(
+            serde_json::to_string(&target).unwrap(),
+            &[
+                "target",
+                "tx",
+                "kind",
+                "no_section",
+                "items",
+                "reload_required",
+                "atomic_swap",
+                "creates_addons_dir",
+                "error",
+            ],
+        );
+        order(
+            serde_json::to_string(&item).unwrap(),
+            &[
+                "request",
+                "name",
+                "ref",
+                "status",
+                "skip_reason",
+                "from_version",
+                "to_version",
+                "folders",
+                "required_by",
+                "error",
+            ],
+        );
+        order(
+            serde_json::to_string(&data.summary).unwrap(),
+            &["targets", "changed", "unchanged", "skipped", "failed"],
+        );
+    }
+
+    fn rendered(data: &TargetsData) -> String {
+        let mut out = Vec::new();
+        render(&mut out, "update", data, &[]).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn renders_zero_one_and_three_targets() {
+        let none = TargetsData::assemble(&[], &[], &[], false, run(), &[]);
+        let retail = vec![change("DBM", ChangeKind::Update, Some("1"), Some("2"))];
+        let mut one_outcome = outcome("retail", Some("01JB8Q2VA00000000000000001"), retail.clone());
+        one_outcome.reload_required = ReloadRequired::Reload;
+        let one = TargetsData::assemble(
+            &[planned("retail", &retail)],
+            &[one_outcome],
+            &[],
+            false,
+            run(),
+            &[request("retail", "DBM"), request("retail", "Details")],
+        )
+        .listing(false);
+        let three = three().listing(false);
+        insta::assert_snapshot!("targets_human_0", rendered(&none));
+        insta::assert_snapshot!("targets_human_1", rendered(&one));
+        insta::assert_snapshot!("targets_human_3", rendered(&three));
+        insta::assert_json_snapshot!("targets_json_0", none);
+        insta::assert_json_snapshot!("targets_json_1", one);
+        insta::assert_json_snapshot!("targets_json_3", three);
+    }
+}

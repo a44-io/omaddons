@@ -1,0 +1,160 @@
+---
+source: src/app/outcome.rs
+expression: three
+---
+{
+  "dry_run": false,
+  "run": "01JB8Q2VR00000000000000000",
+  "targets": [
+    {
+      "target": {
+        "id": "classic",
+        "key": null
+      },
+      "tx": null,
+      "kind": null,
+      "no_section": false,
+      "items": [
+        {
+          "request": "DBM",
+          "name": "DBM",
+          "ref": "gh:o/dbm",
+          "status": "failed",
+          "skip_reason": null,
+          "from_version": "1",
+          "to_version": null,
+          "error": {
+            "code": "locked",
+            "message": "Locked here",
+            "fix": "wait",
+            "fix_argv": null
+          }
+        }
+      ],
+      "reload_required": "none",
+      "atomic_swap": null,
+      "creates_addons_dir": false,
+      "error": {
+        "code": "locked",
+        "message": "Locked here",
+        "fix": "wait",
+        "fix_argv": null,
+        "alternatives": [],
+        "retryable": true,
+        "details": {}
+      }
+    },
+    {
+      "target": {
+        "id": "era",
+        "key": "000000000000000000000032AM"
+      },
+      "tx": "01JB8Q2VA00000000000000002",
+      "kind": "update",
+      "no_section": false,
+      "items": [
+        {
+          "request": "Questie",
+          "name": "Questie",
+          "ref": "gh:o/questie",
+          "status": "updated",
+          "skip_reason": null,
+          "from_version": "9",
+          "to_version": "10",
+          "folders": {
+            "added": [],
+            "replaced": [
+              "Questie"
+            ],
+            "removed": [],
+            "skipped": [],
+            "recorded": []
+          },
+          "required_by": [],
+          "error": null
+        },
+        {
+          "request": "Bartender4",
+          "name": "Bartender4",
+          "ref": null,
+          "status": "failed",
+          "skip_reason": null,
+          "from_version": "1",
+          "to_version": null,
+          "error": {
+            "code": "ownership_conflict",
+            "message": "OwnershipConflict here",
+            "fix": "wait",
+            "fix_argv": null
+          }
+        }
+      ],
+      "reload_required": "none",
+      "atomic_swap": true,
+      "creates_addons_dir": false,
+      "error": null
+    },
+    {
+      "target": {
+        "id": "retail",
+        "key": "0000000000000000000344VW83"
+      },
+      "tx": "01JB8Q2VA00000000000000001",
+      "kind": "update",
+      "no_section": false,
+      "items": [
+        {
+          "request": "DBM",
+          "name": "DBM",
+          "ref": "gh:o/dbm",
+          "status": "updated",
+          "skip_reason": null,
+          "from_version": "1",
+          "to_version": "2",
+          "folders": {
+            "added": [],
+            "replaced": [
+              "DBM"
+            ],
+            "removed": [],
+            "skipped": [],
+            "recorded": []
+          },
+          "required_by": [],
+          "error": null
+        },
+        {
+          "request": "Plater",
+          "name": "Plater",
+          "ref": "gh:o/plater",
+          "status": "updated",
+          "skip_reason": null,
+          "from_version": "661",
+          "to_version": "662",
+          "folders": {
+            "added": [],
+            "replaced": [
+              "Plater"
+            ],
+            "removed": [],
+            "skipped": [],
+            "recorded": []
+          },
+          "required_by": [],
+          "error": null
+        }
+      ],
+      "reload_required": "none",
+      "atomic_swap": true,
+      "creates_addons_dir": false,
+      "error": null
+    }
+  ],
+  "summary": {
+    "targets": 3,
+    "changed": 3,
+    "unchanged": 1,
+    "skipped": 0,
+    "failed": 2
+  }
+}

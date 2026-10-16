@@ -9,6 +9,7 @@ pub mod info;
 pub mod install;
 pub mod list;
 pub mod net_log;
+pub mod outcome;
 pub mod outdated;
 pub mod remove;
 pub mod status;
