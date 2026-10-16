@@ -20,7 +20,6 @@ use super::install::parse_ref;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
-use crate::discover::registry::resolve_one;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{AddonState, Channel, FolderName, Ref, ReleaseSet, TxId, VersionConfidence};
 use crate::net::{NetConfig, NetLog, stack};
@@ -206,15 +205,7 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
         }
     })?;
     let r = parsed.r#ref.clone();
-    let targets: Vec<&DiscoveredTarget> = match &ctx.target {
-        Some(selector) => vec![resolve_one(
-            selector,
-            &world.resolved.targets,
-            &world.table,
-            &ctx.argv,
-        )?],
-        None => world.resolved.targets.iter().collect(),
-    };
+    let targets: Vec<&DiscoveredTarget> = world.select_many(ctx)?;
 
     let mut installed = Vec::new();
     for d in &targets {

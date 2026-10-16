@@ -431,7 +431,7 @@ A client's interface number is `major×10000 + minor×100 (+ patch on modern cli
 6. a **family**: `mainline`, `vanilla`, `wrath-legacy`;
 7. a **path**: the install root, the client directory or its AddOns folder.
 
-If two targets match, the result is `target_ambiguous` (exit 3): the first candidate is the `fix`, and each other one is an `alternatives` entry.
+Every target that the first matching kind matches is selected. `status`, `list` and `info` cover them all: `-t vanilla` reads every vanilla client, `-t mainline` every retail client. A command that changes one client (`install`, `remove`, and `history` and `undo`, which name one) refuses a selector that matches two with `target_ambiguous` (exit 3): the first candidate is the `fix`, and each other one is an `alternatives` entry.
 
 An id beats a family, and the legacy default ids `vanilla`, `tbc`, `cata` and `mists` are also family names. With a 1.12.1 server present, `-t vanilla` selects it, not Classic Era. With a 5.4.8 server, `-t mists` selects it, not Mists Classic. Use `-t era` and `-t classic` (or `-t mop`) for the Battle.net clients, or rename the server's target.
 

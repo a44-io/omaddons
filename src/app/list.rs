@@ -176,7 +176,7 @@ pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
     };
     let mut warnings = world.warnings.clone();
     let mut targets = Vec::new();
-    for d in world.select(ctx)? {
+    for d in world.select_many(ctx)? {
         let record = match d.target.key {
             Some(key) => {
                 let loaded = load_record(&world.paths, &key)?;

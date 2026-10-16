@@ -18,7 +18,6 @@ use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::cache::{CacheStats, DiscoveryMode};
-use crate::discover::registry::resolve_one;
 use crate::discover::running::detect_running;
 use crate::engine::journal;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
@@ -214,15 +213,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     let verbose = ctx.output.style.verbose > 0;
     let mut warnings = world.warnings.clone();
 
-    let selected: Vec<&DiscoveredTarget> = match &ctx.target {
-        Some(selector) => vec![resolve_one(
-            selector,
-            &world.resolved.targets,
-            &world.table,
-            &ctx.argv,
-        )?],
-        None => world.resolved.targets.iter().collect(),
-    };
+    let selected: Vec<&DiscoveredTarget> = world.select_many(ctx)?;
     let missing: Vec<&RegistryEntry> = match &ctx.target {
         Some(_) => Vec::new(),
         None => world.resolved.missing.iter().collect(),

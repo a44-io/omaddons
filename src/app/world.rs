@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use crate::cli::Context;
 use crate::discover::cache::{CacheStats, DiscoveryMode, discover_cached};
-use crate::discover::registry::{Resolved, reconcile, resolve_one};
+use crate::discover::registry::{Resolved, reconcile, resolve, resolve_one};
 use crate::discover::{DiscoveredTarget, DiscoveryInput, DiscoverySource, ScanLimits};
 use crate::error::{Error, Result, Warning};
 use crate::model::TargetKey;
@@ -154,17 +154,44 @@ impl World {
         }
     }
 
-    /// The targets a read command acts on: the `-t` target, or every target sorted by
-    /// id.
-    pub fn select(&self, ctx: &Context) -> Result<Vec<&DiscoveredTarget>> {
-        if let Some(selector) = &ctx.target {
-            return resolve_one(selector, &self.resolved.targets, &self.table, &ctx.argv)
-                .map(|t| vec![t]);
-        }
-        let mut all: Vec<&DiscoveredTarget> = self.resolved.targets.iter().collect();
-        all.sort_by(|a, b| a.target.id.cmp(&b.target.id));
-        Ok(all)
+    /// The targets a command that acts on several clients covers (M2-D24): every
+    /// discovered target without `-t`, else every match of the first selector kind
+    /// that matches (`-t vanilla` is every vanilla client, `-t sod` the Classic Era
+    /// client); sorted by id, without duplicates. For `status`, `list`, `info`, and
+    /// later `outdated`, `update`, `export`, `sync`, `adopt`, `pin`/`unpin` and
+    /// `search`. Commands that must land on one client (`install`, `remove`, `copy`'s
+    /// sides, `adopt --ref`, `history` and `undo`) use `resolve_one`, whose ambiguity is
+    /// an error.
+    pub fn select_many(&self, ctx: &Context) -> Result<Vec<&DiscoveredTarget>> {
+        select_many(ctx.target.as_deref(), &self.resolved.targets, &self.table)
     }
+}
+
+/// [`World::select_many`] over `targets`.
+fn select_many<'a>(
+    selector: Option<&str>,
+    targets: &'a [DiscoveredTarget],
+    table: &RulesTable,
+) -> Result<Vec<&'a DiscoveredTarget>> {
+    let mut selected: Vec<&DiscoveredTarget> = match selector {
+        Some(selector) => resolve(selector, targets, table)?,
+        None => targets.iter().collect(),
+    };
+    selected.sort_by(|a, b| a.target.id.cmp(&b.target.id));
+    // The same client twice (by key, else by directory) is listed once.
+    let mut seen: Vec<(Option<TargetKey>, &std::path::Path)> = Vec::new();
+    selected.retain(|d| {
+        let identity = (d.target.key, d.target.client_dir.as_path());
+        let duplicate = seen.iter().any(|(key, dir)| match (key, identity.0) {
+            (Some(key), Some(other)) => *key == other,
+            _ => *dir == identity.1,
+        });
+        if !duplicate {
+            seen.push(identity);
+        }
+        !duplicate
+    });
+    Ok(selected)
 }
 
 /// `[targets.<id or key>]`: a label, and a family that also picks the rules row.
@@ -183,5 +210,86 @@ fn apply_target_overrides(resolved: &mut Resolved, config: &Config, table: &Rule
             d.target.family = family;
             d.target.refresh_rules(table);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::ErrorCode;
+    use crate::rules::Family;
+
+    fn found(id: &str, family: Family, product: Option<&str>) -> DiscoveredTarget {
+        let mut target = crate::engine::testing::target(&PathBuf::from(format!("/c/{id}")));
+        target.id = id.into();
+        target.family = family;
+        target.product = product.map(Into::into);
+        target.key = Some(TargetKey::new());
+        DiscoveredTarget {
+            target,
+            default_id: id.into(),
+            qualifier: "test".into(),
+            source: DiscoverySource::Scan,
+        }
+    }
+
+    fn ids(selected: &[&DiscoveredTarget]) -> Vec<String> {
+        selected.iter().map(|d| d.target.id.clone()).collect()
+    }
+
+    #[test]
+    fn many_targets_fan_out_by_the_first_selector_kind_that_matches() {
+        let table = RulesTable::builtin();
+        let targets = vec![
+            found("retail", Family::Mainline, Some("wow")),
+            found("turtle", Family::Vanilla, None),
+            found("era", Family::Vanilla, Some("wow_classic_era")),
+            found("ptr", Family::Mainline, Some("wowt")),
+        ];
+        let select = |s: Option<&str>| select_many(s, &targets, &table).map(|t| ids(&t));
+        assert_eq!(
+            select(None).unwrap(),
+            ["era", "ptr", "retail", "turtle"],
+            "everything, by id"
+        );
+        assert_eq!(select(Some("retail")).unwrap(), ["retail"]);
+        assert_eq!(
+            select(Some("vanilla")).unwrap(),
+            ["era", "turtle"],
+            "a family"
+        );
+        assert_eq!(select(Some("mainline")).unwrap(), ["ptr", "retail"]);
+        assert_eq!(select(Some("sod")).unwrap(), ["era"], "a mode's client");
+        let key = targets[1].target.key.unwrap().to_string();
+        assert_eq!(select(Some(&key)).unwrap(), ["turtle"], "a key");
+        let error = select(Some("nosuch")).unwrap_err();
+        assert_eq!(error.code, ErrorCode::TargetNotFound);
+        let one = resolve_one("nosuch", &targets, &table, &[]).unwrap_err();
+        assert_eq!(
+            (&error.message, &error.fix, &error.details),
+            (&one.message, &one.fix, &one.details),
+            "the same error as a single-target command's"
+        );
+
+        // An id beats a family: a 1.12.1 server keeps its default id `vanilla`.
+        let mut with_legacy = targets.clone();
+        with_legacy.push(found("vanilla", Family::VanillaLegacy, None));
+        let selected = select_many(Some("vanilla"), &with_legacy, &table).unwrap();
+        assert_eq!(ids(&selected), ["vanilla"]);
+    }
+
+    #[test]
+    fn the_same_client_is_selected_once() {
+        let table = RulesTable::builtin();
+        let era = found("era", Family::Vanilla, Some("wow_classic_era"));
+        let mut again = era.clone();
+        again.target.id = "era@wine".into();
+        let mut unregistered = found("turtle", Family::Vanilla, None);
+        unregistered.target.key = None;
+        let mut same_dir = unregistered.clone();
+        same_dir.target.id = "turtle@steam".into();
+        let targets = vec![era, again, unregistered, same_dir];
+        let selected = select_many(Some("vanilla"), &targets, &table).unwrap();
+        assert_eq!(ids(&selected), ["era", "turtle"]);
     }
 }
