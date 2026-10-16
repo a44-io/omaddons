@@ -25,6 +25,7 @@ const TARGETS: &[&str] = &[
     "archive",
     "ref_parse",
     "desired_toml",
+    "wowi_filelist",
 ];
 
 fn fuzz_dir() -> PathBuf {
@@ -247,6 +248,26 @@ fn write_fuzz_seeds() {
     );
     write("ref_parse", "url", b"url:https://example.org/addon.zip");
     write("ref_parse", "malformed", b"gh:/\xff#@../..");
+
+    // wowi_filelist: entries as the API writes them, an empty list, a broken body.
+    let list: Vec<serde_json::Value> = [
+        common::wowi::FileEntry::new(5995, "BugSack", &["BugSack", "__MACOSX", "bugsack"]),
+        common::wowi::FileEntry::new(5996, "!BugGrabber", &["!BugGrabber", ""]),
+    ]
+    .iter()
+    .map(common::wowi::FileEntry::json)
+    .collect();
+    write(
+        "wowi_filelist",
+        "list.json",
+        &serde_json::to_vec(&list).unwrap(),
+    );
+    write("wowi_filelist", "empty.json", b"[]");
+    write(
+        "wowi_filelist",
+        "malformed.json",
+        br#"[{"UID":"x","UIDir":[1,null,"a/b"]},{"UID":3,"UIDir":null,"UIDate":"soon"},"#,
+    );
 
     // desired_toml: the documented example, an empty file, a broken one.
     write("desired_toml", "example.toml", DESIRED_EXAMPLE.as_bytes());

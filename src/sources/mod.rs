@@ -17,6 +17,7 @@ pub mod local;
 pub mod refs;
 pub mod release_json;
 pub mod url;
+pub mod wowi;
 
 use std::collections::BTreeMap;
 
@@ -27,6 +28,28 @@ use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::{Channel, Ref, ReleaseSet};
 use crate::net::{Http, run_bounded};
 use crate::politeness::MAX_CONCURRENT_REQUESTS;
+
+/// A source a command could not consult, and why (`sources_skipped` in outputs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct SourceSkipped {
+    pub source: SourceId,
+    pub reason: SourceSkipReason,
+    /// When a rate limit lifts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub reset_at: Option<jiff::Timestamp>,
+}
+
+/// Why a source was not consulted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceSkipReason {
+    Offline,
+    RateLimited,
+    Disabled,
+    /// Its index (WoWInterface's file list) is neither stored nor fetchable.
+    NoIndex,
+}
 
 /// Which source a ref belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]

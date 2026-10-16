@@ -274,6 +274,11 @@ impl Paths {
         self.cache.join("wowi")
     }
 
+    /// The slim WoWInterface project index.
+    pub fn wowi_index(&self) -> PathBuf {
+        self.wowi_cache_dir().join("index.json")
+    }
+
     /// The discovery cache.
     pub fn discovery_cache(&self) -> PathBuf {
         self.cache.join("discovery.json")
@@ -474,6 +479,7 @@ mod tests {
             (p.blob(&sha), format!("/k/omaddons/blobs/{sha}")),
             (p.http_cache_dir(), "/k/omaddons/http".into()),
             (p.wowi_cache_dir(), "/k/omaddons/wowi".into()),
+            (p.wowi_index(), "/k/omaddons/wowi/index.json".into()),
             (p.discovery_cache(), "/k/omaddons/discovery.json".into()),
             (p.cache_tmp(&tx), format!("/k/omaddons/tmp/{TX}")),
             (p.cache_trash(), "/k/omaddons/trash".into()),

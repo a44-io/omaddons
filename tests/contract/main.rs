@@ -75,6 +75,8 @@ mod support {
         // sync
         "pass the file",
         "check that",
+        // stale_check (the WoWInterface index)
+        "run the command again online",
     ];
 
     /// The top-level keys of a JSON object, in document order.

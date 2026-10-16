@@ -137,6 +137,10 @@ pub const KINDS: &[(&str, SchemaVersion)] = &[
         <super::memo::ReleaseMemo as Versioned>::KIND,
         <super::memo::ReleaseMemo as Versioned>::CURRENT,
     ),
+    (
+        <crate::sources::wowi::index::StoredIndex as Versioned>::KIND,
+        <crate::sources::wowi::index::StoredIndex as Versioned>::CURRENT,
+    ),
     ("history", super::history::CURRENT),
 ];
 

@@ -86,3 +86,10 @@ path = "fuzz_targets/desired_toml.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "wowi_filelist"
+path = "fuzz_targets/wowi_filelist.rs"
+test = false
+doc = false
+bench = false
