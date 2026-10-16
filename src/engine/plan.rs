@@ -2276,6 +2276,8 @@ impl TargetPlanner<'_> {
         let mut tried: Vec<Value> = Vec::new();
         let mut winner = None;
         let mut unreadable: Option<Error> = None;
+        // Some candidate was judged and does not load (as opposed to failing to arrive).
+        let mut refused = false;
         for candidate in candidates {
             match self.try_candidate(&wanted.r#ref, &candidate, intent.floor_interface) {
                 Ok(Ok(won)) => {
@@ -2283,6 +2285,7 @@ impl TargetPlanner<'_> {
                     break;
                 }
                 Ok(Err(reason)) => {
+                    refused = true;
                     tried.push(json!({ "asset": candidate.asset.filename, "reason": reason }));
                 }
                 Err(error) => {
@@ -2304,6 +2307,19 @@ impl TargetPlanner<'_> {
                     Suggestion::text("use an archive built for this client"),
                 )
                 .details(json!({ "ref": wanted.r#ref.to_string(), "target": self.target.id, "tried": tried })));
+            }
+            // Every candidate failed its published hash and none was judged: the
+            // download is the problem, not the client (retryable as the download left it).
+            if !refused
+                && let Some(error) = unreadable
+                    .as_ref()
+                    .filter(|e| e.code == ErrorCode::HashMismatch)
+            {
+                let mut details = error.details.clone();
+                if let Some(map) = details.as_object_mut() {
+                    map.insert("tried".into(), json!(tried));
+                }
+                return Err(error.clone().details(details));
             }
             // A release that does not exist at all (a git rev naming nothing), or one
             // whose archive cannot be downloaded offline, is not a question of flavor.
