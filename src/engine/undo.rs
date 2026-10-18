@@ -42,7 +42,8 @@ use super::swap::{
     snapshot_state, sv_candidates, sv_in_scope, swap,
 };
 use super::tx::{
-    EngineCtx, TxOutcome, cleanup, millis, recovery_failed, running_now, sv_writable, write_status,
+    EngineCtx, RunningNow, TxOutcome, cleanup, millis, recovery_failed, running_now, sv_writable,
+    write_status,
 };
 use crate::discover::target::DiscoveredTarget;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
@@ -174,8 +175,8 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
             )
         })?;
     let target = &discovered.target;
-    let running = running_now(ctx, std::slice::from_ref(target)).contains(&target.client_dir);
-    let planned = plan(ctx, req, &entries, at, target, running)?;
+    let running = running_now(ctx, std::slice::from_ref(target));
+    let planned = plan(ctx, req, &entries, at, target, &running)?;
     if req.dry_run {
         return Ok(planned.outcome(target, None, true, true, Vec::new(), None));
     }
@@ -238,8 +239,8 @@ fn commit(
     let target = &discovered.target;
     let entries = history::read(paths, &HistoryFilter::default())?.entries;
     let at = select(&entries, UndoSelector::Tx(reverts))?;
-    let running = running_now(ctx, std::slice::from_ref(target)).contains(&target.client_dir);
-    let mut planned = plan(ctx, req, &entries, at, target, running)?;
+    let running = running_now(ctx, std::slice::from_ref(target));
+    let mut planned = plan(ctx, req, &entries, at, target, &running)?;
     failpoint::hit("engine.revalidated").map_err(fail)?;
 
     let key = planned.key;
@@ -434,8 +435,9 @@ fn plan(
     entries: &[HistoryEntry],
     at: usize,
     target: &Target,
-    running: bool,
+    running_now: &RunningNow,
 ) -> Result<Planned> {
+    let running = running_now.contains(&target.client_dir);
     let reverted = &entries[at];
     let deferred_by = entries[at + 1..]
         .iter()
@@ -472,6 +474,7 @@ fn plan(
     let policy_ctx = PolicyContext {
         target_id: &target.id,
         argv: ctx.argv,
+        running_unknown: running_now.unknown.as_deref(),
     };
     let judged = running::evaluate(
         &policy_ctx,
@@ -481,14 +484,20 @@ fn plan(
         &std::mem::take(&mut folders.policy),
         req.while_running,
     )?;
-    let mut warnings = judged.warnings;
+    let mut warnings: Vec<Warning> = running_now.warning().into_iter().collect();
+    warnings.extend(judged.warnings);
     let sv = plan_saved_variables(&client, reverted, req.sv_policy, running, &policy_ctx, ctx)?;
     if sv.counts.deferred > 0 {
+        let is = if running_now.unknown.is_some() {
+            "may be running"
+        } else {
+            "is running"
+        };
         warnings.push(
             Warning::new(
                 WarningCode::SavedVariablesDeferred,
                 format!(
-                    "{}'s game client is running, so {} SavedVariables files were left as they are",
+                    "{}'s game client {is}, so {} SavedVariables files were left as they are",
                     target.id, sv.counts.deferred
                 ),
             )

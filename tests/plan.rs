@@ -126,6 +126,7 @@ mod support {
                 table: &table,
                 tx: self.tx,
                 running: &self.running,
+                running_unknown: None,
                 policy: RunningPolicy::Safe,
                 limits: ArchiveLimits::default(),
                 actor: Actor::Agent,

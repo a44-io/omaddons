@@ -422,6 +422,59 @@ fn recovery_defers_saved_variables_while_the_client_runs() {
     s.assert_private();
 }
 
+/// With a process table omaddons cannot read, undo treats the client as running:
+/// SavedVariables wait (`auto`) or are refused (`restore`), and it says why.
+#[test]
+fn an_unreadable_process_table_defers_saved_variables() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if common::procfs::running_as_root() {
+        return; // chmod 000 hides nothing from root
+    }
+    let mut s = Session::new();
+    let t1 = s.install("Foo", "1", &[]);
+    s.play();
+    let locked = s.home.env.root().join("proc-locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let run = |s: &Session, args: &[&str]| {
+        let mut argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        argv.push("--json".to_owned());
+        s.home
+            .exec_with(&argv, &[("OMADDONS_PROC_ROOT", locked.to_str().unwrap())])
+    };
+    let codes = |envelope: &Value| -> Vec<String> {
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["code"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    let r = run(&s, &["undo", "--while-running"]);
+    let envelope = r.expect(0);
+    let warnings = codes(&envelope);
+    for code in ["running_unknown", "saved_variables_deferred"] {
+        assert!(
+            warnings.contains(&code.to_owned()),
+            "{code}: {}",
+            r.context()
+        );
+    }
+    assert_eq!(envelope["data"]["saved_variables"]["deferred"], 2);
+    assert_eq!(
+        s.sv(&format!("{}/Foo.lua", support::ACCOUNT)).as_deref(),
+        Some("-- after")
+    );
+
+    let r = run(&s, &["undo", &t1, "--saved-variables", "restore"]);
+    let envelope = r.expect(4);
+    assert_eq!(envelope["error"]["code"], "game_running", "{}", r.context());
+    assert_eq!(envelope["error"]["details"]["running"], "unknown");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 /// `WTF/` kept in a sync folder and symlinked into the client: SavedVariables there are
 /// never snapshotted or written, and undo succeeds whether the link came before the
 /// install or after it (a snapshot that still lists those files).

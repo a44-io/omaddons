@@ -596,6 +596,7 @@ omaddons status -v --json     # adds client_dir, install_root and exe_name, and 
 
 Each client also shows:
 
+- **`running`.** Whether its game runs now, from `/proc`; `null` when `/proc` could not be read (with `running_unknown`; the human view shows `running?`).
 - **`updates`.** Its pending update counts (`available`, `pinned`, `blocked`, `failed`, `unchecked`) and `checked_at`, the oldest check. They come from what earlier `outdated`, `update` and `install` runs remembered, never from a request, so `status` stays offline. `stale` is true when that check is older than `check_interval_hours` (default 6).
 - **`drift`.** Each managed addon whose files changed on disk since omaddons installed them (`modified`), whose folder is gone or replaced by a symlink (`missing`), or that has no file index to check against (`unindexed`), with its changed-file count (`files`; the paths with `-v`). A file whose size or time changed is re-hashed, so one merely touched is not reported; `--deep` re-hashes every file. `--cached` checks only that the folders are there. Drift is computed on every run and never stored. `modified` raises the attention `addon_modified`, `missing` raises `addon_folder_missing`.
 - **`adoptable`.** How many unmanaged folders a catalog entry names that is not installed on that client.
@@ -1230,7 +1231,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `not_managed` | 3 | no | `remove` of an unmanaged, linked or `Blizzard_*` folder, or a name no managed addon answers to. When the name is an unmanaged folder (`update`, `pin`, `unpin`, `remove`), the fix adopts it: `omaddons adopt <folder> [--ref <catalog ref>] -t <id>`, other clients holding it as alternatives |
 | `plan_not_found` | 3 | no | reserved for stored plans (M4) |
 | `no_compatible_release` | 3 | no | no candidate loads on the client; `details.tried` lists them |
-| `game_running` | 4 | no | the running policy refuses (fix appends `--while-running`), or `undo --saved-variables restore` while the client runs |
+| `game_running` | 4 | no | the running policy refuses (fix appends `--while-running`), or `undo --saved-variables restore` while the client runs; `details.running: "unknown"` when `/proc` could not be read and the client may be running |
 | `protected_folder` | 4 | no | the archive contains a `Blizzard_*` folder |
 | `ownership_conflict` | 4 | no | another addon owns the folder; fix appends `--force` |
 | `unmanaged_folder` | 4 | no | an unmanaged folder exists; for an addon new to the client the fix adopts it (`omaddons adopt <folder> --ref <ref> -t <id>`) with the `--force` retry as alternative, otherwise the fix appends `--force` |
@@ -1263,7 +1264,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 </details>
 
 <details>
-<summary><strong>Every warning code (36)</strong></summary>
+<summary><strong>Every warning code (37)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -1274,6 +1275,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `reload_required` | `/reload` in game to pick up the change |
 | `saved_variables_deferred` | the game is running, or recovery could not tell or could not write them; restore SavedVariables later with the given command |
 | `saved_variables_out_of_scope` | SavedVariables of the changed addons are in a `WTF/` reached through a symlink outside the client directory (a sync folder): they are never snapshotted or written, so undo leaves them as they are. It counts the files and never names them |
+| `running_unknown` | `/proc` could not be read, so every client is treated as running: changes follow the running policy, SavedVariables restores wait, and `status` reports `running: null`. Once per command |
 | `snapshot_cap_exceeded` | protected snapshots alone exceed the size cap |
 | `retention_failed` | pruning failed after commit; the transaction stands |
 | `out_of_date` | the TOC's interface is older than the client's; it loads only with "Load out of date AddOns" enabled |
@@ -1385,7 +1387,7 @@ Refused as `unsafe_archive` before anything reaches the client: path traversal (
 
 ### Running clients
 
-Running clients are detected live from `/proc` (your own processes only). The executable name is matched case-insensitively, and the Wine path is mapped through the prefix's drive letters.
+Running clients are detected live from `/proc` (your own processes only). The executable name is matched case-insensitively, and the Wine path is mapped through the prefix's drive letters. If omaddons cannot read `/proc` (it cannot be listed, or does not list omaddons itself: not mounted, or another PID namespace), it treats every client as running and says so with `running_unknown`; `status` then reports `running: null`. Detection sees only processes in omaddons' own PID namespace, so a sandboxed omaddons with its own `/proc` cannot see a game running outside it.
 
 | `running_policy` | While the client runs |
 |---|---|

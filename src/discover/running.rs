@@ -10,6 +10,12 @@
 //! positive only makes the safe running policy refuse more; a false negative degrades
 //! to a warning, never data loss, because transactions stay atomic. Only `WINEPREFIX`
 //! is taken from `environ`, which can hold secrets.
+//!
+//! A process table that cannot be read is not "nothing runs": [`RunningScan`] says it is
+//! unavailable (`/proc` unlistable, or not listing this very process: unmounted, or
+//! another PID namespace), and decisions then treat every client as running. Detection
+//! still sees only processes in omaddons' own PID namespace: a sandboxed omaddons with
+//! its own readable `/proc` cannot tell what runs outside it.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
@@ -20,6 +26,7 @@ use serde::Serialize;
 
 use super::dosdevices::map_windows_path;
 use super::{DiscoverySource, ExtraPrefix};
+use crate::error::{Suggestion, Warning, WarningCode};
 use crate::model::Target;
 use crate::rules::RulesTable;
 
@@ -43,38 +50,107 @@ pub enum RunningEvidence {
     PrefixOnly,
 }
 
-/// Running clients by target `client_dir`, from the real `/proc`.
-pub fn detect_running(targets: &[Target]) -> BTreeMap<PathBuf, Vec<RunningInfo>> {
-    let Ok(uid) = std::fs::metadata("/proc/self").map(|m| m.uid()) else {
-        return BTreeMap::new();
-    };
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let root = proc_root(
-        std::env::var_os("OMADDONS_PROC_ROOT"),
-        cfg!(debug_assertions),
-    );
-    detect_running_in(&root, uid, targets, home.as_deref())
+/// What one look at the process table found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunningScan {
+    /// Running clients by target `client_dir`.
+    pub clients: BTreeMap<PathBuf, Vec<RunningInfo>>,
+    /// Why the process table could not be read, when it could not: then nothing is known
+    /// about any client, and decisions must treat every one as running. Never holds an
+    /// environment value or a home path.
+    pub unavailable: Option<String>,
 }
 
-/// `/proc`; in debug builds `OMADDONS_PROC_ROOT` names a synthetic tree instead, for
-/// end-to-end tests (release builds ignore it, like `OMADDONS_HTTP_FIXTURES`).
-fn proc_root(var: Option<std::ffi::OsString>, debug: bool) -> PathBuf {
-    match var.filter(|v| debug && !v.is_empty()) {
-        Some(root) => PathBuf::from(root),
-        None => PathBuf::from("/proc"),
+impl RunningScan {
+    /// `running_unknown`, when the process table could not be read.
+    pub fn warning(&self) -> Option<Warning> {
+        self.unavailable.as_deref().map(running_unknown)
     }
 }
 
-/// [`detect_running`] over any proc tree; `home` locates Wine's default prefix.
+/// `running_unknown`: the process table could not be read (`cause`).
+pub fn running_unknown(cause: &str) -> Warning {
+    Warning::new(
+        WarningCode::RunningUnknown,
+        format!("{cause}, so every client is treated as running"),
+    )
+    .with_fix(Suggestion::text(
+        "every client counts as running until /proc can be read: quit the game and add --while-running to change folders; SavedVariables restores wait until then",
+    ))
+}
+
+/// Running clients by target `client_dir`, from the real `/proc`.
+pub fn detect_running(targets: &[Target]) -> RunningScan {
+    let uid = rustix::process::getuid().as_raw();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let (root, own_pid) = match proc_override(
+        std::env::var_os("OMADDONS_PROC_ROOT"),
+        cfg!(debug_assertions),
+    ) {
+        Some(root) => (root, None),
+        None => (PathBuf::from("/proc"), Some(std::process::id())),
+    };
+    scan_running(&root, uid, own_pid, targets, home.as_deref())
+}
+
+/// In debug builds, `OMADDONS_PROC_ROOT` names a synthetic tree to read instead of
+/// `/proc`, for end-to-end tests (release builds ignore it, like
+/// `OMADDONS_HTTP_FIXTURES`).
+fn proc_override(var: Option<std::ffi::OsString>, debug: bool) -> Option<PathBuf> {
+    var.filter(|v| debug && !v.is_empty()).map(PathBuf::from)
+}
+
+/// `/proc`, or its debug stand-in.
+fn proc_root(var: Option<std::ffi::OsString>, debug: bool) -> PathBuf {
+    proc_override(var, debug).unwrap_or_else(|| PathBuf::from("/proc"))
+}
+
+/// [`detect_running`] over any proc tree; `home` locates Wine's default prefix. An
+/// unreadable tree reads as nothing running: decisions use [`scan_running`].
 pub fn detect_running_in(
     proc_root: &Path,
     own_uid: u32,
     targets: &[Target],
     home: Option<&Path>,
 ) -> BTreeMap<PathBuf, Vec<RunningInfo>> {
-    detect(proc_root, own_uid, targets, home, &|p| {
-        std::fs::read(p).ok()
-    })
+    scan_running(proc_root, own_uid, None, targets, home).clients
+}
+
+/// [`detect_running`] over any proc tree, saying when it could not see. `own_pid` is
+/// this process when `proc_root` is the real `/proc`, which always lists the process
+/// reading it: an unmounted `/proc` (an empty directory) or another PID namespace then
+/// shows as unavailable instead of as "nothing runs".
+pub fn scan_running(
+    proc_root: &Path,
+    own_uid: u32,
+    own_pid: Option<u32>,
+    targets: &[Target],
+    home: Option<&Path>,
+) -> RunningScan {
+    let listing = match list(proc_root) {
+        Ok(listing) => listing,
+        Err(e) => {
+            return RunningScan {
+                clients: BTreeMap::new(),
+                unavailable: Some(format!("/proc could not be listed: {}", e.kind())),
+            };
+        }
+    };
+    if let Some(pid) = own_pid
+        && !listing.iter().any(|(p, _)| *p == pid)
+    {
+        return RunningScan {
+            clients: BTreeMap::new(),
+            unavailable: Some(
+                "/proc does not list this process (not mounted, or another PID namespace)"
+                    .to_owned(),
+            ),
+        };
+    }
+    RunningScan {
+        clients: detect(&listing, own_uid, targets, home, &|p| std::fs::read(p).ok()),
+        unavailable: None,
+    }
 }
 
 /// The Wine prefixes under `home` of the user's running WoW and Battle.net processes,
@@ -85,9 +161,7 @@ pub fn detect_running_in(
 /// route). Only under `home`, as every scanned place is: a throwaway `HOME` never
 /// reaches the user's real clients.
 pub fn process_prefixes(table: &RulesTable, home: &Path) -> Vec<ExtraPrefix> {
-    let Ok(uid) = std::fs::metadata("/proc/self").map(|m| m.uid()) else {
-        return Vec::new();
-    };
+    let uid = rustix::process::getuid().as_raw();
     let root = proc_root(
         std::env::var_os("OMADDONS_PROC_ROOT"),
         cfg!(debug_assertions),
@@ -119,7 +193,9 @@ pub fn process_prefixes(table: &RulesTable, home: &Path) -> Vec<ExtraPrefix> {
 pub fn running_prefixes(proc_root: &Path, own_uid: u32, names: &[String]) -> Vec<PathBuf> {
     let known = known_names(names.iter().map(String::as_str));
     let read = |p: &Path| std::fs::read(p).ok();
-    let mut prefixes: Vec<PathBuf> = processes(proc_root, own_uid, &known, &read)
+    // A hint only: an unreadable process table means no prefixes, not an error.
+    let listing = list(proc_root).unwrap_or_default();
+    let mut prefixes: Vec<PathBuf> = processes(&listing, own_uid, &known, &read)
         .filter_map(|p| p.prefix)
         .collect();
     prefixes.sort();
@@ -128,7 +204,7 @@ pub fn running_prefixes(proc_root: &Path, own_uid: u32, names: &[String]) -> Vec
 }
 
 fn detect(
-    proc_root: &Path,
+    listing: &[(u32, PathBuf)],
     own_uid: u32,
     targets: &[Target],
     home: Option<&Path>,
@@ -139,7 +215,7 @@ fn detect(
     if known.is_empty() {
         return running;
     }
-    for process in processes(proc_root, own_uid, &known, read) {
+    for process in processes(listing, own_uid, &known, read) {
         let prefix = process
             .prefix
             .clone()
@@ -211,22 +287,26 @@ fn known_names<'a>(names: impl Iterator<Item = &'a str>) -> BTreeMap<String, Str
     known
 }
 
+/// Every process directory in `proc_root`: (pid, path).
+fn list(proc_root: &Path) -> std::io::Result<Vec<(u32, PathBuf)>> {
+    Ok(std::fs::read_dir(proc_root)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| Some((entry.file_name().to_str()?.parse().ok()?, entry.path())))
+        .collect())
+}
+
 /// The user's own processes whose `comm` is a known name; `cmdline` and `environ` are
-/// read for those only.
+/// read for those only. A process whose files cannot be read (another user's, or one
+/// that exited) is skipped.
 fn processes<'a>(
-    proc_root: &Path,
+    listing: &'a [(u32, PathBuf)],
     own_uid: u32,
     known: &'a BTreeMap<String, String>,
     read: &'a dyn Fn(&Path) -> Option<Vec<u8>>,
 ) -> impl Iterator<Item = Process> + 'a {
-    let listing = std::fs::read_dir(proc_root)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok);
-    listing.filter_map(move |entry| {
-        let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
-        let dir = entry.path();
-        if std::fs::symlink_metadata(&dir).ok()?.uid() != own_uid {
+    listing.iter().filter_map(move |(pid, dir)| {
+        let pid = *pid;
+        if std::fs::symlink_metadata(dir).ok()?.uid() != own_uid {
             return None;
         }
         let comm = read(&dir.join("comm"))?;
@@ -308,6 +388,50 @@ mod tests {
     }
 
     #[test]
+    fn an_unreadable_process_table_is_unavailable_not_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let mut target = crate::engine::testing::target(&home.join("_retail_"));
+        target.exe_name = Some("Wow.exe".into());
+        let targets = [target];
+        let uid = rustix::process::getuid().as_raw();
+
+        // A root that cannot be listed.
+        let gone = home.join("proc");
+        let scan = scan_running(&gone, uid, None, &targets, Some(&home));
+        let cause = scan.unavailable.clone().unwrap();
+        assert!(cause.starts_with("/proc could not be listed"), "{cause}");
+        assert!(
+            !cause.contains(&*home.to_string_lossy()),
+            "no home path: {cause}"
+        );
+        let warning = scan.warning().unwrap();
+        assert_eq!(warning.code, WarningCode::RunningUnknown);
+        assert!(!warning.message.contains(&*home.to_string_lossy()));
+
+        // The real /proc must list this process; one that does not is unavailable.
+        let proc = dir.path().join("proc");
+        let me = proc.join("4242");
+        std::fs::create_dir_all(&me).unwrap();
+        std::fs::write(me.join("comm"), "bash\n").unwrap();
+        let scan = scan_running(&proc, uid, Some(4243), &targets, None);
+        assert!(
+            scan.unavailable
+                .unwrap()
+                .contains("does not list this process")
+        );
+        let scan = scan_running(&proc, uid, Some(4242), &targets, None);
+        assert_eq!(scan, RunningScan::default(), "listed: nothing runs, known");
+
+        // A synthetic root (the debug seam) need not list us; an unreadable process is
+        // skipped silently.
+        std::fs::create_dir_all(proc.join("4244")).unwrap();
+        let scan = scan_running(&proc, uid, None, &targets, None);
+        assert_eq!(scan, RunningScan::default());
+        assert_eq!(scan.warning(), None);
+    }
+
+    #[test]
     fn name_forms() {
         let known = known_names(["WowClassicT.exe", "WowClassicBeta.exe", "Wow.exe"].into_iter());
         for (comm, exe) in [
@@ -341,7 +465,8 @@ mod tests {
         };
         let mut target = crate::engine::testing::target(&dir.path().join("_retail_"));
         target.exe_name = Some("Wow.exe".into());
-        let _ = detect(dir.path(), uid, &[target], None, &read);
+        let listing = list(dir.path()).unwrap();
+        let _ = detect(&listing, uid, &[target], None, &read);
         let seen = seen.into_inner();
         assert!(
             seen.contains("11/environ") && seen.contains("11/cmdline"),

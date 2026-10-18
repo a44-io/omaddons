@@ -1,6 +1,8 @@
 //! The running policy (vision §5.5, D30): what may change while a target's client
 //! runs, and what the player must do afterwards. Pure functions; whether the client
-//! runs is decided live by `discover::running` and passed in.
+//! runs is decided live by `discover::running` and passed in. When the process table
+//! could not be read, every client counts as running (fail closed), and a refusal says
+//! it "may be running" (`details.running: "unknown"`).
 //!
 //! A Linux rename never disturbs files the client has open, and modern clients pick up
 //! new folders and TOC changes on `/reload`; deleting or renaming a loaded TOC needs a
@@ -86,6 +88,29 @@ impl PolicyOp {
 pub struct PolicyContext<'a> {
     pub target_id: &'a str,
     pub argv: &'a [String],
+    /// Why the process table could not be read, when it could not: "running" then means
+    /// "may be running", and a refusal says so (`details.running: "unknown"`).
+    pub running_unknown: Option<&'a str>,
+}
+
+impl PolicyContext<'_> {
+    /// "retail's game client is running", or "may be running" with the cause.
+    fn is_running(&self) -> String {
+        match self.running_unknown {
+            Some(cause) => format!("{}'s game client may be running ({cause})", self.target_id),
+            None => format!("{}'s game client is running", self.target_id),
+        }
+    }
+
+    /// `details` of a refusal, with `running: "unknown"` when that is the case.
+    fn details(&self, mut details: serde_json::Value) -> serde_json::Value {
+        if self.running_unknown.is_some()
+            && let Some(map) = details.as_object_mut()
+        {
+            map.insert("running".into(), "unknown".into());
+        }
+        details
+    }
 }
 
 /// What the player must do once the change is in.
@@ -118,14 +143,14 @@ pub fn evaluate(
     {
         return Err(Error::new(
             ErrorCode::GameRunning,
-            format!("{target}'s game client is running, and SavedVariables are never written while it runs (it overwrites them on logout)"),
+            format!("{}, and SavedVariables are never written while it runs (it overwrites them on logout)", ctx.is_running()),
             Suggestion::text("quit the game client, then rerun"),
         )
-        .details(json!({
+        .details(ctx.details(json!({
             "target": target,
             "reason": "saved_variables",
             "ops": ops.iter().filter(|op| matches!(op, PolicyOp::RestoreSavedVariables { .. })).map(PolicyOp::describe).collect::<Vec<_>>(),
-        })));
+        }))));
     }
 
     let (refused, reason): (Vec<&PolicyOp>, &str) = match (policy, while_running) {
@@ -155,15 +180,15 @@ pub fn evaluate(
         retry.push("--while-running".to_owned());
         return Err(Error::new(
             ErrorCode::GameRunning,
-            format!("{target}'s game client is running: {why}"),
+            format!("{}: {why}", ctx.is_running()),
             Suggestion::command(retry),
         )
         .alternative(Suggestion::text("quit the game client, then rerun"))
-        .details(json!({
+        .details(ctx.details(json!({
             "target": target,
             "reason": reason,
             "ops": refused.iter().map(|op| op.describe()).collect::<Vec<_>>(),
-        })));
+        }))));
     }
 
     let reload_required = ops
@@ -258,6 +283,7 @@ mod tests {
         let ctx = PolicyContext {
             target_id: "retail",
             argv: &argv,
+            running_unknown: None,
         };
         evaluate(&ctx, policy, running, &rules(legacy), ops, while_running)
     }
@@ -362,6 +388,7 @@ mod tests {
         let ctx = PolicyContext {
             target_id: "retail",
             argv: &shown,
+            running_unknown: None,
         };
         let err = evaluate(
             &ctx,

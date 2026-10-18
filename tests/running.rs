@@ -274,7 +274,14 @@ fn real_proc_within_budget() {
     let started = Instant::now();
     let result = detect_running(&targets);
     let elapsed = started.elapsed();
-    assert!(result.is_empty(), "the synthetic targets are not running");
+    assert!(
+        result.clients.is_empty(),
+        "the synthetic targets are not running"
+    );
+    assert_eq!(
+        result.unavailable, None,
+        "the real /proc lists this process"
+    );
     assert!(
         elapsed.as_micros() < 2_000,
         "detect_running took {elapsed:?}"

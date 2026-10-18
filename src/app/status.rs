@@ -90,7 +90,8 @@ pub struct StatusTarget {
     pub version: ClientVersion,
     pub interface: u32,
     pub label: Option<String>,
-    pub running: bool,
+    /// `null` when the process table could not be read (`running_unknown`).
+    pub running: Option<bool>,
     /// Registered, but its client dir is gone.
     pub missing: bool,
     pub folders: Counts,
@@ -230,12 +231,11 @@ impl Outcome for StatusOutcome {
             .targets
             .iter()
             .map(|t| {
-                let state = if t.missing {
-                    "missing".to_owned()
-                } else if t.running {
-                    "running".to_owned()
-                } else {
-                    t.label.clone().unwrap_or_else(|| "-".to_owned())
+                let state = match (t.missing, t.running) {
+                    (true, _) => "missing".to_owned(),
+                    (false, Some(true)) => "running".to_owned(),
+                    (false, None) => "running?".to_owned(),
+                    (false, Some(false)) => t.label.clone().unwrap_or_else(|| "-".to_owned()),
                 };
                 let f = &t.folders;
                 let mut counts = format!(
@@ -382,6 +382,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     };
     let found: Vec<Target> = selected.iter().map(|d| d.target.clone()).collect();
     let running = detect_running(&found);
+    warnings.extend(running.warning());
     let pending = journal::pending(&world.paths)?;
     let held = matches!(probe_global(&world.paths)?, LockState::Held { .. });
     // Read once: what earlier commands learned about releases.
@@ -502,7 +503,10 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             version: t.version,
             interface: t.interface,
             label: t.label.clone(),
-            running: running.contains_key(&t.client_dir),
+            running: running
+                .unavailable
+                .is_none()
+                .then(|| running.clients.contains_key(&t.client_dir)),
             missing: false,
             folders: inv.counts,
             addons,
@@ -541,7 +545,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             version: ClientVersion::new(0, 0, 0),
             interface: 0,
             label: None,
-            running: false,
+            running: Some(false),
             missing: true,
             folders: Counts::default(),
             addons: counts(&record),
@@ -952,7 +956,7 @@ mod tests {
             version: ClientVersion::new(12, 1, 5),
             interface: 120_105,
             label: None,
-            running: false,
+            running: Some(false),
             missing: attention.contains(&Attention::TargetMissing),
             folders: Counts {
                 unmanaged,

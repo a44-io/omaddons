@@ -313,3 +313,64 @@ fn a_running_client_and_dry_runs() {
     );
     assert!(!home.addons("_retail_").join("Foo").exists());
 }
+
+/// A process table omaddons cannot read is not "nothing runs": every client is treated
+/// as running, `status` says it cannot tell, and removing a loaded addon is refused
+/// until `--while-running`.
+#[test]
+fn an_unreadable_process_table_fails_closed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if common::procfs::running_as_root() {
+        return; // chmod 000 hides nothing from root
+    }
+    let home = Home::new(&["wow"]);
+    install(&home, "retail", "Foo", &["Foo"]);
+    let locked = home.env.root().join("proc-locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let run = |args: &[&str]| {
+        let mut argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        argv.push("--json".to_owned());
+        home.exec_with(&argv, &[("OMADDONS_PROC_ROOT", locked.to_str().unwrap())])
+    };
+    let unknown = |envelope: &Value| {
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == "running_unknown")
+            .count()
+    };
+
+    let r = run(&["status"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        envelope["data"]["targets"][0]["running"],
+        Value::Null,
+        "{}",
+        r.context()
+    );
+    assert_eq!(unknown(&envelope), 1, "{}", r.context());
+
+    let r = run(&["remove", "Foo", "-t", "retail"]);
+    let envelope = r.expect(4);
+    let error = &envelope["error"];
+    assert_eq!(error["code"], "game_running", "{}", r.context());
+    assert_eq!(error["details"]["running"], "unknown", "{}", r.context());
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("may be running"),
+        "{}",
+        r.context()
+    );
+    assert!(home.addons("_retail_").join("Foo").is_dir());
+
+    let r = run(&["remove", "Foo", "-t", "retail", "--while-running"]);
+    let envelope = r.expect(0);
+    assert_eq!(unknown(&envelope), 1, "once per command: {}", r.context());
+    assert!(!home.addons("_retail_").join("Foo").exists());
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+}

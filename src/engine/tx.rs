@@ -34,7 +34,7 @@ use super::plan::{
 use super::stage::{Staged, stage};
 use super::swap::{SwapOp, out_of_scope_warning, snapshot_saved_variables, snapshot_state, swap};
 use crate::discover::registry::{LockedRegistry, same_dir};
-use crate::discover::running::detect_running;
+use crate::discover::running::{RunningScan, detect_running, running_unknown};
 use crate::discover::target::DiscoveredTarget;
 use crate::error::{Error, ErrorBody, ErrorCode, PlanStaleSource, Result, Suggestion, Warning};
 use crate::fsx::{
@@ -242,6 +242,7 @@ pub fn check_releases(jobs: &[CheckJob], ctx: &EngineCtx<'_>) -> Result<CheckedR
         table: ctx.table,
         tx,
         running: &nothing_runs,
+        running_unknown: None,
         policy: ctx.policy,
         limits: ctx.limits,
         actor: ctx.actor,
@@ -322,7 +323,8 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         blobs: &blobs,
         table: ctx.table,
         tx: plan_tx,
-        running: &running,
+        running: &running.dirs,
+        running_unknown: running.unknown.as_deref(),
         policy: ctx.policy,
         limits: ctx.limits,
         actor: ctx.actor,
@@ -343,7 +345,8 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
 
     let mut outcomes = Vec::new();
     let mut failures = plan.failures.clone();
-    let mut warnings = Vec::new();
+    // Said once for the run; every later look under the lock fails closed the same way.
+    let mut warnings: Vec<Warning> = running.warning().into_iter().collect();
     if req.dry_run || !plan.has_ops() {
         outcomes = plan
             .targets
@@ -426,11 +429,48 @@ fn unchanged(tp: &TargetPlan, dry_run: bool) -> TxOutcome {
     }
 }
 
-/// The client dirs whose game runs now.
-pub(super) fn running_now(ctx: &EngineCtx<'_>, targets: &[Target]) -> BTreeSet<PathBuf> {
+/// The client dirs to treat as running now.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct RunningNow {
+    /// Every given target's client dir when the process table could not be read: decisions
+    /// fail closed.
+    pub dirs: BTreeSet<PathBuf>,
+    /// Why the process table could not be read, when it could not.
+    pub unknown: Option<String>,
+}
+
+impl RunningNow {
+    fn from_scan(scan: RunningScan, targets: &[Target]) -> Self {
+        match scan.unavailable {
+            Some(cause) => Self {
+                dirs: targets.iter().map(|t| t.client_dir.clone()).collect(),
+                unknown: Some(cause),
+            },
+            None => Self {
+                dirs: scan.clients.into_keys().collect(),
+                unknown: None,
+            },
+        }
+    }
+
+    pub fn contains(&self, client_dir: &Path) -> bool {
+        self.dirs.contains(client_dir)
+    }
+
+    /// `running_unknown`, once per command: the caller that plans adds it.
+    pub fn warning(&self) -> Option<Warning> {
+        self.unknown.as_deref().map(running_unknown)
+    }
+}
+
+/// The client dirs whose game runs now, or every target's when that cannot be told.
+pub(super) fn running_now(ctx: &EngineCtx<'_>, targets: &[Target]) -> RunningNow {
     match ctx.running {
-        Some(running) => running.clone(),
-        None => detect_running(targets).into_keys().collect(),
+        Some(running) => RunningNow {
+            dirs: running.clone(),
+            unknown: None,
+        },
+        None => RunningNow::from_scan(detect_running(targets), targets),
     }
 }
 
@@ -657,7 +697,8 @@ fn locked(
         blobs,
         table: ctx.table,
         tx: *tx,
-        running: &running,
+        running: &running.dirs,
+        running_unknown: running.unknown.as_deref(),
         policy: ctx.policy,
         limits: ctx.limits,
         actor: ctx.actor,
@@ -1459,6 +1500,33 @@ mod tests {
                 leftovers(&scene)
             );
         }
+    }
+
+    #[test]
+    fn an_unreadable_process_table_fails_closed() {
+        let targets: Vec<Target> = ["/c/_retail_", "/c/_classic_"]
+            .iter()
+            .map(|d| crate::engine::testing::target(Path::new(d)))
+            .collect();
+        let unknown = RunningNow::from_scan(
+            RunningScan {
+                clients: BTreeMap::new(),
+                unavailable: Some("/proc could not be listed: permission denied".into()),
+            },
+            &targets,
+        );
+        assert!(targets.iter().all(|t| unknown.contains(&t.client_dir)));
+        let warning = unknown.warning().unwrap();
+        assert_eq!(warning.code, crate::error::WarningCode::RunningUnknown);
+        assert!(
+            warning.message.contains("permission denied"),
+            "{}",
+            warning.message
+        );
+
+        let known = RunningNow::from_scan(RunningScan::default(), &targets);
+        assert!(!targets.iter().any(|t| known.contains(&t.client_dir)));
+        assert_eq!(known.warning(), None);
     }
 
     /// A commit that fails, and whose in-process recovery fails too, keeps the journal,

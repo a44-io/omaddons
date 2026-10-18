@@ -247,6 +247,8 @@ warning_codes! {
     /// SavedVariables in a `WTF/` reached through a symlink outside the client
     /// directory: never snapshotted or written.
     SavedVariablesOutOfScope    = "saved_variables_out_of_scope";
+    /// The process table could not be read, so every client is treated as running.
+    RunningUnknown              = "running_unknown";
     SnapshotCapExceeded         = "snapshot_cap_exceeded";
     /// Retention after a commit failed; the transaction itself stands.
     RetentionFailed             = "retention_failed";
@@ -777,7 +779,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 36);
+        assert_eq!(WarningCode::ALL.len(), 37);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

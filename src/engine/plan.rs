@@ -343,8 +343,11 @@ pub struct PlanCtx<'a> {
     pub table: &'a RulesTable,
     /// The transaction whose in-flight lock the caller holds (temp downloads).
     pub tx: TxId,
-    /// Client dirs whose game client runs now.
+    /// Client dirs whose game client runs now: every one when the process table could
+    /// not be read.
     pub running: &'a BTreeSet<PathBuf>,
+    /// Why the process table could not be read, when it could not.
+    pub running_unknown: Option<&'a str>,
     pub policy: RunningPolicy,
     pub limits: ArchiveLimits,
     pub actor: Actor,
@@ -3628,6 +3631,7 @@ impl TargetPlanner<'_> {
         let policy_ctx = PolicyContext {
             target_id: &self.target.id,
             argv: ctx.argv,
+            running_unknown: ctx.running_unknown,
         };
         let policy = running::evaluate(
             &policy_ctx,
@@ -4889,6 +4893,7 @@ mod tests {
             table: &table,
             tx: TxId::new(),
             running: &scene.running,
+            running_unknown: None,
             policy: RunningPolicy::Safe,
             limits: ArchiveLimits::default(),
             actor: Actor::Agent,

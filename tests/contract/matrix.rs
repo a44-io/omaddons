@@ -47,6 +47,24 @@ fn status() {
 }
 
 #[test]
+fn status_running_unknown() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if common::procfs::running_as_root() {
+        return; // chmod 000 hides nothing from root
+    }
+    // A process table omaddons cannot read: `running` is null, and a warning says why.
+    let s = Scene::new();
+    let locked = s.home.env.root().join("proc-locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let env = [("OMADDONS_PROC_ROOT", locked.to_str().unwrap())];
+    let c = s.json_env(&["status"], &env, 0);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    insta::assert_json_snapshot!("status_running_unknown", s.stable(&c.envelope));
+}
+
+#[test]
 fn targets() {
     let s = Scene::new();
     let c = s.json(&["targets"], 0);
