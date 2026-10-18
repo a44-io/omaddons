@@ -18,7 +18,7 @@
 //! target's state files. The SavedVariables manifest holds account, realm and
 //! character names; it stays local and only counts are reported.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
@@ -86,6 +86,8 @@ pub struct SvReport {
     pub sv_files_snapshotted: usize,
     /// Every clone was a reflink (`true` when nothing needed copying).
     pub reflink: bool,
+    /// Files left out because their `SavedVariables` directory is outside the client.
+    pub sv_files_out_of_scope: usize,
 }
 
 /// `snapshots/<tx>/WTF.manifest.json`: every candidate SavedVariables path, relative to
@@ -108,7 +110,8 @@ pub struct SvEntry {
 
 /// Clones the SavedVariables of `folders` (account and per-character `<Folder>.lua` and
 /// `.lua.bak`, any case; never Blizzard's own `SavedVariables.lua`) into
-/// `snapshots/<tx>/WTF/`, and writes the manifest.
+/// `snapshots/<tx>/WTF/`, and writes the manifest. Files outside the client directory
+/// are only counted.
 pub fn snapshot_saved_variables(
     s: &mut WriteSession<'_>,
     tx: &TxId,
@@ -116,12 +119,13 @@ pub fn snapshot_saved_variables(
     folders: &[FolderName],
 ) -> Result<SvReport> {
     failpoint::hit("engine.snapshot.sv").map_err(|e| fail(&client.wtf(), &e))?;
-    let wtf = client.wtf();
     let snapshot = client.snapshots(tx);
+    let candidates = sv_candidates(client, folders);
     let mut entries = Vec::new();
     let mut report = SvReport {
         sv_files_snapshotted: 0,
         reflink: true,
+        sv_files_out_of_scope: candidates.out_of_scope,
     };
     // Errors never name a file: the paths hold account, realm and character names.
     let private = |e: Error| {
@@ -131,7 +135,7 @@ pub fn snapshot_saved_variables(
             Suggestion::command(["omaddons", "status"]),
         )
     };
-    for (rel, present) in sv_candidates(&wtf, folders) {
+    for (rel, present) in candidates.files {
         let sha256 = match &present {
             Some(path) => {
                 let dest = snapshot.join("WTF").join(&rel);
@@ -163,27 +167,39 @@ pub fn snapshot_saved_variables(
     Ok(report)
 }
 
-/// Every SavedVariables candidate of `folders` under `<wtf>/Account/`: (path relative
-/// to `wtf` with `/`, the existing file if any). Existing files keep their spelling;
-/// absent ones are spelled `<Folder>.lua`.
-pub fn sv_candidates(wtf: &Path, folders: &[FolderName]) -> Vec<(String, Option<PathBuf>)> {
-    let mut out = Vec::new();
-    for account in dirs(&wtf.join("Account")) {
-        let mut sv_dirs = vec![(
-            format!("Account/{account}"),
-            wtf.join("Account").join(&account),
-        )];
-        for realm in dirs(&wtf.join("Account").join(&account)) {
+/// The SavedVariables candidates of some folders.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SvCandidates {
+    /// (path relative to `WTF/` with `/`, the existing file if any). Existing files keep
+    /// their spelling; absent ones are spelled `<Folder>.lua`.
+    pub files: Vec<(String, Option<PathBuf>)>,
+    /// Existing candidate files in `SavedVariables` directories outside the client
+    /// directory (a `WTF/` or account folder symlinked to a sync folder), which are never
+    /// snapshotted or written.
+    pub out_of_scope: usize,
+}
+
+/// Every SavedVariables candidate of `folders` under `<client>/WTF/Account/`, account-wide
+/// and per character. Account, realm and character directories are followed through
+/// symlinks, but a `SavedVariables` directory counts only where it resolves inside the
+/// client directory: SavedVariables are protected there and nowhere else, as the write
+/// scope admits nothing else. A directory reached under two names is listed once.
+pub fn sv_candidates(client: &ClientPaths, folders: &[FolderName]) -> SvCandidates {
+    let mut out = SvCandidates::default();
+    let accounts = client.wtf().join("Account");
+    let inside = std::fs::canonicalize(client.client_dir()).ok();
+    let mut seen = BTreeSet::new();
+    for account in dirs(&accounts) {
+        let account_dir = accounts.join(&account);
+        let mut sv_dirs = vec![(format!("Account/{account}"), account_dir.clone())];
+        for realm in dirs(&account_dir) {
             if realm.eq_ignore_ascii_case("SavedVariables") {
                 continue;
             }
-            for character in dirs(&wtf.join("Account").join(&account).join(&realm)) {
+            for character in dirs(&account_dir.join(&realm)) {
                 sv_dirs.push((
                     format!("Account/{account}/{realm}/{character}"),
-                    wtf.join("Account")
-                        .join(&account)
-                        .join(&realm)
-                        .join(&character),
+                    account_dir.join(&realm).join(&character),
                 ));
             }
         }
@@ -193,24 +209,65 @@ pub fn sv_candidates(wtf: &Path, folders: &[FolderName]) -> Vec<(String, Option<
                 .into_iter()
                 .map(|name| (name.to_ascii_lowercase(), name))
                 .collect();
-            for folder in folders {
-                for suffix in [".lua", ".lua.bak"] {
-                    let want = format!("{}{suffix}", folder.as_str());
-                    if want.to_ascii_lowercase().starts_with("savedvariables.lua") {
-                        continue;
-                    }
-                    match present.get(&want.to_ascii_lowercase()) {
-                        Some(actual) => out.push((
-                            format!("{rel}/SavedVariables/{actual}"),
-                            Some(sv.join(actual)),
-                        )),
-                        None => out.push((format!("{rel}/SavedVariables/{want}"), None)),
-                    }
+            let wanted = folders.iter().flat_map(|folder| {
+                [".lua", ".lua.bak"]
+                    .map(|suffix| format!("{}{suffix}", folder.as_str()))
+                    .into_iter()
+                    .filter(|want| !want.to_ascii_lowercase().starts_with("savedvariables.lua"))
+            });
+            let real =
+                resolved(&sv).filter(|real| inside.as_ref().is_some_and(|i| real.starts_with(i)));
+            let Some(real) = real else {
+                out.out_of_scope += wanted
+                    .filter(|want| present.contains_key(&want.to_ascii_lowercase()))
+                    .count();
+                continue;
+            };
+            // The same directory under another name is listed once.
+            if !seen.insert(real) {
+                continue;
+            }
+            for want in wanted {
+                match present.get(&want.to_ascii_lowercase()) {
+                    Some(actual) => out.files.push((
+                        format!("{rel}/SavedVariables/{actual}"),
+                        Some(sv.join(actual)),
+                    )),
+                    None => out
+                        .files
+                        .push((format!("{rel}/SavedVariables/{want}"), None)),
                 }
             }
         }
     }
     out
+}
+
+/// Whether the `SavedVariables` directory `sv` resolves inside the client directory, the
+/// only place SavedVariables are snapshotted and written. A directory that does not exist
+/// yet resolves through its nearest existing parent.
+pub(super) fn sv_in_scope(client: &ClientPaths, sv: &Path) -> bool {
+    let inside = std::fs::canonicalize(client.client_dir());
+    match (resolved(sv), inside) {
+        (Some(real), Ok(inside)) => real.starts_with(inside),
+        _ => false,
+    }
+}
+
+/// Where `path` really is: the canonical path of its nearest existing ancestor, joined
+/// with the rest of it. `None` when nothing resolves.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        match std::fs::canonicalize(at) {
+            Ok(real) => return Some(rest.iter().rev().fold(real, |p, c| p.join(c))),
+            Err(_) => {
+                rest.push(at.file_name()?);
+                at = at.parent()?;
+            }
+        }
+    }
 }
 
 /// Clones the target's record, files index and the registry into
@@ -505,6 +562,21 @@ fn fail(path: &Path, e: &std::io::Error) -> Error {
     Error::io(path, e, Suggestion::command(["omaddons", "status"]))
 }
 
+/// `saved_variables_out_of_scope`: `files` SavedVariables of `target`'s changed addons
+/// are outside its client directory, so `outcome` says what that cost (never which
+/// files: their paths hold account and character names).
+pub(super) fn out_of_scope_warning(target: &str, files: usize, outcome: &str) -> Warning {
+    Warning::new(
+        WarningCode::SavedVariablesOutOfScope,
+        format!(
+            "{files} SavedVariables files of {target}'s changed addons are in a WTF folder reached through a symlink outside the client directory, so {outcome}"
+        ),
+    )
+    .with_fix(Suggestion::text(
+        "keep WTF/ inside the client directory, not a symlink to a sync folder, for undo to restore SavedVariables",
+    ))
+}
+
 /// The lowercase hex SHA-256 of the file at `path`, streamed (SavedVariables reach
 /// 64 MiB, and undo staging hashes every restored file).
 pub(crate) fn sha256_file(path: &Path) -> Result<String> {
@@ -513,12 +585,13 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String> {
         .map_err(|e| fail(path, &e))
 }
 
-/// Directory names in `dir`, sorted; nothing when it cannot be read.
+/// Directory names in `dir`, symlinks to directories included, sorted; nothing when it
+/// cannot be read.
 fn dirs(dir: &Path) -> Vec<String> {
     entries(dir, true)
 }
 
-/// Regular file names in `dir`, sorted.
+/// Regular file names in `dir` (never a symlink), sorted.
 fn files(dir: &Path) -> Vec<String> {
     entries(dir, false)
 }
@@ -530,8 +603,11 @@ fn entries(dir: &Path, want_dirs: bool) -> Vec<String> {
     let mut names: Vec<String> = listing
         .filter_map(std::result::Result::ok)
         .filter(|e| {
-            e.file_type()
-                .is_ok_and(|t| if want_dirs { t.is_dir() } else { t.is_file() })
+            if want_dirs {
+                std::fs::metadata(e.path()).is_ok_and(|m| m.is_dir())
+            } else {
+                e.file_type().is_ok_and(|t| t.is_file())
+            }
         })
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
@@ -797,7 +873,8 @@ mod tests {
             report,
             SvReport {
                 sv_files_snapshotted: 4,
-                reflink: false
+                reflink: false,
+                sv_files_out_of_scope: 0,
             }
         );
         let snap = scene
@@ -840,6 +917,81 @@ mod tests {
 
         let wire = serde_json::to_string(&report).unwrap();
         for private in ["123456", "RealmName", "CharName"] {
+            assert!(!wire.contains(private), "{wire}");
+        }
+    }
+
+    /// Moves `from` to `to` and leaves a symlink to it in its place, as a player keeping
+    /// `WTF/` (or part of it) in a sync folder does.
+    fn link_away(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::rename(from, to).unwrap();
+        std::os::unix::fs::symlink(to, from).unwrap();
+    }
+
+    /// The scene's candidates for Foo and Gone: (files, existing files, out of scope).
+    fn candidates(scene: &Scene) -> (usize, usize, usize) {
+        let folders = [name("Foo"), name("Gone")].map(MutableFolderName::into_folder);
+        let found = sv_candidates(&scene.client, &folders);
+        let existing = found.files.iter().filter(|(_, f)| f.is_some()).count();
+        (found.files.len(), existing, found.out_of_scope)
+    }
+
+    #[test]
+    fn saved_variables_count_only_inside_the_client() {
+        let sync = tempfile::tempdir().unwrap();
+        let account = |scene: &Scene| scene.client.wtf().join("Account/123456#1");
+
+        // In place: 2 directories x 2 folders x .lua/.lua.bak; 4 of them exist.
+        let scene = Scene::new();
+        assert_eq!(candidates(&scene), (8, 4, 0));
+
+        // WTF/ in a sync folder: nothing is a candidate, the existing files are counted.
+        let scene = Scene::new();
+        link_away(&scene.client.wtf(), &sync.path().join("a/WTF"));
+        assert_eq!(candidates(&scene), (0, 0, 4));
+
+        // One account symlinked out: counted, never skipped silently.
+        let scene = Scene::new();
+        link_away(&account(&scene), &sync.path().join("b/123456#1"));
+        assert_eq!(candidates(&scene), (0, 0, 4));
+
+        // Only a character's SavedVariables symlinked out: the account's still count.
+        let scene = Scene::new();
+        let character = account(&scene).join("RealmName/CharName/SavedVariables");
+        link_away(&character, &sync.path().join("c/SavedVariables"));
+        assert_eq!(candidates(&scene), (4, 2, 2));
+
+        // A character reached under a second name inside the client: listed once.
+        let scene = Scene::new();
+        let realm = account(&scene).join("RealmName");
+        std::os::unix::fs::symlink(realm.join("CharName"), realm.join("Alt")).unwrap();
+        assert_eq!(candidates(&scene), (8, 4, 0));
+    }
+
+    #[test]
+    fn saved_variables_outside_the_client_are_not_snapshotted() {
+        let sync = tempfile::tempdir().unwrap();
+        let scene = Scene::new();
+        link_away(&scene.client.wtf(), &sync.path().join("WTF"));
+        let before = tree(sync.path());
+        let mut s = scene.session();
+        let folders = [name("Foo"), name("Gone")].map(MutableFolderName::into_folder);
+        let report = snapshot_saved_variables(&mut s, &scene.tx, &scene.client, &folders).unwrap();
+        assert_eq!(
+            (report.sv_files_snapshotted, report.sv_files_out_of_scope),
+            (0, 4)
+        );
+        assert!(!scene.client.snapshots(&scene.tx).join("WTF").exists());
+        assert_eq!(tree(sync.path()), before);
+        let warning = out_of_scope_warning("retail", 4, "they were not snapshotted");
+        assert_eq!(warning.code, WarningCode::SavedVariablesOutOfScope);
+        let wire = format!(
+            "{}{}",
+            serde_json::to_string(&report).unwrap(),
+            warning.message
+        );
+        for private in ["123456", "RealmName", "CharName", "WTF/Account"] {
             assert!(!wire.contains(private), "{wire}");
         }
     }

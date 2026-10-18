@@ -38,7 +38,8 @@ use super::plan::{Change, ChangeKind, FolderSummary};
 use super::running::{self, PolicyContext, PolicyOp};
 use super::stage::{Staged, stage_trees};
 use super::swap::{
-    SvEntry, SvManifest, SwapOp, sha256_file, snapshot_saved_variables, snapshot_state, swap,
+    SvEntry, SvManifest, SwapOp, out_of_scope_warning, sha256_file, snapshot_saved_variables,
+    snapshot_state, sv_candidates, sv_in_scope, swap,
 };
 use super::tx::{EngineCtx, TxOutcome, cleanup, millis, running_now, sv_writable, write_status};
 use crate::discover::target::DiscoveredTarget;
@@ -490,6 +491,13 @@ fn plan(
             )
             .with_fix(sv_follow_up(&reverted.tx)),
         );
+    }
+    if sv.out_of_scope > 0 {
+        warnings.push(out_of_scope_warning(
+            &target.id,
+            sv.out_of_scope,
+            "undo left them as they are",
+        ));
     }
     Ok(Planned {
         reverts: reverted.tx,
@@ -1092,10 +1100,16 @@ struct SvPlan {
     counts: SvCounts,
     /// The changed files to restore (empty when deferred, kept or refused).
     restore: Vec<SvEntry>,
+    /// The transaction's SavedVariables files outside the client directory, which the
+    /// undo leaves as they are.
+    out_of_scope: usize,
 }
 
 /// Compares each file of the transaction's manifest with the file now and applies the
 /// policy. While the client runs: `auto` defers, `restore` refuses with `game_running`.
+/// A file whose `SavedVariables` directory now resolves outside the client is neither
+/// compared nor restored (a snapshot from before such files were left out can hold one),
+/// so nothing after `swapped` can be refused for its path.
 fn plan_saved_variables(
     client: &ClientPaths,
     reverted: &HistoryEntry,
@@ -1115,14 +1129,24 @@ fn plan_saved_variables(
     let wtf = client.wtf();
     let mut plan = SvPlan::default();
     let mut changed = Vec::new();
+    let mut skipped = 0;
     for entry in manifest.entries {
-        let now = present_hash(&wtf.join(relative(&entry.path)?))?;
+        let live = wtf.join(relative(&entry.path)?);
+        if !live.parent().is_some_and(|sv| sv_in_scope(client, sv)) {
+            let exists = std::fs::symlink_metadata(&live).is_ok_and(|m| m.is_file());
+            skipped += usize::from(entry.sha256.is_some() || exists);
+            continue;
+        }
+        let now = present_hash(&live)?;
         if now == entry.sha256 {
             plan.counts.unchanged += 1;
         } else {
             changed.push(entry);
         }
     }
+    // And the files a newer snapshot left out in the first place.
+    let folders: Vec<FolderName> = reverted.ops.iter().map(|op| op.folder.clone()).collect();
+    plan.out_of_scope = skipped.max(sv_candidates(client, &folders).out_of_scope);
     if changed.is_empty() {
         return Ok(plan);
     }
@@ -1201,7 +1225,7 @@ pub fn restore_saved_variables(
         restore_one(s, client, sv, undo_tx, &attempt, &rel, existed).map_err(|e| {
             Error::new(
                 e.code,
-                "a SavedVariables file could not be restored; the next omaddons command that changes addons finishes the undo",
+                "a SavedVariables file could not be restored",
                 Suggestion::command(["omaddons", "status"]),
             )
         })?;
@@ -1875,6 +1899,50 @@ mod tests {
             Some("-- before")
         );
         assert_eq!(read(&scene, &format!("{ACCOUNT}/Foo.lua.bak")), None);
+    }
+
+    #[test]
+    fn saved_variables_moved_out_of_the_client_are_left_and_counted() {
+        // Snapshotted in place, then WTF/ moved to a sync folder and symlinked back: the
+        // manifest names files that now resolve outside the client.
+        let scene = TxScene::new();
+        saved_variables(&scene);
+        let t1 = install(&scene, "v1.zip", V1);
+        play(&scene);
+        let sync = tempfile::tempdir().unwrap();
+        let wtf = scene.client.wtf();
+        let away = sync.path().join("WTF");
+        std::fs::rename(&wtf, &away).unwrap();
+        std::os::unix::fs::symlink(&away, &wtf).unwrap();
+
+        let done = scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
+        assert_eq!(done.undoes, t1);
+        assert!(
+            !scene.client.addons().join("Foo").exists(),
+            "folders reverted"
+        );
+        assert_eq!((done.sv.restored, done.sv.deferred), (0, 0));
+        assert_eq!(
+            read(&scene, &format!("{ACCOUNT}/Foo.lua")).as_deref(),
+            Some("-- after"),
+            "left as it is"
+        );
+        let warning = done
+            .outcome
+            .warnings
+            .iter()
+            .find(|w| w.code == WarningCode::SavedVariablesOutOfScope)
+            .unwrap();
+        // Account Foo.lua (changed), its .lua.bak (created) and the character's Foo.lua.
+        assert!(
+            warning.message.starts_with("3 SavedVariables files"),
+            "{}",
+            warning.message
+        );
+        assert!(warning.message.ends_with("undo left them as they are"));
+        assert!(record(&scene).addons.is_empty());
+        assert_eq!(history(&scene).pop().unwrap().reverts, Some(t1));
+        assert!(leftovers(&scene).is_empty(), "{:?}", leftovers(&scene));
     }
 
     #[cfg(debug_assertions)]

@@ -90,6 +90,26 @@ mod support {
             self.run(&args)
         }
 
+        /// Moves the client's `WTF/` to a sync folder outside it, symlinked back.
+        pub fn link_wtf_away(&self) {
+            let wtf = self.home.client("_retail_").join("WTF");
+            let away = self.home.env.root().join("sync/WTF");
+            fs::create_dir_all(away.parent().unwrap()).unwrap();
+            fs::rename(&wtf, &away).unwrap();
+            std::os::unix::fs::symlink(&away, &wtf).unwrap();
+        }
+
+        /// The managed addons `list` shows on retail.
+        pub fn listed(&mut self) -> Vec<String> {
+            let envelope = self.run(&["list", "-t", "retail"]).expect(0);
+            envelope["data"]["targets"][0]["addons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a["name"].as_str().unwrap().to_owned())
+                .collect()
+        }
+
         /// Unfinished transactions in the state directory.
         pub fn journals(&self) -> usize {
             fs::read_dir(self.home.state().join("journal")).map_or(0, |dir| dir.count())
@@ -400,6 +420,62 @@ fn recovery_defers_saved_variables_while_the_client_runs() {
     assert_eq!(s.sv(&format!("{}/Foo.lua.bak", support::ACCOUNT)), None);
     assert!(s.addons().join("Bar").is_dir(), "Bar stays");
     s.assert_private();
+}
+
+/// `WTF/` kept in a sync folder and symlinked into the client: SavedVariables there are
+/// never snapshotted or written, and undo succeeds whether the link came before the
+/// install or after it (a snapshot that still lists those files).
+#[test]
+fn saved_variables_outside_the_client_are_left_alone() {
+    let codes = |envelope: &Value| -> Vec<String> {
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["code"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    for link_first in [true, false] {
+        let mut s = Session::new();
+        if link_first {
+            s.link_wtf_away();
+        }
+        let r = s.install_run("Foo", "1", &[]);
+        let installed = r.expect(0);
+        assert_eq!(
+            codes(&installed).contains(&"saved_variables_out_of_scope".to_owned()),
+            link_first,
+            "{}",
+            r.context()
+        );
+        if !link_first {
+            s.link_wtf_away();
+        }
+        s.play();
+
+        let r = s.run(&["undo"]);
+        let envelope = r.expect(0);
+        let context = format!("link first: {link_first}\n{}", r.context());
+        assert!(
+            codes(&envelope).contains(&"saved_variables_out_of_scope".to_owned()),
+            "{context}"
+        );
+        assert_eq!(
+            envelope["data"]["saved_variables"]["restored"], 0,
+            "{context}"
+        );
+        assert!(!s.addons().join("Foo").exists(), "{context}");
+        assert_eq!(
+            s.sv(&format!("{}/Foo.lua", support::ACCOUNT)).as_deref(),
+            Some("-- after"),
+            "{context}"
+        );
+        let history = s.run(&["history"]).expect(0);
+        assert_eq!(history["data"]["entries"][0]["kind"], "undo", "{context}");
+        assert_eq!(s.listed(), Vec::<String>::new(), "{context}");
+        assert_eq!(s.journals(), 0, "{context}");
+        s.assert_private();
+    }
 }
 
 #[test]

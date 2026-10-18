@@ -9,9 +9,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use omaddons::fsx::{
-    Content, FsxError, Op, RenameMode, ScopeTable, SnapshotRoots, WriteSession, Writer, mutate,
+    Content, FsxError, Op, OwnedFolders, RenameMode, ScopeTable, SnapshotRoots, WriteSession,
+    Writer, mutate,
 };
-use omaddons::model::TxId;
+use omaddons::model::{FolderName, TxId};
 use omaddons::state::paths::Paths;
 
 #[test]
@@ -179,4 +180,56 @@ fn refused_writes_change_nothing() {
         before,
         "a refused write changed the tree"
     );
+}
+
+/// A `WTF/` symlinked to a sync folder outside the client stays out of the Undo writer's
+/// reach under either name, even for a folder it owns; the client's own `WTF/` does not.
+#[test]
+fn the_undo_writer_never_follows_wtf_out_of_the_client() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let home = root.join("home");
+    let client = home.join("Games/WoW/_retail_");
+    let sync = root.join("sync/WTF");
+    let sv = "Account/A/SavedVariables/Foo.lua";
+    fs::create_dir_all(client.join("Interface/AddOns")).unwrap();
+    fs::create_dir_all(sync.join(sv).parent().unwrap()).unwrap();
+    fs::write(sync.join(sv), b"FooDB = {}").unwrap();
+    std::os::unix::fs::symlink(&sync, client.join("WTF")).unwrap();
+    let paths = Paths::with_roots(
+        &home,
+        home.join(".config"),
+        home.join(".local/state"),
+        home.join(".cache"),
+    );
+    fs::create_dir_all(paths.state_dir()).unwrap();
+    let scopes = ScopeTable::new(&paths, std::slice::from_ref(&client), None).unwrap();
+    let tx = TxId::new();
+    let foo = FolderName::new("Foo").unwrap();
+    let mut session = WriteSession::tx(
+        tx,
+        Writer::Undo,
+        &scopes,
+        SnapshotRoots::for_tx(&paths, &tx),
+        paths.state_snapshot(&tx).join("actions.jsonl"),
+    )
+    .with_owned_folders(OwnedFolders::new(std::slice::from_ref(&foo)));
+    let write = || Op::WriteFile {
+        content: Content::Bytes(b"pwned"),
+        mode: None,
+    };
+    for target in [client.join("WTF").join(sv), sync.join(sv)] {
+        let err = mutate(&mut session, &target, write()).unwrap_err();
+        assert!(
+            matches!(err, FsxError::ScopeDenied(_)),
+            "{}: {err}",
+            target.display()
+        );
+    }
+    assert_eq!(fs::read(sync.join(sv)).unwrap(), b"FooDB = {}");
+
+    // The client's own WTF/ is the Undo writer's, for the folder it owns.
+    fs::remove_file(client.join("WTF")).unwrap();
+    fs::create_dir_all(client.join("WTF").join(sv).parent().unwrap()).unwrap();
+    mutate(&mut session, &client.join("WTF").join(sv), write()).unwrap();
 }

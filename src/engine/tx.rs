@@ -32,7 +32,7 @@ use super::plan::{
     released_view, target_kind,
 };
 use super::stage::{Staged, stage};
-use super::swap::{SwapOp, snapshot_saved_variables, snapshot_state, swap};
+use super::swap::{SwapOp, out_of_scope_warning, snapshot_saved_variables, snapshot_state, swap};
 use crate::discover::registry::{LockedRegistry, same_dir};
 use crate::discover::running::detect_running;
 use crate::discover::target::DiscoveredTarget;
@@ -788,6 +788,8 @@ fn locked(
     );
     let mut journal = Journal::create(&mut s, paths, &guard, prepared)?;
 
+    // Kept outside the commit so an in-process roll-forward still reports it.
+    let mut sv_out_of_scope = 0;
     let committed = (|| -> Result<(bool, Vec<Warning>)> {
         failpoint::hit("engine.journal.prepared").map_err(fail)?;
         if creates_addons_dir {
@@ -795,7 +797,8 @@ fn locked(
             failpoint::hit("engine.addons_dir.created").map_err(fail)?;
         }
         let touched: Vec<FolderName> = swap_ops.iter().map(touched_folder).collect();
-        snapshot_saved_variables(&mut s, tx, &client, &touched)?;
+        sv_out_of_scope =
+            snapshot_saved_variables(&mut s, tx, &client, &touched)?.sv_files_out_of_scope;
         snapshot_state(&mut s, paths, tx, &key)?;
         let report = swap(&mut s, &mut journal, &swap_ops, staged, &client)?;
         ensure_dir_all(&mut s, &paths.targets_dir())?;
@@ -842,6 +845,13 @@ fn locked(
         },
     };
     warnings.extend(swap_warnings);
+    if sv_out_of_scope > 0 {
+        warnings.push(out_of_scope_warning(
+            &target.id,
+            sv_out_of_scope,
+            "they were not snapshotted and undo will not restore them",
+        ));
+    }
     // What the committed works did to `required_by`, with this transaction's undo.
     push_new(
         &mut warnings,

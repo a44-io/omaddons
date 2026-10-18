@@ -1263,7 +1263,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 </details>
 
 <details>
-<summary><strong>Every warning code (26)</strong></summary>
+<summary><strong>Every warning code (36)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -1273,6 +1273,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `atomic_swap_unavailable` | the AddOns filesystem has no `renameat2` exchange; two journaled renames were used |
 | `reload_required` | `/reload` in game to pick up the change |
 | `saved_variables_deferred` | the game is running, or recovery could not tell or could not write them; restore SavedVariables later with the given command |
+| `saved_variables_out_of_scope` | SavedVariables of the changed addons are in a `WTF/` reached through a symlink outside the client directory (a sync folder): they are never snapshotted or written, so undo leaves them as they are. It counts the files and never names them |
 | `snapshot_cap_exceeded` | protected snapshots alone exceed the size cap |
 | `retention_failed` | pruning failed after commit; the transaction stands |
 | `out_of_date` | the TOC's interface is older than the client's; it loads only with "Load out of date AddOns" enabled |
@@ -1360,7 +1361,7 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
 - An undo is its own transaction (kind `undo`, `reverts: <tx>`), so it can be undone too.
 - Every history line carries the run (command invocation) it belongs to. Bare `undo` reverts a whole run, one undo transaction per client in its own lock window. Runs are attribution, not atomicity: each client's transaction commits and undoes on its own.
 - Folders come back byte for byte from `<client>/Interface/.omaddons/snapshots/<tx>/AddOns/`; tests compare tree digests. Each addon's record and files index are restored, while other addons' later changes stand.
-- **SavedVariables.** Only the touched addons' own files (`WTF/…/SavedVariables/<Folder>.lua` and `.lua.bak`, account-wide and per character) are snapshotted, with a SHA-256 manifest. On undo, a file that is unchanged since is left alone, a changed one is restored, and one the new version created is moved aside. With `--saved-variables auto` and the game running, folders revert (if the running policy allows), and the SavedVariables restore is deferred. You get a `saved_variables_deferred` warning carrying the command to run after quitting: `omaddons undo <tx> --saved-variables restore`.
+- **SavedVariables.** Only the touched addons' own files (`WTF/…/SavedVariables/<Folder>.lua` and `.lua.bak`, account-wide and per character) are snapshotted, with a SHA-256 manifest. On undo, a file that is unchanged since is left alone, a changed one is restored, and one the new version created is moved aside. With `--saved-variables auto` and the game running, folders revert (if the running policy allows), and the SavedVariables restore is deferred. You get a `saved_variables_deferred` warning carrying the command to run after quitting: `omaddons undo <tx> --saved-variables restore`. SavedVariables directories that lead outside the client directory through a symlink (a `WTF/` kept in a sync folder) are never snapshotted or written; `saved_variables_out_of_scope` counts the files undo cannot restore.
 - **Conflicts.** `undo_conflict` (exit 4) when a later transaction touched the same folders (undo the newest first), when the transaction was already undone, or when a folder it removed has been put back by hand. A snapshot pruned by retention gives `not_found`.
 - Registry changes and `target.json` are not reverted.
 

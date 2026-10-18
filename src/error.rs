@@ -244,6 +244,9 @@ warning_codes! {
     AtomicSwapUnavailable       = "atomic_swap_unavailable";
     ReloadRequired              = "reload_required";
     SavedVariablesDeferred      = "saved_variables_deferred";
+    /// SavedVariables in a `WTF/` reached through a symlink outside the client
+    /// directory: never snapshotted or written.
+    SavedVariablesOutOfScope    = "saved_variables_out_of_scope";
     SnapshotCapExceeded         = "snapshot_cap_exceeded";
     /// Retention after a commit failed; the transaction itself stands.
     RetentionFailed             = "retention_failed";
@@ -774,7 +777,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 35);
+        assert_eq!(WarningCode::ALL.len(), 36);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }
