@@ -25,7 +25,8 @@ use crate::model::{PlanId, TxId};
 pub enum PruneReason {
     /// Snapshots (client and state side) and blob cache entries.
     Retention,
-    /// Stage dirs, cache temp dirs, committed journals and released in-flight locks.
+    /// Stage dirs, cache temp dirs, journals and released in-flight locks. Under a
+    /// transaction's own lock, only a journal that is committed or never started.
     PostCommitCleanup,
     /// Stored plans (M4).
     PlanExpiry,
@@ -75,6 +76,8 @@ struct Planned {
     trash: PathBuf,
     /// An in-flight lock file, deleted only while nobody holds it.
     inflight: bool,
+    /// A transaction journal.
+    journal: bool,
 }
 
 /// Deletes `victims` for `reason`. See the module docs for the steps.
@@ -107,6 +110,20 @@ pub fn prune(
             format!(
                 "refusing to prune {} under transaction {tx}'s own lock: it is not that transaction's",
                 stranger.victim.display()
+            ),
+            Suggestion::command(["omaddons", "status"]),
+        ));
+    }
+    // A writer cleaning up after itself never deletes the journal recovery still needs:
+    // only the next global lock holder finishes or rolls back an unfinished one.
+    if own.is_some()
+        && let Some(open) = planned.iter().find(|p| p.journal && unfinished(&p.victim))
+    {
+        return Err(Error::new(
+            ErrorCode::ScopeDenied,
+            format!(
+                "refusing to prune an unfinished journal ({}): the next omaddons command that commits a change recovers it",
+                open.victim.display()
             ),
             Suggestion::command(["omaddons", "status"]),
         ));
@@ -243,6 +260,7 @@ fn classify(scopes: &ScopeTable, reason: PruneReason, victim: &Path) -> Result<O
         victim: canonical,
         trash,
         inflight: kind == Kind::Inflight,
+        journal: kind == Kind::Journal,
     }))
 }
 
@@ -330,6 +348,27 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
         return Some((kind, scopes.cache_dir().join("trash")));
     }
     None
+}
+
+/// Whether the journal at `path` belongs to a transaction that started but did not
+/// finish: its first complete line is `prepared` and its last is not `committed`. A torn
+/// or missing `prepared` line means nothing ran. An unreadable journal counts as
+/// unfinished. The format is the engine's (`engine::journal`); fsx reads only the tags.
+fn unfinished(path: &Path) -> bool {
+    let Ok(bytes) = fs::read(path) else {
+        return true;
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let mut complete: Vec<&str> = text.lines().collect();
+    if !text.ends_with('\n') {
+        complete.pop();
+    }
+    let tag = |line: Option<&&str>| {
+        line.and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .and_then(|v| v.get("type")?.as_str().map(str::to_owned))
+    };
+    tag(complete.first()).as_deref() == Some("prepared")
+        && tag(complete.last()).as_deref() != Some("committed")
 }
 
 /// Canonicalizes `dir` through its deepest existing ancestor, appending the missing rest.
@@ -726,6 +765,67 @@ mod tests {
         assert_eq!(state_before, state_after, "no state trash");
         drop(lock);
         assert!(!super::super::lock::InflightLock::is_live(&f.paths, &scratch).unwrap());
+    }
+
+    #[test]
+    fn a_transaction_never_prunes_its_own_unfinished_journal() {
+        let f = fixture();
+        let tx: TxId = TX.parse().unwrap();
+        let lock = super::super::lock::InflightLock::create(&f.paths, &tx).unwrap();
+        let journal = f.paths.journal(&tx);
+        let write = |text: &str| {
+            fs::create_dir_all(journal.parent().unwrap()).unwrap();
+            fs::write(&journal, text).unwrap();
+        };
+        let prune_own = || {
+            prune(
+                &f.scopes,
+                PruneReason::PostCommitCleanup,
+                std::slice::from_ref(&journal),
+                LockUse::Own(&lock),
+            )
+        };
+        let prepared = "{\"type\":\"prepared\",\"tx\":\"x\"}\n";
+        let step = "{\"type\":\"step\",\"n\":1}\n";
+        let swapped = "{\"type\":\"swapped\"}\n";
+
+        // Started and not committed (a torn `committed` line is not one): kept.
+        for open in [
+            format!("{prepared}{step}"),
+            format!("{prepared}{step}{swapped}"),
+            format!("{prepared}{step}{swapped}{{\"type\":\"committed\""),
+        ] {
+            write(&open);
+            let err = prune_own().unwrap_err();
+            assert_eq!(err.code, ErrorCode::ScopeDenied, "{open}");
+            assert!(
+                err.message.contains("unfinished journal"),
+                "{}",
+                err.message
+            );
+            assert!(journal.exists(), "{open}");
+        }
+        // Committed, or never started (torn or empty): pruned.
+        for done in [
+            format!("{prepared}{step}{swapped}{{\"type\":\"committed\"}}\n"),
+            "{\"type\":\"prep".to_owned(),
+            String::new(),
+        ] {
+            write(&done);
+            assert_eq!(prune_own().unwrap().removed.len(), 1, "{done}");
+            assert!(!journal.exists(), "{done}");
+        }
+        // Recovery, under the global lock, prunes what it finished or rolled back.
+        write(&format!("{prepared}{step}"));
+        let guard = GlobalLock::acquire(&f.paths, "test").unwrap();
+        prune(
+            &f.scopes,
+            PruneReason::PostCommitCleanup,
+            std::slice::from_ref(&journal),
+            LockUse::Held(&guard),
+        )
+        .unwrap();
+        assert!(!journal.exists());
     }
 
     #[test]

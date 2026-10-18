@@ -762,3 +762,109 @@ fn crash_matrix_undo_recovered_while_the_client_runs() {
         );
     }
 }
+
+/// A commit that fails right after its exchange, whose rollback fails too (the third
+/// rename, the exchange back, is refused): the old folder exists only in the stage dir.
+/// The command fails naming the kept journal, and the next change command rolls it back
+/// byte for byte: a local edit, and an unmanaged folder replaced with `--force`, both
+/// come back.
+#[test]
+fn a_failed_recovery_is_finished_by_the_next_command() {
+    use common::archives::zip_text;
+
+    const DOUBLE_FAULT: &str = "engine.swap.after_exchange=error,fsx.rename_with.before=error@3";
+    for force in [false, true] {
+        let s = Scene::new();
+        let foo = s.addons().join("Foo");
+        let zip = |name: &str, entries: &[(&str, &str)]| {
+            fs::write(s.dl.join(format!("{name}.zip")), zip_text(entries)).unwrap();
+        };
+        // Foo 2 with a new folder Bar: Bar goes in (rename 1), Foo is exchanged (2).
+        zip(
+            "v2bar",
+            &[
+                ("Foo/Foo.toc", "## Interface: 120105\n## Version: 2\n"),
+                ("Foo/core.lua", "-- v2\n"),
+                ("Bar/Bar.toc", "## Interface: 120105\n"),
+            ],
+        );
+        zip("baz", &[("Baz/Baz.toc", "## Interface: 120105\n")]);
+        let mut args = if force {
+            // Someone's own Foo, unmanaged, replaced with --force.
+            fs::create_dir_all(&foo).unwrap();
+            fs::write(foo.join("Foo.toc"), "## Interface: 120105\n").unwrap();
+            fs::write(foo.join("mine.lua"), "-- MINE\n").unwrap();
+            let mut args = s.install_args("gh:o/foo", "v2bar");
+            args.push("--force".to_owned());
+            args
+        } else {
+            s.install("gh:o/foo", "v1");
+            let mut core = fs::read_to_string(foo.join("core.lua")).unwrap();
+            core.push_str("-- MY LOCAL EDIT\n");
+            fs::write(foo.join("core.lua"), core).unwrap();
+            s.install_args("gh:o/foo", "v2bar")
+        };
+        let before = common::trees::tree_hash(&foo);
+        let generation = s.generation();
+
+        let r = s.run(&args, DOUBLE_FAULT);
+        let context = format!("force: {force}\n{}", r.context());
+        let envelope = r.expect(1);
+        let error = &envelope["error"];
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("recovering it failed too"),
+            "{context}"
+        );
+        assert_eq!(error["fix_argv"], serde_json::json!(["omaddons", "status"]));
+        assert!(
+            error["details"]["recovery_error"]["code"].is_string(),
+            "{context}"
+        );
+        let tx = error["details"]["journal_pending"].as_str().unwrap();
+        assert_eq!(s.journals().len(), 1, "{context}");
+        let stage = s
+            .home
+            .client("_retail_")
+            .join("Interface/.omaddons/stage")
+            .join(tx);
+        assert_eq!(
+            common::trees::tree_hash(&stage.join("Foo")),
+            before,
+            "{context}: the old Foo is kept in the stage dir"
+        );
+        let status = s
+            .run(&["status".to_owned(), "--json".to_owned()], "")
+            .expect(0);
+        assert!(
+            warning_codes(&status)
+                .iter()
+                .any(|c| c == "journal_pending"),
+            "{context}"
+        );
+
+        // The next change recovers first: everything is as before the failed install.
+        args = s.install_args("gh:o/baz", "baz");
+        args.push("--force".to_owned());
+        let r = s.run(&args, "");
+        let envelope = r.expect(0);
+        assert!(
+            warning_codes(&envelope)
+                .iter()
+                .any(|c| c == "journal_recovered"),
+            "{context}\n{}",
+            r.context()
+        );
+        assert_eq!(common::trees::tree_hash(&foo), before, "{context}");
+        assert!(!s.addons().join("Bar").exists(), "{context}");
+        assert!(s.addons().join("Baz").is_dir(), "{context}");
+        assert!(s.journals().is_empty() && !stage.exists(), "{context}");
+        assert_eq!(
+            s.generation(),
+            generation + 1,
+            "{context}: only Baz committed"
+        );
+    }
+}

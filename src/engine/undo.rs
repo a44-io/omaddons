@@ -41,7 +41,9 @@ use super::swap::{
     SvEntry, SvManifest, SwapOp, out_of_scope_warning, sha256_file, snapshot_saved_variables,
     snapshot_state, sv_candidates, sv_in_scope, swap,
 };
-use super::tx::{EngineCtx, TxOutcome, cleanup, millis, running_now, sv_writable, write_status};
+use super::tx::{
+    EngineCtx, TxOutcome, cleanup, millis, recovery_failed, running_now, sv_writable, write_status,
+};
 use crate::discover::target::DiscoveredTarget;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
@@ -345,19 +347,20 @@ fn commit(
     })();
     let (atomic_swap, swap_warnings) = match committed {
         Ok(done) => done,
-        Err(error) => match recover_tx(&recovery, tx)? {
-            Some(Recovered {
+        Err(error) => match recover_tx(&recovery, tx) {
+            Err(failed) => return Err(recovery_failed(error, tx, &failed)),
+            Ok(Some(Recovered {
                 action: RecoveryAction::RolledForward,
                 warnings,
                 sv_deferred,
-            }) => {
+            })) => {
                 // What roll-forward could not restore waits, as under a running client.
                 let counts = &mut planned.sv.counts;
                 counts.deferred += sv_deferred;
                 counts.restored = counts.restored.saturating_sub(sv_deferred);
                 (true, warnings)
             }
-            _ => return Err(error),
+            Ok(_) => return Err(error),
         },
     };
     let held = millis(&guard);
@@ -1942,6 +1945,44 @@ mod tests {
         assert!(warning.message.ends_with("undo left them as they are"));
         assert!(record(&scene).addons.is_empty());
         assert_eq!(history(&scene).pop().unwrap().reverts, Some(t1));
+        assert!(leftovers(&scene).is_empty(), "{:?}", leftovers(&scene));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn an_undo_whose_recovery_fails_keeps_its_journal_for_the_next_command() {
+        let scene = TxScene::new();
+        install(&scene, "v1.zip", V1);
+        let v1 = tree(&scene);
+        let t2 = install(&scene, "v2.zip", V2);
+        let v2 = tree(&scene);
+        let spec = "engine.swap.after_exchange=error,engine.recover.step=error";
+        let err = failpoint::with_spec(spec, || scene.undo(UndoSelector::Latest, SvPolicy::Auto))
+            .unwrap_err();
+        assert!(
+            err.message.contains("recovering it failed too"),
+            "{}",
+            err.message
+        );
+        assert_eq!(err.fix.argv().unwrap(), ["omaddons", "status"]);
+        let tx: TxId = err.details["journal_pending"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(scene.paths.journal(&tx).is_file() && scene.client.stage(&tx).is_dir());
+        assert_ne!(tree(&scene), v2, "the undo is half done");
+
+        // The next undo recovers it (back to v2), then undoes t2 itself.
+        let done = scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
+        assert_eq!(done.undoes, t2);
+        assert!(
+            done.outcome
+                .warnings
+                .iter()
+                .any(|w| w.code == WarningCode::JournalRecovered)
+        );
+        assert_eq!(tree(&scene), v1);
         assert!(leftovers(&scene).is_empty(), "{:?}", leftovers(&scene));
     }
 

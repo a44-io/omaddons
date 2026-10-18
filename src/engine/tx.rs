@@ -86,6 +86,7 @@ pub const FAILPOINTS: &[&str] = &[
     "engine.retention",
     "engine.recover.step",
     "engine.recover.sv",
+    "engine.recover.forward",
 ];
 
 /// What a mutating command asks the engine for.
@@ -431,6 +432,30 @@ pub(super) fn running_now(ctx: &EngineCtx<'_>, targets: &[Target]) -> BTreeSet<P
         Some(running) => running.clone(),
         None => detect_running(targets).into_keys().collect(),
     }
+}
+
+/// The commit's own `error` when recovering its transaction in process failed too: the
+/// journal and the staged folders stay (see [`cleanup`]) for the next command that
+/// commits a change, which finishes it. `details` gain `journal_pending` (the
+/// transaction) and `recovery_error` (`{code, message}`).
+pub(super) fn recovery_failed(mut error: Error, tx: &TxId, recovery: &Error) -> Error {
+    error.message = format!(
+        "{}; recovering it failed too ({}), so its journal is kept and the next omaddons command that commits a change finishes it",
+        error.message, recovery.message
+    );
+    error.retryable = false;
+    error.fix = Suggestion::command(["omaddons", "status"]);
+    if !error.details.is_object() {
+        error.details = serde_json::json!({});
+    }
+    if let Some(details) = error.details.as_object_mut() {
+        details.insert("journal_pending".into(), tx.to_string().into());
+        details.insert(
+            "recovery_error".into(),
+            serde_json::json!({"code": recovery.code, "message": recovery.message}),
+        );
+    }
+    error
 }
 
 /// Whether recovery may write the SavedVariables of the client at `client_dir` now
@@ -834,14 +859,15 @@ fn locked(
     })();
     let (atomic_swap, swap_warnings) = match committed {
         Ok(done) => done,
-        Err(error) => match recover_tx(&recovery, tx)? {
+        Err(error) => match recover_tx(&recovery, tx) {
             // Swapped already: the payload completed it, so the transaction stands.
-            Some(Recovered {
+            Ok(Some(Recovered {
                 action: RecoveryAction::RolledForward,
                 warnings,
                 ..
-            }) => (true, warnings),
-            _ => return Err(error),
+            })) => (true, warnings),
+            Ok(_) => return Err(error),
+            Err(failed) => return Err(recovery_failed(error, tx, &failed)),
         },
     };
     warnings.extend(swap_warnings);
@@ -1163,8 +1189,11 @@ pub(super) fn write_status(
 }
 
 /// Prunes what the transaction left (its journal, stage dir, temp downloads and lock
-/// file) under its own in-flight lock, then drops the lock. Best effort: recovery and
-/// retention sweep anything left.
+/// file) under its own in-flight lock, then drops the lock. An unfinished journal (the
+/// commit failed and so did recovering it) stays, with its stage dir, which can hold the
+/// old folders, and its lock file: dropping the lock frees them for the next global lock
+/// holder, which recovers them. Best effort otherwise: recovery and retention sweep
+/// anything left.
 pub(super) fn cleanup(
     paths: &Paths,
     scopes: &ScopeTable,
@@ -1172,13 +1201,11 @@ pub(super) fn cleanup(
     tx: &TxId,
     stage_dir: Option<&PathBuf>,
 ) {
-    let mut victims = vec![
-        paths.journal(tx),
-        paths.inflight_lock(tx),
-        paths.cache_inflight_lock(tx),
-        paths.cache_tmp(tx),
-    ];
-    victims.extend(stage_dir.cloned());
+    let mut victims = vec![paths.cache_inflight_lock(tx), paths.cache_tmp(tx)];
+    if !journal::unfinished(paths, tx) {
+        victims.extend([paths.journal(tx), paths.inflight_lock(tx)]);
+        victims.extend(stage_dir.cloned());
+    }
     victims.retain(|v| v.exists());
     if !victims.is_empty() {
         // Under the transaction's own in-flight lock: cleanup never waits for the
@@ -1394,6 +1421,7 @@ mod tests {
                 "engine.plan.downloaded"
                     | "engine.recover.step"
                     | "engine.recover.sv"
+                    | "engine.recover.forward"
                     | "engine.addons_dir.created"
             ) {
                 continue;
@@ -1428,6 +1456,99 @@ mod tests {
             assert!(
                 leftovers(&scene).is_empty(),
                 "{name}: {:?}",
+                leftovers(&scene)
+            );
+        }
+    }
+
+    /// A commit that fails, and whose in-process recovery fails too, keeps the journal,
+    /// the stage dir (holding the old Foo after the exchange) and its snapshot; the next
+    /// lock holder then rolls it back, or forward with one history line.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_failed_recovery_keeps_the_journal_for_the_next_lock_holder() {
+        let new_tree = updated_tree();
+        for (spec, forward) in [
+            (
+                "engine.swap.after_exchange=error,engine.recover.step=error",
+                false,
+            ),
+            (
+                "engine.record.written=error,engine.recover.forward=error",
+                true,
+            ),
+        ] {
+            let scene = with_v1();
+            let old_tree = scene.addons();
+            let v2 = scene.zip("v2.zip", V2);
+            let done =
+                failpoint::with_spec(spec, || scene.run(vec![scene.install("gh:o/foo", &v2)]))
+                    .unwrap();
+            assert_eq!(done.failures.len(), 1, "{spec}");
+            let error = &done.failures[0].error;
+            assert!(
+                error.message.contains("recovering it failed too"),
+                "{spec}: {}",
+                error.message
+            );
+            assert_eq!(
+                error.fix_argv.as_deref(),
+                Some(&["omaddons".to_owned(), "status".to_owned()][..])
+            );
+            assert!(
+                error.details["recovery_error"]["code"].is_string(),
+                "{spec}"
+            );
+            let tx: TxId = error.details["journal_pending"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(scene.paths.journal(&tx).is_file(), "{spec}: journal kept");
+            assert!(scene.client.stage(&tx).is_dir(), "{spec}: stage dir kept");
+            assert!(
+                scene.client.snapshots(&tx).is_dir(),
+                "{spec}: snapshot kept"
+            );
+
+            let lock = GlobalLock::acquire(&scene.paths, "test").unwrap();
+            let scopes = ScopeTable::new(
+                &scene.paths,
+                &[scene.client.client_dir().to_path_buf()],
+                None,
+            )
+            .unwrap();
+            let warnings = recover_all(&RecoveryEnv {
+                lock: &lock,
+                paths: &scene.paths,
+                scopes: &scopes,
+                sv_writable: &|_| false,
+            })
+            .unwrap();
+            drop(lock);
+            assert_eq!(warnings.len(), 1, "{spec}: {warnings:?}");
+            assert_eq!(
+                warnings[0].code,
+                crate::error::WarningCode::JournalRecovered
+            );
+            if forward {
+                assert_eq!(scene.addons(), new_tree, "{spec}: rolled forward");
+                assert_eq!(
+                    (generation(&scene), history(&scene).len()),
+                    (2, 2),
+                    "{spec}"
+                );
+            } else {
+                assert_eq!(scene.addons(), old_tree, "{spec}: rolled back");
+                assert_eq!(
+                    (generation(&scene), history(&scene).len()),
+                    (1, 1),
+                    "{spec}"
+                );
+            }
+            assert!(
+                leftovers(&scene).is_empty(),
+                "{spec}: {:?}",
                 leftovers(&scene)
             );
         }

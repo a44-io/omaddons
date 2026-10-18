@@ -385,6 +385,16 @@ fn read(path: &Path) -> Result<Parsed> {
         .map_err(|e| Error::internal(format!("{}: {}", path.display(), e.message)))
 }
 
+/// Whether `tx`'s journal is one recovery still needs: started (`prepared`) and neither
+/// committed nor recovered. An unreadable one counts too: recovery reports it.
+pub(crate) fn unfinished(paths: &Paths, tx: &TxId) -> bool {
+    let path = paths.journal(tx);
+    path.exists()
+        && read(&path).map_or(true, |parsed| {
+            matches!(parsed.phase, Phase::Prepared | Phase::Swapped)
+        })
+}
+
 // ---------------------------------------------------------------------------------------
 // Reader reporting.
 
@@ -584,6 +594,8 @@ fn roll_forward(
     journal: &Path,
     prepared: &Prepared,
 ) -> Result<Option<(usize, Warning)>> {
+    failpoint::hit("engine.recover.forward")
+        .map_err(|e| Error::io(journal, &e, Suggestion::command(["omaddons", "status"])))?;
     let paths = env.paths;
     let key = prepared.target_key;
     let commit = &prepared.commit;
