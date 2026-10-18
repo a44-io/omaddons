@@ -1408,6 +1408,7 @@ Running clients are detected live from `/proc` (your own processes only). The ex
 Retention runs after every commit, for the target just changed:
 
 - Snapshots younger than 24 hours and the target's most recent transaction are always kept.
+- A snapshot that a deferred SavedVariables restore still needs (`saved_variables_deferred`) is kept until that restore runs, the undo is undone, or a later transaction changes those addons.
 - At most the newest 10 snapshots within 7 days are kept, the protected ones included; everything outside that set is pruned.
 - If the kept set exceeds 2 GiB for the target, its oldest unprotected snapshots are pruned until it fits.
 - History lines are never pruned.
@@ -1899,7 +1900,7 @@ No. There is no telemetry. Only the hosts on the allowlist are contacted, every 
 
 ### Where does undo data live, and how long is it kept?
 
-Old folders and SavedVariables copies go to `<client>/Interface/.omaddons/snapshots/`, on the same filesystem as the addons, and state-file copies go to `~/.local/state/omaddons/snapshots/`. Per target, everything younger than 24 hours and the latest change are always kept. Beyond those, at most the newest 10 changes within 7 days are kept, capped at 2 GiB.
+Old folders and SavedVariables copies go to `<client>/Interface/.omaddons/snapshots/`, on the same filesystem as the addons, and state-file copies go to `~/.local/state/omaddons/snapshots/`. Per target, everything younger than 24 hours, the latest change, and whatever a deferred SavedVariables restore still needs are always kept. Beyond those, at most the newest 10 changes within 7 days are kept, capped at 2 GiB.
 
 ### Can a coding agent drive it?
 

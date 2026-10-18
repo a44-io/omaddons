@@ -1,12 +1,12 @@
 //! Snapshot retention and blob eviction (vision §5.5 "Retention"), after every commit.
 //!
-//! Per target: snapshots younger than 24 h and the most recent transaction's are never
-//! pruned; beyond that the newest 10 within 7 days stay (protected ones count toward
-//! the 10), then the oldest unprotected ones go until the target is under
-//! `SNAPSHOT_MAX_BYTES` (apparent sizes, both the client-dir and the state-dir halves).
-//! Protection beats the cap; if protected snapshots alone exceed it,
-//! `snapshot_cap_exceeded`. History entries stay; undo of a pruned transaction reports
-//! the snapshot gone.
+//! Per target: snapshots younger than 24 h, the most recent transaction's, and those a
+//! deferred SavedVariables restore still needs are never pruned; beyond that the newest
+//! 10 within 7 days stay (protected ones count toward the 10), then the oldest
+//! unprotected ones go until the target is under `SNAPSHOT_MAX_BYTES` (apparent sizes,
+//! both the client-dir and the state-dir halves). Protection beats the cap; if
+//! protected snapshots alone exceed it, `snapshot_cap_exceeded`. History entries stay;
+//! undo of a pruned transaction reports the snapshot gone.
 //!
 //! Also swept: stage dirs, in-flight lock files and snapshot dirs of dead transactions
 //! (lock free, no journal, older than `ORPHAN_MIN_AGE`), a snapshot dir only when no
@@ -31,7 +31,7 @@ use crate::limits::{
     TxRetention,
 };
 use crate::model::{TargetKey, TxId};
-use crate::state::history::{self, HistoryFilter};
+use crate::state::history::{self, HistoryEntry, HistoryFilter};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::load_record;
 use crate::state::registry::load_registry;
@@ -72,6 +72,8 @@ pub struct SnapshotTx {
     pub bytes: u64,
     /// The target's most recent transaction.
     pub most_recent: bool,
+    /// A deferred SavedVariables restore still needs it ([`super::undo`]'s follow-up).
+    pub pinned: bool,
 }
 
 /// What the policy decided.
@@ -99,7 +101,7 @@ pub struct RetentionReport {
 pub fn select(txs: &[SnapshotTx], now: Timestamp, limits: &RetentionLimits) -> Selection {
     let age = |t: &SnapshotTx| now.as_second().saturating_sub(t.at.as_second());
     let secs = |d: std::time::Duration| i64::try_from(d.as_secs()).unwrap_or(i64::MAX);
-    let protected = |t: &SnapshotTx| t.most_recent || age(t) < secs(limits.tx.min_age);
+    let protected = |t: &SnapshotTx| t.most_recent || t.pinned || age(t) < secs(limits.tx.min_age);
     let mut newest_first: Vec<&SnapshotTx> = txs.iter().collect();
     newest_first.sort_by(|a, b| b.at.cmp(&a.at).then(b.tx.cmp(&a.tx)));
 
@@ -139,13 +141,12 @@ pub fn run(
     now: Timestamp,
     pins: &BTreeSet<String>,
 ) -> Result<RetentionReport> {
-    let filter = HistoryFilter {
-        target: Some(key),
-        ..HistoryFilter::default()
-    };
-    // Read once: the target's entries for the policy, the whole text for orphans.
+    // Read once: the whole history for pending restores (their conflict check spans
+    // targets), the target's entries for the policy, the raw text for orphans.
     let text = history::text(paths)?;
-    let entries = history::parse(&text, &filter).entries;
+    let all = history::parse(&text, &HistoryFilter::default()).entries;
+    let pinned = super::undo::pending_sv_restores(&all);
+    let entries: Vec<&HistoryEntry> = all.iter().filter(|e| e.target == key).collect();
     let latest = entries.last().map(|e| e.tx);
     let txs: Vec<SnapshotTx> = entries
         .iter()
@@ -156,6 +157,7 @@ pub fn run(
                 at: e.at,
                 bytes: halves.iter().map(|p| apparent_size(p)).sum(),
                 most_recent: Some(e.tx) == latest,
+                pinned: pinned.contains(&e.tx),
             })
         })
         .collect();
@@ -402,6 +404,7 @@ mod tests {
             at: ago(age),
             bytes,
             most_recent: false,
+            pinned: false,
         }
     }
 
@@ -427,6 +430,19 @@ mod tests {
         assert!(selection.prune.is_empty(), "{selection:?}");
         assert_eq!(selection.cap_exceeded, Some(1_500));
         assert_eq!(selection.kept, 3);
+    }
+
+    #[test]
+    fn a_pinned_snapshot_is_protected_like_the_most_recent() {
+        let mut pinned = tx(1, 10 * DAY, 500);
+        pinned.pinned = true;
+        let selection = select(&[pinned, tx(2, 9 * DAY, 1)], now(), &limits(100));
+        assert_eq!(pruned(&selection), [tx(2, 0, 0).tx.to_string()]);
+        assert_eq!(
+            (selection.kept, selection.cap_exceeded),
+            (1, Some(500)),
+            "kept over the cap, which it counts toward"
+        );
     }
 
     #[test]

@@ -22,7 +22,7 @@
 //! the client runs by then or the restore fails. Account, realm and character names
 //! never reach the output: only counts do.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use jiff::Timestamp;
@@ -559,6 +559,29 @@ fn select(entries: &[HistoryEntry], selector: UndoSelector) -> Result<usize> {
             Ok(at)
         }
     }
+}
+
+/// The transactions whose undo deferred its SavedVariables restore and whose follow-up
+/// (`undo <tx> --saved-variables restore`) would still pass its conflict check: it has
+/// not run, the deferred undo was not undone, and nothing later changed those folders.
+/// Retention keeps their snapshots, which hold the SavedVariables copies. `entries` is
+/// the whole history, oldest first.
+pub(super) fn pending_sv_restores(entries: &[HistoryEntry]) -> BTreeSet<TxId> {
+    // Each reverted transaction's latest deferred undo, as the follow-up finds it.
+    let mut deferred: BTreeMap<TxId, usize> = BTreeMap::new();
+    for (i, e) in entries.iter().enumerate() {
+        if let (TxKind::Undo, Some(of), true) = (e.kind, e.reverts, e.sv_deferred) {
+            deferred.insert(of, i);
+        }
+    }
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(at, e)| {
+            let by = *deferred.get(&e.tx)?;
+            (by > at && check_conflicts(entries, at, Some(by)).is_ok()).then_some(e.tx)
+        })
+        .collect()
 }
 
 /// `undo_conflict` when a transaction after `entries[at]` (or after the deferred undo
@@ -1383,6 +1406,93 @@ mod tests {
     fn play(scene: &TxScene) {
         std::fs::write(wtf(scene, &format!("{ACCOUNT}/Foo.lua")), "-- after").unwrap();
         std::fs::write(wtf(scene, &format!("{ACCOUNT}/Foo.lua.bak")), "-- created").unwrap();
+    }
+
+    /// Foo v1 installed over SavedVariables the game then changed, then undone while the
+    /// client ran: its folders reverted, its SavedVariables restore deferred. Returns v1's
+    /// transaction.
+    fn deferred_undo(scene: &mut TxScene) -> TxId {
+        saved_variables(scene);
+        let t1 = install(scene, "v1.zip", V1);
+        play(scene);
+        let dir = scene.client.client_dir().to_path_buf();
+        scene.running.insert(dir.clone());
+        scene.while_running = true;
+        let done = scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
+        assert_eq!(done.sv.deferred, 2);
+        scene.running.remove(&dir);
+        scene.while_running = false;
+        t1
+    }
+
+    /// Installs a one-folder addon `name` that shares nothing with Foo.
+    fn unrelated(scene: &TxScene, name: &str) {
+        let toc = format!("{name}/{name}.toc");
+        let zip = scene.zip(
+            &format!("{name}.zip"),
+            &[(toc.as_str(), "## Interface: 120105\n")],
+        );
+        let r = format!("gh:o/{}", name.to_ascii_lowercase());
+        let done = scene.run(vec![scene.install(&r, &zip)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+    }
+
+    /// Whether both halves of `tx`'s snapshot are still there after retention runs
+    /// eight days from now: past the 24-hour floor and the 7-day window.
+    fn kept_eight_days_on(scene: &TxScene, tx: &TxId) -> bool {
+        let scopes = ScopeTable::new(
+            &scene.paths,
+            &[scene.client.client_dir().to_path_buf()],
+            None,
+        )
+        .unwrap();
+        let later = Timestamp::from_second(Timestamp::now().as_second() + 8 * 86_400).unwrap();
+        crate::engine::retention::run(
+            &scene.paths,
+            &scopes,
+            record(scene).key,
+            &scene.client,
+            &crate::engine::retention::RetentionLimits::default(),
+            later,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        scene.client.snapshots(tx).is_dir() && scene.paths.state_snapshot(tx).is_dir()
+    }
+
+    #[test]
+    fn retention_keeps_what_a_deferred_restore_needs_until_it_can_no_longer_run() {
+        // Pending: kept past every age rule, and the follow-up then restores the files.
+        let mut scene = TxScene::new();
+        let t1 = deferred_undo(&mut scene);
+        unrelated(&scene, "Bar");
+        unrelated(&scene, "Baz");
+        assert_eq!(pending_sv_restores(&history(&scene)), BTreeSet::from([t1]));
+        assert!(kept_eight_days_on(&scene, &t1), "pinned");
+        scene.undo(UndoSelector::Tx(t1), SvPolicy::Restore).unwrap();
+        assert_eq!(
+            read(&scene, &format!("{ACCOUNT}/Foo.lua")).as_deref(),
+            Some("-- before")
+        );
+        unrelated(&scene, "Qux");
+        assert!(pending_sv_restores(&history(&scene)).is_empty());
+        assert!(!kept_eight_days_on(&scene, &t1), "the follow-up ran");
+
+        // A later transaction changed those folders: the follow-up cannot run any more.
+        let mut scene = TxScene::new();
+        let t1 = deferred_undo(&mut scene);
+        install(&scene, "v2.zip", V2);
+        unrelated(&scene, "Bar");
+        assert!(pending_sv_restores(&history(&scene)).is_empty());
+        assert!(!kept_eight_days_on(&scene, &t1), "Foo changed since");
+
+        // The deferred undo was undone.
+        let mut scene = TxScene::new();
+        let t1 = deferred_undo(&mut scene);
+        scene.undo(UndoSelector::Latest, SvPolicy::Keep).unwrap();
+        unrelated(&scene, "Bar");
+        assert!(pending_sv_restores(&history(&scene)).is_empty());
+        assert!(!kept_eight_days_on(&scene, &t1), "its undo was undone");
     }
 
     fn mtime(scene: &TxScene, rel: &str) -> std::time::SystemTime {
