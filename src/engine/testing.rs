@@ -42,6 +42,14 @@ pub fn target(client_dir: &Path) -> Target {
     target
 }
 
+/// Marks `client_dir` as `key`'s, as registration does: recovery writes a journal's
+/// client only when its marker names the journal's target.
+pub fn mark(client_dir: &Path, key: TargetKey) {
+    let marker = crate::discover::registry::marker_path(client_dir);
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(marker, format!("{{\"key\":\"{key}\"}}")).unwrap();
+}
+
 /// Writes `<dir>/<name>.toc` (and makes `dir`) with `text` in it.
 pub fn folder(dir: &Path, text: &str) {
     std::fs::create_dir_all(dir).unwrap();
@@ -154,6 +162,7 @@ impl Scene {
 
     /// Creates the journal with a minimal payload.
     pub fn journal(&self, s: &mut WriteSession<'_>, lock: &GlobalLockGuard) -> Journal {
+        mark(self.client.client_dir(), self.key);
         let prepared = Prepared {
             schema_version: journal::CURRENT,
             tx: self.tx,

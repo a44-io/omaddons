@@ -22,7 +22,7 @@ use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result, Suggestion, Warning, WarningCode};
+use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
     self, FsxError, GlobalLockGuard, InflightLock, LockState, LockUse, Op, PruneReason, RenameMode,
     ScopeTable, WriteSession, Writer, ensure_dir_all, failpoint, mutate, probe_global,
@@ -494,10 +494,17 @@ pub enum RecoveryAction {
 }
 
 /// What recovery runs with. The guard proves the global lock is held.
+#[derive(Clone, Copy)]
 pub struct RecoveryEnv<'a> {
     pub lock: &'a GlobalLockGuard,
     pub paths: &'a Paths,
+    /// The caller's writable scopes. Each journal is also given its own client dir,
+    /// once that dir's target marker names the journal's target.
     pub scopes: &'a ScopeTable,
+    /// The targets the caller is about to commit. A journal of one of them that cannot
+    /// be recovered fails the caller; any other target's becomes a `journal_pending`
+    /// warning, so one client's leftover never blocks the others.
+    pub own: &'a [TargetKey],
     /// Whether the SavedVariables of the client at this dir may be written now: only
     /// when the command can tell that its game is not running (vision §5.5: never while
     /// it runs). When not, roll-forward leaves an undo's SavedVariables for
@@ -525,9 +532,45 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
         if InflightLock::is_live(env.paths, &tx)? {
             continue;
         }
-        warnings.extend(recover_one(env, &tx, path)?);
+        // Whose it is, for isolation: an unreadable journal's owner is unknown, and
+        // fails the caller as before.
+        let target = read(&path)
+            .ok()
+            .and_then(|p| p.prepared)
+            .map(|p| p.target_key);
+        match recover_one(env, &tx, path) {
+            Ok(recovered) => warnings.extend(recovered),
+            Err(error) => match target.filter(|t| !env.own.contains(t)) {
+                Some(other) => warnings.push(
+                    Warning::new(
+                        WarningCode::JournalPending,
+                        format!(
+                            "transaction {tx} on target {other} did not finish and could not be recovered: {}",
+                            error.message
+                        ),
+                    )
+                    .with_fix(Suggestion::command(["omaddons", "status"])),
+                ),
+                None => return Err(error),
+            },
+        }
     }
     Ok(warnings)
+}
+
+/// The scopes a journal's recovery writes with: the caller's, plus the journal's client
+/// dir once that dir's target marker names the journal's target (registration writes
+/// markers under the lock, before any journal). `None`: the journal names a directory
+/// that is not its target's now, which recovery never writes.
+fn journal_scopes(env: &RecoveryEnv<'_>, prepared: &Prepared) -> Option<ScopeTable> {
+    let marker = crate::discover::registry::read_marker(&prepared.client_dir);
+    // ubs:ignore — comparing target keys (public ULIDs), not secrets
+    if marker != Some(prepared.target_key) {
+        return None;
+    }
+    let mut scopes = env.scopes.clone();
+    scopes.add_client_dir(&prepared.client_dir).ok()?;
+    Some(scopes)
 }
 
 /// Recovers one transaction by its own writer, in process: an error after `prepared`
@@ -574,7 +617,28 @@ fn recover_parsed(
     path: &Path,
     parsed: &Parsed,
 ) -> Result<Option<Recovered>> {
-    let (paths, scopes) = (env.paths, env.scopes);
+    let paths = env.paths;
+    let scoped = match &parsed.prepared {
+        Some(prepared) => journal_scopes(env, prepared),
+        None => None,
+    };
+    let unfinished = matches!(parsed.phase, Phase::Prepared | Phase::Swapped);
+    if let (Some(prepared), None, true) = (&parsed.prepared, &scoped, unfinished) {
+        return Err(Error::new(
+            ErrorCode::ScopeDenied,
+            format!(
+                "transaction {tx} names {}, whose marker is not target {}'s; recovery leaves it for manual repair",
+                prepared.client_dir.display(),
+                prepared.target_key
+            ),
+            Suggestion::command(["omaddons", "status"]),
+        ));
+    }
+    let env = &RecoveryEnv {
+        scopes: scoped.as_ref().unwrap_or(env.scopes),
+        ..*env
+    };
+    let scopes = env.scopes;
     let mut s = WriteSession::untracked(Writer::Mutating, scopes, "recovery");
     let recovered = match (&parsed.prepared, parsed.phase) {
         (None, _) | (_, Phase::Unprepared) => None,
@@ -597,7 +661,8 @@ fn recover_parsed(
         }
     };
     let mut victims = Vec::new();
-    if let Some(prepared) = &parsed.prepared
+    // The client side only where the journal's directory is its target's.
+    if let (Some(prepared), Some(_)) = (&parsed.prepared, &scoped)
         && prepared.commit.stage_dir.exists()
     {
         victims.push(prepared.commit.stage_dir.clone());
@@ -1206,11 +1271,13 @@ mod tests {
             (Some("new"), Some("bar"))
         );
 
+        crate::engine::testing::mark(&client, key);
         let lock = GlobalLock::acquire(&paths, "test").unwrap();
         let env = RecoveryEnv {
             lock: &lock,
             paths: &paths,
             scopes: &scopes,
+            own: std::slice::from_ref(&key),
             sv_writable: &|_| false,
         };
         let crashed = failpoint::with_spec("engine.recover.step=error", || recover_all(&env));
@@ -1277,6 +1344,7 @@ mod tests {
             let paths = Paths::with_roots(&root, root.join("c"), root.join("s"), root.join("k"));
             let scopes = ScopeTable::new(&paths, std::slice::from_ref(&client), None).unwrap();
             let key = TargetKey::new();
+            crate::engine::testing::mark(&client, key);
             let prepared = Prepared {
                 schema_version: CURRENT,
                 tx: undo,
@@ -1339,11 +1407,13 @@ mod tests {
         fn recover(&self, writable: bool) -> Result<Vec<Warning>> {
             let lock = crate::fsx::GlobalLock::acquire(&self.paths, "test").unwrap();
             let client = self.client.clone();
+            // ubs:ignore — comparing paths, not secrets
             let sv_writable = move |dir: &Path| writable && dir == client;
             recover_all(&RecoveryEnv {
                 lock: &lock,
                 paths: &self.paths,
                 scopes: &self.scopes,
+                own: &[],
                 sv_writable: &sv_writable,
             })
         }
@@ -1410,6 +1480,106 @@ mod tests {
         let warnings =
             failpoint::with_spec("engine.recover.sv=error", || scene.recover(true)).unwrap();
         scene.assert_deferred(&warnings, "could not be restored (io)");
+    }
+
+    /// A journal of client A, recovered by a command whose scopes cover only client B:
+    /// A is written only once its marker names the journal's target; until then the
+    /// journal is left, a warning for another target's command, an error for its own.
+    #[test]
+    fn a_journal_is_recovered_in_its_own_client_and_only_there() {
+        use crate::fsx::GlobalLock;
+        use crate::model::Actor;
+        use crate::state::history::TxResult;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (a, b) = (root.join("_retail_"), root.join("_classic_"));
+        let tx = TxId::new();
+        let stage_dir = a.join(format!("Interface/.omaddons/stage/{tx}"));
+        std::fs::create_dir_all(stage_dir.join("Bar")).unwrap();
+        std::fs::create_dir_all(a.join("Interface/AddOns")).unwrap();
+        std::fs::create_dir_all(b.join("Interface/AddOns")).unwrap();
+        let paths = Paths::with_roots(&root, root.join("c"), root.join("s"), root.join("k"));
+        let (key, other) = (TargetKey::new(), TargetKey::new());
+        // Written by A's own command, whose scopes held A.
+        {
+            let scopes = ScopeTable::new(&paths, std::slice::from_ref(&a), None).unwrap();
+            let lock = GlobalLock::acquire(&paths, "test").unwrap();
+            let mut s = WriteSession::untracked(Writer::Mutating, &scopes, "test");
+            let prepared = Prepared {
+                schema_version: CURRENT,
+                tx,
+                target_key: key,
+                client_dir: a.clone(),
+                kind: TxKind::Install,
+                started_at: Timestamp::now(),
+                creates_dirs: Vec::new(),
+                commit: CommitPayload {
+                    record: TargetRecord::empty(key),
+                    index: IndexChanges::default(),
+                    history: HistoryEntry {
+                        schema_version: history::CURRENT,
+                        tx,
+                        kind: TxKind::Install,
+                        at: Timestamp::now(),
+                        target: key,
+                        actor: Actor::Agent,
+                        reason: None,
+                        argv: vec!["omaddons".into()],
+                        ops: Vec::new(),
+                        result: TxResult::Committed,
+                        reverts: None,
+                        sv_deferred: false,
+                        created_addons_dir: false,
+                        run: None,
+                    },
+                    stage_dir: stage_dir.clone(),
+                    sv_restore: None,
+                },
+            };
+            let mut journal = Journal::create(&mut s, &paths, &lock, prepared).unwrap();
+            let step = Step {
+                op: StepOp::Noreplace,
+                from: stage_dir.join("Bar"),
+                to: a.join("Interface/AddOns/Bar"),
+                purpose: StepPurpose::SwapIn,
+            };
+            journal.step(&mut s, step.clone()).unwrap();
+            let mode = RenameMode::NoReplace;
+            mutate(&mut s, &step.from, Op::Rename { to: &step.to, mode }).unwrap();
+        }
+        let bar = a.join("Interface/AddOns/Bar");
+        let b_scopes = ScopeTable::new(&paths, std::slice::from_ref(&b), None).unwrap();
+        let lock = GlobalLock::acquire(&paths, "test").unwrap();
+        let recover = |own: &[TargetKey]| {
+            recover_all(&RecoveryEnv {
+                lock: &lock,
+                paths: &paths,
+                scopes: &b_scopes,
+                own,
+                sv_writable: &|_| false,
+            })
+        };
+
+        // A's marker names another target: A is never written.
+        crate::engine::testing::mark(&a, other);
+        let warnings = recover(&[]).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, WarningCode::JournalPending);
+        assert!(
+            warnings[0].message.contains("manual repair"),
+            "{}",
+            warnings[0].message
+        );
+        assert!(bar.is_dir() && paths.journal(&tx).exists());
+        let err = recover(std::slice::from_ref(&key)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ScopeDenied);
+
+        // Its own marker: B's command rolls A back and prunes A's stage dir.
+        crate::engine::testing::mark(&a, key);
+        let warnings = recover(&[]).unwrap();
+        assert_eq!(warnings[0].code, WarningCode::JournalRecovered);
+        assert!(!bar.exists() && !stage_dir.exists() && !paths.journal(&tx).exists());
     }
 
     #[test]

@@ -76,12 +76,17 @@ mod support {
             }
             fs::create_dir_all(&snaps).unwrap();
             let old = tree_hash(&addons);
+            // Registration marks the client before any of its journals exists.
+            let key = TargetKey::new();
+            let marker = omaddons::discover::registry::marker_path(&target.client_dir);
+            fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            fs::write(&marker, format!("{{\"key\":\"{key}\"}}")).unwrap();
             Self {
                 env,
                 target,
                 paths,
                 scopes,
-                key: TargetKey::new(),
+                key,
                 tx,
                 addons,
                 stage,
@@ -240,6 +245,7 @@ mod support {
                 lock: &lock,
                 paths: &self.paths,
                 scopes: &self.scopes,
+                own: std::slice::from_ref(&self.key),
                 sv_writable: &|_| false,
             };
             recover_all(&env).unwrap()

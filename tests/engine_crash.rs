@@ -868,3 +868,117 @@ fn a_failed_recovery_is_finished_by_the_next_command() {
         );
     }
 }
+
+/// One client's leftover journal never blocks another client: a change on classic
+/// recovers retail's interrupted transaction (forward from `swapped`, back from before)
+/// and goes ahead; a retail journal recovery cannot finish only warns there, while
+/// retail's own commands keep failing until it is repaired.
+#[test]
+fn another_clients_journal_is_recovered_or_reported_never_blocking() {
+    use common::archives::zip_text;
+    use common::home::Home;
+    use serde_json::Value;
+
+    // (failpoint, Foo's version on retail after recovery, whether recovery can finish)
+    for (failpoint, foo, recoverable) in [
+        ("engine.swapped=abort", "2", true),
+        ("engine.swap.after_exchange=abort", "1", true),
+        ("engine.swap.after_exchange=abort", "", false),
+    ] {
+        let home = Home::new(&["wow", "wow_classic"]);
+        let dl = home.env.root().join("dl");
+        fs::create_dir_all(&dl).unwrap();
+        let zip = |name: &str, entries: &[(&str, &str)]| {
+            let path = dl.join(format!("{name}.zip"));
+            fs::write(&path, zip_text(entries)).unwrap();
+            path.display().to_string()
+        };
+        let foo1 = zip(
+            "foo1",
+            &[("Foo/Foo.toc", "## Interface: 120105\n## Version: 1\n")],
+        );
+        let foo2 = zip(
+            "foo2",
+            &[("Foo/Foo.toc", "## Interface: 120105\n## Version: 2\n")],
+        );
+        let baz = zip("baz", &[("Baz/Baz.toc", "## Interface: 50504\n")]);
+        let install = |file: &str, r: &str, target: &str, extra: &[(&str, &str)]| {
+            let argv: Vec<String> = ["install", r, "--file", file, "-t", target, "--json"]
+                .iter()
+                .map(|a| (*a).to_owned())
+                .collect();
+            home.exec_with(&argv, extra)
+        };
+        install(&foo1, "gh:o/foo", "retail", &[]).expect(0);
+        let crashed = install(
+            &foo2,
+            "gh:o/foo",
+            "retail",
+            &[("OMADDONS_FAILPOINTS", failpoint)],
+        );
+        assert_eq!(crashed.code, -1, "{failpoint}: {}", crashed.context());
+        let journal_dir = home.state().join("journal");
+        let journal = fs::read_dir(&journal_dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let tx = journal.file_stem().unwrap().to_string_lossy().into_owned();
+        if !recoverable {
+            // A step that matches neither its before nor its after state.
+            let mut text = String::new();
+            for line in fs::read_to_string(&journal).unwrap().lines() {
+                let mut value: Value = serde_json::from_str(line).unwrap();
+                if value["type"] == "step" && value["from_id"].is_object() {
+                    value["from_id"]["ino"] = Value::from(1u64);
+                }
+                text.push_str(&value.to_string());
+                text.push('\n');
+            }
+            fs::write(&journal, text).unwrap();
+        }
+        let context = format!("{failpoint}, recoverable: {recoverable}");
+
+        let r = install(&baz, "gh:o/baz", "classic", &[]);
+        let envelope = r.expect(0);
+        assert!(home.addons("_classic_").join("Baz").is_dir(), "{context}");
+        let warnings = envelope["warnings"].as_array().unwrap();
+        let about = |code: &str| {
+            warnings
+                .iter()
+                .any(|w| w["code"] == code && w["message"].as_str().unwrap().contains(&tx))
+        };
+        if recoverable {
+            assert!(about("journal_recovered"), "{context}: {}", r.context());
+            assert!(
+                fs::read_dir(&journal_dir).unwrap().next().is_none(),
+                "{context}"
+            );
+            let toc = fs::read_to_string(home.addons("_retail_").join("Foo/Foo.toc")).unwrap();
+            assert!(toc.contains(&format!("Version: {foo}")), "{context}: {toc}");
+            let stage = home
+                .client("_retail_")
+                .join("Interface/.omaddons/stage")
+                .join(&tx);
+            assert!(!stage.exists(), "{context}");
+            let history = fs::read_to_string(home.state().join("history.jsonl")).unwrap();
+            assert_eq!(
+                history.matches(&tx).count(),
+                usize::from(foo == "2"),
+                "{context}: rolled forward once, or back"
+            );
+        } else {
+            assert!(about("journal_pending"), "{context}: {}", r.context());
+            assert!(journal.exists(), "{context}: kept for repair");
+            // Retail's own changes still stop at it.
+            let r = install(&foo2, "gh:o/foo", "retail", &[]);
+            assert_ne!(r.code, 0, "{context}: {}", r.context());
+            assert!(
+                r.stdout.contains("manual repair"),
+                "{context}: {}",
+                r.context()
+            );
+        }
+    }
+}

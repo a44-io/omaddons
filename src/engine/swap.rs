@@ -839,6 +839,7 @@ mod tests {
                 lock: &lock,
                 paths: &scene.paths,
                 scopes: &scene.scopes,
+                own: std::slice::from_ref(&scene.key),
                 sv_writable: &|_| false,
             })
             .unwrap()

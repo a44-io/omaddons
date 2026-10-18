@@ -661,6 +661,7 @@ fn locked(
         lock: &guard,
         paths,
         scopes,
+        own: discovered.target.key.as_slice(),
         sv_writable: &sv_writable,
     };
     let recovered = recover_all(&recovery)?;
@@ -1593,6 +1594,7 @@ mod tests {
                 lock: &lock,
                 paths: &scene.paths,
                 scopes: &scopes,
+                own: &[],
                 sv_writable: &|_| false,
             })
             .unwrap();

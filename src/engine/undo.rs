@@ -231,6 +231,7 @@ fn commit(
         lock: &guard,
         paths,
         scopes,
+        own: discovered.target.key.as_slice(),
         sv_writable: &sv_writable,
     };
     let recovered = recover_all(&recovery)?;
