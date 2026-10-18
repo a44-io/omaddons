@@ -30,7 +30,7 @@ use crate::fsx::{
 use crate::model::{TargetKey, TxId, TxKind};
 use crate::state::files_index::{FilesIndex, FolderIndex};
 use crate::state::history::{self, HistoryEntry, HistoryFilter};
-use crate::state::paths::Paths;
+use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::TargetRecord;
 use crate::state::store::{self, SchemaVersion};
 
@@ -195,6 +195,7 @@ fn same(a: Option<FileId>, b: Option<FileId>) -> bool {
         (Some(a), Some(b)) => {
             a.ino == b.ino
                 && match (a.born_ns, b.born_ns) {
+                    // ubs:ignore — comparing birth times, not secrets
                     (Some(x), Some(y)) => x == y,
                     _ => true,
                 }
@@ -520,6 +521,8 @@ pub struct Recovered {
     pub warnings: Vec<Warning>,
     /// How many SavedVariables files roll-forward left as they are.
     pub sv_deferred: usize,
+    /// The client snapshot a rollback kept, and how many folders are still in it.
+    pub snapshot_kept: Option<(PathBuf, usize)>,
 }
 
 /// Recovers every leftover journal. No writer is alive except ones still cleaning up
@@ -596,11 +599,22 @@ fn recover_one(env: &RecoveryEnv<'_>, tx: &TxId, path: PathBuf) -> Result<Vec<Wa
         RecoveryAction::RolledForward => "completed it (rolled forward)",
         RecoveryAction::RolledBack => "undid it (rolled back)",
     };
+    let kept = match &recovered.snapshot_kept {
+        Some((snapshot, 1)) => format!(
+            "; its snapshot {} is kept: 1 folder is still in it",
+            snapshot.display()
+        ),
+        Some((snapshot, n)) => format!(
+            "; its snapshot {} is kept: {n} folders are still in it",
+            snapshot.display()
+        ),
+        None => String::new(),
+    };
     let mut warnings = vec![
         Warning::new(
             WarningCode::JournalRecovered,
             format!(
-                "transaction {tx} on target {} was interrupted; recovery {what}",
+                "transaction {tx} on target {} was interrupted; recovery {what}{kept}",
                 prepared.target_key
             ),
         )
@@ -610,7 +624,8 @@ fn recover_one(env: &RecoveryEnv<'_>, tx: &TxId, path: PathBuf) -> Result<Vec<Wa
     Ok(warnings)
 }
 
-/// Rolls forward or back by phase, then prunes what the transaction left.
+/// Rolls forward or back by phase, then prunes what the transaction left: its snapshots
+/// too when it never committed (rolled back, or never prepared).
 fn recover_parsed(
     env: &RecoveryEnv<'_>,
     tx: &TxId,
@@ -640,7 +655,7 @@ fn recover_parsed(
     };
     let scopes = env.scopes;
     let mut s = WriteSession::untracked(Writer::Mutating, scopes, "recovery");
-    let recovered = match (&parsed.prepared, parsed.phase) {
+    let mut recovered = match (&parsed.prepared, parsed.phase) {
         (None, _) | (_, Phase::Unprepared) => None,
         (Some(_), Phase::Committed) => None,
         (Some(prepared), Phase::Swapped) => {
@@ -649,6 +664,7 @@ fn recover_parsed(
                 action: RecoveryAction::RolledForward,
                 sv_deferred: left.as_ref().map_or(0, |(files, _)| *files),
                 warnings: left.into_iter().map(|(_, warning)| warning).collect(),
+                snapshot_kept: None,
             })
         }
         (Some(_), Phase::Prepared) => {
@@ -657,6 +673,7 @@ fn recover_parsed(
                 action: RecoveryAction::RolledBack,
                 warnings: Vec::new(),
                 sv_deferred: 0,
+                snapshot_kept: None,
             })
         }
     };
@@ -677,6 +694,28 @@ fn recover_parsed(
         &victims,
         LockUse::Held(env.lock),
     )?;
+    // Rolled back or never prepared, the transaction will never commit: its snapshots
+    // are retention's garbage (vision §5.5). Only the state half is known without a
+    // `prepared` line, and a client half is written only after one. Best effort:
+    // retention sweeps what is left once it is old enough.
+    if matches!(parsed.phase, Phase::Prepared | Phase::Unprepared) {
+        let client = parsed
+            .prepared
+            .as_ref()
+            .map(|p| ClientPaths::new(&p.client_dir));
+        let dead = super::retention::dead_snapshots(paths, client.as_ref(), tx);
+        if !dead.victims.is_empty() {
+            let _ = fsx::prune(
+                scopes,
+                PruneReason::Retention,
+                &dead.victims,
+                LockUse::Held(env.lock),
+            );
+        }
+        if let Some(recovered) = recovered.as_mut() {
+            recovered.snapshot_kept = dead.kept;
+        }
+    }
     Ok(recovered)
 }
 
@@ -1580,6 +1619,142 @@ mod tests {
         let warnings = recover(&[]).unwrap();
         assert_eq!(warnings[0].code, WarningCode::JournalRecovered);
         assert!(!bar.exists() && !stage_dir.exists() && !paths.journal(&tx).exists());
+    }
+
+    /// `testing::Scene`'s swap (replace Foo, add Bar, remove Gone) after both snapshot
+    /// halves were written, stopped by an error before its fourth rename: the old Foo
+    /// already sits in the client snapshot's `AddOns/`. Its writer is gone.
+    #[cfg(debug_assertions)]
+    fn interrupted_swap() -> crate::engine::testing::Scene {
+        use crate::engine::swap::{SwapOp, snapshot_saved_variables, snapshot_state, swap};
+        use crate::model::FolderName;
+        let name = |n: &str| FolderName::new(n).unwrap().into_mutable().unwrap();
+        let ops = [
+            SwapOp::Replace {
+                name: name("Foo"),
+                live: name("Foo"),
+                old_tree: None,
+            },
+            SwapOp::Add { name: name("Bar") },
+            SwapOp::Remove {
+                live: name("Gone"),
+                old_tree: None,
+            },
+        ];
+        let mut scene = crate::engine::testing::Scene::new();
+        {
+            let lock = scene.lock();
+            let mut s = scene.session();
+            let mut journal = scene.journal(&mut s, &lock);
+            let touched = ["Foo", "Bar", "Gone"].map(|n| FolderName::new(n).unwrap());
+            snapshot_saved_variables(&mut s, &scene.tx, &scene.client, &touched).unwrap();
+            snapshot_state(&mut s, &scene.paths, &scene.tx, &scene.key).unwrap();
+            let swapped = failpoint::with_spec("engine.swap.before_rename=error@4", || {
+                swap(&mut s, &mut journal, &ops, &scene.staged, &scene.client)
+            });
+            assert!(swapped.is_err());
+        }
+        let snapshot = scene.client.snapshots(&scene.tx);
+        assert!(
+            snapshot.join("AddOns/Foo").is_dir() && snapshot.join("WTF").is_dir(),
+            "the old Foo and the SavedVariables are in the snapshot"
+        );
+        assert!(scene.paths.state_snapshot(&scene.tx).is_dir());
+        scene.release_inflight();
+        scene
+    }
+
+    #[cfg(debug_assertions)]
+    fn recover_scene(scene: &crate::engine::testing::Scene) -> Vec<Warning> {
+        let lock = scene.lock();
+        recover_all(&RecoveryEnv {
+            lock: &lock,
+            paths: &scene.paths,
+            scopes: &scene.scopes,
+            own: std::slice::from_ref(&scene.key),
+            sv_writable: &|_| false,
+        })
+        .unwrap()
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_rollback_prunes_both_snapshot_halves() {
+        let scene = interrupted_swap();
+        let warnings = recover_scene(&scene);
+        assert_eq!(
+            scene.notes("Foo").as_deref(),
+            Some("old foo"),
+            "rolled back"
+        );
+        assert!(!scene.client.snapshots(&scene.tx).exists(), "client half");
+        assert!(
+            !scene.paths.state_snapshot(&scene.tx).exists(),
+            "state half"
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0]
+                .message
+                .ends_with("recovery undid it (rolled back)"),
+            "{}",
+            warnings[0].message
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_rollback_keeps_a_client_snapshot_that_still_holds_a_folder() {
+        let scene = interrupted_swap();
+        // What a recovery bug would leave behind: a folder no step brings back.
+        let stray = scene.client.snapshots(&scene.tx).join("AddOns/Stray");
+        crate::engine::testing::folder(&stray, "stray");
+        let warnings = recover_scene(&scene);
+        assert_eq!(
+            scene.notes("Foo").as_deref(),
+            Some("old foo"),
+            "rolled back"
+        );
+        assert!(stray.is_dir(), "the folder's snapshot is kept");
+        assert!(
+            !scene.paths.state_snapshot(&scene.tx).exists(),
+            "state half"
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let message = &warnings[0].message;
+        assert!(
+            message.contains(&format!(
+                "its snapshot {} is kept: 1 folder is still in it",
+                scene.client.snapshots(&scene.tx).display()
+            )),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_journal_that_never_prepared_leaves_no_state_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::with_roots(&root, root.join("c"), root.join("s"), root.join("k"));
+        let tx = TxId::new();
+        let snapshot = paths.state_snapshot(&tx);
+        std::fs::create_dir_all(&snapshot).unwrap();
+        std::fs::write(snapshot.join("actions.jsonl"), b"").unwrap();
+        std::fs::create_dir_all(paths.journal_dir()).unwrap();
+        std::fs::write(paths.journal(&tx), "{\"type\":\"prepa").unwrap();
+        std::fs::create_dir_all(paths.cache_dir()).unwrap();
+        let scopes = ScopeTable::new(&paths, &[], None).unwrap();
+        let lock = crate::fsx::GlobalLock::acquire(&paths, "test").unwrap();
+        let warnings = recover_all(&RecoveryEnv {
+            lock: &lock,
+            paths: &paths,
+            scopes: &scopes,
+            own: &[],
+            sv_writable: &|_| false,
+        })
+        .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!paths.journal(&tx).exists() && !snapshot.exists());
     }
 
     #[test]

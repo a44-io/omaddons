@@ -184,11 +184,11 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     let scopes = ScopeTable::new(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
     let tx = TxId::new();
     let inflight = InflightLock::create(ctx.paths, &tx)?;
+    let client = ClientPaths::new(&target.client_dir);
     let staged = match stage_trees(&inflight, &scopes, target, &planned.folders.sources) {
         Ok(staged) => staged,
         Err(error) => {
-            let stage_dir = ClientPaths::new(&target.client_dir).stage(&tx);
-            cleanup(ctx.paths, &scopes, inflight, &tx, Some(&stage_dir));
+            cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), false);
             return Err(error);
         }
     };
@@ -196,7 +196,8 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     // racy slack.
     staged.wait_out_racy_slack();
     let result = commit(ctx, req, &scopes, discovered, reverted.tx, &tx, &staged);
-    cleanup(ctx.paths, &scopes, inflight, &tx, Some(&staged.stage_dir));
+    let committed = result.as_ref().is_ok_and(|done| done.outcome.tx.is_some());
+    cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), committed);
     let mut done = result?;
     if let (Some(key), Some(_)) = (done.outcome.key, done.outcome.tx) {
         let retained = super::tx::retain(ctx, &scopes, key, &target.client_dir);
@@ -355,6 +356,7 @@ fn commit(
                 action: RecoveryAction::RolledForward,
                 warnings,
                 sv_deferred,
+                ..
             })) => {
                 // What roll-forward could not restore waits, as under a running client.
                 let counts = &mut planned.sv.counts;
@@ -1390,6 +1392,8 @@ mod tests {
             .unwrap()
     }
 
+    /// Journals, locks and stage dirs, and the snapshot dirs of transactions that did not
+    /// commit (no history line).
     fn leftovers(scene: &TxScene) -> Vec<PathBuf> {
         let mut found = Vec::new();
         for dir in [
@@ -1400,6 +1404,21 @@ mod tests {
         ] {
             if let Ok(listing) = std::fs::read_dir(&dir) {
                 found.extend(listing.map(|e| e.unwrap().path()));
+            }
+        }
+        let committed: std::collections::BTreeSet<String> =
+            history(scene).iter().map(|e| e.tx.to_string()).collect();
+        for dir in [
+            scene.client.meta_dir().join("snapshots"),
+            scene.paths.state_snapshots_dir(),
+        ] {
+            if let Ok(listing) = std::fs::read_dir(&dir) {
+                found.extend(
+                    listing
+                        .map(|e| e.unwrap())
+                        .filter(|e| !committed.contains(e.file_name().to_str().unwrap()))
+                        .map(|e| e.path()),
+                );
             }
         }
         found
@@ -1891,6 +1910,13 @@ mod tests {
                 "{name}: {:?}",
                 leftovers(&scene)
             );
+            // An error after the commit point keeps the committed undo's snapshot.
+            let lost: Vec<TxId> = history(&scene)
+                .into_iter()
+                .map(|e| e.tx)
+                .filter(|tx| !scene.paths.state_snapshot(tx).is_dir())
+                .collect();
+            assert!(lost.is_empty(), "{name}: {lost:?}");
         }
     }
 

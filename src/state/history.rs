@@ -172,19 +172,27 @@ pub struct HistoryRead {
 
 /// Reads the history, skipping bad lines rather than failing.
 pub fn read(paths: &Paths, filter: &HistoryFilter) -> Result<HistoryRead> {
+    Ok(parse(&text(paths)?, filter))
+}
+
+/// The history as it is on disk, torn and merged lines included; empty before the first
+/// transaction.
+pub fn text(paths: &Paths) -> Result<String> {
     let path = paths.history_file();
-    let text = match std::fs::read(&path) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
         // ubs:ignore — an io::ErrorKind, not a secret
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HistoryRead::default()),
-        Err(err) => {
-            return Err(Error::io(
-                &path,
-                &err,
-                Suggestion::command(["omaddons", "status"]),
-            ));
-        }
-    };
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(Error::io(
+            &path,
+            &err,
+            Suggestion::command(["omaddons", "status"]),
+        )),
+    }
+}
+
+/// The entries of history `text` that match `filter`, skipping bad lines.
+pub fn parse(text: &str, filter: &HistoryFilter) -> HistoryRead {
     let mut read = HistoryRead::default();
     let complete = text.ends_with('\n');
     let lines: Vec<&str> = text
@@ -208,7 +216,7 @@ pub fn read(paths: &Paths, filter: &HistoryFilter) -> Result<HistoryRead> {
         let excess = read.entries.len().saturating_sub(limit);
         read.entries.drain(..excess);
     }
-    Ok(read)
+    read
 }
 
 /// The most recent matching entry (`undo`, `undo --last-by`).

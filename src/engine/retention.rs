@@ -8,10 +8,14 @@
 //! `snapshot_cap_exceeded`. History entries stay; undo of a pruned transaction reports
 //! the snapshot gone.
 //!
-//! Also swept: stage dirs and in-flight lock files of dead transactions (lock free, no
-//! journal, older than `ORPHAN_MIN_AGE`), which nothing else removes in M1. Then the
-//! blob cache is evicted LRU to `BLOB_CACHE_MAX_BYTES`, sparing the blobs of installed
-//! releases. Every removal goes through `fsx::prune`.
+//! Also swept: stage dirs, in-flight lock files and snapshot dirs of dead transactions
+//! (lock free, no journal, older than `ORPHAN_MIN_AGE`), a snapshot dir only when no
+//! history line names its transaction, which never committed. Rollback and cleanup
+//! remove a dead transaction's snapshots at once; the sweep takes what a crash or a
+//! failed prune left. A client snapshot whose `AddOns/` still holds a folder is never
+//! removed as garbage: it may be the only copy of an addon. Then the blob cache is
+//! evicted LRU to `BLOB_CACHE_MAX_BYTES`, sparing the blobs of installed releases. Every
+//! removal goes through `fsx::prune`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -139,7 +143,9 @@ pub fn run(
         target: Some(key),
         ..HistoryFilter::default()
     };
-    let entries = history::read(paths, &filter)?.entries;
+    // Read once: the target's entries for the policy, the whole text for orphans.
+    let text = history::text(paths)?;
+    let entries = history::parse(&text, &filter).entries;
     let latest = entries.last().map(|e| e.tx);
     let txs: Vec<SnapshotTx> = entries
         .iter()
@@ -184,16 +190,24 @@ pub fn run(
         );
     }
 
-    let orphans = orphans(paths, client, now)?;
-    if !orphans.is_empty() {
+    let orphans = orphans(paths, client, now, &text)?;
+    if !orphans.scratch.is_empty() {
         fsx::prune(
             scopes,
             PruneReason::PostCommitCleanup,
-            &orphans,
+            &orphans.scratch,
             LockUse::Acquire,
         )?;
-        report.orphans_swept = orphans.len();
     }
+    if !orphans.snapshots.is_empty() {
+        fsx::prune(
+            scopes,
+            PruneReason::Retention,
+            &orphans.snapshots,
+            LockUse::Acquire,
+        )?;
+    }
+    report.orphans_swept = orphans.scratch.len() + orphans.snapshots.len();
     let evicted = BlobCache::new(paths).evict(scopes, pins, limits.blob_cache_max_bytes)?;
     report.blobs_evicted = evicted.evicted.len();
     Ok(report)
@@ -209,9 +223,73 @@ pub fn pinned_blobs(paths: &Paths) -> Result<BTreeSet<String>> {
     Ok(pins)
 }
 
-/// Stage dirs and in-flight lock files (the state's and the cache's scratch locks) of
-/// dead transactions: lock free, no journal, older than `ORPHAN_MIN_AGE`.
-fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp) -> Result<Vec<PathBuf>> {
+/// The snapshot dirs of `tx`, a transaction that never committed and never will, that
+/// may go.
+#[derive(Debug, Default)]
+pub(super) struct DeadSnapshots {
+    /// The state half, and the client half unless it is kept; each only if it exists.
+    pub victims: Vec<PathBuf>,
+    /// The client half, kept because its `AddOns/` still holds this many entries.
+    pub kept: Option<(PathBuf, usize)>,
+}
+
+/// What of `tx`'s snapshots may go once it is known never to commit: the state half,
+/// and the client half (when `client` is known) unless its `AddOns/` still holds a
+/// folder. A rollback brings every folder back out of it, so one left there is what a
+/// recovery bug left, and may be the only copy of an addon.
+pub(super) fn dead_snapshots(
+    paths: &Paths,
+    client: Option<&ClientPaths>,
+    tx: &TxId,
+) -> DeadSnapshots {
+    let mut dead = DeadSnapshots::default();
+    if let Some(client) = client {
+        let snapshot = client.snapshots(tx);
+        if snapshot.exists() {
+            match snapshot_folders(&snapshot) {
+                0 => dead.victims.push(snapshot),
+                n => dead.kept = Some((snapshot, n)),
+            }
+        }
+    }
+    let state = paths.state_snapshot(tx);
+    if state.exists() {
+        dead.victims.push(state);
+    }
+    dead
+}
+
+/// The entries in a client snapshot's `AddOns/`: none when it is absent, one when it
+/// cannot be read (kept, as if it held a folder).
+fn snapshot_folders(client_snapshot: &Path) -> usize {
+    match std::fs::read_dir(client_snapshot.join("AddOns")) {
+        Ok(listing) => listing.count(),
+        // ubs:ignore — an io::ErrorKind, not a secret
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(_) => 1,
+    }
+}
+
+/// Whether history `text` names `tx` anywhere. The raw text, not the parsed entries: a
+/// committed transaction whose line is torn or merged into the next still counts, so
+/// its snapshot is never taken for garbage.
+pub(super) fn in_history(text: &str, tx: &TxId) -> bool {
+    text.contains(&tx.to_string())
+}
+
+/// What the orphan sweep removes, by the reason `fsx::prune` takes for each.
+struct Orphans {
+    /// Stage dirs and in-flight lock files.
+    scratch: Vec<PathBuf>,
+    /// Snapshot dirs, both halves.
+    snapshots: Vec<PathBuf>,
+}
+
+/// Stage dirs, in-flight lock files (the state's and the cache's scratch locks) and
+/// snapshot dirs of dead transactions: lock free, no journal, older than
+/// `ORPHAN_MIN_AGE`. A snapshot dir also needs no mention in history `text`, and a
+/// client one an empty `AddOns/`.
+fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp, text: &str) -> Result<Orphans> {
     let old = |path: &Path| {
         std::fs::symlink_metadata(path)
             .and_then(|m| m.modified())
@@ -247,7 +325,28 @@ fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp) -> Result<Vec<Pa
             found.push(path);
         }
     }
-    Ok(found)
+    let mut snapshots = Vec::new();
+    // The state half is every target's; the client half is this client's.
+    let roots = [
+        (client.meta_dir().join("snapshots"), true),
+        (paths.state_snapshots_dir(), false),
+    ];
+    for (root, client_side) in roots {
+        for (name, path) in listing(&root) {
+            if let Ok(tx) = name.parse::<TxId>()
+                && !in_history(text, &tx)
+                && dead(&tx)?
+                && old(&path)
+                && !(client_side && snapshot_folders(&path) > 0)
+            {
+                snapshots.push(path);
+            }
+        }
+    }
+    Ok(Orphans {
+        scratch: found,
+        snapshots,
+    })
 }
 
 /// (name, path) of each entry in `dir`; nothing when it cannot be read.
@@ -395,13 +494,18 @@ mod tests {
     impl Fixture {
         /// A committed transaction `age` seconds old with `bytes` in each snapshot half.
         fn commit(&self, age: i64, bytes: usize) -> TxId {
+            self.commit_as(self.key, age, bytes)
+        }
+
+        /// The same, committed by target `key` in this client dir.
+        fn commit_as(&self, key: TargetKey, age: i64, bytes: usize) -> TxId {
             let tx = TxId::new();
             let entry = HistoryEntry {
                 schema_version: history::CURRENT,
                 tx,
                 kind: TxKind::Install,
                 at: ago(age),
-                target: self.key,
+                target: key,
                 actor: Actor::Agent,
                 reason: None,
                 argv: vec!["omaddons".into()],
@@ -501,6 +605,62 @@ mod tests {
             f.paths.cache_tmp(&held_scratch).exists(),
             "live scratch is kept"
         );
+    }
+
+    #[test]
+    fn snapshots_of_transactions_that_never_committed_are_swept_once_old() {
+        let f = fixture();
+        let committed = f.commit(HOUR, 1);
+        // Two targets can share one client dir: another target's commit is no orphan.
+        let shared = f.commit_as(TargetKey::new(), HOUR, 1);
+        let [dead, held, journaled, holding, torn] = [(); 5].map(|()| TxId::new());
+        for tx in [&dead, &held, &journaled, &holding, &torn] {
+            for half in [
+                f.client.snapshots(tx).join("WTF"),
+                f.paths.state_snapshot(tx),
+            ] {
+                std::fs::create_dir_all(&half).unwrap();
+                std::fs::write(half.join("data"), b"x").unwrap();
+            }
+        }
+        let _live = InflightLock::create(&f.paths, &held).unwrap();
+        std::fs::create_dir_all(f.paths.journal_dir()).unwrap();
+        std::fs::write(f.paths.journal(&journaled), b"").unwrap();
+        // A folder a recovery bug left behind may be the addon's only copy.
+        std::fs::create_dir_all(f.client.snapshots(&holding).join("AddOns/Foo")).unwrap();
+        // A committed transaction whose history line was cut short is still named.
+        let mut text = std::fs::read_to_string(f.paths.history_file()).unwrap();
+        text.push_str(&format!(
+            "{{\"schema_version\":\"1.0\",\"tx\":\"{torn}\",\"ki"
+        ));
+        std::fs::write(f.paths.history_file(), text).unwrap();
+
+        let young = run(
+            &f.paths,
+            &f.scopes,
+            f.key,
+            &f.client,
+            &RetentionLimits::default(),
+            Timestamp::now(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(young.orphans_swept, 0, "younger than ORPHAN_MIN_AGE");
+        assert_eq!(f.has_snapshot(&dead), (true, true));
+
+        let report = f.run(&RetentionLimits::default(), &BTreeSet::new());
+        assert_eq!(report.orphans_swept, 3, "{report:?}");
+        assert_eq!(f.has_snapshot(&dead), (false, false));
+        assert_eq!(f.has_snapshot(&held), (true, true), "a live transaction's");
+        assert_eq!(f.has_snapshot(&journaled), (true, true), "recovery owns it");
+        assert_eq!(
+            f.has_snapshot(&holding),
+            (true, false),
+            "its AddOns/ holds a folder"
+        );
+        assert_eq!(f.has_snapshot(&torn), (true, true), "history names it");
+        assert_eq!(f.has_snapshot(&committed), (true, true));
+        assert_eq!(f.has_snapshot(&shared), (true, true), "another target's");
     }
 
     #[cfg(debug_assertions)]

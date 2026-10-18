@@ -1,6 +1,7 @@
 //! End-to-end engine scenes: a synthetic retail client, `--file` fixture archives (no
 //! network), and the invariant oracle's views of disk and state: per-folder tree hashes,
-//! the record generation, history kinds, leftover journals and the lock file's inode.
+//! the record generation, history kinds, leftover journals and snapshot dirs, and the
+//! lock file's inode.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -267,6 +268,50 @@ impl Scene {
             .lines()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
             .map(|v| v["kind"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// The transaction ids in history.jsonl, oldest first (torn lines skipped).
+    pub fn history_txs(&self) -> Vec<String> {
+        fs::read_to_string(self.home.state().join("history.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .map(|v| v["tx"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// Snapshot dirs, client and state halves, of transactions history does not name:
+    /// once recovered, a transaction that never committed leaves none.
+    pub fn orphan_snapshots(&self) -> Vec<PathBuf> {
+        let committed = self.history_txs();
+        [
+            self.home
+                .client("_retail_")
+                .join("Interface/.omaddons/snapshots"),
+            self.home.state().join("snapshots"),
+        ]
+        .iter()
+        .flat_map(|dir| {
+            fs::read_dir(dir)
+                .map(|l| l.map(|e| e.unwrap().path()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        })
+        .filter(|p| {
+            !committed
+                .iter()
+                .any(|tx| p.file_name() == Some(tx.as_ref()))
+        })
+        .collect()
+    }
+
+    /// Transactions in history whose state snapshot is gone. Retention keeps a day of
+    /// them, so a test sees none.
+    pub fn lost_snapshots(&self) -> Vec<String> {
+        let snapshots = self.home.state().join("snapshots");
+        self.history_txs()
+            .into_iter()
+            .filter(|tx| !snapshots.join(tx).is_dir())
             .collect()
     }
 

@@ -85,6 +85,27 @@ mod support {
             .count()
     }
 
+    /// After the recovering command: no snapshot dir of a transaction that never
+    /// committed, and every committed one's still there.
+    pub fn assert_snapshots(s: &Scene, context: &dyn Fn(&str) -> String) {
+        let orphans = s.orphan_snapshots();
+        assert!(
+            orphans.is_empty(),
+            "{}",
+            context(&format!(
+                "snapshots of uncommitted transactions {orphans:?}"
+            ))
+        );
+        let lost = s.lost_snapshots();
+        assert!(
+            lost.is_empty(),
+            "{}",
+            context(&format!(
+                "committed transactions lost their snapshots {lost:?}"
+            ))
+        );
+    }
+
     /// Every failpoint as a crash of `op`.
     pub fn matrix(op: Op) {
         let new = expected_new(op);
@@ -157,6 +178,7 @@ mod support {
                 "{}",
                 context("journals left after recovery")
             );
+            assert_snapshots(&s, &context);
             // AddOns holds whole addon folders only: nothing staged or half-moved.
             let mut stray: Vec<String> = fs::read_dir(s.addons())
                 .map(|l| {
@@ -359,6 +381,7 @@ mod support {
                 context("recovery warning")
             );
             assert!(s.journals().is_empty(), "{}", context("journals left"));
+            assert_snapshots(&s, &context);
             let allowed: Vec<&str> = shape.folders().iter().copied().chain(["Bar"]).collect();
             let stray = s.stray(&allowed);
             assert!(stray.is_empty(), "{}", context(&format!("stray {stray:?}")));
@@ -516,6 +539,7 @@ mod support {
                 context("recovery warning")
             );
             assert!(s.journals().is_empty(), "{}", context("journals left"));
+            assert_snapshots(&s, &context);
             let stray = s.stray(&["Foo", "FooOld", "Bar"]);
             assert!(stray.is_empty(), "{}", context(&format!("stray {stray:?}")));
 

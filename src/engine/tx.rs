@@ -263,7 +263,7 @@ pub fn check_releases(jobs: &[CheckJob], ctx: &EngineCtx<'_>) -> Result<CheckedR
             &mut checked.notes,
         ));
     }
-    cleanup(ctx.paths, &scopes, inflight, &tx, None);
+    cleanup(ctx.paths, &scopes, inflight, &tx, None, false);
     Ok(checked)
 }
 
@@ -340,7 +340,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
     let plan = match planned {
         Ok(plan) => plan,
         Err(error) => {
-            cleanup(ctx.paths, &scopes, plan_inflight, &plan_tx, None);
+            cleanup(ctx.paths, &scopes, plan_inflight, &plan_tx, None, false);
             return Err(error);
         }
     };
@@ -396,7 +396,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
             }
         }
     }
-    cleanup(ctx.paths, &scopes, plan_inflight, &plan_tx, None);
+    cleanup(ctx.paths, &scopes, plan_inflight, &plan_tx, None, false);
     Ok(TxOutcomes {
         plan,
         outcomes,
@@ -527,19 +527,14 @@ fn commit_target(
     let tx = TxId::new();
     let inflight = InflightLock::create(ctx.paths, &tx)?;
     let target = &discovered.target;
+    let client = ClientPaths::new(&target.client_dir);
     let staged = match stage_all(&inflight, scopes, target, &tp.work) {
         Ok(staged) => {
             ctx.progress.event(Phase::Stage, with_work, &target.id);
             staged
         }
         Err(error) => {
-            cleanup(
-                ctx.paths,
-                scopes,
-                inflight,
-                &tx,
-                Some(&ClientPaths::new(&target.client_dir).stage(&tx)),
-            );
+            cleanup(ctx.paths, scopes, inflight, &tx, Some(&client), false);
             return Err(error);
         }
     };
@@ -549,7 +544,10 @@ fn commit_target(
     let result = locked(
         req, ctx, scopes, plan_req, blobs, discovered, tp, &tx, &staged,
     );
-    cleanup(ctx.paths, scopes, inflight, &tx, Some(&staged.stage_dir));
+    let committed = result
+        .as_ref()
+        .is_ok_and(|(outcome, _)| outcome.tx.is_some());
+    cleanup(ctx.paths, scopes, inflight, &tx, Some(&client), committed);
     let fail = |e: std::io::Error| {
         Error::io(
             ctx.paths.state_dir(),
@@ -1233,23 +1231,26 @@ pub(super) fn write_status(
     let _ = write_monotonic(&mut s, paths, &StatusFile::build(&records, &meta));
 }
 
-/// Prunes what the transaction left (its journal, stage dir, temp downloads and lock
-/// file) under its own in-flight lock, then drops the lock. An unfinished journal (the
+/// Prunes what the transaction left (its journal, stage dir in `client`, temp downloads
+/// and lock file) under its own in-flight lock, then drops the lock. Unless the caller
+/// saw it commit, its snapshots go too once no journal names it and no history line
+/// does (a failure after the commit point still committed). An unfinished journal (the
 /// commit failed and so did recovering it) stays, with its stage dir, which can hold the
-/// old folders, and its lock file: dropping the lock frees them for the next global lock
-/// holder, which recovers them. Best effort otherwise: recovery and retention sweep
-/// anything left.
+/// old folders, its snapshots and its lock file: dropping the lock frees them for the
+/// next global lock holder, which recovers them. Best effort otherwise: recovery and
+/// retention sweep anything left.
 pub(super) fn cleanup(
     paths: &Paths,
     scopes: &ScopeTable,
     inflight: InflightLock,
     tx: &TxId,
-    stage_dir: Option<&PathBuf>,
+    client: Option<&ClientPaths>,
+    committed: bool,
 ) {
     let mut victims = vec![paths.cache_inflight_lock(tx), paths.cache_tmp(tx)];
     if !journal::unfinished(paths, tx) {
         victims.extend([paths.journal(tx), paths.inflight_lock(tx)]);
-        victims.extend(stage_dir.cloned());
+        victims.extend(client.map(|c| c.stage(tx)));
     }
     victims.retain(|v| v.exists());
     if !victims.is_empty() {
@@ -1261,6 +1262,20 @@ pub(super) fn cleanup(
             &victims,
             LockUse::Own(&inflight),
         );
+    }
+    if !committed && !paths.journal(tx).exists() {
+        let dead = super::retention::dead_snapshots(paths, client, tx);
+        // An unreadable history might name it: kept.
+        let in_history =
+            || history::text(paths).map_or(true, |text| super::retention::in_history(&text, tx));
+        if !dead.victims.is_empty() && !in_history() {
+            let _ = fsx::prune(
+                scopes,
+                PruneReason::Retention,
+                &dead.victims,
+                LockUse::Own(&inflight),
+            );
+        }
     }
     drop(inflight);
 }
@@ -1337,6 +1352,8 @@ mod tests {
             .entries
     }
 
+    /// Journals, locks and stage dirs, and the snapshot dirs of transactions that did not
+    /// commit (no history line).
     fn leftovers(scene: &TxScene) -> Vec<String> {
         let mut found = Vec::new();
         for dir in [
@@ -1349,7 +1366,31 @@ mod tests {
                 found.extend(listing.map(|e| e.unwrap().path().display().to_string()));
             }
         }
+        let committed: BTreeSet<String> = history(scene).iter().map(|e| e.tx.to_string()).collect();
+        for dir in [
+            scene.client.meta_dir().join("snapshots"),
+            scene.paths.state_snapshots_dir(),
+        ] {
+            if let Ok(listing) = std::fs::read_dir(&dir) {
+                found.extend(
+                    listing
+                        .map(|e| e.unwrap())
+                        .filter(|e| !committed.contains(e.file_name().to_str().unwrap()))
+                        .map(|e| e.path().display().to_string()),
+                );
+            }
+        }
         found
+    }
+
+    /// Committed transactions whose snapshot is gone. Retention keeps a day of them, so
+    /// a test sees none: an error after the commit point must not take a snapshot.
+    fn lost_snapshots(scene: &TxScene) -> Vec<TxId> {
+        history(scene)
+            .into_iter()
+            .map(|e| e.tx)
+            .filter(|tx| !scene.paths.state_snapshot(tx).is_dir())
+            .collect()
     }
 
     #[test]
@@ -1502,6 +1543,11 @@ mod tests {
                 leftovers(&scene).is_empty(),
                 "{name}: {:?}",
                 leftovers(&scene)
+            );
+            assert!(
+                lost_snapshots(&scene).is_empty(),
+                "{name}: {:?}",
+                lost_snapshots(&scene)
             );
         }
     }

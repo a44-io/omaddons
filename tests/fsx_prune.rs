@@ -5,7 +5,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use omaddons::fsx::{LockState, LockUse, PruneReason, probe_global, prune};
+use omaddons::error::ErrorCode;
+use omaddons::fsx::{
+    GlobalLock, InflightLock, LockState, LockUse, PruneReason, probe_global, prune,
+};
 
 const TX: &str = "01JB8Q2VA00000000000000000";
 const TX2: &str = "01JB8Q2VB00000000000000000";
@@ -176,4 +179,43 @@ fn successful_prunes_empty_every_trash_side() {
     }
     assert_eq!(entries(&l.client.join("Interface/.omaddons/trash")), 0);
     assert_eq!(entries(&l.paths.state_dir().join("trash")), 0);
+}
+
+/// A transaction that never committed loses its snapshots under the global lock a
+/// recovery holds, or under its own in-flight lock at cleanup, which reaches no other
+/// transaction's.
+#[test]
+fn snapshots_prune_under_a_held_global_lock_or_their_own_transactions_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let l = layout(dir.path());
+    let s = scopes(&l.paths, &l.client);
+    let both = |tx: &str| {
+        let state = l.paths.state_snapshot(&tx.parse().unwrap());
+        fs::create_dir_all(&state).unwrap();
+        fs::write(state.join("actions.jsonl"), b"").unwrap();
+        [snapshot(&l, tx), state]
+    };
+
+    let held = both(TX);
+    let guard = GlobalLock::acquire(&l.paths, "test").unwrap();
+    prune(&s, PruneReason::Retention, &held, LockUse::Held(&guard)).unwrap();
+    drop(guard);
+
+    let own = both(TX2);
+    let inflight = InflightLock::create(&l.paths, &TX2.parse().unwrap()).unwrap();
+    prune(&s, PruneReason::Retention, &own, LockUse::Own(&inflight)).unwrap();
+    for gone in held.iter().chain(&own) {
+        assert!(!gone.exists(), "{}", gone.display());
+    }
+    let other = snapshot(&l, TX);
+    let refused = prune(
+        &s,
+        PruneReason::Retention,
+        std::slice::from_ref(&other),
+        LockUse::Own(&inflight),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::ScopeDenied, "{}", refused.message);
+    drop(inflight);
+    assert!(other.exists(), "another transaction's snapshot stays");
 }
