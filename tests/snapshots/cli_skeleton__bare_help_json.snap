@@ -1,6 +1,6 @@
 ---
 source: tests/cli_skeleton.rs
-assertion_line: 163
+assertion_line: 174
 expression: envelope
 ---
 {
@@ -16,7 +16,9 @@ expression: envelope
       },
       {
         "about": "List the addons in each target's AddOns folder",
-        "aliases": [],
+        "aliases": [
+          "ls"
+        ],
         "group": "look",
         "name": "list"
       },
@@ -30,7 +32,9 @@ expression: envelope
       },
       {
         "about": "What an addon is: installed records, catalog entry and newest release",
-        "aliases": [],
+        "aliases": [
+          "show"
+        ],
         "group": "look",
         "name": "info"
       },
@@ -50,7 +54,9 @@ expression: envelope
       },
       {
         "about": "Show what changed, when, by whom and why",
-        "aliases": [],
+        "aliases": [
+          "log"
+        ],
         "group": "look",
         "name": "history"
       },
@@ -62,7 +68,9 @@ expression: envelope
       },
       {
         "about": "Install or update addons in one target, verified by its own TOC rules",
-        "aliases": [],
+        "aliases": [
+          "add"
+        ],
         "group": "change",
         "name": "install"
       },
@@ -106,13 +114,20 @@ expression: envelope
       },
       {
         "about": "Remove managed addons from one target (undoable)",
-        "aliases": [],
+        "aliases": [
+          "uninstall",
+          "rm",
+          "delete"
+        ],
         "group": "change",
         "name": "remove"
       },
       {
         "about": "Revert the last change (or one by id), SavedVariables included",
-        "aliases": [],
+        "aliases": [
+          "revert",
+          "rollback"
+        ],
         "group": "change",
         "name": "undo"
       },

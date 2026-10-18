@@ -561,6 +561,8 @@ remove = true
 
 `omaddons help` lists the commands. `omaddons help <command>` or `omaddons <command> --help` shows every flag. For subcommands, use `omaddons targets add --help` or `omaddons help targets add`.
 
+A mistyped command, flag or value is a usage error. Its fix is the corrected command when that command only reads, and `omaddons help <command>` when the closest command changes something: a typo never hands you a different command that changes addons. A mistyped flag or value of the command you typed is corrected in place (`--channel betaa` → `--channel beta`). Every suggested command parses.
+
 ### Global options
 
 Every global option works before or after the command, except `-V`/`--version`, which works only right after `omaddons`.
@@ -616,7 +618,7 @@ Pending updates never count as attention: `status --check` stays a health check,
 
 ### `install <REF>...`
 
-Install or update addons in one target. Each ref is fetched once and verified against the target's TOC rules before anything is written, and all addons for a target go into one transaction. Re-running `install` on an installed addon updates it to the newest release its channel allows. `url:` refs are never re-checked, and pinned addons stay where they are (`addon_pinned`; see [Pinning](#sources-and-refs)).
+Install or update addons in one target (`add` is an alias). Each ref is fetched once and verified against the target's TOC rules before anything is written, and all addons for a target go into one transaction. Re-running `install` on an installed addon updates it to the newest release its channel allows. `url:` refs are never re-checked, and pinned addons stay where they are (`addon_pinned`; see [Pinning](#sources-and-refs)).
 
 | Flag | Meaning |
 |---|---|
@@ -849,7 +851,7 @@ Each side is exactly one client: a selector that matches two is `target_ambiguou
 
 ### `remove <ADDON>...`
 
-Remove managed addons from one target, as an undoable transaction. An addon is named by its name, its ref or a folder it owns.
+Remove managed addons from one target, as an undoable transaction (`uninstall`, `rm` and `delete` are aliases). An addon is named by its name, its ref or a folder it owns.
 
 ```bash
 omaddons remove DBM -t retail
@@ -864,7 +866,7 @@ An addon whose folders were all deleted by hand is forgotten: its record and ind
 
 ### `undo [TX]`
 
-Revert what a command did, as new transactions, SavedVariables included.
+Revert what a command did, as new transactions, SavedVariables included (`revert` and `rollback` are aliases).
 
 A command that changes several clients commits one transaction per client, and all of them share a run id. Bare `undo` reverts the most recent run, every one of its transactions, newest first. After a single-client command that is one transaction, as before. Those undo transactions share a run of their own, so a second `undo` reverts them all again.
 
@@ -891,7 +893,7 @@ Undoing the newest change never conflicts with a later transaction. Undoing an o
 
 ### `history`
 
-What changed, when, by whom and why, newest first.
+What changed, when, by whom and why, newest first (`log` is an alias).
 
 ```bash
 omaddons history
@@ -907,7 +909,7 @@ Each line counts the folders added (`+`), replaced (`~`) and removed (`-`). A tr
 
 ### `list`
 
-The addons in each target's AddOns folder.
+The addons in each target's AddOns folder (`ls` is an alias).
 
 ```bash
 omaddons list                              # every target: managed addons with version, ref, channel
@@ -1081,7 +1083,7 @@ Each result says, for every selected client, whether it is likely to load. This 
 
 ### `info <REF>`
 
-What an addon is: installed records on every target, the catalog entry, and the newest release.
+What an addon is: installed records on every target, the catalog entry, and the newest release (`show` is an alias).
 
 ```text
 $ omaddons info weakauras --offline

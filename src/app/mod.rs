@@ -67,45 +67,61 @@ pub struct CommandEntry {
     /// Its canonical name; a nested one is its path (`targets add`).
     pub name: &'static str,
     pub group: Group,
+    /// Whether some form of it changes state (conservative: `export` writes with
+    /// `--write`, `auth` with `set`). A usage error never guesses one for you.
+    pub mutates: bool,
 }
 
-const fn entry(name: &'static str, group: Group) -> CommandEntry {
-    CommandEntry { name, group }
+const fn entry(name: &'static str, group: Group, mutates: bool) -> CommandEntry {
+    CommandEntry {
+        name,
+        group,
+        mutates,
+    }
 }
 
 /// Every subcommand this build has, one per line, in display order within its group (a
 /// nested one takes its parent's group). Each command bead adds its own line in the
 /// commit that adds its clap variant (DEC-1).
 pub const COMMANDS: &[CommandEntry] = &[
-    entry("status", Group::Look),
-    entry("list", Group::Look),
-    entry("outdated", Group::Look),
-    entry("info", Group::Look),
-    entry("search", Group::Look),
-    entry("export", Group::Look),
-    entry("history", Group::Look),
-    entry("net-log", Group::Look),
-    entry("install", Group::Change),
-    entry("update", Group::Change),
-    entry("pin", Group::Change),
-    entry("unpin", Group::Change),
-    entry("adopt", Group::Change),
-    entry("sync", Group::Change),
-    entry("copy", Group::Change),
-    entry("remove", Group::Change),
-    entry("undo", Group::Change),
-    entry("targets", Group::Setup),
-    entry("targets add", Group::Setup),
-    entry("targets rm", Group::Setup),
-    entry("targets rename", Group::Setup),
-    entry("targets default", Group::Setup),
-    entry("config", Group::Setup),
-    entry("config get", Group::Setup),
-    entry("config set", Group::Setup),
-    entry("config path", Group::Setup),
-    entry("auth", Group::Setup),
-    entry("help", Group::Setup),
+    entry("status", Group::Look, false),
+    entry("list", Group::Look, false),
+    entry("outdated", Group::Look, false),
+    entry("info", Group::Look, false),
+    entry("search", Group::Look, false),
+    entry("export", Group::Look, true),
+    entry("history", Group::Look, false),
+    entry("net-log", Group::Look, false),
+    entry("install", Group::Change, true),
+    entry("update", Group::Change, true),
+    entry("pin", Group::Change, true),
+    entry("unpin", Group::Change, true),
+    entry("adopt", Group::Change, true),
+    entry("sync", Group::Change, true),
+    entry("copy", Group::Change, true),
+    entry("remove", Group::Change, true),
+    entry("undo", Group::Change, true),
+    entry("targets", Group::Setup, false),
+    entry("targets add", Group::Setup, true),
+    entry("targets rm", Group::Setup, true),
+    entry("targets rename", Group::Setup, true),
+    entry("targets default", Group::Setup, true),
+    entry("config", Group::Setup, false),
+    entry("config get", Group::Setup, false),
+    entry("config set", Group::Setup, true),
+    entry("config path", Group::Setup, false),
+    entry("auth", Group::Setup, true),
+    entry("help", Group::Setup, false),
 ];
+
+/// Whether the command at `path` (`targets add`) may change state; one this build does
+/// not list counts as changing it.
+pub fn mutates(path: &str) -> bool {
+    COMMANDS
+        .iter()
+        .find(|c| c.name == path)
+        .is_none_or(|c| c.mutates)
+}
 
 /// The canonical (static) name for a subcommand name clap reported.
 pub fn canonical(name: &str) -> &'static str {

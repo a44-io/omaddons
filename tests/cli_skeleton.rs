@@ -2,6 +2,8 @@
 //! panic hook, run as a real process with HOME and XDG_* in a tempdir (DEC-6). Every
 //! test checks that each captured stderr line is an NDJSON event.
 
+mod common;
+
 use serde_json::Value;
 use support::{run, run_env};
 
@@ -286,6 +288,43 @@ fn unknown_subcommands_suggest_the_closest() {
         envelope["error"]["fix_argv"],
         serde_json::json!(["omaddons", "help", "help"])
     );
+}
+
+/// The verb aliases (vision §5.10) run their command: the same answer, under the
+/// canonical `command`. `uninstall dbm` removes, it never suggests installing.
+#[test]
+fn verb_aliases_answer_as_their_command() {
+    for (alias, canonical) in [
+        (&["ls", "--json"][..], &["list", "--json"][..]),
+        (&["log", "--json"], &["history", "--json"]),
+        (
+            &["show", "weakauras", "--offline", "--json"],
+            &["info", "weakauras", "--offline", "--json"],
+        ),
+        (
+            &["uninstall", "dbm", "--json"],
+            &["remove", "dbm", "--json"],
+        ),
+        (&["rm", "dbm", "--json"], &["remove", "dbm", "--json"]),
+        (&["delete", "dbm", "--json"], &["remove", "dbm", "--json"]),
+        (
+            &["add", "dbm", "--offline", "--json"],
+            &["install", "dbm", "--offline", "--json"],
+        ),
+        (&["revert", "--json"], &["undo", "--json"]),
+        (&["rollback", "--json"], &["undo", "--json"]),
+    ] {
+        let home = common::home::Home::new(&["wow"]);
+        let exec =
+            |args: &[&str]| home.exec(&args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>());
+        let (a, b) = (exec(alias), exec(canonical));
+        let (x, y) = (a.envelope(), b.envelope());
+        assert_eq!(a.code, b.code, "{}\n{}", a.context(), b.context());
+        for key in ["command", "ok", "exit_code", "data"] {
+            assert_eq!(x[key], y[key], "{key}: {}\n{}", a.context(), b.context());
+        }
+        assert_eq!(x["error"]["code"], y["error"]["code"], "{}", a.context());
+    }
 }
 
 #[test]

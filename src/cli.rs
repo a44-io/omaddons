@@ -131,6 +131,7 @@ pub enum Command {
     Status(crate::app::status::StatusArgs),
     /// Install or update addons in one target, verified by its own TOC rules
     #[command(
+        visible_alias = "add",
         after_long_help = "An addon is installed from one ref at a time. Another local archive of a local\ninstall (./Bar-2.2.0.zip over ./Bar-2.1.0.zip) updates it; an addon of the same\nname from any other ref is a takeover, refused (ownership_conflict) unless --force."
     )]
     Install(crate::app::install::InstallArgs),
@@ -154,15 +155,19 @@ pub enum Command {
     #[command(after_long_help = COPY_HELP)]
     Copy(crate::app::copy::CopyArgs),
     /// Remove managed addons from one target (undoable)
+    #[command(visible_aliases = ["uninstall", "rm", "delete"])]
     Remove(crate::app::remove::RemoveArgs),
     /// Revert the last change (or one by id), SavedVariables included
+    #[command(visible_aliases = ["revert", "rollback"])]
     Undo(crate::app::undo::UndoArgs),
     /// Show what changed, when, by whom and why
+    #[command(visible_alias = "log")]
     History(crate::app::history::HistoryArgs),
     /// Which managed addons have updates, on every client (changes nothing)
     #[command(visible_alias = "check", after_long_help = OUTDATED_HELP)]
     Outdated(crate::app::outdated::OutdatedArgs),
     /// What an addon is: installed records, catalog entry and newest release
+    #[command(visible_alias = "show")]
     Info(crate::app::info::InfoArgs),
     /// Find addons by name in the catalog, WoWInterface, Tukui and GitHub
     #[command(visible_alias = "find", after_long_help = SEARCH_HELP)]
@@ -173,6 +178,7 @@ pub enum Command {
     /// Every network request omaddons made
     NetLog(crate::app::net_log::NetLogArgs),
     /// List the addons in each target's AddOns folder
+    #[command(visible_alias = "ls")]
     List(crate::app::list::ListArgs),
     /// List the WoW clients, or add, remove, rename and choose them
     Targets(crate::app::targets::TargetsArgs),
@@ -544,11 +550,11 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
                 if bad == "reinstall" {
                     return Some((reinstall_fix(argv), Vec::new()));
                 }
-                let names: Vec<String> = cmd
-                    .get_subcommands()
-                    .map(|c| c.get_name().to_owned())
-                    .collect();
-                suggest(argv, &bad, &names)
+                let (fix, alternatives, closest) = subcommand_fix(argv, &path, &bad)?;
+                if let Some(closest) = closest {
+                    message = format!("{message}; the closest command is {closest}");
+                }
+                Some((fix, alternatives))
             })
             .unwrap_or_else(help_fix),
         ErrorKind::UnknownArgument => invalid(ContextKind::InvalidArg)
@@ -559,38 +565,198 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
                     let (help, _) = help_fix();
                     return Some((Suggestion::command(["omaddons", "--version"]), vec![help]));
                 }
-                // Under a subcommand, only the global flags of the root apply.
+                // The root's global flags, and every flag of the command parsing reached
+                // (`targets add`, not `targets`). The verb is the user's own, so the
+                // corrected flag is applied.
+                let mut root = Cli::command();
+                root.build();
                 let mut longs: Vec<String> = cmd
                     .get_arguments()
                     .filter(|a| subcommand.is_none() || a.is_global_set())
                     .filter_map(|a| a.get_long())
                     .map(|l| format!("--{l}"))
                     .collect();
-                if let Some(sub) = subcommand.as_deref().and_then(|s| cmd.find_subcommand(s)) {
+                if !path.is_empty() {
                     longs.extend(
-                        sub.get_arguments()
-                            .filter_map(|a| a.get_long())
+                        command_at(&root, &path)
+                            .get_arguments()
+                            .filter_map(|a| a.get_long_and_visible_aliases())
+                            .flatten()
                             .map(|l| format!("--{l}")),
                     );
                 }
+                longs.sort();
+                longs.dedup();
                 suggest(argv, &bad_flag, &longs)
+            })
+            .unwrap_or_else(help_fix),
+        ErrorKind::InvalidValue => invalid(ContextKind::InvalidValue)
+            .and_then(|bad| {
+                let valid = match err.get(ContextKind::ValidValue) {
+                    Some(ContextValue::Strings(valid)) => valid.clone(),
+                    _ => return None,
+                };
+                let arg = invalid(ContextKind::InvalidArg).unwrap_or_default();
+                value_fix(argv, &path, &arg, &bad, &valid)
             })
             .unwrap_or_else(help_fix),
         _ => help_fix(),
     };
-    // Never the failing command itself.
+    // Every suggestion parses, and none is the failing command itself.
     let failing = fix_argv(argv);
-    let fails = |s: &Suggestion| s.argv() == Some(failing.as_slice());
+    let fails = |s: &Suggestion| s.argv() == Some(failing.as_slice()) || !parses(s);
     let (fix, alternatives) = if fails(&fix) {
         help_fix()
     } else {
         (fix, alternatives)
     };
     let mut error = Error::new(ErrorCode::Usage, message, fix);
+    let mut seen = vec![error.fix.clone()];
     for alternative in alternatives.into_iter().filter(|a| !fails(a)) {
-        error = error.alternative(alternative);
+        if !seen.contains(&alternative) {
+            seen.push(alternative.clone());
+            error = error.alternative(alternative);
+        }
     }
     error
+}
+
+/// Whether a suggested command line parses (help and version requests count).
+fn parses(suggestion: &Suggestion) -> bool {
+    let Some(argv) = suggestion.argv() else {
+        return true;
+    };
+    match Cli::try_parse_from(argv) {
+        Ok(_) => true,
+        Err(e) => matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion),
+    }
+}
+
+/// The command `path` names under `root` (`root` itself for an empty path).
+fn command_at<'a>(root: &'a clap::Command, path: &[String]) -> &'a clap::Command {
+    path.iter()
+        .fold(root, |cmd, name| cmd.find_subcommand(name).unwrap_or(cmd))
+}
+
+/// `omaddons help <path>`.
+fn help_for(path: &[String]) -> Suggestion {
+    let mut argv = vec!["omaddons".to_owned(), "help".to_owned()];
+    argv.extend(path.iter().cloned());
+    Suggestion::command(argv)
+}
+
+/// Synonym words a nested level knows (vision §5.10), as an exact intent: `targets
+/// remove` is `targets rm`, `targets ls` and `config show` are the bare listing.
+fn synonym(argv: &[String], path: &[String], bad: &str) -> Option<Suggestion> {
+    let level: Vec<&str> = path.iter().map(String::as_str).collect();
+    match (level.as_slice(), bad) {
+        (["targets"], "remove" | "delete" | "uninstall") => {
+            fix_argv_replacing(argv, bad, "rm").map(Suggestion::command)
+        }
+        (["targets"] | ["config"], "ls" | "list" | "show") => {
+            let at = argv.iter().skip(1).position(|a| a == bad)? + 1;
+            let mut without = argv.to_vec();
+            without.remove(at);
+            Some(Suggestion::command(fix_argv(&without)))
+        }
+        _ => None,
+    }
+}
+
+/// The fix for the unknown subcommand `bad` of the command `path` names: a synonym that
+/// level knows, else its closest subcommands (names and visible aliases, distance ≤ 2).
+/// A command that only reads is suggested as the corrected argv, one that changes
+/// something as its help, so a guess never hands over a different mutating command;
+/// the third value names that command for the message.
+fn subcommand_fix(
+    argv: &[String],
+    path: &[String],
+    bad: &str,
+) -> Option<(Suggestion, Vec<Suggestion>, Option<String>)> {
+    if let Some(fix) = synonym(argv, path, bad) {
+        return Some((fix, Vec::new(), None));
+    }
+    let mut root = Cli::command();
+    root.build();
+    let parent = command_at(&root, path);
+    let mut close: Vec<(usize, String)> = parent
+        .get_subcommands()
+        .flat_map(|c| {
+            std::iter::once(c.get_name())
+                .chain(c.get_visible_aliases())
+                .map(move |spelling| (levenshtein(bad, spelling), c.get_name().to_owned()))
+        })
+        .filter(|(d, _)| *d <= 2)
+        .collect();
+    close.sort();
+    let mut canonical: Vec<String> = Vec::new();
+    for (_, name) in close {
+        if !canonical.contains(&name) {
+            canonical.push(name);
+        }
+    }
+    let guess = |name: &str| {
+        let mut full = path.to_vec();
+        full.push(name.to_owned());
+        if crate::app::mutates(&full.join(" ")) {
+            (help_for(&full), Some(full.join(" ")))
+        } else {
+            let fixed = fix_argv_replacing(argv, bad, name).unwrap_or_else(|| fix_argv(argv));
+            (Suggestion::command(fixed), None)
+        }
+    };
+    let mut guesses = canonical.iter().map(|name| guess(name));
+    let (fix, closest) = guesses.next()?;
+    let alternatives = guesses.map(|(s, _)| s).collect();
+    Some((fix, alternatives, closest))
+}
+
+/// The fix for `bad`, a value outside `valid` given to `arg` under `path`: the closest
+/// valid value (distance ≤ 2) in its place. The verb is the user's own, so the value is
+/// applied, except `auth`'s ACTION, itself a verb: `set` and `clear` are suggested as
+/// `auth`'s help, and `show` means `status`.
+fn value_fix(
+    argv: &[String],
+    path: &[String],
+    arg: &str,
+    bad: &str,
+    valid: &[String],
+) -> Option<(Suggestion, Vec<Suggestion>)> {
+    // ubs:ignore — comparing command names, not secrets
+    let action = path.first().is_some_and(|p| p == "auth") && arg.contains("ACTION");
+    let mut close: Vec<(usize, &String)> = valid
+        .iter()
+        .map(|v| (levenshtein(bad, v), v))
+        .filter(|(d, _)| *d <= 2)
+        .collect();
+    close.sort();
+    let chosen: Vec<&str> = if action && bad == "show" {
+        vec!["status"]
+    } else {
+        close.iter().map(|(_, v)| v.as_str()).collect()
+    };
+    let replaced = |with: &str| {
+        if action && matches!(with, "set" | "clear") {
+            return help_for(path);
+        }
+        let at = argv.iter().skip(1).position(|a| {
+            a == bad
+                || a.split_once('=')
+                    .is_some_and(|(f, v)| f.starts_with('-') && v == bad)
+        });
+        let mut fixed = argv.to_vec();
+        let position = at.map(|i| i + 1);
+        if let Some(slot) = position.and_then(|i| fixed.get_mut(i)) {
+            *slot = match slot.split_once('=') {
+                Some((flag, _)) if slot.starts_with('-') => format!("{flag}={with}"),
+                _ => with.to_owned(),
+            };
+        }
+        Suggestion::command(fix_argv_keeping(&fixed, position))
+    };
+    let mut suggestions = chosen.iter().map(|v| replaced(v));
+    let fix = suggestions.next()?;
+    Some((fix, suggestions.collect()))
 }
 
 /// `omaddons reinstall X …` as `omaddons install X … --reinstall`, every other argument
@@ -669,9 +835,11 @@ pub fn command_path(argv: &[String]) -> Vec<String> {
     let mut path = Vec::new();
     let mut args = argv.iter().skip(1);
     while let Some(arg) = args.next() {
+        // ubs:ignore — comparing command-line words, not secrets
         if arg == "--" {
             break;
         }
+        // ubs:ignore — comparing command-line words, not secrets
         if arg.starts_with('-') && arg != "-" {
             if takes_value(cmd, arg) {
                 args.next();
@@ -726,6 +894,7 @@ fn fix_argv_keeping(argv: &[String], keep: Option<usize>) -> Vec<String> {
             continue;
         }
         let name = arg.split('=').next().unwrap_or(arg);
+        // ubs:ignore — comparing flag names, not secrets
         match PRESENTATION_FLAGS.iter().find(|(flag, _)| *flag == name) {
             Some((_, takes_value)) => skip_value = *takes_value && !arg.contains('='),
             None => out.push(arg.clone()),
@@ -756,6 +925,7 @@ pub(crate) fn without_flag(argv: &[String], flag: &str) -> Vec<String> {
         if std::mem::take(&mut skip) {
             continue;
         }
+        // ubs:ignore — comparing flag names, not secrets
         if arg == flag {
             skip = true;
         } else if !arg.starts_with(&format!("{flag}=")) {
@@ -778,6 +948,7 @@ fn with_flag_value(argv: &[String], flag: &str, value: &str) -> Vec<String> {
     for arg in argv {
         if std::mem::take(&mut replace_next) {
             out.push(value.to_owned());
+        // ubs:ignore — comparing flag names, not secrets
         } else if arg == flag {
             out.push(arg.clone());
             replace_next = true;
@@ -1025,6 +1196,168 @@ mod tests {
         );
     }
 
+    /// The usage error's fix and alternatives for `args`, as argv lists.
+    fn fixes(args: &[&str]) -> (Vec<String>, Vec<Vec<String>>, String) {
+        let raw = argv(args);
+        let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+        let alternatives = err
+            .alternatives
+            .iter()
+            .map(|a| a.argv().unwrap().to_vec())
+            .collect();
+        (
+            err.fix.argv().unwrap().to_vec(),
+            alternatives,
+            err.message.clone(),
+        )
+    }
+
+    #[test]
+    fn fixes_come_from_the_level_that_failed_and_never_guess_a_mutating_verb() {
+        for (args, fix) in [
+            // A typo of a command that changes something: its help, never the command.
+            (&["plan"][..], &["help", "pin"][..]),
+            (&["unpn", "x"], &["help", "unpin"]),
+            (&["instal", "dbm"], &["help", "install"]),
+            // Of one that only reads: the corrected command.
+            (&["statsu"], &["status"]),
+            (&["hepl"], &["help"]),
+            // Nested levels suggest among their own subcommands.
+            (&["targets", "rn", "a", "b"], &["help", "targets", "rm"]),
+            (&["config", "st", "k", "v"], &["help", "config", "set"]),
+            (&["targets", "ad", "/x"], &["help", "targets", "add"]),
+            (&["config", "gte", "k"], &["config", "get", "k"]),
+            // Synonyms a nested level knows: the intent is exact.
+            (&["targets", "remove", "x"], &["targets", "rm", "x"]),
+            (&["targets", "ls"], &["targets"]),
+            (&["config", "show"], &["config"]),
+            // Flags of the deepest command, applied: the verb is the user's own.
+            (
+                &["targets", "add", "/x", "--nme", "foo"],
+                &["targets", "add", "/x", "--name", "foo"],
+            ),
+            (&["targets", "--rescn"], &["targets", "--rescan"]),
+            // Values.
+            (
+                &["install", "x", "--channel", "betaa"],
+                &["install", "x", "--channel", "beta"],
+            ),
+            (
+                &["install", "x", "--channel=betaa"],
+                &["install", "x", "--channel=beta"],
+            ),
+            (&["auth", "gihub"], &["auth", "github"]),
+            (&["auth", "github", "st"], &["help", "auth"]),
+            (&["auth", "github", "show"], &["auth", "github", "status"]),
+        ] {
+            let (got, alternatives, message) = fixes(args);
+            assert_eq!(got, argv(fix), "{args:?}: {message}");
+            for alternative in &alternatives {
+                let parsed = Cli::try_parse_from(alternative);
+                assert!(parsed.is_ok(), "{args:?}: {alternative:?} does not parse");
+            }
+        }
+        // No alternative runs another mutating command; the message names the guess.
+        let (_, alternatives, message) = fixes(&["unpn", "x"]);
+        assert!(
+            alternatives
+                .iter()
+                .all(|a| a.get(1).map(String::as_str) == Some("help")),
+            "{alternatives:?}"
+        );
+        assert!(
+            message.ends_with("the closest command is unpin"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn verb_aliases_run_their_command() {
+        for (alias, canonical) in [
+            ("add", "install"),
+            ("uninstall", "remove"),
+            ("rm", "remove"),
+            ("delete", "remove"),
+            ("ls", "list"),
+            ("show", "info"),
+            ("log", "history"),
+            ("revert", "undo"),
+            ("rollback", "undo"),
+        ] {
+            let raw = argv(&[alias, "x"]);
+            let raw = if matches!(alias, "ls" | "log" | "revert" | "rollback") {
+                argv(&[alias])
+            } else {
+                raw
+            };
+            assert_eq!(command_path(&raw), [canonical], "{alias}");
+            let cli = Cli::try_parse_from(&raw).unwrap();
+            assert_eq!(
+                crate::app::command_name(cli.command.as_ref()),
+                canonical,
+                "{alias}"
+            );
+        }
+    }
+
+    /// Every subcommand at every level, misspelled three ways: the fix parses, and a
+    /// guessed command (another path than the one meant) never changes anything.
+    #[test]
+    fn every_misspelled_subcommand_gets_a_fix_that_parses_and_never_mutates_by_guess() {
+        let mut root = Cli::command();
+        root.build();
+        let mut paths: Vec<Vec<String>> = Vec::new();
+        for sub in root.get_subcommands() {
+            paths.push(vec![sub.get_name().to_owned()]);
+            for nested in sub.get_subcommands() {
+                paths.push(vec![
+                    sub.get_name().to_owned(),
+                    nested.get_name().to_owned(),
+                ]);
+            }
+        }
+        let mut checked = 0;
+        for path in &paths {
+            let Some((word, parent)) = path.split_last() else {
+                continue;
+            };
+            let chars: Vec<char> = word.chars().collect();
+            let mut typos = vec![chars[1..].iter().collect::<String>()];
+            typos.push(
+                std::iter::once('q')
+                    .chain(chars[1..].iter().copied())
+                    .collect(),
+            );
+            if chars.len() > 2 {
+                let mut swapped = chars.clone();
+                swapped.swap(0, 1);
+                typos.push(swapped.into_iter().collect());
+            }
+            for typo in typos {
+                let mut args: Vec<&str> = parent.iter().map(String::as_str).collect();
+                args.push(&typo);
+                let raw = argv(&args);
+                let Err(e) = Cli::try_parse_from(&raw) else {
+                    continue;
+                };
+                let err = usage_error(&e, &raw);
+                for suggestion in std::iter::once(&err.fix).chain(&err.alternatives) {
+                    let s = suggestion.argv().unwrap();
+                    assert!(parses(suggestion), "{args:?}: {s:?}");
+                    if s.get(1).map(String::as_str) != Some("help") {
+                        let guessed = command_path(s).join(" ");
+                        assert!(
+                            !crate::app::mutates(&guessed) || guessed == path.join(" "),
+                            "{args:?}: {s:?} runs {guessed}"
+                        );
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 50, "{checked}");
+    }
+
     #[test]
     fn fixes_drop_presentation_flags() {
         let raw = argv(&[
@@ -1132,8 +1465,10 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Usage);
         assert_eq!(err.fix.argv().unwrap(), ["omaddons"]);
 
+        // ubs:ignore — comparing environment variable names, not secrets
         let env_widget = |name: &str| (name == "OMADDONS_ACTOR").then(|| "widget".to_owned());
         assert_eq!(make(&[], &env_widget).unwrap().actor, Actor::Widget);
+        // ubs:ignore — comparing environment variable names, not secrets
         let env_offline = |name: &str| (name == "OMADDONS_OFFLINE").then(|| "1".to_owned());
         assert!(make(&[], &env_offline).unwrap().offline);
     }
