@@ -275,7 +275,9 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
         _ => SvPolicy::Auto,
     };
     let world = World::load()?;
-    let entries = history::read(&world.paths, &HistoryFilter::default())?.entries;
+    let read = history::read(&world.paths, &HistoryFilter::default())?;
+    let skipped = read.skipped_warning();
+    let entries = read.entries;
     let selection = select(
         &entries,
         &Selector {
@@ -302,7 +304,12 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
         });
         done.push((*entry, result));
     }
-    outcome(ctx, &world, &selection, run, sv_policy, done)
+    let mut undone = outcome(ctx, &world, &selection, run, sv_policy, done)?;
+    // What it chose from may lack the transactions on lines that did not read.
+    if let Some(warning) = skipped {
+        undone.warnings.insert(0, warning);
+    }
+    Ok(undone)
 }
 
 /// What `undo`'s arguments ask for.

@@ -766,6 +766,10 @@ fn roll_forward(
     index.written_at_ns = Timestamp::now().as_nanosecond();
     store::save(s, &index_path, &index, loaded.as_ref().map(|l| &l.status))?;
 
+    // A crash mid-append left this transaction's line cut short, perhaps only its
+    // newline: closed off, a whole line reads back and is not appended twice, and a
+    // fragment stays apart from the line appended after it.
+    history::close_torn_tail(s, paths)?;
     let filter = HistoryFilter {
         target: Some(key),
         ..HistoryFilter::default()
@@ -1664,7 +1668,6 @@ mod tests {
         scene
     }
 
-    #[cfg(debug_assertions)]
     fn recover_scene(scene: &crate::engine::testing::Scene) -> Vec<Warning> {
         let lock = scene.lock();
         recover_all(&RecoveryEnv {
@@ -1728,6 +1731,52 @@ mod tests {
                 scene.client.snapshots(&scene.tx).display()
             )),
             "{message}"
+        );
+    }
+
+    /// `testing::Scene`'s transaction, swapped, then cut short while appending its
+    /// history line: its last `cut` bytes never reached the disk. Its writer is gone.
+    fn swapped_with_its_line_cut(cut: usize) -> (crate::engine::testing::Scene, HistoryEntry) {
+        let mut scene = crate::engine::testing::Scene::new();
+        let line = {
+            let lock = scene.lock();
+            let mut s = scene.session();
+            let mut journal = scene.journal(&mut s, &lock);
+            journal.mark_swapped(&mut s).unwrap();
+            let text = std::fs::read_to_string(journal.path()).unwrap();
+            parse(&text).unwrap().prepared.unwrap().commit.history
+        };
+        let mut bytes = serde_json::to_vec(&line).unwrap();
+        bytes.push(b'\n');
+        bytes.truncate(bytes.len() - cut);
+        std::fs::write(scene.paths.history_file(), bytes).unwrap();
+        scene.release_inflight();
+        (scene, line)
+    }
+
+    #[test]
+    fn roll_forward_finds_its_own_line_that_lost_only_its_newline() {
+        let (scene, line) = swapped_with_its_line_cut(1);
+        let warnings = recover_scene(&scene);
+        assert!(
+            warnings[0].message.contains("rolled forward"),
+            "{warnings:?}"
+        );
+        let read = history::read(&scene.paths, &HistoryFilter::default()).unwrap();
+        assert_eq!(read.entries, [line], "one line, not two");
+        assert_eq!((read.torn_lines, read.skipped_lines), (0, 0));
+    }
+
+    #[test]
+    fn roll_forward_appends_its_line_apart_from_its_own_fragment() {
+        let (scene, line) = swapped_with_its_line_cut(40);
+        recover_scene(&scene);
+        let read = history::read(&scene.paths, &HistoryFilter::default()).unwrap();
+        assert_eq!(read.entries, [line]);
+        assert_eq!(
+            (read.torn_lines, read.skipped_lines),
+            (1, 0),
+            "the fragment is a line of its own"
         );
     }
 

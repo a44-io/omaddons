@@ -1268,7 +1268,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 </details>
 
 <details>
-<summary><strong>Every warning code (37)</strong></summary>
+<summary><strong>Every warning code (38)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -1309,6 +1309,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `orphaned_dependency` | a remove or update left dependencies required by nothing; the fix is one `omaddons remove <names…> -t <id>` naming them all |
 | `bridge_dependency` | a newly installed addon's other folder (a bridge or plugin) works with an addon that is not installed; nothing is installed for it, and the fix installs it (`omaddons install <name or ref> -t <id>`), or searches for it (`omaddons search <folder>`) when no keyless source ships it. Only on the addon's first install |
 | `target_addons_shared` | `status`: two or more clients share one AddOns directory (an `Interface/AddOns` symlinked between them); a folder one client records is `shared` on the others, which may not record it too; the fix is advice: manage those addons from one client, or stop sharing the directory. Also on `install`, `update` and `remove` of a folder both clients recorded before that was refused: the change shows on the other client too (fix `omaddons status -t <other>`) |
+| `history_lines_skipped` | `history` and `undo`: lines of `history.jsonl` could not be read (a hand edit or other damage, not a write a crash cut short) and were skipped, so the transactions on them are not listed and cannot be undone; it counts them, and the fix is advice, since omaddons never rewrites the file |
 
 </details>
 
@@ -1566,7 +1567,7 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_HTTP_FIXTURES`, `OMADDON
 | `~/.config/omaddons/credentials/github` | The GitHub token `auth github set` stores (mode 0600, in a 0700 directory) | Yes (forgets the token) |
 | `~/.local/state/omaddons/registry.json` | Registered targets and the default | Loses ids and registrations |
 | `~/.local/state/omaddons/targets/<key>.json`, `<key>.files.json` | Per-target addon records, and every managed file's size and hash | Loses management |
-| `~/.local/state/omaddons/history.jsonl` | One line per committed transaction | Loses history |
+| `~/.local/state/omaddons/history.jsonl` | One line per committed transaction. A line a crash cut short is closed off by the next write, and recovery appends that transaction's line again; other unreadable lines are skipped and counted in a `history_lines_skipped` warning on `history` and `undo` | Loses history |
 | `~/.local/state/omaddons/snapshots/<tx>/`, `journal/`, `inflight/`, `trash/` | Undo data for state files, journals, in-flight locks, staged deletions | No |
 | `~/.local/state/omaddons/lock` | The global lock (never delete while running) | No |
 | `~/.local/state/omaddons/status.json` | A derived summary for the future widget | Yes |

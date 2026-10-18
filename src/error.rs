@@ -298,6 +298,9 @@ warning_codes! {
     /// Two or more targets share one AddOns directory (a symlink): each keeps its own
     /// records, so each sees the other's addons as unmanaged.
     TargetAddonsShared          = "target_addons_shared";
+    /// Lines of `history.jsonl` that are not cut-short writes did not read: their
+    /// transactions are lost to `history` and `undo`.
+    HistoryLinesSkipped         = "history_lines_skipped";
 }
 
 impl fmt::Display for WarningCode {
@@ -779,7 +782,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 37);
+        assert_eq!(WarningCode::ALL.len(), 38);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

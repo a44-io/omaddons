@@ -4,6 +4,12 @@
 //!
 //! Each line carries its own `schema_version` as its first key. A crash mid-append
 //! leaves at most a torn last line; the reader skips it and never fails on a bad line.
+//! The next write closes it off first, so a new line never merges with it, and the
+//! reader salvages lines an older omaddons merged. Lines that still do not read are
+//! counted, and `history` and `undo` warn about them.
+
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 
 use jiff::Timestamp;
 use schemars::JsonSchema;
@@ -11,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use super::paths::Paths;
 use super::store::SchemaVersion;
-use crate::error::{Error, ErrorCode, Result, Suggestion};
+use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{Op, WriteSession, mutate};
 use crate::limits::REASON_MAX_CHARS;
 use crate::model::{Actor, FolderName, RunId, TargetKey, TxId, TxKind};
@@ -119,7 +125,9 @@ pub enum TxResult {
 }
 
 /// Appends one line through `fsx::mutate(AppendFile)`: a single write plus fsync,
-/// inside the commit's transaction session while the global lock is held.
+/// inside the commit's transaction session while the global lock is held. A last line
+/// a crash cut short is closed off in the same write, so the new line never merges
+/// with it.
 pub fn append(s: &mut WriteSession<'_>, paths: &Paths, entry: &HistoryEntry) -> Result<()> {
     if let Some(reason) = &entry.reason
         && reason.chars().count() > REASON_MAX_CHARS
@@ -130,11 +138,37 @@ pub fn append(s: &mut WriteSession<'_>, paths: &Paths, entry: &HistoryEntry) -> 
             Suggestion::text("shorten --reason"),
         ));
     }
-    let mut line = serde_json::to_vec(entry)
+    let path = paths.history_file();
+    let mut line = Vec::new();
+    if unterminated(&path) {
+        line.push(b'\n');
+    }
+    serde_json::to_writer(&mut line, entry)
         .map_err(|err| Error::internal(format!("serializing a history line: {err}")))?;
     line.push(b'\n');
-    mutate(s, &paths.history_file(), Op::AppendFile { content: &line })?;
+    mutate(s, &path, Op::AppendFile { content: &line })?;
     Ok(())
+}
+
+/// Closes off a last line a crash cut short, under the global lock: a line that was
+/// complete but for its newline then reads back, and the next append starts a fresh
+/// line. Roll-forward does this before it looks for its own line, so it neither misses
+/// nor duplicates it.
+pub fn close_torn_tail(s: &mut WriteSession<'_>, paths: &Paths) -> Result<()> {
+    let path = paths.history_file();
+    if unterminated(&path) {
+        mutate(s, &path, Op::AppendFile { content: b"\n" })?;
+    }
+    Ok(())
+}
+
+/// Whether `path` is a non-empty file whose last byte is not a newline.
+fn unterminated(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut last = [0u8; 1];
+    file.seek(SeekFrom::End(-1)).is_ok() && file.read_exact(&mut last).is_ok() && last[0] != b'\n'
 }
 
 /// Which entries to return.
@@ -164,10 +198,33 @@ impl HistoryFilter {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HistoryRead {
     pub entries: Vec<HistoryEntry>,
-    /// The last line was cut short by a crash (or does not parse) and was skipped.
+    /// The last line has no newline yet (cut short by a crash, or still being written)
+    /// and was skipped.
     pub torn_tail: bool,
-    /// Other lines that do not parse.
+    /// Lines a crash cut short that a later write closed off. No transaction is lost on
+    /// one: recovery appends the whole line again.
+    pub torn_lines: usize,
+    /// Other lines that do not read (a hand edit, damage): the transactions on them are
+    /// lost to `history` and `undo`.
     pub skipped_lines: usize,
+}
+
+impl HistoryRead {
+    /// `history_lines_skipped`, when lines other than cut-short writes did not read.
+    pub fn skipped_warning(&self) -> Option<Warning> {
+        let message = match self.skipped_lines {
+            0 => return None,
+            1 => "1 line of history.jsonl could not be read and was skipped; the transaction on it is not listed and cannot be undone".to_owned(),
+            n => format!(
+                "{n} lines of history.jsonl could not be read and were skipped; the transactions on them are not listed and cannot be undone"
+            ),
+        };
+        Some(
+            Warning::new(WarningCode::HistoryLinesSkipped, message).with_fix(Suggestion::text(
+                "a line was damaged by a crash or a hand edit; omaddons never rewrites history.jsonl",
+            )),
+        )
+    }
 }
 
 /// Reads the history, skipping bad lines rather than failing.
@@ -201,15 +258,18 @@ pub fn parse(text: &str, filter: &HistoryFilter) -> HistoryRead {
         .collect();
     let last = lines.len().saturating_sub(1);
     for (index, line) in lines.iter().enumerate() {
-        let is_last = index == last;
-        match serde_json::from_str::<HistoryEntry>(line) {
-            Ok(entry) if !(is_last && !complete) => {
+        if index == last && !complete {
+            read.torn_tail = true;
+            continue;
+        }
+        match read_line(line) {
+            Line::Entry(entry) => {
                 if filter.matches(&entry) {
-                    read.entries.push(entry);
+                    read.entries.push(*entry);
                 }
             }
-            _ if is_last => read.torn_tail = true,
-            _ => read.skipped_lines += 1,
+            Line::Torn => read.torn_lines += 1,
+            Line::Unreadable => read.skipped_lines += 1,
         }
     }
     if let Some(limit) = filter.limit {
@@ -217,6 +277,38 @@ pub fn parse(text: &str, filter: &HistoryFilter) -> HistoryRead {
         read.entries.drain(..excess);
     }
     read
+}
+
+/// How every line starts: `schema_version` is the first key of [`HistoryEntry`]. Inside
+/// a string value the quotes would be escaped, so this marks a line's start only.
+const LINE_START: &str = "{\"schema_version\":";
+
+/// One complete line, read.
+enum Line {
+    Entry(Box<HistoryEntry>),
+    /// The JSON ends early: a write a crash cut short.
+    Torn,
+    /// Anything else that does not read.
+    Unreadable,
+}
+
+/// Reads one complete line. An older omaddons appended right after a cut-short line,
+/// merging the two (`<fragment><line>`); when the whole does not read, the part from
+/// the last line start on is tried, which salvages the line appended after it.
+fn read_line(line: &str) -> Line {
+    let error = match serde_json::from_str::<HistoryEntry>(line) {
+        Ok(entry) => return Line::Entry(Box::new(entry)),
+        Err(error) => error,
+    };
+    if let Some(at) = line.rfind(LINE_START).filter(|at| *at > 0)
+        && let Ok(entry) = serde_json::from_str::<HistoryEntry>(&line[at..])
+    {
+        return Line::Entry(Box::new(entry));
+    }
+    match error.classify() {
+        serde_json::error::Category::Eof => Line::Torn,
+        _ => Line::Unreadable,
+    }
 }
 
 /// The most recent matching entry (`undo`, `undo --last-by`).
@@ -422,6 +514,117 @@ mod tests {
         assert_eq!(read.entries.len(), 2);
         assert!(read.torn_tail);
         assert_eq!(read.skipped_lines, 1);
+    }
+
+    fn json(entry: &HistoryEntry) -> String {
+        serde_json::to_string(entry).unwrap()
+    }
+
+    fn txs(read: &HistoryRead) -> Vec<String> {
+        read.entries.iter().map(|e| e.tx.to_string()).collect()
+    }
+
+    #[test]
+    fn an_append_after_a_cut_short_line_starts_a_fresh_one() {
+        let f = fixture();
+        let [one, two, three] =
+            [1, 2, 3].map(|n| entry(n, Actor::Agent, TxKind::Install, "2026-10-14T21:00:00Z"));
+        append_all(&f, std::slice::from_ref(&one));
+        sys::append_durable(&f.paths.history_file(), &json(&two).as_bytes()[..40]).unwrap();
+        append_all(&f, std::slice::from_ref(&three));
+
+        let text = std::fs::read_to_string(f.paths.history_file()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "{text}");
+        assert_eq!(lines[1], &json(&two)[..40], "the fragment stands alone");
+        let read = read(&f.paths, &HistoryFilter::default()).unwrap();
+        assert_eq!(txs(&read), [one.tx.to_string(), three.tx.to_string()]);
+        assert_eq!(
+            (read.torn_tail, read.torn_lines, read.skipped_lines),
+            (false, 1, 0)
+        );
+        assert_eq!(
+            read.skipped_warning(),
+            None,
+            "a closed fragment loses nothing"
+        );
+    }
+
+    #[test]
+    fn a_line_merged_onto_a_fragment_by_an_older_omaddons_is_salvaged() {
+        let f = fixture();
+        let [one, two] =
+            [1, 2].map(|n| entry(n, Actor::Agent, TxKind::Install, "2026-10-14T21:00:00Z"));
+        append_all(&f, std::slice::from_ref(&one));
+        let merged = format!("{}{}\n", &json(&two)[..40], json(&two));
+        sys::append_durable(&f.paths.history_file(), merged.as_bytes()).unwrap();
+        // A whole line without its newline, then the same line again.
+        let doubled = format!("{}{}\n", json(&one), json(&two));
+        sys::append_durable(&f.paths.history_file(), doubled.as_bytes()).unwrap();
+
+        let read = read(&f.paths, &HistoryFilter::default()).unwrap();
+        assert_eq!(
+            txs(&read),
+            [one.tx.to_string(), two.tx.to_string(), two.tx.to_string()]
+        );
+        assert_eq!((read.torn_lines, read.skipped_lines), (0, 0));
+    }
+
+    #[test]
+    fn unreadable_lines_are_counted_apart_from_cut_short_ones() {
+        let f = fixture();
+        assert_eq!(
+            read(&f.paths, &HistoryFilter::default()).unwrap(),
+            HistoryRead::default(),
+            "no file"
+        );
+        let one = entry(1, Actor::Agent, TxKind::Install, "2026-10-14T21:00:00Z");
+        append_all(&f, std::slice::from_ref(&one));
+        sys::append_durable(&f.paths.history_file(), b"not json\n").unwrap();
+        sys::append_durable(
+            &f.paths.history_file(),
+            b"{\"schema_version\":\"1.0\",\"tx\"\n",
+        )
+        .unwrap();
+
+        let read = read(&f.paths, &HistoryFilter::default()).unwrap();
+        assert_eq!(txs(&read), [one.tx.to_string()]);
+        assert_eq!(
+            (read.torn_tail, read.torn_lines, read.skipped_lines),
+            (false, 1, 1)
+        );
+        let warning = read.skipped_warning().unwrap();
+        assert_eq!(warning.code, WarningCode::HistoryLinesSkipped);
+        assert!(
+            warning
+                .message
+                .starts_with("1 line of history.jsonl could not be read"),
+            "{}",
+            warning.message
+        );
+        assert_eq!(warning.fix.as_ref().and_then(|f| f.argv()), None);
+    }
+
+    #[test]
+    fn a_line_missing_only_its_newline_reads_once_closed_off() {
+        let f = fixture();
+        let one = entry(1, Actor::Agent, TxKind::Install, "2026-10-14T21:00:00Z");
+        sys::append_durable(&f.paths.history_file(), json(&one).as_bytes()).unwrap();
+        let before = read(&f.paths, &HistoryFilter::default()).unwrap();
+        assert!(before.entries.is_empty() && before.torn_tail);
+
+        let mut s = crate::fsx::WriteSession::untracked(Writer::Mutating, &f.scopes, "test");
+        close_torn_tail(&mut s, &f.paths).unwrap();
+        let after = read(&f.paths, &HistoryFilter::default()).unwrap();
+        assert_eq!(txs(&after), [one.tx.to_string()]);
+        assert!(!after.torn_tail);
+        let len = std::fs::metadata(f.paths.history_file()).unwrap().len();
+        close_torn_tail(&mut s, &f.paths).unwrap();
+        assert_eq!(
+            std::fs::metadata(f.paths.history_file()).unwrap().len(),
+            len,
+            "a terminated file is left alone"
+        );
     }
 
     #[cfg(debug_assertions)]

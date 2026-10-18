@@ -278,9 +278,11 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
         .take(limit)
         .map(|e| line(&world, e, verbose))
         .collect();
+    let mut warnings = world.warnings.clone();
+    warnings.extend(read.skipped_warning());
     Ok(HistoryOutcome {
         data: HistoryData { entries, truncated },
-        warnings: world.warnings.clone(),
+        warnings,
         torn_tail: read.torn_tail,
     })
 }

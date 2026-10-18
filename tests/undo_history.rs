@@ -558,6 +558,41 @@ fn force_over_an_unmanaged_folder_then_undo_restores_it() {
     );
 }
 
+/// A line that does not read (here a hand edit) loses its transaction to `history` and
+/// `undo`, and both say so; the lines around it still read.
+#[test]
+fn an_unreadable_history_line_is_warned_about_by_history_and_undo() {
+    let mut s = Session::new();
+    s.install("Foo", "1", &[]);
+    let history = s.home.state().join("history.jsonl");
+    let mut text = fs::read_to_string(&history).unwrap();
+    text.push_str("not json\n");
+    fs::write(&history, text).unwrap();
+    let bar = s.install("Bar", "1", &[]);
+    let skipped = |envelope: &Value| {
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == "history_lines_skipped")
+            .map(|w| w["message"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    let listed = s.run(&["history"]).expect(0);
+    assert_eq!(listed["data"]["entries"].as_array().unwrap().len(), 2);
+    let warned = skipped(&listed);
+    assert_eq!(warned.len(), 1, "{listed}");
+    assert!(
+        warned[0].starts_with("1 line of history.jsonl"),
+        "{warned:?}"
+    );
+
+    let undone = s.run(&["undo"]).expect(0);
+    assert_eq!(undone["data"]["reverted"]["tx"], bar.as_str());
+    assert_eq!(skipped(&undone).len(), 1, "{undone}");
+}
+
 #[test]
 fn history_filters_orders_and_truncates() {
     let mut s = Session::new();

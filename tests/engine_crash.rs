@@ -16,6 +16,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::fs;
 
+use common::archives::zip_text;
 use common::engine::{Scene, shapes, warning_codes};
 use omaddons::engine::FAILPOINTS;
 use support::{Op, RecordsOp, Shape, expected_new, matrix, record_matrix, shape_matrix};
@@ -1004,5 +1005,61 @@ fn another_clients_journal_is_recovered_or_reported_never_blocking() {
                 r.context()
             );
         }
+    }
+}
+
+/// A crash after Bar's history line was written, then a power loss that cut the line
+/// short (by 40 bytes, or by its newline alone): the next command rolls Bar forward
+/// with exactly one whole line of its own, and `history` and `undo` see Foo, Bar and
+/// Baz, with nothing to warn about.
+#[test]
+fn a_history_line_cut_short_by_a_crash_hides_no_transaction() {
+    for cut in [40, 1] {
+        let s = Scene::new();
+        let baz = zip_text(&[("Baz/Baz.toc", "## Interface: 120105\n")]);
+        fs::write(s.dl.join("baz.zip"), baz).unwrap();
+        s.install("gh:o/foo", "v1");
+        let crashed = s.run(
+            &s.install_args("gh:o/bar", "bar"),
+            "engine.history.appended=abort",
+        );
+        assert_eq!(crashed.code, -1, "{}", crashed.context());
+        let journals = s.journals();
+        let bar = journals[0]
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let history = s.home.state().join("history.jsonl");
+        let len = fs::metadata(&history).unwrap().len();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&history)
+            .unwrap()
+            .set_len(len - cut)
+            .unwrap();
+
+        let recovering = s.install("gh:o/baz", "baz");
+        assert!(
+            warning_codes(&recovering).contains(&"journal_recovered".to_owned()),
+            "cut {cut}: {recovering}"
+        );
+        let txs = s.history_txs();
+        assert_eq!(txs.len(), 3, "cut {cut}: {txs:?}");
+        assert_eq!(txs.iter().filter(|t| **t == bar).count(), 1, "cut {cut}");
+        let listed = s.ok(&["history"]);
+        assert_eq!(
+            listed["data"]["entries"].as_array().unwrap().len(),
+            3,
+            "cut {cut}: {listed}"
+        );
+        assert!(warning_codes(&listed).is_empty(), "cut {cut}: {listed}");
+
+        let first = s.ok(&["undo"]);
+        assert!(!s.addons().join("Baz").exists(), "cut {cut}: {first}");
+        let second = s.ok(&["undo", &bar]);
+        assert_eq!(second["data"]["reverted"]["tx"], bar.as_str(), "cut {cut}");
+        assert!(!s.addons().join("Bar").exists(), "cut {cut}: {second}");
     }
 }
