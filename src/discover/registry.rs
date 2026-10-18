@@ -47,7 +47,7 @@ pub fn read_marker(client_dir: &Path) -> Option<TargetKey> {
 }
 
 /// Whether two paths name the same directory (also through symlinks).
-fn same_dir(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_dir(a: &Path, b: &Path) -> bool {
     a == b
         || std::fs::canonicalize(a)
             .ok()

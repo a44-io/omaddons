@@ -1586,6 +1586,7 @@ mod engine_api {
             argv: &argv,
             command: "install",
             running: Some(&nothing_runs),
+            known_targets: std::slice::from_ref(&req.targets[0].discovered.target),
             cache: None,
             progress: &ProgressSink::none(),
             catalog: Some(&catalog),

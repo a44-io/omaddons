@@ -698,3 +698,67 @@ fn the_reference_runs_change_what_they_should() {
     assert_ne!(install["Foo"], update["Foo"]);
     assert!(remove.values().all(Option::is_none));
 }
+
+/// An undo crashed at each failpoint after its swap, then recovered by a change made
+/// while the client runs. Recovery finishes folders, record and history, and never
+/// writes SavedVariables under the running client: a restore the crash cut off waits
+/// (`sv_deferred`, `saved_variables_deferred`); one done before the crash stays done.
+#[test]
+fn crash_matrix_undo_recovered_while_the_client_runs() {
+    const SV: &str = "WTF/Account/ACCT/SavedVariables/Foo.lua";
+    // Each failpoint after `swapped`, whether the restore had run before it, and whether
+    // the journal was left unfinished (a committed one is pruned silently).
+    let points = [
+        ("engine.swapped", false, true),
+        ("engine.record.written", true, true),
+        ("engine.history.appended", true, true),
+        ("engine.committed", true, false),
+    ];
+    for (failpoint, restored, unfinished) in points {
+        let mut s = Scene::new();
+        let sv = s.home.client("_retail_").join(SV);
+        fs::create_dir_all(sv.parent().unwrap()).unwrap();
+        fs::write(&sv, "-- before").unwrap();
+        let empty = s.folders();
+        s.install("gh:o/foo", "v1");
+        fs::write(&sv, "-- after").unwrap();
+
+        let undo: Vec<String> = ["undo", "--offline", "--json"]
+            .iter()
+            .map(|a| (*a).to_owned())
+            .collect();
+        let crashed = s.run(&undo, &format!("{failpoint}=abort"));
+        assert_eq!(crashed.code, -1, "{failpoint}: {}", crashed.context());
+
+        s.home.retail_running();
+        let r = s.run(&s.install_args("gh:o/bar", "bar"), "");
+        let envelope = r.expect(0);
+        let codes = warning_codes(&envelope);
+        let context = format!("{failpoint}\n{}", r.context());
+        assert_eq!(
+            codes.iter().any(|c| c == "journal_recovered"),
+            unfinished,
+            "{context}"
+        );
+        assert_eq!(
+            codes.iter().any(|c| c == "saved_variables_deferred"),
+            !restored,
+            "{context}"
+        );
+        let want = if restored { "-- before" } else { "-- after" };
+        assert_eq!(fs::read_to_string(&sv).unwrap(), want, "{context}");
+        assert_eq!(s.folders(), empty, "{context}: the undo's folders stand");
+        assert!(s.journals().is_empty(), "{context}");
+        let line = fs::read_to_string(s.home.state().join("history.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|v| v["kind"] == "undo")
+            .unwrap();
+        assert_eq!(
+            line["sv_deferred"].as_bool().unwrap_or(false),
+            !restored,
+            "{context}: {line}"
+        );
+    }
+}

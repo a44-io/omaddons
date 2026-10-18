@@ -542,7 +542,7 @@ fn entries(dir: &Path, want_dirs: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::journal::{Phase, StepRecord, parse, recover_all};
+    use crate::engine::journal::{Phase, RecoveryEnv, StepRecord, parse, recover_all};
     use crate::engine::testing::{Scene, folder};
     use crate::error::ErrorCode;
     use crate::state::files_index::FolderIndex;
@@ -758,14 +758,23 @@ mod tests {
             "crashed mid-swap"
         );
         let lock = scene.lock();
-        let warnings = recover_all(&lock, &scene.paths, &scene.scopes).unwrap();
+        let recover = |scene: &Scene| {
+            recover_all(&RecoveryEnv {
+                lock: &lock,
+                paths: &scene.paths,
+                scopes: &scene.scopes,
+                sv_writable: &|_| false,
+            })
+            .unwrap()
+        };
+        let warnings = recover(&scene);
         assert_eq!(
             warnings.len(),
             0,
             "the in-flight lock is still held by the scene"
         );
         scene.release_inflight();
-        let warnings = recover_all(&lock, &scene.paths, &scene.scopes).unwrap();
+        let warnings = recover(&scene);
         assert_eq!(warnings.len(), 1);
         assert_eq!(
             tree(&scene.client.addons()),

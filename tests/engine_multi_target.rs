@@ -48,7 +48,7 @@ mod support {
     use omaddons::engine::retention::RetentionLimits;
     use omaddons::engine::{EngineCtx, TxOutcomes, TxRequest, TxTarget};
     use omaddons::error::Result;
-    use omaddons::model::{Actor, AddonReason, Channel, RunId, TxKind};
+    use omaddons::model::{Actor, AddonReason, Channel, RunId, Target, TxKind};
     use omaddons::model::{
         Asset as ReleaseAsset, AssetFlavor, AssetLocation, HashFromHeader, Release, ReleaseSet,
     };
@@ -78,6 +78,7 @@ mod support {
         nothing_runs: BTreeSet<PathBuf>,
         progress: ProgressSink,
         discovered: Vec<DiscoveredTarget>,
+        known: Vec<Target>,
     }
 
     impl Scene {
@@ -93,8 +94,9 @@ mod support {
                         source: DiscoverySource::Scan,
                     }
                 })
-                .collect();
+                .collect::<Vec<_>>();
             Self {
+                known: discovered.iter().map(|d| d.target.clone()).collect(),
                 paths: super::common::http::paths(&env),
                 _env: env,
                 http,
@@ -126,6 +128,7 @@ mod support {
                 argv: &self.argv,
                 command: "update",
                 running: Some(&self.nothing_runs),
+                known_targets: &self.known,
                 cache: None,
                 progress: &self.progress,
                 catalog: None,

@@ -69,6 +69,13 @@ mod support {
 
         /// Installs `<name>.zip` (one folder `<name>`) as gh:o/<name>; returns the tx.
         pub fn install(&mut self, name: &str, version: &str, extra: &[&str]) -> String {
+            let run = self.install_run(name, version, extra);
+            let envelope = run.expect(0);
+            envelope["data"]["tx"].as_str().unwrap().to_owned()
+        }
+
+        /// [`Session::install`]'s run, whatever its outcome.
+        pub fn install_run(&mut self, name: &str, version: &str, extra: &[&str]) -> Run {
             let dl = self.home.env.root().join("dl");
             fs::create_dir_all(&dl).unwrap();
             let zip = dl.join(format!("{name}-{version}.zip"));
@@ -80,9 +87,12 @@ mod support {
             let path = zip.display().to_string();
             let mut args = vec!["install", &r, "--file", &path, "-t", "retail"];
             args.extend_from_slice(extra);
-            let run = self.run(&args);
-            let envelope = run.expect(0);
-            envelope["data"]["tx"].as_str().unwrap().to_owned()
+            self.run(&args)
+        }
+
+        /// Unfinished transactions in the state directory.
+        pub fn journals(&self) -> usize {
+            fs::read_dir(self.home.state().join("journal")).map_or(0, |dir| dir.count())
         }
 
         /// No output so far names the account, realm or character.
@@ -315,6 +325,81 @@ fn saved_variables_while_the_client_runs_and_after() {
         .push(format!("{}\n{}", human.stdout, human.stderr));
     s.assert_private();
     k.assert_private();
+}
+
+/// An undo that crashed after its swap, before its SavedVariables restore, is finished
+/// by the next change while the client runs: folders and records complete, the
+/// SavedVariables wait for the follow-up restore, which works once the client exits.
+#[test]
+fn recovery_defers_saved_variables_while_the_client_runs() {
+    let mut s = Session::new();
+    let t1 = s.install("Foo", "1", &[]);
+    s.play();
+    let foo_lua = format!("{}/Foo.lua", support::ACCOUNT);
+
+    let crashed = s.home.exec_with(
+        &["undo".to_owned(), "--json".to_owned()],
+        &[("OMADDONS_FAILPOINTS", "engine.swapped=abort")],
+    );
+    assert_eq!(crashed.code, -1, "{}", crashed.context());
+    assert!(!s.addons().join("Foo").exists(), "swapped before the crash");
+    assert_eq!(s.sv(&foo_lua).as_deref(), Some("-- after"));
+    assert_eq!(s.journals(), 1);
+
+    // Adding a folder goes through while the client runs; it recovers the undo first.
+    s.home.retail_running();
+    let r = s.install_run("Bar", "7", &[]);
+    let envelope = r.expect(0);
+    let codes: Vec<&str> = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["code"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"journal_recovered"), "{}", r.context());
+    let deferred = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["code"] == "saved_variables_deferred");
+    assert!(deferred.is_some(), "{}", r.context());
+    assert_eq!(
+        argv_of(&deferred.unwrap()["fix_argv"]),
+        [
+            "omaddons",
+            "undo",
+            t1.as_str(),
+            "--saved-variables",
+            "restore"
+        ]
+    );
+    assert_eq!(
+        s.sv(&foo_lua).as_deref(),
+        Some("-- after"),
+        "never written while the client runs"
+    );
+    assert_eq!(s.journals(), 0);
+    let undo = common::state::history(&s.home)
+        .into_iter()
+        // ubs:ignore — comparing transaction ids, not secrets
+        .find(|e| e.reverts.map(|tx| tx.to_string()) == Some(t1.clone()))
+        .unwrap();
+    assert!(undo.sv_deferred, "{undo:?}");
+
+    // Once the client exits, the follow-up restores them.
+    s.home.nothing_running();
+    let r = s.run(&["undo", &t1, "--saved-variables", "restore"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        envelope["data"]["saved_variables"]["restored"],
+        2,
+        "{}",
+        r.context()
+    );
+    assert_eq!(s.sv(&foo_lua).as_deref(), Some("-- before"));
+    assert_eq!(s.sv(&format!("{}/Foo.lua.bak", support::ACCOUNT)), None);
+    assert!(s.addons().join("Bar").is_dir(), "Bar stays");
+    s.assert_private();
 }
 
 #[test]
@@ -552,6 +637,7 @@ mod runs {
                 let sources = SourceRegistry::builtin(&SourceConfigView::all_enabled());
                 let argv: Vec<String> = vec!["omaddons".into(), "update".into()];
                 let nothing_runs = BTreeSet::new();
+                let known: Vec<_> = resolved.targets.iter().map(|d| d.target.clone()).collect();
                 let ctx = EngineCtx {
                     paths: &paths,
                     http: http.as_ref(),
@@ -564,6 +650,7 @@ mod runs {
                     argv: &argv,
                     command: "update",
                     running: Some(&nothing_runs),
+                    known_targets: &known,
                     cache: None,
                     progress: &ProgressSink::none(),
                     catalog: None,

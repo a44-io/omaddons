@@ -13,8 +13,8 @@ use common::targets::battlenet;
 use common::trees::tree_hash;
 use jiff::Timestamp;
 use omaddons::engine::journal::{
-    CURRENT, CommitPayload, IndexChanges, Journal, Prepared, Step, StepOp, StepPurpose,
-    pending_warnings, recover_all,
+    CURRENT, CommitPayload, IndexChanges, Journal, Prepared, RecoveryEnv, Step, StepOp,
+    StepPurpose, pending_warnings, recover_all,
 };
 use omaddons::error::{Warning, WarningCode};
 use omaddons::fsx::{
@@ -230,7 +230,13 @@ mod support {
 
         pub fn recover(&self) -> Vec<Warning> {
             let lock = GlobalLock::acquire(&self.paths, "test").unwrap();
-            recover_all(&lock, &self.paths, &self.scopes).unwrap()
+            let env = RecoveryEnv {
+                lock: &lock,
+                paths: &self.paths,
+                scopes: &self.scopes,
+                sv_writable: &|_| false,
+            };
+            recover_all(&env).unwrap()
         }
 
         pub fn text(&self, folder: &str) -> Option<String> {

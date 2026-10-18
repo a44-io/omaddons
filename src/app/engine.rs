@@ -11,7 +11,7 @@ use crate::engine::plan::DownloadMemo;
 use crate::engine::retention::RetentionLimits;
 use crate::engine::{EngineCtx, TxOutcomes, TxRequest, UndoOutcome, UndoRequest};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
-use crate::model::{Actor, Channel};
+use crate::model::{Actor, Channel, Target};
 use crate::net::{Http, NetConfig, NetLog, stack};
 use crate::output::ProgressSink;
 use crate::resolve::cache::{Freshness, ReleaseCache};
@@ -47,6 +47,8 @@ pub struct Engine {
     /// The Tukui list and WoWInterface index dependencies resolve from after the
     /// catalog, each loaded at most once per command.
     indexes: DepIndexes,
+    /// Every discovered target, for recovery's running check.
+    known_targets: Vec<Target>,
 }
 
 impl Engine {
@@ -83,6 +85,12 @@ impl Engine {
             default_channel: world.config.default_channel.unwrap_or_default(),
             downloads: DownloadMemo::default(),
             indexes: DepIndexes::default(),
+            known_targets: world
+                .resolved
+                .targets
+                .iter()
+                .map(|d| d.target.clone())
+                .collect(),
         })
     }
 
@@ -99,6 +107,7 @@ impl Engine {
             argv: &self.argv,
             command: self.command,
             running: None,
+            known_targets: &self.known_targets,
             cache,
             progress: &self.progress,
             catalog: Some(&self.catalog),

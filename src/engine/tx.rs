@@ -13,7 +13,7 @@
 //! One target's failure is a per-item failure; committed targets stay committed.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use schemars::JsonSchema;
@@ -23,7 +23,8 @@ use super::blobs::BlobCache;
 use super::edit::RecordEdit;
 use super::inspect::ArchiveLimits;
 use super::journal::{
-    self, CommitPayload, IndexChanges, Journal, Prepared, RecoveryAction, recover_all, recover_tx,
+    self, CommitPayload, IndexChanges, Journal, Prepared, Recovered, RecoveryAction, RecoveryEnv,
+    recover_all, recover_tx,
 };
 use super::plan::{
     self, AddonWork, Change, Plan, PlanCtx, PlanFailure, PlanRequest, Planned, RequestedChange,
@@ -32,7 +33,7 @@ use super::plan::{
 };
 use super::stage::{Staged, stage};
 use super::swap::{SwapOp, snapshot_saved_variables, snapshot_state, swap};
-use crate::discover::registry::LockedRegistry;
+use crate::discover::registry::{LockedRegistry, same_dir};
 use crate::discover::running::detect_running;
 use crate::discover::target::DiscoveredTarget;
 use crate::error::{Error, ErrorBody, ErrorCode, PlanStaleSource, Result, Suggestion, Warning};
@@ -84,6 +85,7 @@ pub const FAILPOINTS: &[&str] = &[
     "engine.cleanup.done",
     "engine.retention",
     "engine.recover.step",
+    "engine.recover.sv",
 ];
 
 /// What a mutating command asks the engine for.
@@ -131,6 +133,9 @@ pub struct EngineCtx<'a> {
     pub command: &'a str,
     /// Running client dirs; `None` detects them live (production).
     pub running: Option<&'a BTreeSet<PathBuf>>,
+    /// Every target the command discovered: recovery writes SavedVariables only in a
+    /// client among them whose game is not running.
+    pub known_targets: &'a [Target],
     /// The command's release metadata, shared by its engine runs; `None` fetches
     /// without a memo.
     pub cache: Option<&'a ReleaseCache<'a>>,
@@ -428,6 +433,18 @@ pub(super) fn running_now(ctx: &EngineCtx<'_>, targets: &[Target]) -> BTreeSet<P
     }
 }
 
+/// Whether recovery may write the SavedVariables of the client at `client_dir` now
+/// (vision §5.5: never while its game runs): only in a client the command discovered,
+/// checked live. A client it did not discover might be running, so its SavedVariables
+/// wait: a false "running" only defers them, a false "not running" would write them
+/// under the game.
+pub(super) fn sv_writable(ctx: &EngineCtx<'_>, client_dir: &Path) -> bool {
+    ctx.known_targets
+        .iter()
+        .find(|t| same_dir(&t.client_dir, client_dir))
+        .is_some_and(|t| !running_now(ctx, std::slice::from_ref(t)).contains(&t.client_dir))
+}
+
 /// One target's transaction, from staging to cleanup.
 #[allow(clippy::too_many_arguments)]
 fn commit_target(
@@ -572,7 +589,14 @@ fn locked(
     };
     let guard = GlobalLock::acquire(paths, ctx.command)?;
     failpoint::hit("engine.lock.acquired").map_err(fail)?;
-    let recovered = recover_all(&guard, paths, scopes)?;
+    let sv_writable = |dir: &Path| sv_writable(ctx, dir);
+    let recovery = RecoveryEnv {
+        lock: &guard,
+        paths,
+        scopes,
+        sv_writable: &sv_writable,
+    };
+    let recovered = recover_all(&recovery)?;
     failpoint::hit("engine.recovered").map_err(fail)?;
 
     let mut target = discovered.target.clone();
@@ -807,9 +831,13 @@ fn locked(
     })();
     let (atomic_swap, swap_warnings) = match committed {
         Ok(done) => done,
-        Err(error) => match recover_tx(&guard, paths, scopes, tx)? {
+        Err(error) => match recover_tx(&recovery, tx)? {
             // Swapped already: the payload completed it, so the transaction stands.
-            Some(RecoveryAction::RolledForward) => (true, Vec::new()),
+            Some(Recovered {
+                action: RecoveryAction::RolledForward,
+                warnings,
+                ..
+            }) => (true, warnings),
             _ => return Err(error),
         },
     };
@@ -1353,7 +1381,10 @@ mod tests {
             // AddOns folder's creation.
             if matches!(
                 *name,
-                "engine.plan.downloaded" | "engine.recover.step" | "engine.addons_dir.created"
+                "engine.plan.downloaded"
+                    | "engine.recover.step"
+                    | "engine.recover.sv"
+                    | "engine.addons_dir.created"
             ) {
                 continue;
             }

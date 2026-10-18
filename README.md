@@ -1272,7 +1272,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `tx_in_progress` | another omaddons process is committing |
 | `atomic_swap_unavailable` | the AddOns filesystem has no `renameat2` exchange; two journaled renames were used |
 | `reload_required` | `/reload` in game to pick up the change |
-| `saved_variables_deferred` | the game is running; restore SavedVariables later with the given command |
+| `saved_variables_deferred` | the game is running, or recovery could not tell or could not write them; restore SavedVariables later with the given command |
 | `snapshot_cap_exceeded` | protected snapshots alone exceed the size cap |
 | `retention_failed` | pruning failed after commit; the transaction stands |
 | `out_of_date` | the TOC's interface is older than the client's; it loads only with "Load out of date AddOns" enabled |
@@ -1347,10 +1347,10 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
                                                               then: status.json, cleanup, retention
 ```
 
-- **Interrupted runs.** The next command that commits a change (install, remove or undo) recovers under the lock first. A journal that reached `swapped` rolls forward, and anything earlier rolls back. Each step records the device and inode of both paths, so rollback reverses a rename only if it actually happened. Read commands never recover anything: they report `journal_pending`, and `status` lists it under attention.
+- **Interrupted runs.** The next command that commits a change (install, remove or undo) recovers under the lock first. A journal that reached `swapped` rolls forward, and anything earlier rolls back. Each step records the device and inode of both paths, so rollback reverses a rename only if it actually happened. An interrupted undo whose SavedVariables restore had not run yet restores them during recovery only when the client is not running. Otherwise, or when the restore fails, recovery leaves them as they are and warns `saved_variables_deferred` with the command to run after quitting. Read commands never recover anything: they report `journal_pending`, and `status` lists it under attention.
 - **No atomic rename.** On filesystems without `renameat2` exchange (NTFS through ntfs-3g, some FUSE mounts), omaddons falls back to two journaled renames per folder and reports `atomic_swap: false` with an `atomic_swap_unavailable` warning. A cross-device rename is an error, never a fallback, and the staging area must be on the same filesystem as AddOns.
 - **Concurrency.** Planning and staging take no lock, so a terminal and an agent (and later the widget) can work at once. The global lock (`~/.local/state/omaddons/lock`, an flock that is never renamed or deleted) is held for the commit window, and briefly for retention, `config set` and `targets` changes. Tests assert each commit holds it under 50 ms, and the M1 checkpoint measured at most 2 ms. A second run waits up to 5 seconds, then fails with `locked` (exit 5, retryable, `details.holder`).
-- **Crash testing.** All 24 engine failpoints are armed as a real `abort` in a child process for first installs, installs, updates and removes. The state afterwards must be wholly old or wholly new, and at least ten of them must actually crash a scene. A failpoint off a scene's path has to let it succeed.
+- **Crash testing.** All 25 engine failpoints are armed as a real `abort` in a child process for first installs, installs, updates and removes. The state afterwards must be wholly old or wholly new, and at least ten of them must actually crash a scene. A failpoint off a scene's path has to let it succeed. An undo crashed after its swap is also recovered while the client runs, and its SavedVariables must never be written then.
 - **Records-only changes.** `adopt`, `pin` (without `--version`, which installs that release) and `unpin`, and a dependency's `required_by` bookkeeping, are transactions that change records only: no folder is touched, and each is undoable like any other.
 - **Your local changes.** Files you edited in a managed addon are replaced by an update or a reinstall, with a `local_changes_replaced` warning naming them; the transaction snapshot keeps them, so `omaddons undo` brings them back.
 - **Your `addons.toml`.** `export --write` keeps the previous file as `addons.toml.bak`, refuses to replace a file edited by hand since it last wrote it (without `--overwrite`), and never writes an empty export.
@@ -1827,7 +1827,7 @@ At the time of writing there are 760 tests: 464 unit tests in `src/`, 295 integr
 | Suite | What it covers |
 |---|---|
 | `tests/contract/` | A matrix of success and failure envelopes across the commands: key order, exit codes, registered codes, fix argv round-trips (24 snapshots) |
-| `tests/engine_crash.rs` | All 24 engine failpoints armed as real `abort`s in a child process |
+| `tests/engine_crash.rs` | All 25 engine failpoints armed as real `abort`s in a child process |
 | `tests/engine_concurrency.rs` | Parallel runs, duplicate installs, lock hold time under 50 ms |
 | `tests/discover_*.rs` | The discovery matrix, launchers, scanning, custom clients, the cache |
 | `tests/catalog.rs` | The 19 GitHub and `git:` catalog entries replayed offline from recorded HTTP fixtures, with no REST calls |

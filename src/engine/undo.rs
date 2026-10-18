@@ -18,8 +18,9 @@
 //! `auto` defers them (`saved_variables_deferred`, finished later by
 //! `undo <tx> --saved-variables restore`, SavedVariables only), `restore` refuses with
 //! `game_running`, `keep` never touches them. The restore list rides in the journal
-//! payload, so roll-forward completes it after a crash. Account, realm and character
-//! names never reach the output: only counts do.
+//! payload, so roll-forward completes it after a crash, or defers it the same way when
+//! the client runs by then or the restore fails. Account, realm and character names
+//! never reach the output: only counts do.
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
@@ -30,7 +31,8 @@ use serde::{Deserialize, Serialize};
 
 use super::edit::{EditField, changed_fields};
 use super::journal::{
-    self, CommitPayload, IndexChanges, Journal, Prepared, RecoveryAction, recover_all, recover_tx,
+    self, CommitPayload, IndexChanges, Journal, Prepared, Recovered, RecoveryAction, RecoveryEnv,
+    recover_all, recover_tx,
 };
 use super::plan::{Change, ChangeKind, FolderSummary};
 use super::running::{self, PolicyContext, PolicyOp};
@@ -38,7 +40,7 @@ use super::stage::{Staged, stage_trees};
 use super::swap::{
     SvEntry, SvManifest, SwapOp, sha256_file, snapshot_saved_variables, snapshot_state, swap,
 };
-use super::tx::{EngineCtx, TxOutcome, cleanup, millis, running_now, write_status};
+use super::tx::{EngineCtx, TxOutcome, cleanup, millis, running_now, sv_writable, write_status};
 use crate::discover::target::DiscoveredTarget;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
@@ -220,14 +222,21 @@ fn commit(
     };
     let guard = GlobalLock::acquire(paths, ctx.command)?;
     failpoint::hit("engine.lock.acquired").map_err(fail)?;
-    let recovered = recover_all(&guard, paths, scopes)?;
+    let sv_writable = |dir: &Path| sv_writable(ctx, dir);
+    let recovery = RecoveryEnv {
+        lock: &guard,
+        paths,
+        scopes,
+        sv_writable: &sv_writable,
+    };
+    let recovered = recover_all(&recovery)?;
     failpoint::hit("engine.recovered").map_err(fail)?;
 
     let target = &discovered.target;
     let entries = history::read(paths, &HistoryFilter::default())?.entries;
     let at = select(&entries, UndoSelector::Tx(reverts))?;
     let running = running_now(ctx, std::slice::from_ref(target)).contains(&target.client_dir);
-    let planned = plan(ctx, req, &entries, at, target, running)?;
+    let mut planned = plan(ctx, req, &entries, at, target, running)?;
     failpoint::hit("engine.revalidated").map_err(fail)?;
 
     let key = planned.key;
@@ -335,8 +344,18 @@ fn commit(
     })();
     let (atomic_swap, swap_warnings) = match committed {
         Ok(done) => done,
-        Err(error) => match recover_tx(&guard, paths, scopes, tx)? {
-            Some(RecoveryAction::RolledForward) => (true, Vec::new()),
+        Err(error) => match recover_tx(&recovery, tx)? {
+            Some(Recovered {
+                action: RecoveryAction::RolledForward,
+                warnings,
+                sv_deferred,
+            }) => {
+                // What roll-forward could not restore waits, as under a running client.
+                let counts = &mut planned.sv.counts;
+                counts.deferred += sv_deferred;
+                counts.restored = counts.restored.saturating_sub(sv_deferred);
+                (true, warnings)
+            }
             _ => return Err(error),
         },
     };
@@ -469,13 +488,7 @@ fn plan(
                     target.id, sv.counts.deferred
                 ),
             )
-            .with_fix(Suggestion::command([
-                "omaddons".to_owned(),
-                "undo".to_owned(),
-                reverted.tx.to_string(),
-                "--saved-variables".to_owned(),
-                "restore".to_owned(),
-            ])),
+            .with_fix(sv_follow_up(&reverted.tx)),
         );
     }
     Ok(Planned {
@@ -1137,6 +1150,31 @@ fn plan_saved_variables(
         }
     }
     Ok(plan)
+}
+
+/// The command that finishes a deferred SavedVariables restore of `reverted`'s undo.
+pub(super) fn sv_follow_up(reverted: &TxId) -> Suggestion {
+    Suggestion::command([
+        "omaddons".to_owned(),
+        "undo".to_owned(),
+        reverted.to_string(),
+        "--saved-variables".to_owned(),
+        "restore".to_owned(),
+    ])
+}
+
+/// How many files of `sv` are not back to their state before `sv.from`; one that
+/// cannot be read counts as not back.
+pub(super) fn unrestored(client: &ClientPaths, sv: &SvRestore) -> usize {
+    let wtf = client.wtf();
+    sv.files
+        .iter()
+        .filter(|entry| {
+            relative(&entry.path)
+                .and_then(|rel| present_hash(&wtf.join(rel)))
+                .map_or(true, |now| now != entry.sha256)
+        })
+        .count()
 }
 
 /// Brings each file of `sv` back to its state before `sv.from`; a file already there
@@ -1837,6 +1875,48 @@ mod tests {
             Some("-- before")
         );
         assert_eq!(read(&scene, &format!("{ACCOUNT}/Foo.lua.bak")), None);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn an_in_process_roll_forward_that_cannot_restore_saved_variables_defers_them() {
+        let scene = TxScene::new();
+        saved_variables(&scene);
+        let t1 = install(&scene, "v1.zip", V1);
+        play(&scene);
+        let spec = "engine.swapped=error,engine.recover.sv=error";
+        let done = failpoint::with_spec(spec, || scene.undo(UndoSelector::Latest, SvPolicy::Auto))
+            .unwrap();
+        assert!(
+            !scene.client.addons().join("Foo").exists(),
+            "folders reverted"
+        );
+        assert_eq!((done.sv.restored, done.sv.deferred), (0, 2));
+        assert_eq!(
+            read(&scene, &format!("{ACCOUNT}/Foo.lua")).as_deref(),
+            Some("-- after")
+        );
+        let warning = done
+            .outcome
+            .warnings
+            .iter()
+            .find(|w| w.code == WarningCode::SavedVariablesDeferred)
+            .unwrap();
+        assert_eq!(
+            warning.fix.as_ref().unwrap().argv().unwrap(),
+            sv_follow_up(&t1).argv().unwrap()
+        );
+        assert!(history(&scene).pop().unwrap().sv_deferred);
+
+        // The follow-up restores them.
+        let done = scene.undo(UndoSelector::Tx(t1), SvPolicy::Restore).unwrap();
+        assert_eq!(done.sv.restored, 2);
+        assert_eq!(
+            read(&scene, &format!("{ACCOUNT}/Foo.lua")).as_deref(),
+            Some("-- before")
+        );
+        assert_eq!(read(&scene, &format!("{ACCOUNT}/Foo.lua.bak")), None);
+        assert!(leftovers(&scene).is_empty(), "{:?}", leftovers(&scene));
     }
 
     #[cfg(debug_assertions)]

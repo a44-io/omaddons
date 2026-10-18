@@ -453,21 +453,39 @@ pub enum RecoveryAction {
     RolledBack,
 }
 
-/// Recovers every leftover journal. The guard proves the global lock is held, so no
-/// writer is alive except ones still cleaning up after commit, whose in-flight lock is
-/// held and whose journals are skipped. One `journal_recovered` warning per rolled
-/// transaction; committed and unprepared journals are removed silently.
-pub fn recover_all(
-    lock: &GlobalLockGuard,
-    paths: &Paths,
-    scopes: &ScopeTable,
-) -> Result<Vec<Warning>> {
+/// What recovery runs with. The guard proves the global lock is held.
+pub struct RecoveryEnv<'a> {
+    pub lock: &'a GlobalLockGuard,
+    pub paths: &'a Paths,
+    pub scopes: &'a ScopeTable,
+    /// Whether the SavedVariables of the client at this dir may be written now: only
+    /// when the command can tell that its game is not running (vision §5.5: never while
+    /// it runs). When not, roll-forward leaves an undo's SavedVariables for
+    /// `undo <tx> --saved-variables restore`.
+    pub sv_writable: &'a dyn Fn(&Path) -> bool,
+}
+
+/// What recovering one transaction did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recovered {
+    pub action: RecoveryAction,
+    /// `saved_variables_deferred`, when roll-forward left an undo's SavedVariables.
+    pub warnings: Vec<Warning>,
+    /// How many SavedVariables files roll-forward left as they are.
+    pub sv_deferred: usize,
+}
+
+/// Recovers every leftover journal. No writer is alive except ones still cleaning up
+/// after commit, whose in-flight lock is held and whose journals are skipped. One
+/// `journal_recovered` warning per rolled transaction, each followed by what its
+/// roll-forward left; committed and unprepared journals are removed silently.
+pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
     let mut warnings = Vec::new();
-    for (tx, path) in journals(paths)? {
-        if InflightLock::is_live(paths, &tx)? {
+    for (tx, path) in journals(env.paths)? {
+        if InflightLock::is_live(env.paths, &tx)? {
             continue;
         }
-        warnings.extend(recover_one(lock, paths, scopes, &tx, path)?);
+        warnings.extend(recover_one(env, &tx, path)?);
     }
     Ok(warnings)
 }
@@ -475,39 +493,27 @@ pub fn recover_all(
 /// Recovers one transaction by its own writer, in process: an error after `prepared`
 /// rolls back, after `swapped` rolls forward. No liveness check: the caller is the
 /// writer. Leftovers its in-flight lock still protects are pruned at cleanup.
-pub fn recover_tx(
-    lock: &GlobalLockGuard,
-    paths: &Paths,
-    scopes: &ScopeTable,
-    tx: &TxId,
-) -> Result<Option<RecoveryAction>> {
-    let path = paths.journal(tx);
+pub fn recover_tx(env: &RecoveryEnv<'_>, tx: &TxId) -> Result<Option<Recovered>> {
+    let path = env.paths.journal(tx);
     if !path.exists() {
         return Ok(None);
     }
     let parsed = read(&path)?;
-    let action = recover_parsed(lock, paths, scopes, tx, &path, &parsed)?;
-    Ok(action)
+    recover_parsed(env, tx, &path, &parsed)
 }
 
 /// Recovers one journal and reports it.
-fn recover_one(
-    lock: &GlobalLockGuard,
-    paths: &Paths,
-    scopes: &ScopeTable,
-    tx: &TxId,
-    path: PathBuf,
-) -> Result<Option<Warning>> {
+fn recover_one(env: &RecoveryEnv<'_>, tx: &TxId, path: PathBuf) -> Result<Vec<Warning>> {
     let parsed = read(&path)?;
-    let action = recover_parsed(lock, paths, scopes, tx, &path, &parsed)?;
-    let (Some(action), Some(prepared)) = (action, &parsed.prepared) else {
-        return Ok(None);
+    let recovered = recover_parsed(env, tx, &path, &parsed)?;
+    let (Some(recovered), Some(prepared)) = (recovered, &parsed.prepared) else {
+        return Ok(Vec::new());
     };
-    let what = match action {
+    let what = match recovered.action {
         RecoveryAction::RolledForward => "completed it (rolled forward)",
         RecoveryAction::RolledBack => "undid it (rolled back)",
     };
-    Ok(Some(
+    let mut warnings = vec![
         Warning::new(
             WarningCode::JournalRecovered,
             format!(
@@ -516,29 +522,38 @@ fn recover_one(
             ),
         )
         .with_fix(Suggestion::command(["omaddons", "history", "--limit", "5"])),
-    ))
+    ];
+    warnings.extend(recovered.warnings);
+    Ok(warnings)
 }
 
 /// Rolls forward or back by phase, then prunes what the transaction left.
 fn recover_parsed(
-    lock: &GlobalLockGuard,
-    paths: &Paths,
-    scopes: &ScopeTable,
+    env: &RecoveryEnv<'_>,
     tx: &TxId,
     path: &Path,
     parsed: &Parsed,
-) -> Result<Option<RecoveryAction>> {
+) -> Result<Option<Recovered>> {
+    let (paths, scopes) = (env.paths, env.scopes);
     let mut s = WriteSession::untracked(Writer::Mutating, scopes, "recovery");
-    let action = match (&parsed.prepared, parsed.phase) {
+    let recovered = match (&parsed.prepared, parsed.phase) {
         (None, _) | (_, Phase::Unprepared) => None,
         (Some(_), Phase::Committed) => None,
         (Some(prepared), Phase::Swapped) => {
-            roll_forward(&mut s, scopes, paths, path, prepared)?;
-            Some(RecoveryAction::RolledForward)
+            let left = roll_forward(&mut s, env, path, prepared)?;
+            Some(Recovered {
+                action: RecoveryAction::RolledForward,
+                sv_deferred: left.as_ref().map_or(0, |(files, _)| *files),
+                warnings: left.into_iter().map(|(_, warning)| warning).collect(),
+            })
         }
         (Some(_), Phase::Prepared) => {
             roll_back(&mut s, &parsed.steps)?;
-            Some(RecoveryAction::RolledBack)
+            Some(Recovered {
+                action: RecoveryAction::RolledBack,
+                warnings: Vec::new(),
+                sv_deferred: 0,
+            })
         }
     };
     let mut victims = Vec::new();
@@ -555,27 +570,27 @@ fn recover_parsed(
         scopes,
         PruneReason::PostCommitCleanup,
         &victims,
-        LockUse::Held(lock),
+        LockUse::Held(env.lock),
     )?;
-    Ok(action)
+    Ok(recovered)
 }
 
 /// Writes the payload's state (each part only if not already written), then `committed`.
+/// Returns the SavedVariables files an undo's restore left, with the warning that says
+/// so.
 fn roll_forward(
     s: &mut WriteSession<'_>,
-    scopes: &ScopeTable,
-    paths: &Paths,
+    env: &RecoveryEnv<'_>,
     journal: &Path,
     prepared: &Prepared,
-) -> Result<()> {
+) -> Result<Option<(usize, Warning)>> {
+    let paths = env.paths;
     let key = prepared.target_key;
     let commit = &prepared.commit;
-    if let Some(sv) = &commit.sv_restore {
-        let mut undo = WriteSession::untracked(Writer::Undo, scopes, "recovery")
-            .with_owned_folders(sv.owned_folders());
-        let client = crate::state::paths::ClientPaths::new(&prepared.client_dir);
-        super::undo::restore_saved_variables(&mut undo, &client, sv, &prepared.tx)?;
-    }
+    let left = match &commit.sv_restore {
+        Some(sv) => finish_saved_variables(env, prepared, sv),
+        None => None,
+    };
     ensure_dir_all(s, &paths.targets_dir())?;
     let record_path = paths.target_record(&key);
     let current = store::load::<TargetRecord>(&record_path)?;
@@ -612,11 +627,66 @@ fn roll_forward(
     if !history::read(paths, &filter)?
         .entries
         .iter()
+        // ubs:ignore — comparing transaction ids, not secrets
         .any(|e| e.tx == prepared.tx)
     {
-        history::append(s, paths, &commit.history)?;
+        // A restore left for later is pending, as a live undo's deferred one is.
+        let mut line = commit.history.clone();
+        line.sv_deferred |= left.is_some();
+        history::append(s, paths, &line)?;
     }
-    append_line(s, journal, &JournalLine::Committed)
+    append_line(s, journal, &JournalLine::Committed)?;
+    Ok(left)
+}
+
+/// An interrupted undo's SavedVariables restore. It runs only when the client's
+/// SavedVariables may be written now; otherwise, or when it fails, the files stay as
+/// they are and `saved_variables_deferred` names the follow-up, exactly as a live
+/// `--saved-variables auto` undo does. Never a recovery failure, so roll-forward cannot
+/// get stuck on SavedVariables. `None` when nothing is left to restore.
+fn finish_saved_variables(
+    env: &RecoveryEnv<'_>,
+    prepared: &Prepared,
+    sv: &super::undo::SvRestore,
+) -> Option<(usize, Warning)> {
+    let client = crate::state::paths::ClientPaths::new(&prepared.client_dir);
+    let (tx, key) = (prepared.tx, prepared.target_key);
+    let failed = if (env.sv_writable)(&prepared.client_dir) {
+        let restored = failpoint::hit("engine.recover.sv")
+            .map_err(|e| {
+                Error::io(
+                    &prepared.client_dir,
+                    &e,
+                    Suggestion::command(["omaddons", "status"]),
+                )
+            })
+            .and_then(|()| {
+                let mut undo = WriteSession::untracked(Writer::Undo, env.scopes, "recovery")
+                    .with_owned_folders(sv.owned_folders());
+                super::undo::restore_saved_variables(&mut undo, &client, sv, &tx)
+            });
+        match restored {
+            Ok(_) => return None,
+            Err(error) => Some(error.code),
+        }
+    } else {
+        None
+    };
+    let files = super::undo::unrestored(&client, sv);
+    if files == 0 {
+        return None;
+    }
+    let message = match failed {
+        Some(code) => format!(
+            "transaction {tx} on target {key} was finished by recovery, but {files} SavedVariables files could not be restored ({code}) and were left as they are"
+        ),
+        None => format!(
+            "transaction {tx} on target {key} was finished by recovery while its game client was running (or not found by this command), so {files} SavedVariables files were left as they are"
+        ),
+    };
+    let warning = Warning::new(WarningCode::SavedVariablesDeferred, message)
+        .with_fix(super::undo::sv_follow_up(&sv.from));
+    Some((files, warning))
 }
 
 /// Undoes the steps that ran, last first. The failpoint `engine.recover.step` sits
@@ -982,9 +1052,13 @@ mod tests {
         );
 
         let lock = GlobalLock::acquire(&paths, "test").unwrap();
-        let crashed = failpoint::with_spec("engine.recover.step=error", || {
-            recover_all(&lock, &paths, &scopes)
-        });
+        let env = RecoveryEnv {
+            lock: &lock,
+            paths: &paths,
+            scopes: &scopes,
+            sv_writable: &|_| false,
+        };
+        let crashed = failpoint::with_spec("engine.recover.step=error", || recover_all(&env));
         assert!(crashed.is_err());
         assert_eq!(
             (
@@ -995,7 +1069,7 @@ mod tests {
             "Bar was undone, then the crash"
         );
 
-        let warnings = recover_all(&lock, &paths, &scopes).unwrap();
+        let warnings = recover_all(&env).unwrap();
         assert_eq!(read(&addons.join("Foo")).as_deref(), Some("old"));
         assert!(
             !addons.join("Bar").exists() && !stage_dir.exists() && !paths.journal(&tx).exists()
@@ -1007,6 +1081,180 @@ mod tests {
             "{}",
             warnings[0].message
         );
+    }
+
+    /// An undo of `from` interrupted after `swapped`, before its SavedVariables restore:
+    /// `Foo.lua` was `before` when `from` committed and is `after` now.
+    struct SvScene {
+        _dir: tempfile::TempDir,
+        paths: Paths,
+        scopes: ScopeTable,
+        client: PathBuf,
+        live: PathBuf,
+        from: TxId,
+        undo: TxId,
+    }
+
+    impl SvScene {
+        const REL: &str = "Account/ACCT/SavedVariables/Foo.lua";
+
+        fn new() -> Self {
+            use crate::engine::undo::SvRestore;
+            use crate::fsx::GlobalLock;
+            use crate::model::Actor;
+            use crate::state::history::TxResult;
+
+            let dir = tempfile::tempdir().unwrap();
+            let root = std::fs::canonicalize(dir.path()).unwrap();
+            let client = root.join("_retail_");
+            std::fs::create_dir_all(client.join("Interface/AddOns")).unwrap();
+            let (from, undo) = (TxId::new(), TxId::new());
+            let snapshot = client.join(format!("Interface/.omaddons/snapshots/{from}/WTF"));
+            let live = client.join("WTF").join(Self::REL);
+            for (path, text) in [
+                (snapshot.join(Self::REL), "FooDB = { v = 0 }"),
+                (live.clone(), "FooDB = { v = 1 }"),
+            ] {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, text).unwrap();
+            }
+            let sha256 = crate::engine::swap::sha256_file(&snapshot.join(Self::REL)).unwrap();
+            let paths = Paths::with_roots(&root, root.join("c"), root.join("s"), root.join("k"));
+            let scopes = ScopeTable::new(&paths, std::slice::from_ref(&client), None).unwrap();
+            let key = TargetKey::new();
+            let prepared = Prepared {
+                schema_version: CURRENT,
+                tx: undo,
+                target_key: key,
+                client_dir: client.clone(),
+                kind: TxKind::Undo,
+                started_at: Timestamp::now(),
+                creates_dirs: Vec::new(),
+                commit: CommitPayload {
+                    record: TargetRecord {
+                        key,
+                        generation: 2,
+                        addons: Default::default(),
+                    },
+                    index: IndexChanges::default(),
+                    history: HistoryEntry {
+                        schema_version: history::CURRENT,
+                        tx: undo,
+                        kind: TxKind::Undo,
+                        at: Timestamp::now(),
+                        target: key,
+                        actor: Actor::Agent,
+                        reason: None,
+                        argv: vec!["omaddons".into(), "undo".into()],
+                        ops: Vec::new(),
+                        result: TxResult::Committed,
+                        reverts: Some(from),
+                        sv_deferred: false,
+                        created_addons_dir: false,
+                        run: None,
+                    },
+                    stage_dir: client.join(format!("Interface/.omaddons/stage/{undo}")),
+                    sv_restore: Some(SvRestore {
+                        from,
+                        files: vec![crate::engine::swap::SvEntry {
+                            path: Self::REL.into(),
+                            sha256: Some(sha256),
+                        }],
+                    }),
+                },
+            };
+            {
+                let lock = GlobalLock::acquire(&paths, "test").unwrap();
+                let mut s = WriteSession::untracked(Writer::Mutating, &scopes, "test");
+                let mut journal = Journal::create(&mut s, &paths, &lock, prepared).unwrap();
+                journal.mark_swapped(&mut s).unwrap();
+            }
+            Self {
+                _dir: dir,
+                paths,
+                scopes,
+                client,
+                live,
+                from,
+                undo,
+            }
+        }
+
+        /// Recovers with the client's SavedVariables `writable` or not.
+        fn recover(&self, writable: bool) -> Result<Vec<Warning>> {
+            let lock = crate::fsx::GlobalLock::acquire(&self.paths, "test").unwrap();
+            let client = self.client.clone();
+            let sv_writable = move |dir: &Path| writable && dir == client;
+            recover_all(&RecoveryEnv {
+                lock: &lock,
+                paths: &self.paths,
+                scopes: &self.scopes,
+                sv_writable: &sv_writable,
+            })
+        }
+
+        fn live(&self) -> String {
+            std::fs::read_to_string(&self.live).unwrap()
+        }
+
+        fn line(&self) -> HistoryEntry {
+            let mut entries = history::read(&self.paths, &HistoryFilter::default())
+                .unwrap()
+                .entries;
+            assert_eq!(entries.len(), 1, "{entries:?}");
+            entries.remove(0)
+        }
+
+        /// The undo finished but left `Foo.lua`: history marks it, and the warning
+        /// names the follow-up.
+        fn assert_deferred(&self, warnings: &[Warning], why: &str) {
+            assert_eq!(self.live(), "FooDB = { v = 1 }", "left as it is");
+            let line = self.line();
+            assert_eq!((line.tx, line.sv_deferred), (self.undo, true));
+            let codes: Vec<_> = warnings.iter().map(|w| w.code).collect();
+            assert_eq!(
+                codes,
+                [
+                    WarningCode::JournalRecovered,
+                    WarningCode::SavedVariablesDeferred
+                ]
+            );
+            let deferred = &warnings[1];
+            assert!(deferred.message.contains(why), "{}", deferred.message);
+            assert!(!deferred.message.contains("ACCT"), "{}", deferred.message);
+            let from = self.from.to_string();
+            assert_eq!(
+                deferred.fix.as_ref().unwrap().argv().unwrap(),
+                ["omaddons", "undo", &from, "--saved-variables", "restore"]
+            );
+            assert!(!self.paths.journal(&self.undo).exists());
+        }
+    }
+
+    #[test]
+    fn recovery_restores_saved_variables_only_where_it_may_write_them() {
+        // The client runs (or the command did not find it): the files wait.
+        let scene = SvScene::new();
+        let warnings = scene.recover(false).unwrap();
+        scene.assert_deferred(&warnings, "while its game client was running");
+
+        // It does not: roll-forward restores them, as before.
+        let scene = SvScene::new();
+        let warnings = scene.recover(true).unwrap();
+        assert_eq!(scene.live(), "FooDB = { v = 0 }");
+        assert!(!scene.line().sv_deferred);
+        let codes: Vec<_> = warnings.iter().map(|w| w.code).collect();
+        assert_eq!(codes, [WarningCode::JournalRecovered]);
+        assert!(!scene.paths.journal(&scene.undo).exists());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_failed_saved_variables_restore_in_recovery_is_deferred() {
+        let scene = SvScene::new();
+        let warnings =
+            failpoint::with_spec("engine.recover.sv=error", || scene.recover(true)).unwrap();
+        scene.assert_deferred(&warnings, "could not be restored (io)");
     }
 
     #[test]

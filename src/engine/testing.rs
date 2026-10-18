@@ -360,6 +360,7 @@ impl TxScene {
             argv: &argv,
             command,
             running: Some(&self.running),
+            known_targets: std::slice::from_ref(&self.discovered.target),
             cache: None,
             progress: &crate::output::ProgressSink::none(),
             catalog: None,
