@@ -132,7 +132,7 @@ pub fn run(ctx: &Context, args: &ExportArgs) -> Result<ExportOutcome> {
             Suggestion::command(argv),
         ));
     }
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();
 

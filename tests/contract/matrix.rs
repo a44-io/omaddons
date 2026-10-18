@@ -44,6 +44,15 @@ fn status() {
     let c = s.json(&["status", "--check"], 6);
     assert_eq!(c.envelope["error"]["code"], "check_failed");
     insta::assert_json_snapshot!("status_check_failed", s.stable(&c.envelope));
+    // A failure still reports what the run found before it: the pending journal.
+    let c = s.json(&["list", "-t", "nosuch"], 3);
+    let codes: Vec<&str> = c.envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["journal_pending"], "{}", c.envelope);
 }
 
 #[test]

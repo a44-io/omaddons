@@ -591,6 +591,34 @@ fn an_unreadable_history_line_is_warned_about_by_history_and_undo() {
     let undone = s.run(&["undo"]).expect(0);
     assert_eq!(undone["data"]["reverted"]["tx"], bar.as_str());
     assert_eq!(skipped(&undone).len(), 1, "{undone}");
+    // Most of all when the transaction asked for is not found.
+    let missing = s.run(&["undo", "01JB8Q2VZ00000000000000000"]).expect(3);
+    assert_eq!(skipped(&missing).len(), 1, "{missing}");
+}
+
+/// Outcomes that never carried the run's warnings (undo, targets) report them now, and
+/// so does a failure.
+#[test]
+fn undo_and_targets_report_what_the_run_found() {
+    let mut s = Session::new();
+    s.install("Foo", "1", &[]);
+    let config = s.home.env.config().join("omaddons/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "bogus_key = 1\n").unwrap();
+    for (args, code) in [
+        (&["undo", "--dry-run"][..], 0),
+        (&["targets", "default", "retail"], 0),
+        (&["targets", "rm", "nosuch"], 3),
+    ] {
+        let envelope = s.run(args).expect(code);
+        let codes: Vec<&str> = envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["code"].as_str().unwrap())
+            .collect();
+        assert_eq!(codes, ["config_unknown_key"], "{args:?}: {envelope}");
+    }
 }
 
 #[test]

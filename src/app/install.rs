@@ -410,7 +410,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
     }
     let cwd = std::env::current_dir().unwrap_or_default();
     let file = args.file.as_ref().map(|f| cwd.join(f));
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
     let (catalog, catalog_warnings) = Catalog::load(&world.paths);
     warnings.extend(catalog_warnings);

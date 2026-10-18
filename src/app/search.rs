@@ -278,7 +278,7 @@ fn reset_at(error: &Error) -> Option<Timestamp> {
 pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
     let limit = check_limit(args)?;
     let query = args.query.join(" ");
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
     let mut notes: Vec<String> = Vec::new();
     let mut partial = false;

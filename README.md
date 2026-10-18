@@ -1200,11 +1200,11 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 | `partial` | bool | success with some failed items (present on success and on `check_failed`) |
 | `data` | object | the command's result (success, and `check_failed`) |
 | `error` | object | `code`, `message`, `fix` (display string), `fix_argv` (argv array, or `null` when the fix is prose), `alternatives` (`[{display, argv}]`), `retryable`, `details` (always an object) |
-| `warnings` | array | `{code, message, fix, fix_argv}`. On a partial run, each failed item is mirrored here |
+| `warnings` | array | `{code, message, fix, fix_argv}`. On a partial run, each failed item is mirrored here. On a failure, it holds what the run found before it failed (a `journal_pending`, a `config_unknown_key`), and stderr carries each as a `warning` event before the `error` event |
 | `commands` | array | suggested next steps: `{action, command, argv, destructive}`, e.g. `undo <tx>` after a change and `undo --run <run>` (action `undo_run`) after a change on several clients, `update`, `check_updates`, `adopt`, `reinstall`, `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive) |
 | `meta` | object | `elapsed_ms`, `offline` (`--offline` or `OMADDONS_OFFLINE=1`, usage errors included) |
 
-`check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status. Long commands also stream NDJSON `progress` events on stderr with `--progress json` (see [stderr events](#stderr-events)); stdout stays one envelope.
+`check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status; on every other failure `commands` is empty. Long commands also stream NDJSON `progress` events on stderr with `--progress json` (see [stderr events](#stderr-events)); stdout stays one envelope.
 
 ### Exit codes
 

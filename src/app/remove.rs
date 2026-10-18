@@ -158,7 +158,7 @@ struct Request {
 
 /// Runs `remove`.
 pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let records = world.records()?;
     let targets: Vec<&DiscoveredTarget> = match &ctx.target {
         Some(selector) => vec![resolve_one(

@@ -374,7 +374,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     } else {
         DiscoveryMode::Full
     };
-    let world = World::load_with(mode)?;
+    let world = World::load_with(ctx, mode)?;
     let verbose = ctx.output.style.verbose > 0;
     let mut warnings = world.warnings.clone();
 
@@ -426,7 +426,9 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         let record = match t.key {
             Some(key) => {
                 let loaded = load_record(&world.paths, &key)?;
-                warnings.extend(loaded.warning(&world.paths.target_record(&key)));
+                let warning = loaded.warning(&world.paths.target_record(&key));
+                ctx.notes.warn_all(warning.as_slice());
+                warnings.extend(warning);
                 Some(loaded)
             }
             None => None,

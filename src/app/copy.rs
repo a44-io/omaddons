@@ -167,7 +167,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             Suggestion::text("omaddons copy --from <client> --to <client>"),
         ));
     }
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let verbose = ctx.output.style.verbose > 0;
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();

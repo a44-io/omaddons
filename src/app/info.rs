@@ -238,7 +238,7 @@ impl Outcome for InfoOutcome {
 
 /// Runs `info`.
 pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let verbose = ctx.output.style.verbose > 0;
     let mut warnings = world.warnings.clone();
     let (catalog, catalog_warnings) = Catalog::load(&world.paths);

@@ -201,6 +201,62 @@ fn unknown_keys_warn() {
     );
 }
 
+/// A failure reports what the run found before it, in the envelope and as a stderr
+/// warning event before the one error event; `config set`, whose own outcome has no
+/// warnings, reports it too.
+#[test]
+fn unknown_keys_are_reported_by_failures_and_by_config_set() {
+    let env = TestEnv::new();
+    write_config(&env, "bogus_key = 1\n");
+    let codes = |warnings: &Value| -> Vec<String> {
+        warnings
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["code"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    for args in [
+        &["remove", "nothing", "-t", "nowhere"][..],
+        &["install", "nosuchaddon", "--offline"],
+    ] {
+        let output = env.command().args(args).arg("--json").output().unwrap();
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["ok"], false, "{args:?}: {envelope}");
+        assert_eq!(
+            codes(&envelope["warnings"]),
+            ["config_unknown_key"],
+            "{args:?}: {envelope}"
+        );
+        let events: Vec<String> = String::from_utf8(output.stderr)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .map(|e| {
+                format!(
+                    "{}:{}",
+                    e["event"].as_str().unwrap(),
+                    e["code"].as_str().unwrap()
+                )
+            })
+            .collect();
+        let error = format!("error:{}", envelope["error"]["code"].as_str().unwrap());
+        assert_eq!(
+            events,
+            ["warning:config_unknown_key", error.as_str()],
+            "{args:?}"
+        );
+    }
+    let (code, set) = run(
+        &env,
+        &["config", "set", "default_channel", "beta", "--dry-run"],
+    );
+    assert_eq!(
+        (code, codes(&set["warnings"])),
+        (0, vec!["config_unknown_key".to_owned()])
+    );
+}
+
 #[test]
 fn dry_runs_write_nothing() {
     let env = TestEnv::new();

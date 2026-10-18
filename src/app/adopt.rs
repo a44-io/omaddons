@@ -466,7 +466,7 @@ struct Exact {
 /// Runs `adopt`.
 pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
     let mode = Mode::of(ctx, args)?;
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
     let mut notes: Vec<String> = Vec::new();
     let records = world.records()?;

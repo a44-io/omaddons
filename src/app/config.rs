@@ -308,6 +308,11 @@ pub fn set(ctx: &Context, key: &str, raw_value: &str) -> Result<Done<SetData>> {
             ));
         }
     };
+    // What the file says about itself (an unknown key) stands whether or not the value
+    // is accepted; a file that does not parse is set_value's error.
+    if let Ok((_, warnings)) = Config::parse(&text, &path) {
+        ctx.notes.warn_all(&warnings);
+    }
     let before: toml::Table = toml::from_str(&text).unwrap_or_default();
     let updated = set_value(&text, &path, key, raw_value)?;
     let after: toml::Table = toml::from_str(&updated).unwrap_or_default();

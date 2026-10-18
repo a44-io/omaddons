@@ -126,7 +126,7 @@ struct InScope<'w> {
 /// Runs `update`.
 pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
     let channel = check_args(ctx, args)?;
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let verbose = ctx.output.style.verbose > 0;
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();

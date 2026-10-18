@@ -182,6 +182,7 @@ struct Out<'a> {
     name: &'static str,
     started: std::time::Instant,
     offline: bool,
+    notes: &'a output::RunNotes,
 }
 
 impl Out<'_> {
@@ -201,6 +202,7 @@ impl Out<'_> {
             name,
             self.started,
             self.offline,
+            self.notes,
             result,
         )
     }
@@ -242,6 +244,7 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         name,
         started: ctx.started,
         offline: ctx.offline,
+        notes: &ctx.notes,
     };
     if cli.global.version {
         return out.emit_as("version", Ok(help::version()));

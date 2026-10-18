@@ -173,6 +173,7 @@ pub fn run(ctx: &Context, args: &AuthArgs) -> Result<AuthOutcome> {
     let mut warnings = config.warnings;
     let token = GithubToken::resolve(&paths, &config.config.sources);
     warnings.extend(token.warnings.iter().cloned());
+    ctx.notes.warn_all(&warnings);
     let rate_limit = match action {
         AuthAction::Status => {
             // A configured token that cannot be had is the answer.

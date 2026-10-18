@@ -9,6 +9,7 @@
 
 mod envelope;
 mod human;
+mod notes;
 mod stderr;
 mod term;
 
@@ -20,6 +21,7 @@ use serde::Serialize;
 
 pub use envelope::{Envelope, Meta, SCHEMA_VERSION};
 pub use human::{count, table};
+pub use notes::RunNotes;
 pub use stderr::{LogLevel, Phase, ProgressSink, Reporter, SharedReporter, lock, shared_stderr};
 pub use term::{
     OutputConfig, OutputFlags, OutputMode, ProgressMode, StderrMode, Style, TermEnv,
@@ -62,22 +64,31 @@ pub fn stdout_written() -> bool {
 }
 
 /// Renders a command's result to the real stdout and the reporter, and returns the
-/// exit status.
+/// exit status. `notes` are the warnings the run found on its way, reported on failure
+/// too.
 pub fn emit<O: Outcome, W: Write>(
     cfg: &OutputConfig,
     reporter: &mut Reporter<W>,
     command: &'static str,
     started: Instant,
     offline: bool,
+    notes: &RunNotes,
     result: Result<O, Error>,
 ) -> Exit {
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();
-    emit_to(cfg, &mut lock, reporter, command, started, offline, result)
+    emit_to(
+        cfg, &mut lock, reporter, command, started, offline, notes, result,
+    )
 }
 
 /// [`emit`] with an explicit stdout. `command` names the command for failures, which
-/// have no outcome to ask.
+/// have no outcome to ask. The run's warnings come first, on success followed by the
+/// outcome's that are not among them, so each is reported once.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "emit's arguments plus the stdout it writes to; a struct would only rename them"
+)]
 pub fn emit_to<O: Outcome, W: Write>(
     cfg: &OutputConfig,
     stdout: &mut dyn Write,
@@ -85,15 +96,23 @@ pub fn emit_to<O: Outcome, W: Write>(
     command: &'static str,
     started: Instant,
     offline: bool,
+    notes: &RunNotes,
     result: Result<O, Error>,
 ) -> Exit {
     let meta = Meta {
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         offline,
     };
+    let (mut warnings, _) = notes.snapshot();
     match result {
         Ok(outcome) => {
+            let found = warnings.len();
             for warning in outcome.warnings() {
+                if !warnings[..found].contains(warning) {
+                    warnings.push(warning.clone());
+                }
+            }
+            for warning in &warnings {
                 reporter.warning(warning);
             }
             let failure = outcome.assertion_failure();
@@ -104,7 +123,7 @@ pub fn emit_to<O: Outcome, W: Write>(
                             outcome.command(),
                             outcome.data(),
                             outcome.partial(),
-                            outcome.warnings(),
+                            &warnings,
                             outcome.commands(),
                             meta,
                         ),
@@ -113,7 +132,7 @@ pub fn emit_to<O: Outcome, W: Write>(
                             outcome.data(),
                             outcome.partial(),
                             error,
-                            outcome.warnings(),
+                            &warnings,
                             outcome.commands(),
                             meta,
                         ),
@@ -137,8 +156,14 @@ pub fn emit_to<O: Outcome, W: Write>(
             }
         }
         Err(error) => {
+            for warning in &warnings {
+                reporter.warning(warning);
+            }
             if cfg.output == OutputMode::Json {
-                write_json(stdout, &Envelope::failure(command, &error, &[], &[], meta));
+                write_json(
+                    stdout,
+                    &Envelope::failure(command, &error, &warnings, &[], meta),
+                );
             }
             reporter.error(&error);
             error.exit()

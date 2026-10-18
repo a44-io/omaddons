@@ -200,7 +200,7 @@ impl Outcome for ListOutcome {
 
 /// Runs `list`.
 pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let verbose = ctx.output.style.verbose > 0;
     let depth = if args.unmanaged || verbose {
         Depth::Full
@@ -214,7 +214,9 @@ pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
         let record = match d.target.key {
             Some(key) => {
                 let loaded = load_record(&world.paths, &key)?;
-                warnings.extend(loaded.warning(&world.paths.target_record(&key)));
+                let warning = loaded.warning(&world.paths.target_record(&key));
+                ctx.notes.warn_all(warning.as_slice());
+                warnings.extend(warning);
                 Some(loaded.value)
             }
             None => None,

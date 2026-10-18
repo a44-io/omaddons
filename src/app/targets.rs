@@ -24,6 +24,7 @@ use crate::fsx::{GlobalLock, ScopeTable, WriteSession, Writer};
 use crate::model::TargetKey;
 use crate::output::{Outcome, Style, table};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
+use crate::state::config::Config;
 use crate::state::paths::Paths;
 use crate::state::records::load_record;
 use crate::state::registry::{Origin, Registry, RegistryEntry, load_registry};
@@ -210,7 +211,7 @@ pub fn list(ctx: &Context, rescan: bool) -> Result<Done<TargetsData>> {
     } else {
         DiscoveryMode::Full
     };
-    let world = World::load_with(mode)?;
+    let world = World::load_with(ctx, mode)?;
     let verbose = ctx.output.style.verbose > 0;
     let default = world.registry.default;
     let mut targets: Vec<TargetInfo> = world
@@ -356,7 +357,7 @@ fn locked<T>(
 
 /// `targets add <path> [--name N]`.
 pub fn add(ctx: &Context, path: &Path, name: Option<&str>) -> Result<Done<AddData>> {
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let (paths, table) = (&world.paths, &world.table);
     let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let (found, warnings) = manual_targets(table, &path)?;
@@ -415,7 +416,15 @@ pub fn add(ctx: &Context, path: &Path, name: Option<&str>) -> Result<Done<AddDat
 /// `targets rm <id>`.
 pub fn rm(ctx: &Context, id: &str) -> Result<Done<RmData>> {
     let (paths, _) = base()?;
-    let registry = load_registry(&paths)?.value;
+    // rm needs neither discovery nor config.toml, and a broken one must not stop it;
+    // what a readable one says about itself is still said.
+    if let Ok(config) = Config::load(&paths) {
+        ctx.notes.warn_all(&config.warnings);
+    }
+    let loaded = load_registry(&paths)?;
+    ctx.notes
+        .warn_all(loaded.warning(&paths.registry_file()).as_slice());
+    let registry = loaded.value;
     let entry = registry
         .entry_by_id(id)
         .ok_or_else(|| unknown_id(id))?
@@ -509,7 +518,7 @@ fn named_parts(target: &Named) -> (Option<TargetKey>, Vec<PathBuf>) {
 
 /// `targets rename <id> <new>`; an unregistered target is registered first.
 pub fn rename(ctx: &Context, id: &str, new: &str) -> Result<Done<RenameData>> {
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let target = named(&world, id)?;
     let (key, dirs) = named_parts(&target);
     if new != id {
@@ -545,7 +554,7 @@ pub fn rename(ctx: &Context, id: &str, new: &str) -> Result<Done<RenameData>> {
 
 /// `targets default <id>`; an unregistered target is registered first.
 pub fn default(ctx: &Context, id: &str) -> Result<Done<DefaultData>> {
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let target = named(&world, id)?;
     let (key, dirs) = named_parts(&target);
     let (key, id) = if ctx.dry_run {

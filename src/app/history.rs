@@ -237,7 +237,7 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
             })
         })
         .transpose()?;
-    let world = World::load()?;
+    let world = World::load(ctx)?;
     let run = match &args.run {
         Some(prefix) => {
             let all = history::read(&world.paths, &HistoryFilter::default())?.entries;

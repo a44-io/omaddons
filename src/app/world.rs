@@ -44,22 +44,29 @@ pub struct World {
 impl World {
     /// Discovers every target under the user's home, config's `extra_roots` and the
     /// registry's manual roots, reusing unchanged roots from the discovery cache, and
-    /// gives each its registered or provisional identity and config overrides.
-    pub fn load() -> Result<Self> {
-        Self::load_with(DiscoveryMode::Full)
+    /// gives each its registered or provisional identity and config overrides. Each
+    /// batch of warnings also goes to the run's notes as soon as it is found, so a
+    /// failure later in the command still reports it.
+    pub fn load(ctx: &Context) -> Result<Self> {
+        Self::load_with(ctx, DiscoveryMode::Full)
     }
 
     /// [`World::load`] with an explicit cache mode (`status --cached`, `--rescan`).
-    pub fn load_with(mode: DiscoveryMode) -> Result<Self> {
+    pub fn load_with(ctx: &Context, mode: DiscoveryMode) -> Result<Self> {
         let paths = Paths::from_env()?;
+        let mut warnings: Vec<Warning> = Vec::new();
+        let mut found = |batch: &[Warning]| {
+            ctx.notes.warn_all(batch);
+            warnings.extend_from_slice(batch);
+        };
         let loaded_config = Config::load(&paths)?;
+        found(&loaded_config.warnings);
         let config = loaded_config.config;
-        let mut warnings = loaded_config.warnings;
         let table = config
             .rules_table(&RulesTable::builtin())
             .map_err(|e| Error::internal(format!("validated rules overrides failed: {e}")))?;
         let loaded = load_registry(&paths)?;
-        warnings.extend(loaded.warning(&paths.registry_file()));
+        found(loaded.warning(&paths.registry_file()).as_slice());
         let registry = loaded.value;
         let mut extra_roots = config.extra_roots.clone();
         extra_roots.extend(
@@ -96,18 +103,18 @@ impl World {
             data_home: Some(paths.data_home().to_path_buf()),
             ..DiscoveryInput::default()
         };
-        let (found, discovery) =
+        let (discovered, discovery) =
             discover_cached(&input, &table, &paths, ScanLimits::default(), mode);
-        warnings.extend(found.warnings);
-        let mut resolved = reconcile(&registry, &found.targets);
-        warnings.extend(resolved.warnings.iter().cloned());
+        found(&discovered.warnings);
+        let mut resolved = reconcile(&registry, &discovered.targets);
+        found(&resolved.warnings);
         apply_target_overrides(&mut resolved, &config, &table);
         // Unfinished transactions, reported without recovering (D23). A mutating
         // command recovers them under the lock and reports `journal_recovered` instead.
-        warnings.extend(crate::engine::journal::pending_warnings(&paths)?);
+        found(&crate::engine::journal::pending_warnings(&paths)?);
         // Resolved once; a `command` credential runs only when REST first needs it.
         let github_token = GithubToken::resolve(&paths, &config.sources);
-        warnings.extend(github_token.warnings.iter().cloned());
+        found(&github_token.warnings);
         Ok(Self {
             paths,
             config,
@@ -115,7 +122,7 @@ impl World {
             registry,
             resolved,
             warnings,
-            diagnostics: found.diagnostics,
+            diagnostics: discovered.diagnostics,
             discovery,
             github_token,
         })

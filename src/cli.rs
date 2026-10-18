@@ -206,6 +206,8 @@ pub struct Context {
     pub started: Instant,
     /// Where long commands report progress (nothing when progress is off).
     pub progress: crate::output::ProgressSink,
+    /// What the run found on its way (warnings), reported even when it then fails.
+    pub notes: crate::output::RunNotes,
     /// Standard input is a terminal: a command that reads a secret from it refuses.
     pub stdin_is_tty: bool,
 }
@@ -257,6 +259,7 @@ impl Context {
             target: global.target.clone(),
             started,
             progress: crate::output::ProgressSink::none(),
+            notes: crate::output::RunNotes::default(),
             stdin_is_tty,
         })
     }
@@ -306,6 +309,7 @@ fn run_with(
                 "help",
                 started,
                 early_offline,
+                &output::RunNotes::default(),
                 result,
             );
         }
@@ -353,6 +357,7 @@ fn render_error(
         command,
         started,
         offline,
+        &output::RunNotes::default(),
         Err(error),
     )
 }

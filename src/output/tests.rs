@@ -122,6 +122,11 @@ struct Run {
 }
 
 fn run(cfg: OutputConfig, result: Result<Demo, Error>) -> Run {
+    run_noted(cfg, &RunNotes::default(), result)
+}
+
+/// [`run`] for a run whose notes hold `notes`.
+fn run_noted(cfg: OutputConfig, notes: &RunNotes, result: Result<Demo, Error>) -> Run {
     let mut stdout = Vec::new();
     let mut reporter = Reporter::new(Vec::new(), &cfg);
     let exit = emit_to(
@@ -131,6 +136,7 @@ fn run(cfg: OutputConfig, result: Result<Demo, Error>) -> Run {
         "update",
         Instant::now(),
         false,
+        notes,
         result,
     );
     Run {
@@ -279,6 +285,75 @@ fn ndjson_stderr_mirrors_each_error_once() {
     assert_eq!(r.stderr.lines().count(), 1, "the warning, mirrored");
 }
 
+fn unknown_key() -> Warning {
+    Warning::new(
+        WarningCode::ConfigUnknownKey,
+        "config.toml: unknown key bogus_key",
+    )
+}
+
+/// Codes of a run's envelope warnings, and of its stderr events in order.
+fn codes(r: &Run) -> (Vec<String>, Vec<String>) {
+    let envelope: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+    let warnings = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["code"].as_str().unwrap().to_owned())
+        .collect();
+    let events = r
+        .stderr
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .map(|e| {
+            format!(
+                "{}:{}",
+                e["event"].as_str().unwrap(),
+                e["code"].as_str().unwrap()
+            )
+        })
+        .collect();
+    (warnings, events)
+}
+
+#[test]
+fn a_failure_reports_what_the_run_found_before_it() {
+    let notes = RunNotes::default();
+    notes.warn(unknown_key());
+    notes.warn(unknown_key());
+    let r = run_noted(OutputConfig::machine(), &notes, Err(ambiguous()));
+    assert_eq!(r.exit, Exit::NotFound);
+    let (warnings, events) = codes(&r);
+    assert_eq!(warnings, ["config_unknown_key"], "{}", r.stdout);
+    assert_eq!(
+        events,
+        ["warning:config_unknown_key", "error:target_ambiguous"],
+        "the warning first, then the one error"
+    );
+    let envelope: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+    assert_eq!(envelope["commands"], serde_json::json!([]));
+}
+
+#[test]
+fn a_success_reports_the_runs_warnings_first_and_each_once() {
+    let notes = RunNotes::default();
+    notes.warn(unknown_key());
+    // An outcome that, like every World-loading command, repeats the run's warnings.
+    let mut outcome = demo();
+    outcome.warnings.insert(0, unknown_key());
+    let r = run_noted(OutputConfig::machine(), &notes, Ok(outcome));
+    let (warnings, events) = codes(&r);
+    assert_eq!(warnings, ["config_unknown_key", "reload_required"]);
+    assert_eq!(
+        events,
+        ["warning:config_unknown_key", "warning:reload_required"]
+    );
+
+    // One that dropped them (undo, targets, config set) gets them back.
+    let r = run_noted(OutputConfig::machine(), &notes, Ok(demo()));
+    assert_eq!(codes(&r).0, ["config_unknown_key", "reload_required"]);
+}
+
 #[test]
 fn a_closed_stdout_is_not_an_error() {
     struct Closed;
@@ -299,6 +374,7 @@ fn a_closed_stdout_is_not_an_error() {
         "update",
         Instant::now(),
         false,
+        &RunNotes::default(),
         Ok(demo()),
     );
     assert_eq!(exit, Exit::Ok);
