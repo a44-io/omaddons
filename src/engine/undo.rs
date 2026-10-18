@@ -38,8 +38,8 @@ use super::plan::{Change, ChangeKind, FolderSummary};
 use super::running::{self, PolicyContext, PolicyOp};
 use super::stage::{Staged, stage_trees};
 use super::swap::{
-    SvEntry, SvManifest, SwapOp, out_of_scope_warning, sha256_file, snapshot_saved_variables,
-    snapshot_state, sv_candidates, sv_in_scope, swap,
+    SvEntry, SvManifest, SvSkip, SvSkipped, SwapOp, out_of_scope_warnings, sha256_file,
+    snapshot_saved_variables, snapshot_state, sv_candidates, sv_skip, swap,
 };
 use super::tx::{
     EngineCtx, RunningNow, TxOutcome, cleanup, millis, recovery_failed, running_now, sv_writable,
@@ -507,13 +507,11 @@ fn plan(
             .with_fix(sv_follow_up(&reverted.tx)),
         );
     }
-    if sv.out_of_scope > 0 {
-        warnings.push(out_of_scope_warning(
-            &target.id,
-            sv.out_of_scope,
-            "undo left them as they are",
-        ));
-    }
+    warnings.extend(out_of_scope_warnings(
+        &target.id,
+        sv.out_of_scope,
+        "undo left them as they are",
+    ));
     Ok(Planned {
         reverts: reverted.tx,
         key,
@@ -1138,16 +1136,17 @@ struct SvPlan {
     counts: SvCounts,
     /// The changed files to restore (empty when deferred, kept or refused).
     restore: Vec<SvEntry>,
-    /// The transaction's SavedVariables files outside the client directory, which the
-    /// undo leaves as they are.
-    out_of_scope: usize,
+    /// The transaction's SavedVariables files outside the client directory or under a
+    /// folder spelled two ways, which the undo leaves as they are.
+    out_of_scope: SvSkipped,
 }
 
 /// Compares each file of the transaction's manifest with the file now and applies the
 /// policy. While the client runs: `auto` defers, `restore` refuses with `game_running`.
-/// A file whose `SavedVariables` directory now resolves outside the client is neither
-/// compared nor restored (a snapshot from before such files were left out can hold one),
-/// so nothing after `swapped` can be refused for its path.
+/// A file whose `SavedVariables` directory now resolves outside the client, or sits
+/// under a folder now spelled two ways, is neither compared nor restored (a snapshot
+/// from before such files were left out can hold one), so nothing after `swapped` can be
+/// refused for its path.
 fn plan_saved_variables(
     client: &ClientPaths,
     reverted: &HistoryEntry,
@@ -1167,12 +1166,15 @@ fn plan_saved_variables(
     let wtf = client.wtf();
     let mut plan = SvPlan::default();
     let mut changed = Vec::new();
-    let mut skipped = 0;
+    let mut skipped = SvSkipped::default();
     for entry in manifest.entries {
         let live = wtf.join(relative(&entry.path)?);
-        if !live.parent().is_some_and(|sv| sv_in_scope(client, sv)) {
+        let skip = live
+            .parent()
+            .map_or(Some(SvSkip::Symlinked), |sv| sv_skip(client, sv));
+        if let Some(skip) = skip {
             let exists = std::fs::symlink_metadata(&live).is_ok_and(|m| m.is_file());
-            skipped += usize::from(entry.sha256.is_some() || exists);
+            skipped.count(skip, usize::from(entry.sha256.is_some() || exists));
             continue;
         }
         let now = present_hash(&live)?;
@@ -1184,7 +1186,7 @@ fn plan_saved_variables(
     }
     // And the files a newer snapshot left out in the first place.
     let folders: Vec<FolderName> = reverted.ops.iter().map(|op| op.folder.clone()).collect();
-    plan.out_of_scope = skipped.max(sv_candidates(client, &folders).out_of_scope);
+    plan.out_of_scope = skipped.max(sv_candidates(client, &folders).skipped);
     if changed.is_empty() {
         return Ok(plan);
     }

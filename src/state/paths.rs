@@ -397,9 +397,10 @@ impl ClientPaths {
         self.meta_dir().join("backups")
     }
 
-    /// `<client dir>/WTF`
+    /// `<client dir>/WTF`, spelled as on disk like [`ClientPaths::interface`]: an existing
+    /// `wtf/` is the client's `WTF/`. `WTF` when there is none.
     pub fn wtf(&self) -> PathBuf {
-        self.client_dir.join("WTF")
+        find_child(&self.client_dir, "WTF").unwrap_or_else(|| self.client_dir.join("WTF"))
     }
 }
 
@@ -569,6 +570,12 @@ mod tests {
             c.addons_case_variants(),
             [root.join("Interface"), root.join("interface")]
         );
+
+        assert_eq!(c.wtf(), root.join("WTF"), "nothing yet");
+        std::fs::create_dir_all(root.join("wtf")).unwrap();
+        assert_eq!(c.wtf(), root.join("wtf"));
+        std::fs::create_dir_all(root.join("WTF")).unwrap();
+        assert_eq!(c.wtf(), root.join("WTF"), "the exact name first");
     }
 
     #[test]

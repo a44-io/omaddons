@@ -596,6 +596,50 @@ fn an_unreadable_history_line_is_warned_about_by_history_and_undo() {
     assert_eq!(skipped(&missing).len(), 1, "{missing}");
 }
 
+/// `wtf/` and `account/` in lowercase are the client's own, as Wine matches them
+/// ignoring case: undo restores the SavedVariables there. Beside a second spelling of
+/// `WTF`, nothing under either is written, and a warning says why without naming them.
+#[test]
+fn lowercase_wtf_folders_are_restored_and_two_spellings_left_alone() {
+    let mut s = Session::new();
+    let client = s.home.client("_retail_");
+    fs::rename(client.join("WTF"), client.join("wtf")).unwrap();
+    fs::rename(client.join("wtf/Account"), client.join("wtf/account")).unwrap();
+    let foo = client.join("wtf/account/FAKEACCT/SavedVariables/Foo.lua");
+    s.install("Foo", "1", &[]);
+    fs::write(&foo, "-- after").unwrap();
+    let undone = s.run(&["undo"]).expect(0);
+    assert_eq!(
+        (
+            &undone["data"]["saved_variables"]["restored"],
+            &undone["data"]["saved_variables"]["unchanged"]
+        ),
+        (&Value::from(1), &Value::from(3)),
+        "{undone}"
+    );
+    assert_eq!(fs::read_to_string(&foo).unwrap(), "-- before");
+
+    fs::create_dir_all(client.join("WTF")).unwrap();
+    s.install("Foo", "1", &[]);
+    fs::write(&foo, "-- after again").unwrap();
+    let undone = s.run(&["undo"]).expect(0);
+    assert_eq!(fs::read_to_string(&foo).unwrap(), "-- after again");
+    assert!(
+        fs::read_dir(client.join("WTF")).unwrap().next().is_none(),
+        "nothing written under the other spelling"
+    );
+    let messages: Vec<&str> = undone["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "saved_variables_out_of_scope")
+        .map(|w| w["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(messages.len(), 1, "{undone}");
+    assert!(messages[0].contains("spelled two ways"), "{}", messages[0]);
+    s.assert_private();
+}
+
 /// Outcomes that never carried the run's warnings (undo, targets) report them now, and
 /// so does a failure.
 #[test]
