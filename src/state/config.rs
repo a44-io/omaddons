@@ -323,7 +323,6 @@ const RULES_FIELDS: &[&str] = &[
     "install_kind",
     "version_min",
     "version_max",
-    "game",
     "game_types",
     "multi_toc",
     "comma_interface",
@@ -331,7 +330,6 @@ const RULES_FIELDS: &[&str] = &[
     "family_suffixes",
     "legacy_suffixes",
     "directive_conditionals",
-    "path_variables",
     "interface_includes_patch",
     "legacy",
 ];

@@ -426,7 +426,6 @@ expression: "RulesTable::builtin()"
       "install_kind": null,
       "version_min": "12.1.5",
       "version_max": null,
-      "game": "standard",
       "game_types": [
         "standard"
       ],
@@ -440,7 +439,6 @@ expression: "RulesTable::builtin()"
       ],
       "legacy_suffixes": [],
       "directive_conditionals": true,
-      "path_variables": true,
       "interface_includes_patch": true,
       "legacy": false
     },
@@ -450,7 +448,6 @@ expression: "RulesTable::builtin()"
       "install_kind": null,
       "version_min": "12.0.7",
       "version_max": "12.1.4",
-      "game": "standard",
       "game_types": [
         "standard"
       ],
@@ -462,7 +459,6 @@ expression: "RulesTable::builtin()"
       ],
       "legacy_suffixes": [],
       "directive_conditionals": true,
-      "path_variables": true,
       "interface_includes_patch": true,
       "legacy": false
     },
@@ -472,7 +468,6 @@ expression: "RulesTable::builtin()"
       "install_kind": null,
       "version_min": "10.2.7",
       "version_max": "12.0.6",
-      "game": "standard",
       "game_types": [
         "standard"
       ],
@@ -484,7 +479,6 @@ expression: "RulesTable::builtin()"
       ],
       "legacy_suffixes": [],
       "directive_conditionals": false,
-      "path_variables": true,
       "interface_includes_patch": true,
       "legacy": false
     },
@@ -494,7 +488,6 @@ expression: "RulesTable::builtin()"
       "install_kind": null,
       "version_min": "9.1.0",
       "version_max": "10.2.6",
-      "game": "standard",
       "game_types": [
         "standard"
       ],
@@ -506,7 +499,6 @@ expression: "RulesTable::builtin()"
       ],
       "legacy_suffixes": [],
       "directive_conditionals": false,
-      "path_variables": true,
       "interface_includes_patch": true,
       "legacy": false
     },
@@ -516,7 +508,6 @@ expression: "RulesTable::builtin()"
       "install_kind": null,
       "version_min": "1.50.0",
       "version_max": null,
-      "game": "camelot",
       "game_types": [
         "camelot",
         "forever"
@@ -531,8 +522,7 @@ expression: "RulesTable::builtin()"
         "Mainline"
       ],
       "legacy_suffixes": [],
-      "directive_conditionals": false,
-      "path_variables": true,
+      "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false
     },
@@ -542,7 +532,6 @@ expression: "RulesTable::builtin()"
       "install_kind": null,
       "version_min": "1.13.0",
       "version_max": null,
-      "game": "vanilla",
       "game_types": [
         "vanilla"
       ],
@@ -555,8 +544,7 @@ expression: "RulesTable::builtin()"
         "Classic"
       ],
       "legacy_suffixes": [],
-      "directive_conditionals": false,
-      "path_variables": true,
+      "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false
     },
@@ -566,7 +554,6 @@ expression: "RulesTable::builtin()"
       "install_kind": null,
       "version_min": "2.5.0",
       "version_max": null,
-      "game": "tbc",
       "game_types": [
         "tbc"
       ],
@@ -579,8 +566,7 @@ expression: "RulesTable::builtin()"
         "Classic"
       ],
       "legacy_suffixes": [],
-      "directive_conditionals": false,
-      "path_variables": true,
+      "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false
     },
@@ -590,7 +576,6 @@ expression: "RulesTable::builtin()"
       "install_kind": null,
       "version_min": "3.4.0",
       "version_max": null,
-      "game": "wrath",
       "game_types": [
         "wrath"
       ],
@@ -604,7 +589,6 @@ expression: "RulesTable::builtin()"
       ],
       "legacy_suffixes": [],
       "directive_conditionals": false,
-      "path_variables": true,
       "interface_includes_patch": true,
       "legacy": false
     },
@@ -614,7 +598,6 @@ expression: "RulesTable::builtin()"
       "install_kind": null,
       "version_min": "3.80.0",
       "version_max": null,
-      "game": "titan",
       "game_types": [
         "titan"
       ],
@@ -627,8 +610,7 @@ expression: "RulesTable::builtin()"
         "Classic"
       ],
       "legacy_suffixes": [],
-      "directive_conditionals": false,
-      "path_variables": true,
+      "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false
     },
@@ -638,7 +620,6 @@ expression: "RulesTable::builtin()"
       "install_kind": null,
       "version_min": "4.4.0",
       "version_max": null,
-      "game": "cata",
       "game_types": [
         "cata"
       ],
@@ -652,7 +633,6 @@ expression: "RulesTable::builtin()"
       ],
       "legacy_suffixes": [],
       "directive_conditionals": false,
-      "path_variables": true,
       "interface_includes_patch": true,
       "legacy": false
     },
@@ -662,7 +642,6 @@ expression: "RulesTable::builtin()"
       "install_kind": null,
       "version_min": "5.5.0",
       "version_max": null,
-      "game": "mists",
       "game_types": [
         "mists"
       ],
@@ -675,8 +654,7 @@ expression: "RulesTable::builtin()"
         "Classic"
       ],
       "legacy_suffixes": [],
-      "directive_conditionals": false,
-      "path_variables": true,
+      "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false
     },
@@ -686,7 +664,6 @@ expression: "RulesTable::builtin()"
       "install_kind": "custom",
       "version_min": "1.12.0",
       "version_max": null,
-      "game": "vanilla",
       "game_types": [],
       "multi_toc": false,
       "comma_interface": false,
@@ -694,7 +671,6 @@ expression: "RulesTable::builtin()"
       "family_suffixes": [],
       "legacy_suffixes": [],
       "directive_conditionals": false,
-      "path_variables": false,
       "interface_includes_patch": false,
       "legacy": true
     },
@@ -704,7 +680,6 @@ expression: "RulesTable::builtin()"
       "install_kind": "custom",
       "version_min": "2.4.0",
       "version_max": null,
-      "game": "tbc",
       "game_types": [],
       "multi_toc": false,
       "comma_interface": false,
@@ -712,7 +687,6 @@ expression: "RulesTable::builtin()"
       "family_suffixes": [],
       "legacy_suffixes": [],
       "directive_conditionals": false,
-      "path_variables": false,
       "interface_includes_patch": false,
       "legacy": true
     },
@@ -722,7 +696,6 @@ expression: "RulesTable::builtin()"
       "install_kind": "custom",
       "version_min": "3.3.0",
       "version_max": null,
-      "game": "wrath",
       "game_types": [],
       "multi_toc": false,
       "comma_interface": false,
@@ -730,7 +703,6 @@ expression: "RulesTable::builtin()"
       "family_suffixes": [],
       "legacy_suffixes": [],
       "directive_conditionals": false,
-      "path_variables": false,
       "interface_includes_patch": false,
       "legacy": true
     },
@@ -740,7 +712,6 @@ expression: "RulesTable::builtin()"
       "install_kind": "custom",
       "version_min": "4.3.0",
       "version_max": null,
-      "game": "cata",
       "game_types": [],
       "multi_toc": false,
       "comma_interface": false,
@@ -748,7 +719,6 @@ expression: "RulesTable::builtin()"
       "family_suffixes": [],
       "legacy_suffixes": [],
       "directive_conditionals": false,
-      "path_variables": false,
       "interface_includes_patch": false,
       "legacy": true
     },
@@ -758,7 +728,6 @@ expression: "RulesTable::builtin()"
       "install_kind": "custom",
       "version_min": "5.4.0",
       "version_max": null,
-      "game": "mists",
       "game_types": [],
       "multi_toc": false,
       "comma_interface": false,
@@ -766,7 +735,6 @@ expression: "RulesTable::builtin()"
       "family_suffixes": [],
       "legacy_suffixes": [],
       "directive_conditionals": false,
-      "path_variables": false,
       "interface_includes_patch": false,
       "legacy": true
     }
@@ -777,7 +745,6 @@ expression: "RulesTable::builtin()"
     "install_kind": "battlenet",
     "version_min": "0.0.0",
     "version_max": null,
-    "game": "unknown",
     "game_types": [],
     "multi_toc": true,
     "comma_interface": true,
@@ -787,8 +754,7 @@ expression: "RulesTable::builtin()"
       "Classic"
     ],
     "legacy_suffixes": [],
-    "directive_conditionals": false,
-    "path_variables": true,
+    "directive_conditionals": true,
     "interface_includes_patch": true,
     "legacy": false
   },
@@ -798,7 +764,6 @@ expression: "RulesTable::builtin()"
     "install_kind": "custom",
     "version_min": "0.0.0",
     "version_max": null,
-    "game": "unknown",
     "game_types": [],
     "multi_toc": false,
     "comma_interface": false,
@@ -806,7 +771,6 @@ expression: "RulesTable::builtin()"
     "family_suffixes": [],
     "legacy_suffixes": [],
     "directive_conditionals": false,
-    "path_variables": false,
     "interface_includes_patch": false,
     "legacy": true
   }

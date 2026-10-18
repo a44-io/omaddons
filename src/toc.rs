@@ -474,12 +474,17 @@ impl Toc {
     /// is dropped: never installed anyway).
     ///
     /// Several variants of one directive are read as the union of those that apply,
-    /// as inline file conditionals behave. UNVERIFIED against the client. A legacy
-    /// client (`rules.legacy`) predates directive conditions and reads such a line's key
-    /// as another key, so no conditional variant applies there.
+    /// as inline file conditionals behave. UNVERIFIED against the client. A client
+    /// without directive conditions (`rules.directive_conditionals` false: before 12.0.7,
+    /// and every legacy client) reads such a line's key as another key, so no
+    /// conditional variant applies there.
     pub fn dependencies_for(&self, rules: &ClientRules) -> DepList {
         let names = loaded::client_names(rules);
-        let conditional: &[Directive] = if rules.legacy { &[] } else { &self.conditional };
+        let conditional: &[Directive] = if rules.directive_conditionals {
+            &self.conditional
+        } else {
+            &[]
+        };
         let mut lines: Vec<&Directive> = self.directives.values().chain(conditional).collect();
         lines.sort_by_key(|d| d.line);
         let mut deps = DepList::default();
@@ -512,13 +517,13 @@ impl Toc {
     }
 
     /// The title the client of `rules` shows: the first conditional `Title` variant
-    /// that admits it, else the unconditional one. Which one the client shows when both
-    /// exist is UNVERIFIED.
+    /// that admits it (on a client with directive conditions), else the unconditional
+    /// one. Which one the client shows when both exist is UNVERIFIED.
     pub fn title_for(&self, rules: &ClientRules) -> Option<&str> {
         let names = loaded::client_names(rules);
         self.conditional
             .iter()
-            .filter(|d| !rules.legacy && d.key.eq_ignore_ascii_case("title"))
+            .filter(|d| rules.directive_conditionals && d.key.eq_ignore_ascii_case("title"))
             .find(|d| {
                 d.parsed_condition
                     .as_ref()
@@ -986,6 +991,35 @@ mod tests {
             "B is required anyway"
         );
         assert!(deps.optional.is_empty());
+    }
+
+    /// Conditional variants apply only on a client that reads directive conditions:
+    /// every current client, none before 12.0.7, and not a row whose override turns the
+    /// flag off.
+    #[test]
+    fn conditional_variants_need_a_client_with_directive_conditionals() {
+        use crate::rules::{InstallKind, RulesOverrides, RulesTable};
+        let toc = parse(
+            "## Dependencies [AllowLoadGameType standard, camelot, vanilla, tbc, wrath, titan, cata, mists]: X\n",
+        );
+        let required = |rules: &ClientRules| !toc.dependencies_for(rules).required.is_empty();
+        for version in [
+            "12.1.5", "12.0.7", "1.60.1", "1.15.9", "2.5.6", "3.80.2", "5.5.4",
+        ] {
+            assert!(required(&rules_of(version, false)), "{version}");
+        }
+        for version in ["12.0.1", "11.2.0", "3.4.3", "4.4.2"] {
+            let rules = rules_of(version, false);
+            assert!(!required(&rules), "{version} ({})", rules.name);
+        }
+
+        let overrides: RulesOverrides =
+            toml::from_str("[client_rules.vanilla]\ndirective_conditionals = false\n").unwrap();
+        let table = RulesTable::builtin().with_overrides(&overrides).unwrap();
+        let era = table.rules_for(&"1.15.9".parse().unwrap(), InstallKind::Battlenet);
+        assert!(!required(era), "turned off by the override");
+        let titled = parse("## Title: Plain\n## Title [AllowLoadGameType vanilla]: Era\n");
+        assert_eq!(titled.title_for(era), Some("Plain"));
     }
 
     #[test]

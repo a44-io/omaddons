@@ -426,8 +426,6 @@ pub struct ClientRules {
     pub version_min: ClientVersion,
     /// Inclusive; `None` is unbounded. Bounds ignore build numbers.
     pub version_max: Option<ClientVersion>,
-    /// The client's internal game type, e.g. `standard` or `camelot`.
-    pub game: String,
     /// Every name `AllowLoadGameType`/`ExcludeLoadGameType` may use for this client.
     pub game_types: Vec<String>,
     pub multi_toc: bool,
@@ -438,8 +436,10 @@ pub struct ClientRules {
     /// Retired suffixes (`BCC`, `WOTLKC`) the client still loads at game level. Empty in
     /// every builtin row; the field exists for overrides.
     pub legacy_suffixes: Vec<String>,
+    /// Whether the client reads directive conditions (`## Dependencies [AllowLoadGameType
+    /// vanilla]: X`, 12.0.7). A client without them reads such a key literally, so no
+    /// conditional variant applies.
     pub directive_conditionals: bool,
-    pub path_variables: bool,
     /// Whether the interface number includes the patch digit (12.1.5 → 120105) or not
     /// (legacy 3.3.5 → 30300).
     pub interface_includes_patch: bool,
@@ -837,9 +837,9 @@ pub struct RulesOverrides {
 }
 
 /// A field subset of [`ClientRules`]. Patching an existing row replaces only the fields
-/// given. A new row needs `family`, `version_min`, `game`, `multi_toc`,
-/// `comma_interface`, `interface_includes_patch` and `legacy`; the rest default to
-/// empty, false or `None`. A patch cannot reset `install_kind` or `version_max` to `None`.
+/// given. A new row needs `family`, `version_min`, `multi_toc`, `comma_interface`,
+/// `interface_includes_patch` and `legacy`; the rest default to empty, false or `None`.
+/// A patch cannot reset `install_kind` or `version_max` to `None`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ClientRulesOverride {
@@ -847,7 +847,6 @@ pub struct ClientRulesOverride {
     pub install_kind: Option<InstallKind>,
     pub version_min: Option<ClientVersion>,
     pub version_max: Option<ClientVersion>,
-    pub game: Option<String>,
     pub game_types: Option<Vec<String>>,
     pub multi_toc: Option<bool>,
     pub comma_interface: Option<bool>,
@@ -855,7 +854,6 @@ pub struct ClientRulesOverride {
     pub family_suffixes: Option<Vec<String>>,
     pub legacy_suffixes: Option<Vec<String>>,
     pub directive_conditionals: Option<bool>,
-    pub path_variables: Option<bool>,
     pub interface_includes_patch: Option<bool>,
     pub legacy: Option<bool>,
 }
@@ -875,7 +873,6 @@ impl ClientRulesOverride {
         if self.version_max.is_some() {
             row.version_max = self.version_max;
         }
-        set(&mut row.game, &self.game);
         set(&mut row.game_types, &self.game_types);
         set(&mut row.multi_toc, &self.multi_toc);
         set(&mut row.comma_interface, &self.comma_interface);
@@ -886,7 +883,6 @@ impl ClientRulesOverride {
             &mut row.directive_conditionals,
             &self.directive_conditionals,
         );
-        set(&mut row.path_variables, &self.path_variables);
         set(
             &mut row.interface_includes_patch,
             &self.interface_includes_patch,
@@ -911,7 +907,6 @@ impl ClientRulesOverride {
             install_kind: self.install_kind,
             version_min: required(&self.version_min, name, "version_min")?,
             version_max: self.version_max,
-            game: required(&self.game, name, "game")?,
             game_types: self.game_types.clone().unwrap_or_default(),
             multi_toc: required(&self.multi_toc, name, "multi_toc")?,
             comma_interface: required(&self.comma_interface, name, "comma_interface")?,
@@ -919,7 +914,6 @@ impl ClientRulesOverride {
             family_suffixes: self.family_suffixes.clone().unwrap_or_default(),
             legacy_suffixes: self.legacy_suffixes.clone().unwrap_or_default(),
             directive_conditionals: self.directive_conditionals.unwrap_or(false),
-            path_variables: self.path_variables.unwrap_or(false),
             interface_includes_patch: required(
                 &self.interface_includes_patch,
                 name,
@@ -1088,13 +1082,12 @@ fn strings(items: &[&str]) -> Vec<String> {
     items.iter().map(|&s| s.to_owned()).collect()
 }
 
-/// A multi-TOC Battle.net-era row: comma Interface lists, path variables and the patch
-/// digit, no directive conditionals.
+/// A multi-TOC Battle.net-era row as every current client has it (12.0.7 or later):
+/// comma Interface lists, directive conditionals and the patch digit.
 fn modern_row(
     name: &str,
     family: Family,
     version_min: ClientVersion,
-    game: &str,
     game_types: &[&str],
     game_suffixes: &[&str],
     family_suffix: &str,
@@ -1105,15 +1098,13 @@ fn modern_row(
         install_kind: None,
         version_min,
         version_max: None,
-        game: game.to_owned(),
         game_types: strings(game_types),
         multi_toc: true,
         comma_interface: true,
         game_suffixes: strings(game_suffixes),
         family_suffixes: strings(&[family_suffix]),
         legacy_suffixes: Vec::new(),
-        directive_conditionals: false,
-        path_variables: true,
+        directive_conditionals: true,
         interface_includes_patch: true,
         legacy: false,
     }
@@ -1121,14 +1112,13 @@ fn modern_row(
 
 /// A private-server generation below the multi-TOC era: one plain TOC with a single
 /// Interface value and no patch digit.
-fn legacy_row(name: &str, family: Family, version_min: ClientVersion, game: &str) -> ClientRules {
+fn legacy_row(name: &str, family: Family, version_min: ClientVersion) -> ClientRules {
     ClientRules {
         name: name.to_owned(),
         family,
         install_kind: Some(InstallKind::Custom),
         version_min,
         version_max: None,
-        game: game.to_owned(),
         game_types: Vec::new(),
         multi_toc: false,
         comma_interface: false,
@@ -1136,7 +1126,6 @@ fn legacy_row(name: &str, family: Family, version_min: ClientVersion, game: &str
         family_suffixes: Vec::new(),
         legacy_suffixes: Vec::new(),
         directive_conditionals: false,
-        path_variables: false,
         interface_includes_patch: false,
         legacy: true,
     }
@@ -1145,34 +1134,33 @@ fn legacy_row(name: &str, family: Family, version_min: ClientVersion, game: &str
 /// Rows of one family are tried in order. Mainline is split where clients gained
 /// `_Standard` (12.1.5), directive conditionals (12.0.7), comma lists (10.2.7) and
 /// multi-TOC (9.1.0). Within the classic families each row covers the whole family,
-/// so it has no `version_max`.
+/// so it has no `version_max`: these rows describe current clients.
+///
+/// Directive conditionals: warcraft.wiki.gg `TOC_format` (fetched 2026-10-18) has Modern
+/// 12.0.7 add them, and Classic Era 1.15.9, Anniversary 2.5.6, Titan Reforged 3.80.2 and
+/// Mists 5.5.4 each "include all Modern changes up to 12.0.7" (Forever 1.60.1 up to
+/// 12.1.5), so every current client reads them. Wrath and Cata Classic have no live
+/// product and their last builds predate 12.0.7, as do older mainline builds.
 ///
 /// UNVERIFIED, so table values only: the first classic builds with multi-TOC and comma
-/// lists (these rows describe current clients), and the build that introduced path
-/// variables. Titan's game type and suffix come from publishers' archives (see its row).
+/// lists. Titan's game type and suffix come from publishers' archives (see its row).
 fn builtin_client_rules() -> Vec<ClientRules> {
     let standard = ["standard"];
     vec![
-        ClientRules {
-            directive_conditionals: true,
-            ..modern_row(
-                "mainline",
-                Family::Mainline,
-                ClientVersion::new(12, 1, 5),
-                "standard",
-                &standard,
-                &["Standard"],
-                "Mainline",
-            )
-        },
+        modern_row(
+            "mainline",
+            Family::Mainline,
+            ClientVersion::new(12, 1, 5),
+            &standard,
+            &["Standard"],
+            "Mainline",
+        ),
         ClientRules {
             version_max: Some(ClientVersion::new(12, 1, 4)),
-            directive_conditionals: true,
             ..modern_row(
                 "mainline-12.0.7",
                 Family::Mainline,
                 ClientVersion::new(12, 0, 7),
-                "standard",
                 &standard,
                 &[],
                 "Mainline",
@@ -1180,11 +1168,11 @@ fn builtin_client_rules() -> Vec<ClientRules> {
         },
         ClientRules {
             version_max: Some(ClientVersion::new(12, 0, 6)),
+            directive_conditionals: false,
             ..modern_row(
                 "mainline-10.2.7",
                 Family::Mainline,
                 ClientVersion::new(10, 2, 7),
-                "standard",
                 &standard,
                 &[],
                 "Mainline",
@@ -1193,11 +1181,11 @@ fn builtin_client_rules() -> Vec<ClientRules> {
         ClientRules {
             version_max: Some(ClientVersion::new(10, 2, 6)),
             comma_interface: false,
+            directive_conditionals: false,
             ..modern_row(
                 "mainline-9.1",
                 Family::Mainline,
                 ClientVersion::new(9, 1, 0),
-                "standard",
                 &standard,
                 &[],
                 "Mainline",
@@ -1207,7 +1195,6 @@ fn builtin_client_rules() -> Vec<ClientRules> {
             "forever",
             Family::Forever,
             ClientVersion::new(1, 50, 0),
-            "camelot",
             &["camelot", "forever"],
             &["Forever", "Camelot"],
             "Mainline",
@@ -1216,7 +1203,6 @@ fn builtin_client_rules() -> Vec<ClientRules> {
             "vanilla",
             Family::Vanilla,
             ClientVersion::new(1, 13, 0),
-            "vanilla",
             &["vanilla"],
             &["Vanilla"],
             "Classic",
@@ -1225,20 +1211,21 @@ fn builtin_client_rules() -> Vec<ClientRules> {
             "tbc",
             Family::Tbc,
             ClientVersion::new(2, 5, 0),
-            "tbc",
             &["tbc"],
             &["TBC"],
             "Classic",
         ),
-        modern_row(
-            "wrath",
-            Family::Wrath,
-            ClientVersion::new(3, 4, 0),
-            "wrath",
-            &["wrath"],
-            &["Wrath"],
-            "Classic",
-        ),
+        ClientRules {
+            directive_conditionals: false,
+            ..modern_row(
+                "wrath",
+                Family::Wrath,
+                ClientVersion::new(3, 4, 0),
+                &["wrath"],
+                &["Wrath"],
+                "Classic",
+            )
+        },
         // Titan loads `_Wrath` TOCs and its game type is `titan`: WeakAuras 5.22.1 ships
         // `WeakAuras_Wrath.toc` with `## Interface: 38002` (Titan's alone) and
         // `## AllowLoadGameType: wrath, titan`, and Questie declares `wrath:38002`
@@ -1247,25 +1234,25 @@ fn builtin_client_rules() -> Vec<ClientRules> {
             "titan",
             Family::Titan,
             ClientVersion::new(3, 80, 0),
-            "titan",
             &["titan"],
             &["Wrath"],
             "Classic",
         ),
-        modern_row(
-            "cata",
-            Family::Cata,
-            ClientVersion::new(4, 4, 0),
-            "cata",
-            &["cata"],
-            &["Cata"],
-            "Classic",
-        ),
+        ClientRules {
+            directive_conditionals: false,
+            ..modern_row(
+                "cata",
+                Family::Cata,
+                ClientVersion::new(4, 4, 0),
+                &["cata"],
+                &["Cata"],
+                "Classic",
+            )
+        },
         modern_row(
             "mists",
             Family::Mists,
             ClientVersion::new(5, 5, 0),
-            "mists",
             &["mists"],
             &["Mists"],
             "Classic",
@@ -1274,38 +1261,30 @@ fn builtin_client_rules() -> Vec<ClientRules> {
             "vanilla-legacy",
             Family::VanillaLegacy,
             ClientVersion::new(1, 12, 0),
-            "vanilla",
         ),
-        legacy_row(
-            "tbc-legacy",
-            Family::TbcLegacy,
-            ClientVersion::new(2, 4, 0),
-            "tbc",
-        ),
+        legacy_row("tbc-legacy", Family::TbcLegacy, ClientVersion::new(2, 4, 0)),
         legacy_row(
             "wrath-legacy",
             Family::WrathLegacy,
             ClientVersion::new(3, 3, 0),
-            "wrath",
         ),
         legacy_row(
             "cata-legacy",
             Family::CataLegacy,
             ClientVersion::new(4, 3, 0),
-            "cata",
         ),
         legacy_row(
             "mists-legacy",
             Family::MistsLegacy,
             ClientVersion::new(5, 4, 0),
-            "mists",
         ),
     ]
 }
 
 /// Every Battle.net client is multi-TOC, but an unmapped one could belong to either
 /// family, so both family suffixes are candidates. The verdict's exact-interface rule
-/// for `unknown` is what guards installs.
+/// for `unknown` is what guards installs. An unmapped Battle.net client today is built on
+/// 12.0.7 or later, so it reads directive conditionals.
 fn fallback_battlenet() -> ClientRules {
     ClientRules {
         install_kind: Some(InstallKind::Battlenet),
@@ -1314,7 +1293,6 @@ fn fallback_battlenet() -> ClientRules {
             "fallback-battlenet",
             Family::Unknown,
             ClientVersion::new(0, 0, 0),
-            "unknown",
             &[],
             &[],
             "Mainline",
@@ -1327,7 +1305,6 @@ fn fallback_custom() -> ClientRules {
         "fallback-custom",
         Family::Unknown,
         ClientVersion::new(0, 0, 0),
-        "unknown",
     )
 }
 
@@ -1623,6 +1600,28 @@ mod tests {
             table.rules_for(&v("12.1.4.99999"), bn).name,
             "mainline-12.0.7"
         );
+        // Directive conditionals: every client built on 12.0.7 or later (warcraft.wiki.gg
+        // TOC_format, 2026-10-18), and nothing older.
+        let reads: Vec<&str> = table
+            .client_rules()
+            .iter()
+            .chain([&table.fallback_battlenet, &table.fallback_custom])
+            .filter(|row| row.directive_conditionals)
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(
+            reads,
+            [
+                "mainline",
+                "mainline-12.0.7",
+                "forever",
+                "vanilla",
+                "tbc",
+                "titan",
+                "mists",
+                "fallback-battlenet"
+            ]
+        );
     }
 
     #[test]
@@ -1630,7 +1629,6 @@ mod tests {
         let rules = table()
             .rules_for(&v("1.60.1"), InstallKind::Battlenet)
             .clone();
-        assert_eq!(rules.game, "camelot");
         assert_eq!(rules.game_types, ["camelot", "forever"]);
         assert_eq!(rules.game_suffixes, ["Forever", "Camelot"]);
         assert_eq!(rules.family_suffixes, ["Mainline"]);
@@ -1816,7 +1814,6 @@ mod tests {
                 }
             }
             assert_eq!(row.legacy, row.family.is_legacy(), "{}", row.name);
-            assert_eq!(row.path_variables, row.multi_toc, "{}", row.name);
             assert!(row.legacy_suffixes.is_empty(), "{}", row.name);
             names.push(row.name.as_str());
         }
@@ -1894,7 +1891,6 @@ mod tests {
             install_kind = "custom"
             version_min = "7.3.0"
             version_max = "7.3.5"
-            game = "standard"
             multi_toc = false
             comma_interface = false
             interface_includes_patch = false
