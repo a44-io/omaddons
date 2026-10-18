@@ -45,20 +45,34 @@ fn crashes_in_fallback_mode_still_recover_to_one_side() {
     let old = reference.folders();
     reference.install("gh:o/foo", "v2");
     let new = reference.folders();
-    for failpoint in [
+    let failpoints = [
         "engine.journal.prepared",
         "engine.swap.before_rename",
+        // Between a folder's two plain renames: the third rename of the update.
+        "engine.swap.before_rename@3",
         "engine.swap.after_exchange",
         "engine.swapped",
         "engine.record.written",
-    ] {
+    ];
+    // Also after a reboot that renumbered the devices the journal's steps recorded.
+    for (failpoint, reboot) in failpoints.iter().flat_map(|f| [(f, false), (f, true)]) {
         let s = Scene::new();
         s.install("gh:o/foo", "v1");
+        let (name, nth) = failpoint.split_once('@').unwrap_or((failpoint, ""));
+        let at = if nth.is_empty() {
+            String::new()
+        } else {
+            format!("@{nth}")
+        };
         let r = s.run(
             &s.install_args("gh:o/foo", "v2"),
-            &format!("{EINVAL},{failpoint}=abort"),
+            &format!("{EINVAL},{name}=abort{at}"),
         );
         assert_eq!(r.code, -1, "{failpoint}: {}", r.context());
+        if reboot {
+            common::engine::renumber_journal_devices(&s.home.state().join("journal"));
+        }
+        let failpoint = format!("{failpoint}, reboot: {reboot}");
         let bar = s.run(&s.install_args("gh:o/bar", "bar"), "").expect(0);
         assert!(
             warning_codes(&bar).iter().any(|c| c == "journal_recovered"),

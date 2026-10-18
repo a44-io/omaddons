@@ -416,3 +416,27 @@ pub fn warning_codes(envelope: &Value) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+/// What a reboot does to the journals in `dir` on btrfs, FUSE or device-mapper: every
+/// device number their steps recorded changes, while inode numbers stay.
+pub fn renumber_journal_devices(dir: &std::path::Path) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let mut text = String::new();
+        for line in fs::read_to_string(&path).unwrap().lines() {
+            let mut value: Value = serde_json::from_str(line).unwrap();
+            if value["type"] == "step" {
+                for key in ["from_id", "to_id"] {
+                    if let Some(dev) = value.get_mut(key).and_then(|id| id.get_mut("dev")) {
+                        *dev = (dev.as_u64().unwrap() + 1000).into();
+                    }
+                }
+                text.push_str(&value.to_string());
+            } else {
+                text.push_str(line);
+            }
+            text.push('\n');
+        }
+        fs::write(&path, text).unwrap();
+    }
+}

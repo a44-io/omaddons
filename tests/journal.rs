@@ -201,6 +201,12 @@ mod support {
             }
         }
 
+        /// What a reboot does on btrfs, FUSE or device-mapper: every device number the
+        /// journal's steps recorded changes; inode numbers stay.
+        pub fn renumber_devices(&self) {
+            common::engine::renumber_journal_devices(&self.paths.journal_dir());
+        }
+
         /// Runs `executed` steps, optionally records the next without running it, then
         /// the markers, and "crashes" (drops everything).
         pub fn run(&self, executed: usize, record_next: bool, swapped: bool, committed: bool) {
@@ -259,46 +265,51 @@ mod support {
 
 #[test]
 fn every_interrupted_prefix_rolls_back_to_the_old_trees() {
-    for executed in 0..=6 {
-        for record_next in [false, true] {
-            if record_next && executed == 6 {
-                continue;
-            }
-            let scene = Scene::new();
-            scene.run(executed, record_next, false, false);
-            let warnings = scene.recover();
-            let label = format!("{executed} steps run, next recorded: {record_next}");
-            assert_eq!(
-                tree_hash(&scene.addons),
-                scene.old,
-                "{label}\n{}",
-                common::trees::listing(&scene.addons)
-            );
-            scene.assert_cleaned();
-            assert_eq!(warnings.len(), 1, "{label}");
-            assert_eq!(warnings[0].code, WarningCode::JournalRecovered);
-            assert!(
-                warnings[0].message.contains("rolled back"),
-                "{label}: {}",
-                warnings[0].message
-            );
-            assert_eq!(
-                warnings[0].fix.as_ref().and_then(|f| f.argv()),
-                Some(
-                    &[
-                        "omaddons".to_owned(),
-                        "history".into(),
-                        "--limit".into(),
-                        "5".into()
-                    ][..]
-                )
-            );
-            assert!(scene.history().is_empty(), "{label}: nothing committed");
-            assert!(
-                scene.recover().is_empty(),
-                "{label}: a second recovery finds nothing"
-            );
+    // Also after a reboot that renumbered the devices the steps recorded.
+    for (executed, record_next, reboot) in (0..=6)
+        .flat_map(|e| [(e, false), (e, true)])
+        .flat_map(|(e, r)| [(e, r, false), (e, r, true)])
+    {
+        if record_next && executed == 6 {
+            continue;
         }
+        let scene = Scene::new();
+        scene.run(executed, record_next, false, false);
+        if reboot {
+            scene.renumber_devices();
+        }
+        let warnings = scene.recover();
+        let label = format!("{executed} steps run, next recorded: {record_next}, reboot: {reboot}");
+        assert_eq!(
+            tree_hash(&scene.addons),
+            scene.old,
+            "{label}\n{}",
+            common::trees::listing(&scene.addons)
+        );
+        scene.assert_cleaned();
+        assert_eq!(warnings.len(), 1, "{label}");
+        assert_eq!(warnings[0].code, WarningCode::JournalRecovered);
+        assert!(
+            warnings[0].message.contains("rolled back"),
+            "{label}: {}",
+            warnings[0].message
+        );
+        assert_eq!(
+            warnings[0].fix.as_ref().and_then(|f| f.argv()),
+            Some(
+                &[
+                    "omaddons".to_owned(),
+                    "history".into(),
+                    "--limit".into(),
+                    "5".into()
+                ][..]
+            )
+        );
+        assert!(scene.history().is_empty(), "{label}: nothing committed");
+        assert!(
+            scene.recover().is_empty(),
+            "{label}: a second recovery finds nothing"
+        );
     }
 }
 

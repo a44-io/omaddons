@@ -156,11 +156,19 @@ pub enum StepPurpose {
     FallbackStageToLive,
 }
 
-/// A path's identity, which a rename on one filesystem keeps.
+/// A path's identity, which a rename on one filesystem keeps: its inode number and, where
+/// the filesystem keeps one, its birth time. The device number is recorded for diagnosis
+/// only: btrfs subvolumes, FUSE and device-mapper volumes get a new one on every mount,
+/// so a reboot would make every step look like neither state. Compare with [`same`],
+/// never `==`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct FileId {
     pub dev: u64,
     pub ino: u64,
+    /// Nanoseconds since the epoch (statx `STATX_BTIME`); `None` where the filesystem
+    /// has none, and in journals written before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub born_ns: Option<i64>,
 }
 
 impl FileId {
@@ -169,7 +177,29 @@ impl FileId {
         std::fs::symlink_metadata(path).ok().map(|m| Self {
             dev: m.dev(),
             ino: m.ino(),
+            born_ns: m
+                .created()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|d| i64::try_from(d.as_nanos()).ok()),
         })
+    }
+}
+
+/// Whether two recorded identities name the same file: both absent, or the same inode
+/// with the same birth time when both know it. The device is ignored: a step's two paths
+/// are on one filesystem by construction, and its number changes across mounts.
+fn same(a: Option<FileId>, b: Option<FileId>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.ino == b.ino
+                && match (a.born_ns, b.born_ns) {
+                    (Some(x), Some(y)) => x == y,
+                    _ => true,
+                }
+        }
+        _ => false,
     }
 }
 
@@ -723,10 +753,12 @@ fn ran(step: &StepRecord) -> Result<bool> {
         StepOp::Exchange => (step.to_id, step.from_id),
         StepOp::Noreplace | StepOp::Rename => (None, step.from_id),
     };
-    if (now_from, now_to) == before {
+    let is =
+        |(from, to): (Option<FileId>, Option<FileId>)| same(now_from, from) && same(now_to, to);
+    if is(before) {
         return Ok(false);
     }
-    if (now_from, now_to) == after {
+    if is(after) {
         return Ok(true);
     }
     Err(Error::internal(format!(
@@ -845,7 +877,11 @@ mod tests {
             from: "/c/Interface/.omaddons/stage/t/Foo".into(),
             to: "/c/Interface/AddOns/Foo".into(),
             purpose: StepPurpose::SwapIn,
-            from_id: Some(FileId { dev: 1, ino: 2 }),
+            from_id: Some(FileId {
+                dev: 1,
+                ino: 2,
+                born_ns: Some(3),
+            }),
             to_id: None,
         });
         let json = serde_json::to_value(&step).unwrap();
@@ -961,6 +997,113 @@ mod tests {
             ran(&rename).is_err(),
             "something new at `from` is neither state"
         );
+    }
+
+    /// What a reboot does to a recorded identity: another device number, same inode.
+    fn renumbered(id: Option<FileId>) -> Option<FileId> {
+        id.map(|id| FileId {
+            dev: id.dev ^ 0x5a5a,
+            ..id
+        })
+    }
+
+    #[test]
+    fn a_renumbered_device_still_decides_whether_a_step_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, c) = (
+            dir.path().join("a"),
+            dir.path().join("b"),
+            dir.path().join("c"),
+        );
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let exchange = StepRecord {
+            n: 1,
+            op: StepOp::Exchange,
+            from_id: renumbered(FileId::of(&a)),
+            to_id: renumbered(FileId::of(&b)),
+            from: a.clone(),
+            to: b.clone(),
+            purpose: StepPurpose::SwapIn,
+        };
+        let noreplace = StepRecord {
+            n: 2,
+            op: StepOp::Noreplace,
+            from_id: renumbered(FileId::of(&b)),
+            to_id: None,
+            from: b.clone(),
+            to: c.clone(),
+            purpose: StepPurpose::OldToSnapshot,
+        };
+        assert!(!ran(&exchange).unwrap() && !ran(&noreplace).unwrap());
+        rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            &a,
+            rustix::fs::CWD,
+            &b,
+            rustix::fs::RenameFlags::EXCHANGE,
+        )
+        .unwrap();
+        assert!(ran(&exchange).unwrap());
+        // `b` now holds what was `a`: the noreplace step recorded the old `b`.
+        let moved = StepRecord {
+            from_id: renumbered(FileId::of(&b)),
+            ..noreplace
+        };
+        std::fs::rename(&b, &c).unwrap();
+        assert!(ran(&moved).unwrap());
+    }
+
+    #[test]
+    fn a_legacy_step_without_birth_time_decides_by_inode() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, c) = (dir.path().join("a"), dir.path().join("c"));
+        std::fs::create_dir(&a).unwrap();
+        let ino = FileId::of(&a).unwrap().ino;
+        let line = format!(
+            "{{\"type\":\"step\",\"n\":1,\"op\":\"noreplace\",\"from\":{},\"to\":{},\"purpose\":\"old_to_snapshot\",\"from_id\":{{\"dev\":7,\"ino\":{ino}}},\"to_id\":null}}\n",
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&c).unwrap(),
+        );
+        let parsed = parse(&line).unwrap();
+        let step = &parsed.steps[0];
+        assert_eq!(step.from_id.unwrap().born_ns, None);
+        assert!(!ran(step).unwrap());
+        std::fs::rename(&a, &c).unwrap();
+        assert!(ran(step).unwrap());
+        assert!(
+            serde_json::to_string(step)
+                .unwrap()
+                .contains("\"from_id\":{\"dev\":7,\"ino\""),
+            "no born_ns key written when unknown"
+        );
+    }
+
+    #[test]
+    fn a_reused_inode_with_another_birth_time_is_neither_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, c) = (dir.path().join("a"), dir.path().join("c"));
+        std::fs::create_dir(&a).unwrap();
+        let now = FileId::of(&a).unwrap();
+        // As if `a` had been removed and a new directory had got its inode number.
+        let step = StepRecord {
+            n: 1,
+            op: StepOp::Noreplace,
+            from_id: Some(FileId {
+                born_ns: Some(now.born_ns.unwrap_or(0) - 1_000_000_000),
+                ..now
+            }),
+            to_id: None,
+            from: a.clone(),
+            to: c.clone(),
+            purpose: StepPurpose::OldToSnapshot,
+        };
+        if now.born_ns.is_some() {
+            assert!(ran(&step).is_err(), "a different file at `from`");
+        } else {
+            // A filesystem without birth times decides by inode alone.
+            assert!(!ran(&step).unwrap());
+        }
     }
 
     #[cfg(debug_assertions)]
