@@ -1,6 +1,6 @@
 //! `omaddons list [-t T] [--unmanaged] [--protected] [--deep]`: the managed addons of
-//! each target and counts of every folder class; on request the unmanaged (plus linked
-//! and invalid) and protected folders. With `-v` (stat-first) or `--deep` (every file
+//! each target and counts of every folder class; on request the unmanaged (plus shared,
+//! linked and invalid) and protected folders. With `-v` (stat-first) or `--deep` (every file
 //! re-hashed), each addon's drift. Read-only: no lock, no writes, no network.
 
 use std::io::Write;
@@ -16,7 +16,7 @@ use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::drift::{DriftMode, DriftState};
 use crate::error::{Result, Warning};
-use crate::inventory::{Depth, FolderClass, FolderEntry, Inventory, inventory};
+use crate::inventory::{Depth, FolderClass, FolderEntry, Inventory, OwnedOn, inventory_shared};
 use crate::model::{AddonReason, AddonRecord, AddonState, Channel, TargetKey, VersionConfidence};
 use crate::output::{Outcome, Style, table};
 use crate::resolve::updates::{StatusKind, StatusRow, UpdateStatus};
@@ -27,7 +27,7 @@ use crate::toc::Verdict;
 /// `list`'s own flags.
 #[derive(Debug, Clone, Copy, Default, clap::Args)]
 pub struct ListArgs {
-    /// Also list unmanaged, linked and invalid folders, with their TOC
+    /// Also list unmanaged, shared, linked and invalid folders, with their TOC
     #[arg(long)]
     pub unmanaged: bool,
     /// Also list protected (Blizzard_*) folders
@@ -63,7 +63,8 @@ pub struct ListTarget {
     /// Sorted by name, ignoring case.
     pub addons: Vec<ListAddon>,
     pub counts: ListCounts,
-    /// With `--unmanaged`: unmanaged, linked and invalid folders by key; else `null`.
+    /// With `--unmanaged`: unmanaged, shared, linked and invalid folders by key; else
+    /// `null`.
     pub unmanaged: Option<Vec<FolderInfo>>,
     /// With `--protected`; else `null`.
     pub protected: Option<Vec<ProtectedFolder>>,
@@ -121,6 +122,8 @@ pub enum Folders {
 pub struct ListCounts {
     pub managed: u32,
     pub unmanaged: u32,
+    /// Managed by another client sharing this AddOns directory.
+    pub shared: u32,
     pub protected: u32,
     pub linked: u32,
     pub invalid: u32,
@@ -138,6 +141,9 @@ pub struct FolderInfo {
     pub interface: Option<u32>,
     pub verdict: Option<VerdictKind>,
     pub case_duplicate: bool,
+    /// A `shared` folder's owners on the clients sharing this AddOns directory.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub owned_on: Vec<OwnedOn>,
 }
 
 /// The TOC-load verdict, flattened.
@@ -213,7 +219,8 @@ pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
             }
             None => None,
         };
-        let inv = inventory(&d.target, record.as_ref(), &world.table, depth)?;
+        let shared = world.sibling_records(&d.target)?;
+        let inv = inventory_shared(&d.target, record.as_ref(), &shared, &world.table, depth)?;
         let rows = record
             .as_ref()
             .map(|r| remembered.statuses(&d.target, r, &world.table))
@@ -326,6 +333,7 @@ fn list_target(
         counts: ListCounts {
             managed: inv.counts.managed,
             unmanaged: inv.counts.unmanaged,
+            shared: inv.counts.shared,
             protected: inv.counts.protected,
             linked: inv.counts.linked,
             invalid: inv.counts.invalid,
@@ -333,6 +341,7 @@ fn list_target(
         unmanaged: args.unmanaged.then(|| {
             of(&[
                 FolderClass::Unmanaged,
+                FolderClass::Shared,
                 FolderClass::Linked,
                 FolderClass::Invalid,
             ])
@@ -385,6 +394,7 @@ fn folder_info(e: &FolderEntry, family: Family, table: &RulesTable) -> FolderInf
             Verdict::NoToc => VerdictKind::NoToc,
         }),
         case_duplicate: e.case_duplicate,
+        owned_on: e.owned_on.clone(),
     }
 }
 
@@ -456,10 +466,15 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
         let rows: Vec<Vec<String>> = folders
             .iter()
             .map(|f| {
-                let verdict = f
-                    .verdict
-                    .map(|v| wire(&v))
-                    .unwrap_or_else(|| wire(&f.class));
+                let verdict = match f.owned_on.first() {
+                    Some(owned) if f.class == FolderClass::Shared => {
+                        format!("shared (managed on {})", owned.target)
+                    }
+                    _ => f
+                        .verdict
+                        .map(|v| wire(&v))
+                        .unwrap_or_else(|| wire(&f.class)),
+                };
                 vec![
                     format!("  {}", f.folder),
                     f.title.clone().unwrap_or_default(),
@@ -484,6 +499,9 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
         "  {} managed · {} unmanaged · {} protected · {} linked",
         c.managed, c.unmanaged, c.protected, c.linked
     );
+    if c.shared > 0 {
+        counts.push_str(&format!(" · {} shared", c.shared));
+    }
     if c.invalid > 0 {
         counts.push_str(&format!(" · {} invalid", c.invalid));
     }

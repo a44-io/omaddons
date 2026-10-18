@@ -188,6 +188,7 @@ pub(super) fn choose(
     works: &mut [TargetWork<'_>],
     records: &BTreeMap<String, TargetRecord>,
     over: Option<&Override>,
+    argv: &[String],
 ) {
     match mode {
         Mode::Report => {}
@@ -209,7 +210,7 @@ pub(super) fn choose(
             for work in works.iter_mut() {
                 let record = records.get(&work.discovered.target.id);
                 for (i, folder) in folders.iter().enumerate() {
-                    if let Some(act) = choose_folder(work, folder, record, None) {
+                    if let Some(act) = choose_folder(work, folder, record, None, argv) {
                         work.acts.push(act);
                         found[i] = true;
                     }
@@ -225,7 +226,7 @@ pub(super) fn choose(
         Mode::Ref { folder, .. } => {
             for work in works.iter_mut() {
                 let record = records.get(&work.discovered.target.id);
-                let act = choose_folder(work, folder, record, over)
+                let act = choose_folder(work, folder, record, over, argv)
                     .unwrap_or_else(|| absent(folder, &work.discovered.target.id));
                 work.acts.push(act);
             }
@@ -261,17 +262,19 @@ fn choose_folder(
     request: &str,
     record: Option<&TargetRecord>,
     over: Option<&Override>,
+    argv: &[String],
 ) -> Option<Act> {
     let id = work.discovered.target.id.clone();
     let entry = work
         .entries
         .iter()
         .find(|e| e.name.eq_ignore_ascii_case(request))?;
-    let (name, class, owners, duplicate) = (
+    let (name, class, owners, duplicate, owned_on) = (
         entry.name.clone(),
         entry.class,
         entry.owners.clone(),
         entry.case_duplicate,
+        entry.owned_on.first().cloned(),
     );
     let fail = |error: Error| {
         Some(Act::Fail {
@@ -299,6 +302,13 @@ fn choose_folder(
         FolderClass::Linked => return fail(not_addon("a symlink", "linked")),
         FolderClass::Invalid => return fail(not_addon("not an addon folder", "invalid")),
         FolderClass::Managed => return Some(managed(request, &owners, record, over, &id)),
+        // Recorded by a client sharing this AddOns directory: one record per folder.
+        FolderClass::Shared => {
+            let owned = owned_on?;
+            return fail(crate::engine::ownership::owned_on_shared(
+                &name, &owned, argv,
+            ));
+        }
         FolderClass::Unmanaged if duplicate => {
             return fail(not_addon(
                 "one of several folders differing only in case",

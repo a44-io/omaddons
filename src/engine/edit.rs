@@ -635,6 +635,7 @@ mod tests {
             toc: None,
             verdict: None,
             link_target: None,
+            owned_on: Vec::new(),
         });
         assert_eq!(
             check(&forget, Some(&foo), &live),

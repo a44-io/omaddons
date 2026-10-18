@@ -430,3 +430,51 @@ fn classes_depth_is_fast() {
     let budget = if cfg!(debug_assertions) { 50 } else { 5 };
     assert!(took.as_millis() < budget, "{took:?} for 500 folders");
 }
+
+/// A folder only a client sharing this AddOns directory records is `shared`, naming
+/// that client; one recorded on both stays `managed` and lists the other too.
+#[test]
+fn folders_another_sharing_client_records_are_shared() {
+    let env = TestEnv::new();
+    let root = BattlenetRoot::at(env.root().join("wow"))
+        .product("wow")
+        .build();
+    let target = battlenet_target(&root, "_retail_");
+    let addons = target.client_dir.join("Interface/AddOns");
+    for name in ["Mine", "Theirs", "Both", "Loose"] {
+        addon_folder(
+            &addons,
+            name,
+            &[(&format!("{name}.toc"), &toc("120105", &[]))],
+            &[],
+        );
+    }
+    let mine = record(&[addon("Mine", &["Mine"]), addon("Both", &["Both"])]);
+    let era = record(&[addon("Theirs", &["Theirs"]), addon("BothThere", &["Both"])]);
+    let inv = omaddons::inventory::inventory_shared(
+        &target,
+        Some(&mine),
+        &[("era".to_owned(), era)],
+        &RulesTable::builtin(),
+        Depth::Classes,
+    )
+    .unwrap();
+    let class = |name: &str| inv.folders.iter().find(|e| e.name == name).unwrap();
+    assert_eq!(class("Mine").class, FolderClass::Managed);
+    assert!(class("Mine").owned_on.is_empty());
+    assert_eq!(class("Theirs").class, FolderClass::Shared);
+    assert_eq!(
+        (
+            class("Theirs").owned_on[0].target.as_str(),
+            class("Theirs").owned_on[0].addon.as_str()
+        ),
+        ("era", "Theirs")
+    );
+    assert_eq!(class("Both").class, FolderClass::Managed);
+    assert_eq!(class("Both").owned_on[0].addon, "BothThere");
+    assert_eq!(class("Loose").class, FolderClass::Unmanaged);
+    assert_eq!(
+        (inv.counts.managed, inv.counts.shared, inv.counts.unmanaged),
+        (2, 1, 1)
+    );
+}

@@ -170,6 +170,7 @@ expression: inv
   "counts": {
     "protected": 1,
     "managed": 1,
+    "shared": 0,
     "linked": 1,
     "unmanaged": 2,
     "invalid": 0

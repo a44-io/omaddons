@@ -1234,9 +1234,14 @@ mod tests {
             toc: None,
             verdict: None,
             link_target: None,
+            owned_on: Vec::new(),
         };
         assert!(
             CandidateFolder::from_entry(&entry(FolderClass::Unmanaged, false, "Foo")).is_some()
+        );
+        assert!(
+            CandidateFolder::from_entry(&entry(FolderClass::Shared, false, "Foo")).is_none(),
+            "another client's folder is never a candidate"
         );
         for (class, dup) in [
             (FolderClass::Unmanaged, true),

@@ -36,7 +36,7 @@ use crate::engine::inspect::ArchiveLimits;
 use crate::engine::plan::{Checked, ReleaseCheck};
 use crate::engine::tx::CheckJob;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Warning};
-use crate::inventory::{Depth, FolderEntry, inventory};
+use crate::inventory::{Depth, FolderEntry, inventory_shared};
 use crate::model::{FolderName, Ref, TxId, VersionConfidence};
 use crate::output::{Outcome, Phase, Style};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
@@ -548,7 +548,8 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
     let mut works: Vec<TargetWork<'_>> = Vec::new();
     for d in &targets {
         let record = records.get(&d.target.id);
-        let inv = inventory(&d.target, record, &world.table, Depth::Full)?;
+        let shared = world.sibling_records(&d.target)?;
+        let inv = inventory_shared(&d.target, record, &shared, &world.table, Depth::Full)?;
         let candidates: Vec<CandidateFolder> = inv
             .folders
             .iter()
@@ -589,7 +590,7 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
     }
 
     // What adopting takes; in report mode, nothing.
-    apply::choose(&mode, &mut works, &records, over.as_ref());
+    apply::choose(&mode, &mut works, &records, over.as_ref(), &ctx.argv);
 
     // Exactness: each identified group the command looks at whose source is on, checked
     // against its newest release.

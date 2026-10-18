@@ -15,6 +15,7 @@ expression: s.stable(&c.envelope)
           "linked": 0,
           "managed": 0,
           "protected": 0,
+          "shared": 0,
           "unmanaged": 0
         },
         "family": "mists",
@@ -52,6 +53,7 @@ expression: s.stable(&c.envelope)
           "linked": 0,
           "managed": 1,
           "protected": 0,
+          "shared": 0,
           "unmanaged": 0
         },
         "family": "mainline",

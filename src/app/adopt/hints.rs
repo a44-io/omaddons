@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use crate::app::world::World;
 use crate::discover::DiscoveredTarget;
 use crate::error::{Error, Suggestion};
-use crate::inventory::{Depth, FolderClass, inventory};
+use crate::inventory::{Depth, FolderClass, inventory_shared};
 use crate::model::Ref;
 use crate::resolve::catalog::Catalog;
 use crate::state::records::TargetRecord;
@@ -50,7 +50,9 @@ pub fn adopt_fixes(
     let mut fixes = Vec::new();
     for d in targets {
         let record = records.get(&d.target.id);
-        let Ok(inv) = inventory(&d.target, record, &world.table, Depth::Classes) else {
+        let shared = world.sibling_records(&d.target).unwrap_or_default();
+        let Ok(inv) = inventory_shared(&d.target, record, &shared, &world.table, Depth::Classes)
+        else {
             continue;
         };
         let Some(entry) = inv.folders.iter().find(|e| {

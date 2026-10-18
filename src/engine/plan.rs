@@ -36,7 +36,7 @@ use super::running::{self, PolicyContext, PolicyOp};
 use super::swap::SwapOp;
 use crate::error::{Error, ErrorBody, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{ScopeTable, TreeDigest, WriteSession, Writer, ensure_dir_all, failpoint};
-use crate::inventory::{Depth, FolderClass, Inventory, inventory};
+use crate::inventory::{Depth, FolderClass, Inventory, inventory_shared, sibling_records};
 use crate::limits::{DEPENDENCY_MAX_ADDONS, DEPENDENCY_MAX_DEPTH};
 use crate::model::{
     Actor, AddonReason, AddonRecord, AddonState, AssetLocation, Candidate, Channel, ExpectedHash,
@@ -348,6 +348,9 @@ pub struct PlanCtx<'a> {
     pub running: &'a BTreeSet<PathBuf>,
     /// Why the process table could not be read, when it could not.
     pub running_unknown: Option<&'a str>,
+    /// Every target the command discovered: the clients sharing a target's AddOns
+    /// directory are found among them.
+    pub known_targets: &'a [Target],
     pub policy: RunningPolicy,
     pub limits: ArchiveLimits,
     pub actor: Actor,
@@ -1009,7 +1012,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             default_kind: tr.default_kind,
             dependencies: BTreeMap::new(),
         };
-        let live = match inventory(target, Some(&record), ctx.table, Depth::Classes) {
+        let live = match live_inventory(ctx, target, &record) {
             Ok(live) => live,
             Err(error) => {
                 // Every change on the target fails with it, each under its own ref and
@@ -2059,13 +2062,21 @@ impl TargetState {
     /// Reads `target` now.
     pub fn now(ctx: &PlanCtx<'_>, target: &Target) -> Result<Self> {
         let (record, index) = target_state(ctx.paths, target)?;
-        let live = inventory(target, Some(&record), ctx.table, Depth::Classes)?;
+        let live = live_inventory(ctx, target, &record)?;
         Ok(Self {
             record,
             index,
             live,
         })
     }
+}
+
+/// `target`'s inventory under `record`, with the records of the clients sharing its
+/// AddOns directory: a folder only they record is `shared`, never ours to take. Under
+/// the lock this reads their records as they are now.
+fn live_inventory(ctx: &PlanCtx<'_>, target: &Target, record: &TargetRecord) -> Result<Inventory> {
+    let shared = sibling_records(ctx.paths, target, ctx.known_targets)?;
+    inventory_shared(target, Some(record), &shared, ctx.table, Depth::Classes)
 }
 
 /// The view a replay of `works` starts from: every folder their addons stop shipping.
@@ -4894,6 +4905,7 @@ mod tests {
             tx: TxId::new(),
             running: &scene.running,
             running_unknown: None,
+            known_targets: &[],
             policy: RunningPolicy::Safe,
             limits: ArchiveLimits::default(),
             actor: Actor::Agent,

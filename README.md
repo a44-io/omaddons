@@ -913,13 +913,15 @@ The addons in each target's AddOns folder (`ls` is an alias).
 
 ```bash
 omaddons list                              # every target: managed addons with version, ref, channel
-omaddons list -t forever --unmanaged       # also unmanaged, linked and invalid folders, with title, version and load verdict
+omaddons list -t forever --unmanaged       # also unmanaged, shared, linked and invalid folders, with title, version and load verdict
 omaddons list -t wotlk --protected         # also Blizzard_* folders
 omaddons list -v                           # also each addon's drift (files changed on disk), with paths
 omaddons list --deep                       # drift by content: every managed file re-hashed
 ```
 
 Each addon also carries `latest {version, status}`: the newest release remembered from earlier checks and its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`). `list` never asks a source; the column is blank when the addon is unchecked or static. With `-v` or `--deep` each addon carries `drift {state, files}` too (as in [`status`](#status); the paths with `-v`); a plain `list` checks no file. Each addon carries `reason` (`explicit` or `dependency`), `required_by` and `orphan` (a dependency nothing requires any more): the table marks a dependency `dep` (`dependency of LittleWigs` with `-v`) and an orphan `orphan`.
+
+On a client whose AddOns directory another client shares, a folder only the other client records is class `shared` (counted in `counts.shared`, and under `--unmanaged` with `owned_on [{target, addon}]`, shown as `shared (managed on era)`): it is not this client's to adopt, install over or remove.
 
 ### `outdated`
 
@@ -1306,7 +1308,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `still_required` | a removed addon is required by addons that stay, which will not load without it; the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that undo restores it |
 | `orphaned_dependency` | a remove or update left dependencies required by nothing; the fix is one `omaddons remove <names…> -t <id>` naming them all |
 | `bridge_dependency` | a newly installed addon's other folder (a bridge or plugin) works with an addon that is not installed; nothing is installed for it, and the fix installs it (`omaddons install <name or ref> -t <id>`), or searches for it (`omaddons search <folder>`) when no keyless source ships it. Only on the addon's first install |
-| `target_addons_shared` | `status`: two or more clients share one AddOns directory (an `Interface/AddOns` symlinked between them). Each keeps its own records, so each sees the others' addons as unmanaged; the fix is advice: manage those addons from one client and do not adopt them on the others, or stop sharing the directory |
+| `target_addons_shared` | `status`: two or more clients share one AddOns directory (an `Interface/AddOns` symlinked between them); a folder one client records is `shared` on the others, which may not record it too; the fix is advice: manage those addons from one client, or stop sharing the directory. Also on `install`, `update` and `remove` of a folder both clients recorded before that was refused: the change shows on the other client too (fix `omaddons status -t <other>`) |
 
 </details>
 
@@ -1379,6 +1381,7 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
 | A name that differs only in case from an existing folder | `case_collision`, even with `--force`. Wine folds case, so the game would see only one. An addon's own folder may change case on update |
 | Two AddOns folders that differ only in case (`AddOns` and `addons`) | Refused. An existing lowercase `interface/addons` alone is used as the AddOns folder |
 | Another managed addon's folder | `ownership_conflict`; `--force` transfers it and marks the old owner degraded |
+| A folder another client's records own, in an AddOns directory the two share (class `shared`) | `ownership_conflict` naming that client (`details.owner_target`), even with `--force`; the fix runs the same command on that client. `adopt` skips such folders and refuses them by name |
 | An unmanaged folder | `unmanaged_folder`, whose fix adopts it under the ref being installed (`omaddons adopt <folder> --ref <ref> -t <id>`); `--force`, the alternative, replaces it, and the snapshot keeps the original for undo. An update of an addon already managed has only the `--force` fix |
 
 Ownership comes only from omaddons' own records. Other managers' metadata is not read; [`adopt`](#adopt) identifies their folders and records them as they are.
@@ -1781,7 +1784,7 @@ Journals are recovered by the next command that commits a change, not by read co
 - The download cache reuses an asset whose SHA-256 is known: from the source (GitHub REST assets carry a digest) or remembered from an earlier download of that release's asset in the release memo. A release's assets are taken to be immutable, so a publisher re-uploading different bytes under the same tag and file name is not noticed while the old blob is cached (unless the source declares a different size or hash). Within one command, the same asset is still downloaded once per target that tries it. An unchanged release is never downloaded.
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
 - Private GitHub repositories and HTTP proxies are not supported.
-- Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) are detected but not managed together: `status` warns `target_addons_shared`, yet each client's records stay its own, so the other sees the shared folders as unmanaged, and `adopt` there would manage them twice.
+- Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) keep separate records: a folder one records is `shared` on the other, which cannot record it too, so manage those addons from one client. Records made on both before this check stay doubled: `status` warns `target_addons_shared`, a change through either warns the same, and M4's doctor will report them.
 - The legacy running behavior and several upstream file layouts (product.db, Steam and Bottles Flatpak paths) are marked UNVERIFIED in the code.
 
 ### Known issues

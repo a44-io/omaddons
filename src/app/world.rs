@@ -13,7 +13,7 @@ use crate::discover::registry::{Resolved, reconcile, resolve, resolve_one};
 use crate::discover::running::process_prefixes;
 use crate::discover::{DiscoveredTarget, DiscoveryInput, DiscoverySource, ScanLimits};
 use crate::error::{Error, Result, Warning};
-use crate::model::{AddonRecord, TargetKey};
+use crate::model::{AddonRecord, Target, TargetKey};
 use crate::resolve::catalog::Catalog;
 use crate::rules::RulesTable;
 use crate::sources::SourceConfigView;
@@ -137,6 +137,16 @@ impl World {
             }
         }
         Ok(records)
+    }
+
+    /// The records of the registered clients sharing `target`'s AddOns directory, by
+    /// target id: what [`crate::inventory::inventory_shared`] classifies `shared` by.
+    pub fn sibling_records(&self, target: &Target) -> Result<Vec<(String, TargetRecord)>> {
+        crate::inventory::sibling_records(
+            &self.paths,
+            target,
+            self.resolved.targets.iter().map(|d| &d.target),
+        )
     }
 
     /// The id of the target registered as `key`: discovered now, else as the registry

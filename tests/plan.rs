@@ -127,6 +127,7 @@ mod support {
                 tx: self.tx,
                 running: &self.running,
                 running_unknown: None,
+                known_targets: &[],
                 policy: RunningPolicy::Safe,
                 limits: ArchiveLimits::default(),
                 actor: Actor::Agent,

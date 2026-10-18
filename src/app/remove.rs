@@ -25,7 +25,7 @@ use crate::discover::registry::{resolve_one, with_target};
 use crate::engine::plan::RequestedChange;
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
-use crate::inventory::{Depth, FolderClass, inventory};
+use crate::inventory::{Depth, FolderClass, inventory_shared};
 use crate::model::{AddonRecord, FolderName, Ref, ReloadRequired, RunId, TxId, TxKind};
 use crate::output::{Outcome, Style};
 use crate::state::records::TargetRecord;
@@ -378,7 +378,9 @@ fn not_managed(
     };
     for d in looked.iter().copied() {
         let record = records.get(&d.target.id);
-        let Ok(inv) = inventory(&d.target, record, &world.table, Depth::Classes) else {
+        let shared = world.sibling_records(&d.target).unwrap_or_default();
+        let Ok(inv) = inventory_shared(&d.target, record, &shared, &world.table, Depth::Classes)
+        else {
             continue;
         };
         let Some(entry) = inv.folders.iter().find(|e| e.key.eq(key.as_str())) else {
@@ -396,6 +398,23 @@ fn not_managed(
                 format!("{} is a symlink, which omaddons never changes", entry.name),
                 Suggestion::text("remove or rename the symlink yourself"),
             ),
+            // Another client sharing this AddOns directory records it: remove it there.
+            FolderClass::Shared => match entry.owned_on.first() {
+                Some(owned) => (
+                    format!(
+                        "{} belongs to {} on {}, which shares this AddOns directory",
+                        entry.name, owned.addon, owned.target
+                    ),
+                    Suggestion::command([
+                        "omaddons",
+                        "remove",
+                        owned.addon.as_str(),
+                        "-t",
+                        owned.target.as_str(),
+                    ]),
+                ),
+                None => continue,
+            },
             FolderClass::Unmanaged | FolderClass::Invalid => (
                 format!(
                     "{} was not installed by omaddons, so omaddons does not remove it",

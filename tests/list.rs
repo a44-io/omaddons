@@ -196,7 +196,7 @@ fn managed_addons_and_counts() {
     assert_eq!(wa["folders"], 2);
     assert_eq!(
         t["counts"],
-        serde_json::json!({"managed": 3, "unmanaged": 1, "protected": 0, "linked": 1, "invalid": 0})
+        serde_json::json!({"managed": 3, "unmanaged": 1, "shared": 0, "protected": 0, "linked": 1, "invalid": 0})
     );
     assert!(t["unmanaged"].is_null() && t["protected"].is_null());
     assert!(t["key"].is_string());

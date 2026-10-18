@@ -5,9 +5,11 @@
 //! Classes, in precedence order: `invalid` (not a folder name, e.g. `.git`), `protected`
 //! (`Blizzard_*`, even as a symlink: private-server packs ship them), `linked` (a
 //! symlink, e.g. a developer's working copy; never read or followed), `managed` (owned
-//! by an addon record) and `unmanaged`. Keys are ASCII case-folded, because Wine resolves
-//! names case-insensitively. The inventory reports conflicts and case duplicates; it
-//! never decides what may be mutated, and it never writes (not even `AddOns/`).
+//! by an addon record), `shared` (in an AddOns directory another client shares, owned by
+//! that client's record only) and `unmanaged`. Keys are ASCII case-folded, because Wine
+//! resolves names case-insensitively. The inventory reports conflicts and case
+//! duplicates; it never decides what may be mutated, and it never writes (not even
+//! `AddOns/`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +21,8 @@ use crate::discover::find_path;
 use crate::error::{Error, Result, Suggestion};
 use crate::model::{FolderName, Target};
 use crate::rules::RulesTable;
-use crate::state::records::TargetRecord;
+use crate::state::paths::Paths;
+use crate::state::records::{TargetRecord, load_record};
 use crate::toc::{DiskFolder, VerdictReport, judge, loaded_toc};
 
 /// How much to read.
@@ -66,6 +69,17 @@ pub struct FolderEntry {
     /// A linked entry's target, at [`Depth::Full`] only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_target: Option<String>,
+    /// The other clients sharing this AddOns directory whose records claim the key.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub owned_on: Vec<OwnedOn>,
+}
+
+/// An addon of another client, sharing the AddOns directory, that claims a folder.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+pub struct OwnedOn {
+    /// That client's target id.
+    pub target: String,
+    pub addon: String,
 }
 
 /// What an entry is.
@@ -74,6 +88,8 @@ pub struct FolderEntry {
 pub enum FolderClass {
     Protected,
     Managed,
+    /// Owned by another client's record, in an AddOns directory the two share.
+    Shared,
     Linked,
     Unmanaged,
     Invalid,
@@ -115,6 +131,7 @@ pub struct MissingFolder {
 pub struct Counts {
     pub protected: u32,
     pub managed: u32,
+    pub shared: u32,
     pub linked: u32,
     pub unmanaged: u32,
     pub invalid: u32,
@@ -126,6 +143,19 @@ pub struct Counts {
 pub fn inventory(
     target: &Target,
     record: Option<&TargetRecord>,
+    table: &RulesTable,
+    depth: Depth,
+) -> Result<Inventory> {
+    inventory_shared(target, record, &[], table, depth)
+}
+
+/// [`inventory`] of an AddOns directory other clients share: `shared` holds each such
+/// client's target id and record (`discover::shared::siblings`). A folder only they
+/// claim is `shared`; every claim of theirs is listed in the entry's `owned_on`.
+pub fn inventory_shared(
+    target: &Target,
+    record: Option<&TargetRecord>,
+    shared: &[(String, TargetRecord)],
     table: &RulesTable,
     depth: Depth,
 ) -> Result<Inventory> {
@@ -158,11 +188,13 @@ pub fn inventory(
             .as_ref()
             .map_or_else(|| name.to_ascii_lowercase(), |f| f.key().to_owned());
         let claimed: Vec<String> = owners.get(&key).cloned().unwrap_or_default();
+        let owned_on = shared_owners(shared, &key);
         let class = match &folder {
             None => FolderClass::Invalid,
             Some(f) if f.is_protected() => FolderClass::Protected,
             Some(_) if kind.is_symlink() => FolderClass::Linked,
             Some(_) if !claimed.is_empty() => FolderClass::Managed,
+            Some(_) if !owned_on.is_empty() => FolderClass::Shared,
             Some(_) => FolderClass::Unmanaged,
         };
         let mut folder_entry = FolderEntry {
@@ -176,6 +208,7 @@ pub fn inventory(
             toc: None,
             verdict: None,
             link_target: None,
+            owned_on,
         };
         if depth == Depth::Full {
             read_details(
@@ -239,6 +272,7 @@ impl Counts {
             let slot = match entry.class {
                 FolderClass::Protected => &mut counts.protected,
                 FolderClass::Managed => &mut counts.managed,
+                FolderClass::Shared => &mut counts.shared,
                 FolderClass::Linked => &mut counts.linked,
                 FolderClass::Unmanaged => &mut counts.unmanaged,
                 FolderClass::Invalid => &mut counts.invalid,
@@ -247,6 +281,48 @@ impl Counts {
         }
         counts
     }
+}
+
+/// The records of `target`'s registered siblings among `all` (the clients sharing its
+/// AddOns directory, `discover::shared::siblings`), by target id: the `shared` input of
+/// [`inventory_shared`]. A sibling discovered unregistered is looked up by its marker,
+/// which registration writes under the global lock: one registered since discovery
+/// counts too. An unregistered sibling has no records.
+pub fn sibling_records<'a>(
+    paths: &Paths,
+    target: &Target,
+    all: impl IntoIterator<Item = &'a Target>,
+) -> Result<Vec<(String, TargetRecord)>> {
+    crate::discover::shared::siblings(target, all)
+        .into_iter()
+        .filter_map(|t| {
+            let key = t
+                .key
+                .or_else(|| crate::discover::registry::read_marker(&t.client_dir))?;
+            Some((t.id.clone(), key))
+        })
+        .map(|(id, key)| Ok((id, load_record(paths, &key)?.value)))
+        .collect()
+}
+
+/// Every addon of the clients in `shared` that claims the folder `key`, sorted.
+fn shared_owners(shared: &[(String, TargetRecord)], key: &str) -> Vec<OwnedOn> {
+    let mut owned_on: Vec<OwnedOn> = shared
+        .iter()
+        .flat_map(|(target, record)| {
+            record
+                .addons
+                .values()
+                .filter(|addon| addon.folders.iter().any(|f| f.key() == key))
+                .map(|addon| OwnedOn {
+                    target: target.clone(),
+                    addon: addon.name.clone(),
+                })
+        })
+        .collect();
+    owned_on.sort();
+    owned_on.dedup();
+    owned_on
 }
 
 /// Folder key → the sorted names of every addon claiming it.
@@ -345,11 +421,13 @@ mod tests {
             toc: None,
             verdict: None,
             link_target: None,
+            owned_on: Vec::new(),
         };
         let counts = Counts::of(&[
             entry(FolderClass::Protected),
             entry(FolderClass::Protected),
             entry(FolderClass::Managed),
+            entry(FolderClass::Shared),
             entry(FolderClass::Linked),
             entry(FolderClass::Unmanaged),
             entry(FolderClass::Invalid),
@@ -359,6 +437,7 @@ mod tests {
             Counts {
                 protected: 2,
                 managed: 1,
+                shared: 1,
                 linked: 1,
                 unmanaged: 1,
                 invalid: 1

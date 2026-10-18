@@ -28,7 +28,7 @@ use crate::drift::{AddonDrift, DriftMode, DriftState};
 use crate::engine::journal;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{LockState, probe_global};
-use crate::inventory::{Counts, Depth, FolderClass, Inventory, inventory};
+use crate::inventory::{Counts, Depth, FolderClass, Inventory, inventory_shared};
 use crate::model::{AddonRecord, AddonState, Channel, FolderName, Ref, Target, TargetKey};
 use crate::output::{Outcome, Style, table};
 use crate::politeness::DEFAULT_CHECK_INTERVAL;
@@ -242,6 +242,9 @@ impl Outcome for StatusOutcome {
                     "{} managed · {} unmanaged · {} protected",
                     f.managed, f.unmanaged, f.protected
                 );
+                if f.shared > 0 {
+                    counts.push_str(&format!(" · {} shared", f.shared));
+                }
                 if t.updates.available > 0 {
                     let n = t.updates.available;
                     let s = if n == 1 { "" } else { "s" };
@@ -428,9 +431,10 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             }
             None => None,
         };
-        let inv = inventory(
+        let inv = inventory_shared(
             t,
             record.as_ref().map(|l| &l.value),
+            &world.sibling_records(t)?,
             &world.table,
             Depth::Classes,
         )?;
@@ -710,7 +714,9 @@ pub(crate) fn adopt_hints(
         if record.is_some_and(|r| !r.addons.is_empty()) {
             continue;
         }
-        let Ok(inv) = inventory(&d.target, record, &world.table, Depth::Classes) else {
+        let shared = world.sibling_records(&d.target).unwrap_or_default();
+        let Ok(inv) = inventory_shared(&d.target, record, &shared, &world.table, Depth::Classes)
+        else {
             continue;
         };
         if inv.counts.unmanaged == 0 {

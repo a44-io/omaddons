@@ -19,6 +19,20 @@ pub struct SharedAddons {
     pub targets: Vec<String>,
 }
 
+/// The other targets among `all` whose AddOns directory is the very directory
+/// `target`'s is (a symlink to it, or the other way round): siblings that must not
+/// record one folder twice. One directory inside another is not that kind of sharing
+/// (`status` still warns about it). A missing AddOns directory has no siblings.
+pub fn siblings<'a>(target: &Target, all: impl IntoIterator<Item = &'a Target>) -> Vec<&'a Target> {
+    let Ok(mine) = std::fs::canonicalize(target.addons_dir()) else {
+        return Vec::new();
+    };
+    all.into_iter()
+        .filter(|t| t.client_dir != target.client_dir)
+        .filter(|t| std::fs::canonicalize(t.addons_dir()).is_ok_and(|p| p == mine))
+        .collect()
+}
+
 /// Every group of two or more `targets` sharing an AddOns directory. A target whose
 /// AddOns directory does not exist (a never-launched client) shares nothing.
 pub fn shared_addons<'a>(targets: impl IntoIterator<Item = &'a Target>) -> Vec<SharedAddons> {
@@ -122,5 +136,37 @@ mod tests {
             "the outermost directory"
         );
         assert_eq!(groups[0].targets, ["inner", "outer"]);
+        // One inside another is not one directory: no siblings.
+        let all = [target("inner", &inner), target("outer", &outer)];
+        assert!(siblings(&all[0], &all).is_empty());
+    }
+
+    #[test]
+    fn siblings_share_the_very_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let era = dir.path().join("_classic_era_");
+        let anniversary = dir.path().join("_anniversary_");
+        let retail = dir.path().join("_retail_");
+        let fresh = dir.path().join("_beta_");
+        std::fs::create_dir_all(era.join("Interface/AddOns")).unwrap();
+        std::fs::create_dir_all(anniversary.join("Interface")).unwrap();
+        std::fs::create_dir_all(retail.join("Interface/AddOns")).unwrap();
+        symlink(
+            era.join("Interface/AddOns"),
+            anniversary.join("Interface/AddOns"),
+        )
+        .unwrap();
+        let all = [
+            target("era", &era),
+            target("anniversary", &anniversary),
+            target("retail", &retail),
+            target("beta", &fresh),
+        ];
+        let ids = |t: &Target| -> Vec<String> {
+            siblings(t, &all).iter().map(|s| s.id.clone()).collect()
+        };
+        assert_eq!(ids(&all[0]), ["anniversary"]);
+        assert_eq!(ids(&all[1]), ["era"]);
+        assert!(ids(&all[2]).is_empty() && ids(&all[3]).is_empty());
     }
 }

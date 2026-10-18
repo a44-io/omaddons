@@ -7,14 +7,18 @@
 //!    overridable (D14);
 //! 2. a symlinked folder (a developer's working copy) is never touched:
 //!    `unmanaged_folder` (class `linked`), never overridable;
-//! 3. a key whose live spelling differs from the incoming one: `case_collision` (Wine
+//! 3. a folder only another client sharing this AddOns directory records (class
+//!    `shared`): `ownership_conflict` naming that client, never overridable, since a
+//!    second record of one folder is what ownership prevents. A folder recorded on both
+//!    (before this was refused) changes with a `target_addons_shared` warning;
+//! 4. a key whose live spelling differs from the incoming one: `case_collision` (Wine
 //!    would see one folder under two names), never overridable: `--force` does not
 //!    pick a spelling. The installing addon's own folder may change case freely;
-//! 4. another addon's folder: `ownership_conflict`; `--force` transfers it and marks
+//! 5. another addon's folder: `ownership_conflict`; `--force` transfers it and marks
 //!    the previous owner degraded (`ownership_transferred`);
-//! 5. an unmanaged folder: `unmanaged_folder`; `--force` replaces it (its snapshot
+//! 6. an unmanaged folder: `unmanaged_folder`; `--force` replaces it (its snapshot
 //!    keeps it undoable);
-//! 6. otherwise a replacement of the addon's own folder, or an add.
+//! 7. otherwise a replacement of the addon's own folder, or an add.
 //!
 //! Within one transaction (M2-D6) a [`WorkingView`] says what the works judged before
 //! did: a folder another work already claims is an `ownership_conflict` that `--force`
@@ -31,7 +35,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
-use crate::inventory::{FolderClass, FolderEntry, Inventory};
+use crate::inventory::{FolderClass, FolderEntry, Inventory, OwnedOn};
 use crate::model::{FolderName, MutableFolderName, Ref};
 use crate::state::records::TargetRecord;
 
@@ -276,6 +280,27 @@ pub fn check_in(
         else {
             continue;
         };
+        // Another client sharing this AddOns directory owns it: a second record of one
+        // folder is what ownership exists to prevent, so `--force` does not help.
+        if let (FolderChange::Install(_), FolderClass::Shared, Some(owned)) =
+            (change, entry.class, entry.owned_on.first())
+        {
+            refuse(
+                name.as_str(),
+                ErrorCode::OwnershipConflict,
+                "owned_on_shared_target",
+                json!({
+                    "existing": entry.name,
+                    "owner": owned.addon,
+                    "owner_target": owned.target,
+                }),
+            );
+            continue;
+        }
+        // Recorded on both before that was refused: the change shows there too.
+        if let Some(owned) = entry.owned_on.first() {
+            outcome.warnings.push(doubled(&live_name, owned));
+        }
         if let FolderChange::Remove(_) = change {
             outcome.allowed.push(AllowedOp::Remove { live: live_name });
             continue;
@@ -387,6 +412,47 @@ pub fn check_in(
     Err(refusal(&violations, argv, adopt))
 }
 
+/// `ownership_conflict` for `folder`, which `owned`'s addon on another client sharing
+/// this AddOns directory owns. Never overridable: the fix is the same command on that
+/// client, the alternative removes it there.
+pub fn owned_on_shared(folder: &str, owned: &OwnedOn, argv: &[String]) -> Error {
+    let (addon, target) = (&owned.addon, &owned.target);
+    Error::new(
+        ErrorCode::OwnershipConflict,
+        format!("{folder} belongs to {addon} on {target}, which shares this AddOns directory"),
+        Suggestion::command(crate::discover::registry::with_target(argv, target)),
+    )
+    .alternative(Suggestion::command([
+        "omaddons", "remove", addon, "-t", target,
+    ]))
+    .details(json!({
+        "folder": folder,
+        "reason": "owned_on_shared_target",
+        "owner": addon,
+        "owner_target": target,
+    }))
+}
+
+/// `target_addons_shared` for a folder recorded here and by `owned` on a client sharing
+/// this AddOns directory (both recorded before that was refused).
+fn doubled(folder: &MutableFolderName, owned: &OwnedOn) -> Warning {
+    Warning::new(
+        WarningCode::TargetAddonsShared,
+        format!(
+            "{} is also recorded by {} on {}, which shares this AddOns directory: the change shows there too",
+            folder.as_str(),
+            owned.addon,
+            owned.target
+        ),
+    )
+    .with_fix(Suggestion::command([
+        "omaddons",
+        "status",
+        "-t",
+        owned.target.as_str(),
+    ]))
+}
+
 /// The one error for every violation, with the most serious one's code and fix.
 fn refusal(violations: &[Violation], argv: &[String], adopt: Option<AdoptFix<'_>>) -> Error {
     let Some(top) = violations.first() else {
@@ -444,6 +510,24 @@ fn refusal(violations: &[Violation], argv: &[String], adopt: Option<AdoptFix<'_>
                     Vec::new(),
                 ),
             }
+        }
+        (ErrorCode::OwnershipConflict, "owned_on_shared_target") => {
+            let shared = owned_on_shared(
+                &top.folder,
+                &OwnedOn {
+                    target: top.extra["owner_target"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    addon: top.extra["owner"].as_str().unwrap_or_default().to_owned(),
+                },
+                argv,
+            );
+            (
+                shared.message.clone(),
+                shared.fix.clone(),
+                shared.alternatives.clone(),
+            )
         }
         (ErrorCode::OwnershipConflict, _) => {
             let owner = top.extra["owner"].as_str().unwrap_or_default();
@@ -523,6 +607,7 @@ mod tests {
             toc: None,
             verdict: None,
             link_target: None,
+            owned_on: Vec::new(),
         }
     }
 
@@ -596,6 +681,60 @@ mod tests {
             if let Err(e) = &result {
                 assert_eq!(e.exit().code(), 4, "{name}");
             }
+        }
+    }
+
+    /// A folder of another client sharing this AddOns directory.
+    fn on_era(name: &str, class: FolderClass, owners: &[&str]) -> FolderEntry {
+        FolderEntry {
+            owned_on: vec![OwnedOn {
+                target: "era".into(),
+                addon: "Both".into(),
+            }],
+            ..entry(name, class, owners)
+        }
+    }
+
+    #[test]
+    fn a_shared_folder_is_refused_even_forced_and_a_doubled_one_warns() {
+        let live = inventory(vec![
+            on_era("Both", FolderClass::Shared, &[]),
+            on_era("Twice", FolderClass::Managed, &["Me"]),
+        ]);
+        let argv: Vec<String> = ["omaddons", "install", "gh:o/both", "-t", "anniversary"]
+            .map(str::to_owned)
+            .to_vec();
+        for force in [false, true] {
+            let change = FolderChange::Install(FolderName::new("Both").unwrap());
+            let err = check(&[change], &live, "Me", force, &argv, None).unwrap_err();
+            assert_eq!(err.code, ErrorCode::OwnershipConflict, "force={force}");
+            assert!(err.message.contains("Both on era"), "{}", err.message);
+            assert_eq!(
+                err.details["folders"][0]["owner_target"], "era",
+                "{}",
+                err.details
+            );
+            assert_eq!(
+                err.fix.argv().unwrap(),
+                ["omaddons", "install", "gh:o/both", "-t", "era"]
+            );
+            assert_eq!(
+                err.alternatives[0].argv().unwrap(),
+                ["omaddons", "remove", "Both", "-t", "era"]
+            );
+        }
+        // Recorded on both before this was refused: allowed, with a warning.
+        for change in [
+            FolderChange::Install(FolderName::new("Twice").unwrap()),
+            FolderChange::Remove(FolderName::new("Twice").unwrap()),
+        ] {
+            let done = check(&[change], &live, "Me", false, &argv, None).unwrap();
+            assert_eq!(done.allowed.len(), 1);
+            assert_eq!(done.warnings[0].code, WarningCode::TargetAddonsShared);
+            assert_eq!(
+                done.warnings[0].fix.as_ref().unwrap().argv().unwrap(),
+                ["omaddons", "status", "-t", "era"]
+            );
         }
     }
 
