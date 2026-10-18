@@ -1242,7 +1242,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `case_collision` | 4 | no | a folder name differs only in case from an existing one |
 | `wrong_flavor` | 4 | no | a `url:`, `file:` or `--file` archive does not load on the client |
 | `unsafe_archive` | 4 | no | traversal, absolute paths, symlinks, devices, duplicate or case-colliding entries, the compression-ratio limit |
-| `archive_too_large` | 4 | no | over the entry, uncompressed-size or download limit |
+| `archive_too_large` | 4 | no | over the entry, uncompressed-size or download limit (also a download past it while streaming); `details.limit`, and `details.config_key` when `config.toml` can raise it |
 | `undo_conflict` | 4 | no | a later transaction touched the same folders, already undone, or a removed folder put back by hand |
 | `host_blocked` | 4 | no | host not on the allowlist or in `git_hosts` |
 | `scope_denied` | 4 | no | the filesystem writer refused a path outside its scope |

@@ -1651,6 +1651,61 @@ fn a_reinstalled_dependency_stays_a_dependency() {
     assert_eq!(support::addon_record(&home, "foo")["reason"], "dependency");
 }
 
+/// A download that fails while its body streams in is the network's failure, never an
+/// io error on the cache's temp file: past the configured cap (no `Content-Length` to
+/// refuse it early) it is `archive_too_large`, and a `net.log` line that cannot be
+/// written is that file's own `io` error.
+#[test]
+fn a_download_that_fails_midway_names_the_real_cause() {
+    let mut home = Home::new(&["wow"]);
+    let scenario = home.scenario("big");
+    let url = "https://cdn.wowinterface.com/downloads/big.zip";
+    common::http::fixture_bytes(&scenario, "big", url, 200, &[], Some(&[0u8; 5_000]));
+    let config = home.env.config().join("omaddons/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "[limits]\ndownload_max_bytes = 1000\n").unwrap();
+    let r = home.run(&[
+        "install",
+        &format!("url:{url}"),
+        "-t",
+        "retail",
+        "--dry-run",
+    ]);
+    let envelope = r.expect(4);
+    let error = &envelope["error"];
+    assert_eq!(error["code"], "archive_too_large", "{}", r.context());
+    assert_eq!(
+        (&error["details"]["limit"], &error["details"]["config_key"]),
+        (
+            &Value::from(1000),
+            &Value::from("limits.download_max_bytes")
+        )
+    );
+    assert!(!error.to_string().contains("omaddons/tmp"), "{error}");
+
+    fs::remove_file(&config).unwrap();
+    let net_log = home.state().join("net.log");
+    let _ = fs::remove_file(&net_log);
+    fs::create_dir_all(&net_log).unwrap();
+    let r = home.run(&[
+        "install",
+        &format!("url:{url}"),
+        "-t",
+        "retail",
+        "--dry-run",
+    ]);
+    let envelope = r.expect(1);
+    let error = &envelope["error"];
+    assert_eq!(error["code"], "io", "{}", r.context());
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.starts_with(&format!("{}: ", net_log.display())),
+        "{}",
+        r.context()
+    );
+    assert!(!error.to_string().contains("omaddons/tmp"), "{error}");
+}
+
 #[test]
 fn the_reinstall_verb_is_install_with_reinstall() {
     let (home, foo) = installed_foo();

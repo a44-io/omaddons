@@ -120,7 +120,8 @@ impl BlobCache {
     /// Streams `reader` into storage, hashing it, capping its size and checking
     /// `expected`. Errors: `archive_too_large` (exit 4), `hash_mismatch` (exit 1,
     /// retryable: the caller may download once more and should mark a second failure
-    /// not retryable).
+    /// not retryable), and the reader's own failure as a response body's
+    /// (`net::body_error`: `network`, the streamed cap, a `net.log` line not written).
     pub fn store_stream(
         &self,
         scopes: &ScopeTable,
@@ -456,7 +457,15 @@ impl<R> Guard<R> {
 
 impl<R: Read> Read for Guard<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.inner.read(buf)?;
+        let n = match self.inner.read(buf) {
+            Ok(n) => n,
+            // ubs:ignore — an io::ErrorKind, not a secret
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => return Err(err),
+            // The network stack's own failure (the streamed download cap, a reset, its
+            // net.log line), classified as `Response::bytes` does, never an io error on
+            // the temp file it was being written to.
+            Err(err) => return Err(self.fail(crate::net::body_error(err))),
+        };
         if n == 0 {
             for expected in self.expected.clone() {
                 let actual = self.actual(&expected).unwrap_or_default();
@@ -478,17 +487,7 @@ impl<R: Read> Read for Guard<R> {
         }
         self.len += n as u64;
         if self.len > self.max {
-            let max = self.max;
-            return Err(self.fail(
-                Error::new(
-                    ErrorCode::ArchiveTooLarge,
-                    format!("the download is larger than the {max}-byte limit"),
-                    Suggestion::text(
-                        "if the archive is genuine, raise the limit: omaddons config set limits.download_max_bytes <value>",
-                    ),
-                )
-                .details(json!({ "limit": max, "config_key": "limits.download_max_bytes" })),
-            ));
+            return Err(self.fail(crate::net::download_too_large(self.max)));
         }
         let chunk = buf.get(..n).unwrap_or_default();
         self.hasher.update(chunk);
@@ -670,6 +669,60 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(DOWNLOAD_MAX_BYTES, 512 << 20, "the production cap");
+    }
+
+    /// Yields `n` bytes, then fails with `error` (a response body failing mid-stream).
+    struct Failing(u64, Option<io::Error>);
+
+    impl Read for Failing {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.0 == 0 {
+                return Err(self.1.take().unwrap_or_else(|| io::Error::other("again")));
+            }
+            Zeros(self.0).read(buf).inspect(|n| self.0 -= *n as u64)
+        }
+    }
+
+    /// The reader's failure is the network's, never an io error on the temp file: a
+    /// reset is `network` (retryable), and an error the stack carries inside it (its
+    /// `net.log` line not written) is that error.
+    #[test]
+    fn a_body_that_fails_midway_is_the_networks_failure() {
+        let f = fixture();
+        let cache = BlobCache::new(&f.paths);
+        let store = |error: io::Error| {
+            cache
+                .store_stream(
+                    &f.scopes,
+                    &TxId::new(),
+                    Failing(5_000, Some(error)),
+                    None,
+                    &Storage::Cache,
+                )
+                .unwrap_err()
+        };
+        let reset = store(io::Error::from(io::ErrorKind::ConnectionReset));
+        assert_eq!((reset.code, reset.retryable), (ErrorCode::Network, true));
+        let logged = Error::io(
+            &f.paths.net_log(),
+            &io::Error::from(io::ErrorKind::IsADirectory),
+            Suggestion::command(["omaddons", "status"]),
+        );
+        let carried = store(io::Error::other(logged.clone()));
+        assert_eq!(carried, logged);
+        for err in [&reset, &carried] {
+            assert!(!err.message.contains("blob-"), "{}", err.message);
+            assert!(
+                !err.details.to_string().contains("blob-"),
+                "{}",
+                err.details
+            );
+        }
+        assert!(
+            files(f.paths.cache_dir()).is_empty(),
+            "{:?}",
+            files(f.paths.cache_dir())
+        );
     }
 
     #[test]

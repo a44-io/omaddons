@@ -263,21 +263,31 @@ pub(crate) struct SizeCapExceeded {
 /// `archive_too_large` for a response past `max_bytes`: the download limit, which
 /// config can raise, or (with `api_host`) the API response limit, which it cannot.
 pub(crate) fn too_large(max_bytes: u64, api_host: Option<&str>) -> Error {
-    let (message, fix) = match api_host {
-        None => (
-            format!("the response is larger than the {max_bytes}-byte download limit"),
-            "raise download_max_bytes under [limits] in config.toml",
-        ),
-        Some(host) => (
+    match api_host {
+        None => download_too_large(max_bytes),
+        Some(host) => Error::new(
+            ErrorCode::ArchiveTooLarge,
             format!(
                 "the response from {host} is larger than the {} API response limit",
                 size(max_bytes)
             ),
-            "retry later; the source sent an unexpectedly large response",
+            Suggestion::text("retry later; the source sent an unexpectedly large response"),
+        )
+        .details(serde_json::json!({ "limit": max_bytes })),
+    }
+}
+
+/// `archive_too_large` for a download past `limits.download_max_bytes`, however it was
+/// found: announced by `Content-Length`, or counted while streaming.
+pub fn download_too_large(max_bytes: u64) -> Error {
+    Error::new(
+        ErrorCode::ArchiveTooLarge,
+        format!("the download is larger than the {max_bytes}-byte download limit"),
+        Suggestion::text(
+            "if the archive is genuine, raise the limit: omaddons config set limits.download_max_bytes <value>",
         ),
-    };
-    Error::new(ErrorCode::ArchiveTooLarge, message, Suggestion::text(fix))
-        .details(serde_json::json!({ "max_bytes": max_bytes }))
+    )
+    .details(serde_json::json!({ "limit": max_bytes, "config_key": "limits.download_max_bytes" }))
 }
 
 /// `64 MiB` for whole mebibytes, else bytes.

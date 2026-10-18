@@ -236,7 +236,7 @@ fn the_size_cap_applies_to_announced_and_streamed_bodies() {
         (Some(200), Some("archive_too_large"))
     );
 
-    let h = harness(config, vec![ok(&[0; 100])]);
+    let h = harness(config.clone(), vec![ok(&[0; 100])]);
     let response = h
         .http
         .send(Request::get("https://github.com/big.zip", "asset").download())
@@ -245,6 +245,43 @@ fn the_size_cap_applies_to_announced_and_streamed_bodies() {
     assert_eq!(err.code, ErrorCode::ArchiveTooLarge);
     let line = h.log.read(None).unwrap().pop().unwrap();
     assert_eq!(line.error.as_deref(), Some("archive_too_large"));
+
+    // Streamed into the blob cache (no Content-Length), the stack's cap trips before the
+    // cache's own: the same error, never an io error on the cache's temp file.
+    use crate::engine::blobs::{BlobCache, Storage};
+    let h = harness(config, vec![ok(&[0; 100])]);
+    let response = h
+        .http
+        .send(Request::get("https://github.com/big.zip", "asset").download())
+        .unwrap();
+    let scopes = crate::fsx::ScopeTable::new(&h.paths, &[], None).unwrap();
+    let err = BlobCache::new(&h.paths)
+        .store_stream(
+            &scopes,
+            &crate::model::TxId::new(),
+            response.into_reader(),
+            None,
+            &Storage::Cache,
+        )
+        .unwrap_err();
+    assert_eq!(
+        (err.code, err.exit().code(), err.retryable),
+        (ErrorCode::ArchiveTooLarge, 4, false)
+    );
+    assert_eq!(
+        (&err.details["limit"], &err.details["config_key"]),
+        (
+            &serde_json::json!(10),
+            &serde_json::json!("limits.download_max_bytes")
+        )
+    );
+    assert!(!err.message.contains("blob-"), "{}", err.message);
+    let tmp = h.paths.cache_dir().join("tmp");
+    let left = std::fs::read_dir(&tmp).map_or(0, |dir| {
+        dir.flat_map(|tx| std::fs::read_dir(tx.unwrap().path()).unwrap())
+            .count()
+    });
+    assert_eq!(left, 0, "nothing left in the cache's temp dirs");
 }
 
 fn gzip(bytes: &[u8]) -> Vec<u8> {
@@ -287,7 +324,8 @@ fn api_responses_and_downloads_each_have_their_own_cap() {
         "{}",
         err.fix.display()
     );
-    assert_eq!(err.details["max_bytes"], 10);
+    assert_eq!(err.details["limit"], 10);
+    assert!(err.details.get("config_key").is_none(), "{}", err.details);
     // A download of the same size is under its own cap.
     let h = harness_capped(config, Some(10), vec![ok(&[b'x'; 100])]);
     let response = h
