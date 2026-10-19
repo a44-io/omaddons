@@ -251,10 +251,10 @@ impl Out<'_> {
             }
             ErrorCode::PlanStale if e.retryable => e.fix = rerun(self.argv),
             ErrorCode::Locked => e.fix = rerun(self.argv),
-            ErrorCode::Offline
-                if !self.offline_by_env && self.argv.iter().any(|a| a == "--offline") =>
-            {
-                e.fix = rerun(&crate::cli::without_switch(self.argv, "--offline"));
+            ErrorCode::Offline => {
+                if let Some(online) = crate::cli::online_rerun(self.argv, self.offline_by_env) {
+                    e.fix = crate::error::Suggestion::command(online);
+                }
             }
             _ => {}
         }

@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::error::{CommandHint, Warning};
+use crate::error::{CommandHint, Suggestion, Warning, WarningCode};
 
 /// Warnings and command hints found during one run, shared by every clone. Commands add
 /// them as soon as they are found (`World::load` does for its config, registry,
@@ -22,6 +22,8 @@ struct Notes {
     commands: Vec<CommandHint>,
     /// The journal warnings found at the start of the run, and how to read them again.
     journal: Option<(Vec<Warning>, Refresh)>,
+    /// The same command online, when `--offline` alone kept the run offline.
+    online_rerun: Option<Vec<String>>,
 }
 
 /// Reads the journal warnings again; `None` when they cannot be read.
@@ -84,6 +86,25 @@ impl RunNotes {
             if !warnings.contains(&warning) {
                 warnings.push(warning);
             }
+        }
+    }
+
+    /// The command to rerun online (`cli::online_rerun`): a `stale_check` warning's fix.
+    pub fn online_rerun(&self, argv: Option<Vec<String>>) {
+        self.lock().online_rerun = argv;
+    }
+
+    /// Gives each `stale_check` in `warnings` the online rerun as its fix, when there is
+    /// one: an answer from stored data is refreshed by the same command, online.
+    pub fn rerun_stale(&self, warnings: &mut [Warning]) {
+        let Some(argv) = self.lock().online_rerun.clone() else {
+            return;
+        };
+        for warning in warnings
+            .iter_mut()
+            .filter(|w| matches!(w.code, WarningCode::StaleCheck))
+        {
+            warning.fix = Some(Suggestion::command(argv.clone()));
         }
     }
 

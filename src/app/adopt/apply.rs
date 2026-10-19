@@ -452,13 +452,15 @@ fn already_recorded(r: &Ref, owner: &str, id: &str) -> Error {
     .details(json!({ "owner": owner }))
 }
 
-/// `not_found` for a folder nothing identifies.
+/// `not_found` for a folder nothing identifies: the ref is the user's to name; what
+/// ships the folder is a read-only search away.
 fn unknown(name: &str, id: &str) -> Error {
     Error::new(
         ErrorCode::NotFound,
         format!("nothing says where {name} comes from"),
         ref_text(name, id),
     )
+    .alternative(Suggestion::command(["omaddons", "search", name]))
 }
 
 /// The text fix that names the ref to fill in.

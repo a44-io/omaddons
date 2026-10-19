@@ -6,7 +6,16 @@ expression: s.stable(&c.envelope)
   "command": "adopt",
   "commands": [],
   "error": {
-    "alternatives": [],
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "search",
+          "Mystery"
+        ],
+        "display": "omaddons search Mystery"
+      }
+    ],
     "code": "not_found",
     "details": {},
     "fix": "omaddons adopt --ref <ref> Mystery -t retail",

@@ -347,6 +347,8 @@ fn run_with(
     };
     // A panic from here on reports what the run noted (an undo hint among them).
     set_panic_notes(&ctx.notes);
+    ctx.notes
+        .online_rerun(online_rerun(&ctx.argv, ctx.offline_by_env));
     // One reporter for the whole run: the command's progress and the outcome's output.
     let reporter = output::shared_stderr(&output);
     ctx.progress = output::ProgressSink::new(&reporter, &output);
@@ -853,6 +855,7 @@ pub fn suggest(
     let position = argv
         .iter()
         .skip(1)
+        // ubs:ignore — comparing flag names, not secrets
         .position(|a| a == bad || a.split_once('=').is_some_and(|(flag, _)| flag == bad))
         .map(|i| i + 1);
     let replaced = |with: &str| {
@@ -922,6 +925,13 @@ fn wants_help(argv: &[String]) -> bool {
         .skip(1)
         .take_while(|a| *a != "--")
         .any(|a| a == "-h" || a == "--help")
+}
+
+/// The same command online: `argv` without `--offline`, when that flag alone kept the
+/// run offline (`OMADDONS_OFFLINE=1` would keep the rerun offline too).
+pub fn online_rerun(argv: &[String], offline_by_env: bool) -> Option<Vec<String>> {
+    (!offline_by_env && argv.iter().any(|a| a == "--offline"))
+        .then(|| fix_argv(&without_switch(argv, "--offline")))
 }
 
 /// `argv` without presentation flags.
@@ -994,6 +1004,35 @@ pub(crate) fn without_flag(argv: &[String], flag: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// `argv` (without presentation flags) without its target: `-t`, `--target` and
+/// `--flavor`, each with its value. `None` when a short cluster may hold one (`-vt`).
+pub(crate) fn without_target(argv: &[String]) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut rest = argv.iter();
+    while let Some(arg) = rest.next() {
+        let name = arg.split('=').next().unwrap_or(arg);
+        match name {
+            // Positionals from here on.
+            "--" => {
+                out.push(arg.clone());
+                out.extend(rest.by_ref().cloned());
+            }
+            "-t" | "--target" | "--flavor" => {
+                if !arg.contains('=') {
+                    rest.next();
+                }
+            }
+            // The value attached (`-tretail`).
+            _ if arg.starts_with("-t") => {}
+            _ if !arg.starts_with("--") && arg.starts_with('-') && arg.contains('t') => {
+                return None;
+            }
+            _ => out.push(arg.clone()),
+        }
+    }
+    Some(fix_argv(&out))
 }
 
 /// `argv` without `switch`, a flag that takes no value (`--all`): the word after it is
@@ -1581,6 +1620,29 @@ mod tests {
         assert_eq!(
             with_flag_value(&argv(&["--reason=long"]), "--reason", "cut"),
             argv(&["--reason=cut"])
+        );
+        // Every spelling of the target goes with its value; the rest stays.
+        let copy = argv(&["copy", "--from", "tbc", "--to", "retail", "dbm", "--json"]);
+        for given in [
+            &["-t", "era"][..],
+            &["-tera"],
+            &["-t=era"],
+            &["--target", "era"],
+            &["--target=era"],
+            &["--flavor", "era", "-t", "x"],
+        ] {
+            let mut raw = copy.clone();
+            raw.splice(2..2, given.iter().map(|s| (*s).to_owned()));
+            assert_eq!(
+                without_target(&raw),
+                Some(argv(&["copy", "--from", "tbc", "--to", "retail", "dbm"])),
+                "{given:?}"
+            );
+        }
+        assert_eq!(without_target(&argv(&["copy", "-vt", "era"])), None);
+        assert_eq!(
+            without_target(&argv(&["copy", "-v", "--", "-t"])),
+            Some(argv(&["copy", "-v", "--", "-t"]))
         );
     }
 

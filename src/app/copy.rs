@@ -166,10 +166,14 @@ struct InScope<'w> {
 /// Runs `copy`.
 pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
     if ctx.target.is_some() {
+        // clap requires --from and --to, so the command without -t is the fix.
         return Err(Error::new(
             ErrorCode::Usage,
             "copy names its clients with --from and --to, not -t",
-            Suggestion::text("omaddons copy --from <client> --to <client>"),
+            crate::cli::without_target(&ctx.argv).map_or_else(
+                || Suggestion::text("omaddons copy --from <client> --to <client>"),
+                Suggestion::command,
+            ),
         ));
     }
     let world = World::load(ctx)?;

@@ -7,7 +7,16 @@ expression: s.stable(&c.envelope)
   "command": "sync",
   "commands": [],
   "error": {
-    "alternatives": [],
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "help",
+          "sync"
+        ],
+        "display": "omaddons help sync"
+      }
+    ],
     "code": "not_found",
     "details": {
       "path": "<root>/config/omaddons/addons.toml"

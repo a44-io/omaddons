@@ -383,6 +383,8 @@ fn read(path: &Path, given: bool) -> Result<String> {
                 format!("{} does not exist", path.display()),
                 fix,
             )
+            // What the file holds, read-only.
+            .alternative(Suggestion::command(["omaddons", "help", "sync"]))
             .details(json!({ "path": path.display().to_string() })))
         }
         Err(err) => Err(Error::io(

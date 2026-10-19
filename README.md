@@ -1215,7 +1215,7 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 | `exit_code` | int | the process exit code |
 | `partial` | bool | success with some failed items (present on success and on `check_failed`) |
 | `data` | object | the command's result (success, and `check_failed`) |
-| `error` | object | `code`, `message`, `fix` (display string), `fix_argv` (argv array, or `null` when the fix is prose), `alternatives` (`[{display, argv}]`), `retryable`, `details` (always an object) |
+| `error` | object | `code`, `message`, `fix` (display string), `fix_argv` (argv array, or `null` when the fix is prose or needs a value only you can supply; such a fix shows the command with each missing value as a `<placeholder>`, as in `omaddons targets add <path>`), `alternatives` (`[{display, argv}]`), `retryable`, `details` (always an object) |
 | `warnings` | array | `{code, message, fix, fix_argv}`. On a partial run, each failed item is mirrored here. On a failure, it holds what the run found before it failed (a `journal_pending`, a `config_unknown_key`), and stderr carries each as a `warning` event before the `error` event |
 | `commands` | array | suggested next steps: `{action, command, argv, destructive}`, e.g. `undo <tx>` after a change and `undo --run <run>` (action `undo_run`) after a change on several clients, `update`, `check_updates`, `adopt`, `reinstall`, `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive) |
 | `meta` | object | `elapsed_ms`, `offline` (`--offline` or `OMADDONS_OFFLINE=1`, usage errors included) |
@@ -1346,7 +1346,7 @@ Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` l
 
 ### Stability
 
-The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the contract can still change. From that tag on, it is frozen. The contract suite (`tests/contract/`) runs a matrix of success and failure cases across the commands. It checks key order, `ok`/`exit_code` agreement and registered codes. Every `fix_argv`, `alternatives[].argv` and `commands[].argv` must parse as an omaddons command line and round-trip through shell quoting to its display string. A corpus of mistyped commands, and every one-letter typo of every command name, check that a fix never names a different command that changes something. Snapshots pin representative envelopes.
+The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the contract can still change. From that tag on, it is frozen. The contract suite (`tests/contract/`) runs a matrix of success and failure cases across the commands. It checks key order, `ok`/`exit_code` agreement and registered codes. Every `fix_argv`, `alternatives[].argv` and `commands[].argv` must parse as an omaddons command line and round-trip through shell quoting to its display string. A prose fix may not name a runnable omaddons command: a scan of the source and the matrix both fail one that does. A corpus of mistyped commands, and every one-letter typo of every command name, check that a fix never names a different command that changes something. Snapshots pin representative envelopes.
 
 ---
 
@@ -1473,7 +1473,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 
 Production purposes for HTTP are `release-latest`, `release-json`, `releases-atom` (release notes), `rest-releases`, `commits-atom`, `asset` (every download, WoWInterface's and Tukui's included), `wowi-filelist`, `wowi-details`, `tukui-list`, `tukui-addon`, `tukui-changelog`, `github-search` and `rate-limit`. `wire_bytes` is what crossed the network when it differs from `bytes` (WoWInterface's file list arrives gzipped). A Tukui download link carries a token: its path is logged as `/v1/download/<slug>/…`, never with the token. git lines have `"method":"GIT"`, `"via":"git"`, the exit code as `status`, and a purpose of `ls-remote`, `clone`, `init`, `fetch`, `checkout` or `rev-parse`.
 
-**Offline.** `--offline` or `OMADDONS_OFFLINE=1` refuses all network access, git included, and runs no credential command. Local installs, `remove`, `undo` and every read command work offline. Release metadata a command fetched is remembered in the release memo; offline, `info` answers from it with a `stale_check` warning.
+**Offline.** `--offline` or `OMADDONS_OFFLINE=1` refuses all network access, git included, and runs no credential command. Local installs, `remove`, `undo` and every read command work offline. Release metadata a command fetched is remembered in the release memo; offline, `info` answers from it with a `stale_check` warning. When `--offline` alone made the run offline, an `offline` error's and a `stale_check` warning's `fix_argv` is the same command without it; under `OMADDONS_OFFLINE=1` the fix stays prose.
 
 **Fetch once.** Within one command each ref is fetched once, however many targets and engine runs need it: `install` without `-t` probes every live client and then installs with the same answer. `install` always asks the source for the newest release; `info` reuses an answer up to 15 minutes old (`SOURCE_RECHECK_MIN_INTERVAL`) unless `--refresh` is given.
 
@@ -1969,7 +1969,9 @@ Read the envelope
   ok, exit_code, partial, data, error{code, message, fix, fix_argv, alternatives[{display, argv}], retryable, details}
   warnings[{code, message, fix, fix_argv}], commands[{action, command, argv, destructive}]
   Run fix_argv / alternatives[].argv / commands[].argv as argv arrays; never parse the display strings.
-  fix_argv is null when the fix is prose (read error.fix).
+  fix_argv is null when the fix is prose or needs a value only you can supply (read error.fix:
+  the command shows each missing value as a <placeholder>; alternatives may hold a read-only step).
+  A locked or retryable plan_stale error's fix_argv reruns the same command.
 
 Exit codes  0 ok (check partial) · 1 failed (see retryable) · 2 usage · 3 not found/ambiguous
             4 refused (safety) · 5 locked (retry) · 6 --check/--strict failed

@@ -46,52 +46,39 @@ mod support {
         "meta",
     ];
 
-    /// Fixes with no argv because they are not an omaddons command, or need input the
-    /// suite cannot invent. Matched as prefixes; keep this list small and explicit.
-    pub const TEXT_FIXES: &[&str] = &[
-        "omaddons targets add <path>",
-        "omaddons update <addon> --channel",
-        "/reload in game",
-        "restart the game client",
-        "upgrade omaddons",
-        "this folder belongs to the game client and is never modified",
-        "check that the addon supports this client",
-        "see data.items[].error",
-        "run any omaddons command that changes addons",
-        "wait for the running omaddons command to finish",
-        "update the addon, or enable",
-        "the AddOns filesystem does not support atomic renames",
-        "use an archive built for this client",
-        // adopt: the ref to fill in
-        "omaddons adopt --ref <ref>",
-        // local_changes_replaced under --dry-run
-        "the replaced files are kept in the transaction snapshot",
-        // still_required under --dry-run
-        "nothing is removed under --dry-run",
-        // snapshot_only_copy under --dry-run
-        "nothing is moved under --dry-run",
-        // an addon gone upstream: the new ref is the user's to find
-        "if it moved, re-point it",
-        // missing_dependency
-        "no keyless source ships",
-        "install the one you use",
-        "install it yourself",
-        "install without --no-deps",
-        "install a project that ships",
-        "install the addon that ships",
-        // desired_state_invalid and desired_unknown_key
-        "use a family name",
-        "keep one of the entries",
-        "correct line",
-        "remove it, or correct its spelling",
-        // sync
-        "pass the file",
-        "check that",
-        // stale_check (the WoWInterface index)
-        "run the command again online",
-        // copy given -t: the clients are the user's to name
-        "omaddons copy --from <client> --to <client>",
+    /// Prose fixes that mention an omaddons command on purpose, matched as substrings:
+    /// keep this list small and explicit.
+    pub const PROSE_COMMANDS: &[&str] = &[
+        // A token goes on standard input, never argv.
+        "omaddons auth github set",
+        // Asked for with a bug report.
+        "omaddons --version",
+        // sync: the file is the user's to regenerate.
+        "regenerate the file with `omaddons export`",
+        // local_changes_replaced under --dry-run: there is no transaction yet.
+        "`omaddons undo` restores them",
     ];
+
+    /// Whether a prose fix `display` names a runnable omaddons command: `omaddons`
+    /// then a subcommand or a flag. One that needs a value only the user has shows it
+    /// as a `<placeholder>` and is not runnable as is; [`PROSE_COMMANDS`] mention one on
+    /// purpose. Such a fix must carry argv instead.
+    pub fn names_a_command(display: &str) -> bool {
+        if display.contains('<') || PROSE_COMMANDS.iter().any(|p| display.contains(p)) {
+            return false;
+        }
+        display.match_indices("omaddons ").any(|(at, word)| {
+            let rest = &display[at + word.len()..];
+            let first = rest
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .next()
+                .unwrap_or_default();
+            rest.starts_with("--")
+                || omaddons::app::COMMANDS
+                    .iter()
+                    .any(|c| c.name.split(' ').next() == Some(first))
+        })
+    }
 
     /// The top-level keys of a JSON object, in document order.
     struct Keys(Vec<String>);
@@ -232,14 +219,13 @@ mod support {
     }
 
     /// A fix is non-empty; its argv starts with omaddons and joins back to the display,
-    /// or it is null for a documented text fix.
+    /// or it is null for prose that names no runnable command ([`names_a_command`]).
     pub fn fix(display: &Value, argv: &Value, ctx: &str) {
         let display = display.as_str().unwrap_or_default();
         assert!(!display.is_empty(), "empty fix\n{ctx}");
         if argv.is_null() {
             assert!(
-                TEXT_FIXES.iter().any(|t| display.starts_with(t))
-                    || !display.starts_with("omaddons"),
+                !names_a_command(display),
                 "a command fix without argv: {display}\n{ctx}"
             );
             return;

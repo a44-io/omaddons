@@ -409,7 +409,13 @@ fn without_metadata_only_gated_folders_are_skipped() {
         &library(&["## AllowLoadGameType: standard"]),
     );
     let r = home.run(&["install", "gh:o/foo", "-t", "era", "--dry-run"]);
-    assert_eq!(r.expect(3)["error"]["code"], "no_compatible_release");
+    let error = &r.expect(3)["error"];
+    assert_eq!(error["code"], "no_compatible_release");
+    // What the addon supports is a read-only look away.
+    assert_eq!(
+        error["alternatives"][0]["argv"],
+        serde_json::json!(["omaddons", "info", "gh:o/foo", "-t", "era"])
+    );
 
     // A sibling that merely lists retail's interfaces marks a retail build.
     let scenario = home.scenario("ungated-sibling");

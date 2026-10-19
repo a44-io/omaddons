@@ -114,11 +114,12 @@ fn info_reports_the_catalog_latest_and_installed() {
         r.context()
     );
     let warning = &envelope["warnings"][0];
+    // Refreshed by the same command online (the flag alone made it offline).
     assert_eq!(
-        (&warning["code"], &warning["fix"]),
+        (&warning["code"], &warning["fix_argv"]),
         (
             &Value::from("stale_check"),
-            &Value::from("run without --offline and with OMADDONS_OFFLINE unset")
+            &serde_json::json!(["omaddons", "info", "weakauras"])
         ),
         "{}",
         r.context()

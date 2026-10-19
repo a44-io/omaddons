@@ -33,6 +33,87 @@ fn every_error_code_used_in_src_is_registered() {
     assert!(used.len() > 20, "the scan found the codes: {used:?}");
 }
 
+/// The string literals inside each `Suggestion::text(…)` call of `code`, joined per
+/// call (a `format!`'s braces kept).
+fn text_fix_literals(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (at, call) in code.match_indices("Suggestion::text(") {
+        let (mut depth, mut in_str, mut escaped) = (1, false, false);
+        let mut literals = String::new();
+        for c in code[at + call.len()..].chars() {
+            if in_str {
+                match (escaped, c) {
+                    (true, _) => {
+                        literals.push(c);
+                        escaped = false;
+                    }
+                    (false, '\\') => escaped = true,
+                    (false, '"') => in_str = false,
+                    (false, _) => literals.push(c),
+                }
+                continue;
+            }
+            match c {
+                '"' => in_str = true,
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.push(literals);
+    }
+    out
+}
+
+/// No prose fix in production code names a runnable omaddons command: such a fix
+/// carries argv (vision §5.9). The scan sees the sites the matrix never reaches.
+#[test]
+fn prose_fixes_name_no_runnable_command() {
+    let mut found = Vec::new();
+    for (path, text) in sources() {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if matches!(name, "tests.rs" | "testing.rs") {
+            continue;
+        }
+        let code = text
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap_or(&text);
+        for display in text_fix_literals(code) {
+            if support::names_a_command(&display) {
+                found.push(format!("{}: {display}", path.display()));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "prose fixes that are omaddons commands (give them argv):\n{}",
+        found.join("\n")
+    );
+    let planted = text_fix_literals("Err(x(Suggestion::text(\"omaddons status\")))");
+    assert_eq!(planted, ["omaddons status"]);
+    assert!(
+        support::names_a_command(&planted[0]),
+        "the scan sees a planted one"
+    );
+    for prose in [
+        "omaddons install <path>",
+        "wait for the running omaddons command to finish",
+        "echo \"$TOKEN\" | omaddons auth github set",
+        "/reload in game",
+    ] {
+        assert!(!support::names_a_command(prose), "{prose}");
+    }
+}
+
 #[test]
 fn registered_codes_are_unique_snake_case_with_dictionary_exits() {
     let dictionary: BTreeSet<u8> = Exit::ALL.iter().map(|e| e.code()).collect();

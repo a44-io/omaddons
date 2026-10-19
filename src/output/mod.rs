@@ -120,6 +120,7 @@ pub fn emit_to<O: Outcome, W: Write>(
                 }
             }
             notes.settle_journal(&mut warnings);
+            notes.rerun_stale(&mut warnings);
             for warning in &warnings {
                 reporter.warning(warning);
             }
@@ -238,6 +239,7 @@ fn fail<W: Write>(
     error: Error,
 ) -> Exit {
     notes.settle_journal(&mut warnings);
+    notes.rerun_stale(&mut warnings);
     for warning in &warnings {
         reporter.warning(warning);
     }

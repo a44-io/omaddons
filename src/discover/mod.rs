@@ -109,9 +109,10 @@ pub fn unknown_flavor(target: &Target) -> Option<Warning> {
         }
     };
     Some(
-        Warning::new(WarningCode::UnknownFlavor, message).with_fix(Suggestion::text(
-            "set its family with a [targets.<id>] override in config.toml",
-        )),
+        Warning::new(WarningCode::UnknownFlavor, message).with_fix(Suggestion::text(format!(
+            "set its family: omaddons config set targets.{}.family <family>",
+            target.id
+        ))),
     )
 }
 

@@ -295,6 +295,11 @@ fn copy() {
         2,
     );
     assert_eq!(c.envelope["error"]["code"], "usage");
+    // The same copy without -t.
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "copy", "--from", "retail", "--to", "classic"])
+    );
 }
 
 #[test]

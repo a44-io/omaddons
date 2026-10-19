@@ -4345,26 +4345,14 @@ impl TargetPlanner<'_> {
             .values()
             .find(|a| a.r#ref == wanted.r#ref)
             .map_or_else(|| wanted.r#ref.to_string(), |a| a.name.clone());
-        let fix = if self
-            .ctx
-            .argv
-            .iter()
-            .any(|a| matches!(a.as_str(), "--offline"))
-        {
-            let argv: Vec<String> = crate::cli::fix_argv(self.ctx.argv)
-                .into_iter()
-                .filter(|a| !matches!(a.as_str(), "--offline"))
-                .collect();
-            Suggestion::command(argv)
-        } else {
-            Suggestion::text("run without --offline and with OMADDONS_OFFLINE unset")
-        };
+        // The command boundary makes it the same command online when `--offline` alone
+        // kept the run offline.
         Error::new(
             ErrorCode::Offline,
             format!(
                 "{name}: its archive is not in the blob cache, and getting it again needs the network"
             ),
-            fix,
+            Suggestion::text("run without --offline and with OMADDONS_OFFLINE unset"),
         )
         .details(json!({ "ref": wanted.r#ref.to_string(), "reason": "not_cached" }))
     }
@@ -4382,6 +4370,14 @@ impl TargetPlanner<'_> {
                 "check that the addon supports this client, or pin another release with --version",
             ),
         )
+        // What the addon says it supports, read-only.
+        .alternative(Suggestion::command([
+            "omaddons".to_owned(),
+            "info".to_owned(),
+            wanted.r#ref.to_string(),
+            "-t".to_owned(),
+            self.target.id.clone(),
+        ]))
         .details(
             json!({ "ref": wanted.r#ref.to_string(), "target": self.target.id, "tried": tried }),
         )
