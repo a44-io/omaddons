@@ -73,6 +73,18 @@ impl GitHosts {
     pub fn permits(&self, host: &str) -> bool {
         self.hosts.contains(&host.to_ascii_lowercase())
     }
+
+    /// These hosts and `host`, as the TOML array `config set git_hosts` takes: a fix
+    /// that allows one more host keeps the others.
+    pub fn toml_with(&self, host: &str) -> String {
+        let mut hosts = self.hosts.clone();
+        hosts.insert(host.to_ascii_lowercase());
+        let quoted: Vec<String> = hosts
+            .iter()
+            .map(|h| toml::Value::from(h.as_str()).to_string())
+            .collect();
+        format!("[{}]", quoted.join(", "))
+    }
 }
 
 /// Whether `host` is one HTTP may ever reach (the always-list or an optional source's).

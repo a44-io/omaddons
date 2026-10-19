@@ -121,11 +121,17 @@ fn not_https(input: &str, ctx: &RefContext<'_>) -> Error {
                 if listed {
                     suggest_https(&not, &https)
                 } else {
+                    // Adds it to git_hosts, keeping the hosts listed now.
+                    let hosts = crate::net::allowlist::GitHosts::new(ctx.git_hosts);
                     blocked(
                         &host,
-                        Suggestion::text(format!(
-                            "add it to git_hosts: omaddons config set git_hosts '[\"{host}\"]' (keep any hosts already listed)"
-                        )),
+                        Suggestion::command([
+                            "omaddons".to_owned(),
+                            "config".to_owned(),
+                            "set".to_owned(),
+                            "git_hosts".to_owned(),
+                            hosts.toml_with(&host),
+                        ]),
                     )
                 }
             }
@@ -726,9 +732,10 @@ mod tests {
                     Some("git:https://codeberg.org/a/b.git"),
                     None,
                 ),
+                // Adding the git host to git_hosts, keeping codeberg.org.
                 (
                     "git:http://git.example.org/a.git",
-                    None,
+                    Some("[\"codeberg.org\", \"git.example.org\"]"),
                     Some("git.example.org"),
                 ),
             ] {
@@ -742,7 +749,10 @@ mod tests {
                     e.fix.display()
                 );
                 assert_eq!(e.details["host"].as_str(), host, "{input}");
-                if let Some(fixed) = argv.as_ref().and_then(|a| a.last()) {
+                let install = argv
+                    .as_ref()
+                    .filter(|a| a.get(1).is_some_and(|c| c == "install"));
+                if let Some(fixed) = install.and_then(|a| a.last()) {
                     let r = parse_user_ref(fixed, ctx).unwrap().r#ref;
                     if let Ref::Url { url } = &r {
                         assert!(super::super::url::url_host_allowed(url).1, "{fixed}");

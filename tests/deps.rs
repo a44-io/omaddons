@@ -675,6 +675,19 @@ fn no_deps_installs_only_the_requester_and_warns() {
     let missing = warnings_with(&envelope, "missing_dependency");
     assert_eq!(missing.len(), 1, "{}", r.context());
     assert!(missing[0].contains("BigWigs") && missing[0].contains("--no-deps"));
+    // Its fix is the same install with its dependencies.
+    let warning = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["code"] == "missing_dependency")
+        .unwrap();
+    assert_eq!(
+        warning["fix_argv"],
+        json!(["omaddons", "install", "littlewigs"]),
+        "{}",
+        r.context()
+    );
 }
 
 #[test]

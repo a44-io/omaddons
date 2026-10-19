@@ -305,16 +305,29 @@ fn an_offline_install_plans_from_the_memo_but_downloads_nothing() {
     )]));
     let r = home.run(&["install", "gh:o/foo", "-t", "retail", "--offline"]);
     let envelope = r.expect(1);
+    // The fix is the same install without --offline (the flag alone made it offline).
     assert_eq!(
-        (&envelope["error"]["code"], &envelope["error"]["fix"]),
+        (&envelope["error"]["code"], &envelope["error"]["fix_argv"]),
         (
             &Value::from("offline"),
-            &Value::from("run without --offline and with OMADDONS_OFFLINE unset")
+            &serde_json::json!(["omaddons", "install", "gh:o/foo", "-t", "retail"])
         ),
         "the remembered v9's archive is not downloaded\n{}",
         r.context()
     );
     assert_eq!(requests(&home), before, "no request either time");
+    // Under OMADDONS_OFFLINE=1 no rerun without the flag escapes it: the fix stays prose.
+    let argv: Vec<String> = ["install", "gh:o/foo", "-t", "retail", "--offline", "--json"]
+        .map(str::to_owned)
+        .to_vec();
+    let r = home.exec_with(&argv, &[("OMADDONS_OFFLINE", "1")]);
+    let envelope: Value = serde_json::from_str(&r.stdout).unwrap();
+    assert_eq!(
+        envelope["error"]["fix_argv"],
+        Value::Null,
+        "{}",
+        r.context()
+    );
 }
 
 #[test]

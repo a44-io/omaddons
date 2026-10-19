@@ -210,6 +210,8 @@ pub struct Context {
     /// for building `fix_argv`s.
     pub argv: Vec<String>,
     pub offline: bool,
+    /// `OMADDONS_OFFLINE=1`: the run stays offline without `--offline` too.
+    pub offline_by_env: bool,
     pub dry_run: bool,
     pub while_running: bool,
     /// The raw `-t` value; the registry resolves it.
@@ -265,6 +267,7 @@ impl Context {
             reason: global.reason.clone(),
             argv: argv.to_vec(),
             offline: global.offline || env("OMADDONS_OFFLINE").as_deref() == Some("1"),
+            offline_by_env: env("OMADDONS_OFFLINE").as_deref() == Some("1"),
             dry_run: global.dry_run,
             while_running: global.while_running,
             target: global.target.clone(),

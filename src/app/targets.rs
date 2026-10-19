@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::world::World;
-use crate::cli::{Context, fix_argv};
+use crate::cli::Context;
 use crate::discover::cache::DiscoveryMode;
 use crate::discover::registry::{
     LockedRegistry, check_user_id, manual_targets, reconcile, registered_at, unknown_id,
@@ -346,12 +346,7 @@ fn locked<T>(
     dirs: &[PathBuf],
     f: impl FnOnce(&mut LockedRegistry<'_>, &mut WriteSession<'_>) -> Result<T>,
 ) -> Result<T> {
-    let guard = GlobalLock::acquire(paths, command).map_err(|mut err| {
-        if err.code == ErrorCode::Locked {
-            err.fix = Suggestion::command(fix_argv(&ctx.argv));
-        }
-        err
-    })?;
+    let guard = GlobalLock::acquire(paths, command)?;
     {
         use crate::engine::journal::{no_saved_variables, recover_under};
         ctx.notes

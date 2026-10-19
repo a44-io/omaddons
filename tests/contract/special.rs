@@ -35,6 +35,11 @@ fn a_held_lock_is_locked_and_retryable() {
     let c = s.json(&["remove", "Foo", "-t", "retail"], 5);
     assert_eq!(c.envelope["error"]["code"], "locked");
     assert_eq!(c.envelope["error"]["retryable"], true);
+    // The fix reruns the same command once the holder is done.
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "remove", "Foo", "-t", "retail"])
+    );
     let done = wait(holder, &argv);
     assert_eq!(done.code, 0, "{}", done.context());
 }
@@ -180,6 +185,11 @@ fn offline_refuses_the_network() {
     let s = Scene::new();
     let c = s.json(&["install", "gh:o/foo", "-t", "retail", "--offline"], 1);
     assert_eq!(c.envelope["error"]["code"], "offline");
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "install", "gh:o/foo", "-t", "retail"]),
+        "the same install, online"
+    );
 }
 
 #[test]

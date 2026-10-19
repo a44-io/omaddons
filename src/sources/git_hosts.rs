@@ -311,11 +311,17 @@ impl GitRunner {
             };
             return Err(Error::new(
                 ErrorCode::HostBlocked,
-                format!("{} is not a git host omaddons may contact{http}", repo.host),
-                Suggestion::text(format!(
-                    "add it to git_hosts: omaddons config set git_hosts '[\"{}\"]' (keep any hosts already listed)",
+                format!(
+                    "{} is not a git host omaddons may contact{http} (the fix adds it to git_hosts, keeping the hosts listed now)",
                     repo.host
-                )),
+                ),
+                Suggestion::command([
+                    "omaddons".to_owned(),
+                    "config".to_owned(),
+                    "set".to_owned(),
+                    "git_hosts".to_owned(),
+                    self.hosts.toml_with(&repo.host),
+                ]),
             )
             .details(serde_json::json!({ "host": repo.host })));
         }
@@ -1163,8 +1169,20 @@ mod tests {
             .run(&[], &repo, "ls-remote", API_READ_TIMEOUT)
             .unwrap_err();
         assert_eq!((err.code, err.exit().code()), (ErrorCode::HostBlocked, 4));
-        assert!(err.fix.argv().is_none());
-        assert!(err.fix.display().contains("git_hosts"));
+        // The fix adds the host and keeps the one listed.
+        assert_eq!(
+            err.fix.argv(),
+            Some(
+                &[
+                    "omaddons",
+                    "config",
+                    "set",
+                    "git_hosts",
+                    "[\"codeberg.org\", \"gitlab.com\"]"
+                ]
+                .map(str::to_owned)[..]
+            )
+        );
         // HTTP's hosts are never git's, even with no git_hosts at all.
         let mut none = runner(ProtocolPolicy::Https, &[]);
         none.program = OsString::from("/nonexistent/git");

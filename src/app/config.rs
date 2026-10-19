@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::cli::{Context, fix_argv};
+use crate::cli::Context;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::fsx::{
     Content, GlobalLock, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate,
@@ -286,14 +286,7 @@ pub fn set(ctx: &Context, key: &str, raw_value: &str) -> Result<Done<SetData>> {
     let guard = if ctx.dry_run {
         None
     } else {
-        Some(
-            GlobalLock::acquire(&paths, "config set").map_err(|mut err| {
-                if err.code == ErrorCode::Locked {
-                    err.fix = Suggestion::command(fix_argv(&ctx.argv));
-                }
-                err
-            })?,
-        )
+        Some(GlobalLock::acquire(&paths, "config set")?)
     };
     if let Some(guard) = &guard {
         use crate::engine::journal::{no_saved_variables, recover_under};

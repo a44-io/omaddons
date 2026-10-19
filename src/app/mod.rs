@@ -206,8 +206,11 @@ struct Out<'a> {
     started: std::time::Instant,
     offline: bool,
     notes: &'a output::RunNotes,
-    /// For an internal error's fix, which must not rerun what failed.
+    /// For an internal error's fix, which must not rerun what failed, and a retryable
+    /// one's, which reruns it.
     argv: &'a [String],
+    /// `OMADDONS_OFFLINE=1`, which no rerun without `--offline` escapes.
+    offline_by_env: bool,
 }
 
 impl Out<'_> {
@@ -221,11 +224,7 @@ impl Out<'_> {
         result: crate::error::Result<O>,
     ) -> Exit {
         let result = result.map_err(|mut e| {
-            if matches!(e.code, crate::error::ErrorCode::Internal)
-                && e.fix == crate::error::internal_fix()
-            {
-                e.fix = crate::error::internal_fix_for(name, self.argv);
-            }
+            self.boundary_fix(name, &mut e);
             e
         });
         let mut reporter = output::lock(self.reporter);
@@ -238,6 +237,27 @@ impl Out<'_> {
             self.notes,
             result,
         )
+    }
+
+    /// The fixes only the command's boundary knows: an internal error's never reruns
+    /// what failed; a retryable `plan_stale` and a `locked` rerun the same command; an
+    /// `offline` one, when `--offline` alone made the run offline, reruns it without.
+    fn boundary_fix(&self, name: &str, e: &mut crate::error::Error) {
+        use crate::error::ErrorCode;
+        let rerun = |argv: &[String]| crate::error::Suggestion::command(crate::cli::fix_argv(argv));
+        match e.code {
+            ErrorCode::Internal if e.fix == crate::error::internal_fix() => {
+                e.fix = crate::error::internal_fix_for(name, self.argv);
+            }
+            ErrorCode::PlanStale if e.retryable => e.fix = rerun(self.argv),
+            ErrorCode::Locked => e.fix = rerun(self.argv),
+            ErrorCode::Offline
+                if !self.offline_by_env && self.argv.iter().any(|a| a == "--offline") =>
+            {
+                e.fix = rerun(&crate::cli::without_switch(self.argv, "--offline"));
+            }
+            _ => {}
+        }
     }
 
     fn log(&self, level: output::LogLevel, message: &str) {
@@ -279,6 +299,7 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         offline: ctx.offline,
         notes: &ctx.notes,
         argv: &ctx.argv,
+        offline_by_env: ctx.offline_by_env,
     };
     if cli.global.version {
         return out.emit_as("version", Ok(help::version()));

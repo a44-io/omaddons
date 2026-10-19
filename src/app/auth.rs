@@ -19,7 +19,7 @@ use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::cli::{Context, fix_argv};
+use crate::cli::Context;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::fsx::{
     Content, GlobalLock, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate,
@@ -301,12 +301,8 @@ fn write(ctx: &Context, paths: &Paths, content: &[u8]) -> Result<()> {
     if ctx.dry_run {
         return Ok(());
     }
-    let guard = GlobalLock::acquire(paths, "auth github").map_err(|mut err| {
-        if matches!(err.code, ErrorCode::Locked) {
-            err.fix = Suggestion::command(fix_argv(&ctx.argv));
-        }
-        err
-    })?;
+    // A `locked` refusal's fix reruns this command (the command boundary sets it).
+    let guard = GlobalLock::acquire(paths, "auth github")?;
     {
         use crate::engine::journal::{no_saved_variables, recover_under};
         ctx.notes

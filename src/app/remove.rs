@@ -301,6 +301,24 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
     })
 }
 
+/// `ref_ambiguous`: `request` names several addons (`names`) on `id`. The fix lists
+/// them, and each has its own remove as an alternative.
+fn ambiguous(request: &str, id: &str, names: &[&str]) -> Error {
+    let mut error = Error::new(
+        ErrorCode::RefAmbiguous,
+        format!(
+            "{request} names {} addons in {id}: {}; name the addon itself rather than a folder or ref they share",
+            names.len(),
+            names.join(", ")
+        ),
+        Suggestion::command(["omaddons", "list", "-t", id]),
+    );
+    for name in names {
+        error = error.alternative(Suggestion::command(["omaddons", "remove", name, "-t", id]));
+    }
+    error.details(serde_json::json!({ "candidates": names, "target": id }))
+}
+
 /// The addon `request` names in each of `targets` (by target id), or why it cannot be
 /// removed: `ref_ambiguous` when it names two addons in one target, `not_managed` when
 /// it names none anywhere.
@@ -322,19 +340,7 @@ fn find(
             }
             many => {
                 let names: Vec<&str> = many.iter().map(|a| a.name.as_str()).collect();
-                return Err(Error::new(
-                    ErrorCode::RefAmbiguous,
-                    format!(
-                        "{request} names {} addons in {}: {}",
-                        names.len(),
-                        d.target.id,
-                        names.join(", ")
-                    ),
-                    Suggestion::text(
-                        "name the addon itself rather than a folder or ref they share",
-                    ),
-                )
-                .details(serde_json::json!({ "candidates": names, "target": d.target.id })));
+                return Err(ambiguous(request, &d.target.id, &names));
             }
         }
     }
@@ -599,5 +605,22 @@ mod tests {
         // A folder one addon owns that names another: two candidates.
         let clash = record(&[("Foo", "gh:o/foo", &["Bar"]), ("Bar", "gh:o/bar", &["Baz"])]);
         assert_eq!(matches(&clash, "bar").len(), 2);
+    }
+
+    /// The fix lists the client's addons; each candidate's own remove is an alternative.
+    #[test]
+    fn an_ambiguous_request_offers_each_addon_s_remove() {
+        let e = ambiguous("bar", "retail", &["Foo", "Bar"]);
+        assert_eq!(e.code, ErrorCode::RefAmbiguous);
+        let argv = |s: &Suggestion| s.argv().map(|a| a.join(" ")).unwrap_or_default();
+        assert_eq!(argv(&e.fix), "omaddons list -t retail");
+        let alternatives: Vec<String> = e.alternatives.iter().map(argv).collect();
+        assert_eq!(
+            alternatives,
+            [
+                "omaddons remove Foo -t retail",
+                "omaddons remove Bar -t retail"
+            ]
+        );
     }
 }

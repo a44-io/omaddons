@@ -398,12 +398,7 @@ fn write(
     let guard = if ctx.dry_run {
         None
     } else {
-        Some(GlobalLock::acquire(paths, "export").map_err(|mut err| {
-            if err.code == ErrorCode::Locked {
-                err.fix = Suggestion::command(fix_argv(&ctx.argv));
-            }
-            err
-        })?)
+        Some(GlobalLock::acquire(paths, "export")?)
     };
     if let Some(guard) = &guard {
         use crate::engine::journal::{no_saved_variables, recover_under};

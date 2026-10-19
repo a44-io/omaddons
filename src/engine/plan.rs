@@ -1439,10 +1439,13 @@ fn missing_dependency(
     requester: &str,
     unresolved: &Unresolved,
     detail: Option<&str>,
+    argv: &[String],
 ) -> Warning {
     let folder = unresolved.folder.as_str();
     let id = target.id.as_str();
     let top = unresolved.candidates.first();
+    // Without a candidate to install, what ships the folder is the next question.
+    let search = || Suggestion::command(["omaddons", "search", folder]);
     let install_top = |r: &Ref| {
         Suggestion::command([
             "omaddons".to_owned(),
@@ -1484,21 +1487,21 @@ fn missing_dependency(
         ),
         UnresolvedReason::SeveralCatalogEntries | UnresolvedReason::WowiAmbiguous => (
             format!("several projects ship it ({})", listed.join(", ")),
-            top.map_or_else(|| Suggestion::text("install the one you use"), install_top),
+            top.map_or_else(search, install_top),
         ),
         UnresolvedReason::WowiAbandoned => (
             format!(
                 "the project that ships it ({}) has not changed in two years",
                 listed.join(", ")
             ),
-            top.map_or_else(|| Suggestion::text("install the one you use"), install_top),
+            top.map_or_else(search, install_top),
         ),
         UnresolvedReason::OutOfDate => (
             format!(
                 "its build ({}) is out of date for this client",
                 listed.join(", ")
             ),
-            top.map_or_else(|| Suggestion::text("install the one you use"), install_top),
+            top.map_or_else(search, install_top),
         ),
         UnresolvedReason::LimitReached => (
             if detail == Some(MAX_ADDONS) {
@@ -1508,25 +1511,23 @@ fn missing_dependency(
             } else {
                 format!("it is past {MAX_DEPTH} ({DEPENDENCY_MAX_DEPTH} dependency rounds)")
             },
-            top.map_or_else(|| Suggestion::text("install it yourself"), install_top),
+            top.map_or_else(search, install_top),
         ),
         UnresolvedReason::NotRequested => (
             "--no-deps installs only what was named".to_owned(),
-            Suggestion::text(format!(
-                "install without --no-deps, or install the addon that ships {folder}"
-            )),
+            // The same command with its dependencies.
+            Suggestion::command(crate::cli::fix_argv(&crate::cli::without_switch(
+                argv,
+                "--no-deps",
+            ))),
         ),
         UnresolvedReason::NotShipped => (
             format!("{} does not ship it for this client", listed.join(", ")),
-            Suggestion::text(format!(
-                "install a project that ships {folder} for this client"
-            )),
+            search(),
         ),
         UnresolvedReason::UnknownCondition => (
             "its TOC requires it only under a condition omaddons cannot decide offline (a text locale, say)".to_owned(),
-            Suggestion::text(format!(
-                "install the addon that ships {folder} if this client needs it"
-            )),
+            search(),
         ),
     };
     Warning::new(
@@ -2173,7 +2174,8 @@ impl TargetPlanner<'_> {
         detail: Option<&str>,
     ) {
         // Tied to no work, so the commit keeps it as it keeps an unchanged addon's.
-        let warning = missing_dependency(self.target, requester, &unresolved, detail);
+        let warning =
+            missing_dependency(self.target, requester, &unresolved, detail, self.ctx.argv);
         push_new(&mut tp.warnings, vec![warning.clone()]);
         push_new(&mut tp.unchanged_warnings, vec![warning]);
         let report = tp.dependencies.entry(requester.to_owned()).or_default();
