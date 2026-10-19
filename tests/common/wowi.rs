@@ -24,16 +24,17 @@ pub struct FileEntry {
     pub compat: Vec<(String, String)>,
 }
 
-/// Thirty days before the real clock, in Unix milliseconds: inside every freshness
-/// window the code compares against the real clock (`DEPENDENCY_SOURCE_MAX_AGE` is
-/// two years) on any date, where a fixed date would age out of it.
+/// Thirty days before today's UTC midnight, in Unix milliseconds: inside every
+/// freshness window the code compares against the real clock (`DEPENDENCY_SOURCE_MAX_AGE`
+/// is two years) on any date, where a fixed date would age out of it, and the same all
+/// day, so builders stay byte-identical within a run.
 pub fn recent_ms() -> u64 {
+    const DAY_MS: u64 = 24 * 60 * 60 * 1000;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    u64::try_from(now.as_millis())
-        .unwrap_or(u64::MAX)
-        .saturating_sub(30 * 24 * 60 * 60 * 1000)
+    let now = u64::try_from(now.as_millis()).unwrap_or(u64::MAX);
+    (now - now % DAY_MS).saturating_sub(30 * DAY_MS)
 }
 
 impl FileEntry {

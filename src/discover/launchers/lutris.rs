@@ -1,26 +1,47 @@
-//! Lutris: `games/*.yml` under `<config>/lutris` and `<data>/lutris` (releases moved the
-//! directory; both are read). The `exe:`, `prefix:` and `working_dir:` lines sit under
-//! `game:`. Every prefix is kept, since scanning a prefix that holds another game is
-//! bounded and harmless; an exe is kept only when it is a WoW client or launcher.
+//! Lutris: `games/*.yml` under `<config>/lutris` and `<data>/lutris`, native and in the
+//! Flatpak `net.lutris.Lutris` (`~/.var/app/<id>/{config,data}`), as Lutris v0.5.22
+//! keeps them:
+//! - `CONFIG_DIR` is `<config>/lutris`, or `DATA_DIR` (`<data>/lutris`) when that does
+//!   not exist; game files are `CONFIG_DIR/games/<slug>-<timestamp>.yml`
+//!   (`lutris/settings.py:21-33`, `lutris/config.py:15-26`), so both are read. Inside the
+//!   Flatpak, GLib's directories are the app's `config` and `data` (Flatpak docs
+//!   `conventions.rst:365-378`; the app id from `lutris/util/xdgshortcuts.py:18-21`).
+//! - The wine runner's `game:` options are `exe`, `prefix` and `working_dir`
+//!   (`lutris/runners/wine.py:262-316`); neither `wine:` nor `system:` has a prefix.
+//!   Every prefix is kept, since scanning a prefix that holds another game is bounded
+//!   and harmless; an exe is kept only when it is a WoW client or launcher.
+//! - Lutris resolves a relative `exe` against the game's `directory` in `pga.db`
+//!   (`wine.py:703-717`, `lutris/runners/runner.py:54-63`). Without a SQLite reader,
+//!   omaddons tries `working_dir`, then `prefix`, and says so when neither is set.
 
 use std::path::{Path, PathBuf};
 
-use super::{Hints, LauncherDirs, expand_home, files_with_ext, read_config, yaml_value};
+use super::{
+    Hints, LauncherDirs, expand_home, files_with_ext, is_client_exe, read_config, yaml_value,
+};
 
 const LAUNCHER: &str = "lutris";
+const FLATPAK: &str = "net.lutris.Lutris";
 
 pub(super) fn read(dirs: &LauncherDirs, out: &mut Hints) {
-    for base in [&dirs.config, &dirs.data] {
+    let flatpak = dirs.flatpak(FLATPAK);
+    let bases = [
+        (false, dirs.config.clone()),
+        (false, dirs.data.clone()),
+        (true, flatpak.join("config")),
+        (true, flatpak.join("data")),
+    ];
+    for (is_flatpak, base) in bases {
         for file in files_with_ext(&base.join("lutris/games"), "yml") {
             let Some(text) = read_config(LAUNCHER, &file, out) else {
                 continue;
             };
             let game = parse(&text, &dirs.home);
             if let Some(prefix) = &game.prefix {
-                out.prefix(LAUNCHER, false, prefix.clone());
+                out.prefix(LAUNCHER, is_flatpak, prefix.clone());
             }
             match game.client_exe() {
-                Ok(Some(exe)) => out.exe(LAUNCHER, false, exe),
+                Ok(Some(exe)) => out.exe(LAUNCHER, is_flatpak, exe),
                 Ok(None) => {}
                 Err(exe) => out.note(format!(
                     "{LAUNCHER}: {} names {exe}, a relative path with no directory it resolves against",
@@ -66,14 +87,7 @@ impl Game {
         let Some(exe) = &self.exe else {
             return Ok(None);
         };
-        let name = exe
-            .file_name()
-            .map(|n| n.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default();
-        let client = (name.starts_with("wow") && name.ends_with(".exe"))
-            || name == "world of warcraft launcher.exe"
-            || name == "battle.net launcher.exe";
-        if !client {
+        if !is_client_exe(exe) {
             return Ok(None);
         }
         if exe.is_absolute() {

@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use common::env::TestEnv;
 use common::launchers::{
     Install, LutrisDir, Malformed, bottle, bottle_in, bottles_data, bottles_dir,
-    custom_path_bottle, heroic_game, lutris_game, malform, steam_libraries, steam_prefix,
-    steam_root,
+    custom_path_bottle, heroic_game, heroic_settings, heroic_sideloaded, lutris_game, malform,
+    steam_libraries, steam_prefix, steam_root, steam_shortcuts,
 };
 use common::trees::{BattlenetRoot, CustomRoot, Prefix, tree_stat};
 use omaddons::discover::launchers::{LauncherDirs, collect_hints};
@@ -313,6 +313,186 @@ fn the_steam_links_and_a_repeated_library_are_read_once() {
     let pfx = steam_prefix(&native, 9);
     let (hints, _) = collect_hints(&dirs(&env));
     assert_eq!(prefixes(&hints, "steam", false), [pfx], "{hints:#?}");
+}
+
+/// Heroic v2.22.4's other homes for a prefix or a client: the folder of per-game
+/// prefixes (`~/Games/Heroic/Prefixes` by default, else `config.json`'s
+/// `defaultWinePrefixDir`), the shared prefix, a Proton game's `pfx`, and a sideloaded
+/// WoW exe; and Lutris's game files inside its Flatpak.
+#[test]
+fn heroic_prefix_folders_proton_sideloads_and_flatpak_lutris_lead_to_their_clients() {
+    let env = TestEnv::new();
+    let (root, home) = (env.root(), env.home());
+    // Native Heroic: the default folder, a Proton game, a sideloaded client.
+    let titled = Prefix::at(home.join("Games/Heroic/Prefixes/World of Warcraft"));
+    BattlenetRoot::at(titled.wow_root()).product("wow").build();
+    fs::create_dir_all(home.join("Games/Heroic/Prefixes/not-a-prefix")).unwrap();
+    let proton = Prefix::at(root.join("heroic-proton/pfx"));
+    CustomRoot::at(proton.drive_c().join("Games/Cata"))
+        .version(4, 3, 4, 15595)
+        .build();
+    heroic_game(&env, Install::Native, "cata", &root.join("heroic-proton"));
+    CustomRoot::at(root.join("heroic-sideload/wotlk")).build();
+    heroic_sideloaded(
+        &env,
+        Install::Native,
+        &[
+            &root.join("heroic-sideload/wotlk/Wow.exe"),
+            Path::new("/usr/bin/firefox"),
+        ],
+    );
+    // Flatpak Heroic: its own folder of prefixes and a shared prefix, in config.json.
+    let folder = root.join("heroic-flatpak-prefixes");
+    let era = Prefix::at(folder.join("Era"));
+    BattlenetRoot::at(era.wow_root())
+        .product("wow_classic_era")
+        .build();
+    let shared = Prefix::at(root.join("heroic-shared"));
+    heroic_settings(&env, Install::Flatpak, Some(shared.path()), Some(&folder));
+    // Lutris's Flatpak: a prefix in its config directory, an exe in its data directory.
+    let pfx = Prefix::at(root.join("lutris-flatpak-pfx"));
+    CustomRoot::at(pfx.drive_c().join("Games/MoP"))
+        .version(5, 4, 8, 18414)
+        .build();
+    lutris_game(
+        &env,
+        LutrisDir::FlatpakConfig,
+        "wow-mop",
+        None,
+        Some(pfx.path()),
+    );
+    CustomRoot::at(root.join("lutris-flatpak-games/cata"))
+        .version(4, 3, 4, 15595)
+        .build();
+    lutris_game(
+        &env,
+        LutrisDir::FlatpakData,
+        "wow-cata",
+        Some(&root.join("lutris-flatpak-games/cata/Wow.exe")),
+        None,
+    );
+
+    let (hints, diagnostics) = collect_hints(&dirs(&env));
+    let context = format!("{hints:#?}\n{diagnostics:#?}");
+    assert!(diagnostics.is_empty(), "{context}");
+    assert_eq!(
+        prefixes(&hints, "heroic", false),
+        [
+            root.join("heroic-proton/pfx"),
+            home.join("Games/Heroic/Prefixes/World of Warcraft"),
+        ],
+        "{context}"
+    );
+    assert_eq!(
+        prefixes(&hints, "heroic", true),
+        [root.join("heroic-shared"), folder.join("Era")],
+        "{context}"
+    );
+    assert_eq!(
+        prefixes(&hints, "lutris", true),
+        [root.join("lutris-flatpak-pfx")],
+        "{context}"
+    );
+    let exes: Vec<(&str, bool, &PathBuf)> = hints
+        .iter()
+        .filter_map(|h| Some((h.launcher.as_str(), h.flatpak, h.exe.as_ref()?)))
+        .collect();
+    assert_eq!(
+        exes,
+        [
+            (
+                "lutris",
+                true,
+                &root.join("lutris-flatpak-games/cata/Wow.exe")
+            ),
+            ("heroic", false, &root.join("heroic-sideload/wotlk/Wow.exe")),
+        ],
+        "{context}"
+    );
+
+    let d = discover(&input(&env), &RulesTable::builtin());
+    let context = serde_json::to_string_pretty(&d).unwrap();
+    let mut expected = vec![
+        row(
+            "home/Games/Heroic/Prefixes/World of Warcraft/drive_c/Program Files (x86)/World of Warcraft/_retail_",
+            "retail",
+            "heroic",
+        ),
+        row("heroic-proton/pfx/drive_c/Games/Cata", "cata", "heroic"),
+        row("heroic-sideload/wotlk", "wotlk", "heroic"),
+        row(
+            "heroic-flatpak-prefixes/Era/drive_c/Program Files (x86)/World of Warcraft/_classic_era_",
+            "era",
+            "heroic",
+        ),
+        row("lutris-flatpak-pfx/drive_c/Games/MoP", "mists", "lutris"),
+        row("lutris-flatpak-games/cata", "cata", "lutris"),
+    ];
+    expected.sort();
+    assert_eq!(rows(&d, root), expected, "{context}");
+}
+
+/// The Steam homes beyond the native and Flathub roots (Snap, the Flatpak's lowercase
+/// `data/steam`), and a WoW client added as a non-Steam shortcut, which only
+/// `shortcuts.vdf` names.
+#[test]
+fn steam_snap_roots_and_non_steam_shortcuts_lead_to_their_clients() {
+    let env = TestEnv::new();
+    let (root, home) = (env.root(), env.home());
+    let snap = home.join("snap/steam/common/.local/share/Steam");
+    let snap_pfx = steam_prefix(&snap, 3);
+    CustomRoot::at(snap_pfx.join("drive_c/Games/Cata"))
+        .version(4, 3, 4, 15595)
+        .build();
+    let lower = home.join(".var/app/com.valvesoftware.Steam/data/steam");
+    let lower_pfx = steam_prefix(&lower, 4);
+    // A client outside every prefix, and a shortcut to something else.
+    CustomRoot::at(root.join("steam-games/wotlk")).build();
+    steam_shortcuts(
+        &env,
+        Install::Native,
+        12_345_678,
+        &[
+            (
+                0x8000_0005,
+                &root.join("steam-games/wotlk/Wow.exe"),
+                &root.join("steam-games/wotlk"),
+            ),
+            (
+                0x8000_0006,
+                Path::new("/usr/bin/supertuxkart"),
+                Path::new("/usr/bin"),
+            ),
+        ],
+    );
+
+    let (hints, diagnostics) = collect_hints(&dirs(&env));
+    let context = format!("{hints:#?}\n{diagnostics:#?}");
+    assert!(diagnostics.is_empty(), "{context}");
+    assert_eq!(prefixes(&hints, "steam", false), [snap_pfx], "{context}");
+    assert_eq!(prefixes(&hints, "steam", true), [lower_pfx], "{context}");
+    let exes: Vec<(&str, bool, &PathBuf)> = hints
+        .iter()
+        .filter_map(|h| Some((h.launcher.as_str(), h.flatpak, h.exe.as_ref()?)))
+        .collect();
+    assert_eq!(
+        exes,
+        [("steam", false, &root.join("steam-games/wotlk/Wow.exe"))],
+        "{context}"
+    );
+
+    let d = discover(&input(&env), &RulesTable::builtin());
+    let context = serde_json::to_string_pretty(&d).unwrap();
+    let mut expected = vec![
+        row(
+            "home/snap/steam/common/.local/share/Steam/steamapps/compatdata/3/pfx/drive_c/Games/Cata",
+            "cata",
+            "steam",
+        ),
+        row("steam-games/wotlk", "wotlk", "steam"),
+    ];
+    expected.sort();
+    assert_eq!(rows(&d, root), expected, "{context}");
 }
 
 #[test]

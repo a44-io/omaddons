@@ -20,6 +20,7 @@ const TARGETS: &[&str] = &[
     "lutris",
     "heroic",
     "steam_vdf",
+    "steam_shortcuts",
     "bottles",
     "toc",
     "archive",
@@ -170,6 +171,16 @@ fn write_fuzz_seeds() {
         br#"{"wow": {"winePrefix": "/g/wo"#,
     );
     write(
+        "heroic",
+        "config.json",
+        br#"{"defaultSettings": {"winePrefix": "~/Games/Heroic/Prefixes/shared", "defaultWinePrefixDir": "~/Games/Heroic/Prefixes", "defaultWinePrefix": "/g/old"}, "version": "v0"}"#,
+    );
+    write(
+        "heroic",
+        "library.json",
+        br#"{"games": [{"runner": "sideload", "app_name": "x1", "title": "WoW", "install": {"executable": "/g/wow/Wow.exe", "platform": "Windows", "is_dlc": false}, "folder_name": "/g/wow"}, {"install": {"platform": "Browser"}}], "installed": []}"#,
+    );
+    write(
         "steam_vdf",
         "libraryfolders.vdf",
         b"\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"/h/.local/share/Steam\"\n\t\t\"label\"\t\t\"\"\n\t\t\"apps\"\n\t\t{\n\t\t\t\"228980\"\t\t\"102931551\"\n\t\t}\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\"/mnt/games/SteamLibrary\"\n\t}\n}\n",
@@ -183,6 +194,29 @@ fn write_fuzz_seeds() {
         "steam_vdf",
         "malformed.vdf",
         b"\"libraryfolders\"\n{\n\t\"path\"\"/x\n\t\"path\"\t\"\xff",
+    );
+    let shortcuts = common::launchers::shortcuts_vdf(&[
+        (
+            0x8000_0001,
+            Path::new("/h/Games/World of Warcraft/_retail_/Wow.exe"),
+            Path::new("/h/Games/World of Warcraft/_retail_/"),
+        ),
+        (
+            3_000_000_000,
+            Path::new("/usr/bin/supertuxkart"),
+            Path::new("/usr/bin/"),
+        ),
+    ]);
+    write("steam_shortcuts", "shortcuts.vdf", &shortcuts);
+    write(
+        "steam_shortcuts",
+        "lowercase-and-every-type.vdf",
+        b"\x00shortcuts\x00\x000\x00\x03f\x00\x00\x00\x80\x3f\x05w\x00a\x00\x00\x00\x07u\x00\x01\x02\x03\x04\x05\x06\x07\x08\x01exe\x00\"Wow.exe\"\x00\x01startdir\x00\"/g/wow\"\x00\x0B\x0B",
+    );
+    write(
+        "steam_shortcuts",
+        "malformed-truncated.vdf",
+        &shortcuts[..shortcuts.len() / 2],
     );
     write(
         "bottles",
@@ -407,13 +441,18 @@ fn write_fuzz_seeds() {
         br#"[{"id":"x","slug":"Elv UI","patch":["12..1",null,7],"url":"http://x"},{"slug":"a","version":1e400},"#,
     );
 
-    // wowi_filelist: entries as the API writes them, an empty list, a broken body.
+    // wowi_filelist: entries as the API writes them, an empty list, a broken body. The
+    // date is fixed, so the committed seed never changes with the clock.
     let list: Vec<serde_json::Value> = [
         common::wowi::FileEntry::new(5995, "BugSack", &["BugSack", "__MACOSX", "bugsack"]),
         common::wowi::FileEntry::new(5996, "!BugGrabber", &["!BugGrabber", ""]),
     ]
     .iter()
-    .map(common::wowi::FileEntry::json)
+    .map(|entry| {
+        let mut entry = entry.clone();
+        entry.date_ms = 1_760_300_000_000;
+        entry.json()
+    })
     .collect();
     write(
         "wowi_filelist",

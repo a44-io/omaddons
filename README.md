@@ -360,9 +360,9 @@ Discovery runs whenever a command needs the clients: every command except `confi
 It first collects the Wine prefixes (directories containing `drive_c/`):
 
 - the prefixes that **launcher configs** name:
-  - Lutris: `games/*.yml` under the native config and data directories (prefix and exe);
-  - Heroic: every `winePrefix` in `GamesConfig/*.json`, native and Flatpak;
-  - Steam: the `compatdata/*/pfx` Proton prefixes of every library in `libraryfolders.vdf`, native and Flatpak (WoW is usually a non-Steam shortcut with its own compatdata id);
+  - Lutris: `games/*.yml` under the config and data directories, native and Flatpak (prefix and exe);
+  - Heroic: every `winePrefix` in `GamesConfig/*.json` (a Proton game's `pfx` inside it), the shared prefix and the prefixes in its per-game prefix folder (`~/Games/Heroic/Prefixes` unless `config.json` names another), and the exes of sideloaded apps, native and Flatpak;
+  - Steam: the `compatdata/*/pfx` Proton prefixes of every library in `libraryfolders.vdf`, native, Flatpak and Snap (WoW is usually a non-Steam shortcut with its own compatdata id);
   - Bottles: every bottle, including a bottles directory moved in Bottles' preferences and bottles created at a custom path, native and Flatpak;
 - the prefixes of **running WoW and Battle.net processes** (their `WINEPREFIX`, your own processes only), when the prefix is under your home: a client in a nested prefix such as `~/Games/umu/umu-default` is found while it runs, and remembered after it exits (route 8 below);
 - the **direct children of `~/Games`** that are prefixes;
@@ -371,7 +371,7 @@ It first collects the Wine prefixes (directories containing `drive_c/`):
 Then it looks for clients in this order. The first route that finds a client decides how it was found and its qualifier.
 
 1. **Battle.net's `product.db`** in every prefix (`drive_c/ProgramData/Battle.net/Agent/product.db`). Windows drive letters are mapped through `dosdevices/`, so a game on `D:` outside the prefix is found.
-2. **Executables named by launcher configs** (Lutris's `exe:` lines).
+2. **Executables named by launcher configs**: Lutris's `exe:` lines, Heroic's sideloaded apps, and the `Exe` of each non-Steam shortcut in Steam's `userdata/*/config/shortcuts.vdf`.
 3. **A walk of the `drive_c` of each launcher-named prefix and each running process's prefix**, skipping `windows`, `users` and `ProgramData`.
 4. **`extra_roots`** from `config.toml`, and the roots of manually added targets.
 5. **A walk of the `drive_c` of each `~/Games` prefix and of `~/.wine`**, with the same skips.
@@ -1713,7 +1713,7 @@ omaddons targets add ~/path/to/client --name mine # a root, client dir, Interfac
 omaddons config set extra_roots '["/mnt/games"]'  # scan this root every run
 ```
 
-Wine prefixes are found only as direct children of `~/Games`, as `~/.wine`, or where a launcher config names them. A nested prefix such as Heroic's `~/Games/Heroic/Prefixes/…` is found only through Heroic's own config. Outside prefixes, `~/Games` is walked 4 levels deep, and `extra_roots`, manually added roots and `product.db` paths are used as well. A custom client needs an `Interface/` folder next to its `wow*.exe`. A warning `discovery_truncated` means the 50,000-directory budget ran out; add the client by path.
+Wine prefixes are found only as direct children of `~/Games`, as `~/.wine`, or where a launcher config names them. A nested prefix such as Heroic's `~/Games/Heroic/Prefixes/…` is found only through Heroic: its configs, or its per-game prefix folder when Heroic is installed. Outside prefixes, `~/Games` is walked 4 levels deep, and `extra_roots`, manually added roots and `product.db` paths are used as well. A custom client needs an `Interface/` folder next to its `wow*.exe`. A warning `discovery_truncated` means the 50,000-directory budget ran out; add the client by path.
 
 ### `target_ambiguous`: several clients match
 
@@ -1812,7 +1812,7 @@ Journals are recovered by the next command that changes something: install, upda
 
 ### Known limitations
 
-- Discovery reads only the direct children of `~/Games` as prefixes, and Lutris only from its native install (no Flatpak reader). Steam's `shortcuts.vdf` is not read.
+- Discovery reads only the direct children of `~/Games` as prefixes, apart from those a launcher names. A relative Lutris `exe` is resolved against the game's `working_dir` or `prefix`, where Lutris itself uses the game directory in its `pga.db`, which omaddons does not read.
 - Drive-letter mapping applies to clients that Battle.net's `product.db` names. A custom client on another drive letter needs `targets add` or `extra_roots`.
 - Custom clients between the five legacy versions (2.0–2.3, 3.0–3.2, 4.0–4.2, 5.0–5.3) get family `unknown`, which matches only their exact major.minor.
 - On unknown custom clients, the `safe` running policy behaves as for legacy clients and refuses every change while they run.
@@ -1820,7 +1820,7 @@ Journals are recovered by the next command that changes something: install, upda
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
 - Private GitHub repositories and HTTP proxies are not supported.
 - Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) keep separate records: a folder one records is `shared` on the other, which cannot record it too, so manage those addons from one client. Records made on both before this check stay doubled: `status` warns `target_addons_shared`, a change through either warns the same, and M4's doctor will report them.
-- The legacy running behavior and the Steam Flatpak paths are marked UNVERIFIED in the code. The Bottles layout was verified against Bottles 67.4, and `product.db` against a real Agent database and two upstream readers.
+- The legacy running behavior is marked UNVERIFIED in the code. The Lutris, Heroic and Steam readers follow their upstream source (Lutris v0.5.22, Heroic v2.22.4, and for closed-source Steam the readers of Lutris, protontricks and ValvePython `vdf`), cited in each reader; the Bottles layout was verified against Bottles 67.4, and `product.db` against a real Agent database and two upstream readers.
 
 ### Known issues
 

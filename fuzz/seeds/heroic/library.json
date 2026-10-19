@@ -1,0 +1,1 @@
+{"games": [{"runner": "sideload", "app_name": "x1", "title": "WoW", "install": {"executable": "/g/wow/Wow.exe", "platform": "Windows", "is_dlc": false}, "folder_name": "/g/wow"}, {"install": {"platform": "Browser"}}], "installed": []}

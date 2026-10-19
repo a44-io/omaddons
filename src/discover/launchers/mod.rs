@@ -137,6 +137,18 @@ fn unquote(s: &str, quote: char) -> String {
     out
 }
 
+/// Whether `exe` names a WoW client or launcher (`Wow*.exe`, the World of Warcraft or
+/// Battle.net launcher), ignoring ASCII case: the only exes a reader keeps as hints.
+pub fn is_client_exe(exe: &Path) -> bool {
+    let name = exe
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    (name.starts_with("wow") && name.ends_with(".exe"))
+        || name == "world of warcraft launcher.exe"
+        || name == "battle.net launcher.exe"
+}
+
 /// A path from a launcher config: a leading `~`, `$HOME` or `${HOME}` is `home`; other
 /// variables are left as they are.
 pub fn expand_home(value: &str, home: &Path) -> PathBuf {

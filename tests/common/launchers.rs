@@ -1,6 +1,7 @@
-//! Launcher configuration fixtures at the locations the launcher readers search
-//! (discover-launchers bead; several of those paths are unverified upstream, so keep the
-//! two in sync): Lutris, Heroic, Steam and Bottles, native and Flatpak.
+//! Launcher configuration fixtures at the locations the launcher readers search, laid
+//! out as the upstream sources each reader cites (keep the two in sync, and build a new
+//! fixture from those sources, never from the reader): Lutris, Heroic, Steam and
+//! Bottles, native, Flatpak and Snap.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,13 +15,17 @@ pub enum Install {
     Flatpak,
 }
 
-/// Lutris keeps game files in either directory.
+/// Lutris keeps game files in either directory, native or inside its Flatpak.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LutrisDir {
     /// `<config>/lutris/games`.
     Config,
     /// `<data>/lutris/games`.
     Data,
+    /// `~/.var/app/net.lutris.Lutris/config/lutris/games`.
+    FlatpakConfig,
+    /// `~/.var/app/net.lutris.Lutris/data/lutris/games`.
+    FlatpakData,
 }
 
 /// How [`malform`] damages a file.
@@ -47,9 +52,12 @@ pub fn lutris_game(
     exe: Option<&Path>,
     prefix: Option<&Path>,
 ) -> PathBuf {
+    let flatpak = env.home().join(".var/app/net.lutris.Lutris");
     let base = match dir {
         LutrisDir::Config => env.config(),
         LutrisDir::Data => env.data(),
+        LutrisDir::FlatpakConfig => flatpak.join("config"),
+        LutrisDir::FlatpakData => flatpak.join("data"),
     };
     let mut yaml = "game:\n".to_owned();
     if let Some(exe) = exe {
@@ -78,7 +86,8 @@ pub fn heroic_dir(env: &TestEnv, install: Install) -> PathBuf {
     }
 }
 
-/// `GamesConfig/<app>.json` with a `winePrefix`.
+/// `GamesConfig/<app>.json` with a `winePrefix`, as Heroic v2.22.4 writes it
+/// (`src/backend/game_config.ts:336-370`).
 pub fn heroic_game(env: &TestEnv, install: Install, app: &str, wine_prefix: &Path) -> PathBuf {
     let json = serde_json::json!({
         app: {
@@ -86,12 +95,62 @@ pub fn heroic_game(env: &TestEnv, install: Install, app: &str, wine_prefix: &Pat
             "wineVersion": { "bin": "/usr/bin/wine", "name": "Wine - System", "type": "wine" },
             "language": "en"
         },
-        "version": "v0"
+        "version": "v0",
+        "explicit": true
     });
     write(
         &heroic_dir(env, install)
             .join("GamesConfig")
             .join(format!("{app}.json")),
+        &serde_json::to_string_pretty(&json).unwrap(),
+    )
+}
+
+/// `config.json` as Heroic v2.22.4 writes it (`src/backend/config.ts:404-409`), with
+/// `defaultSettings.winePrefix` (the shared prefix) and `defaultWinePrefixDir` (the
+/// folder of per-game prefixes) when given.
+pub fn heroic_settings(
+    env: &TestEnv,
+    install: Install,
+    shared: Option<&Path>,
+    folder: Option<&Path>,
+) -> PathBuf {
+    let mut settings = serde_json::json!({ "language": "en", "maxWorkers": 0 });
+    if let Some(shared) = shared {
+        settings["winePrefix"] = serde_json::json!(shared);
+    }
+    if let Some(folder) = folder {
+        settings["defaultWinePrefixDir"] = serde_json::json!(folder);
+        settings["defaultWinePrefix"] = serde_json::json!(folder);
+    }
+    let json = serde_json::json!({ "defaultSettings": settings, "version": "v0" });
+    write(
+        &heroic_dir(env, install).join("config.json"),
+        &serde_json::to_string_pretty(&json).unwrap(),
+    )
+}
+
+/// `sideload_apps/library.json` as Heroic v2.22.4 writes it
+/// (`src/backend/storeManagers/sideload/library.ts:19-49`): one sideloaded app per exe.
+pub fn heroic_sideloaded(env: &TestEnv, install: Install, exes: &[&Path]) -> PathBuf {
+    let games: Vec<serde_json::Value> = exes
+        .iter()
+        .enumerate()
+        .map(|(i, exe)| {
+            serde_json::json!({
+                "runner": "sideload",
+                "app_name": format!("sideload{i}"),
+                "title": "World of Warcraft",
+                "install": { "executable": exe, "platform": "Windows", "is_dlc": false },
+                "folder_name": exe.parent(),
+                "is_installed": true,
+                "canRunOffline": true
+            })
+        })
+        .collect();
+    let json = serde_json::json!({ "games": games, "installed": [] });
+    write(
+        &heroic_dir(env, install).join("sideload_apps/library.json"),
         &serde_json::to_string_pretty(&json).unwrap(),
     )
 }
@@ -120,6 +179,59 @@ pub fn steam_libraries(env: &TestEnv, install: Install, libraries: &[&Path]) -> 
     }
     vdf.push_str("}\n");
     write(&root.join("steamapps/libraryfolders.vdf"), &vdf)
+}
+
+/// A binary `shortcuts.vdf` as Steam writes it: a `shortcuts` map of numbered maps, one
+/// per `(appid, exe, start dir)`, the paths in double quotes, among Steam's other fields
+/// and a `tags` map. Each field is a type byte (`0x00` map, `0x01` string, `0x02`
+/// int32), a NUL-terminated key and its value; `0x08` closes a map.
+pub fn shortcuts_vdf(shortcuts: &[(u32, &Path, &Path)]) -> Vec<u8> {
+    let string = |b: &mut Vec<u8>, key: &str, value: &str| {
+        b.push(0x01);
+        b.extend(key.as_bytes());
+        b.push(0);
+        b.extend(value.as_bytes());
+        b.push(0);
+    };
+    let int = |b: &mut Vec<u8>, key: &str, value: u32| {
+        b.push(0x02);
+        b.extend(key.as_bytes());
+        b.push(0);
+        b.extend(value.to_le_bytes());
+    };
+    let mut b = b"\x00shortcuts\x00".to_vec();
+    for (i, (app_id, exe, dir)) in shortcuts.iter().enumerate() {
+        b.extend(format!("\x00{i}\x00").as_bytes());
+        int(&mut b, "appid", *app_id);
+        string(&mut b, "AppName", "World of Warcraft");
+        string(&mut b, "Exe", &format!("\"{}\"", exe.display()));
+        string(&mut b, "StartDir", &format!("\"{}\"", dir.display()));
+        string(&mut b, "icon", "");
+        string(&mut b, "ShortcutPath", "");
+        string(&mut b, "LaunchOptions", "");
+        int(&mut b, "IsHidden", 0);
+        int(&mut b, "AllowDesktopConfig", 1);
+        int(&mut b, "AllowOverlay", 1);
+        int(&mut b, "OpenVR", 0);
+        int(&mut b, "LastPlayTime", 0);
+        b.extend(b"\x00tags\x00\x08");
+        b.push(0x08);
+    }
+    b.extend(b"\x08\x08");
+    b
+}
+
+/// `<steam root>/userdata/<user>/config/shortcuts.vdf` holding `shortcuts`.
+pub fn steam_shortcuts(
+    env: &TestEnv,
+    install: Install,
+    user: u32,
+    shortcuts: &[(u32, &Path, &Path)],
+) -> PathBuf {
+    let path = steam_root(env, install).join(format!("userdata/{user}/config/shortcuts.vdf"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, shortcuts_vdf(shortcuts)).unwrap();
+    path
 }
 
 /// `<library>/steamapps/compatdata/<app_id>/pfx` with a `drive_c/`; returns the prefix.

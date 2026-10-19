@@ -53,6 +53,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "steam_shortcuts"
+path = "fuzz_targets/steam_shortcuts.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "bottles"
 path = "fuzz_targets/bottles.rs"
 test = false
