@@ -457,3 +457,27 @@ fn an_anniversary_folder_named_only_by_product_db_gets_its_product_code() {
         assert_eq!(code, 0, "{selector}: {status}");
     }
 }
+
+/// The human table keeps the label and the notes in columns of their own, so every
+/// client's path starts in the same place.
+#[test]
+fn the_targets_table_aligns_paths_whatever_the_label() {
+    let env = TestEnv::new();
+    machine(&env);
+    run(&env, &["targets", "default", "retail"]);
+    let config = env.config().join("omaddons/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "[targets.retail]\nlabel = \"localhost\"\n").unwrap();
+    let out = env.command().arg("targets").output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let starts: Vec<usize> = stdout
+        .lines()
+        .filter_map(|line| line.find(" /").map(|at| line[..at].chars().count()))
+        .collect();
+    assert_eq!(starts.len(), 2, "{stdout}");
+    assert_eq!(starts[0], starts[1], "{stdout}");
+    assert!(
+        stdout.contains("localhost") && stdout.contains("(unregistered)"),
+        "{stdout}"
+    );
+}

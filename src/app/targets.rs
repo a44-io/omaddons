@@ -632,26 +632,28 @@ fn rows(targets: &[TargetInfo], style: &Style) -> Vec<Vec<String>> {
             let key = t
                 .key
                 .map_or_else(|| "-".to_owned(), |k| k.to_string()[..6].to_owned() + "…");
+            // Each in its own column, so every path starts in the same place.
+            let label = t
+                .label
+                .clone()
+                .filter(|l| *l != format!("{} (battlenet)", t.id))
+                .unwrap_or_else(|| "-".to_owned());
             let mut notes = Vec::new();
-            notes.extend(
-                t.label
-                    .clone()
-                    .filter(|l| *l != format!("{} (battlenet)", t.id)),
-            );
             if !t.registered {
                 notes.push("(unregistered)".to_owned());
             }
             if t.missing {
                 notes.push(style.warn("(missing)"));
             }
-            notes.push(t.client_dir.display().to_string());
             vec![
                 format!("{} {}", if t.default { "*" } else { " " }, t.id),
                 key,
                 super::status::modes_or_family(&t.modes, t.family),
                 t.version.to_string(),
                 wire(&t.kind),
+                label,
                 notes.join("  "),
+                t.client_dir.display().to_string(),
             ]
         })
         .collect()

@@ -1128,12 +1128,11 @@ pub(crate) fn header(command: &str, dry_run: bool, t: &TargetResult) -> String {
     // 01M5… — no folder was changed`.
     let adoption = t.kind == Some(TxKind::Adopt);
     if let Some(tx) = t.tx {
-        let full = tx.to_string();
-        let short = full.get(..10).unwrap_or(&full);
+        let short = super::history::short_tx(&tx);
         if adoption {
-            line.push_str(&format!(", tx {short}…"));
+            line.push_str(&format!(", tx {short}"));
         } else {
-            line.push_str(&format!(" (tx {short}…)"));
+            line.push_str(&format!(" (tx {short})"));
         }
     }
     match t.reload_required {

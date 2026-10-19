@@ -310,14 +310,14 @@ retail: removed Bar 2.1.0 (1 folder)
 tx 01M51F4QY5KBKP70YF3DZV69ZN · undo: omaddons undo 01M51F4QY5KBKP70YF3DZV69ZN
 
 $ omaddons undo --last-by agent --actor agent --reason "the user wants Bar back"
-reverted 01M51F4QY5… (remove by agent, 2026-10-15 23:22) on retail
+reverted 01M51F4QY5KBKP70… (remove by agent, 2026-10-15 23:22) on retail
 restored 1 folder, removed 0 · SavedVariables: 0 restored, 0 unchanged
 tx 01M51F4QYBQEXB2HECCHD1728N · undo this: omaddons undo 01M51F4QYBQEXB2HECCHD1728N
 
 $ omaddons history
-01M51F4QYB…  2026-10-15 23:22  agent  undo     retail  +1 ~0 -0  "the user wants Bar back"
-01M51F4QY5…  2026-10-15 23:22  agent  remove   retail  +0 ~0 -1  "Bar conflicts with ElvUI"
-01M51F4QXQ…  2026-10-15 23:22  human  install  retail  +2 ~0 -0  "set up retail UI"
+01M51F4QYBQEXB2H…  2026-10-15 23:22  agent  undo     retail  +1 ~0 -0  "the user wants Bar back"
+01M51F4QY5KBKP70…  2026-10-15 23:22  agent  remove   retail  +0 ~0 -1  "Bar conflicts with ElvUI"
+01M51F4QXQ7RJ2C5…  2026-10-15 23:22  human  install  retail  +2 ~0 -0  "set up retail UI"
 ```
 
 And what a refusal looks like:
@@ -687,10 +687,10 @@ Every managed addon on every client, or only the named ones, to its newest compa
 
 ```text
 $ omaddons update
-classic: updated 1 addon (tx 01M5Q2VA0J…) — /reload in game
+classic: updated 1 addon (tx 01M5Q2VA0JX3N8K2…) — /reload in game
   DBM  12.1.14 → 12.1.15
 era: nothing to update (Questie is pinned)
-retail: updated 2 addons (tx 01M5Q2VA1K…)
+retail: updated 2 addons (tx 01M5Q2VA1KR4P9D6…)
   DBM     12.1.14 → 12.1.15
   Plater  Plater-v661 → Plater-v662
 Undo all of it with: omaddons undo
@@ -721,11 +721,11 @@ Hold an addon at its release through `update`, and let it go again.
 
 ```text
 $ omaddons pin questie
-forever: pinned 1 addon (tx 01M5Q2VB2M…)
+forever: pinned 1 addon (tx 01M5Q2VB2MZ0N4E6…)
   Questie  pinned at bundle/v12.1.0+v1.0.6
 undo: omaddons undo 01M5Q2VB2MZ0N4E6V7A8C9D1EF
 $ omaddons unpin questie
-forever: unpinned 1 addon (tx 01M5Q2VB3N…)
+forever: unpinned 1 addon (tx 01M5Q2VB3NA1P5F7…)
   Questie  unpinned at bundle/v12.1.0+v1.0.6
 undo: omaddons undo 01M5Q2VB3NA1P5F7W8B9D0E2FG
 forever: `omaddons update Questie -t forever` installs bundle/v12.2.0+v1.0.7
@@ -928,7 +928,7 @@ omaddons list -v                           # also each addon's drift (files chan
 omaddons list --deep                       # drift by content: every managed file re-hashed
 ```
 
-Each addon also carries `latest {version, status}`: the newest release remembered from earlier checks and its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`). `list` never asks a source; the column is blank when the addon is unchecked or static. With `-v` or `--deep` each addon carries `drift {state, files}` too (as in [`status`](#status); the paths with `-v`); a plain `list` checks no file. Each addon carries `reason` (`explicit` or `dependency`), `required_by` and `orphan` (a dependency nothing requires any more): the table marks a dependency `dep` (`dependency of LittleWigs` with `-v`) and an orphan `orphan`.
+Each addon also carries `latest {version, status}`: the newest release remembered from earlier checks and its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`). `list` never asks a source. Its column shows `→ <version>` when a newer release is known (`update_available`, `pinned`, `blocked`), `check failed` after a failed check, and is blank otherwise. With `-v` or `--deep` each addon carries `drift {state, files}` too (as in [`status`](#status); the paths with `-v`); a plain `list` checks no file. Each addon carries `reason` (`explicit` or `dependency`), `required_by` and `orphan` (a dependency nothing requires any more): the table marks a dependency `dep` (`dependency of LittleWigs` with `-v`) and an orphan `orphan`.
 
 On a client whose AddOns directory another client shares, a folder only the other client records is class `shared` (counted in `counts.shared`, and under `--unmanaged` with `owned_on [{target, addon}]`, shown as `shared (managed on era)`): it is not this client's to adopt, install over or remove.
 

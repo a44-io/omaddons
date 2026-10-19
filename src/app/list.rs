@@ -452,8 +452,7 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
                 Some((DriftState::Unindexed, _)) => flags.push("not indexed".into()),
                 _ => {}
             }
-            // The newest known release; blank when unchecked or static.
-            let latest = a.latest.version.clone().unwrap_or_default();
+            let latest = latest_cell(&a.latest);
             vec![
                 format!("  {}", a.name),
                 a.version.clone(),
@@ -511,4 +510,44 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
         counts.push_str(" · no AddOns folder yet");
     }
     writeln!(w, "{}", style.dim(&counts))
+}
+
+/// The latest column: a newer release when one is known (pinned: the flags say why it
+/// waits), blank otherwise, since a current addon's version would only repeat the
+/// installed one.
+fn latest_cell(latest: &Latest) -> String {
+    let newer = || format!("→ {}", latest.version.as_deref().unwrap_or("?"));
+    match latest.status {
+        StatusKind::UpdateAvailable | StatusKind::Pinned => newer(),
+        StatusKind::Blocked => format!("{} (blocked)", newer()),
+        StatusKind::Failed => "check failed".to_owned(),
+        StatusKind::Current | StatusKind::Ahead | StatusKind::Unchecked | StatusKind::Static => {
+            String::new()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_latest_column_shows_only_a_newer_release() {
+        for (status, cell) in [
+            (StatusKind::UpdateAvailable, "→ 1.2"),
+            (StatusKind::Pinned, "→ 1.2"),
+            (StatusKind::Blocked, "→ 1.2 (blocked)"),
+            (StatusKind::Failed, "check failed"),
+            (StatusKind::Current, ""),
+            (StatusKind::Ahead, ""),
+            (StatusKind::Unchecked, ""),
+            (StatusKind::Static, ""),
+        ] {
+            let latest = Latest {
+                version: Some("1.2".to_owned()),
+                status,
+            };
+            assert_eq!(latest_cell(&latest), cell, "{status:?}");
+        }
+    }
 }

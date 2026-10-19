@@ -46,14 +46,14 @@ pub fn count(n: usize, noun: &str) -> String {
 }
 
 /// Rows as left-aligned columns separated by two spaces, without trailing spaces.
-/// Widths count characters, so the alignment is right for plain text.
+/// Widths count visible characters, so a colored cell aligns like a plain one.
 pub fn table(rows: &[Vec<String>]) -> String {
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let widths: Vec<usize> = (0..columns)
         .map(|c| {
             rows.iter()
                 .filter_map(|row| row.get(c))
-                .map(|cell| cell.chars().count())
+                .map(|cell| visible_width(cell))
                 .max()
                 .unwrap_or(0)
         })
@@ -68,13 +68,32 @@ pub fn table(rows: &[Vec<String>]) -> String {
             line.push_str(cell);
             if c + 1 < row.len() {
                 let width = widths.get(c).copied().unwrap_or(0);
-                line.push_str(&" ".repeat(width.saturating_sub(cell.chars().count())));
+                line.push_str(&" ".repeat(width.saturating_sub(visible_width(cell))));
             }
         }
         out.push_str(line.trim_end());
         out.push('\n');
     }
     out
+}
+
+/// A cell's width on screen: its characters, color sequences (`ESC [ … m`) aside.
+fn visible_width(cell: &str) -> usize {
+    let mut width = 0;
+    let mut chars = cell.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // Up to and including the sequence's final letter.
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            width += 1;
+        }
+    }
+    width
 }
 
 #[cfg(test)]
@@ -98,6 +117,34 @@ mod tests {
             }
             .paths_visible()
         );
+    }
+
+    /// A colored cell pads as its visible text does, so the next column lines up.
+    #[test]
+    fn colored_cells_align_like_plain_ones() {
+        let color = Style {
+            color: true,
+            ..Style::default()
+        };
+        assert_eq!(visible_width(&color.warn("(missing)")), "(missing)".len());
+        let rows = vec![
+            vec!["a".to_owned(), color.warn("(missing)"), "/p/one".to_owned()],
+            vec![
+                "b".to_owned(),
+                "(unregistered)".to_owned(),
+                "/p/two".to_owned(),
+            ],
+            vec!["c".to_owned(), String::new(), "/p/three".to_owned()],
+        ];
+        let out = table(&rows);
+        let starts: Vec<usize> = out
+            .lines()
+            .map(|line| {
+                let at = line.find("/p/").unwrap();
+                visible_width(&line[..at])
+            })
+            .collect();
+        assert_eq!(starts, [19, 19, 19], "{out}");
     }
 
     #[test]

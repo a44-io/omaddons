@@ -1122,6 +1122,31 @@ mod runs {
         assert!(!r.stdout.contains("restored"), "{}", r.stdout);
     }
 
+    /// The short id human output shows (16 characters: time and randomness) undoes its
+    /// own transaction, even among one run's transactions minted in one millisecond.
+    #[test]
+    fn a_shown_short_id_undoes_its_own_transaction() {
+        let c = Clients::new();
+        c.run_everywhere(omaddons::model::Actor::Agent);
+        let lines = c.history(&[]);
+        let updates: Vec<String> = lines
+            .iter()
+            .filter(|l| matches!(l["kind"].as_str(), Some("update")))
+            .filter_map(|l| l["tx"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(updates.len(), 3, "{lines:?}");
+        for tx in &updates {
+            let r = c.home.run(&["undo", &tx[..16], "--dry-run"]);
+            let undone = r.expect(0);
+            assert_eq!(
+                undone["data"]["reverted"]["tx"],
+                tx.as_str(),
+                "{}",
+                r.context()
+            );
+        }
+    }
+
     #[test]
     fn undo_t_reverts_only_that_targets_transaction() {
         let c = Clients::new();
@@ -1224,10 +1249,9 @@ mod runs {
         let unknown = c.home.run(&["history", "--run", "01ZZZZZZZZ"]).expect(3);
         assert_eq!(unknown["error"]["code"], "not_found");
         let human = c.home.exec(&["history".to_owned()]);
-        assert!(
-            human.stdout.contains(&format!("{}…", &run[..10])),
-            "{}",
-            human.stdout
-        );
+        // The run names itself on each of its rows, and only there.
+        let named = format!("run {}…", &run[..16]);
+        assert_eq!(human.stdout.matches(&named).count(), 3, "{}", human.stdout);
+        assert_eq!(human.stdout.matches("run ").count(), 3, "{}", human.stdout);
     }
 }

@@ -6,6 +6,7 @@
 //! working (M1); `OMADDONS_ACTOR` never filters. A torn last line is skipped and
 //! reported as one stderr log event.
 
+use std::collections::BTreeSet;
 use std::io::Write;
 
 use jiff::{SignedDuration, Timestamp};
@@ -124,6 +125,8 @@ pub struct HistoryOutcome {
     warnings: Vec<Warning>,
     /// The last line of `history.jsonl` was cut short and skipped (a stderr log event).
     pub torn_tail: bool,
+    /// Runs with two or more lines, whose rows name the run (human output only).
+    shared_runs: BTreeSet<RunId>,
 }
 
 impl Outcome for HistoryOutcome {
@@ -145,6 +148,12 @@ impl Outcome for HistoryOutcome {
         if self.data.entries.is_empty() {
             return writeln!(w, "No transactions yet.");
         }
+        // A run column only when some row names its run.
+        let with_runs = self
+            .data
+            .entries
+            .iter()
+            .any(|e| e.run.is_some_and(|r| self.shared_runs.contains(&r)));
         let rows: Vec<Vec<String>> = self
             .data
             .entries
@@ -159,10 +168,17 @@ impl Outcome for HistoryOutcome {
                 } else {
                     c.human()
                 };
-                vec![
-                    short_tx(&e.tx),
-                    e.run
-                        .map_or_else(|| "-".to_owned(), |r| short_id(&r.to_string())),
+                // The run, only when it holds more than this transaction: a lone
+                // transaction's run id would read as a second copy of its own.
+                let run = e
+                    .run
+                    .filter(|r| self.shared_runs.contains(r))
+                    .map_or_else(String::new, |r| format!("run {}", short_id(&r.to_string())));
+                let mut row = vec![short_tx(&e.tx)];
+                if with_runs {
+                    row.push(run);
+                }
+                row.extend([
                     local_time(e.at),
                     e.actor.as_str().to_owned(),
                     kind_name(e.kind),
@@ -174,7 +190,8 @@ impl Outcome for HistoryOutcome {
                         .as_ref()
                         .map(|r| format!("{r:?}"))
                         .unwrap_or_default(),
-                ]
+                ]);
+                row
             })
             .collect();
         write!(w, "{}", table(&rows))?;
@@ -294,6 +311,7 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
         .collect();
     lines.sort_by_key(|l| (l.at, l.tx));
     let truncated = lines.len() > limit;
+    let shared_runs = shared_runs(&lines);
     let entries = lines.into_iter().rev().take(limit).collect();
     let mut warnings = world.warnings.clone();
     warnings.extend(read.skipped_warning());
@@ -301,7 +319,21 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
         data: HistoryData { entries, truncated },
         warnings,
         torn_tail: read.torn_tail,
+        shared_runs,
     })
+}
+
+/// The runs that recorded two or more of `lines` (all of them, before `--limit`): only
+/// their rows name the run.
+fn shared_runs(lines: &[HistoryLine]) -> BTreeSet<RunId> {
+    let mut seen = BTreeSet::new();
+    let mut shared = BTreeSet::new();
+    for run in lines.iter().filter_map(|l| l.run) {
+        if !seen.insert(run) {
+            shared.insert(run);
+        }
+    }
+    shared
 }
 
 fn setting_line(world: &World, e: &SettingEntry, verbose: bool) -> HistoryLine {
@@ -364,14 +396,15 @@ pub fn parse_since(s: &str, now: Timestamp) -> Option<Timestamp> {
         .ok()
 }
 
-/// The first ten characters of a transaction id: enough to undo by prefix.
+/// A transaction id as human output shows it ([`short_id`]): enough to undo by prefix.
 pub fn short_tx(tx: &TxId) -> String {
     short_id(&tx.to_string())
 }
 
-/// The first ten characters of an id, then `…`.
+/// The first sixteen characters of an id, then `…`: a ULID's ten of time and six of
+/// randomness, so ids minted in one millisecond (one run's transactions) still differ.
 pub fn short_id(full: &str) -> String {
-    format!("{}…", full.get(..10).unwrap_or(full))
+    format!("{}…", full.get(..16).unwrap_or(full))
 }
 
 /// The run whose id is `prefix` or starts with it (8+ characters, any case), among the
@@ -497,7 +530,7 @@ mod tests {
         assert_eq!(pin.human(), "+0 ~0 -0 =2", "recorded folders are counted");
         assert_eq!(ChangeCounts::of(&[op(FolderOp::Add)]).human(), "+1 ~0 -0");
         let tx: TxId = "01JB8Q2VA00000000000000000".parse().unwrap();
-        assert_eq!(short_tx(&tx), "01JB8Q2VA0…");
+        assert_eq!(short_tx(&tx), "01JB8Q2VA0000000…");
         assert_eq!(kind_name(TxKind::Undo), "undo");
     }
 }
