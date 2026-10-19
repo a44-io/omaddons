@@ -521,6 +521,7 @@ fn unknown_keys(raw: &toml::Table, path: &Path) -> Vec<Warning> {
     let mut unknown = Vec::new();
     for (key, value) in raw {
         match (key.as_str(), value) {
+            ("rules", toml::Value::Table(rules)) => unknown_rules_keys(rules, &mut unknown),
             ("rules", _) => {}
             ("limits" | "sources" | "targets" | "client_rules", toml::Value::Table(t)) => {
                 for (sub, inner) in t {
@@ -540,8 +541,8 @@ fn unknown_keys(raw: &toml::Table, path: &Path) -> Vec<Warning> {
     }
     unknown
         .into_iter()
-        .map(|key| {
-            let hint = closest_key(&key)
+        .map(|(key, closest)| {
+            let hint = closest
                 .map(|c| format!("; did you mean {c}?"))
                 .unwrap_or_default();
             Warning::new(
@@ -553,9 +554,82 @@ fn unknown_keys(raw: &toml::Table, path: &Path) -> Vec<Warning> {
         .collect()
 }
 
-fn check(key: &str, unknown: &mut Vec<String>) {
+/// An unknown key, and the documented key it likely meant.
+type Unknown = (String, Option<String>);
+
+fn check(key: &str, unknown: &mut Vec<Unknown>) {
     if spec_for(key).is_none() {
-        unknown.push(key.to_owned());
+        unknown.push((key.to_owned(), closest_key(key)));
+    }
+}
+
+/// The tables of `[rules]` (`config get`/`set` do not reach them, so they are not in
+/// [`KEYS`]); each list equals its struct's fields (a test reads their schemas).
+const RULES_TABLES: &[&str] = &[
+    "products",
+    "version_families",
+    "family_ranges",
+    "client_rules",
+];
+const PRODUCT_FIELDS: &[&str] = &["code", "folder", "exe", "kind", "default_id", "modes"];
+const MODE_FIELDS: &[&str] = &["id", "name", "aliases"];
+const VERSION_RULE_FIELDS: &[&str] = &["install_kind", "major", "minor", "family", "interface"];
+const RANGE_FIELDS: &[&str] = &["min", "max"];
+
+/// The unknown keys anywhere in `[rules]`, array elements by index
+/// (`rules.products[0].modes[1].nmae`). A value of the wrong type is the parse's error.
+fn unknown_rules_keys(rules: &toml::Table, unknown: &mut Vec<Unknown>) {
+    let tables = |table: &toml::Table, key: &str| -> Vec<toml::Table> {
+        match table.get(key) {
+            Some(toml::Value::Array(items)) => {
+                items.iter().filter_map(|v| v.as_table().cloned()).collect()
+            }
+            _ => Vec::new(),
+        }
+    };
+    unknown_fields(rules, "rules", RULES_TABLES, unknown);
+    for (i, product) in tables(rules, "products").iter().enumerate() {
+        let at = format!("rules.products[{i}]");
+        unknown_fields(product, &at, PRODUCT_FIELDS, unknown);
+        for (j, mode) in tables(product, "modes").iter().enumerate() {
+            unknown_fields(mode, &format!("{at}.modes[{j}]"), MODE_FIELDS, unknown);
+        }
+    }
+    for (i, rule) in tables(rules, "version_families").iter().enumerate() {
+        let at = format!("rules.version_families[{i}]");
+        unknown_fields(rule, &at, VERSION_RULE_FIELDS, unknown);
+        for part in ["major", "minor"] {
+            if let Some(range) = rule.get(part).and_then(toml::Value::as_table) {
+                unknown_fields(range, &format!("{at}.{part}"), RANGE_FIELDS, unknown);
+            }
+        }
+    }
+    let named = |key: &str| rules.get(key).and_then(toml::Value::as_table);
+    for (family, range) in named("family_ranges").into_iter().flatten() {
+        if let Some(range) = range.as_table() {
+            let at = format!("rules.family_ranges.{family}");
+            unknown_fields(range, &at, RANGE_FIELDS, unknown);
+        }
+    }
+    for (row, fields) in named("client_rules").into_iter().flatten() {
+        if let Some(fields) = fields.as_table() {
+            let at = format!("rules.client_rules.{row}");
+            unknown_fields(fields, &at, RULES_FIELDS, unknown);
+        }
+    }
+}
+
+/// `at.<key>` for each key of `table` not in `fields`, with the field within edit
+/// distance 2 it likely meant.
+fn unknown_fields(table: &toml::Table, at: &str, fields: &[&str], unknown: &mut Vec<Unknown>) {
+    for key in table.keys().filter(|k| !fields.contains(&k.as_str())) {
+        let closest = fields
+            .iter()
+            .map(|f| (crate::cli::levenshtein(key, f), *f))
+            .filter(|(d, _)| *d <= 2)
+            .min()
+            .map(|(_, f)| format!("{at}.{f}"));
+        unknown.push((format!("{at}.{key}"), closest));
     }
 }
 
@@ -999,6 +1073,157 @@ multi_toc = true
             messages
                 .iter()
                 .any(|m| m.contains("did you mean sources.github.enabled?"))
+        );
+    }
+
+    /// The unknown-key messages of `text`, each `key; did you mean …?` part only.
+    fn unknown_in(text: &str) -> Vec<String> {
+        let (_, warnings) = parse(text).unwrap();
+        assert!(
+            warnings
+                .iter()
+                .all(|w| matches!(w.code, WarningCode::ConfigUnknownKey))
+        );
+        warnings
+            .iter()
+            .filter_map(|w| {
+                w.message
+                    .split_once("has an unknown key ")
+                    .map(|(_, k)| k.to_owned())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn unknown_keys_under_rules_warn_with_a_suggestion() {
+        let found = unknown_in(
+            "[rules]\nprodcuts = []\n\n[rules.client_rules.vanilla]\nmulti_tocs = false\n\n[client_rules.mainline]\ncomma_interfaces = true\n\n[targets.retail]\nlabl = \"x\"\n",
+        );
+        // Sections in key order.
+        assert_eq!(
+            found,
+            [
+                "client_rules.mainline.comma_interfaces; did you mean client_rules.mainline.comma_interface?",
+                "rules.prodcuts; did you mean rules.products?",
+                "rules.client_rules.vanilla.multi_tocs; did you mean rules.client_rules.vanilla.multi_toc?",
+                "targets.retail.labl; did you mean targets.retail.label?",
+            ]
+        );
+        let found = unknown_in(
+            r#"[[rules.products]]
+code = "wow_x"
+folder = "_x_"
+exe = "WowX.exe"
+kind = "live"
+default_id = "x"
+colour = "red"
+[[rules.products.modes]]
+id = "a"
+name = "A"
+nmae = "typo"
+
+[[rules.version_families]]
+major = { min = 1, max = 1, mid = 2 }
+minor = { min = 0 }
+family = "vanilla"
+famly = "vanilla"
+
+[rules.family_ranges.vanilla]
+min = 11_200
+maks = 11_599
+"#,
+        );
+        assert_eq!(
+            found,
+            [
+                "rules.products[0].colour",
+                "rules.products[0].modes[0].nmae; did you mean rules.products[0].modes[0].name?",
+                "rules.version_families[0].famly; did you mean rules.version_families[0].family?",
+                "rules.version_families[0].major.mid; did you mean rules.version_families[0].major.min?",
+                "rules.family_ranges.vanilla.maks; did you mean rules.family_ranges.vanilla.max?",
+            ]
+        );
+    }
+
+    #[test]
+    fn every_documented_rules_field_is_quiet() {
+        let rows: String = RULES_FIELDS
+            .iter()
+            .map(|f| match *f {
+                "family" => "family = \"vanilla\"\n".to_owned(),
+                "install_kind" => "install_kind = \"battlenet\"\n".to_owned(),
+                "version_min" | "version_max" => format!("{f} = \"1.15.0\"\n"),
+                "game_types" | "game_suffixes" | "family_suffixes" | "legacy_suffixes" => {
+                    format!("{f} = [\"Vanilla\"]\n")
+                }
+                _ => format!("{f} = true\n"),
+            })
+            .collect();
+        let text = format!(
+            r#"[[rules.products]]
+code = "wow_x"
+folder = "_x_"
+exe = "WowX.exe"
+kind = "live"
+default_id = "x"
+[[rules.products.modes]]
+id = "a"
+name = "A"
+aliases = ["b"]
+
+[[rules.version_families]]
+install_kind = "custom"
+major = {{ min = 1, max = 1 }}
+minor = {{ min = 70, max = 70 }}
+family = "vanilla-legacy"
+interface = 11_200
+
+[rules.family_ranges.vanilla]
+min = 11_200
+max = 11_599
+
+[rules.client_rules.vanilla]
+{rows}
+[client_rules.mists]
+{rows}"#
+        );
+        assert_eq!(unknown_in(&text), Vec::<String>::new(), "{text}");
+    }
+
+    /// The `[rules]` field lists are the structs' fields, as their schemas name them.
+    #[test]
+    fn the_rules_field_lists_are_the_structs_fields() {
+        fn fields(schema: schemars::Schema) -> Vec<String> {
+            let schema = serde_json::to_value(schema).unwrap();
+            let mut names: Vec<String> = schema["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            names.sort();
+            names
+        }
+        fn sorted(list: &[&str]) -> Vec<String> {
+            let mut names: Vec<String> = list.iter().map(|s| (*s).to_owned()).collect();
+            names.sort();
+            names
+        }
+        use crate::rules::{
+            ClientRulesOverride, GameMode, NumRange, Product, RulesOverrides, VersionFamilyRule,
+        };
+        use schemars::schema_for;
+        assert_eq!(fields(schema_for!(RulesOverrides)), sorted(RULES_TABLES));
+        assert_eq!(fields(schema_for!(Product)), sorted(PRODUCT_FIELDS));
+        assert_eq!(fields(schema_for!(GameMode)), sorted(MODE_FIELDS));
+        assert_eq!(
+            fields(schema_for!(VersionFamilyRule)),
+            sorted(VERSION_RULE_FIELDS)
+        );
+        assert_eq!(fields(schema_for!(NumRange)), sorted(RANGE_FIELDS));
+        assert_eq!(
+            fields(schema_for!(ClientRulesOverride)),
+            sorted(RULES_FIELDS)
         );
     }
 

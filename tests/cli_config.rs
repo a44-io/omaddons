@@ -201,6 +201,35 @@ fn unknown_keys_warn() {
     );
 }
 
+/// `[rules]` is checked like every other section, `[rules.client_rules.<row>]` like its
+/// `[client_rules.<row>]` shorthand, and `config set` still refuses `rules.*`.
+#[test]
+fn unknown_keys_under_rules_warn_too() {
+    let env = TestEnv::new();
+    write_config(
+        &env,
+        "[rules]\nprodcuts = []\n\n[rules.client_rules.vanilla]\nmulti_tocs = false\n\n[client_rules.mainline]\ncomma_interfaces = true\n\n[targets.retail]\nlabl = \"x\"\n",
+    );
+    let (code, envelope) = run(&env, &["status"]);
+    assert_eq!(code, 0, "{envelope}");
+    let unknown: Vec<&str> = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "config_unknown_key")
+        .filter_map(|w| w["message"].as_str())
+        .collect();
+    assert_eq!(unknown.len(), 4, "{unknown:?}");
+    for meant in ["rules.products?", "rules.client_rules.vanilla.multi_toc?"] {
+        assert!(
+            unknown.iter().any(|m| m.ends_with(meant)),
+            "{meant}: {unknown:?}"
+        );
+    }
+    let (code, _) = run(&env, &["config", "set", "rules.products", "[]"]);
+    assert_ne!(code, 0, "rules.* is not settable");
+}
+
 /// A failure reports what the run found before it, in the envelope and as a stderr
 /// warning event before the one error event; `config set`, whose own outcome has no
 /// warnings, reports it too.
