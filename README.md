@@ -363,7 +363,7 @@ It first collects the Wine prefixes (directories containing `drive_c/`):
   - Lutris: `games/*.yml` under the native config and data directories (prefix and exe);
   - Heroic: every `winePrefix` in `GamesConfig/*.json`, native and Flatpak;
   - Steam: the `compatdata/*/pfx` Proton prefixes of every library in `libraryfolders.vdf`, native and Flatpak (WoW is usually a non-Steam shortcut with its own compatdata id);
-  - Bottles: every bottle, including bottles kept at a custom path, native and Flatpak;
+  - Bottles: every bottle, including a bottles directory moved in Bottles' preferences and bottles created at a custom path, native and Flatpak;
 - the prefixes of **running WoW and Battle.net processes** (their `WINEPREFIX`, your own processes only), when the prefix is under your home: a client in a nested prefix such as `~/Games/umu/umu-default` is found while it runs;
 - the **direct children of `~/Games`** that are prefixes;
 - **`~/.wine`**.
@@ -1816,7 +1816,7 @@ Journals are recovered by the next command that changes something: install, upda
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
 - Private GitHub repositories and HTTP proxies are not supported.
 - Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) keep separate records: a folder one records is `shared` on the other, which cannot record it too, so manage those addons from one client. Records made on both before this check stay doubled: `status` warns `target_addons_shared`, a change through either warns the same, and M4's doctor will report them.
-- The legacy running behavior and several upstream file layouts (product.db, Steam and Bottles Flatpak paths) are marked UNVERIFIED in the code.
+- The legacy running behavior and several upstream file layouts (product.db, Steam Flatpak paths) are marked UNVERIFIED in the code. The Bottles layout was verified against Bottles 67.4.
 
 ### Known issues
 

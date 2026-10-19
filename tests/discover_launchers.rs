@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 
 use common::env::TestEnv;
 use common::launchers::{
-    Install, LutrisDir, Malformed, bottle, heroic_game, lutris_game, malform, steam_libraries,
-    steam_prefix, steam_root,
+    Install, LutrisDir, Malformed, bottle, bottle_in, bottles_data, bottles_dir,
+    custom_path_bottle, heroic_game, lutris_game, malform, steam_libraries, steam_prefix,
+    steam_root,
 };
 use common::trees::{BattlenetRoot, CustomRoot, Prefix, tree_stat};
 use omaddons::discover::launchers::{LauncherDirs, collect_hints};
@@ -120,12 +121,12 @@ mod support {
             .version(4, 3, 4, 15595)
             .build();
         // Bottles: two native bottles, one Flatpak.
-        let wow = bottle(env, Install::Native, "wow", None);
+        let wow = bottle(env, Install::Native, "wow");
         CustomRoot::at(wow.join("drive_c/Games/MoP"))
             .version(5, 4, 8, 18414)
             .build();
-        bottle(env, Install::Native, "other", None);
-        let classic = bottle(env, Install::Flatpak, "classic", None);
+        bottle(env, Install::Native, "other");
+        let classic = bottle(env, Install::Flatpak, "classic");
         CustomRoot::at(classic.join("drive_c/Games/Classic")).build();
     }
 
@@ -217,6 +218,87 @@ fn every_launcher_config_leads_to_its_clients() {
     assert!(
         d.diagnostics.iter().all(|m| !m.contains("Game.exe")),
         "a non-WoW exe is not a hint: {context}"
+    );
+}
+
+/// Bottles 67.4's two other homes for a bottle, native and Flatpak: a bottles directory
+/// moved in its preferences (`data.yml`), and a bottle created at a custom path (only a
+/// placeholder in the default directory). Only Bottles leads to them.
+#[test]
+fn bottles_outside_the_default_directory_are_found() {
+    for install in [Install::Native, Install::Flatpak] {
+        let env = TestEnv::new();
+        let root = env.root();
+        let moved = root.join("disk2/Bottles");
+        bottles_data(&env, install, &moved);
+        let wow = bottle_in(&moved, "wow");
+        CustomRoot::at(wow.join("drive_c/Games/WotLK")).build();
+        let custom = root.join("elsewhere/wow2");
+        custom_path_bottle(&env, install, "wow2", &custom);
+        CustomRoot::at(custom.join("drive_c/Games/MoP"))
+            .version(5, 4, 8, 18414)
+            .build();
+        // Left in the default directory from before the move.
+        let left = bottle(&env, install, "wow3");
+        CustomRoot::at(left.join("drive_c/Games/Cata"))
+            .version(4, 3, 4, 15595)
+            .build();
+
+        let flatpak = matches!(install, Install::Flatpak);
+        let (hints, diagnostics) = collect_hints(&dirs(&env));
+        let context = format!("{install:?}\n{hints:#?}\n{diagnostics:#?}");
+        assert!(diagnostics.is_empty(), "{context}");
+        assert_eq!(
+            prefixes(&hints, "bottles", flatpak),
+            [custom.clone(), left.clone(), wow.clone()],
+            "{context}"
+        );
+        assert!(
+            prefixes(&hints, "bottles", !flatpak).is_empty(),
+            "{context}"
+        );
+
+        let d = discover(&input(&env), &RulesTable::builtin());
+        let default = bottles_dir(&env, install);
+        let default = default.strip_prefix(root).unwrap().display();
+        let mut expected = vec![
+            row("disk2/Bottles/wow/drive_c/Games/WotLK", "wotlk", "bottles"),
+            row("elsewhere/wow2/drive_c/Games/MoP", "mists", "bottles"),
+            row(
+                &format!("{default}/wow3/drive_c/Games/Cata"),
+                "cata",
+                "bottles",
+            ),
+        ];
+        expected.sort();
+        assert_eq!(
+            rows(&d, root),
+            expected,
+            "{install:?}\n{}",
+            serde_json::to_string_pretty(&d).unwrap()
+        );
+    }
+}
+
+/// A moved bottles directory in the document portal is refused, as Bottles refuses it,
+/// with a diagnostic; a placeholder naming a bottle since deleted is skipped silently.
+#[test]
+fn a_document_portal_bottles_directory_and_a_dangling_placeholder_lead_nowhere() {
+    let env = TestEnv::new();
+    let portal = Path::new("/run/user/1000/doc/1a2b3c/Bottles");
+    bottles_data(&env, Install::Native, portal);
+    let gone = env.root().join("gone");
+    let placeholder = bottles_dir(&env, Install::Native).join("gone/placeholder.yml");
+    fs::create_dir_all(placeholder.parent().unwrap()).unwrap();
+    fs::write(&placeholder, format!("Path: {}\n", gone.display())).unwrap();
+    let (hints, diagnostics) = collect_hints(&dirs(&env));
+    assert!(hints.is_empty(), "{hints:#?}");
+    assert_eq!(
+        diagnostics,
+        [format!(
+            "bottles: custom_bottles_path {} is a document-portal path, which Bottles does not use",
+            portal.display()
+        )]
     );
 }
 

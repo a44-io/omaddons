@@ -526,11 +526,11 @@ fn every_launcher_config_resolves_its_root_with_its_qualifier() {
     CustomRoot::at(pfx.join("drive_c/WoW"))
         .version(4, 3, 4, 15595)
         .build();
-    let mists = bottle(&env, Install::Native, "mists", None);
+    let mists = bottle(&env, Install::Native, "mists");
     CustomRoot::at(mists.join("drive_c/WoW"))
         .version(5, 4, 8, 18414)
         .build();
-    let wotlk = bottle(&env, Install::Flatpak, "wotlk", None);
+    let wotlk = bottle(&env, Install::Flatpak, "wotlk");
     CustomRoot::at(wotlk.join("drive_c/WoW")).build();
 
     let run = run(&env);

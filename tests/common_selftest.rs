@@ -316,7 +316,7 @@ fn launcher_files_land_at_their_documented_locations() {
         )
     );
 
-    let bottle = launchers::bottle(&env, Install::Native, "wow", None);
+    let bottle = launchers::bottle(&env, Install::Native, "wow");
     assert_eq!(bottle, env.data().join("bottles/bottles/wow"));
     assert!(bottle.join("drive_c").is_dir());
     assert!(
@@ -324,16 +324,32 @@ fn launcher_files_land_at_their_documented_locations() {
             .unwrap()
             .contains("Path: wow\n")
     );
-    let custom = env.root().join("elsewhere");
-    let flatpak_bottle = launchers::bottle(&env, Install::Flatpak, "wow2", Some(&custom));
+    let moved = env.root().join("Bottles");
+    let data = launchers::bottles_data(&env, Install::Flatpak, &moved);
     assert_eq!(
-        flatpak_bottle,
-        home.join(".var/app/com.usebottles.bottles/data/bottles/bottles/wow2")
+        data,
+        home.join(".var/app/com.usebottles.bottles/data/bottles/data.yml")
     );
+    assert_eq!(
+        fs::read_to_string(&data).unwrap(),
+        format!("custom_bottles_path: {}\n", moved.display())
+    );
+    assert_eq!(launchers::bottle_in(&moved, "w"), moved.join("w"));
+    let custom = env.root().join("elsewhere");
+    let placeholder = launchers::custom_path_bottle(&env, Install::Flatpak, "wow2", &custom);
+    assert_eq!(
+        placeholder,
+        home.join(".var/app/com.usebottles.bottles/data/bottles/bottles/wow2/placeholder.yml")
+    );
+    assert_eq!(
+        fs::read_to_string(&placeholder).unwrap(),
+        format!("Path: {}\n", custom.display())
+    );
+    assert!(custom.join("drive_c").is_dir());
+    let real = fs::read_to_string(custom.join("bottle.yml")).unwrap();
     assert!(
-        fs::read_to_string(flatpak_bottle.join("bottle.yml"))
-            .unwrap()
-            .contains(&format!("Path: {}\n", custom.display()))
+        real.contains(&format!("Path: {}\nCustom_Path: true\n", custom.display())),
+        "{real}"
     );
 
     let full = fs::read(&lutris).unwrap().len();

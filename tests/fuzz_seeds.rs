@@ -186,8 +186,18 @@ fn write_fuzz_seeds() {
     );
     write(
         "bottles",
-        "custom-path.yml",
-        b"Name: wow\r\nCustom_Path: true\r\nPath: ~/Games/bottles/wow\r\n",
+        "custom-path-bottle.yml",
+        b"Arch: win64\r\nName: wow\r\nPath: ~/Games/bottles/wow\r\nCustom_Path: true\r\n",
+    );
+    write(
+        "bottles",
+        "placeholder.yml",
+        b"Path: /mnt/games/Bottles/wow2\n",
+    );
+    write(
+        "bottles",
+        "data.yml",
+        b"custom_bottles_path: '~/Bottles'\nnotes:\n  path: /x\n",
     );
     write(
         "bottles",

@@ -129,32 +129,64 @@ pub fn steam_prefix(library: &Path, app_id: u32) -> PathBuf {
     pfx
 }
 
-/// The bottles directory: `<data>/bottles/bottles` or the Flatpak's.
-pub fn bottles_dir(env: &TestEnv, install: Install) -> PathBuf {
+/// Bottles' base: `<data>/bottles` or the Flatpak's `data/bottles`.
+pub fn bottles_base(env: &TestEnv, install: Install) -> PathBuf {
     match install {
-        Install::Native => env.data().join("bottles/bottles"),
+        Install::Native => env.data().join("bottles"),
         Install::Flatpak => env
             .home()
-            .join(".var/app/com.usebottles.bottles/data/bottles/bottles"),
+            .join(".var/app/com.usebottles.bottles/data/bottles"),
     }
 }
 
-/// A bottle with `drive_c/` and a `bottle.yml` whose `Path:` is the override when given
-/// (else the bottle's name); returns the bottle directory.
-pub fn bottle(
-    env: &TestEnv,
-    install: Install,
-    name: &str,
-    path_override: Option<&Path>,
-) -> PathBuf {
-    let dir = bottles_dir(env, install).join(name);
+/// The default bottles directory: `<base>/bottles`.
+pub fn bottles_dir(env: &TestEnv, install: Install) -> PathBuf {
+    bottles_base(env, install).join("bottles")
+}
+
+/// A bottle with `drive_c/` and a `bottle.yml` whose `Path:` is its name, in the default
+/// bottles directory; returns the bottle directory.
+pub fn bottle(env: &TestEnv, install: Install, name: &str) -> PathBuf {
+    bottle_in(&bottles_dir(env, install), name)
+}
+
+/// A bottle as [`bottle`] makes it, in `dir` (a moved bottles directory).
+pub fn bottle_in(dir: &Path, name: &str) -> PathBuf {
+    let bottle = dir.join(name);
+    fs::create_dir_all(bottle.join("drive_c")).unwrap();
+    write(
+        &bottle.join("bottle.yml"),
+        &format!(
+            "Arch: win64\nName: {name}\nPath: {name}\nCustom_Path: false\nRunner: soda-9.0-1\n"
+        ),
+    );
+    bottle
+}
+
+/// `<base>/data.yml` naming `dir` as the moved bottles directory (Bottles' preferences);
+/// returns the file.
+pub fn bottles_data(env: &TestEnv, install: Install, dir: &Path) -> PathBuf {
+    let yml = bottles_base(env, install).join("data.yml");
+    write(&yml, &format!("custom_bottles_path: {}\n", dir.display()));
+    yml
+}
+
+/// A bottle created at the custom path `dir`, as Bottles 67.4 writes it: the bottle
+/// (`drive_c/`, a `bottle.yml` with `Custom_Path: true` and its absolute `Path`) at
+/// `dir`, and only a `placeholder.yml` naming it in the default bottles directory.
+/// Returns the placeholder.
+pub fn custom_path_bottle(env: &TestEnv, install: Install, name: &str, dir: &Path) -> PathBuf {
     fs::create_dir_all(dir.join("drive_c")).unwrap();
-    let path = path_override.map_or_else(|| name.to_owned(), |p| p.display().to_string());
+    let path = dir.display();
     write(
         &dir.join("bottle.yml"),
-        &format!("Arch: win64\nName: {name}\nPath: {path}\nRunner: soda-9.0-1\n"),
+        &format!(
+            "Arch: win64\nName: {name}\nPath: {path}\nCustom_Path: true\nRunner: soda-9.0-1\n"
+        ),
     );
-    dir
+    let placeholder = bottles_dir(env, install).join(name).join("placeholder.yml");
+    write(&placeholder, &format!("Path: {path}\n"));
+    placeholder
 }
 
 /// Damages a launcher file in place.
