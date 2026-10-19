@@ -1449,7 +1449,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 
 **Search.** Only GitHub receives what you search for, in one `search/repositories` request per run (10 a minute without a token, 30 with one, counted apart from the REST budget). The catalog is built in, and WoWInterface's index and Tukui's list are whole lists, fetched (or reused) and searched on this machine, so neither learns the query.
 
-**The git subprocess** runs with a cleared environment. Only `PATH` and `HOME` are kept, plus `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ALLOW_PROTOCOL=https`. It also gets no credential helper, no askpass, no redirects and https as the only protocol. Arguments go as argv (never through a shell), and the run is in its own process group, which is killed on timeout. URLs with embedded credentials are refused.
+**The git subprocess** runs with a cleared environment. Only `PATH` and `HOME` are kept, plus `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ALLOW_PROTOCOL=https`. It also gets no credential helper, no askpass, no redirects and https as the only protocol. Arguments go as argv (never through a shell), and the run is in its own process group, which is killed on timeout. A checkout is held to the download limit (`limits.download_max_bytes`, `.git` included): git is stopped, with its process group, once the checkout grows past it (`archive_too_large`). What git prints is kept up to 64 MiB per stream. URLs with embedded credentials are refused.
 
 **`net.log`.** Every request that reaches the network (each redirect hop and each retry) and every git run against a repository is one JSON line in `~/.local/state/omaddons/net.log`, rotated once at 10 MiB. Requests refused before sending (offline, `host_blocked`) and the `git --version` probe are not logged. Query strings and headers are never written. An illustrative line:
 
@@ -1523,7 +1523,7 @@ label = "my 3.3.5a server"
 | `limits.archive_max_entries` | `20000` | Entries per archive |
 | `limits.archive_max_uncompressed` | `1GiB` | Expanded size per archive |
 | `limits.archive_max_ratio` | `200` | Compression ratio, checked past 32 MiB |
-| `limits.download_max_bytes` | `512MiB` | Largest download |
+| `limits.download_max_bytes` | `512MiB` | Largest download, and git checkouts |
 | `limits.tx_retention_count` | `10` | Snapshots kept per target within the window |
 | `limits.tx_retention_days` | `7` | The retention window |
 | `limits.snapshot_max_bytes` | `2GiB` | Snapshot total per target beyond 24 hours |

@@ -322,6 +322,8 @@ pub struct TxScene {
     pub with_git: bool,
     /// The effective `[limits]` retention.
     pub retention: super::retention::RetentionLimits,
+    /// What a git checkout may hold (`limits.download_max_bytes`).
+    pub git_download_max_bytes: u64,
 }
 
 impl TxScene {
@@ -350,6 +352,7 @@ impl TxScene {
             while_running: false,
             with_git: false,
             retention: super::retention::RetentionLimits::default(),
+            git_download_max_bytes: crate::limits::DOWNLOAD_MAX_BYTES,
         }
     }
 
@@ -365,7 +368,10 @@ impl TxScene {
     pub fn with_ctx<R>(&self, command: &str, f: impl FnOnce(&super::tx::EngineCtx<'_>) -> R) -> R {
         let mut registry = crate::sources::SourceRegistry::new();
         if self.with_git {
-            registry = registry.with_git(crate::sources::git_hosts::GitRunner::for_tests());
+            registry = registry.with_git(
+                crate::sources::git_hosts::GitRunner::for_tests()
+                    .with_download_max_bytes(self.git_download_max_bytes),
+            );
         }
         let table = RulesTable::builtin();
         let argv: Vec<String> = ["omaddons", command, "test"]

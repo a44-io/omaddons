@@ -11,7 +11,9 @@
 //! elsewhere; and `-c` options that refuse redirects, credentials and every protocol but
 //! https. Each run touching a repository is one `via: git` line in `net.log` (the
 //! `git --version` probe touches none). A run past its timeout is killed with its whole
-//! process group.
+//! process group, and so is a checkout that grows past the download limit
+//! (`limits.download_max_bytes`). What git prints is kept up to `API_RESPONSE_MAX_BYTES`
+//! per stream.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -24,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use super::Wanted;
 use crate::error::{Error, ErrorCode, PlanStaleSource, Result, Suggestion};
+use crate::limits::API_RESPONSE_MAX_BYTES;
 use crate::model::{Asset, AssetLocation, Channel, Ref, Release, ReleaseSet};
 use crate::net::NetConfig;
 use crate::net::allowlist::Allowlist;
@@ -32,6 +35,9 @@ use crate::politeness::{API_READ_TIMEOUT, DOWNLOAD_TIMEOUT};
 
 /// The oldest git that honours `GIT_CONFIG_GLOBAL`.
 const MIN_GIT: (u32, u32) = (2, 32);
+
+/// How often a checkout's size is measured while git runs.
+const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 
 /// What git may speak: https in production; `file://` exists only for in-crate tests
 /// against local repositories.
@@ -61,6 +67,10 @@ pub struct GitRunner {
     policy: ProtocolPolicy,
     /// The `git --version` verdict, probed once.
     version: OnceLock<std::result::Result<(), Error>>,
+    /// The most a checkout may hold, `.git` included (`limits.download_max_bytes`).
+    download_max_bytes: u64,
+    /// The most kept of each of git's output streams; the rest is read and dropped.
+    output_max: u64,
 }
 
 impl std::fmt::Debug for GitRunner {
@@ -100,6 +110,8 @@ impl GitRunner {
             program: OsString::from("git"),
             policy: ProtocolPolicy::Https,
             version: OnceLock::new(),
+            download_max_bytes: config.download_max_bytes,
+            output_max: API_RESPONSE_MAX_BYTES,
         }
     }
 
@@ -113,7 +125,17 @@ impl GitRunner {
             program: OsString::from("git"),
             policy: ProtocolPolicy::FileForTests,
             version: OnceLock::new(),
+            download_max_bytes: crate::limits::DOWNLOAD_MAX_BYTES,
+            output_max: API_RESPONSE_MAX_BYTES,
         }
+    }
+
+    /// The same runner with checkouts held to `bytes`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_download_max_bytes(mut self, bytes: u64) -> Self {
+        self.download_max_bytes = bytes;
+        self
     }
 
     /// The hygienic command for `args`, before it is spawned.
@@ -189,6 +211,19 @@ impl GitRunner {
         purpose: &'static str,
         timeout: Duration,
     ) -> Result<GitOutput> {
+        self.run_watched(args, repo, purpose, timeout, None)
+    }
+
+    /// [`GitRunner::run`], also killed once `checkout`, the directory it writes, grows
+    /// past the download limit (`archive_too_large`).
+    fn run_watched(
+        &self,
+        args: &[&OsStr],
+        repo: &RepoUrl,
+        purpose: &'static str,
+        timeout: Duration,
+        checkout: Option<&Path>,
+    ) -> Result<GitOutput> {
         if self.offline {
             return Err(Error::new(
                 ErrorCode::Offline,
@@ -209,7 +244,12 @@ impl GitRunner {
         }
         self.check_version()?;
         let started = Instant::now();
-        let result = finish(self.command(args), timeout, purpose);
+        let watch = checkout.map(|dir| Watch {
+            dir,
+            cap: self.download_max_bytes,
+            repo,
+        });
+        let result = finish(self.command(args), timeout, purpose, self.output_max, watch);
         let (exit_code, error) = match &result {
             Ok((status, _)) => (status.code(), None),
             Err(e) => (None, Some(e.code)),
@@ -240,6 +280,8 @@ impl GitRunner {
                     self.command(&[OsStr::new("--version")]),
                     API_READ_TIMEOUT,
                     "version",
+                    self.output_max,
+                    None,
                 )?;
                 let found = status
                     .success()
@@ -262,11 +304,13 @@ impl GitRunner {
 
     /// Clones `rev` at `sha` from `url` into `dest`, an empty directory the caller
     /// created: shallow for a branch or tag, a fetch by sha otherwise. `plan_stale` when
-    /// the checkout is not `sha` (the branch moved since resolution).
+    /// the checkout is not `sha` (the branch moved since resolution); `archive_too_large`
+    /// when it grows past the download limit, `.git` included.
     pub fn materialize(&self, url: &str, rev: &str, sha: &str, dest: &Path) -> Result<()> {
         let repo = self.repo_url(url)?;
         let dest_arg = dest.as_os_str();
         let os = OsStr::new;
+        let watched = Some(dest);
         if rev.eq_ignore_ascii_case(sha) {
             self.run(
                 &[os("init"), os("--quiet"), dest_arg],
@@ -274,11 +318,12 @@ impl GitRunner {
                 "init",
                 API_READ_TIMEOUT,
             )?;
-            self.run(
+            self.run_watched(
                 &[os("-C"), dest_arg, os("fetch"), os("--quiet"), os("--depth"), os("1"), os("--"), os(url), os(sha)],
                 &repo,
                 "fetch",
                 DOWNLOAD_TIMEOUT,
+                watched,
             )
             .map_err(|e| {
                 if e.code == ErrorCode::DownloadFailed {
@@ -291,7 +336,7 @@ impl GitRunner {
                     e
                 }
             })?;
-            self.run(
+            self.run_watched(
                 &[
                     os("-C"),
                     dest_arg,
@@ -303,10 +348,11 @@ impl GitRunner {
                 &repo,
                 "checkout",
                 API_READ_TIMEOUT,
+                watched,
             )?;
         } else {
             let branch = format!("--branch={rev}");
-            self.run(
+            self.run_watched(
                 &[
                     os("clone"),
                     os("--quiet"),
@@ -322,7 +368,12 @@ impl GitRunner {
                 &repo,
                 "clone",
                 DOWNLOAD_TIMEOUT,
+                watched,
             )?;
+        }
+        // A fast run can finish between two measures.
+        if tree_bytes(dest, self.download_max_bytes) > self.download_max_bytes {
+            return Err(checkout_too_large(&repo, self.download_max_bytes));
         }
         let head = self.run(
             &[os("-C"), dest_arg, os("rev-parse"), os("HEAD")],
@@ -581,9 +632,76 @@ fn failure(purpose: &str, repo: &RepoUrl, stderr: &str) -> Error {
     Error::new(ErrorCode::Network, message, Suggestion::text("retry later")).retryable(true)
 }
 
-/// Spawns `cmd`, collects its output and waits at most `timeout`, killing its process
-/// group past that. A missing git is `source_disabled`; a timeout is `network`.
-fn finish(mut cmd: Command, timeout: Duration, purpose: &str) -> Result<(ExitStatus, GitOutput)> {
+/// A directory a git run writes, held to `cap` bytes.
+struct Watch<'a> {
+    dir: &'a Path,
+    cap: u64,
+    repo: &'a RepoUrl,
+}
+
+/// `archive_too_large` for a checkout of `repo` past the download limit `cap`.
+fn checkout_too_large(repo: &RepoUrl, cap: u64) -> Error {
+    Error::new(
+        ErrorCode::ArchiveTooLarge,
+        format!(
+            "the git checkout of {}{} grew past the {cap}-byte download limit",
+            repo.host, repo.path
+        ),
+        Suggestion::text(
+            "if the repository is genuine, raise the limit: omaddons config set limits.download_max_bytes <value>",
+        ),
+    )
+    .details(serde_json::json!({ "limit": cap, "config_key": "limits.download_max_bytes" }))
+}
+
+/// The bytes under `dir` (every entry's own length, symlinks not followed), counted
+/// until past `past`. An entry that cannot be read counts nothing.
+fn tree_bytes(dir: &Path, past: u64) -> u64 {
+    let mut total = 0u64;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            total = total.saturating_add(meta.len());
+            if total > past {
+                return total;
+            }
+            if meta.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    total
+}
+
+/// Reads `pipe` to its end, keeping its first `max` bytes: the rest is dropped, so the
+/// writer never blocks on a full pipe.
+fn read_bounded(pipe: Option<Box<dyn Read + Send>>, max: u64) -> String {
+    let mut kept = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.by_ref().take(max).read_to_end(&mut kept);
+        let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+    }
+    String::from_utf8_lossy(&kept).into_owned()
+}
+
+/// Spawns `cmd`, collects up to `output_max` bytes of each of its outputs and waits at
+/// most `timeout`, killing its process group past that, or once `watch`'s directory
+/// grows past its cap (measured every `WATCH_INTERVAL`). A missing git is
+/// `source_disabled`; a timeout is `network`; a checkout past its cap
+/// `archive_too_large`.
+fn finish(
+    mut cmd: Command,
+    timeout: Duration,
+    purpose: &str,
+    output_max: u64,
+    watch: Option<Watch<'_>>,
+) -> Result<(ExitStatus, GitOutput)> {
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             Error::new(
@@ -600,13 +718,7 @@ fn finish(mut cmd: Command, timeout: Duration, purpose: &str) -> Result<(ExitSta
         }
     })?;
     let reader = |pipe: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut buf);
-            }
-            String::from_utf8_lossy(&buf).into_owned()
-        })
+        std::thread::spawn(move || read_bounded(pipe, output_max))
     };
     let out = reader(
         child
@@ -620,19 +732,24 @@ fn finish(mut cmd: Command, timeout: Duration, purpose: &str) -> Result<(ExitSta
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
     );
+    // Kills git with its whole process group.
+    let stop = |child: &mut std::process::Child| {
+        if let Some(pid) = i32::try_from(child.id())
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+        {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    };
     let deadline = Instant::now() + timeout;
+    let mut measure_at = Instant::now() + WATCH_INTERVAL;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() >= deadline => {
-                if let Some(pid) = i32::try_from(child.id())
-                    .ok()
-                    .and_then(rustix::process::Pid::from_raw)
-                {
-                    let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-                }
-                let _ = child.kill();
-                let _ = child.wait();
+                stop(&mut child);
                 return Err(Error::new(
                     ErrorCode::Network,
                     format!(
@@ -642,6 +759,15 @@ fn finish(mut cmd: Command, timeout: Duration, purpose: &str) -> Result<(ExitSta
                     Suggestion::text("retry later; a slow or unreachable host stops git"),
                 )
                 .retryable(true));
+            }
+            Ok(None) if Instant::now() >= measure_at => {
+                if let Some(w) = &watch
+                    && tree_bytes(w.dir, w.cap) > w.cap
+                {
+                    stop(&mut child);
+                    return Err(checkout_too_large(w.repo, w.cap));
+                }
+                measure_at = Instant::now() + WATCH_INTERVAL;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(e) => {
@@ -681,7 +807,17 @@ mod tests {
             program: OsString::from("git"),
             policy,
             version: OnceLock::new(),
+            download_max_bytes: crate::limits::DOWNLOAD_MAX_BYTES,
+            output_max: API_RESPONSE_MAX_BYTES,
         }
+    }
+
+    /// A stand-in for git at `<dir>/git` running `script`.
+    fn stand_in(dir: &Path, script: &str) -> OsString {
+        let fake = dir.join("git");
+        fs::write(&fake, format!("#!/bin/sh\n{script}")).unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        fake.into_os_string()
     }
 
     #[test]
@@ -799,7 +935,14 @@ mod tests {
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
         let mut git = runner(ProtocolPolicy::Https, &[]);
         git.program = fake.into_os_string();
-        let (status, out) = finish(git.command(&[]), Duration::from_secs(10), "env").unwrap();
+        let (status, out) = finish(
+            git.command(&[]),
+            Duration::from_secs(10),
+            "env",
+            API_RESPONSE_MAX_BYTES,
+            None,
+        )
+        .unwrap();
         assert!(status.success());
         let mut keys: Vec<&str> = out
             .stdout
@@ -863,13 +1006,88 @@ mod tests {
         let mut git = runner(ProtocolPolicy::Https, &[]);
         git.program = fake.into_os_string();
         let started = Instant::now();
-        let err = finish(git.command(&[]), Duration::from_millis(300), "ls-remote").unwrap_err();
+        let err = finish(
+            git.command(&[]),
+            Duration::from_millis(300),
+            "ls-remote",
+            API_RESPONSE_MAX_BYTES,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(err.code, ErrorCode::Network);
         assert!(err.retryable);
         assert!(
             started.elapsed() < Duration::from_secs(10),
             "the sleeping child was killed too"
         );
+    }
+
+    /// A git that keeps writing into the checkout is stopped, with the child doing the
+    /// writing, once the checkout passes the cap: long before its timeout.
+    #[test]
+    fn a_growing_checkout_is_killed_with_its_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = dir.path().join("checkout");
+        fs::create_dir_all(&checkout).unwrap();
+        let grown = checkout.join("pack");
+        let mut git = runner(ProtocolPolicy::Https, &["codeberg.org"]);
+        git.program = stand_in(
+            dir.path(),
+            &format!(
+                "(while :; do head -c 65536 /dev/zero >> '{}'; sleep 0.02; done) &\nwait\n",
+                grown.display()
+            ),
+        );
+        let repo = git.repo_url("https://codeberg.org/o/r").unwrap();
+        let watch = Watch {
+            dir: &checkout,
+            cap: 1 << 20,
+            repo: &repo,
+        };
+        let started = Instant::now();
+        let err = finish(
+            git.command(&[]),
+            Duration::from_secs(60),
+            "clone",
+            API_RESPONSE_MAX_BYTES,
+            Some(watch),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (err.code, err.exit().code(), err.retryable),
+            (ErrorCode::ArchiveTooLarge, 4, false)
+        );
+        assert_eq!(err.details["limit"], 1 << 20);
+        assert_eq!(err.details["config_key"], "limits.download_max_bytes");
+        assert!(err.message.contains("codeberg.org/o/r"), "{}", err.message);
+        assert!(started.elapsed() < Duration::from_secs(20));
+        // The writer died with the group: the file stops growing.
+        let size = fs::metadata(&grown).unwrap().len();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(fs::metadata(&grown).unwrap().len(), size);
+    }
+
+    /// Output past the bound is read and dropped: what is kept stops at the bound, and
+    /// git is never blocked on a full pipe.
+    #[test]
+    fn captured_output_is_bounded_and_drained() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut git = runner(ProtocolPolicy::Https, &[]);
+        git.program = stand_in(
+            dir.path(),
+            "head -c 300000 /dev/zero | tr '\\0' x >&2\necho done\n",
+        );
+        let (status, out) = finish(
+            git.command(&[]),
+            Duration::from_secs(10),
+            "fetch",
+            1000,
+            None,
+        )
+        .unwrap();
+        assert!(status.success());
+        assert_eq!(out.stderr.len(), 1000);
+        assert_eq!(out.stdout, "done\n");
     }
 
     /// A local repository: `main` at A, `dev` at B, annotated tag `v1` on B.
@@ -933,6 +1151,54 @@ mod tests {
             _dir: dir,
             main,
             dev,
+        }
+    }
+
+    /// A local repository whose `main` holds a 2 MB file: (its dir, its URL, main's sha).
+    fn big_local() -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("Big");
+        fs::create_dir_all(&work).unwrap();
+        sh(&work, &["init", "--quiet", "--initial-branch=main"]);
+        fs::write(work.join("Big.toc"), "## Interface: 120105\n").unwrap();
+        fs::write(work.join("data.bin"), vec![0u8; 2 << 20]).unwrap();
+        sh(&work, &["add", "."]);
+        sh(&work, &["commit", "--quiet", "-m", "big"]);
+        let sha = sh(&work, &["rev-parse", "HEAD"]);
+        let bare = dir.path().join("Big.git");
+        let (from, to) = (work.to_str().unwrap(), bare.to_str().unwrap());
+        sh(dir.path(), &["clone", "--quiet", "--bare", from, to]);
+        sh(&bare, &["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        let url = format!("file://{}", bare.display());
+        (dir, url, sha)
+    }
+
+    #[test]
+    fn a_checkout_past_the_download_limit_is_refused() {
+        let (_repo, url, sha) = big_local();
+        let out = tempfile::tempdir().unwrap();
+        for (cap, fits) in [(1u64 << 20, false), (4 << 20, true)] {
+            let git = runner(ProtocolPolicy::FileForTests, &[]).with_download_max_bytes(cap);
+            // A branch clones; a sha fetches into a fresh repository.
+            for rev in ["main", sha.as_str()] {
+                let dest = out.path().join(format!("{cap}-{}", &rev[..4]));
+                fs::create_dir_all(&dest).unwrap();
+                let result = git.materialize(&url, rev, &sha, &dest);
+                if fits {
+                    result.unwrap();
+                    assert!(dest.join("data.bin").is_file(), "{rev}");
+                } else {
+                    let err = result.unwrap_err();
+                    assert_eq!(
+                        err.code,
+                        ErrorCode::ArchiveTooLarge,
+                        "{rev}: {}",
+                        err.message
+                    );
+                    assert_eq!(err.details["limit"], cap, "{rev}");
+                    assert_eq!(err.details["config_key"], "limits.download_max_bytes");
+                }
+            }
         }
     }
 
@@ -1009,6 +1275,48 @@ mod tests {
             !scene.paths.cache_tmp(tx).exists(),
             "the checkout went with the transaction's temp dir"
         );
+    }
+
+    /// An install whose checkout is over the limit fails that candidate with
+    /// `archive_too_large` (the item: no candidate loads), and its partial checkout goes
+    /// with the transaction's temp dir.
+    #[test]
+    fn the_engine_refuses_a_checkout_past_the_limit_and_leaves_nothing() {
+        let (_repo, url, _) = big_local();
+        let mut scene = crate::engine::testing::TxScene::new();
+        scene.with_git = true;
+        scene.git_download_max_bytes = 1 << 20;
+        let change = crate::engine::plan::RequestedChange::Install {
+            r#ref: Ref::Git {
+                url,
+                rev: Some("main".into()),
+            },
+            channel: Channel::Stable,
+            channel_explicit: false,
+            version: None,
+            file: None,
+            name: None,
+            pin: crate::engine::plan::PinIntent::Keep,
+            reason: crate::model::AddonReason::Explicit,
+            reinstall: false,
+            blob_sha256: None,
+            asset: None,
+        };
+        let done = scene.run(vec![change]).unwrap();
+        assert_eq!(done.failures.len(), 1, "{:?}", done.failures);
+        let failure = &done.failures[0];
+        assert_eq!(failure.error.code, ErrorCode::NoCompatibleRelease);
+        let reason = failure.error.details["tried"][0]["reason"]
+            .as_str()
+            .unwrap();
+        assert!(reason.starts_with("archive_too_large: "), "{reason}");
+        assert!(done.outcomes.iter().all(|o| o.tx.is_none()));
+        assert!(!scene.client.addons().join("Big").exists());
+        let tmp = scene.paths.cache_dir().join("tmp");
+        let left: Vec<_> = fs::read_dir(&tmp)
+            .map(|d| d.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     #[test]
