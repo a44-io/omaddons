@@ -340,18 +340,16 @@ fn unknown_flags_suggest_the_closest() {
     let events = r.events();
     assert_eq!(events.len(), 1, "{}", r.context());
     assert_eq!(events[0]["code"], "usage");
-    assert!(
-        events[0]["fix"].as_str().unwrap().contains("--json"),
-        "{}",
-        r.context()
-    );
+    // The closest flag is a presentation one: the command without it, which the
+    // caller reruns with its own presentation flags.
+    assert_eq!(events[0]["fix"], "omaddons", "{}", r.context());
 
     let r = run(&["help", "--jsno", "--format", "json"]);
     let envelope = r.envelope();
     assert_eq!(envelope["command"], "help");
     assert_eq!(
         envelope["error"]["fix_argv"],
-        serde_json::json!(["omaddons", "help", "--json"])
+        serde_json::json!(["omaddons", "help"])
     );
 
     let r = run(&["--format", "jsno"]);

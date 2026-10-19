@@ -53,7 +53,13 @@ pub struct GlobalArgs {
     #[arg(long, global = true)]
     pub robot: bool,
     /// Output format
-    #[arg(long, global = true, value_name = "FORMAT", value_parser = ["json", "human"])]
+    #[arg(
+        long,
+        global = true,
+        value_name = "FORMAT",
+        value_parser = ["json", "human"],
+        ignore_case = true
+    )]
     pub format: Option<String>,
     /// The client to act on: id, key, game mode (sod and hardcore select the Classic Era
     /// client), family, product, flavor folder or path
@@ -87,7 +93,13 @@ pub struct GlobalArgs {
     #[arg(long, global = true)]
     pub no_progress: bool,
     /// Progress events on stderr
-    #[arg(long, global = true, value_name = "MODE", value_parser = ["json", "human", "none"])]
+    #[arg(
+        long,
+        global = true,
+        value_name = "MODE",
+        value_parser = ["json", "human", "none"],
+        ignore_case = true
+    )]
     pub progress: Option<String>,
     /// Only errors on stderr
     #[arg(long, global = true)]
@@ -522,6 +534,18 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
         Some(ContextValue::String(token)) => Some(token.clone()),
         _ => None,
     };
+    // A presentation flag the parser refused (`--json=1`, `--format xml`, `--format`
+    // without its value): the same command without it, which the caller reruns with
+    // its own presentation flags. It is the failing argv minus that flag, so the
+    // never-itself check below does not apply.
+    if let Some(flag) = invalid(ContextKind::InvalidArg)
+        && is_presentation(flag_name(&flag))
+    {
+        let fix = Suggestion::command(fix_argv(argv));
+        if parses(&fix) {
+            return Error::new(ErrorCode::Usage, message, fix);
+        }
+    }
     let cmd = Cli::command();
     let path = command_path(argv);
     let subcommand = path.first().cloned();
@@ -592,6 +616,18 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
                 }
                 longs.sort();
                 longs.dedup();
+                // A misspelled presentation flag (`--jsno`): the command without it, as
+                // for a refused one.
+                let closest = longs
+                    .iter()
+                    .map(|l| (levenshtein(&bad_flag, l), l))
+                    .filter(|(d, _)| *d <= 2)
+                    .min();
+                if closest.is_some_and(|(_, l)| is_presentation(l)) {
+                    let without: Vec<String> =
+                        argv.iter().filter(|a| **a != bad).cloned().collect();
+                    return Some((Suggestion::command(fix_argv(&without)), Vec::new()));
+                }
                 suggest(argv, &bad_flag, &longs)
             })
             .unwrap_or_else(help_fix),
@@ -624,6 +660,18 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
         }
     }
     error
+}
+
+/// A flag's name in clap's rendering of it: `--format <FORMAT>` or `--json=1` is
+/// `--format` or `--json`.
+fn flag_name(arg: &str) -> &str {
+    arg.split(['=', ' ']).next().unwrap_or(arg)
+}
+
+/// Whether `flag` (a long flag's name) is about presentation.
+fn is_presentation(flag: &str) -> bool {
+    // ubs:ignore — comparing flag names, not secrets
+    PRESENTATION_FLAGS.iter().any(|(f, _)| *f == flag)
 }
 
 /// Whether a suggested command line parses (help and version requests count).
@@ -891,7 +939,9 @@ fn fix_argv_keeping(argv: &[String], keep: Option<usize>) -> Vec<String> {
     let mut out = Vec::new();
     let mut skip_value = false;
     for (i, arg) in argv.iter().enumerate() {
-        if std::mem::take(&mut skip_value) {
+        // A presentation flag's value, unless it is a flag itself (clap refuses that as
+        // the value too).
+        if std::mem::take(&mut skip_value) && !arg.starts_with('-') {
             continue;
         }
         if Some(i) == keep {
@@ -1088,9 +1138,10 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Usage);
         assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help"]);
 
+        // The closest flag is a presentation one: the command without it.
         let raw = argv(&["--jsno"]);
         let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
-        assert_eq!(err.fix.argv().unwrap(), ["omaddons", "--json"]);
+        assert_eq!(err.fix.argv().unwrap(), ["omaddons"]);
 
         let raw = argv(&["frobnicate"]);
         let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
@@ -1148,6 +1199,18 @@ mod tests {
                 };
                 let err = usage_error(&e, &raw);
                 let own = fix_argv(&raw);
+                // A refused presentation flag's fix is the argv without it, by design,
+                // when that parses (else help).
+                if is_presentation(flag_name(token)) {
+                    let fix = err.fix.argv().unwrap();
+                    if parses(&Suggestion::command(own.clone())) {
+                        assert_eq!(fix, own.as_slice(), "{args:?}");
+                    } else {
+                        assert_eq!(fix.get(1).map(String::as_str), Some("help"), "{args:?}");
+                    }
+                    checked += 1;
+                    continue;
+                }
                 assert_ne!(err.fix.argv(), Some(own.as_slice()), "{args:?}");
                 for alternative in &err.alternatives {
                     assert_ne!(alternative.argv(), Some(own.as_slice()), "{args:?}");
@@ -1182,6 +1245,49 @@ mod tests {
         let quiet = fallback_output(&raw(&["nosuch", "--quiet", "--json"]), &tty);
         assert_eq!(quiet.output, output::OutputMode::Json);
         assert!(quiet.style.quiet);
+        let refused = fallback_output(&raw(&["status", "--json=1"]), &tty);
+        assert_eq!(refused.output, output::OutputMode::Json);
+    }
+
+    /// A presentation flag clap refuses, or a misspelling of one, is dropped from the
+    /// fix: the same command, which the caller reruns with its own flags. Values are
+    /// read ignoring case.
+    #[test]
+    fn a_refused_presentation_flag_is_dropped_from_the_fix() {
+        for args in [
+            &["status", "--json=1"][..],
+            &["status", "--json=true"],
+            &["status", "--robot=1"],
+            &["--robot=yes", "status"],
+            &["status", "--format", "--json"],
+            &["status", "--progress", "--json"],
+            &["status", "--format", "xml"],
+            &["status", "--jsno"],
+        ] {
+            let raw = argv(args);
+            let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+            assert_eq!(
+                err.fix.argv().unwrap(),
+                ["omaddons", "status"],
+                "{args:?}: {}",
+                err.message
+            );
+            assert!(err.alternatives.is_empty(), "{args:?}");
+        }
+        let raw = argv(&["--jsno"]);
+        let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+        assert_eq!(err.fix.argv().unwrap(), ["omaddons"]);
+        for args in [
+            &["status", "--format", "JSON"][..],
+            &["status", "--progress", "JSON"],
+        ] {
+            assert!(Cli::try_parse_from(argv(args)).is_ok(), "{args:?}");
+        }
+        // A missing presentation value never swallows the flag after it.
+        assert_eq!(
+            fix_argv(&argv(&["status", "--format", "--offline"])),
+            argv(&["status", "--offline"])
+        );
     }
 
     #[test]

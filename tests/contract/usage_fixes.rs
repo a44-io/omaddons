@@ -72,8 +72,10 @@ const CORPUS: &[(&[&str], Option<&str>)] = &[
         Some("targets add"),
     ),
     (&["undo", "--last-bi", "agent"], Some("undo")),
-    // A mistyped presentation flag (`--jsno`, `--format jsno`) is omad-m2-audit-yegz.5.4's:
-    // its fix drops the flag.
+    // A mistyped or refused presentation flag: the fix drops it.
+    (&["--jsno"], None),
+    (&["status", "--jsno"], Some("status")),
+    (&["--format", "jsno", "status"], Some("status")),
     (&["status", "--cachd"], Some("status")),
     (&["history", "--limt", "5"], Some("history")),
     (&["install", "x", "--channel", "betaa"], Some("install")),
@@ -107,6 +109,8 @@ const DECIDED: &[(&[&str], &[&str])] = &[
         &["omaddons", "install", "x", "--channel", "beta"],
     ),
     (&["auth", "gihub"], &["omaddons", "auth", "github"]),
+    (&["status", "--jsno"], &["omaddons", "status"]),
+    (&["--format", "jsno", "status"], &["omaddons", "status"]),
     (
         &["reinstall", "x", "-t", "retail"],
         &["omaddons", "install", "x", "-t", "retail", "--reinstall"],

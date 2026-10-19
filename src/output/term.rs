@@ -129,8 +129,8 @@ pub fn resolve(flags: &OutputFlags, env: &TermEnv) -> OutputConfig {
         StderrMode::Human
     };
     let progress = match flags.progress.as_deref() {
-        Some("json") => ProgressMode::Json,
-        Some("human") => ProgressMode::Human,
+        Some(p) if p.eq_ignore_ascii_case("json") => ProgressMode::Json,
+        Some(p) if p.eq_ignore_ascii_case("human") => ProgressMode::Human,
         Some(_) => ProgressMode::None,
         None if flags.no_progress || output == OutputMode::Json || env.ci() || !env.stderr_tty => {
             ProgressMode::None
@@ -182,23 +182,34 @@ pub fn resolve_output_mode_from_argv(argv: &[OsString], env: &TermEnv) -> Output
 /// `--`, so a usage error renders as asked (`--json`, `--no-color`, `--quiet`, …).
 pub fn flags_from_argv(argv: &[OsString]) -> OutputFlags {
     let mut flags = OutputFlags::default();
-    let mut args = argv
+    let args = argv
         .iter()
         .skip(1)
         .map(|a| a.to_string_lossy().into_owned());
+    // A flag's value is the next token unless that is a flag itself, which clap
+    // refuses as the value too: `--format --json` still asks for JSON.
+    let value =
+        |args: &mut std::iter::Peekable<_>| args.next_if(|next: &String| !next.starts_with('-'));
+    let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--" => break,
             "--json" => flags.json = true,
             "--robot" => flags.robot = true,
-            "--format" => flags.format = args.next(),
-            "--progress" => flags.progress = args.next(),
+            "--format" => flags.format = value(&mut args),
+            "--progress" => flags.progress = value(&mut args),
             "--no-color" => flags.no_color = true,
             "--no-progress" => flags.no_progress = true,
             "--quiet" => flags.quiet = true,
             "--verbose" => flags.verbose = flags.verbose.saturating_add(1),
             other => {
-                if let Some(value) = other.strip_prefix("--format=") {
+                // The JSON flag named with a value (`--json=1`): the value is what is
+                // wrong, and the error answers in JSON.
+                if other.starts_with("--json=") {
+                    flags.json = true;
+                } else if other.starts_with("--robot=") {
+                    flags.robot = true;
+                } else if let Some(value) = other.strip_prefix("--format=") {
                     flags.format = Some(value.to_owned());
                 } else if let Some(value) = other.strip_prefix("--progress=") {
                     flags.progress = Some(value.to_owned());
@@ -492,6 +503,20 @@ mod tests {
             resolve_output_mode_from_argv(&argv(&["x", "--", "--json"]), &env),
             OutputMode::Human
         );
+        // The JSON flag with a value clap refuses, and a value-taking flag before it.
+        for args in [
+            &["status", "--json=1"][..],
+            &["status", "--json="],
+            &["--robot=yes", "status"],
+            &["status", "--format", "--json"],
+            &["status", "--progress", "--json"],
+        ] {
+            assert_eq!(
+                resolve_output_mode_from_argv(&argv(args), &env),
+                OutputMode::Json,
+                "{args:?}"
+            );
+        }
         let env_json = TermEnv {
             format: Some("JSON".into()),
             ..tty()

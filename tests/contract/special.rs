@@ -216,6 +216,37 @@ fn every_json_spelling_prints_the_same_envelope() {
     assert!(outputs.windows(2).all(|w| w[0] == w[1]), "{outputs:#?}");
 }
 
+/// A JSON spelling clap refuses still answers with one envelope, whose fix is the
+/// command without the refused flag; values are read ignoring case.
+#[test]
+fn a_refused_json_spelling_still_prints_one_envelope() {
+    let s = Scene::new();
+    for args in [
+        &["status", "--json=1"][..],
+        &["status", "--json=true"],
+        &["status", "--robot=1"],
+        &["--robot=yes", "status"],
+        &["status", "--format", "--json"],
+        &["status", "--progress", "--json"],
+    ] {
+        let argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        let checked = support::check(s.home.exec_with(&argv, &[]), 2);
+        assert_eq!(
+            checked.envelope["error"]["fix_argv"],
+            serde_json::json!(["omaddons", "status"]),
+            "{}",
+            checked.run.context()
+        );
+    }
+    for args in [
+        &["status", "--format", "JSON"][..],
+        &["status", "--progress", "JSON", "--json"],
+    ] {
+        let argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        support::check(s.home.exec_with(&argv, &[]), 0);
+    }
+}
+
 #[test]
 fn repeated_runs_are_byte_identical() {
     let s = Scene::new();
