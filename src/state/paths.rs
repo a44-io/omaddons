@@ -661,8 +661,9 @@ mod tests {
 
     #[test]
     fn this_module_never_touches_the_filesystem() {
-        let source = include_str!("paths.rs");
-        let code = source.split("#[cfg(test)]").next().unwrap();
+        use crate::source_scan::{Literals, production_code};
+
+        let code = production_code(include_str!("paths.rs"), Literals::Blank).unwrap();
         for call in [
             "create_dir",
             "canonicalize",

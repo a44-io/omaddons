@@ -638,8 +638,9 @@ mod tests {
 
     #[test]
     fn selection_does_no_io() {
-        let source = include_str!("select.rs");
-        let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+        use crate::source_scan::{Literals, production_code};
+
+        let code = production_code(include_str!("select.rs"), Literals::Blank).unwrap_or_default();
         for banned in [
             "std::fs",
             "std::net",

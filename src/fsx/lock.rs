@@ -349,25 +349,18 @@ mod tests {
 
     #[test]
     fn no_code_path_truncates_renames_or_unlinks_the_lock_file() {
+        use crate::source_scan::{Literals, production_code, sources};
+
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut pending = vec![src];
         let mut referencing = Vec::new();
-        while let Some(dir) = pending.pop() {
-            for entry in fs::read_dir(dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    pending.push(path);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    let text = fs::read_to_string(&path).unwrap();
-                    let code = text.split("#[cfg(test)]").next().unwrap();
-                    if code.contains("lock_file") {
-                        referencing.push(
-                            path.strip_prefix(env!("CARGO_MANIFEST_DIR"))
-                                .unwrap()
-                                .to_path_buf(),
-                        );
-                    }
-                }
+        for (path, text) in sources(&src) {
+            let code = production_code(&text, Literals::Blank).unwrap_or_default();
+            if code.contains("lock_file") {
+                referencing.push(
+                    path.strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                        .unwrap()
+                        .to_path_buf(),
+                );
             }
         }
         referencing.sort();
@@ -380,8 +373,7 @@ mod tests {
             referencing, expected,
             "only the lock, the deny-list and the path table name the lock file"
         );
-        let lock_rs = include_str!("lock.rs");
-        let code = lock_rs.split("#[cfg(test)]").next().unwrap();
+        let code = production_code(include_str!("lock.rs"), Literals::Blank).unwrap();
         for forbidden in [
             ".truncate(true)",
             "remove_file",

@@ -1870,11 +1870,12 @@ mod tests {
 
     #[test]
     fn failpoints_list_every_engine_failpoint() {
+        use crate::source_scan::{Literals, production_code, sources};
+
         let mut found = BTreeSet::new();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine");
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
-            let code = text.split("#[cfg(test)]").next().unwrap_or_default();
+        for (_, text) in sources(&dir) {
+            let code = production_code(&text, Literals::Keep).unwrap_or_default();
             for (at, _) in code.match_indices("failpoint::hit(\"engine.") {
                 let rest = &code[at + "failpoint::hit(\"".len()..];
                 found.insert(rest.split('"').next().unwrap().to_owned());

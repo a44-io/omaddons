@@ -332,17 +332,10 @@ mod tests {
 
     /// Every `impl Versioned for T` outside tests, as `T`.
     fn versioned_impls(dir: &std::path::Path, found: &mut Vec<String>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                versioned_impls(&path, found);
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap();
-            let code = text.split("#[cfg(test)]").next().unwrap_or_default();
+        use crate::source_scan::{Literals, production_code, sources};
+
+        for (_, text) in sources(dir) {
+            let code = production_code(&text, Literals::Blank).unwrap_or_default();
             for (at, _) in code.match_indices("impl Versioned for ") {
                 let rest = &code[at + "impl Versioned for ".len()..];
                 let name: String = rest
