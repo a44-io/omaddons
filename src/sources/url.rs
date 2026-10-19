@@ -40,21 +40,34 @@ impl Source for UrlSource {
     }
 }
 
+/// The host of an https URL: no userinfo, no port, lowercase.
+pub fn url_host(url: &str) -> String {
+    let rest = url.strip_prefix("https://").unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    authority
+        .rsplit('@')
+        .next()
+        .unwrap_or(authority)
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// [`url_host`], and whether the `url:` source downloads from it (the hard allowlist).
+pub fn url_host_allowed(url: &str) -> (String, bool) {
+    let host = url_host(url);
+    let allowed = UrlSource::new().allowlist.permits(&host);
+    (host, allowed)
+}
+
 impl UrlSource {
     fn release_set(&self, r: &Ref) -> Result<ReleaseSet> {
         let Ref::Url { url } = r else {
             return Err(Error::internal(format!("the url source got {r}")));
         };
         let rest = url.strip_prefix("https://").unwrap_or(url);
-        let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-        let host = authority
-            .rsplit('@')
-            .next()
-            .unwrap_or(authority)
-            .split(':')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+        let host = url_host(url);
         if !self.allowlist.permits(&host) {
             return Err(Error::new(
                 ErrorCode::HostBlocked,
@@ -131,5 +144,26 @@ mod tests {
             fetch("https://addons.wago.io/x.zip").is_err(),
             "Wago is off in M1"
         );
+    }
+
+    #[test]
+    fn a_urls_host_is_checked_without_userinfo_or_port() {
+        for (url, host, allowed) in [
+            ("https://github.com/o/r/archive/x.zip", "github.com", true),
+            ("https://example.com/a.zip", "example.com", false),
+            ("https://user:pw@GitHub.com:443/o/r.zip", "github.com", true),
+            (
+                "https://evil.example@example.com/a.zip",
+                "example.com",
+                false,
+            ),
+            (
+                "https://cdn.wowinterface.com/downloads/x?d=1",
+                "cdn.wowinterface.com",
+                true,
+            ),
+        ] {
+            assert_eq!(url_host_allowed(url), (host.to_owned(), allowed), "{url}");
+        }
     }
 }

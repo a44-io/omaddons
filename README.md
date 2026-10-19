@@ -492,7 +492,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 | `cf:<id>`, `wago:<id>`, CurseForge and Wago links | CurseForge, Wago | parsed and refused with `source_disabled` ("arrives in M5"), unless `--file` supplies the archive |
 | an `https://` link to a `git_hosts` host, or ending in `.git` | `git:` | as `git:` above (`#fragment` becomes the rev) |
 | any other `https://` link | `url:` | refused at plan time unless its host is allowlisted |
-| `http://…` | | refused (`ref_invalid`), suggesting the https form |
+| `http://…` (also `url:http://…`, `git:http://…`) | | refused (`ref_invalid`), suggesting the https form when omaddons can fetch it; for a host it does not download from (`details.host`), the fix is to download the file and install the local path, and for a git host not in `git_hosts`, to add it |
 
 **Channels.** `--channel stable|beta|alpha`. The default is the addon's recorded channel, then `default_channel`, then `stable`. On GitHub, `alpha` behaves like `beta`, and the newest 20 releases are considered.
 

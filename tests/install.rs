@@ -2068,3 +2068,48 @@ fn a_byte_identical_reinstall_of_a_directory_is_no_only_copy() {
         r.context()
     );
 }
+
+/// An http ref is refused, and its fix is never an https URL that is then blocked: for
+/// a host omaddons does not download from, the fix is to download the file; a fetchable
+/// https form is suggested, aimed at the running command.
+#[test]
+fn an_http_ref_never_suggests_a_url_that_is_then_blocked() {
+    let home = Home::new(&["wow"]);
+    let error = |args: &[&str]| -> serde_json::Value {
+        let r = home.run(args);
+        r.expect(2)["error"].clone()
+    };
+    for args in [
+        &["install", "http://example.com/a.zip", "-t", "retail"][..],
+        &["install", "url:http://example.com/a.zip", "-t", "retail"][..],
+        &["info", "http://example.com/a.zip"][..],
+    ] {
+        let e = error(args);
+        assert_eq!(
+            (&e["code"], &e["fix_argv"], &e["details"]["host"]),
+            (
+                &serde_json::json!("ref_invalid"),
+                &serde_json::Value::Null,
+                &serde_json::json!("example.com")
+            ),
+            "{args:?}: {e}"
+        );
+        assert!(
+            e["fix"]
+                .as_str()
+                .is_some_and(|f| f.starts_with("download the file in a browser")),
+            "{e}"
+        );
+    }
+    let e = error(&["install", "http://github.com/o/r", "-t", "retail"]);
+    assert_eq!(
+        e["fix_argv"],
+        serde_json::json!([
+            "omaddons",
+            "install",
+            "https://github.com/o/r",
+            "-t",
+            "retail"
+        ])
+    );
+}

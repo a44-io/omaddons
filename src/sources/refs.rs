@@ -70,6 +70,13 @@ pub fn parse_user_ref(input: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
     if input.is_empty() {
         return Err(invalid(input, "it is empty"));
     }
+    // `http://`, bare or as a `url:` or `git:` ref, is refused: omaddons fetches over
+    // https only.
+    for http in ["http://", "url:http://", "git:http://"] {
+        if input.starts_with(http) {
+            return Err(not_https(input, ctx));
+        }
+    }
     if let Some(prefix) = input.split_once(':').map(|(p, _)| p)
         && RefKind::ALL.iter().any(|k| k.prefix() == prefix)
     {
@@ -78,15 +85,65 @@ pub fn parse_user_ref(input: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
     if let Some(rest) = input.strip_prefix("https://") {
         return url(input, rest, ctx);
     }
-    if input.starts_with("http://") {
-        let https = input.replacen("http://", "https://", 1);
-        return Err(Error::new(
-            ErrorCode::RefInvalid,
-            format!("{input:?} is not https; omaddons fetches over https only"),
-            Suggestion::command(["omaddons", "install", &https]),
-        ));
-    }
     local_or_name(input, ctx)
+}
+
+/// `ref_invalid` for an `http://` input. Its https form is the fix only when omaddons
+/// can fetch it: for a URL on a host it does not download from, or a git host not in
+/// `git_hosts`, the fix is what the source would say. When the https form is malformed
+/// too, its own problem is the error.
+fn not_https(input: &str, ctx: &RefContext<'_>) -> Error {
+    let https = input.replacen("http://", "https://", 1);
+    let not = format!("{input:?} is not https");
+    let blocked = |host: &str, fix: Suggestion| {
+        Error::new(
+            ErrorCode::RefInvalid,
+            format!("{not}, and {host} is not a host omaddons downloads from"),
+            fix,
+        )
+        .details(serde_json::json!({ "host": host }))
+    };
+    match parse_user_ref(&https, ctx) {
+        Ok(parsed) => match &parsed.r#ref {
+            Ref::Url { url } => match super::url::url_host_allowed(url) {
+                (_, true) => suggest_https(&not, &https),
+                (host, false) => blocked(
+                    &host,
+                    Suggestion::text(
+                        "download the file in a browser, then: omaddons install <path>",
+                    ),
+                ),
+            },
+            Ref::Git { url, .. } => {
+                let host = super::url::url_host(url);
+                let listed = host == "github.com"
+                    || ctx.git_hosts.iter().any(|h| h.eq_ignore_ascii_case(&host));
+                if listed {
+                    suggest_https(&not, &https)
+                } else {
+                    blocked(
+                        &host,
+                        Suggestion::text(format!(
+                            "add it to git_hosts: omaddons config set git_hosts '[\"{host}\"]' (keep any hosts already listed)"
+                        )),
+                    )
+                }
+            }
+            _ => suggest_https(&not, &https),
+        },
+        Err(mut e) => {
+            e.message = format!("{not}; and with https: {}", e.message);
+            e
+        }
+    }
+}
+
+fn suggest_https(not: &str, https: &str) -> Error {
+    Error::new(
+        ErrorCode::RefInvalid,
+        format!("{not}; omaddons fetches over https only"),
+        Suggestion::command(["omaddons", "install", https]),
+    )
 }
 
 fn parsed(r#ref: Ref, matched_by: MatchKind) -> ParsedRef {
@@ -632,6 +689,70 @@ mod tests {
         ("nonexistent-addon", "not_found", None, None, None),
         ("", "ref_invalid", None, None, None),
     ];
+
+    /// An http input is `ref_invalid`, and its fix is its https form only when that can
+    /// be fetched: a host omaddons does not download from (or a git host not in
+    /// `git_hosts`) gets the source's own advice, and a malformed https form its error.
+    /// No suggested argv names a `url:` on a blocked host.
+    #[test]
+    fn an_http_ref_suggests_https_only_when_it_can_be_fetched() {
+        let dir = tempfile::tempdir().unwrap();
+        with_ctx(dir.path(), |ctx| {
+            for (input, fix, host) in [
+                (
+                    "http://github.com/o/r",
+                    Some("https://github.com/o/r"),
+                    None,
+                ),
+                (
+                    "http://www.wowinterface.com/downloads/info123-x.html",
+                    Some("https://www.wowinterface.com/downloads/info123-x.html"),
+                    None,
+                ),
+                ("http://example.com/a.zip", None, Some("example.com")),
+                ("url:http://example.com/a.zip", None, Some("example.com")),
+                (
+                    "url:http://github.com/o/r/archive/x.zip",
+                    Some("url:https://github.com/o/r/archive/x.zip"),
+                    None,
+                ),
+                (
+                    "git:http://github.com/o/r",
+                    Some("git:https://github.com/o/r"),
+                    None,
+                ),
+                (
+                    "git:http://codeberg.org/a/b.git",
+                    Some("git:https://codeberg.org/a/b.git"),
+                    None,
+                ),
+                (
+                    "git:http://git.example.org/a.git",
+                    None,
+                    Some("git.example.org"),
+                ),
+            ] {
+                let e = parse_user_ref(input, ctx).unwrap_err();
+                assert_eq!(e.code, ErrorCode::RefInvalid, "{input}");
+                let argv = e.fix.argv().map(<[String]>::to_vec);
+                assert_eq!(
+                    argv.as_ref().and_then(|a| a.last()).map(String::as_str),
+                    fix,
+                    "{input}: {}",
+                    e.fix.display()
+                );
+                assert_eq!(e.details["host"].as_str(), host, "{input}");
+                if let Some(fixed) = argv.as_ref().and_then(|a| a.last()) {
+                    let r = parse_user_ref(fixed, ctx).unwrap().r#ref;
+                    if let Ref::Url { url } = &r {
+                        assert!(super::super::url::url_host_allowed(url).1, "{fixed}");
+                    }
+                }
+            }
+            let e = parse_user_ref("http://github.com/a_b/c", ctx).unwrap_err();
+            assert!(e.message.contains("and with https:"), "{}", e.message);
+        });
+    }
 
     #[test]
     fn every_input_class() {
