@@ -1,7 +1,8 @@
 //! `omaddons info <ref|addon> [-t T]`: what an addon is and what installing it would
 //! get. The installed records across targets, the catalog entry, and the newest stable
-//! release with the targets that have a candidate for it (metadata only: nothing is
-//! downloaded or verified; `install` verifies). `--changelog` adds the release notes of
+//! release with how likely it is to load on each target (what plans proved, its
+//! metadata, the catalog's families: nothing is downloaded or verified; `install`
+//! verifies). `--changelog` adds the release notes of
 //! every release newer than the oldest installed one (`sources::changelog`).
 //!
 //! Release metadata comes through the release memo: a check from the last 15 minutes is
@@ -25,7 +26,7 @@ use crate::discover::DiscoveredTarget;
 use crate::drift::{DriftMode, DriftState};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{
-    AddonReason, AddonState, Channel, FolderName, Ref, ReleaseSet, TxId, VersionConfidence,
+    AddonReason, AddonState, Channel, FolderName, Ref, ReleaseSet, Target, TxId, VersionConfidence,
 };
 use crate::net::{NetConfig, NetLog, stack};
 use crate::output::{Outcome, Style};
@@ -33,12 +34,14 @@ use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::{Freshness, ReleaseCache};
 use crate::resolve::catalog::Catalog;
 use crate::resolve::select::{newest, select};
+use crate::resolve::updates::{Confidence, rank_confidence};
 use crate::rules::Family;
 use crate::sources::changelog::{
     Changelog, ChangelogUnavailable, Installed, changelog_for, human_lines, oldest_since,
 };
 use crate::sources::git_hosts::GitRunner;
 use crate::sources::{SourceRegistry, Wanted};
+use crate::state::memo::FactIndex;
 
 /// `info`'s own arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -119,11 +122,68 @@ pub struct Latest {
     pub channel: Channel,
     /// release.json flavor names, when the release has them.
     pub flavors: Vec<String>,
-    /// Targets with a metadata candidate (not verified).
+    /// The selected targets it is `verified`, `declared` or `likely` to load on, sorted.
     pub targets: Vec<String>,
+    /// For each selected target, how likely it is to load ([`judge`]). A hint only:
+    /// `install` verifies every TOC.
+    pub compat: std::collections::BTreeMap<String, LoadHint>,
     /// `-v` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asset_urls: Option<Vec<String>>,
+}
+
+/// How likely the newest release is to load on one client: `outdated`'s words, plus
+/// `blocked` for what a plan proved does not load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadHint {
+    /// A plan verified a candidate loads here.
+    Verified,
+    /// Its release metadata names this client.
+    Declared,
+    /// Nothing says otherwise.
+    Likely,
+    /// The metadata names other clients only, or the catalog none of its families.
+    Unlikely,
+    /// A plan verified that no candidate loads here.
+    Blocked,
+}
+
+impl LoadHint {
+    fn likely(self) -> bool {
+        matches!(self, Self::Verified | Self::Declared | Self::Likely)
+    }
+}
+
+/// `set`'s newest stable release on `target`, by the first rule that says something:
+/// what plans proved (`facts`); else what its best candidate's metadata says (it
+/// describes this very release); else the catalog's `families`, when it lists any (a
+/// `git:` or `url:` release carries no metadata); else likely.
+fn judge(set: &ReleaseSet, target: &Target, facts: &FactIndex, families: &[Family]) -> LoadHint {
+    let candidates = select(set, target, Channel::Stable, None).candidates;
+    let Some(best) = candidates.first() else {
+        return LoadHint::Unlikely;
+    };
+    let rules = target.rules.name.as_str();
+    let verdicts: Vec<_> = candidates
+        .iter()
+        .map(|c| facts.verdict(&c.release_id, &c.asset.filename, rules, target.interface))
+        .collect();
+    if verdicts.iter().flatten().any(|v| v.loads) {
+        return LoadHint::Verified;
+    }
+    if verdicts.iter().all(|v| v.is_some_and(|v| !v.loads)) {
+        return LoadHint::Blocked;
+    }
+    match rank_confidence(best.rank) {
+        Confidence::Declared => LoadHint::Declared,
+        Confidence::Unlikely => LoadHint::Unlikely,
+        Confidence::Verified | Confidence::Likely if families.is_empty() => LoadHint::Likely,
+        Confidence::Verified | Confidence::Likely if families.contains(&target.family) => {
+            LoadHint::Likely
+        }
+        Confidence::Verified | Confidence::Likely => LoadHint::Unlikely,
+    }
 }
 
 /// `info`'s outcome.
@@ -156,7 +216,7 @@ impl Outcome for InfoOutcome {
         self.partial
     }
 
-    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
+    fn render_human(&self, w: &mut dyn Write, style: &Style) -> std::io::Result<()> {
         let d = &self.data;
         let name = d.name.as_deref().unwrap_or(&d.query);
         writeln!(w, "{name}  {}", d.r#ref)?;
@@ -208,20 +268,33 @@ impl Outcome for InfoOutcome {
             )?;
         }
         match (&d.latest, d.offline) {
-            (Some(l), _) if l.targets.is_empty() => {
-                writeln!(
-                    w,
-                    "  latest: {} · no candidate for any target here",
-                    l.version
-                )?;
-            }
             (Some(l), _) => {
-                writeln!(
-                    w,
-                    "  latest: {} · candidates for {}",
-                    l.version,
-                    l.targets.join(", ")
-                )?;
+                let not: Vec<&str> = l
+                    .compat
+                    .iter()
+                    .filter(|(_, hint)| !hint.likely())
+                    .map(|(id, _)| id.as_str())
+                    .collect();
+                let likely = l.targets.join(", ");
+                let line = match (l.targets.is_empty(), not.is_empty()) {
+                    (true, _) => format!(
+                        "latest: {} · not likely to load on any client here",
+                        l.version
+                    ),
+                    (false, true) => format!("latest: {} · likely to load on {likely}", l.version),
+                    (false, false) => format!(
+                        "latest: {} · likely to load on {likely} · not on {}",
+                        l.version,
+                        not.join(", ")
+                    ),
+                };
+                writeln!(w, "  {line}")?;
+                if style.verbose > 0 {
+                    for (id, hint) in &l.compat {
+                        let hint = serde_json::to_value(hint).unwrap_or_default();
+                        writeln!(w, "    {id}: {}", hint.as_str().unwrap_or_default())?;
+                    }
+                }
             }
             (None, true) => writeln!(w, "  latest: not checked (offline)")?,
             (None, false) => writeln!(w, "  latest: unavailable")?,
@@ -366,11 +439,19 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
             || Err(Error::internal("the fetch returned nothing for the ref")),
             |f| f.set,
         );
+    // What plans learned, for judging each client (taken before the cache is spent).
+    let facts = cache.facts().clone();
     // Before any error return: a remembered failure is worth keeping too.
     let remembered = cache.remember(&[]);
     warnings.extend(remembered.warnings);
     let (latest, partial, set) = match fetched {
-        Ok(set) => (Some(latest(&set, &targets, verbose)), false, Some(set)),
+        Ok(set) => {
+            let families = catalog_info
+                .as_ref()
+                .map_or(&[][..], |c| c.families.as_slice());
+            let found = latest(&set, &targets, verbose, &facts, families);
+            (Some(found), false, Some(set))
+        }
         // Offline with nothing remembered: the local part only, as in M1.
         Err(_) if ctx.offline => (None, false, None),
         Err(error) if known_locally => {
@@ -419,7 +500,13 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
 
 /// The newest stable release and the targets with a candidate for it; `None` when the
 /// source lists no stable release.
-fn latest(set: &ReleaseSet, targets: &[&DiscoveredTarget], verbose: bool) -> Option<Latest> {
+fn latest(
+    set: &ReleaseSet,
+    targets: &[&DiscoveredTarget],
+    verbose: bool,
+    facts: &FactIndex,
+    families: &[Family],
+) -> Option<Latest> {
     let release = newest(set, Channel::Stable)?;
     let mut flavors: Vec<String> = release
         .assets
@@ -428,16 +515,15 @@ fn latest(set: &ReleaseSet, targets: &[&DiscoveredTarget], verbose: bool) -> Opt
         .collect();
     flavors.sort();
     flavors.dedup();
-    let mut with_candidate: Vec<String> = targets
+    let compat: std::collections::BTreeMap<String, LoadHint> = targets
         .iter()
-        .filter(|d| {
-            !select(set, &d.target, Channel::Stable, None)
-                .candidates
-                .is_empty()
-        })
-        .map(|d| d.target.id.clone())
+        .map(|d| (d.target.id.clone(), judge(set, &d.target, facts, families)))
         .collect();
-    with_candidate.sort();
+    let likely: Vec<String> = compat
+        .iter()
+        .filter(|(_, hint)| hint.likely())
+        .map(|(id, _)| id.clone())
+        .collect();
     let urls = verbose.then(|| {
         release
             .assets
@@ -458,7 +544,8 @@ fn latest(set: &ReleaseSet, targets: &[&DiscoveredTarget], verbose: bool) -> Opt
         release_id: release.release_id.clone(),
         channel: release.channel,
         flavors,
-        targets: with_candidate,
+        targets: likely,
+        compat,
         asset_urls: urls,
     })
 }

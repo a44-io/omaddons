@@ -262,16 +262,24 @@ pub fn evaluate(
         };
     }
     // 8. An update, and how likely it is to load.
-    let confidence = match (loading, best.rank) {
+    let confidence = match (loading, rank_confidence(best.rank)) {
         (Some(_), _) => Confidence::Verified,
-        (None, RankReason::MetadataInterface | RankReason::MetadataFlavor) if by_toc => {
-            Confidence::Likely
-        }
-        (None, RankReason::MetadataInterface | RankReason::MetadataFlavor) => Confidence::Declared,
-        (None, RankReason::NameHint | RankReason::Unannotated) => Confidence::Likely,
-        (None, RankReason::NameHintMismatch | RankReason::MetadataMismatch) => Confidence::Unlikely,
+        // Installed with only a TOC version: metadata is no more than likely.
+        (None, Confidence::Declared) if by_toc => Confidence::Likely,
+        (None, confidence) => confidence,
     };
     UpdateStatus::UpdateAvailable { latest, confidence }
+}
+
+/// How likely a release is to load on a client from its best candidate's rank alone (no
+/// plan verified it): the publisher's metadata naming the client is `declared`, naming
+/// others only `unlikely`, saying nothing `likely`. `outdated` and `info` share it.
+pub fn rank_confidence(rank: RankReason) -> Confidence {
+    match rank {
+        RankReason::MetadataInterface | RankReason::MetadataFlavor => Confidence::Declared,
+        RankReason::NameHint | RankReason::Unannotated => Confidence::Likely,
+        RankReason::NameHintMismatch | RankReason::MetadataMismatch => Confidence::Unlikely,
+    }
 }
 
 fn unchecked(reason: UncheckedReason) -> UpdateStatus {

@@ -300,3 +300,65 @@ fn net_log_without_a_log_is_empty() {
         (&serde_json::json!([]), &Value::from(0))
     );
 }
+
+/// `latest` says, per selected client, how likely the newest release is to load: what
+/// its metadata declares, what a plan proved since, and, for a release with no metadata,
+/// the catalog's families.
+#[test]
+fn latest_judges_each_client_by_metadata_plans_and_the_catalog() {
+    let home = Home::new(&["wow", "wow_classic"]);
+    // A release whose release.json names Mists only, with a Mists-only TOC.
+    let toc = "## Interface: 50504\n## Version: 1.0\n";
+    let assets: [Asset<'_>; 1] = [(
+        "Mists-1.0.zip",
+        &[("mists", 50_504)],
+        vec![("Mists/Mists.toc", toc)],
+    )];
+    gh_release(&home.http, "https://github.com/o/mists", "1.0", &assets);
+    let latest = |args: &[&str]| -> Value {
+        let r = home.run(args);
+        r.expect(0)["data"]["latest"].clone()
+    };
+    let l = latest(&["info", "gh:o/mists"]);
+    assert_eq!(l["targets"], serde_json::json!(["classic"]), "{l}");
+    assert_eq!(
+        l["compat"],
+        serde_json::json!({"classic": "declared", "retail": "unlikely"})
+    );
+    let human = home.exec(&["info".to_owned(), "gh:o/mists".to_owned()]);
+    assert!(
+        human
+            .stdout
+            .contains("latest: 1.0 · likely to load on classic · not on retail"),
+        "{}",
+        human.stdout
+    );
+
+    // A plan proves it does not load on retail.
+    let r = home.run(&["install", "gh:o/mists", "-t", "retail", "--dry-run"]);
+    assert_ne!(r.code, 0, "{}", r.context());
+    let l = latest(&["info", "gh:o/mists"]);
+    assert_eq!(l["compat"]["retail"], "blocked", "{l}");
+
+    // No metadata at all: the catalog's families decide.
+    let plain: [Asset<'_>; 1] = [(
+        "Legacy-2.0.zip",
+        &[],
+        vec![("Legacy/Legacy.toc", "## Interface: 50504\n")],
+    )];
+    gh_release(&home.http, "https://github.com/o/legacy", "2.0", &plain);
+    let dir = home.env.config().join("omaddons/catalog.d");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("50-info.toml"),
+        "schema_version = \"1.0\"\n\n[[addon]]\nname = \"Legacy\"\nref = \"gh:o/legacy\"\nfamilies = [\"mists\"]\nfolders = [\"Legacy\"]\n",
+    )
+    .unwrap();
+    let l = latest(&["info", "legacy"]);
+    assert_eq!(
+        l["compat"],
+        serde_json::json!({"classic": "likely", "retail": "unlikely"}),
+        "{l}"
+    );
+    assert_eq!(l["targets"], serde_json::json!(["classic"]));
+}

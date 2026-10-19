@@ -1,6 +1,5 @@
 ---
 source: tests/contract/matrix.rs
-assertion_line: 200
 expression: s.stable(&c.envelope)
 ---
 {
@@ -91,6 +90,10 @@ expression: s.stable(&c.envelope)
     ],
     "latest": {
       "channel": "stable",
+      "compat": {
+        "classic": "declared",
+        "retail": "declared"
+      },
       "flavors": [
         "mainline",
         "mists"

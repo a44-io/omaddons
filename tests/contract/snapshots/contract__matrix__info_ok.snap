@@ -31,6 +31,10 @@ expression: s.stable(&c.envelope)
     "installed": [],
     "latest": {
       "channel": "stable",
+      "compat": {
+        "classic": "declared",
+        "retail": "declared"
+      },
       "flavors": [
         "mainline",
         "mists"
