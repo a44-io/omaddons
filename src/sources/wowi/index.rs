@@ -135,15 +135,31 @@ pub struct IndexLoad {
     pub index: Option<WowiIndex>,
     pub warnings: Vec<Warning>,
     pub diagnostics: Vec<String>,
+    /// Why the fetch this load attempted failed; a stored index may still be in use.
+    pub failure: Option<Error>,
+    /// The policy allowed no request (`--offline`).
+    offline: bool,
 }
 
 impl IndexLoad {
-    /// `{source: wowi, reason: no_index}` when there is no index to use.
+    /// Why WoWInterface gives nothing, when there is no index to use: `offline` when no
+    /// request was allowed, else what the failed fetch says (`rate_limited` with when it
+    /// lifts, else `no_index`).
     pub fn skipped(&self) -> Option<SourceSkipped> {
-        self.index.is_none().then_some(SourceSkipped {
-            source: SourceId::Wowi,
-            reason: SourceSkipReason::NoIndex,
-            reset_at: None,
+        if self.index.is_some() {
+            return None;
+        }
+        Some(match &self.failure {
+            Some(error) if !self.offline => SourceSkipped::for_error(SourceId::Wowi, error),
+            _ => SourceSkipped {
+                source: SourceId::Wowi,
+                reason: if self.offline {
+                    SourceSkipReason::Offline
+                } else {
+                    SourceSkipReason::NoIndex
+                },
+                reset_at: None,
+            },
         })
     }
 }
@@ -200,7 +216,10 @@ impl WowiIndex {
         policy: IndexPolicy,
         now: Timestamp,
     ) -> Result<IndexLoad> {
-        let mut load = IndexLoad::default();
+        let mut load = IndexLoad {
+            offline: policy == IndexPolicy::Offline,
+            ..IndexLoad::default()
+        };
         let stored = load_stored(paths, &mut load.diagnostics);
         let fresh = stored
             .as_ref()
@@ -208,7 +227,7 @@ impl WowiIndex {
         if policy == IndexPolicy::Offline || (policy == IndexPolicy::Auto && fresh) {
             if let Some(s) = stored {
                 if !fresh {
-                    load.warnings.push(stale(s.fetched_at));
+                    load.warnings.push(stale(s.fetched_at, None));
                 }
                 load.index = Some(Self::build(s));
             }
@@ -226,9 +245,10 @@ impl WowiIndex {
                 load.diagnostics
                     .push(format!("WoWInterface file list: {}", error.message));
                 if let Some(s) = stored {
-                    load.warnings.push(stale(s.fetched_at));
+                    load.warnings.push(stale(s.fetched_at, Some(&error)));
                     load.index = Some(Self::build(s));
                 }
+                load.failure = Some(error);
             }
         }
         Ok(load)
@@ -260,12 +280,17 @@ fn is_fresh(fetched_at: Timestamp, max_age_s: u64, now: Timestamp) -> bool {
     fetched_at <= now && now.duration_since(fetched_at).unsigned_abs() < window
 }
 
-fn stale(fetched_at: Timestamp) -> Warning {
-    Warning::new(
-        WarningCode::StaleCheck,
-        format!("the WoWInterface index is from {fetched_at}"),
-    )
-    .with_fix(Suggestion::text(
+/// `stale_check` for a stored index in use past its window; `refresh` is why fetching a
+/// newer one failed, when one was tried.
+fn stale(fetched_at: Timestamp, refresh: Option<&Error>) -> Warning {
+    let message = match refresh {
+        Some(error) => format!(
+            "the WoWInterface index is from {fetched_at}; refreshing it failed: {}",
+            error.message
+        ),
+        None => format!("the WoWInterface index is from {fetched_at}"),
+    };
+    Warning::new(WarningCode::StaleCheck, message).with_fix(Suggestion::text(
         "run the command again online to refresh it",
     ))
 }
@@ -581,6 +606,47 @@ mod tests {
         assert_eq!(
             IndexPolicy::from(Freshness::OfflineOnly),
             IndexPolicy::Offline
+        );
+    }
+
+    /// A failed fetch is kept for the caller; a stored index past its window still
+    /// answers, and its `stale_check` names the failed refresh.
+    #[test]
+    fn a_failed_fetch_is_kept_and_named_by_the_stale_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::with_roots(
+            dir.path(),
+            dir.path().join("c"),
+            dir.path().join("s"),
+            dir.path().join("k"),
+        );
+        let http = crate::engine::testing::NoNetwork;
+        let now = Timestamp::now();
+        let reason = |load: &IndexLoad| load.skipped().map(|s| s.reason);
+
+        let load = WowiIndex::load_or_refresh_at(&paths, &http, IndexPolicy::Auto, now).unwrap();
+        assert!(load.index.is_none() && load.failure.is_some());
+        assert_eq!(reason(&load), Some(SourceSkipReason::NoIndex));
+        let offline =
+            WowiIndex::load_or_refresh_at(&paths, &http, IndexPolicy::Offline, now).unwrap();
+        assert!(offline.failure.is_none());
+        assert_eq!(reason(&offline), Some(SourceSkipReason::Offline));
+
+        let old = StoredIndex {
+            fetched_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            max_age_s: 0,
+            entries: Vec::new(),
+        };
+        write_stored(&paths, &old).unwrap();
+        let load = WowiIndex::load_or_refresh_at(&paths, &http, IndexPolicy::Auto, now).unwrap();
+        assert!(load.index.is_some() && load.failure.is_some());
+        assert_eq!(reason(&load), None);
+        let message = &load.warnings[0].message;
+        assert!(
+            message.starts_with(
+                "the WoWInterface index is from 2026-01-01T00:00:00Z; refreshing it failed: "
+            ),
+            "{message}"
         );
     }
 }

@@ -1091,7 +1091,7 @@ Each result says, for every selected client, whether it is likely to load. This 
 
 Names, authors and versions from WoWInterface are shown with their HTML entities decoded (`&amp;` is `&`). Text from any source loses its control characters (so it cannot send terminal escapes) and the characters that reorder or hide text, and is cut at 200 characters.
 
-`commands` holds `omaddons install <ref> -t <client>` for up to three results, each on its best client, never for `no`, `unlikely` or `abandoned`. A source not consulted is listed in `sources_skipped` (`offline`, `rate_limited` with `reset_at`, `disabled`, `no_index`). A spent GitHub search is not a failure; any other source failure makes the run `partial`. `--offline` searches the catalog, the stored index and the remembered Tukui list.
+`commands` holds `omaddons install <ref> -t <client>` for up to three results, each on its best client, never for `no`, `unlikely` or `abandoned`. A source not consulted is listed in `sources_skipped` (`offline`, `rate_limited` with `reset_at`, `disabled`, `no_index`). A spent GitHub search is not a failure. Any other source that could not be read makes the run `partial`, with a warning naming the failure: its fetch failed, or it is rate limited. A stored WoWInterface index that answers because a refresh failed is no failure: its `stale_check` warning says the refresh failed and why. `--offline` searches the catalog, the stored index and the remembered Tukui list, and lists the other sources `offline`.
 
 ### `info <REF>`
 

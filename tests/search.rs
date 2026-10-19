@@ -5,11 +5,13 @@
 
 mod common;
 
+use std::fs;
+
 use common::archives::zip_text;
 use common::home::Home;
-use common::http::{github_search, github_search_spent, replay};
+use common::http::{Resp, fixture_seq, github_search, github_search_spent, replay};
 use common::netlog::net_log;
-use common::tukui::{elvui, tukui_list};
+use common::tukui::{LIST as TUKUI_LIST, elvui, tukui_list};
 use common::wowi::{FileEntry, details, wowi_details, wowi_file, wowi_filelist};
 use serde_json::{Value, json};
 use support::{refs, results};
@@ -250,7 +252,7 @@ fn offline_answers_from_the_catalog_and_the_stored_index_without_a_request() {
         envelope["data"]["sources_skipped"],
         json!([{"source": "github", "reason": "offline"}])
     );
-    // Offline and nothing stored: the index is not there.
+    // Offline and nothing stored: WoWInterface, like Tukui, was not asked.
     let fresh = Home::new(&["wow"]);
     let r = fresh.run(&["search", "weakauras", "--offline"]);
     let envelope = r.expect(0);
@@ -265,12 +267,13 @@ fn offline_answers_from_the_catalog_and_the_stored_index_without_a_request() {
         skipped,
         [
             (&json!("github"), &json!("offline")),
-            (&json!("wowi"), &json!("no_index")),
+            (&json!("wowi"), &json!("offline")),
             (&json!("tukui"), &json!("offline"))
         ],
         "{}",
         r.context()
     );
+    assert_eq!(envelope["partial"], false, "{}", r.context());
 }
 
 #[test]
@@ -511,5 +514,91 @@ fn dbm_finds_deadly_boss_mods_first_and_no_database_tools() {
             .contains("GitHub: 2 repositories without a WoW marker dropped"),
         "{}",
         r.context()
+    );
+}
+
+/// The `code: message` of each warning.
+fn warning_texts(envelope: &Value) -> Vec<String> {
+    envelope["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|w| {
+            format!(
+                "{}: {}",
+                w["code"].as_str().unwrap_or_default(),
+                w["message"].as_str().unwrap_or_default()
+            )
+        })
+        .collect()
+}
+
+/// A WoWInterface index that cannot be fetched: with nothing stored, the run is partial
+/// and says why. With a stored index past its window, its results stand, the run is not
+/// partial, and `stale_check` names the failed refresh.
+#[test]
+fn a_failed_wowi_fetch_is_partial_unless_a_stored_index_answers() {
+    let home = Home::new(&["wow"]);
+    let r = home.run(&["search", "bugsack", "--source", "wowi"]);
+    let envelope = r.expect(0);
+    assert_eq!(envelope["partial"], true, "{}", r.context());
+    assert_eq!(
+        envelope["data"]["sources_skipped"],
+        json!([{"source": "wowi", "reason": "no_index"}])
+    );
+    let texts = warning_texts(&envelope);
+    assert!(
+        texts.iter().any(|t| t.contains("the WoWInterface index: ")),
+        "{texts:?}"
+    );
+
+    wowi_filelist(&home.http, &[FileEntry::new(1, "BugSack", &["BugSack"])]);
+    home.run(&["search", "bugsack", "--source", "wowi"])
+        .expect(0);
+    // Past its window, and the file list is gone.
+    let index = home.env.cache().join("omaddons/wowi/index.json");
+    let mut stored: Value = serde_json::from_str(&fs::read_to_string(&index).unwrap()).unwrap();
+    stored["fetched_at"] = json!("2026-01-01T00:00:00Z");
+    fs::write(&index, stored.to_string()).unwrap();
+    fs::remove_file(home.http.join("api.mmoui.com/wowi-filelist.json")).unwrap();
+    let r = home.run(&["search", "bugsack", "--source", "wowi"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        (&envelope["partial"], refs(&envelope)),
+        (&json!(false), vec!["wowi:1"]),
+        "{}",
+        r.context()
+    );
+    let texts = warning_texts(&envelope);
+    assert!(
+        texts.iter().any(|t| t.starts_with(
+            "stale_check: the WoWInterface index is from 2026-01-01T00:00:00Z; refreshing it failed: "
+        )),
+        "{texts:?}"
+    );
+}
+
+/// A rate-limited Tukui list is a failure, unlike a spent GitHub search: the run is
+/// partial, and the list is skipped `rate_limited` with when the limit lifts.
+#[test]
+fn a_rate_limited_tukui_list_makes_the_run_partial() {
+    let home = Home::new(&["wow"]);
+    let limited = Resp::status(429).header("retry-after", "3600");
+    fixture_seq(&home.http, "tukui-list", TUKUI_LIST, &[limited]);
+    let r = home.run(&["search", "elvui", "--source", "tukui"]);
+    let envelope = r.expect(0);
+    assert_eq!(envelope["partial"], true, "{}", r.context());
+    let skipped = &envelope["data"]["sources_skipped"][0];
+    assert_eq!(
+        (&skipped["source"], &skipped["reason"]),
+        (&json!("tukui"), &json!("rate_limited")),
+        "{}",
+        r.context()
+    );
+    assert!(skipped["reset_at"].is_string(), "{}", r.context());
+    let texts = warning_texts(&envelope);
+    assert!(
+        texts.iter().any(|t| t.contains("the Tukui list: ")),
+        "{texts:?}"
     );
 }

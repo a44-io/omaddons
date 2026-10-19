@@ -47,6 +47,25 @@ pub struct SourceSkipped {
     pub reset_at: Option<jiff::Timestamp>,
 }
 
+impl SourceSkipped {
+    /// What a failed read of `source` leaves: `offline`, `rate_limited` (with when it
+    /// lifts, from the error's `reset_at`), else `no_index`.
+    pub fn for_error(source: SourceId, error: &Error) -> Self {
+        let reason = match error.code {
+            ErrorCode::Offline => SourceSkipReason::Offline,
+            ErrorCode::RateLimited => SourceSkipReason::RateLimited,
+            _ => SourceSkipReason::NoIndex,
+        };
+        Self {
+            source,
+            reason,
+            reset_at: error.details["reset_at"]
+                .as_str()
+                .and_then(|t| t.parse().ok()),
+        }
+    }
+}
+
 /// Why a source was not consulted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

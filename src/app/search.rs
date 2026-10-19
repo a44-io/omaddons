@@ -258,20 +258,19 @@ fn check_limit(args: &SearchArgs) -> Result<usize> {
     ))
 }
 
-/// Why a source could not be consulted, as `sources_skipped` says it.
-fn skip_reason(error: &Error) -> SourceSkipReason {
-    match error.code {
-        ErrorCode::Offline => SourceSkipReason::Offline,
-        ErrorCode::RateLimited => SourceSkipReason::RateLimited,
-        _ => SourceSkipReason::NoIndex,
+/// The warning for a source the run could not read, when that is a failure (the run is
+/// `partial`): anything but `offline`, which the user asked for, and `disabled`, which
+/// config says. `what` names the source in the message ("the Tukui list").
+fn source_failure(what: &str, skipped: &SourceSkipped, error: &Error) -> Option<Warning> {
+    if matches!(
+        skipped.reason,
+        SourceSkipReason::Offline | SourceSkipReason::Disabled
+    ) {
+        return None;
     }
-}
-
-/// When a rate limit lifts, from its error's details.
-fn reset_at(error: &Error) -> Option<Timestamp> {
-    error.details["reset_at"]
-        .as_str()
-        .and_then(|t| t.parse().ok())
+    let mut warning = Warning::item(error);
+    warning.message = format!("{what}: {}", error.message);
+    Some(warning)
 }
 
 /// Runs `search`.
@@ -346,7 +345,16 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
             Ok(load) => {
                 warnings.extend(load.warnings.iter().cloned());
                 notes.extend(load.diagnostics.iter().cloned());
+                // A stored index used after a failed refresh is no failure: its
+                // `stale_check` says so.
                 if let Some(s) = load.skipped() {
+                    let failed = load.failure.as_ref();
+                    if let Some(warning) =
+                        failed.and_then(|e| source_failure("the WoWInterface index", &s, e))
+                    {
+                        partial = true;
+                        warnings.push(warning);
+                    }
                     skip(s.source, s.reason, s.reset_at);
                 }
                 if let Some(index) = &load.index {
@@ -375,8 +383,12 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
                 }
             }
             Err(error) => {
-                notes.push(format!("the WoWInterface index: {}", error.message));
-                skip(SourceId::Wowi, skip_reason(&error), reset_at(&error));
+                let s = SourceSkipped::for_error(SourceId::Wowi, &error);
+                if let Some(warning) = source_failure("the WoWInterface index", &s, &error) {
+                    partial = true;
+                    warnings.push(warning);
+                }
+                skip(s.source, s.reason, s.reset_at);
             }
         }
         progress("the WoWInterface index");
@@ -387,17 +399,12 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
         match cache.tukui_list() {
             Ok(list) => hits.extend(tukui_hits(&list, &world.table)),
             Err(error) => {
-                let reason = skip_reason(&error);
-                if matches!(reason, SourceSkipReason::NoIndex) {
-                    // A failure, not a state: said, and the run is partial.
+                let s = SourceSkipped::for_error(SourceId::Tukui, &error);
+                if let Some(warning) = source_failure("the Tukui list", &s, &error) {
                     partial = true;
-                    let mut warning = Warning::item(&error);
-                    warning.message = format!("the Tukui list: {}", error.message);
                     warnings.push(warning);
-                    skip(SourceId::Tukui, SourceSkipReason::NoIndex, None);
-                } else {
-                    skip(SourceId::Tukui, reason, reset_at(&error));
                 }
+                skip(s.source, s.reason, s.reset_at);
             }
         }
         progress("the Tukui list");
@@ -435,7 +442,8 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
                 Err(error) => match error.code {
                     // Not a failure: said, with when it lifts.
                     ErrorCode::RateLimited | ErrorCode::Offline => {
-                        skip(SourceId::Github, skip_reason(&error), reset_at(&error));
+                        let s = SourceSkipped::for_error(SourceId::Github, &error);
+                        skip(s.source, s.reason, s.reset_at);
                     }
                     _ => {
                         partial = true;
