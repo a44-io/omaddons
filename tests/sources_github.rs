@@ -314,3 +314,63 @@ fn a_moved_tag_costs_one_manifest_through_its_assets_redirect() {
     );
     assert_no_github_rest(&log);
 }
+
+/// GitHub's own links to Questie's release, as pasted: the slash tag pins (encoded or
+/// not, never encoded twice), and the download link names the asset exactly as the
+/// release lists it. No `releases/latest` request.
+#[test]
+fn a_pasted_release_link_pins_its_slash_tag_and_names_its_asset() {
+    use omaddons::sources::refs::{RefContext, parse_user_ref};
+
+    let base = "https://github.com/Questie/Questie/releases";
+    let tag = "bundle/v12.1.0+v1.0.6";
+    let file = "Questie-v12.1.0+v1.0.6.zip";
+    for (link, asset) in [
+        (format!("{base}/tag/bundle/v12.1.0%2Bv1.0.6"), None),
+        (format!("{base}/tag/{tag}"), None),
+        (
+            format!("{base}/download/bundle/v12.1.0%2Bv1.0.6/Questie-v12.1.0%2Bv1.0.6.zip"),
+            Some(file),
+        ),
+    ] {
+        let env = TestEnv::new();
+        let ctx = RefContext {
+            cwd: env.root().to_path_buf(),
+            git_hosts: &[],
+            installed: &|_| Vec::new(),
+            catalog: &|_| None,
+        };
+        let parsed = parse_user_ref(&link, &ctx).unwrap();
+        assert_eq!(parsed.r#ref.to_string(), "gh:Questie/Questie", "{link}");
+        assert_eq!(parsed.version_hint.as_deref(), Some(tag), "{link}");
+        assert_eq!(parsed.asset_hint.as_deref(), asset, "{link}");
+
+        // What install asks for: the hint as a pinned version.
+        let mut w = want("gh:Questie/Questie");
+        w.version = parsed.version_hint.clone();
+        let set = fetch_one(&env, &scenario("github-stable"), w).unwrap();
+        assert_eq!(set.releases[0].version, tag, "{link}");
+        if let Some(asset) = asset {
+            assert!(
+                set.releases[0].assets.iter().any(|a| a.filename == asset),
+                "{link}: {:?}",
+                set.releases[0].assets
+            );
+        }
+        let log = read_net_log(&paths(&env));
+        let requested: Vec<&str> = log.iter().map(|e| e.path.as_str()).collect();
+        assert!(
+            requested
+                .iter()
+                .any(|p| p.ends_with("/releases/download/bundle/v12.1.0%2Bv1.0.6/release.json")),
+            "{link}: {requested:?}"
+        );
+        assert!(
+            !requested
+                .iter()
+                .any(|p| p.ends_with("/releases/latest") || p.contains("%25")),
+            "{link}: {requested:?}"
+        );
+        assert_no_github_rest(&log);
+    }
+}

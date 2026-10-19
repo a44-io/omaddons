@@ -424,7 +424,7 @@ const fn channel_name(channel: Channel) -> &'static str {
 }
 
 /// A tag usable in a download path: no empty, `.` or `..` segment, no control characters.
-fn valid_tag(tag: &str) -> bool {
+pub(crate) fn valid_tag(tag: &str) -> bool {
     !tag.is_empty()
         && !tag.chars().any(char::is_control)
         && tag

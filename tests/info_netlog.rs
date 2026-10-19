@@ -151,6 +151,18 @@ fn info_errors_and_a_failing_fetch() {
         serde_json::json!(["omaddons", "list"])
     );
 
+    // A github.com link that names no repository: refused before any request.
+    for args in [
+        &["info", "https://github.com/WeakAuras"][..],
+        &["install", "https://github.com/WeakAuras", "-t", "retail"],
+        &["install", "https://github.com/", "-t", "retail"],
+    ] {
+        let r = home.run(args);
+        let envelope = r.expect(2);
+        assert_eq!(envelope["error"]["code"], "ref_invalid", "{}", r.context());
+        assert_eq!(net_log(&home), "", "{args:?}: no request");
+    }
+
     let r = home.run(&["info", "wago:aNDmy96o"]);
     let envelope = r.expect(1);
     assert_eq!(

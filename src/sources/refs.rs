@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::{Ref, RefKind};
+use crate::sources::github::{percent_unescape, valid_tag};
 
 /// A parsed user ref and the hints its URL carried.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -212,9 +213,18 @@ fn url(input: &str, rest: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
     let with_url = |r: Ref| parsed(r, MatchKind::Url);
 
     match host.as_str() {
-        "github.com" if segments.len() >= 2 => {
-            let owner = segments[0];
-            let repo = segments[1].strip_suffix(".git").unwrap_or(segments[1]);
+        "github.com" if segments.len() < 2 => {
+            return Err(invalid(
+                input,
+                "a GitHub link names a repository: https://github.com/<owner>/<repo>",
+            ));
+        }
+        "github.com" => {
+            // Each segment decoded after the split, so an encoded `/` stays inside its
+            // segment; GitHub writes a tag's own slashes literally (`bundle/v1.0+x`).
+            let decoded: Vec<String> = segments.iter().map(|s| percent_unescape(s)).collect();
+            let owner = decoded[0].as_str();
+            let repo = decoded[1].strip_suffix(".git").unwrap_or(&decoded[1]);
             if !is_github_owner(owner) || !is_github_repo(repo) {
                 return Err(invalid(input, "the GitHub owner or repo is not valid"));
             }
@@ -222,16 +232,37 @@ fn url(input: &str, rest: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
                 owner: owner.to_owned(),
                 repo: repo.to_owned(),
             };
-            return Ok(match &segments[2..] {
-                ["releases", "tag", tag] => ParsedRef {
-                    version_hint: Some((*tag).to_owned()),
+            let tag = |tag: &[&str]| {
+                let tag = tag.join("/");
+                if valid_tag(&tag) {
+                    Ok(tag)
+                } else {
+                    Err(invalid(input, "the release tag is not valid"))
+                }
+            };
+            let rest: Vec<&str> = decoded[2..].iter().map(String::as_str).collect();
+            return Ok(match rest.as_slice() {
+                ["releases", "tag", t @ ..] if !t.is_empty() => ParsedRef {
+                    version_hint: Some(tag(t)?),
                     ..with_url(gh())
                 },
-                ["releases", "download", tag, file] => ParsedRef {
-                    version_hint: Some((*tag).to_owned()),
-                    asset_hint: Some((*file).to_owned()),
-                    ..with_url(gh())
-                },
+                // The tag is every segment but the last, which is the file.
+                ["releases", "download", t @ .., file] if !t.is_empty() => {
+                    if file.is_empty() || file.contains('/') || file.chars().any(char::is_control) {
+                        return Err(invalid(input, "the release file name is not valid"));
+                    }
+                    ParsedRef {
+                        version_hint: Some(tag(t)?),
+                        asset_hint: Some((*file).to_owned()),
+                        ..with_url(gh())
+                    }
+                }
+                ["releases", "download", ..] => {
+                    return Err(invalid(
+                        input,
+                        "a release download link names a tag and a file",
+                    ));
+                }
                 ["tree", branch @ ..] if !branch.is_empty() => {
                     let rev = branch.join("/");
                     let git = format!("git:https://github.com/{owner}/{repo}#{rev}");
@@ -549,7 +580,25 @@ mod tests {
         ("https://github.com/WeakAuras/WeakAuras2/tree/main", "git:https://github.com/WeakAuras/WeakAuras2#main", Some(MatchKind::Url), None, None),
         ("https://github.com/a/b/tree/feature/x", "git:https://github.com/a/b#feature/x", Some(MatchKind::Url), None, None),
         ("https://github.com/WeakAuras/WeakAuras2/issues/12", "gh:WeakAuras/WeakAuras2", Some(MatchKind::Url), None, None),
-        ("https://github.com/WeakAuras", "url:https://github.com/WeakAuras", Some(MatchKind::Url), None, None),
+        // GitHub's own release links, slash tags and `+` encoded or not, decoded once.
+        ("https://github.com/Questie/Questie/releases/tag/bundle/v12.1.0%2Bv1.0.6", "gh:Questie/Questie", Some(MatchKind::Url), Some("bundle/v12.1.0+v1.0.6"), None),
+        ("https://github.com/Questie/Questie/releases/tag/bundle/v12.1.0+v1.0.6", "gh:Questie/Questie", Some(MatchKind::Url), Some("bundle/v12.1.0+v1.0.6"), None),
+        ("https://github.com/Questie/Questie/releases/download/bundle/v12.1.0%2Bv1.0.6/Questie-v12.1.0.zip", "gh:Questie/Questie", Some(MatchKind::Url), Some("bundle/v12.1.0+v1.0.6"), Some("Questie-v12.1.0.zip")),
+        ("https://github.com/o/r/releases/download/v1/My%20Addon.zip", "gh:o/r", Some(MatchKind::Url), Some("v1"), Some("My Addon.zip")),
+        ("https://github.com/o/r/releases/tag/v1.0%2Bbuild", "gh:o/r", Some(MatchKind::Url), Some("v1.0+build"), None),
+        ("https://github.com/o/r/releases/tag/v1.0%252Bbuild", "gh:o/r", Some(MatchKind::Url), Some("v1.0%2Bbuild"), None),
+        ("https://github.com/o/r/releases/download/v1", "ref_invalid", None, None, None),
+        ("https://github.com/o/r/releases/download/", "ref_invalid", None, None, None),
+        ("https://github.com/o/r/releases/tag/a/../b", "ref_invalid", None, None, None),
+        ("https://github.com/o/r/releases/tag/a%2F..%2Fb", "ref_invalid", None, None, None),
+        ("https://github.com/o/r/releases/tag/v1%0A", "ref_invalid", None, None, None),
+        ("https://github.com/o/r/releases/download/v1/a%2Fb.zip", "ref_invalid", None, None, None),
+        ("https://github.com/o/r/tree/feature%2Bx", "git:https://github.com/o/r#feature+x", Some(MatchKind::Url), None, None),
+        ("https://github.com/o%2Fx/r", "ref_invalid", None, None, None),
+        // A github.com link names a repository.
+        ("https://github.com/WeakAuras", "ref_invalid", None, None, None),
+        ("https://github.com/", "ref_invalid", None, None, None),
+        ("https://www.github.com/WeakAuras/", "ref_invalid", None, None, None),
         ("https://www.wowinterface.com/downloads/info5108-Clique.html", "wowi:5108", Some(MatchKind::Url), None, None),
         ("https://www.wowinterface.com/downloads/download5108-Clique", "wowi:5108", Some(MatchKind::Url), None, None),
         ("https://www.wowinterface.com/forums/", "ref_invalid", None, None, None),
