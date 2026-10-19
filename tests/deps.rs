@@ -2310,3 +2310,79 @@ fn undo_of_an_older_dependency_update_keeps_a_later_requester() {
         r.context()
     );
 }
+
+/// On Classic Era, a dependency the catalog declares only for mainline (as RaiderIO's
+/// entry does) is tried after Tukui and WoWInterface: its TOCs decide. Loading there it
+/// installs; not loading, the requester warns `not_shipped` and the run is not partial.
+#[test]
+fn an_entry_not_declaring_the_client_is_tried_last_and_its_tocs_decide() {
+    for (rio_interface, loads) in [("11509", true), ("120105", false)] {
+        let home = Home::new(&["wow_classic_era"]);
+        let needs = [common::graph::Folder {
+            name: "NeedsRio",
+            interface: "11509",
+            deps: &["RaiderIO"],
+            optional: &[],
+        }];
+        let rio = [common::graph::Folder {
+            name: "RaiderIO",
+            interface: rio_interface,
+            deps: &[],
+            optional: &[],
+        }];
+        release_graph(
+            &home.http,
+            &[
+                Node {
+                    base: "https://github.com/o/needsrio",
+                    tag: "v1",
+                    folders: &needs,
+                },
+                Node {
+                    base: "https://github.com/o/rio",
+                    tag: "v1",
+                    folders: &rio,
+                },
+            ],
+        );
+        let dir = home.env.config().join("omaddons/catalog.d");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("50-deps.toml"),
+            "schema_version = \"1.0\"\n\n[[addon]]\nname = \"RaiderIO\"\nref = \"gh:o/rio\"\nfamilies = [\"mainline\"]\nfolders = [\"RaiderIO\"]\n",
+        )
+        .unwrap();
+        let r = home.run(&["install", "gh:o/needsrio", "-t", "era"]);
+        let envelope = r.expect(0);
+        let on_era = |name: &str| {
+            common::state::record(&home, "era")
+                .addons
+                .values()
+                .any(|a| a.name.eq_ignore_ascii_case(name))
+        };
+        assert_eq!(envelope["partial"], false, "{}", r.context());
+        assert!(on_era("NeedsRio"), "{}", r.context());
+        assert_eq!(on_era("RaiderIO"), loads, "{}", r.context());
+        let missing = warnings_with(&envelope, "missing_dependency");
+        if loads {
+            assert!(missing.is_empty(), "{}", r.context());
+        } else {
+            let item = &items(&envelope)[0];
+            assert_eq!(
+                (
+                    &item["unresolved"][0]["folder"],
+                    &item["unresolved"][0]["reason"],
+                    &item["unresolved"][0]["candidates"]
+                ),
+                (
+                    &json!("RaiderIO"),
+                    &json!("not_shipped"),
+                    &json!(["gh:o/rio"])
+                ),
+                "{}",
+                r.context()
+            );
+            assert_eq!(missing.len(), 1, "{}", r.context());
+        }
+    }
+}

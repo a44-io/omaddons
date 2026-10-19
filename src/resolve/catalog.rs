@@ -6,9 +6,12 @@
 //! never break install or status. Loading reads files only.
 //!
 //! Entries are `{name, aliases[], ref, families[], folders[], notes}`. `families` says
-//! where an entry is known to work: `info` shows it and `search` reports compatibility
-//! from it, but no target choice reads it and TOC verification alone decides an
-//! install. `folders` feeds the folder index used by adoption and dependencies.
+//! where the publisher declares an entry works: `info` shows it, `search` reports
+//! compatibility from it, and it orders the folder lookups of dependencies and adoption
+//! (entries declaring the client's family first, other entries of its generation only
+//! after Tukui and WoWInterface, never one of the other generation). It never refuses
+//! an install: TOC verification decides. `folders` feeds the folder index used by
+//! adoption and dependencies.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -38,6 +41,18 @@ impl Entry {
     pub fn answers_to(&self, name: &str) -> bool {
         self.name.eq_ignore_ascii_case(name)
             || self.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+    }
+
+    /// Whether the publisher declares `family` (an entry declaring none claims all).
+    pub fn declares(&self, family: Family) -> bool {
+        self.families.is_empty() || self.families.contains(&family)
+    }
+
+    /// Whether every family it declares is of one generation with a client that is
+    /// `legacy` or not: a family of that generation it does not declare may still load
+    /// its TOCs, one of the other never does.
+    pub fn of_generation(&self, legacy: bool) -> bool {
+        self.families.iter().all(|f| f.is_legacy() == legacy)
     }
 }
 

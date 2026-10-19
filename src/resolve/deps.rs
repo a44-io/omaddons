@@ -255,6 +255,9 @@ pub enum DepResolution {
         via: DepVia,
         /// The catalog name, Tukui name or WoWInterface `UIName`, for the new record.
         name: Option<String>,
+        /// A catalog entry that does not declare the client's family: a guess its TOCs
+        /// settle, so a refusal is no failure (the wire still says `catalog`).
+        undeclared: bool,
     },
     Ambiguous {
         candidates: Vec<DepCandidate>,
@@ -281,42 +284,15 @@ pub fn resolve(missing: &FolderName, target: &Target, lookups: &DepLookups<'_>) 
             owner: Some(owner.name.clone()),
         };
     }
-    // 2. The catalog, for this family; a name equal to the folder breaks a tie.
-    let entries: Vec<&Entry> = lookups
-        .catalog
-        .by_folder(missing)
-        .into_iter()
-        .filter(|e| e.families.is_empty() || e.families.contains(&target.family))
-        .collect();
-    let named: Vec<&Entry> = entries
+    // 2. The catalog's entries declaring this family.
+    let entries = lookups.catalog.by_folder(missing);
+    let declared: Vec<&Entry> = entries
         .iter()
         .copied()
-        .filter(|e| e.name.eq_ignore_ascii_case(missing.as_str()))
+        .filter(|e| e.declares(target.family))
         .collect();
-    match (entries.as_slice(), named.as_slice()) {
-        ([], _) => {}
-        ([only], _) | (_, [only]) => {
-            return DepResolution::Resolved {
-                r#ref: only.r#ref.clone(),
-                via: DepVia::Catalog,
-                name: Some(only.name.clone()),
-            };
-        }
-        (all, named) => {
-            let tied = if named.is_empty() { all } else { named };
-            return DepResolution::Ambiguous {
-                candidates: tied
-                    .iter()
-                    .map(|e| DepCandidate {
-                        r#ref: e.r#ref.clone(),
-                        name: e.name.clone(),
-                        via: DepVia::Catalog,
-                        updated_at: None,
-                    })
-                    .collect(),
-                reason: AmbiguityReason::SeveralCatalogEntries,
-            };
-        }
+    if let Some(found) = from_catalog(missing, &declared, false) {
+        return found;
     }
     // 3. Tukui: only a unique entry (several fall through to WoWInterface).
     if let Some(tukui) = lookups.tukui
@@ -328,18 +304,72 @@ pub fn resolve(missing: &FolderName, target: &Target, lookups: &DepLookups<'_>) 
             },
             via: DepVia::Tukui,
             name: Some(hit.name.clone()),
+            undeclared: false,
         };
     }
     // 4. WoWInterface, ranked and guarded.
-    if let Some(wowi) = lookups.wowi {
-        let projects = wowi.by_dir(missing);
-        if !projects.is_empty() {
-            return from_wowi(missing, target, lookups.now, projects);
-        }
+    let wowi = lookups
+        .wowi
+        .map(|wowi| wowi.by_dir(missing))
+        .filter(|projects| !projects.is_empty())
+        .map(|projects| from_wowi(missing, target, lookups.now, projects));
+    if let Some(resolved @ DepResolution::Resolved { .. }) = wowi {
+        return resolved;
     }
-    DepResolution::Missing {
-        reason: MissingReason::NoSource,
-        owner: None,
+    // 5. The catalog's other entries of this client's generation (modern or legacy):
+    // the publisher does not declare the family, but the TOCs may still load here.
+    let legacy = match target.family {
+        Family::Unknown => target.rules.legacy,
+        family => family.is_legacy(),
+    };
+    let undeclared: Vec<&Entry> = entries
+        .iter()
+        .copied()
+        .filter(|e| !e.declares(target.family) && e.of_generation(legacy))
+        .collect();
+    from_catalog(missing, &undeclared, true)
+        .or(wowi)
+        .unwrap_or(DepResolution::Missing {
+            reason: MissingReason::NoSource,
+            owner: None,
+        })
+}
+
+/// One catalog entry among `entries` (a name equal to the folder breaks a tie), several
+/// tied, or none.
+fn from_catalog(
+    missing: &FolderName,
+    entries: &[&Entry],
+    undeclared: bool,
+) -> Option<DepResolution> {
+    let named: Vec<&Entry> = entries
+        .iter()
+        .copied()
+        .filter(|e| e.name.eq_ignore_ascii_case(missing.as_str()))
+        .collect();
+    match (entries, named.as_slice()) {
+        ([], _) => None,
+        ([only], _) | (_, [only]) => Some(DepResolution::Resolved {
+            r#ref: only.r#ref.clone(),
+            via: DepVia::Catalog,
+            name: Some(only.name.clone()),
+            undeclared,
+        }),
+        (all, named) => {
+            let tied = if named.is_empty() { all } else { named };
+            Some(DepResolution::Ambiguous {
+                candidates: tied
+                    .iter()
+                    .map(|e| DepCandidate {
+                        r#ref: e.r#ref.clone(),
+                        name: e.name.clone(),
+                        via: DepVia::Catalog,
+                        updated_at: None,
+                    })
+                    .collect(),
+                reason: AmbiguityReason::SeveralCatalogEntries,
+            })
+        }
     }
 }
 
@@ -386,6 +416,7 @@ fn from_wowi(
             r#ref: Ref::Wowi { id: top.uid },
             via: DepVia::Wowi,
             name: Some(top.name.clone()),
+            undeclared: false,
         };
     }
     DepResolution::Ambiguous {
@@ -698,6 +729,7 @@ mod tests {
             r#ref: r.parse().unwrap(),
             via: DepVia::Catalog,
             name: Some(name.into()),
+            undeclared: false,
         };
         assert_eq!(
             resolve_with("!BugGrabber", &none, &catalog, None, None),
@@ -705,11 +737,13 @@ mod tests {
         );
         assert_eq!(
             resolve_with("RetailLib", &none, &catalog, None, None),
-            DepResolution::Missing {
-                reason: MissingReason::NoSource,
-                owner: None,
+            DepResolution::Resolved {
+                r#ref: "gh:o/retail".parse().unwrap(),
+                via: DepVia::Catalog,
+                name: Some("RetailOnly".into()),
+                undeclared: true,
             },
-            "an entry for another family falls through"
+            "an entry for another family of the generation, as a last guess"
         );
         assert_eq!(
             resolve_with("Ace3", &none, &catalog, None, None),
@@ -723,6 +757,120 @@ mod tests {
         assert_eq!(candidates.len(), 2);
     }
 
+    /// Families rank within a generation: an entry not declaring the client's family is
+    /// tried only after Tukui and WoWInterface miss, and an entry of the other
+    /// generation never answers.
+    #[test]
+    fn undeclared_entries_come_last_and_never_cross_a_generation() {
+        let none = TargetRecord::empty(TargetKey::new());
+        let rio = entry("RaiderIO", "gh:o/rio", &["RaiderIO"], &[Family::Mainline]);
+        let undeclared = |r: &str, name: &str| DepResolution::Resolved {
+            r#ref: r.parse().unwrap(),
+            via: DepVia::Catalog,
+            name: Some(name.into()),
+            undeclared: true,
+        };
+        let catalog = Entries(vec![
+            rio.clone(),
+            entry(
+                "InFlight",
+                "gh:o/inflight",
+                &["InFlight"],
+                &[Family::MistsLegacy],
+            ),
+            entry("A", "gh:o/a", &["Twice"], &[Family::Mainline]),
+            entry("B", "gh:o/b", &["Twice"], &[Family::Tbc]),
+        ]);
+        assert_eq!(
+            resolve_with("RaiderIO", &none, &catalog, None, None),
+            undeclared("gh:o/rio", "RaiderIO")
+        );
+        // A declared entry of the same folder wins at once.
+        let declared = Entries(vec![
+            rio.clone(),
+            entry(
+                "RIO Classic",
+                "gh:o/rio-classic",
+                &["RaiderIO"],
+                &[Family::Vanilla],
+            ),
+        ]);
+        let found = resolve_with("RaiderIO", &none, &declared, None, None);
+        assert!(
+            matches!(&found, DepResolution::Resolved { undeclared: false, name: Some(n), .. } if n == "RIO Classic"),
+            "{found:?}"
+        );
+        // Tukui and a unique WoWInterface project come first.
+        let tukui = Tukui(vec![("rio".into(), vec![f("RaiderIO")])]);
+        let found = resolve_with("RaiderIO", &none, &catalog, Some(&tukui), None);
+        assert!(
+            matches!(
+                found,
+                DepResolution::Resolved {
+                    via: DepVia::Tukui,
+                    ..
+                }
+            ),
+            "{found:?}"
+        );
+        let port = Wowi(vec![project(
+            9,
+            "RaiderIO",
+            &["RaiderIO"],
+            100,
+            days_ago(5),
+        )]);
+        let found = resolve_with("RaiderIO", &none, &catalog, None, Some(&port));
+        assert!(
+            matches!(
+                found,
+                DepResolution::Resolved {
+                    via: DepVia::Wowi,
+                    ..
+                }
+            ),
+            "{found:?}"
+        );
+        // An abandoned WoWInterface answer yields to the undeclared entry.
+        let old = Wowi(vec![project(
+            9,
+            "RaiderIO",
+            &["RaiderIO"],
+            100,
+            days_ago(800),
+        )]);
+        assert_eq!(
+            resolve_with("RaiderIO", &none, &catalog, None, Some(&old)),
+            undeclared("gh:o/rio", "RaiderIO")
+        );
+        // Two undeclared entries tie.
+        let (_, reason) = ambiguous(resolve_with("Twice", &none, &catalog, None, None)).unwrap();
+        assert_eq!(reason, AmbiguityReason::SeveralCatalogEntries);
+        // Never across a generation, in either direction.
+        assert!(matches!(
+            resolve_with("InFlight", &none, &catalog, None, None),
+            DepResolution::Missing { .. }
+        ));
+        let mut legacy = vanilla();
+        legacy.family = Family::WrathLegacy;
+        legacy.install_kind = crate::rules::InstallKind::Custom;
+        let lookups = DepLookups {
+            managed: &none,
+            catalog: &catalog,
+            tukui: None,
+            wowi: None,
+            now: now(),
+        };
+        assert!(matches!(
+            resolve(&f("RaiderIO"), &legacy, &lookups),
+            DepResolution::Missing { .. }
+        ));
+        assert_eq!(
+            resolve(&f("InFlight"), &legacy, &lookups),
+            undeclared("gh:o/inflight", "InFlight")
+        );
+    }
+
     #[test]
     fn tukui_then_wowinterface() {
         let none = TargetRecord::empty(TargetKey::new());
@@ -734,6 +882,7 @@ mod tests {
                 r#ref: "tukui:elvui".parse().unwrap(),
                 via: DepVia::Tukui,
                 name: Some("ELVUI".into()),
+                undeclared: false,
             }
         );
 
@@ -752,6 +901,7 @@ mod tests {
                 r#ref: "wowi:1".parse().unwrap(),
                 via: DepVia::Wowi,
                 name: Some("LibStub".into()),
+                undeclared: false,
             },
             "the single-folder project beats a bigger bundle"
         );

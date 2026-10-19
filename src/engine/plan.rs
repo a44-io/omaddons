@@ -1563,6 +1563,9 @@ struct RoundDep {
     name: Option<String>,
     folder: FolderName,
     requesters: BTreeSet<String>,
+    /// From a catalog entry not declaring this client's family: a release that does not
+    /// load here is `not_shipped`, no failure.
+    undeclared: bool,
 }
 
 /// What a ref the rounds met came to, for a later requester resolving to it.
@@ -1780,7 +1783,12 @@ impl TargetPlanner<'_> {
             push_new(&mut tp.unchanged_warnings, warnings);
         }
         match resolution {
-            DepResolution::Resolved { r#ref, name, .. } => {
+            DepResolution::Resolved {
+                r#ref,
+                name,
+                undeclared,
+                ..
+            } => {
                 let id = r#ref.identity();
                 if let Some(wanted) = rounds.wanted.get_mut(&id) {
                     wanted.requesters.insert(requester.to_owned());
@@ -1806,6 +1814,7 @@ impl TargetPlanner<'_> {
                             name,
                             folder: dep.clone(),
                             requesters: BTreeSet::from([requester.to_owned()]),
+                            undeclared,
                         };
                         rounds.wanted.insert(id, wanted);
                     }
@@ -1910,10 +1919,21 @@ impl TargetPlanner<'_> {
             set,
             cached: None,
         };
-        let build = match self.prepare_install(dep.name.as_deref(), wanted, source, &intent)? {
-            Prepared::Build(build) => build,
+        let build = match self.prepare_install(dep.name.as_deref(), wanted, source, &intent) {
+            Ok(Prepared::Build(build)) => build,
             // Installed and kept as it is, yet the folder is not there.
-            Prepared::Done(_) => return Ok(Err(UnresolvedReason::NotShipped)),
+            Ok(Prepared::Done(_)) => return Ok(Err(UnresolvedReason::NotShipped)),
+            // An entry not declaring this client was a guess its TOCs settled.
+            Err(e)
+                if dep.undeclared
+                    && matches!(
+                        e.code,
+                        ErrorCode::NoCompatibleRelease | ErrorCode::WrongFlavor
+                    ) =>
+            {
+                return Ok(Err(UnresolvedReason::NotShipped));
+            }
+            Err(e) => return Err(e),
         };
         if build.deps.out_of_date.contains(&dep.folder) {
             return Ok(Err(UnresolvedReason::OutOfDate));

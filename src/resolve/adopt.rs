@@ -221,16 +221,32 @@ pub fn evidence(candidate: &CandidateFolder, lookups: &AdoptLookups<'_>) -> Vec<
             });
         };
 
-        // 1. The catalog, for the target's family.
-        for entry in lookups.catalog.by_folder(f) {
-            if entry.families.is_empty() || entry.families.contains(&lookups.family) {
-                push(
-                    Evidence::CatalogFolder,
-                    Some(entry.r#ref.clone()),
-                    with(f, &entry.folders),
-                    Some(entry.name.clone()),
-                );
-            }
+        // 1. The catalog: the entries declaring the target's family, else the other
+        // entries of its generation (a guess verification settles; claiming beside a
+        // declared entry they would only tie with it), never the other generation.
+        let entries = lookups.catalog.by_folder(f);
+        let legacy = lookups.family.is_legacy();
+        let declared: Vec<&Entry> = entries
+            .iter()
+            .copied()
+            .filter(|e| e.declares(lookups.family))
+            .collect();
+        let claiming = if declared.is_empty() {
+            entries
+                .iter()
+                .copied()
+                .filter(|e| e.of_generation(legacy))
+                .collect()
+        } else {
+            declared
+        };
+        for entry in claiming {
+            push(
+                Evidence::CatalogFolder,
+                Some(entry.r#ref.clone()),
+                with(f, &entry.folders),
+                Some(entry.name.clone()),
+            );
         }
 
         // 2. The Tukui id: the list, else the built-in map.
@@ -1310,11 +1326,14 @@ mod tests {
             ],
             "the catalog wins; the TOC's WoWI id and the name match are still listed"
         );
-        assert!(
-            evidence(&candidate("Questie", None), &l)
+        let questie = evidence(&candidate("Questie", None), &l);
+        assert_eq!(
+            questie
                 .iter()
-                .all(|c| c.evidence != Evidence::CatalogFolder),
-            "a vanilla-only entry does not claim on retail"
+                .filter(|c| matches!(c.evidence, Evidence::CatalogFolder))
+                .count(),
+            1,
+            "a vanilla-only entry still claims on retail (a guess verification settles)"
         );
         let dbm = evidence(&candidate("DBM-Core", None), &l);
         assert_eq!(
@@ -1324,6 +1343,49 @@ mod tests {
             2,
             "two entries: two rank-1 claims"
         );
+    }
+
+    /// The entries declaring the client's family claim; only when none does, the other
+    /// entries of its generation (they would tie with a declared one); an entry of the
+    /// other generation never claims.
+    #[test]
+    fn undeclared_catalog_entries_claim_only_when_none_declares_and_never_cross() {
+        let refs = |catalog: &FakeCatalog, family| -> Vec<String> {
+            let mut l = lookups(catalog, None, None);
+            l.family = family;
+            evidence(&candidate("RaiderIO", None), &l)
+                .iter()
+                .filter(|c| matches!(c.evidence, Evidence::CatalogFolder))
+                .filter_map(|c| c.r#ref.as_ref().map(ToString::to_string))
+                .collect()
+        };
+        let rio = entry("RIO", &[], "gh:o/rio", &[Family::Mainline], &["RaiderIO"]);
+        let old = entry(
+            "Old",
+            &[],
+            "gh:o/old",
+            &[Family::WrathLegacy],
+            &["RaiderIO"],
+        );
+        let era = entry(
+            "RIO Era",
+            &[],
+            "gh:o/rio-era",
+            &[Family::Vanilla],
+            &["RaiderIO"],
+        );
+        let undeclared = FakeCatalog(vec![rio.clone(), old.clone()]);
+        assert_eq!(refs(&undeclared, Family::Vanilla), ["gh:o/rio"]);
+        assert_eq!(refs(&undeclared, Family::Mainline), ["gh:o/rio"]);
+        assert_eq!(refs(&undeclared, Family::WrathLegacy), ["gh:o/old"]);
+        assert!(
+            refs(&undeclared, Family::TbcLegacy)
+                .iter()
+                .all(|r| r == "gh:o/old")
+        );
+        let declared = FakeCatalog(vec![rio, era, old]);
+        assert_eq!(refs(&declared, Family::Vanilla), ["gh:o/rio-era"]);
+        assert_eq!(refs(&declared, Family::Mainline), ["gh:o/rio"]);
     }
 
     #[test]
@@ -1604,13 +1666,23 @@ mod tests {
                 Some("WeakAuras")
             )]
         );
-        assert_eq!(
-            evidence(&candidate("WeakAuras", None), &l)
+        let kinds = |l: &AdoptLookups<'_>| -> Vec<Evidence> {
+            evidence(&candidate("WeakAuras", None), l)
                 .iter()
                 .map(|c| c.evidence)
-                .collect::<Vec<_>>(),
+                .collect()
+        };
+        assert_eq!(
+            kinds(&l),
+            [Evidence::CatalogFolder, Evidence::NameMatch],
+            "an undeclared modern family: the folder still claims"
+        );
+        let mut legacy = lookups(&catalog, None, None);
+        legacy.family = Family::WrathLegacy;
+        assert_eq!(
+            kinds(&legacy),
             [Evidence::NameMatch],
-            "no catalog_folder outside the entry's families"
+            "no catalog_folder across a generation; the name still matches"
         );
     }
 
