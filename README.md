@@ -1691,7 +1691,7 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 
 **Invariants the build enforces:**
 
-- Only `src/fsx/` writes to the filesystem (`tests/single_writer.rs` scans the source).
+- Only `src/fsx/` writes to the filesystem (`tests/single_writer.rs` scans every production item of the source, test-only items aside). Only two modules start processes, each named with its reason: git checkouts (`src/sources/git_hosts.rs`) and the credential command (`src/state/config.rs`, which reads its output).
 - Commands never print: `print!` and `eprint!` are denied by clippy.
 - No `unwrap` or `expect` outside tests, and `unsafe` is forbidden.
 - Nothing calls `std::process::exit`. Every exit goes through one table, and every error code used in `src/` must be registered (`tests/contract/exit_sites.rs`).
