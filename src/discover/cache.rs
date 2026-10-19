@@ -51,7 +51,9 @@ pub struct DiscoveryCache {
 
 impl Versioned for DiscoveryCache {
     const KIND: &'static str = "discovery_cache";
-    const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
+    /// 1.2: a root's `source` may be `registered` or `remembered`, which a 1.1 reader
+    /// does not know (it ignores a newer cache).
+    const CURRENT: SchemaVersion = SchemaVersion::new(1, 2);
 }
 
 /// What a root's parse yields, beyond the rules: bumped when it changes while the
@@ -148,14 +150,30 @@ pub fn discover_cached(
     mode: DiscoveryMode,
 ) -> (Discovery, CacheStats) {
     let mut stats = CacheStats::default();
-    let cache = match mode {
-        DiscoveryMode::Rescan => None,
-        DiscoveryMode::NoScan | DiscoveryMode::Full => load_cache(paths),
-    };
+    let cache = load_cache(paths);
     let basis = basis(table);
     // The cache's roots are still where to look (no scan for `NoScan`), but none of its
-    // parses is reused on another basis.
-    let reusable = cache.as_ref().filter(|c| c.basis == basis);
+    // parses is reused on another basis, or by `Rescan`.
+    let reusable = cache
+        .as_ref()
+        .filter(|c| c.basis == basis && mode != DiscoveryMode::Rescan);
+    // Roots found while their client ran stay a route, `Rescan` included; only under
+    // this home, so a throwaway home sharing the cache never reaches the user's clients.
+    let remembered = cache
+        .iter()
+        .flat_map(|c| &c.roots)
+        .filter(|r| {
+            matches!(
+                r.source,
+                DiscoverySource::Process | DiscoverySource::Remembered
+            ) && r.path.starts_with(&input.home)
+        })
+        .map(|r| (r.path.clone(), r.qualifier.clone()))
+        .collect();
+    let input = &DiscoveryInput {
+        remembered_roots: remembered,
+        ..input.clone()
+    };
     let mut diagnostics = Vec::new();
     let (requests, mut warnings) = match (mode, &cache) {
         (DiscoveryMode::NoScan, Some(cache)) => (

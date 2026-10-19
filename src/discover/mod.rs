@@ -132,6 +132,9 @@ pub struct DiscoveryInput {
     /// Registered targets' roots (install root, id qualifier, how it was found), which
     /// [`cache::DiscoveryMode::NoScan`] parses directly when there is no cache.
     pub registered_roots: Vec<(PathBuf, String, DiscoverySource)>,
+    /// Roots found earlier while their client ran (install root, id qualifier): the last
+    /// route. [`cache::discover_cached`] fills it from the discovery cache.
+    pub remembered_roots: Vec<(PathBuf, String)>,
 }
 
 /// A Wine prefix known from outside the scan.
@@ -317,9 +320,18 @@ pub(crate) fn collect(input: &DiscoveryInput, limits: ScanLimits) -> Collected {
             );
         }
     }
-    // Last, registered roots no route reached that are still WoW roots: a client found
-    // once (while it ran, say) is found after it exits, under its recorded qualifier.
-    for (path, qualifier, source) in &input.registered_roots {
+    // Then registered roots no route reached, and last the roots found earlier while
+    // their client ran, while they are still WoW roots: a client found once is found
+    // after it exits, under its recorded qualifier.
+    let remembered = input
+        .remembered_roots
+        .iter()
+        .map(|(path, qualifier)| (path, qualifier, DiscoverySource::Remembered));
+    let registered = input
+        .registered_roots
+        .iter()
+        .map(|(path, qualifier, source)| (path, qualifier, source.clone()));
+    for (path, qualifier, source) in registered.chain(remembered) {
         let kind = if battlenet::is_battlenet_root(path) {
             RootKind::Battlenet
         } else if custom::is_custom_root(path) {
@@ -330,7 +342,7 @@ pub(crate) fn collect(input: &DiscoveryInput, limits: ScanLimits) -> Collected {
         roots.add(
             path.clone(),
             Some(kind),
-            Route::new(qualifier, source.clone()),
+            Route::new(qualifier, source),
             BattlenetHints::default(),
             None,
             &mut diagnostics,

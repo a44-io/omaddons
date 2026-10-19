@@ -465,10 +465,10 @@ fn a_running_client_in_a_nested_prefix_is_found_by_its_process_then_by_its_regis
     assert_eq!(listed(&home), [era, retail.clone()]);
 
     // Registered (its first change, or here `targets default`), it stays found after
-    // the process exits.
+    // the process exits, by its registration.
     home.run(&["targets", "default", "era"]).expect(0);
     home.nothing_running();
-    let era = ("era".to_owned(), "scan".to_owned());
+    let era = ("era".to_owned(), "registered".to_owned());
     assert_eq!(listed(&home), [era.clone(), retail.clone()]);
 
     // A running client in a prefix the scan reaches keeps its scan route.
@@ -488,4 +488,82 @@ fn a_running_client_in_a_nested_prefix_is_found_by_its_process_then_by_its_regis
     .build();
     running(&mut other, "proc-outside", outside.path());
     assert_eq!(listed(&other), [retail]);
+}
+
+/// A client found while it ran and never registered is remembered in the discovery
+/// cache: after it exits every command still finds it (`found_by: remembered`),
+/// `--rescan` included, until its root is gone or the cache is deleted. A throwaway
+/// HOME sharing the cache never sees it.
+#[test]
+fn a_client_found_while_it_ran_is_remembered_after_it_exits() {
+    let mut home = Home::new(&["wow"]);
+    let nested = Prefix::at(home.env.home().join("Games/nested/pfx"));
+    let root = nested
+        .drive_c()
+        .join("Program Files (x86)/World of Warcraft");
+    let build = || {
+        BattlenetRoot::at(root.clone())
+            .product("wow_classic_era")
+            .build();
+    };
+    build();
+    let runs = |home: &mut Home| {
+        let proc = FakeProc::new(home.env.root().join("proc-era")).process(
+            4243,
+            true,
+            "WowClassic.exe",
+            &["C:\\Program Files (x86)\\World of Warcraft\\_classic_era_\\WowClassic.exe"],
+            &[("WINEPREFIX", &nested.path().display().to_string())],
+        );
+        home.proc = Some(proc.root().to_path_buf());
+        listed(home);
+        home.nothing_running();
+    };
+    let retail = ("retail".to_owned(), "scan".to_owned());
+    let era = ("era".to_owned(), "remembered".to_owned());
+
+    runs(&mut home);
+    assert_eq!(listed(&home), [era.clone(), retail.clone()]);
+    home.run(&["targets", "--rescan"]).expect(0);
+    assert_eq!(
+        listed(&home),
+        [era.clone(), retail.clone()],
+        "--rescan keeps it"
+    );
+    let ids = |args: &[&str]| -> Vec<String> {
+        let envelope = home.run(args).expect(0);
+        envelope["data"]["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t["id"].as_str().map(str::to_owned))
+            .collect()
+    };
+    assert!(ids(&["status"]).contains(&"era".to_owned()));
+    assert!(ids(&["status", "--cached"]).contains(&"era".to_owned()));
+    home.run(&["list", "-t", "era"]).expect(0);
+    let addon = home.env.root().join("addons/Era");
+    fs::create_dir_all(&addon).unwrap();
+    fs::write(addon.join("Era.toc"), "## Interface: 11508\n").unwrap();
+    let addon = addon.to_string_lossy().into_owned();
+    home.run(&["install", &addon, "-t", "era", "--dry-run"])
+        .expect(0);
+
+    // A throwaway HOME sharing the cache does not see it.
+    let throwaway = home.env.root().join("throwaway");
+    fs::create_dir_all(&throwaway).unwrap();
+    let throwaway = throwaway.to_string_lossy().into_owned();
+    let argv = ["targets".to_owned(), "--json".to_owned()];
+    let r = home.exec_with(&argv, &[("HOME", &throwaway)]);
+    assert!(!r.stdout.contains("\"era\""), "{}", r.context());
+
+    // Forgotten once the cache is deleted, or once its root is gone.
+    runs(&mut home);
+    assert_eq!(listed(&home), [era.clone(), retail.clone()]);
+    fs::remove_file(home.env.cache().join("omaddons/discovery.json")).unwrap();
+    assert_eq!(listed(&home), std::slice::from_ref(&retail));
+    runs(&mut home);
+    assert_eq!(listed(&home), [era, retail.clone()]);
+    fs::remove_dir_all(&root).unwrap();
+    assert_eq!(listed(&home), [retail]);
 }

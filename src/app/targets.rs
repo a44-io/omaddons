@@ -104,8 +104,9 @@ pub struct TargetInfo {
     pub client_dir: PathBuf,
     /// Registered, but its directory was not found.
     pub missing: bool,
-    /// `product_db`, `scan`, `launcher:<name>`, `process`, `extra_root`, `manual`, or
-    /// `registry` for a missing target.
+    /// `product_db`, `scan`, `launcher:<name>`, `process`, `extra_root`, `manual`,
+    /// `registered` (a registered root no route above reached), `remembered` (found
+    /// earlier while it ran), or `registry` for a missing target.
     pub found_by: String,
     /// `-v` only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -252,6 +253,8 @@ fn found_by(d: &DiscoveredTarget, registry: &Registry) -> String {
         DiscoverySource::ExtraRoot => "extra_root".to_owned(),
         DiscoverySource::Scan => "scan".to_owned(),
         DiscoverySource::Manual => "manual".to_owned(),
+        DiscoverySource::Registered => "registered".to_owned(),
+        DiscoverySource::Remembered => "remembered".to_owned(),
     }
 }
 

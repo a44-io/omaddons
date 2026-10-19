@@ -84,7 +84,7 @@ impl World {
             {
                 let source = match e.origin {
                     Origin::Manual => DiscoverySource::Manual,
-                    Origin::Discovered => DiscoverySource::Scan,
+                    Origin::Discovered => DiscoverySource::Registered,
                 };
                 registered_roots.push((e.install_root.clone(), e.qualifier.clone(), source));
             }

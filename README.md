@@ -364,7 +364,7 @@ It first collects the Wine prefixes (directories containing `drive_c/`):
   - Heroic: every `winePrefix` in `GamesConfig/*.json`, native and Flatpak;
   - Steam: the `compatdata/*/pfx` Proton prefixes of every library in `libraryfolders.vdf`, native and Flatpak (WoW is usually a non-Steam shortcut with its own compatdata id);
   - Bottles: every bottle, including a bottles directory moved in Bottles' preferences and bottles created at a custom path, native and Flatpak;
-- the prefixes of **running WoW and Battle.net processes** (their `WINEPREFIX`, your own processes only), when the prefix is under your home: a client in a nested prefix such as `~/Games/umu/umu-default` is found while it runs;
+- the prefixes of **running WoW and Battle.net processes** (their `WINEPREFIX`, your own processes only), when the prefix is under your home: a client in a nested prefix such as `~/Games/umu/umu-default` is found while it runs, and remembered after it exits (route 8 below);
 - the **direct children of `~/Games`** that are prefixes;
 - **`~/.wine`**.
 
@@ -376,11 +376,12 @@ Then it looks for clients in this order. The first route that finds a client dec
 4. **`extra_roots`** from `config.toml`, and the roots of manually added targets.
 5. **A walk of the `drive_c` of each `~/Games` prefix and of `~/.wine`**, with the same skips.
 6. **A plain walk of `~/Games`** for clients outside any prefix.
-7. **The roots of registered targets** that no route above reached, while they are still WoW roots. A client found once, for example while it ran, is still found after it exits.
+7. **The roots of registered targets** (`found_by: registered`) that no route above reached, while they are still WoW roots.
+8. **Roots found earlier while a client ran** (`found_by: remembered`), kept in `~/.cache/omaddons/discovery.json` while they are still WoW roots under your home. A client found once while it ran is still found after it exits, registered or not. Deleting the cache file forgets them.
 
 A directory with `.build.info` is a **Battle.net root**: each `_<flavor>_` folder in it becomes a target, identified by its `.flavor.info`, product.db or the folder table. A directory with `Interface/` and a `wow*.exe` is a **custom client**: its version comes from the executable's PE version resource, and its label comes from `realmlist.wtf`.
 
-Parsed results are cached in `~/.cache/omaddons/discovery.json` and reused while the stamped files (`.build.info`, `.flavor.info`, exes, `Config.wtf`, `realmlist.wtf`, `product.db`) are unchanged, and while the rules and the omaddons version are the ones the cache was built with. `targets --rescan` ignores the cache, and `status --cached` skips the scan entirely.
+Parsed results are cached in `~/.cache/omaddons/discovery.json` and reused while the stamped files (`.build.info`, `.flavor.info`, exes, `Config.wtf`, `realmlist.wtf`, `product.db`) are unchanged, and while the rules and the omaddons version are the ones the cache was built with. `targets --rescan` re-parses every root and reuses no cached parse (remembered roots are still looked at), and `status --cached` skips the scan entirely.
 
 ### Battle.net products
 
@@ -1058,6 +1059,8 @@ omaddons targets rename wotlk warmane
 omaddons targets default retail            # install's default when -t is absent; config default_target still wins
 omaddons targets rm warmane                # unregister; nothing in the client directory is touched
 ```
+
+Each client's `found_by` names the discovery route that reached it first (see [Where discovery looks](#where-discovery-looks)): `product_db`, `launcher:<name>`, `process`, `extra_root`, `scan`, `manual` (added with `targets add`), `registered`, `remembered`, or `registry` for a registered client whose directory is gone.
 
 An id you choose (`--name`, `rename`) must match `^[a-z0-9][a-z0-9._-]*$`, be at most 32 characters, contain no `@`, and not be a key, family name or product code. Built-in default ids such as `vanilla` or `mists` are exempt, which is why they can shadow a family (see [Choosing a target](#choosing-a-target-with--t)).
 

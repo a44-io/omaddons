@@ -209,7 +209,7 @@ fn a_corrupt_cache_is_ignored_and_rewritten() {
     assert_eq!(d.targets.len(), 3);
     let text = fs::read_to_string(&cache).unwrap();
     assert!(
-        text.starts_with("{\n  \"schema_version\": \"1.1\""),
+        text.starts_with("{\n  \"schema_version\": \"1.2\""),
         "{text}"
     );
 }

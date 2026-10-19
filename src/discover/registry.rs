@@ -166,7 +166,7 @@ pub fn reconcile(registry: &Registry, discovered: &[DiscoveredTarget]) -> Resolv
 }
 
 /// Discovery's route order (vision §5.2): `product.db`, launcher configs, running
-/// processes, extra roots, then the scan.
+/// processes, extra roots, the scan, then registered and remembered roots.
 const fn route_rank(source: &DiscoverySource) -> u8 {
     match source {
         DiscoverySource::ProductDb => 0,
@@ -175,6 +175,8 @@ const fn route_rank(source: &DiscoverySource) -> u8 {
         DiscoverySource::ExtraRoot => 3,
         DiscoverySource::Scan => 4,
         DiscoverySource::Manual => 5,
+        DiscoverySource::Registered => 6,
+        DiscoverySource::Remembered => 7,
     }
 }
 

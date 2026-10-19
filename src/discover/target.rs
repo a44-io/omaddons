@@ -35,6 +35,10 @@ pub enum DiscoverySource {
     Scan,
     /// `targets add`.
     Manual,
+    /// A registered target's root that no route above reached.
+    Registered,
+    /// A root found earlier while its client ran, remembered in the discovery cache.
+    Remembered,
 }
 
 #[cfg(test)]
