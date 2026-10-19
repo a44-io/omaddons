@@ -24,6 +24,18 @@ pub struct FileEntry {
     pub compat: Vec<(String, String)>,
 }
 
+/// Thirty days before the real clock, in Unix milliseconds: inside every freshness
+/// window the code compares against the real clock (`DEPENDENCY_SOURCE_MAX_AGE` is
+/// two years) on any date, where a fixed date would age out of it.
+pub fn recent_ms() -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    u64::try_from(now.as_millis())
+        .unwrap_or(u64::MAX)
+        .saturating_sub(30 * 24 * 60 * 60 * 1000)
+}
+
 impl FileEntry {
     pub fn new(uid: u64, name: &str, dirs: &[&str]) -> Self {
         Self {
@@ -31,7 +43,7 @@ impl FileEntry {
             name: name.to_owned(),
             author: "someone".to_owned(),
             version: "1.0".to_owned(),
-            date_ms: 1_760_300_000_000,
+            date_ms: recent_ms(),
             downloads: 1_000,
             dirs: dirs.iter().map(|d| (*d).to_owned()).collect(),
             compat: Vec::new(),

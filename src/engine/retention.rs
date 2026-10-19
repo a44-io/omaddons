@@ -487,6 +487,9 @@ mod tests {
         client: ClientPaths,
         scopes: ScopeTable,
         key: TargetKey,
+        /// The instant retention runs at, two hours on (every orphan made now is past
+        /// ORPHAN_MIN_AGE); commits are aged from it too, so ages hold on any date.
+        clock: Timestamp,
     }
 
     fn fixture() -> Fixture {
@@ -504,6 +507,7 @@ mod tests {
             paths,
             scopes,
             key: TargetKey::new(),
+            clock: Timestamp::from_second(Timestamp::now().as_second() + 2 * HOUR).unwrap(),
         }
     }
 
@@ -520,7 +524,7 @@ mod tests {
                 schema_version: history::CURRENT,
                 tx,
                 kind: TxKind::Install,
-                at: ago(age),
+                at: Timestamp::from_second(self.clock.as_second() - age).unwrap(),
                 target: key,
                 actor: Actor::Agent,
                 reason: None,
@@ -545,15 +549,13 @@ mod tests {
         }
 
         fn run(&self, limits: &RetentionLimits, pins: &BTreeSet<String>) -> RetentionReport {
-            // Two hours on: every orphan made now is past ORPHAN_MIN_AGE.
-            let later = Timestamp::from_second(Timestamp::now().as_second() + 2 * HOUR).unwrap();
             run(
                 &self.paths,
                 &self.scopes,
                 self.key,
                 &self.client,
                 limits,
-                later,
+                self.clock,
                 pins,
             )
             .unwrap()
