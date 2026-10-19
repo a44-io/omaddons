@@ -1658,6 +1658,7 @@ mod engine_api {
             default_channel: Channel::Stable,
             downloads: None,
             indexes: None,
+            notes: None,
         };
         omaddons::engine::run(&req, &ctx).unwrap()
     }

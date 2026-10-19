@@ -11,7 +11,6 @@ use std::io::IsTerminal;
 use std::panic::AssertUnwindSafe;
 use std::process::ExitCode;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
@@ -292,7 +291,7 @@ where
         let env = |name: &str| std::env::var(name).ok();
         run_with(&raw, &term, &env, std::io::stdin().is_terminal(), started)
     }))
-    .unwrap_or(Exit::Failed);
+    .unwrap_or_else(|_| render_panic());
     ExitCode::from(exit)
 }
 
@@ -343,6 +342,8 @@ fn run_with(
         Ok(ctx) => ctx,
         Err(error) => return render_error(&output, command, started, offline, error),
     };
+    // A panic from here on reports what the run noted (an undo hint among them).
+    set_panic_notes(&ctx.notes);
     // One reporter for the whole run: the command's progress and the outcome's output.
     let reporter = output::shared_stderr(&output);
     ctx.progress = output::ProgressSink::new(&reporter, &output);
@@ -1056,10 +1057,13 @@ struct PanicState {
     argv: Vec<String>,
     started: Instant,
     offline: bool,
+    /// The run's warnings and hints, once its `Context` exists.
+    notes: output::RunNotes,
 }
 
 static PANIC_STATE: Mutex<Option<PanicState>> = Mutex::new(None);
-static PANIC_RENDERED: AtomicBool = AtomicBool::new(false);
+/// The first panic's message and place.
+static PANIC_INFO: Mutex<Option<String>> = Mutex::new(None);
 
 fn set_panic_state(
     output: OutputConfig,
@@ -1075,17 +1079,24 @@ fn set_panic_state(
             argv: argv.to_vec(),
             started,
             offline,
+            notes: output::RunNotes::default(),
         });
     }
 }
 
-/// On a panic: one `internal` envelope on stdout under JSON (unless a document already
-/// went out), the error mirrored to stderr, and nothing else, once per process.
+fn set_panic_notes(notes: &output::RunNotes) {
+    if let Ok(mut state) = PANIC_STATE.lock()
+        && let Some(state) = state.as_mut()
+    {
+        state.notes = notes.clone();
+    }
+}
+
+/// On a panic: its message and place recorded, nothing written. A panic the program
+/// recovers from (a tolerated reader thread) leaves no trace; one that reaches the top
+/// is rendered there, once ([`render_panic`]).
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        if PANIC_RENDERED.swap(true, Ordering::SeqCst) {
-            return;
-        }
         let payload = info
             .payload()
             .downcast_ref::<&str>()
@@ -1096,36 +1107,84 @@ fn install_panic_hook() {
             .location()
             .map(|l| format!(" at {}:{}", l.file(), l.line()))
             .unwrap_or_default();
-        let (cfg, command, argv, started, offline) =
-            match PANIC_STATE.lock().ok().as_deref().and_then(Option::as_ref) {
-                Some(state) => (
-                    state.output,
-                    state.command,
-                    state.argv.clone(),
-                    state.started,
-                    state.offline,
-                ),
-                None => (
-                    OutputConfig::machine(),
-                    "omaddons",
-                    Vec::new(),
-                    Instant::now(),
-                    false,
-                ),
-            };
-        let mut error = Error::internal(format!("internal error: {payload}{at}"));
-        error.fix = crate::error::internal_fix_for(command, &argv);
-        if output::stdout_written() {
-            Reporter::stderr(&cfg).error(&error);
-        } else {
-            render_error(&cfg, command, started, offline, error);
-        }
+        first_panic(&PANIC_INFO, format!("internal error: {payload}{at}"));
     }));
+}
+
+/// Keeps `message` unless a panic is recorded already: a scoped thread's panic panics
+/// again in its parent, more vaguely, and must not replace the cause.
+fn first_panic(slot: &Mutex<Option<String>>, message: String) {
+    let mut first = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    first.get_or_insert(message);
+}
+
+/// A panic that reached the top: one `internal` envelope with the run's warnings and
+/// hints (the `undo` of a transaction that committed before it), mirrored on stderr.
+/// When a document already went out, it is the contract: an `info` line on stderr, and
+/// that document's exit status.
+fn render_panic() -> Exit {
+    let message = PANIC_INFO
+        .lock()
+        .ok()
+        .and_then(|first| first.clone())
+        .unwrap_or_else(|| "internal error: panic".to_owned());
+    let state = PANIC_STATE.lock().ok().and_then(|state| {
+        state.as_ref().map(|s| {
+            (
+                s.output,
+                s.command,
+                s.argv.clone(),
+                s.started,
+                s.offline,
+                s.notes.clone(),
+            )
+        })
+    });
+    let (cfg, command, argv, started, offline, notes) = state.unwrap_or_else(|| {
+        (
+            OutputConfig::machine(),
+            "omaddons",
+            Vec::new(),
+            Instant::now(),
+            false,
+            output::RunNotes::default(),
+        )
+    });
+    let mut error = Error::internal(message);
+    error.fix = crate::error::internal_fix_for(command, &argv);
+    let mut reporter = Reporter::stderr(&cfg);
+    if output::stdout_written() {
+        let line = format!("{} after the result was written", error.message);
+        reporter.log(output::LogLevel::Info, &line);
+        return output::emitted_exit().unwrap_or(Exit::Failed);
+    }
+    output::emit_panic(
+        &cfg,
+        &mut reporter,
+        command,
+        started,
+        offline,
+        &notes,
+        error,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_panic_is_the_one_reported() {
+        let slot = Mutex::new(None);
+        first_panic(&slot, "internal error: the cause at src/x.rs:1".to_owned());
+        first_panic(&slot, "internal error: a scoped thread panicked".to_owned());
+        assert_eq!(
+            slot.lock().unwrap().as_deref(),
+            Some("internal error: the cause at src/x.rs:1")
+        );
+    }
 
     fn argv(args: &[&str]) -> Vec<String> {
         std::iter::once("omaddons")

@@ -157,6 +157,18 @@ pub struct EngineCtx<'a> {
     /// The Tukui list and WoWInterface index dependencies resolve from after the catalog,
     /// loaded once per command; `None`: the catalog only.
     pub indexes: Option<&'a super::indexes::DepIndexes>,
+    /// The run's notes, which keep each committed transaction's undo should the run then
+    /// panic; `None` keeps nothing.
+    pub notes: Option<&'a crate::output::RunNotes>,
+}
+
+/// Notes `omaddons undo <tx>` for a transaction whose history line is written: it
+/// stands from here, whatever happens to the run.
+pub(super) fn note_undo(ctx: &EngineCtx<'_>, tx: &TxId) {
+    if let Some(notes) = ctx.notes {
+        let argv = ["omaddons".to_owned(), "undo".to_owned(), tx.to_string()];
+        notes.hint(crate::error::CommandHint::new("undo", argv, false));
+    }
 }
 
 /// One target's result: the `data` core of install, remove and undo.
@@ -922,6 +934,7 @@ fn locked(
             loaded.as_ref().map(|l| &l.status),
         )?;
         history::append(&mut s, paths, &history)?;
+        note_undo(ctx, tx);
         failpoint::hit("engine.history.appended").map_err(fail)?;
         journal.mark_committed(&mut s)?;
         failpoint::hit("engine.committed").map_err(fail)?;

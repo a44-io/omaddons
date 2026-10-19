@@ -898,6 +898,8 @@ fn run_credential_command(argv: &[String]) -> Result<Secret> {
         .take()
         .ok_or_else(|| rejected("the credential command has no stdout".into()))?;
     let reader = std::thread::spawn(move || {
+        // A seam (DEC-7): a panic here is recovered below, so it must print nothing.
+        let _ = crate::fsx::failpoint::hit("config.credential.reader");
         let mut out = Vec::new();
         let _ = stdout.read_to_end(&mut out);
         out

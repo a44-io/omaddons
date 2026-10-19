@@ -373,6 +373,7 @@ fn commit(
             loaded.as_ref().map(|l| &l.status),
         )?;
         history::append(&mut s, paths, &history)?;
+        super::tx::note_undo(ctx, tx);
         failpoint::hit("engine.history.appended").map_err(fail)?;
         journal.mark_committed(&mut s)?;
         failpoint::hit("engine.committed").map_err(fail)?;

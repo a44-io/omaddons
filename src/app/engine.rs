@@ -37,6 +37,8 @@ pub struct Engine {
     command: &'static str,
     /// The command's progress, which its engine runs report into.
     progress: ProgressSink,
+    /// The run's notes: each committed transaction's undo, should the run then panic.
+    notes: crate::output::RunNotes,
     /// Where dependencies resolve.
     catalog: Catalog,
     /// The channel dependencies install from.
@@ -81,6 +83,7 @@ impl Engine {
             argv: ctx.argv.clone(),
             command,
             progress: ctx.progress.clone(),
+            notes: ctx.notes.clone(),
             // A broken override is the command's own catalog warning, if it loads one.
             catalog: Catalog::load(&world.paths).0,
             default_channel: world.config.default_channel.unwrap_or_default(),
@@ -115,6 +118,7 @@ impl Engine {
             default_channel: self.default_channel,
             downloads: Some(&self.downloads),
             indexes: Some(&self.indexes),
+            notes: Some(&self.notes),
         }
     }
 

@@ -135,6 +135,7 @@ mod support {
                 default_channel: Channel::Stable,
                 downloads: None,
                 indexes: None,
+                notes: None,
             }
         }
 

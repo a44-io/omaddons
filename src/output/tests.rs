@@ -404,3 +404,106 @@ fn envelope_snapshots() {
         Envelope::check_failed("outdated", &d.data, false, &check_failed(), &[], &[], meta);
     insta::assert_json_snapshot!("envelope_check_failed", stable(failed));
 }
+
+/// Data that does not serialize: its `serialize` errs, or panics.
+#[derive(JsonSchema)]
+struct Broken {
+    panics: bool,
+}
+
+impl Serialize for Broken {
+    fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        assert!(!self.panics, "broken data");
+        Err(serde::ser::Error::custom("broken data"))
+    }
+}
+
+struct BrokenOutcome(Broken);
+
+impl Outcome for BrokenOutcome {
+    type Data = Broken;
+
+    fn command(&self) -> &'static str {
+        "status"
+    }
+
+    fn data(&self) -> &Broken {
+        &self.0
+    }
+
+    fn render_human(&self, _: &mut dyn Write, _: &Style) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A result that does not serialize is replaced by one well-formed internal envelope,
+/// the run fails, and the error is mirrored on stderr.
+#[test]
+fn a_result_that_does_not_serialize_is_one_internal_envelope() {
+    let cfg = OutputConfig::machine();
+    let mut stdout = Vec::new();
+    let mut reporter = Reporter::new(Vec::new(), &cfg);
+    let exit = emit_to(
+        &cfg,
+        &mut stdout,
+        &mut reporter,
+        "status",
+        Instant::now(),
+        false,
+        &RunNotes::default(),
+        Ok(BrokenOutcome(Broken { panics: false })),
+    );
+    let stdout = String::from_utf8(stdout).unwrap();
+    assert_eq!(
+        (exit, stdout.lines().count()),
+        (Exit::Failed, 1),
+        "{stdout}"
+    );
+    assert_eq!(
+        top_level_keys(&stdout),
+        [
+            "ok",
+            "schema_version",
+            "tool_version",
+            "command",
+            "exit_code",
+            "error",
+            "warnings",
+            "commands",
+            "meta"
+        ]
+    );
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        (&envelope["error"]["code"], &envelope["exit_code"]),
+        (&serde_json::json!("internal"), &serde_json::json!(1))
+    );
+    let stderr = String::from_utf8(reporter.into_sink()).unwrap();
+    assert!(stderr.contains("could not be serialized"), "{stderr}");
+    // Even the literal kept for when that fails is a whole envelope.
+    let literal = unserializable_literal("status");
+    assert_eq!(top_level_keys(&literal), top_level_keys(&stdout));
+}
+
+/// A panic while the result serializes writes nothing, so the panic's own envelope is
+/// the only document.
+#[test]
+fn a_panic_while_serializing_writes_nothing() {
+    let cfg = OutputConfig::machine();
+    let mut stdout = Vec::new();
+    let mut reporter = Reporter::new(Vec::new(), &cfg);
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        emit_to(
+            &cfg,
+            &mut stdout,
+            &mut reporter,
+            "status",
+            Instant::now(),
+            false,
+            &RunNotes::default(),
+            Ok(BrokenOutcome(Broken { panics: true })),
+        )
+    }));
+    assert!(panicked.is_err());
+    assert!(stdout.is_empty(), "{}", String::from_utf8_lossy(&stdout));
+}

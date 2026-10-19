@@ -66,6 +66,73 @@ fn a_panic_is_one_internal_envelope() {
     );
 }
 
+/// A panic after a transaction committed is one internal envelope, whose commands offer
+/// the undo of what stands, and that undo works.
+#[test]
+fn a_panic_after_commit_offers_undo() {
+    let s = Scene::new();
+    let zip = s.zip("foo");
+    let c = s.json_env(
+        &["install", "gh:o/foo", "--file", &zip, "-t", "retail"],
+        &[("OMADDONS_FAILPOINTS", "engine.retention=panic")],
+        1,
+    );
+    assert_eq!(c.envelope["error"]["code"], "internal", "{}", c.envelope);
+    let undo = &c.envelope["commands"][0];
+    assert_eq!(undo["action"], "undo", "{}", c.envelope);
+    let argv: Vec<&str> = undo["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(argv[..2], ["omaddons", "undo"]);
+    let undone = s.json(&argv[1..], 0);
+    assert_eq!(
+        undone.envelope["data"]["reverted"]["kind"], "install",
+        "{}",
+        undone.envelope
+    );
+}
+
+/// A panic the program recovers from (the credential command's reader thread) prints
+/// nothing: the run's own envelope is the only document.
+#[test]
+fn a_recovered_panic_prints_one_envelope() {
+    let s = Scene::new();
+    let cred = s.home.env.root().join("cred");
+    fs::write(
+        &cred,
+        "#!/bin/sh\necho ghp_0123456789abcdefghijklmnopqrstuvwxyzAB\n",
+    )
+    .unwrap();
+    fs::set_permissions(
+        &cred,
+        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .unwrap();
+    fs::create_dir_all(s.home.env.config().join("omaddons")).unwrap();
+    fs::write(
+        s.home.env.config().join("omaddons/config.toml"),
+        format!(
+            "[sources.github]\ncredential = {{ command = [\"{}\"] }}\n",
+            cred.display()
+        ),
+    )
+    .unwrap();
+    let argv = ["auth", "github", "--json"].map(str::to_owned);
+    let run = s.home.exec_with(
+        &argv,
+        &[("OMADDONS_FAILPOINTS", "config.credential.reader=panic")],
+    );
+    let docs: Vec<Value> = serde_json::Deserializer::from_str(&run.stdout)
+        .into_iter::<Value>()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(docs.len(), 1, "{}", run.context());
+    assert_ne!(docs[0]["error"]["code"], "internal", "{}", run.context());
+}
+
 /// A missing or relative HOME is the environment's fault: `usage` (exit 2), with a fix
 /// no omaddons command can carry out. `help` needs no HOME.
 #[test]

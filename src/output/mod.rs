@@ -14,7 +14,7 @@ mod stderr;
 mod term;
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Instant;
 
 use serde::Serialize;
@@ -56,11 +56,20 @@ pub trait Outcome {
 }
 
 static STDOUT_WRITTEN: AtomicBool = AtomicBool::new(false);
+/// The exit status of the document written; `u8::MAX` while there is none.
+static EMITTED_EXIT: AtomicU8 = AtomicU8::new(u8::MAX);
 
-/// Whether this process has written a document to stdout. The panic hook checks it so
-/// that it never emits a second envelope.
+/// Whether this process has written a document to stdout (once it serialized). A panic
+/// render checks it so that it never emits a second envelope.
 pub fn stdout_written() -> bool {
     STDOUT_WRITTEN.load(Ordering::SeqCst)
+}
+
+/// The exit status of the document this process wrote, if any: a panic after it keeps
+/// that status, so stdout and the exit code agree.
+pub fn emitted_exit() -> Option<Exit> {
+    let code = EMITTED_EXIT.load(Ordering::SeqCst);
+    Exit::ALL.iter().copied().find(|e| e.code() == code)
 }
 
 /// Renders a command's result to the real stdout and the reporter, and returns the
@@ -100,12 +109,9 @@ pub fn emit_to<O: Outcome, W: Write>(
     notes: &RunNotes,
     result: Result<O, Error>,
 ) -> Exit {
-    let meta = Meta {
-        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        offline,
-    };
+    let meta = meta(started, offline);
     let (mut warnings, _) = notes.snapshot();
-    match result {
+    let exit = match result {
         Ok(outcome) => {
             let found = warnings.len();
             for warning in outcome.warnings() {
@@ -118,7 +124,7 @@ pub fn emit_to<O: Outcome, W: Write>(
                 reporter.warning(warning);
             }
             let failure = outcome.assertion_failure();
-            match cfg.output {
+            let unserializable = match cfg.output {
                 OutputMode::Json => {
                     let envelope = match &failure {
                         None => Envelope::success(
@@ -139,51 +145,146 @@ pub fn emit_to<O: Outcome, W: Write>(
                             meta,
                         ),
                     };
-                    write_json(stdout, &envelope);
+                    write_json(stdout, &envelope, outcome.command(), meta)
                 }
                 OutputMode::Human => {
-                    STDOUT_WRITTEN.store(true, Ordering::SeqCst);
+                    // Written once rendered: a panic inside the rendering leaves stdout
+                    // to the error render.
                     let rendered = outcome
                         .render_human(stdout, &cfg.style)
                         .and_then(|()| stdout.flush());
+                    STDOUT_WRITTEN.store(true, Ordering::SeqCst);
                     ignore_write_error(rendered);
+                    None
                 }
-            }
-            match failure {
-                Some(error) => {
+            };
+            match (unserializable, failure) {
+                (Some(internal), _) => {
+                    reporter.error(&internal);
+                    Exit::Failed
+                }
+                (None, Some(error)) => {
                     reporter.error(&error);
                     error.exit()
                 }
-                None => Exit::Ok,
+                (None, None) => Exit::Ok,
             }
         }
-        Err(error) => {
-            notes.settle_journal(&mut warnings);
-            for warning in &warnings {
-                reporter.warning(warning);
-            }
-            if cfg.output == OutputMode::Json {
-                write_json(
-                    stdout,
-                    &Envelope::failure(command, &error, &warnings, &[], meta),
-                );
-            }
-            reporter.error(&error);
-            error.exit()
-        }
+        Err(error) => fail(
+            cfg,
+            stdout,
+            reporter,
+            command,
+            meta,
+            notes,
+            warnings,
+            &[],
+            error,
+        ),
+    };
+    if stdout_written() {
+        EMITTED_EXIT.store(exit.code(), Ordering::SeqCst);
+    }
+    exit
+}
+
+/// The internal error of a panic that reached the top, to the real stdout: its envelope
+/// carries the run's warnings and hints so far (the `undo` of a transaction that
+/// committed before it).
+pub fn emit_panic<W: Write>(
+    cfg: &OutputConfig,
+    reporter: &mut Reporter<W>,
+    command: &'static str,
+    started: Instant,
+    offline: bool,
+    notes: &RunNotes,
+    error: Error,
+) -> Exit {
+    let (warnings, commands) = notes.snapshot();
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    let meta = meta(started, offline);
+    let exit = fail(
+        cfg, &mut lock, reporter, command, meta, notes, warnings, &commands, error,
+    );
+    if stdout_written() {
+        EMITTED_EXIT.store(exit.code(), Ordering::SeqCst);
+    }
+    exit
+}
+
+fn meta(started: Instant, offline: bool) -> Meta {
+    Meta {
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        offline,
     }
 }
 
-/// One compact JSON document and a newline, in one write.
-fn write_json<T: Serialize>(stdout: &mut dyn Write, value: &T) {
-    STDOUT_WRITTEN.store(true, Ordering::SeqCst);
-    let mut line = match serde_json::to_vec(value) {
-        Ok(line) => line,
-        // Every envelope is plain data; a failure here is a bug with nowhere to go.
-        Err(_) => b"{\"ok\":false}".to_vec(),
+/// A failure: the run's `warnings` (journal ones settled) on stderr, its envelope under
+/// JSON, then the error on stderr.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a failure's pieces as emit_to has them; a struct would only rename them"
+)]
+fn fail<W: Write>(
+    cfg: &OutputConfig,
+    stdout: &mut dyn Write,
+    reporter: &mut Reporter<W>,
+    command: &str,
+    meta: Meta,
+    notes: &RunNotes,
+    mut warnings: Vec<Warning>,
+    commands: &[CommandHint],
+    error: Error,
+) -> Exit {
+    notes.settle_journal(&mut warnings);
+    for warning in &warnings {
+        reporter.warning(warning);
+    }
+    if cfg.output == OutputMode::Json {
+        let envelope = Envelope::failure(command, &error, &warnings, commands, meta);
+        if let Some(internal) = write_json(stdout, &envelope, command, meta) {
+            reporter.error(&internal);
+            return Exit::Failed;
+        }
+    }
+    reporter.error(&error);
+    error.exit()
+}
+
+/// One compact JSON document and a newline, in one write; the document counts as
+/// written only once it serialized. A value that does not serialize (a bug) is replaced
+/// by an internal-error envelope, whose error is returned.
+fn write_json<T: Serialize>(
+    stdout: &mut dyn Write,
+    value: &T,
+    command: &str,
+    meta: Meta,
+) -> Option<Error> {
+    let (mut line, failed) = match serde_json::to_vec(value) {
+        Ok(line) => (line, None),
+        Err(e) => {
+            let error = Error::internal(format!("the result could not be serialized: {e}"));
+            let envelope = Envelope::failure(command, &error, &[], &[], meta);
+            let line = serde_json::to_vec(&envelope)
+                .unwrap_or_else(|_| unserializable_literal(command).into_bytes());
+            (line, Some(error))
+        }
     };
+    STDOUT_WRITTEN.store(true, Ordering::SeqCst);
     line.push(b'\n');
     ignore_write_error(stdout.write_all(&line).and_then(|()| stdout.flush()));
+    failed
+}
+
+/// The internal-error envelope as a literal, every key in place, for when even that
+/// does not serialize.
+fn unserializable_literal(command: &str) -> String {
+    let command = serde_json::to_string(command).unwrap_or_else(|_| "\"omaddons\"".to_owned());
+    format!(
+        "{{\"ok\":false,\"schema_version\":\"{SCHEMA_VERSION}\",\"tool_version\":\"{}\",\"command\":{command},\"exit_code\":1,\"error\":{{\"code\":\"internal\",\"message\":\"the result could not be serialized\",\"fix\":\"omaddons status\",\"fix_argv\":[\"omaddons\",\"status\"],\"alternatives\":[],\"retryable\":false,\"details\":{{}}}},\"warnings\":[],\"commands\":[],\"meta\":{{\"elapsed_ms\":0,\"offline\":false}}}}",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// A reader that went away (`| head`, a broken pipe) is not an error, and no other

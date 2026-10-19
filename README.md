@@ -1233,7 +1233,7 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 | 5 | `locked` | Another omaddons process held the lock past the 5-second timeout; retryable |
 | 6 | `check_failed` | An opt-in assertion failed: `status --check` (drift or attention), `outdated --check` (an update is available), or `--strict` on `install`, `update`, `sync` and `copy` (a partial success). `data` is kept |
 
-A panic still produces one `internal` envelope and exit 1, never Rust's 101.
+A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its `commands` offer `omaddons undo <tx>` for a transaction that committed before it, and its warnings are the ones the run found. A panic after the result was written leaves that result and its exit status, with one stderr line saying so; a panic the program recovers from prints nothing.
 
 <details>
 <summary><strong>Every error code (39)</strong></summary>

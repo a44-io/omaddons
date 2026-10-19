@@ -1017,6 +1017,7 @@ mod runs {
                     default_channel: Channel::Stable,
                     downloads: None,
                     indexes: None,
+                    notes: None,
                 };
                 let done = omaddons::engine::run(&req, &ctx).unwrap();
                 let committed = done.outcomes.iter().filter(|o| o.tx.is_some()).count();

@@ -398,6 +398,7 @@ impl TxScene {
             default_channel: crate::model::Channel::Stable,
             downloads: None,
             indexes: None,
+            notes: None,
         };
         f(&ctx)
     }
