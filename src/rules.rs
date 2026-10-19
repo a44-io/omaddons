@@ -663,16 +663,22 @@ impl RulesTable {
     }
 
     /// Like [`RulesTable::rules_for`] with the family already decided, e.g. by a config
-    /// target override.
+    /// target override. With no readable version (`0.0.0`) the family's first row for
+    /// `kind` applies: rows of a family run newest first, so that is its current client's.
+    /// Only a family with no row for `kind` (a `*-legacy` family on Battle.net) falls
+    /// back.
     pub fn rules_for_family(
         &self,
         family: Family,
         version: &ClientVersion,
         kind: InstallKind,
     ) -> &ClientRules {
+        let unreadable = *version == ClientVersion::new(0, 0, 0);
         self.client_rules
             .iter()
-            .find(|row| row.family == family && row.applies_to(kind) && row.covers(version))
+            .find(|row| {
+                row.family == family && row.applies_to(kind) && (unreadable || row.covers(version))
+            })
             .unwrap_or_else(|| self.fallback(kind))
     }
 
@@ -1838,6 +1844,30 @@ mod tests {
                 .name,
             "mainline"
         );
+        // No readable version: the family's current row for the kind, whatever its
+        // bounds; only a family with no row for the kind falls back.
+        let unreadable = ClientVersion::new(0, 0, 0);
+        let custom = InstallKind::Custom;
+        for (family, kind, row) in [
+            (Family::Mainline, bn, "mainline"),
+            (Family::Forever, bn, "forever"),
+            (Family::Vanilla, bn, "vanilla"),
+            (Family::Tbc, bn, "tbc"),
+            (Family::Titan, bn, "titan"),
+            (Family::Mists, bn, "mists"),
+            (Family::Vanilla, custom, "vanilla"),
+            (Family::VanillaLegacy, custom, "vanilla-legacy"),
+            (Family::WrathLegacy, custom, "wrath-legacy"),
+            (Family::VanillaLegacy, bn, "fallback-battlenet"),
+            (Family::Unknown, bn, "fallback-battlenet"),
+            (Family::Unknown, custom, "fallback-custom"),
+        ] {
+            assert_eq!(
+                table.rules_for_family(family, &unreadable, kind).name,
+                row,
+                "{family:?} on {kind:?}"
+            );
+        }
     }
 
     // ---- Products ------------------------------------------------------------------

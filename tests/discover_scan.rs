@@ -364,7 +364,14 @@ fn output_is_deterministic() {
     let d = discover(&input(&env), &RulesTable::builtin());
     assert_eq!(d.targets.len(), 16);
     let codes: Vec<&str> = d.warnings.iter().map(|w| w.code.wire()).collect();
-    assert_eq!(codes, ["client_not_launched_since_patch", "unknown_flavor"]);
+    // `unknown_flavor` is the World's, once overrides applied.
+    assert_eq!(codes, ["client_not_launched_since_patch"]);
+    let unknown = d
+        .targets
+        .iter()
+        .filter_map(|t| omaddons::discover::unknown_flavor(&t.target))
+        .count();
+    assert_eq!(unknown, 1, "the _xyz_ folder");
 }
 
 #[test]

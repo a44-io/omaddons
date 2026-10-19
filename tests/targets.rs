@@ -353,3 +353,71 @@ fn a_held_lock_times_out_as_locked() {
         json!(["omaddons", "targets", "rename", "retail", "main"])
     );
 }
+
+/// An Era folder whose version cannot be read: a family override gives it that family's
+/// current rules (game-suffix TOCs, game types), and `unknown_flavor` goes quiet.
+#[test]
+fn a_family_override_on_an_unreadable_client_takes_the_familys_rules() {
+    let env = TestEnv::new();
+    BattlenetRoot::at(Prefix::new(&env, "battlenet").wow_root())
+        .product("wow")
+        .unknown_folder("_classic_era_", Some("wow_classic_era"), None)
+        .build();
+    let addons = env.root().join("addons");
+    for (path, toc) in [
+        ("Multi/Multi_Mainline.toc", "## Interface: 120105\nm.lua\n"),
+        ("Multi/Multi_Vanilla.toc", "## Interface: 11509\nm.lua\n"),
+        (
+            "Gated/Gated.toc",
+            "## Interface: 11509\n## AllowLoadGameType: vanilla\ng.lua\n",
+        ),
+        ("Fv/Fv_Forever.toc", "## Interface: 16001\nf.lua\n"),
+        ("Fv/Fv_Mainline.toc", "## Interface: 120105\nf.lua\n"),
+    ] {
+        let path = addons.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, toc).unwrap();
+    }
+    let addon = |name: &str| addons.join(name).to_string_lossy().into_owned();
+    let installs = |name: &str| {
+        let (code, envelope) = run(&env, &["install", &addon(name), "-t", "era", "--dry-run"]);
+        assert_eq!(code, 0, "{name}: {envelope}");
+        assert_eq!(
+            envelope["data"]["items"][0]["status"], "installed",
+            "{envelope}"
+        );
+    };
+    let codes = |envelope: &Value| -> Vec<String> {
+        envelope["warnings"]
+            .as_array()
+            .map(|ws| {
+                ws.iter()
+                    .map(|w| w["code"].as_str().unwrap().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let (_, before) = run(&env, &["targets"]);
+    assert_eq!(codes(&before), ["unknown_flavor"], "{before}");
+
+    let config = env.config().join("omaddons/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "[targets.era]\nfamily = \"vanilla\"\n").unwrap();
+    let (_, listed) = run(&env, &["targets", "-v"]);
+    let era = target(&listed, "era");
+    assert_eq!(
+        (&era["family"], &era["details"]["rules"], &era["interface"]),
+        (&json!("vanilla"), &json!("vanilla"), &json!(0)),
+        "{listed}"
+    );
+    assert!(codes(&listed).is_empty(), "{listed}");
+    // Their _Mainline TOCs (120105) would be refused: each loads its vanilla TOC.
+    installs("Multi");
+    installs("Gated");
+
+    fs::write(&config, "[targets.era]\nfamily = \"forever\"\n").unwrap();
+    let (_, listed) = run(&env, &["targets", "-v"]);
+    assert_eq!(target(&listed, "era")["details"]["rules"], "forever");
+    installs("Fv");
+}

@@ -617,7 +617,16 @@ fn an_unknown_flavor_folder_is_a_usable_unknown_target() {
         "{}",
         run.context()
     );
-    assert_eq!(run.warning_codes(), ["unknown_flavor"], "{}", run.context());
+    // Said by the World once overrides applied, not by discovery.
+    assert!(run.warning_codes().is_empty(), "{}", run.context());
+    let warning = omaddons::discover::unknown_flavor(&xyz.target).unwrap();
+    assert!(
+        warning.message.ends_with(
+            "flavor folder _xyz_ has no readable version; it is usable with permissive modern rules"
+        ),
+        "{}",
+        warning.message
+    );
     run.target("retail");
 
     // A product the catalog does not know, with a .build.info row, reads as mainline.

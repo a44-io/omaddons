@@ -254,8 +254,14 @@ fn a_non_pe_exe_is_usable_and_warns() {
         (Family::Unknown, ClientVersion::new(0, 0, 0))
     );
     assert_eq!(t.id, "broken");
-    assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].code, WarningCode::UnknownFlavor);
+    // Said once overrides applied (World), not by discovery.
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let warning = omaddons::discover::unknown_flavor(&t).unwrap();
+    assert_eq!(warning.code, WarningCode::UnknownFlavor);
+    assert_eq!(
+        warning.message,
+        "broken: Wow.exe has no readable version; it is usable with conservative legacy rules"
+    );
 }
 
 /// The development machine's own custom client (vision §4.7), when its path is given:

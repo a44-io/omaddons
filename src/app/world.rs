@@ -109,6 +109,13 @@ impl World {
         let mut resolved = reconcile(&registry, &discovered.targets);
         found(&resolved.warnings);
         apply_target_overrides(&mut resolved, &config, &table);
+        // A client whose family is still unknown, once its override (if any) applied.
+        let unknown: Vec<Warning> = resolved
+            .targets
+            .iter()
+            .filter_map(|d| crate::discover::unknown_flavor(&d.target))
+            .collect();
+        found(&unknown);
         // Unfinished transactions, reported without recovering (D23). A mutating
         // command recovers them under the lock and reports `journal_recovered` instead:
         // the run's notes read them again when it ends.
@@ -256,8 +263,18 @@ fn apply_target_overrides(resolved: &mut Resolved, config: &Config, table: &Rule
             d.target.label = Some(label.clone());
         }
         if let Some(family) = o.family {
-            d.target.family = family;
-            d.target.refresh_rules(table);
+            // The family's rules, and the interface they give, as discovery would have.
+            let t = &mut d.target;
+            t.family = family;
+            t.refresh_rules(table);
+            t.interface = crate::discover::client_interface(
+                table,
+                &t.client_dir,
+                &t.version,
+                t.family,
+                t.install_kind,
+                &t.rules,
+            );
         }
     }
 }
@@ -275,7 +292,7 @@ pub fn names_addon(name: &str, addon: &AddonRecord, catalog: &Catalog) -> bool {
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
-    use crate::rules::Family;
+    use crate::rules::{ClientVersion, Family, InstallKind};
 
     fn found(id: &str, family: Family, product: Option<&str>) -> DiscoveredTarget {
         let mut target = crate::engine::testing::target(&PathBuf::from(format!("/c/{id}")));
@@ -349,5 +366,76 @@ mod tests {
         let targets = vec![era, again, unregistered, same_dir];
         let selected = select_many(Some("vanilla"), &targets, &table).unwrap();
         assert_eq!(ids(&selected), ["era", "turtle"]);
+    }
+
+    /// The overridden family's rules, rules row and interface, after `last_addon_version`
+    /// (when `Some`) is written to the client's `WTF/Config.wtf`.
+    fn overridden(
+        mut d: DiscoveredTarget,
+        family: Family,
+        last_addon_version: Option<u32>,
+    ) -> (String, u32, Option<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        d.target.client_dir = dir.path().to_path_buf();
+        if let Some(last) = last_addon_version {
+            std::fs::create_dir_all(dir.path().join("WTF")).unwrap();
+            std::fs::write(
+                dir.path().join("WTF/Config.wtf"),
+                format!("SET lastAddonVersion \"{last}\"\n"),
+            )
+            .unwrap();
+        }
+        let id = d.target.id.clone();
+        let mut resolved = Resolved {
+            targets: vec![d],
+            warnings: Vec::new(),
+            missing: Vec::new(),
+        };
+        let mut config = Config::default();
+        config.targets.insert(
+            id,
+            crate::state::config::TargetOverride {
+                label: Some("mine".into()),
+                family: Some(family),
+            },
+        );
+        apply_target_overrides(&mut resolved, &config, &RulesTable::builtin());
+        let t = &resolved.targets[0].target;
+        assert_eq!(t.family, family);
+        (t.rules.name.clone(), t.interface, t.label.clone())
+    }
+
+    #[test]
+    fn a_family_override_recomputes_the_rules_and_the_interface() {
+        // A 1.12 client stamped 1.18.1, read as vanilla: its own lastAddonVersion wins
+        // on the legacy row it is moved to.
+        let mut turtle = found("turtle", Family::Vanilla, None);
+        turtle.target.install_kind = InstallKind::Custom;
+        turtle.target.version = "1.18.1.7272".parse().unwrap();
+        turtle.target.interface = 11_801;
+        let legacy = Family::VanillaLegacy;
+        assert_eq!(
+            overridden(turtle.clone(), legacy, Some(11_201)),
+            ("vanilla-legacy".into(), 11_201, Some("mine".into()))
+        );
+        assert_eq!(
+            overridden(turtle, legacy, None),
+            ("vanilla-legacy".into(), 11_200, Some("mine".into())),
+            "without Config.wtf, the 1.16-1.49 version rule's pinned interface"
+        );
+
+        // A Battle.net folder with no readable version takes the family's current row;
+        // its lastAddonVersion counts only inside the family's interfaces.
+        let mut era = found("era", Family::Unknown, Some("wow_classic_era"));
+        era.target.version = ClientVersion::new(0, 0, 0);
+        era.target.interface = 0;
+        let vanilla = |last| overridden(era.clone(), Family::Vanilla, last);
+        assert_eq!(
+            vanilla(Some(11_508)),
+            ("vanilla".into(), 11_508, Some("mine".into()))
+        );
+        assert_eq!(vanilla(Some(120_105)).1, 0, "not a vanilla interface");
+        assert_eq!(vanilla(None).1, 0);
+        assert_eq!(overridden(era, Family::Forever, None).0, "forever");
     }
 }

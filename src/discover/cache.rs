@@ -57,13 +57,18 @@ impl Versioned for DiscoveryCache {
     const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
 }
 
-/// SHA-256 of this binary's version and the effective rules table (builtin plus
-/// `[rules]` and `[client_rules.*]`): a rules edit or an upgrade re-parses every root
-/// once, as `targets --rescan` would.
+/// What a root's parse yields, beyond the rules: bumped when it changes while the
+/// package version does not. 2: `unknown_flavor` is no longer the parse's but the
+/// World's, said once config overrides applied.
+const PARSE_REVISION: u8 = 2;
+
+/// SHA-256 of this binary's version, [`PARSE_REVISION`] and the effective rules table
+/// (builtin plus `[rules]` and `[client_rules.*]`): a rules edit or an upgrade re-parses
+/// every root once, as `targets --rescan` would.
 pub fn basis(table: &RulesTable) -> String {
     let mut hash = Sha256::new();
     hash.update(env!("CARGO_PKG_VERSION").as_bytes());
-    hash.update([0]);
+    hash.update([0, PARSE_REVISION, 0]);
     // A table that does not encode still yields a basis, just one shared by every such
     // table; the builtin and validated overrides always encode.
     hash.update(serde_json::to_vec(table).unwrap_or_default());

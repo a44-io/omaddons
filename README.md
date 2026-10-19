@@ -399,7 +399,7 @@ Parsed results are cached in `~/.cache/omaddons/discovery.json` and reused while
 | `wow_classic_titan` | `_classic_titan_` | WoWClassic.exe | live | `titan` | titan (3.80.x, China) | |
 | `wowf` | `_forever_` | Wow.exe | live | `forever` | forever (1.60.x) | WoW: Forever |
 
-The product code does not decide the family; the version does. `wow_classic_era_ptr` runs TBC 2.5.x, and `wow_classic_beta` runs Forever 1.60.x. An unknown flavor folder still becomes a target. If its version cannot be read, it can receive installs only after you set its family (see [Configuration](#per-target-overrides)).
+The product code does not decide the family; the version does. `wow_classic_era_ptr` runs TBC 2.5.x, and `wow_classic_beta` runs Forever 1.60.x. An unknown flavor folder still becomes a target. If its version cannot be read, it can receive installs only after you set its family (see [Configuration](#per-target-overrides)); the override then gives it that family's current load rules.
 
 ### Private-server (legacy) clients
 
@@ -1302,7 +1302,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `state_version_older` | state migrates forward on the next write |
 | `state_version_newer` | writes refused until omaddons is upgraded |
 | `config_unknown_key` | unknown key in `config.toml`, with the closest valid key |
-| `unknown_flavor` | an unrecognized flavor folder, or a custom client whose version maps to no family, became a target |
+| `unknown_flavor` | an unrecognized flavor folder, or a custom client whose version maps to no family, became a target, and no `[targets.<id>] family` override sets its family |
 | `discovery_truncated` | discovery hit its directory budget; add the client with `targets add` |
 | `target_key_duplicate` | two clients carry the same marker (a copied install) |
 | `catalog_override_invalid` | a `catalog.d` file was skipped |
@@ -1549,6 +1549,8 @@ label = "main"               # shown in status and targets
 [targets.mystery]
 family = "wrath-legacy"      # a misdetected or unreadable client: re-picks its load rules
 ```
+
+A `family` override re-picks the client's load-rules row and its interface, as detection would have for that family. A client whose version cannot be read gets the family's current row: on Battle.net, `vanilla` loads `_Vanilla.toc` and honours `AllowLoadGameType`. Its interface then comes from the client's own `WTF/Config.wtf` (`lastAddonVersion`), when that lies in the family's range. Otherwise installs are judged by the family's interface range alone, and `out_of_date` is not reported. On a `*-legacy` row, the client's `lastAddonVersion` always wins. A family with no row for the install kind, such as a `*-legacy` family on a Battle.net folder, keeps the fallback rules. `unknown_flavor` is not reported for a client whose family an override sets.
 
 ### Rules overrides (advanced)
 

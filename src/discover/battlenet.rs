@@ -32,7 +32,8 @@ pub fn is_battlenet_root(dir: &Path) -> bool {
 }
 
 /// Every flavor folder of `root` as a target, sorted by folder name, plus warnings
-/// (`unknown_flavor`, `client_not_launched_since_patch`). Reads only.
+/// (`client_not_launched_since_patch`; `unknown_flavor` is said once config overrides
+/// applied, [`super::unknown_flavor`]). Reads only.
 pub fn discover_root(
     root: &Path,
     table: &RulesTable,
@@ -67,11 +68,14 @@ pub fn discover_root(
                 table.fallback(InstallKind::Battlenet).clone(),
             ),
         };
-        let interface = if family == Family::Unknown && version == ClientVersion::new(0, 0, 0) {
-            0
-        } else {
-            table.interface_for_client(&version, InstallKind::Battlenet, &rules)
-        };
+        let interface = super::client_interface(
+            table,
+            &client_dir,
+            &version,
+            family,
+            InstallKind::Battlenet,
+            &rules,
+        );
         let kind = known.map_or_else(
             || {
                 let test = |s: &str| {
@@ -89,24 +93,6 @@ pub fn discover_root(
         let default_id = known.map_or_else(|| unknown_folder_id(&folder), |p| p.default_id.clone());
         let exe_name = exe_name(&client_dir, known.map(|p| p.exe.as_str()));
 
-        if family == Family::Unknown {
-            let what = if version == ClientVersion::new(0, 0, 0) {
-                "has no readable version".to_owned()
-            } else {
-                format!("runs version {version}, which no family covers")
-            };
-            warnings.push(
-                Warning::new(
-                    WarningCode::UnknownFlavor,
-                    format!(
-                        "{default_id}: flavor folder {folder} {what}; it is usable with permissive modern rules"
-                    ),
-                )
-                .with_fix(Suggestion::text(
-                    "set its family with a [targets.<id>] override in config.toml",
-                )),
-            );
-        }
         if let Some(last) = config_wtf::last_addon_version(&client_dir)
             && interface != 0
             && last != interface
@@ -507,11 +493,13 @@ mod tests {
             t.rules,
             *RulesTable::builtin().fallback(InstallKind::Battlenet)
         );
-        assert_eq!(warnings.len(), 1, "{context}");
-        assert_eq!(warnings[0].code, WarningCode::UnknownFlavor);
-        assert!(warnings[0].message.contains("_new_ptr_"), "{context}");
+        // `unknown_flavor` is the World's, once overrides applied.
+        assert!(warnings.is_empty(), "{context}");
+        let unknown = super::super::unknown_flavor(t).unwrap();
+        assert_eq!(unknown.code, WarningCode::UnknownFlavor);
+        assert!(unknown.message.contains("_new_ptr_"), "{}", unknown.message);
         assert!(
-            !warnings[0].message.contains(&*root.to_string_lossy()),
+            !unknown.message.contains(&*root.to_string_lossy()),
             "no full paths"
         );
     }
@@ -533,7 +521,14 @@ mod tests {
             "{}",
             dump(&targets, &warnings)
         );
-        assert_eq!(warnings[0].code, WarningCode::UnknownFlavor);
+        let unknown = super::super::unknown_flavor(t).unwrap();
+        assert!(
+            unknown
+                .message
+                .contains("runs version 2.6.0.1, which no family covers"),
+            "{}",
+            unknown.message
+        );
     }
 
     #[test]

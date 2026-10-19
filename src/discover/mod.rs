@@ -41,7 +41,79 @@ use self::battlenet::BattlenetHints;
 use self::scan::{Base, RootKind, Scanner};
 use crate::error::{Suggestion, Warning, WarningCode};
 use crate::limits::DISCOVERY_FILE_MAX_BYTES;
-use crate::rules::RulesTable;
+use crate::model::Target;
+use crate::rules::{ClientRules, ClientVersion, Family, InstallKind, RulesTable};
+
+/// A client's addon interface, one rule for discovery and for a family override: from
+/// its version (a pinned row's, else computed under `rules`), where on a legacy row the
+/// client's own `WTF/Config.wtf` `lastAddonVersion` wins. With no readable version
+/// (`0.0.0`): that `lastAddonVersion` when it lies in the family's interfaces, else 0
+/// (installs are then judged by the family's range alone, and nothing is out of date);
+/// a family with no range keeps it only on a legacy row.
+pub fn client_interface(
+    table: &RulesTable,
+    client_dir: &Path,
+    version: &ClientVersion,
+    family: Family,
+    kind: InstallKind,
+    rules: &ClientRules,
+) -> u32 {
+    let last = config_wtf::last_addon_version(client_dir);
+    if *version == ClientVersion::new(0, 0, 0) {
+        return match table.family_range(family) {
+            Some(range) => last.filter(|l| range.contains(*l)).unwrap_or(0),
+            None if rules.legacy => last.unwrap_or(0),
+            None => 0,
+        };
+    }
+    match last {
+        Some(last) if rules.legacy => last,
+        _ => table.interface_for_client(version, kind, rules),
+    }
+}
+
+/// `unknown_flavor` for a target whose family is still unknown once overrides applied:
+/// usable with its install kind's fallback rules until its family is set.
+pub fn unknown_flavor(target: &Target) -> Option<Warning> {
+    if target.family != Family::Unknown {
+        return None;
+    }
+    let unreadable = target.version == ClientVersion::new(0, 0, 0);
+    let message = match target.install_kind {
+        InstallKind::Battlenet => {
+            let folder = target.flavor_dir.as_deref().unwrap_or("?");
+            let what = if unreadable {
+                "has no readable version".to_owned()
+            } else {
+                format!("runs version {}, which no family covers", target.version)
+            };
+            format!(
+                "{}: flavor folder {folder} {what}; it is usable with permissive modern rules",
+                target.id
+            )
+        }
+        InstallKind::Custom => {
+            let exe = target.exe_name.as_deref().unwrap_or("the client");
+            let what = if unreadable {
+                format!("{exe} has no readable version")
+            } else {
+                format!(
+                    "{exe} reports version {}, which no family covers",
+                    target.version
+                )
+            };
+            format!(
+                "{}: {what}; it is usable with conservative legacy rules",
+                target.id
+            )
+        }
+    };
+    Some(
+        Warning::new(WarningCode::UnknownFlavor, message).with_fix(Suggestion::text(
+            "set its family with a [targets.<id>] override in config.toml",
+        )),
+    )
+}
 
 /// What discovery starts from besides the filesystem.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

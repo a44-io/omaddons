@@ -6,8 +6,8 @@
 
 use std::path::Path;
 
-use super::{DiscoveredTarget, DiscoverySource, config_wtf, find_child, pe, realmlist};
-use crate::error::{Suggestion, Warning, WarningCode};
+use super::{DiscoveredTarget, DiscoverySource, find_child, pe, realmlist};
+use crate::error::Warning;
 use crate::model::Target;
 use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind};
 
@@ -53,8 +53,9 @@ pub(crate) fn pick_exe(names: &[String]) -> Option<String> {
     candidates.first().map(|n| (*n).clone())
 }
 
-/// The target of a custom root, or `None` when `root` is not one; plus `unknown_flavor`
-/// when the exe has no version a family covers (the target stays usable).
+/// The target of a custom root, or `None` when `root` is not one, and the root's
+/// warnings. An exe with no version a family covers still gives a usable target;
+/// `unknown_flavor` is said once config overrides applied ([`super::unknown_flavor`]).
 pub fn discover_custom_root(
     root: &Path,
     table: &RulesTable,
@@ -80,36 +81,12 @@ pub fn discover_custom_root(
             table.fallback(InstallKind::Custom).clone(),
         ),
     };
-    let mut interface = if read.is_some() {
-        table.interface_for_client(&version, InstallKind::Custom, &rules)
-    } else {
-        0
-    };
-    if rules.legacy
-        && let Some(last) = config_wtf::last_addon_version(root)
-    {
-        interface = last;
-    }
+    let interface =
+        super::client_interface(table, root, &version, family, InstallKind::Custom, &rules);
     let default_id = table
         .default_id_for_family(family)
         .map_or_else(|| id_from_dir(root), str::to_owned);
-
-    let mut warnings = Vec::new();
-    if family == Family::Unknown {
-        let what = match read {
-            Some(v) => format!("{exe} reports version {v}, which no family covers"),
-            None => format!("{exe} has no readable version"),
-        };
-        warnings.push(
-            Warning::new(
-                WarningCode::UnknownFlavor,
-                format!("{default_id}: {what}; it is usable with conservative legacy rules"),
-            )
-            .with_fix(Suggestion::text(
-                "set its family with a [targets.<id>] override in config.toml",
-            )),
-        );
-    }
+    let warnings = Vec::new();
 
     let label = realmlist::label_for(realmlist::realmlist_host(root).as_deref(), root);
     let target = Target {
@@ -237,12 +214,15 @@ mod tests {
             t.rules,
             *RulesTable::builtin().fallback(InstallKind::Custom)
         );
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].code, WarningCode::UnknownFlavor);
+        // `unknown_flavor` is the World's, once overrides applied.
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let unknown = super::super::unknown_flavor(&t).unwrap();
         assert!(
-            warnings[0]
+            unknown
                 .message
-                .starts_with("turtle-wow: WoW.exe has no readable version")
+                .starts_with("turtle-wow: WoW.exe has no readable version"),
+            "{}",
+            unknown.message
         );
     }
 }
