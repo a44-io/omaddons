@@ -1,16 +1,18 @@
 //! The cross-process crash matrix (vision §7, M1 checkpoints): every engine failpoint
 //! as a real crash (`abort`: no unwinding, the kernel releases the flocks), for a new
 //! install, a first install into a client never launched (no `Interface/`), an update
-//! that drops a folder, and a removal, each over SavedVariables. A crash before each
-//! journaled rename (`engine.swap.before_rename=abort@N`), with atomic renames and in
-//! the two-rename fallback, reaches every step of a multi-folder swap. After each crash
-//! every folder is wholly old or wholly new (or absent, between the fallback's two
-//! renames), and so are the SavedVariables; a reader reports the unfinished transaction
-//! and changes nothing; the next command that takes the lock recovers it
-//! (`journal_recovered`), after which all folders sit on one side, consistent with the
-//! record generation and history, and the lock file is the same inode. A crash before
-//! `prepared` may leave the SavedVariables copies made before the lock, which the
-//! orphan sweep takes once they are old.
+//! that drops a folder, a removal, and the undo of that update after a play session
+//! (restoring SavedVariables, keeping them, or deferring them while the client runs),
+//! each over SavedVariables. A crash before each journaled rename
+//! (`engine.swap.before_rename=abort@N`), with atomic renames and in the two-rename
+//! fallback, reaches every step of a multi-folder swap. After each crash every folder
+//! is wholly old or wholly new (or absent, between the fallback's two renames), and so
+//! are the SavedVariables; a reader reports the unfinished transaction and changes
+//! nothing; the next command that takes the lock recovers it (`journal_recovered`),
+//! after which all folders sit on one side, consistent with the record generation and
+//! history, and the lock file is the same inode. A crash before `prepared` may leave
+//! the SavedVariables copies made before the lock, which the orphan sweep takes once
+//! they are old.
 //!
 //! Records-only transactions (a pin, a forget) change no folder, so their oracle is the
 //! record: the edit is there exactly when history holds the transaction, the generation
@@ -40,6 +42,13 @@ mod support {
         FirstInstall,
         Update,
         Remove,
+        /// The undo of the update, after a play session: folders back to v1, and the
+        /// SavedVariables restored (the changed ones back, the created one moved aside).
+        Undo,
+        /// The same with `--saved-variables keep`: the played SavedVariables stay.
+        UndoKeep,
+        /// The same while the client runs: folders revert, the restore is deferred.
+        UndoRunning,
     }
 
     impl Op {
@@ -48,6 +57,7 @@ mod support {
                 Self::Install | Self::FirstInstall => "install",
                 Self::Update => "update",
                 Self::Remove => "remove",
+                Self::Undo | Self::UndoKeep | Self::UndoRunning => "undo",
             }
         }
 
@@ -57,7 +67,7 @@ mod support {
         }
 
         /// Sets up the baseline and returns the command.
-        pub fn prepare(self, s: &Scene) -> Vec<String> {
+        pub fn prepare(self, s: &mut Scene) -> Vec<String> {
             match self {
                 Self::Install => s.install_args("gh:o/foo", "v1"),
                 Self::FirstInstall => {
@@ -70,10 +80,20 @@ mod support {
                 }
                 Self::Remove => {
                     s.install("gh:o/foo", "v1");
-                    ["remove", "Foo", "-t", "retail", "--offline", "--json"]
-                        .iter()
-                        .map(|a| (*a).to_owned())
-                        .collect()
+                    s.args(&["remove", "Foo"])
+                }
+                Self::Undo | Self::UndoKeep | Self::UndoRunning => {
+                    s.install("gh:o/foo", "v1");
+                    s.install("gh:o/foo", "v2");
+                    s.play(common::engine::FOLDERS);
+                    match self {
+                        Self::UndoKeep => s.args(&["undo", "--saved-variables", "keep"]),
+                        Self::UndoRunning => {
+                            s.home.retail_running();
+                            s.args(&["undo"])
+                        }
+                        _ => s.args(&["undo"]),
+                    }
                 }
             }
         }
@@ -97,8 +117,8 @@ mod support {
 
     /// The state after `op` runs without a failpoint.
     pub fn expected_new(op: Op) -> Foo {
-        let s = op.scene();
-        let args = op.prepare(&s);
+        let mut s = op.scene();
+        let args = op.prepare(&mut s);
         s.run(&args, "").expect(0);
         Foo::of(&s)
     }
@@ -188,8 +208,9 @@ mod support {
     /// consistent with the generation and history, with nothing stray in AddOns and the
     /// same lock file.
     pub fn crash(op: Op, spec: &str, new: &Foo, fallback: bool) -> Crash {
-        let s = op.scene();
-        let args = op.prepare(&s);
+        let mut s = op.scene();
+        let args = op.prepare(&mut s);
+        let s = s;
         let old = Foo::of(&s);
         let (old_generation, old_history, old_inode) =
             (s.generation(), s.history(), s.lock_inode());
@@ -810,6 +831,26 @@ fn crash_matrix_pin() {
 }
 
 #[test]
+fn crash_matrix_undo() {
+    matrix(Op::Undo);
+}
+
+#[test]
+fn crash_matrix_undo_keeping_saved_variables() {
+    matrix(Op::UndoKeep);
+}
+
+#[test]
+fn crash_matrix_undo_while_the_client_runs() {
+    matrix(Op::UndoRunning);
+}
+
+#[test]
+fn a_crash_at_every_rename_of_an_undo() {
+    rename_matrix(Op::Undo);
+}
+
+#[test]
 fn a_crash_at_every_rename_of_an_install() {
     rename_matrix(Op::Install);
 }
@@ -952,6 +993,24 @@ fn the_reference_runs_change_what_they_should() {
     );
     assert_ne!(install["Foo"], update["Foo"]);
     assert!(remove.values().all(Option::is_none));
+
+    // Undo: v1's folders back, and the SavedVariables restored, kept as played, or
+    // (the client running) left as played.
+    let played = {
+        let s = Op::Undo.scene();
+        s.play(common::engine::FOLDERS);
+        s.wtf()
+    };
+    assert_ne!(played, sv);
+    for (op, wtf) in [
+        (Op::Undo, &sv),
+        (Op::UndoKeep, &played),
+        (Op::UndoRunning, &played),
+    ] {
+        let done = expected_new(op);
+        assert_eq!(done.folders, install, "{op:?}");
+        assert_eq!(&done.wtf, wtf, "{op:?}");
+    }
 }
 
 /// An undo crashed at each failpoint after its swap, then recovered by a change made
