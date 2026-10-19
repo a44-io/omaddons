@@ -630,9 +630,12 @@ fn targets_and_redaction() {
 #[test]
 #[ignore = "live network probe: OMADDONS_LIVE=1 cargo test -- --ignored live_github_request"]
 fn live_github_request() {
-    if std::env::var_os("OMADDONS_LIVE").is_none() {
-        return;
-    }
+    // A checkpoint check that did not run must not pass (tests/common/checkpoint.rs
+    // cannot reach a unit test, and this one is reached only by its filter).
+    assert!(
+        std::env::var("OMADDONS_LIVE").as_deref() == Ok("1"),
+        "live_github_request did not run: OMADDONS_LIVE is not 1. Run it with OMADDONS_LIVE=1"
+    );
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().to_path_buf();
     let paths = Paths::with_roots(

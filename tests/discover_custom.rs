@@ -270,6 +270,7 @@ fn a_non_pe_exe_is_usable_and_warns() {
 #[ignore = "needs a real custom client"]
 fn real_custom_client() {
     let Some(root) = std::env::var_os("OMADDONS_REAL_CUSTOM_ROOT") else {
+        common::checkpoint::skip("real_custom_client", "OMADDONS_REAL_CUSTOM_ROOT is not set");
         return;
     };
     let root = Path::new(&root);

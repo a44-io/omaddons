@@ -499,6 +499,30 @@ fn the_binary_never_touches_the_real_home() {
     );
 }
 
+/// `OMADDONS_ALLOW_SKIP` names tests exactly, in a comma list; a prefix of a name, an
+/// empty value or no value accepts nothing.
+#[test]
+fn skip_allowed_takes_exact_names_only() {
+    use common::checkpoint::skip_allowed;
+
+    let allowed = |allow: Option<&str>, test: &str| skip_allowed(allow, test);
+    assert!(!allowed(None, "a"));
+    assert!(!allowed(Some(""), "a"));
+    assert!(allowed(Some("a"), "a"));
+    assert!(allowed(Some("a, b"), "b"));
+    assert!(allowed(Some(" a ,b"), "a"));
+    assert!(allowed(Some("x,,y"), "y"));
+    assert!(!allowed(Some("x,,y"), "z"));
+    assert!(!allowed(
+        Some("keyless_installs"),
+        "keyless_installs_forever"
+    ));
+    assert!(!allowed(
+        Some("keyless_installs_forever"),
+        "keyless_installs"
+    ));
+}
+
 /// The M2 helpers: HTTP sequences and releases, homes behind, drift, state readers,
 /// `net.log` counts and release graphs.
 mod m2 {

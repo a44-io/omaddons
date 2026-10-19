@@ -97,6 +97,7 @@ use support::{entries, layout, reached, scopes, snapshot, spawn_prune};
 #[test]
 #[ignore = "child process for the prune tests"]
 fn child_prune() {
+    // A child process of the prune tests, not a check: run on its own it does nothing.
     let Some(root) = std::env::var_os("OMADDONS_PRUNE_TEST_ROOT").map(PathBuf::from) else {
         return;
     };

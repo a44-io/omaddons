@@ -471,6 +471,8 @@ mod tests {
             .unwrap()
     }
 
+    /// The path a `child_*` test acts on. They are child processes of the tests here,
+    /// not checks: run on their own they do nothing.
     fn child_path() -> Option<PathBuf> {
         std::env::var_os("OMADDONS_FSX_TEST_PATH").map(PathBuf::from)
     }

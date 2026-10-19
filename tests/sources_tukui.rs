@@ -144,6 +144,7 @@ const ELVUI: [&str; 3] = ["ElvUI", "ElvUI_Libraries", "ElvUI_Options"];
 #[test]
 #[ignore = "records live fixtures: OMADDONS_RECORD=1"]
 fn record_tukui() {
+    // A recorder run on purpose, not a checkpoint check: unset, it has nothing to do.
     if std::env::var("OMADDONS_RECORD").as_deref() != Ok("1") {
         return;
     }

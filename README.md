@@ -1587,7 +1587,7 @@ Every rules edit applies on the next command. The discovery cache records the ru
 | `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | Move omaddons' config, state and cache (used only when absolute). `XDG_CONFIG_HOME` also moves the Lutris and Heroic config lookups |
 | `XDG_DATA_HOME` | Moves the Lutris, Steam and Bottles data lookups; omaddons keeps no files there |
 
-Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD` and `OMADDONS_PROC_ROOT` for testing. Release builds ignore them.
+Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD` and `OMADDONS_PROC_ROOT` for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE` and `OMADDONS_LIVE` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate)).
 
 ---
 
@@ -1884,16 +1884,18 @@ Recorded HTTP fixtures live in `tests/fixtures/http/<scenario>/`. Debug builds r
 ```bash
 argc fuzz-all --time 600                                   # every fuzz target, 10 minutes each
 argc bench                                                 # hyperfine medians on a synthetic home (needs hyperfine, jq)
-cargo test --release --test perf -- --ignored              # the time budgets
+cargo test --release --test perf -- --ignored --skip bench_home --skip live_home   # the time budgets
 OMADDONS_LIVE=1 cargo test --test live_probes -- --ignored  # the real endpoints
-OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 \
+OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 OMADDONS_ALLOW_SKIP=keyless_installs_forever \
   cargo test --test real_machine -- --ignored --test-threads=1   # this machine's clients; every addon change is undone
 ```
+
+A checkpoint test that cannot run (a variable unset, its client running, the Forever stress-test set still installed) prints `SKIP <test>: <reason>` on stderr and fails, so a skip never counts as a pass. `OMADDONS_ALLOW_SKIP=<test>[,<test>…]` accepts the named skips, which still print their line; the real-machine command above accepts `keyless_installs_forever` for as long as the stress-test set stays installed. The checkpoint's close reason quotes every `SKIP` line.
 
 - **Benchmarks.** `argc bench` (`scripts/bench.sh`) builds a home of three synthetic clients with 30 addons and 5,040 managed files, one release behind, and times `status --cached`, `status` (the drift check), `outdated` cold and warm, `update --all --dry-run` warm and `update --all` cold. Each line names its binary: the release binary for what needs no network, and for cold runs a `bench-fixtures` build (release with debug assertions), because release builds never replay fixtures. Warm runs must add no `net.log` line, and a missed target exits 1. The budgets in `tests/perf.rs` check the same targets in-process.
 - **Live probes.** They include `catalog_matches_declared_flavors`, which builds a synthetic client for every live product and every legacy version and dry-runs each catalog addon on each. An addon must install exactly where its publisher declares it and nowhere else, with zero REST calls. The probe prints the addon × client matrix, and publishers whose `release.json` disagrees with their own TOCs are listed in it with a date.
 - **Real-machine tests.** They run against the real home and undo every addon change they make. Target registrations and `target.json` markers written on the first change stay, by design.
-- **Fuzzing.** There are nine cargo-fuzz targets: `archive`, `bottles`, `bpsv`, `heroic`, `lutris`, `product_db`, `ref_parse`, `steam_vdf` and `toc`. Each has committed seeds under `fuzz/seeds/`. They need `cargo-fuzz` and a nightly toolchain at least as new as the crate's `rust-version` (pick one with `--toolchain`). A crash input becomes a regression unit test in the owning parser.
+- **Fuzzing.** There are 17 cargo-fuzz targets: `archive`, `atom_feed`, `bbcode_text`, `bottles`, `bpsv`, `desired_toml`, `heroic`, `html_text`, `lutris`, `product_db`, `ref_parse`, `steam_shortcuts`, `steam_vdf`, `toc`, `tukui_addons`, `wowi_details` and `wowi_filelist`. Each has committed seeds under `fuzz/seeds/`. They need `cargo-fuzz` and a nightly toolchain at least as new as the crate's `rust-version` (pick one with `--toolchain`). A crash input becomes a regression unit test in the owning parser.
 
 ### Work tracking
 

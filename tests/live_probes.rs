@@ -2,7 +2,8 @@
 //! `OMADDONS_LIVE=1 cargo test --test live_probes -- --ignored`. Each probe makes one
 //! request (two for the conditional atom check) through the production stack against
 //! `gh:WeakAuras/WeakAuras2` and checks raw shape only; source beads add decoder-level
-//! probes here.
+//! probes here. Without `OMADDONS_LIVE=1` a probe prints `SKIP <probe>: …` and fails
+//! unless `OMADDONS_ALLOW_SKIP` names it (`common::checkpoint`).
 
 mod common;
 
@@ -33,9 +34,10 @@ const REPO: &str = "https://github.com/WeakAuras/WeakAuras2";
 mod support {
     use super::*;
 
-    /// The production stack in an isolated environment, when `OMADDONS_LIVE=1`.
-    pub fn live() -> Option<(TestEnv, Box<dyn Http>)> {
-        if std::env::var("OMADDONS_LIVE").as_deref() != Ok("1") {
+    /// The production stack in an isolated environment, when `OMADDONS_LIVE=1`; else
+    /// `test` skips (`common::checkpoint`), which fails it unless the run accepts that.
+    pub fn live(test: &str) -> Option<(TestEnv, Box<dyn Http>)> {
+        if !super::common::checkpoint::require(test, &["OMADDONS_LIVE"]) {
             return None;
         }
         let env = TestEnv::new();
@@ -135,6 +137,9 @@ fn declared_families_map_by_interface_first() {
 #[test]
 #[ignore = "live network probe: OMADDONS_LIVE=1"]
 fn catalog_matches_declared_flavors() {
+    let Some((env, http)) = live("catalog_matches_declared_flavors") else {
+        return;
+    };
     // (entry, family, why), dated: a publisher's release.json and its own TOCs disagree,
     // and omaddons follows the TOCs (D5).
     const KNOWN_PUBLISHER_MISMATCHES: &[(&str, &str, &str)] = &[
@@ -172,7 +177,6 @@ fn catalog_matches_declared_flavors() {
         Family::CataLegacy,
         Family::MistsLegacy,
     ];
-    let Some((env, http)) = live() else { return };
     let mut root = BattlenetRoot::at(Prefix::new(&env, "battlenet").wow_root());
     for code in [
         "wow",
@@ -350,14 +354,18 @@ fn catalog_matches_declared_flavors() {
 #[test]
 #[ignore = "live network probe: OMADDONS_LIVE=1"]
 fn latest_release_redirects_to_a_tag() {
-    let Some((_env, http)) = live() else { return };
+    let Some((_env, http)) = live("latest_release_redirects_to_a_tag") else {
+        return;
+    };
     assert!(!latest_tag(http.as_ref()).is_empty());
 }
 
 #[test]
 #[ignore = "live network probe: OMADDONS_LIVE=1"]
 fn the_releases_feed_revalidates() {
-    let Some((_env, http)) = live() else { return };
+    let Some((_env, http)) = live("the_releases_feed_revalidates") else {
+        return;
+    };
     let mut req = Request::get(format!("{REPO}/releases.atom"), "probe");
     req.validators = true;
     let first = http.send(req.clone()).unwrap();
@@ -378,7 +386,9 @@ fn the_releases_feed_revalidates() {
 #[test]
 #[ignore = "live network probe: OMADDONS_LIVE=1"]
 fn release_json_decodes() {
-    let Some((_env, http)) = live() else { return };
+    let Some((_env, http)) = live("release_json_decodes") else {
+        return;
+    };
     let tag = latest_tag(http.as_ref());
     let resp = http
         .send(Request::get(
@@ -394,7 +404,9 @@ fn release_json_decodes() {
 #[test]
 #[ignore = "live network probe: OMADDONS_LIVE=1"]
 fn commits_feed_and_codeload_zip() {
-    let Some((_env, http)) = live() else { return };
+    let Some((_env, http)) = live("commits_feed_and_codeload_zip") else {
+        return;
+    };
     let feed = http
         .send(Request::get(format!("{REPO}/commits/main.atom"), "probe"))
         .unwrap();
@@ -428,7 +440,9 @@ fn commits_feed_and_codeload_zip() {
 #[test]
 #[ignore = "live network probe: OMADDONS_LIVE=1"]
 fn github_source_decodes_live() {
-    let Some((env, http)) = live() else { return };
+    let Some((env, http)) = live("github_source_decodes_live") else {
+        return;
+    };
     let wanted = Wanted::stable("gh:WeakAuras/WeakAuras2".parse().unwrap());
     let set = GithubSource::new()
         .fetch(&[wanted], http.as_ref())
@@ -462,7 +476,9 @@ fn github_source_decodes_live() {
 #[test]
 #[ignore = "live network probe: OMADDONS_LIVE=1"]
 fn keyless_installs_into_a_synthetic_forever_target() {
-    let Some((env, _http)) = live() else { return };
+    let Some((env, _http)) = live("keyless_installs_into_a_synthetic_forever_target") else {
+        return;
+    };
     BattlenetRoot::at(Prefix::new(&env, "battlenet").wow_root())
         .product("wowf")
         .build();
@@ -527,7 +543,10 @@ fn keyless_installs_into_a_synthetic_forever_target() {
 #[test]
 #[ignore = "live network probe: OMADDONS_LIVE=1"]
 fn boss_mods_install_their_shared_folders_on_classic_and_forever() {
-    let Some((env, _http)) = live() else { return };
+    let test = "boss_mods_install_their_shared_folders_on_classic_and_forever";
+    let Some((env, _http)) = live(test) else {
+        return;
+    };
     let products = [
         ("wow_classic_era", "era"),
         ("wow_anniversary", "anniversary"),
@@ -625,7 +644,9 @@ fn boss_mods_install_their_shared_folders_on_classic_and_forever() {
 #[test]
 #[ignore = "live network probe: OMADDONS_LIVE=1"]
 fn git_hosts_resolve_and_check_out_live() {
-    let Some((env, _http)) = live() else { return };
+    let Some((env, _http)) = live("git_hosts_resolve_and_check_out_live") else {
+        return;
+    };
     let paths = Paths::with_roots(env.home(), env.config(), env.state(), env.cache());
     let net = NetConfig {
         git_hosts: vec!["codeberg.org".to_owned()],
@@ -661,7 +682,9 @@ fn git_hosts_resolve_and_check_out_live() {
 #[test]
 #[ignore = "live network probe: OMADDONS_LIVE=1"]
 fn git_source_decodes_live() {
-    let Some((env, http)) = live() else { return };
+    let Some((env, http)) = live("git_source_decodes_live") else {
+        return;
+    };
     let wanted = [
         "git:https://github.com/shagu/pfUI",
         "git:https://github.com/fondlez/GroupBulletinBoard#v1.2.3",
@@ -698,7 +721,9 @@ fn git_source_decodes_live() {
 fn wowi_details_decode_and_the_file_has_its_md5() {
     use md5::{Digest, Md5};
 
-    let Some((env, http)) = live() else { return };
+    let Some((env, http)) = live("wowi_details_decode_and_the_file_has_its_md5") else {
+        return;
+    };
     let wanted = Wanted::stable("wowi:5995".parse().unwrap());
     let set = WowiSource
         .fetch(&[wanted], http.as_ref())
@@ -755,7 +780,9 @@ fn tukui_resolves_downloads_and_its_etag_is_the_md5() {
     use omaddons::engine::inspect::{ArchiveLimits, inspect};
     use omaddons::sources::tukui::TukuiSource;
 
-    let Some((env, http)) = live() else { return };
+    let Some((env, http)) = live("tukui_resolves_downloads_and_its_etag_is_the_md5") else {
+        return;
+    };
     let source = TukuiSource::default();
     let wanted = Wanted::stable("tukui:elvui".parse().unwrap());
     let set = source
@@ -822,7 +849,10 @@ fn wowi_filelist_decodes_gzipped_and_without_validators() {
     use omaddons::model::FolderName;
     use omaddons::sources::wowi::index::{FILELIST_URL, decode_filelist};
 
-    let Some((env, http)) = live() else { return };
+    let test = "wowi_filelist_decodes_gzipped_and_without_validators";
+    let Some((env, http)) = live(test) else {
+        return;
+    };
     let resp = http
         .send(Request::get(FILELIST_URL, "wowi-filelist"))
         .unwrap()
@@ -874,7 +904,9 @@ fn release_notes_decode_from_the_releases_feed() {
     use omaddons::limits::CHANGELOG_MAX_CHARS;
     use omaddons::text::{has_markup, html_to_text};
 
-    let Some((env, http)) = live() else { return };
+    let Some((env, http)) = live("release_notes_decode_from_the_releases_feed") else {
+        return;
+    };
     let feed = GithubSource::recent_tags("WeakAuras", "WeakAuras2", http.as_ref()).unwrap();
     let notes: Vec<String> = feed
         .tags
@@ -906,7 +938,9 @@ fn release_notes_decode_from_the_releases_feed() {
 fn github_search_is_one_request_on_its_own_budget() {
     use omaddons::sources::github_search::GithubSearch;
 
-    let Some((env, http)) = live() else { return };
+    let Some((env, http)) = live("github_search_is_one_request_on_its_own_budget") else {
+        return;
+    };
     let resp = http
         .send(GithubSearch::with_token(None).request("weakauras"))
         .unwrap();
@@ -945,7 +979,9 @@ fn outdated_over_the_catalog_asks_little_then_nothing() {
     use omaddons::state::records::{TargetRecord, load_record};
     use omaddons::state::store::encode;
 
-    let Some((env, _http)) = live() else { return };
+    let Some((env, _http)) = live("outdated_over_the_catalog_asks_little_then_nothing") else {
+        return;
+    };
     let mut root = BattlenetRoot::at(Prefix::new(&env, "battlenet").wow_root());
     for code in ["wow", "wow_classic_era", "wow_classic"] {
         root = root.product(code);

@@ -13,6 +13,7 @@
 
 pub mod addons;
 pub mod archives;
+pub mod checkpoint;
 pub mod drift;
 pub mod engine;
 pub mod env;

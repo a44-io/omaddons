@@ -57,6 +57,7 @@ mod support {
 #[test]
 #[ignore = "records live fixtures: OMADDONS_RECORD=1"]
 fn record_git_github() {
+    // A recorder run on purpose, not a checkpoint check: unset, it has nothing to do.
     if std::env::var("OMADDONS_RECORD").as_deref() != Ok("1") {
         return;
     }

@@ -5,7 +5,9 @@
 //!
 //! Every transaction a test makes is undone before it ends, and every AddOns folder it
 //! touched must hash as it did before. Target keys and markers written on the first
-//! mutation stay, by design. A test skips (with a message) when its client is running.
+//! mutation stay, by design. A test that cannot run (a variable unset, its client
+//! running) prints a `SKIP <test>: <reason>` line and fails unless `OMADDONS_ALLOW_SKIP`
+//! names it (`common::checkpoint`).
 
 mod common;
 
@@ -14,12 +16,13 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
+use common::checkpoint;
 use common::trees::tree_hash;
 use serde_json::Value;
 use support::{
-    addons_of, blizzard_hashes, clients, declares, enabled, entries, flavors_of, forever_guard,
-    hashes, install_then_undo, net_log_lines, note, omaddons, recent_tags, skip_if_running,
-    snapshot_all, target, target_where, tx_of, undo_all,
+    LIVE, MACHINE, addons_of, blizzard_hashes, clients, declares, entries, flavors_of,
+    forever_guard, hashes, install_then_undo, net_log_lines, note, omaddons, recent_tags,
+    skip_if_running, snapshot_all, target, target_where, tx_of, undo_all,
 };
 
 /// The live Classic clients: family, product, interface, version prefix.
@@ -33,11 +36,10 @@ const CLASSIC: &[(&str, &str, u32, &str)] = &[
 mod support {
     use super::*;
 
-    /// Whether the real-machine tests (and, with `live`, the network ones) may run.
-    pub fn enabled(live: bool) -> bool {
-        let on = |var: &str| std::env::var(var).as_deref() == Ok("1");
-        on("OMADDONS_REAL_MACHINE") && (!live || on("OMADDONS_LIVE"))
-    }
+    /// What every real-machine test needs (`checkpoint::require`).
+    pub const MACHINE: &[&str] = &["OMADDONS_REAL_MACHINE"];
+    /// What the tests that also reach the network need.
+    pub const LIVE: &[&str] = &["OMADDONS_REAL_MACHINE", "OMADDONS_LIVE"];
 
     /// `omaddons <args> --json` with the real environment and the real network:
     /// (exit code, envelope).
@@ -148,14 +150,15 @@ mod support {
         dir.unwrap()
     }
 
-    /// True (after saying why) when `target`'s client is running.
-    pub fn skip_if_running(target: &Value) -> bool {
+    /// True when `target`'s client is running: `test` skips (`checkpoint::skip`), which
+    /// fails it unless the run accepts that skip.
+    pub fn skip_if_running(test: &str, target: &Value) -> bool {
         let running = target["running"] == true;
         if running {
-            let _ = writeln!(
-                std::io::stderr(),
-                "skipped: the {} client is running; quit it and run again",
-                target["id"]
+            let id = target["id"].as_str().unwrap_or("?");
+            checkpoint::skip(
+                test,
+                &format!("the {id} client is running; quit it and run again"),
             );
         }
         running
@@ -335,7 +338,7 @@ mod support {
 #[test]
 #[ignore = "real machine: OMADDONS_REAL_MACHINE=1"]
 fn status_reports_every_client() {
-    if !enabled(false) {
+    if !checkpoint::require("status_reports_every_client", MACHINE) {
         return;
     }
     let (code, status) = omaddons(&["status"]);
@@ -459,12 +462,12 @@ fn status_reports_every_client() {
 #[test]
 #[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
 fn keyless_installs_retail() {
-    if !enabled(true) {
+    if !checkpoint::require("keyless_installs_retail", LIVE) {
         return;
     }
     let (_, status) = omaddons(&["status"]);
     let retail = target(&status, "mainline");
-    if skip_if_running(&retail) {
+    if skip_if_running("keyless_installs_retail", &retail) {
         return;
     }
     let addons = addons_of("retail");
@@ -494,13 +497,16 @@ fn keyless_installs_retail() {
 #[test]
 #[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
 fn keyless_installs_classic() {
-    if !enabled(true) {
+    if !checkpoint::require("keyless_installs_classic", LIVE) {
         return;
     }
     let started = jiff::Timestamp::now();
     let (_, status) = omaddons(&["status"]);
     let clients: Vec<Value> = CLASSIC.iter().map(|c| target(&status, c.0)).collect();
-    if clients.iter().any(skip_if_running) {
+    if clients
+        .iter()
+        .any(|c| skip_if_running("keyless_installs_classic", c))
+    {
         return;
     }
     let ids: Vec<String> = clients
@@ -621,12 +627,12 @@ fn keyless_installs_classic() {
 #[test]
 #[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
 fn keyless_installs_forever() {
-    if !enabled(true) {
+    if !checkpoint::require("keyless_installs_forever", LIVE) {
         return;
     }
     let (_, status) = omaddons(&["status"]);
     let forever = target_where(&status, "product", "wowf");
-    if skip_if_running(&forever) {
+    if skip_if_running("keyless_installs_forever", &forever) {
         return;
     }
     // Installing what is already installed is a no-op with nothing to undo, so the test
@@ -634,9 +640,11 @@ fn keyless_installs_forever() {
     // installed for the owner's sessions; omad-classic-forever-gaps-xud.6).
     let managed = forever["addons"]["total"].as_u64().unwrap_or(0);
     if managed > 0 {
-        let _ = writeln!(
-            std::io::stderr(),
-            "skipped: the forever client already manages {managed} addons; remove or undo them and run again"
+        checkpoint::skip(
+            "keyless_installs_forever",
+            &format!(
+                "the forever client manages {managed} addons (the stress-test set of omad-classic-forever-gaps-xud.6); undo or remove them to run this test"
+            ),
         );
         return;
     }
@@ -714,12 +722,13 @@ fn keyless_installs_forever() {
 #[test]
 #[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
 fn legacy_installs_335_from_git_and_from_a_release() {
-    if !enabled(true) {
+    let test = "legacy_installs_335_from_git_and_from_a_release";
+    if !checkpoint::require(test, LIVE) {
         return;
     }
     let (_, status) = omaddons(&["status"]);
     let wotlk = target(&status, "wrath-legacy");
-    if skip_if_running(&wotlk) {
+    if skip_if_running(test, &wotlk) {
         return;
     }
     let id = wotlk["id"].as_str().unwrap_or("wotlk").to_owned();
@@ -750,7 +759,7 @@ fn legacy_installs_335_from_git_and_from_a_release() {
 #[test]
 #[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
 fn m2_read_only_sweep_on_every_client() {
-    if !enabled(true) {
+    if !checkpoint::require("m2_read_only_sweep_on_every_client", LIVE) {
         return;
     }
     let (guard, snapshot) = (forever_guard(), snapshot_all());
@@ -794,11 +803,12 @@ fn m2_read_only_sweep_on_every_client() {
 #[test]
 #[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
 fn m2_pin_unpin_update_on_era() {
-    if !enabled(true) {
+    let test = "m2_pin_unpin_update_on_era";
+    if !checkpoint::require(test, LIVE) {
         return;
     }
     let (_, status) = omaddons(&["status"]);
-    if skip_if_running(&target_where(&status, "id", "era")) {
+    if skip_if_running(test, &target_where(&status, "id", "era")) {
         return;
     }
     let (guard, snapshot) = (forever_guard(), snapshot_all());
@@ -847,11 +857,12 @@ fn m2_pin_unpin_update_on_era() {
 #[test]
 #[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
 fn m2_dependency_install_on_retail() {
-    if !enabled(true) {
+    let test = "m2_dependency_install_on_retail";
+    if !checkpoint::require(test, LIVE) {
         return;
     }
     let (_, status) = omaddons(&["status"]);
-    if skip_if_running(&target_where(&status, "id", "retail")) {
+    if skip_if_running(test, &target_where(&status, "id", "retail")) {
         return;
     }
     let (guard, snapshot) = (forever_guard(), snapshot_all());
@@ -902,7 +913,7 @@ fn m2_dependency_install_on_retail() {
 #[test]
 #[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
 fn m2_export_then_sync_dry_run_changes_nothing() {
-    if !enabled(true) {
+    if !checkpoint::require("m2_export_then_sync_dry_run_changes_nothing", LIVE) {
         return;
     }
     let (guard, snapshot) = (forever_guard(), snapshot_all());

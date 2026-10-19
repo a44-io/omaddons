@@ -83,6 +83,7 @@ mod support {
 #[test]
 #[ignore = "child process for the lock tests"]
 fn child_holder() {
+    // A child process of the lock tests, not a check: run on its own it does nothing.
     let Some(home) = std::env::var_os("OMADDONS_LOCK_TEST_HOME").map(PathBuf::from) else {
         return;
     };

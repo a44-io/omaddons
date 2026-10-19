@@ -68,6 +68,7 @@ fn every_fuzz_target_has_a_source_and_seeds() {
 #[test]
 #[ignore = "writes fuzz/seeds: OMADDONS_WRITE_SEEDS=1"]
 fn write_fuzz_seeds() {
+    // A generator run on purpose, not a checkpoint check: unset, it has nothing to do.
     if std::env::var("OMADDONS_WRITE_SEEDS").as_deref() != Ok("1") {
         return;
     }

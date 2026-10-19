@@ -93,6 +93,7 @@ const TARGETS: &[&str] = &["retail", "classic", "era"];
 #[test]
 #[ignore = "argc bench's home (a debug build, which replays fixtures): BENCH_HOME=<dir> cargo test --test perf bench_home -- --ignored"]
 fn bench_home() {
+    // A builder for `argc bench`, not a budget: without its directory it builds nothing.
     let Some(dir) = std::env::var_os("BENCH_HOME").map(PathBuf::from) else {
         return;
     };
@@ -129,6 +130,7 @@ fn bench_home() {
 #[test]
 #[ignore = "the live run's home: LIVE_HOME=<dir> cargo test --test perf live_home -- --ignored"]
 fn live_home() {
+    // A builder for the live run, not a budget: without its directory it builds nothing.
     let Some(dir) = std::env::var_os("LIVE_HOME").map(PathBuf::from) else {
         return;
     };
