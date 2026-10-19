@@ -951,6 +951,8 @@ impl Checks<'_> {
         let job_list: Vec<CheckJob> = jobs.iter().map(|(_, _, j)| j.clone()).collect();
         let checked = engine.check_releases(&job_list, cache)?;
         out.notes.extend(checked.notes.notes.iter().cloned());
+        // An exact match against an unchecked download says so.
+        out.warnings.extend(checked.notes.warnings.iter().cloned());
         let total = jobs.len() as u64;
         for ((t, g, job), result) in jobs.into_iter().zip(checked.results) {
             let Some(gw) = works.get_mut(t).and_then(|work| work.groups.get_mut(g)) else {

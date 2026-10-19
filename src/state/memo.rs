@@ -8,7 +8,7 @@
 //! empty, a corrupt one is replaced by the next write, and a newer one is never
 //! overwritten.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use jiff::Timestamp;
@@ -99,6 +99,10 @@ pub struct CandidateFact {
     pub sha256: String,
     pub size: u64,
     pub verdicts: Vec<VerdictFact>,
+    /// The download was not checked against the hash its source normally publishes
+    /// (`download_unverified`), so a reuse of its blob is not either.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unverified: bool,
 }
 
 /// Whether a candidate loads on one rules row at one interface.
@@ -273,7 +277,8 @@ impl CandidateFact {
 }
 
 /// Adds `fact` to `facts`, one fact per release and asset: the hash and size of the one
-/// added, and the later verdict per rules row and interface.
+/// added, the later verdict per rules row and interface, and `unverified` once either
+/// was.
 pub fn merge_fact(facts: &mut Vec<CandidateFact>, fact: CandidateFact) {
     let same = facts
         .iter_mut()
@@ -284,6 +289,8 @@ pub fn merge_fact(facts: &mut Vec<CandidateFact>, fact: CandidateFact) {
     };
     kept.sha256 = fact.sha256;
     kept.size = fact.size;
+    // Once unchecked, never claimed checked.
+    kept.unverified |= fact.unverified;
     for verdict in fact.verdicts {
         let at = kept
             .verdicts
@@ -303,6 +310,8 @@ pub fn merge_fact(facts: &mut Vec<CandidateFact>, fact: CandidateFact) {
 pub struct FactIndex {
     hashes: BTreeMap<(String, String), (String, u64)>,
     verdicts: BTreeMap<(String, String, String, u32), VerdictFact>,
+    /// The assets whose download went unchecked.
+    unverified: BTreeSet<(String, String)>,
 }
 
 impl FactIndex {
@@ -318,6 +327,9 @@ impl FactIndex {
             let asset = (fact.release_id.clone(), fact.asset.clone());
             self.hashes
                 .insert(asset.clone(), (fact.sha256.clone(), fact.size));
+            if fact.unverified {
+                self.unverified.insert(asset.clone());
+            }
             for verdict in &fact.verdicts {
                 let key = (
                     asset.0.clone(),
@@ -328,6 +340,24 @@ impl FactIndex {
                 self.verdicts.insert(key, verdict.clone());
             }
         }
+    }
+
+    /// Whether the download of `asset` of `release_id` went unchecked.
+    pub fn unverified(&self, release_id: &str, asset: &str) -> bool {
+        self.unverified
+            .contains(&(release_id.to_owned(), asset.to_owned()))
+    }
+
+    /// Whether the archive with this SHA-256 is an unchecked download of `release_id`
+    /// (whatever its asset was named): a cached blob reused as it is.
+    pub fn unverified_blob(&self, release_id: &str, sha256: &str) -> bool {
+        self.unverified.iter().any(|key| {
+            key.0 == release_id
+                && self
+                    .hashes
+                    .get(key)
+                    .is_some_and(|(sha, _)| sha.eq_ignore_ascii_case(sha256))
+        })
     }
 
     /// The SHA-256 (lowercase hex) and size of `asset` of `release_id`, when downloaded.
@@ -623,6 +653,7 @@ mod tests {
             sha256: "aa".into(),
             size: 1,
             verdicts,
+            unverified: false,
         };
         memo.candidates.push(fact(vec![
             verdict("mainline", true, "2026-10-15T12:00:00Z"),
@@ -689,6 +720,7 @@ mod tests {
             sha256: sha.into(),
             size: 7,
             verdicts,
+            unverified: false,
         };
         let mut facts = Vec::new();
         merge_fact(
@@ -730,6 +762,37 @@ mod tests {
                 .is_none(),
             "another interface is another verdict"
         );
+
+        // An unchecked download stays unchecked through a later merge.
+        assert!(!index.unverified("gh:o/foo@1", "Foo.zip"));
+        let unchecked = CandidateFact {
+            unverified: true,
+            ..fact("Foo.zip", "bb", Vec::new())
+        };
+        merge_fact(&mut facts, unchecked);
+        merge_fact(&mut facts, fact("Foo.zip", "bb", Vec::new()));
+        assert!(facts[0].unverified);
+        let index = FactIndex::new(&facts);
+        assert!(index.unverified("gh:o/foo@1", "Foo.zip"));
+        // Found by its archive too, as a reinstall reuses it (any spelling of the hex).
+        assert!(index.unverified_blob("gh:o/foo@1", "BB"));
+        assert!(
+            !index.unverified_blob("gh:o/foo@1", "cc"),
+            "a checked asset"
+        );
+        assert!(
+            !index.unverified_blob("gh:o/foo@2", "bb"),
+            "another release"
+        );
+        // Written only when set; a fact from before the field loads as checked.
+        let json = serde_json::to_value(&facts[1]).unwrap();
+        assert!(json.get("unverified").is_none(), "{json}");
+        let old: CandidateFact = serde_json::from_value(json).unwrap();
+        assert!(!old.unverified);
+        assert_eq!(
+            serde_json::to_value(&facts[0]).unwrap()["unverified"],
+            serde_json::json!(true)
+        );
     }
 
     #[test]
@@ -747,6 +810,7 @@ mod tests {
                 asset: "x.zip".into(),
                 sha256: String::new(),
                 size: 0,
+                unverified: false,
                 verdicts: vec![VerdictFact {
                     rules: "mainline".into(),
                     interface: 1,

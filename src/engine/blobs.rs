@@ -46,6 +46,14 @@ pub struct BlobRef {
     pub path: PathBuf,
 }
 
+/// A downloaded archive, and why its bytes went unchecked when the hash its source
+/// normally sends (a Tukui `ETag` MD5) could not be had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fetched {
+    pub blob: BlobRef,
+    pub unverified: Option<String>,
+}
+
 /// Where one download attempt's bytes are, and what they must hash to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadTarget {
@@ -205,8 +213,7 @@ impl BlobCache {
     /// Downloads `url` into the cache, checking `declared` and, when `from_header` says
     /// so and no MD5 is declared, the MD5 the response's header carries. A hash
     /// mismatch is retried once; a second one is not retryable. A header that cannot be
-    /// used is no check, said in `notes` (for `-v`).
-    #[allow(clippy::too_many_arguments)]
+    /// used is no check, said in [`Fetched::unverified`].
     pub fn download(
         &self,
         scopes: &ScopeTable,
@@ -215,19 +222,19 @@ impl BlobCache {
         url: &str,
         declared: Option<&ExpectedHash>,
         from_header: Option<HashFromHeader>,
-        notes: &mut Vec<String>,
-    ) -> Result<BlobRef> {
+    ) -> Result<Fetched> {
         let target = DownloadTarget {
             url: url.to_owned(),
             declared: declared.cloned(),
             from_header,
         };
-        self.download_resolving(scopes, tx, http, &mut || Ok(target.clone()), false, notes)
+        self.download_resolving(scopes, tx, http, &mut || Ok(target.clone()), false)
     }
 
     /// [`BlobCache::download`] from a target `resolve` gives afresh before each attempt
     /// (a deferred asset's token URL). The one retry follows a hash mismatch or, when
     /// `refreshable`, a 403 or 404 (the token died), so `resolve` runs at most twice.
+    /// What made the attempt that succeeded unverified is its own.
     pub fn download_resolving(
         &self,
         scopes: &ScopeTable,
@@ -235,8 +242,7 @@ impl BlobCache {
         http: &dyn Http,
         resolve: &mut dyn FnMut() -> Result<DownloadTarget>,
         refreshable: bool,
-        notes: &mut Vec<String>,
-    ) -> Result<BlobRef> {
+    ) -> Result<Fetched> {
         let mut attempt = 1;
         loop {
             let target = resolve()?;
@@ -248,19 +254,21 @@ impl BlobCache {
             let resp = resp.error_for_status("asset")?;
             let declared_md5 = matches!(target.declared, Some(ExpectedHash::Md5(_)));
             let mut expected: Vec<ExpectedHash> = target.declared.into_iter().collect();
+            let mut unverified = None;
             if let (Some(HashFromHeader::EtagMd5), false) = (target.from_header, declared_md5) {
                 match etag_md5(resp.header("etag")) {
                     Ok(md5) => expected.push(md5),
-                    Err(why) => notes.push(format!(
-                        "{}: {why}; its MD5 is not checked",
-                        crate::net::redact(&target.url)
-                    )),
+                    Err(why) => {
+                        unverified =
+                            Some(format!("{} sent {why}", crate::net::redact(&target.url)));
+                    }
                 }
             }
             match self.store_checked(scopes, tx, resp.into_reader(), &expected, &Storage::Cache) {
                 Err(e) if e.code == ErrorCode::HashMismatch && attempt == 1 => attempt += 1,
+                // ubs:ignore — comparing error codes, not secrets
                 Err(e) if e.code == ErrorCode::HashMismatch => return Err(e.retryable(false)),
-                done => return done,
+                done => return done.map(|blob| Fetched { blob, unverified }),
             }
         }
     }
@@ -875,55 +883,53 @@ mod tests {
     }
 
     #[test]
-    fn a_strong_etag_md5_is_checked_and_an_unusable_one_is_noted() {
+    fn a_strong_etag_md5_is_checked_and_an_unusable_one_is_reported() {
         let f = fixture();
         let cache = BlobCache::new(&f.paths);
         let url = "https://www.tukui.org/download/elvui.zip";
         let download = |http: &Serve, declared: Option<&ExpectedHash>| {
-            let mut notes = Vec::new();
-            let got = cache.download(
+            cache.download(
                 &f.scopes,
                 &TxId::new(),
                 http,
                 url,
                 declared,
                 Some(HashFromHeader::EtagMd5),
-                &mut notes,
-            );
-            (got, notes)
+            )
         };
         // A matching ETag verifies.
         let quoted = format!("\"{}\"", md5(b"elvui"));
-        let (got, notes) = download(&Serve::new(b"elvui", Some(&quoted)), None);
-        assert_eq!(got.unwrap().sha256, sha(b"elvui"));
-        assert!(notes.is_empty(), "{notes:?}");
+        let got = download(&Serve::new(b"elvui", Some(&quoted)), None).unwrap();
+        assert_eq!(got.blob.sha256, sha(b"elvui"));
+        assert_eq!(got.unverified, None);
 
         // A wrong one fails, retried once; the second failure is not retryable.
         let wrong = format!("\"{}\"", md5(b"other"));
         let http = Serve::new(b"elvui", Some(&wrong));
-        let (got, _) = download(&http, None);
-        let err = got.unwrap_err();
+        let err = download(&http, None).unwrap_err();
         assert_eq!((err.code, err.retryable), (ErrorCode::HashMismatch, false));
         assert_eq!(http.sent.load(Ordering::Relaxed), 2);
 
-        // Weak, absent, unquoted or not an MD5: no check, and a note says so.
+        // Weak, absent, unquoted or not an MD5: no check, and the download says why.
         let plain = md5(b"elvui");
-        for etag in [
-            Some("W/\"abc\""),
-            None,
-            Some(plain.as_str()),
-            Some("\"abc\""),
+        for (etag, why) in [
+            (Some("W/\"abc\""), "a weak ETag"),
+            (None, "no ETag"),
+            (Some(plain.as_str()), "an unquoted ETag"),
+            (Some("\"abc\""), "an ETag that is not an MD5"),
         ] {
-            let (got, notes) = download(&Serve::new(b"elvui", etag), None);
-            assert!(got.is_ok(), "{etag:?}");
-            assert_eq!(notes.len(), 1, "{etag:?}: {notes:?}");
-            assert!(notes[0].contains("not checked"), "{notes:?}");
+            let got = download(&Serve::new(b"elvui", etag), None).unwrap();
+            let reason = got.unverified.unwrap();
+            assert!(
+                reason.starts_with(&format!("{url} sent {why}")),
+                "{etag:?}: {reason}"
+            );
         }
 
         // A declared MD5 wins; the header is not consulted.
         let declared = ExpectedHash::md5(&md5(b"elvui")).unwrap();
-        let (got, notes) = download(&Serve::new(b"elvui", Some(&wrong)), Some(&declared));
-        assert!(got.is_ok() && notes.is_empty());
+        let got = download(&Serve::new(b"elvui", Some(&wrong)), Some(&declared)).unwrap();
+        assert_eq!(got.unverified, None);
     }
 
     /// Answers each URL its route names (404 otherwise): `(status, ETag)`, serving
@@ -975,21 +981,15 @@ mod tests {
                     from_header: Some(HashFromHeader::EtagMd5),
                 })
             };
-            let got = cache.download_resolving(
-                &f.scopes,
-                &TxId::new(),
-                &http,
-                &mut resolve,
-                refreshable,
-                &mut Vec::new(),
-            );
+            let got =
+                cache.download_resolving(&f.scopes, &TxId::new(), &http, &mut resolve, refreshable);
             (got, resolves)
         };
 
         // A dead token (403 or 404), or a hash mismatch, is resolved again once.
         for first in [(403, None), (404, None), (200, Some(wrong.as_str()))] {
             let (got, resolves) = run(&[first, (200, Some(&good))], true);
-            assert_eq!(got.unwrap().sha256, sha(b"elvui"), "{first:?}");
+            assert_eq!(got.unwrap().blob.sha256, sha(b"elvui"), "{first:?}");
             assert_eq!(resolves, 2, "{first:?}");
         }
         // Dead twice: the second answer is the error, after two resolves.
@@ -1009,6 +1009,16 @@ mod tests {
             (got.unwrap_err().code, resolves),
             (ErrorCode::HttpStatus, 1)
         );
+        // What went unchecked is the attempt that succeeded (a mismatch, then no ETag),
+        // its token redacted.
+        let (got, _) = run(&[(200, Some(&wrong)), (200, None)], true);
+        let reason = got.unwrap().unverified.unwrap();
+        assert_eq!(
+            reason,
+            "https://api.tukui.org/v1/download/elvui/… sent no ETag"
+        );
+        let (got, _) = run(&[(403, None), (200, Some(&good))], true);
+        assert_eq!(got.unwrap().unverified, None);
     }
 
     #[test]

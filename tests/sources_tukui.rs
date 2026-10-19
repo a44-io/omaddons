@@ -380,3 +380,67 @@ fn the_memo_keeps_the_list_without_urls() {
         json!(["12.1.0", "5.5.4", "1.15.9", "2.5.6"])
     );
 }
+
+/// A download without a usable `ETag` MD5 (none, or a weak one) installs, and says it
+/// was not checked: in JSON, to a human, in the release memo, and again when another
+/// client reuses its cached blob without a request.
+#[test]
+fn a_download_without_a_usable_etag_installs_and_says_it_was_not_checked() {
+    for sent in [None, Some("W/\"abc\"")] {
+        let home = Home::new(&["wow", "wow_classic"]);
+        let zip = elvui_zip("16.00");
+        tukui_list(&home.http, &[elvui()]);
+        tukui_addon(&home.http, &elvui(), &["TOKEN-A", "TOKEN-B"]);
+        tukui_download(&home.http, "elvui", "TOKEN-A", &zip, sent);
+        let unverified = |envelope: &Value| -> Vec<String> {
+            envelope["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|w| w["code"] == "download_unverified")
+                .map(|w| w["message"].as_str().unwrap().to_owned())
+                .collect()
+        };
+
+        let r = home.run(&["install", "tukui:elvui", "-t", "retail"]);
+        let envelope = r.expect(0);
+        let warned = unverified(&envelope);
+        assert_eq!(warned.len(), 1, "{sent:?}: {}", r.context());
+        assert!(
+            warned[0].starts_with("ElvUI 16.00: its download was not checked: https://api.tukui.org/v1/download/elvui/… sent"),
+            "{}",
+            warned[0]
+        );
+        assert!(!warned[0].contains("TOKEN"), "the token is redacted");
+        assert_eq!(folders(&home, "_retail_"), ELVUI);
+        let (memo, _) = omaddons::state::memo::load(&common::http::paths(&home.env));
+        let fact = memo
+            .candidates
+            .iter()
+            .find(|f| f.release_id == "tukui:elvui@16.00")
+            .unwrap();
+        assert!(fact.unverified, "{sent:?}");
+
+        // Classic reuses the cached blob: no download, and still not checked.
+        let before = net_log(&home).len();
+        let human = home.exec(&["install", "tukui:elvui", "-t", "classic"].map(str::to_owned));
+        assert_eq!(human.code, 0, "{}", human.context());
+        assert!(
+            human.stderr.contains("its download was not checked"),
+            "{}",
+            human.context()
+        );
+        assert_eq!(purposes(&home, before), (1, 0, 0), "{sent:?}: warm");
+    }
+
+    // A matching ETag: checked, nothing to say.
+    let home = Home::new(&["wow"]);
+    serve_elvui(&home);
+    let envelope = home
+        .run(&["install", "tukui:elvui", "-t", "retail"])
+        .expect(0);
+    assert!(
+        !envelope.to_string().contains("download_unverified"),
+        "{envelope}"
+    );
+}

@@ -200,14 +200,15 @@ fn release_set(w: &Wanted, details: &WowiDetails) -> Result<ReleaseSet> {
     })
 }
 
-/// `wowi:<UID>@<md5>` (or `@d<UIDate>` without a usable MD5), one asset at
-/// `UIDownload` checked against `UIMD5`, the changelog as plain text.
+/// `wowi:<UID>@<md5>` (without a usable MD5: `@d<UIDate>`, else `@v<UIVersion>`), one
+/// asset at `UIDownload` checked against `UIMD5`, the changelog as plain text.
 pub fn release(details: &WowiDetails) -> Release {
     let uid = details.uid;
     let expected_hash = ExpectedHash::md5(details.md5.trim());
-    let release_id = match &expected_hash {
-        Some(md5) => format!("wowi:{uid}@{}", md5.hex()),
-        None => format!("wowi:{uid}@d{}", details.date_ms.unwrap_or(0)),
+    let release_id = match (&expected_hash, details.date_ms) {
+        (Some(md5), _) => format!("wowi:{uid}@{}", md5.hex()),
+        (None, Some(date)) => format!("wowi:{uid}@d{date}"),
+        (None, None) => format!("wowi:{uid}@v{}", details.version.trim()),
     };
     let published_at = details
         .date_ms
@@ -244,6 +245,14 @@ pub fn release(details: &WowiDetails) -> Release {
         notes: (!notes.is_empty()).then_some(notes),
         name_hint: Some(details.name.trim().to_owned()).filter(|n| !n.is_empty()),
     }
+}
+
+/// Why a download of `release_id` goes unchecked: a WoWInterface file whose details
+/// published no usable MD5 (`expected` is then `None`). Other sources' assets without a
+/// hash (GitHub's) never had one to check, and say nothing.
+pub fn unpublished_md5(release_id: &str, expected: Option<&ExpectedHash>) -> Option<String> {
+    (release_id.starts_with("wowi:") && expected.is_none())
+        .then(|| "WoWInterface published no usable MD5 for it".to_owned())
 }
 
 #[cfg(test)]
@@ -409,6 +418,24 @@ mod tests {
         assert_eq!(release.version, "unknown");
         assert!(release.assets.is_empty(), "no UIDownload, no asset");
         assert_eq!((release.notes, release.name_hint), (None, None));
+        // Without an MD5 the file installs unchecked, and says so.
+        let reason = unpublished_md5(&release.release_id, None).unwrap();
+        assert_eq!(reason, "WoWInterface published no usable MD5 for it");
+        assert_eq!(
+            unpublished_md5("gh:o/r@v1", None),
+            None,
+            "GitHub never publishes one"
+        );
+        // Neither an MD5 nor a date: the version names it, never `@d0`.
+        let undated = WowiDetails {
+            uid: 3,
+            version: " 1.2 ".into(),
+            download: "https://cdn.wowinterface.com/downloads/getfile.php?id=3".into(),
+            ..WowiDetails::default()
+        };
+        let release = super::release(&undated);
+        assert_eq!(release.release_id, "wowi:3@v1.2");
+        assert_eq!(release.assets[0].expected_hash, None);
         let unnamed = WowiDetails {
             uid: 2,
             download: "https://cdn.wowinterface.com/downloads/getfile.php?id=2".into(),
@@ -419,6 +446,8 @@ mod tests {
         assert_eq!(release.release_id, format!("wowi:2@{MD5}"), "lowercased");
         assert_eq!(release.assets[0].filename, "wowi-2.zip");
         assert_eq!(release.assets[0].expected_hash, ExpectedHash::md5(MD5));
+        let checked = release.assets[0].expected_hash.as_ref();
+        assert_eq!(unpublished_md5(&release.release_id, checked), None);
     }
 
     #[test]

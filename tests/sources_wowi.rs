@@ -512,3 +512,59 @@ fn the_enable_flag_turns_the_source_off_and_its_fix_turns_it_on() {
         r.context()
     );
 }
+
+/// A file whose details publish no usable MD5 (none, or a malformed one) installs, and
+/// says it was not checked: in JSON, to a human, in the release memo, and again when a
+/// reinstall reuses its cached blob without a request. Its identity is its date.
+#[test]
+fn a_file_without_a_usable_md5_installs_and_says_it_was_not_checked() {
+    for published in ["", "not-an-md5"] {
+        let home = Home::new(&["wow"]);
+        let toc = toc("120105", &["## Title: BugSack", "## Version: v1"]);
+        let zip = zip_text(&[("BugSack/BugSack.toc", &toc)]);
+        wowi_file(&home.http, UID, &zip);
+        wowi_details(
+            &home.http,
+            &[UID],
+            &[details(UID, "BugSack", "v1", published)],
+        );
+        let expected =
+            "BugSack v1: its download was not checked: WoWInterface published no usable MD5 for it";
+
+        let r = home.run(&["install", "wowi:5995", "-t", "retail"]);
+        let envelope = r.expect(0);
+        let warned: Vec<&str> = envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == "download_unverified")
+            .filter_map(|w| w["message"].as_str())
+            .collect();
+        assert_eq!(warned, [expected], "{published:?}: {}", r.context());
+        let addon = &record(&home, "retail").addons["bugsack"];
+        assert_eq!(
+            addon.release_id.as_deref(),
+            Some("wowi:5995@d1760300000000"),
+            "{published:?}"
+        );
+        let (memo, _) = omaddons::state::memo::load(&common::http::paths(&home.env));
+        assert!(
+            memo.candidates
+                .iter()
+                .any(|f| f.release_id == "wowi:5995@d1760300000000" && f.unverified),
+            "{published:?}"
+        );
+
+        // A reinstall takes the cached blob: no download, and still not checked.
+        let before = net_log(&home).len();
+        let argv: Vec<String> = ["install", "wowi:5995", "-t", "retail", "--reinstall"]
+            .iter()
+            .map(|a| (*a).to_owned())
+            .collect();
+        let human = home.exec(&argv);
+        assert_eq!(human.code, 0, "{}", human.context());
+        assert!(human.stderr.contains(expected), "{}", human.context());
+        let new = only_new(net_log(&home), before);
+        assert_eq!(new.count_purpose("asset"), 0, "{}", new.context());
+    }
+}

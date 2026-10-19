@@ -411,6 +411,9 @@ impl DownloadMemo {
 pub struct Downloaded {
     pub blob: BlobRef,
     pub canonical_url: Option<String>,
+    /// Why the download was not checked against the hash its source normally
+    /// publishes (`download_unverified`); `None` when it was, or there is none.
+    pub unverified: Option<String>,
 }
 
 /// The plan: what `--dry-run` returns and the commit executes.
@@ -674,6 +677,9 @@ pub struct FolderWork {
     /// Files of the folders it replaces that changed on disk since they were indexed,
     /// found at plan time (M2-D17): the commit warns `local_changes_replaced`.
     pub local_changes: Option<LocalChanges>,
+    /// `download_unverified` when its archive's download was not checked against the
+    /// hash its source normally publishes, found at plan time: the commit warns again.
+    pub unverified: Option<Warning>,
 }
 
 /// Changed files of the folders a work replaces.
@@ -2354,6 +2360,8 @@ pub struct CheckNotes {
     pub facts: Vec<CandidateFact>,
     /// `-v` notes from downloading.
     pub notes: Vec<String>,
+    /// `download_unverified` for each release checked from an unchecked download.
+    pub warnings: Vec<Warning>,
 }
 
 /// Selects `set`'s release for `wanted` on `target` and tries its candidates in order,
@@ -2408,6 +2416,11 @@ pub fn check_release(
             for candidate in &selection.candidates {
                 match planner.try_candidate(&wanted.r#ref, candidate, name_hint, None) {
                     Ok(Ok(winner)) => {
+                        let unverified = winner
+                            .warnings
+                            .iter()
+                            .filter(|w| matches!(w.code, WarningCode::DownloadUnverified));
+                        push_new(&mut out.warnings, unverified.cloned().collect());
                         found = Some(ReleaseCheck {
                             release_id: winner.candidate.release_id,
                             version: winner.candidate.version,
@@ -2552,7 +2565,10 @@ pub fn rejudge(
                     .local_changes
                     .clone()
                     .filter(|c| c.folders.iter().any(replaced));
+                f.unverified = folders.unverified.clone();
             }
+            // The archive it stages was downloaded unchecked: still said.
+            rebuilt.warnings.extend(folders.unverified.clone());
             Ok(Planned::change(rebuilt))
         }
         _ if !record
@@ -3432,6 +3448,12 @@ impl TargetPlanner<'_> {
         )?;
         if let WorkMode::Folders(f) = &mut planned.work.mode {
             f.deps = b.deps;
+            // The commit downloads nothing: it warns from the work.
+            f.unverified = planned
+                .warnings
+                .iter()
+                .find(|w| matches!(w.code, WarningCode::DownloadUnverified))
+                .cloned();
             // Here, never in `build_install`: the walk stays out of the commit window
             // that `rejudge` holds the lock for.
             f.local_changes = self.local_changes(&f.swap);
@@ -3741,6 +3763,7 @@ impl TargetPlanner<'_> {
                     handed_over: Vec::new(),
                     deps: DepFacts::default(),
                     local_changes: None,
+                    unverified: None,
                 })),
             },
         })
@@ -3803,6 +3826,7 @@ impl TargetPlanner<'_> {
                     handed_over: Vec::new(),
                     deps: DepFacts::default(),
                     local_changes: None,
+                    unverified: None,
                 })),
             },
         })
@@ -3954,6 +3978,7 @@ impl TargetPlanner<'_> {
         let ctx = self.ctx;
         let mut downloaded = None;
         let mut canonical_url = None;
+        let mut unverified = None;
         let (inspected, blob) = match &candidate.asset.location {
             AssetLocation::Url(_) | AssetLocation::Deferred { .. } => {
                 let done = self
@@ -3965,10 +3990,15 @@ impl TargetPlanner<'_> {
                 let inspected = inspect(&done.blob.path, &ctx.limits, ctx.table)?;
                 let path = done.blob.path.clone();
                 canonical_url = done.canonical_url;
+                unverified = done.unverified;
                 downloaded = Some(done.blob);
                 (inspected, Some(path))
             }
             AssetLocation::LocalZip(path) => {
+                // A recorded release's cached archive, reused as it is.
+                if let Some(ExpectedHash::Sha256(sha)) = &candidate.asset.expected_hash {
+                    unverified = self.reused_unverified(&candidate.release_id, sha);
+                }
                 (inspect(path, &ctx.limits, ctx.table)?, Some(path.clone()))
             }
             AssetLocation::LocalDir(path) => (inspect_dir(path, &ctx.limits, ctx.table)?, None),
@@ -3992,7 +4022,7 @@ impl TargetPlanner<'_> {
         let loads = primary.is_some_and(|p| accepts(&split, declared, p));
         if let Some(blob) = &downloaded {
             let verdict = verdicts.iter().find(|v| Some(&v.folder) == primary);
-            self.learn(candidate, blob, loads, verdict);
+            self.learn(candidate, blob, unverified.is_some(), loads, verdict);
         }
         if !loads {
             let why: Vec<String> = verdicts
@@ -4082,11 +4112,21 @@ impl TargetPlanner<'_> {
                 .map(|v| v.folder.clone())
                 .collect(),
         };
-        let warnings = verdicts
+        let mut warnings: Vec<Warning> = verdicts
             .into_iter()
             .filter(|v| split.install.contains(&v.folder))
             .flat_map(|v| v.report.warnings)
             .collect();
+        // TLS protected the transfer and the TOCs verified, but not the source's hash.
+        if let Some(reason) = unverified {
+            warnings.push(Warning::new(
+                WarningCode::DownloadUnverified,
+                format!(
+                    "{name} {}: its download was not checked: {reason}",
+                    candidate.version
+                ),
+            ));
+        }
         Ok(Ok(Winner {
             candidate: candidate.clone(),
             loadable: Loadable {
@@ -4131,6 +4171,7 @@ impl TargetPlanner<'_> {
         &self,
         candidate: &Candidate,
         blob: &BlobRef,
+        unverified: bool,
         loads: bool,
         verdict: Option<&FolderVerdict>,
     ) {
@@ -4149,6 +4190,7 @@ impl TargetPlanner<'_> {
                 primary_interface: verdict.and_then(|v| v.interface),
                 at: Timestamp::now(),
             }],
+            unverified,
         };
         merge_fact(&mut self.facts.borrow_mut(), fact);
     }
@@ -4183,19 +4225,22 @@ impl TargetPlanner<'_> {
     fn fetch_blob(&self, release_id: &str, asset: &crate::model::Asset) -> Result<Downloaded> {
         let ctx = self.ctx;
         let expected = asset.expected_hash.as_ref();
+        // A WoWInterface file published without its MD5 is not checked.
+        let unpublished = crate::sources::wowi::unpublished_md5(release_id, expected);
         // The blob cache is keyed by SHA-256: an MD5 source's fast path is its facts.
         let expected_sha = match expected {
             Some(ExpectedHash::Sha256(sha)) => Some(sha.to_ascii_lowercase()),
             Some(ExpectedHash::Md5(_)) | None => None,
         };
-        let cached = |blob| Downloaded {
+        let cached = |blob, unverified| Downloaded {
             blob,
             canonical_url: None,
+            unverified,
         };
         if let Some(sha) = &expected_sha
             && let Some(blob) = ctx.blobs.get(ctx.scopes, sha)?
         {
-            return Ok(cached(blob));
+            return Ok(cached(blob, None));
         }
         if let Some((sha, size)) = ctx.cache.facts().hash(release_id, &asset.filename)
             // ubs:ignore — comparing archive hashes, not secrets
@@ -4203,10 +4248,11 @@ impl TargetPlanner<'_> {
             && asset.size.is_none_or(|declared| declared == size)
             && let Some(blob) = ctx.blobs.get(ctx.scopes, sha)?
         {
-            return Ok(cached(blob));
+            let unverified = self.reused_unverified(release_id, &blob.sha256);
+            return Ok(cached(blob, unverified));
         }
         let mut canonical_url = None;
-        let blob = match &asset.location {
+        let fetched = match &asset.location {
             AssetLocation::Deferred { source, key } => {
                 let Some(source) = ctx.registry.get(*source) else {
                     return Err(ctx.registry.unavailable(*source, release_id));
@@ -4220,24 +4266,12 @@ impl TargetPlanner<'_> {
                         from_header: resolved.hash_from_header,
                     })
                 };
-                ctx.blobs.download_resolving(
-                    ctx.scopes,
-                    &ctx.tx,
-                    ctx.http,
-                    &mut resolve,
-                    true,
-                    &mut self.notes.borrow_mut(),
-                )?
+                ctx.blobs
+                    .download_resolving(ctx.scopes, &ctx.tx, ctx.http, &mut resolve, true)?
             }
-            AssetLocation::Url(url) => ctx.blobs.download(
-                ctx.scopes,
-                &ctx.tx,
-                ctx.http,
-                url,
-                expected,
-                None,
-                &mut self.notes.borrow_mut(),
-            )?,
+            AssetLocation::Url(url) => ctx
+                .blobs
+                .download(ctx.scopes, &ctx.tx, ctx.http, url, expected, None)?,
             AssetLocation::LocalZip(_)
             | AssetLocation::LocalDir(_)
             | AssetLocation::GitCheckout { .. } => {
@@ -4252,9 +4286,23 @@ impl TargetPlanner<'_> {
         ctx.progress
             .event(Phase::Download, self.candidate_items, &item);
         Ok(Downloaded {
-            blob,
+            blob: fetched.blob,
             canonical_url,
+            unverified: fetched.unverified.or(unpublished),
         })
+    }
+
+    /// Why reusing the cached archive `sha256` of `release_id` goes unchecked: its
+    /// download did (the release memo says so), and the cache cannot check it either.
+    fn reused_unverified(&self, release_id: &str, sha256: &str) -> Option<String> {
+        self.ctx
+            .cache
+            .facts()
+            .unverified_blob(release_id, sha256)
+            .then(|| {
+                crate::sources::wowi::unpublished_md5(release_id, None)
+                    .unwrap_or_else(|| "the cached download it reuses was never checked".to_owned())
+            })
     }
 
     /// A reinstall that needs its source while offline: its archive is not in the blob
@@ -4951,6 +4999,7 @@ mod tests {
                     count: 1,
                     folders: vec![FolderName::new("Foo").unwrap()],
                 }),
+                unverified: None,
             })),
         };
         let replace = |indexed: Option<TreeDigest>| SwapOp::Replace {

@@ -140,8 +140,8 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | Dependencies: what a TOC requires installs with it, from the catalog, Tukui or WoWInterface; `required_by` kept true on update and remove, orphans reported | ✅ Done (milestone 2) |
 | `sync`: every client made to match `addons.toml`, idempotently; `--locked` reproduces exact versions, `--prune` removes what the file drops | ✅ Done (milestone 2) |
 | `export`: every client's addon set as one `addons.toml`, printed or written with a backup | ✅ Done (milestone 2) |
-| WoWInterface: `wowi:` refs and links, keyless, every download checked against its MD5 | ✅ Done (milestone 2) |
-| Tukui (ElvUI and Tukui): `tukui:` refs and links, keyless, every download checked against its `ETag` MD5 | ✅ Done (milestone 2) |
+| WoWInterface: `wowi:` refs and links, keyless, every download checked against its MD5 (a file published without one installs with a `download_unverified` warning) | ✅ Done (milestone 2) |
+| Tukui (ElvUI and Tukui): `tukui:` refs and links, keyless, every download checked against its `ETag` MD5 (a download without a usable one installs with a `download_unverified` warning) | ✅ Done (milestone 2) |
 | `search` (alias `find`): the catalog, WoWInterface, Tukui and GitHub at once, with a compatibility hint per client | ✅ Done (milestone 2) |
 | Changelogs: `info --changelog` and `outdated --changelog`, from GitHub's Atom feeds, WoWInterface and Tukui | ✅ Done (milestone 2) |
 | `copy`: one client's addons installed on another where builds exist, the rest skipped and said why | ✅ Done (milestone 2) |
@@ -486,8 +486,8 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 | `git:https://codeberg.org/o/r#tag` | git elsewhere | the `git` binary (2.32+), in a sandbox, only for hosts listed in `git_hosts`. Branches win over tags with the same name |
 | `url:https://…/addon.zip` | a direct download | only from the always-allowed hosts (GitHub's, WoWInterface's and Tukui's); not `git_hosts` |
 | `./addon.zip`, `./AddonFolder`, `file:path` | local | a zip (a typed path must end in `.zip`, and the magic bytes are checked) or a folder, read in place |
-| `wowi:<id>`; WoWInterface links: `…/downloads/info<id>-Name.html`, `…/downloads/fileinfo.php?id=<id>`, and the download link `cdn.wowinterface.com/downloads/getfile.php?id=<id>&…` | WoWInterface | keyless: one `filedetails` request to `api.mmoui.com` per 50 addons, then the file from `cdn.wowinterface.com`, checked against the MD5 the API publishes. WoWInterface serves only a project's current file, so `--version` matches only its current version. A release is its file: the same bytes uploaded again are no update, and any new file is one. Its compatibility tags lag behind patches, so they never rule a file out; the TOCs decide |
-| `tukui:<slug>` (`tukui:elvui`, any case); Tukui links: `tukui.org/addon/<slug>`, `download.php?ui=<name>` | Tukui | keyless: one list request to `api.tukui.org` per command, and right before each download a fresh download link, which expires within seconds and is never stored or logged (`net.log` shows `/v1/download/<slug>/…`). The download must match the MD5 in its `ETag`. The list's supported patches only rank the file; the TOCs decide, so ElvUI also installs where its TOCs load but the list says nothing (Forever) |
+| `wowi:<id>`; WoWInterface links: `…/downloads/info<id>-Name.html`, `…/downloads/fileinfo.php?id=<id>`, and the download link `cdn.wowinterface.com/downloads/getfile.php?id=<id>&…` | WoWInterface | keyless: one `filedetails` request to `api.mmoui.com` per 50 addons, then the file from `cdn.wowinterface.com`, checked against the MD5 the API publishes; when the API publishes none, the file installs with a `download_unverified` warning and is identified by its date (`wowi:<id>@d<date>`, else `@v<version>`). WoWInterface serves only a project's current file, so `--version` matches only its current version. A release is its file: the same bytes uploaded again are no update, and any new file is one. Its compatibility tags lag behind patches, so they never rule a file out; the TOCs decide |
+| `tukui:<slug>` (`tukui:elvui`, any case); Tukui links: `tukui.org/addon/<slug>`, `download.php?ui=<name>` | Tukui | keyless: one list request to `api.tukui.org` per command, and right before each download a fresh download link, which expires within seconds and is never stored or logged (`net.log` shows `/v1/download/<slug>/…`). The download is checked against the MD5 in its `ETag`; a download without a usable one installs with a `download_unverified` warning. The list's supported patches only rank the file; the TOCs decide, so ElvUI also installs where its TOCs load but the list says nothing (Forever) |
 | `cf:<id>`, `wago:<id>`, CurseForge and Wago links | CurseForge, Wago | parsed and refused with `source_disabled` ("arrives in M5"), unless `--file` supplies the archive |
 | an `https://` link to a `git_hosts` host, or ending in `.git` | `git:` | as `git:` above (`#fragment` becomes the rev) |
 | any other `https://` link | `url:` | refused at plan time unless its host is allowlisted |
@@ -1272,7 +1272,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 </details>
 
 <details>
-<summary><strong>Every warning code (38)</strong></summary>
+<summary><strong>Every warning code (40)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -1315,6 +1315,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `bridge_dependency` | a newly installed addon's other folder (a bridge or plugin) works with an addon that is not installed; nothing is installed for it, and the fix installs it (`omaddons install <name or ref> -t <id>`), or searches for it (`omaddons search <folder>`) when no keyless source ships it. Only on the addon's first install |
 | `target_addons_shared` | `status`: two or more clients share one AddOns directory (an `Interface/AddOns` symlinked between them); a folder one client records is `shared` on the others, which may not record it too; the fix is advice: manage those addons from one client, or stop sharing the directory. Also on `install`, `update` and `remove` of a folder both clients recorded before that was refused: the change shows on the other client too (fix `omaddons status -t <other>`) |
 | `history_lines_skipped` | `history` and `undo`: lines of `history.jsonl` could not be read (a hand edit or other damage, not a write a crash cut short) and were skipped, so the transactions on them are not listed and cannot be undone; it counts them, and the fix is advice, since omaddons never rewrites the file |
+| `download_unverified` | a WoWInterface file whose details published no usable MD5, or a Tukui download without a usable `ETag` MD5 (none, weak, unquoted or not an MD5), installed unchecked: TLS protected the transfer and the TOCs were verified. A later reuse of its cached archive (another client, a reinstall) says it again; no fix |
 
 </details>
 

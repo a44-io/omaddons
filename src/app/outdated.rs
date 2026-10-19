@@ -903,6 +903,15 @@ fn verify(
     match engine.run(&req, Some(cache)) {
         Ok(done) => {
             verified.facts = done.plan.facts.clone();
+            // An update verified from an unchecked download says so.
+            verified.warnings.extend(
+                done.plan
+                    .targets
+                    .iter()
+                    .flat_map(|t| &t.warnings)
+                    .filter(|w| matches!(w.code, WarningCode::DownloadUnverified))
+                    .cloned(),
+            );
             for f in &done.failures {
                 let what = f.addon.as_deref().unwrap_or("verification");
                 if f.error.retryable {

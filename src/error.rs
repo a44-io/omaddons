@@ -304,6 +304,9 @@ warning_codes! {
     /// Lines of `history.jsonl` that are not cut-short writes did not read: their
     /// transactions are lost to `history` and `undo`.
     HistoryLinesSkipped         = "history_lines_skipped";
+    /// A download installed without the hash its source normally publishes; TLS
+    /// protected the transfer, and the TOCs were verified.
+    DownloadUnverified          = "download_unverified";
 }
 
 impl fmt::Display for WarningCode {
@@ -785,7 +788,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 39);
+        assert_eq!(WarningCode::ALL.len(), 40);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

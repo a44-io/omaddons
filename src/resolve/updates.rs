@@ -559,6 +559,7 @@ mod tests {
                 primary_interface: Some(primary),
                 at: at("2026-10-15T00:00:00Z"),
             }],
+            unverified: false,
         }
     }
 
