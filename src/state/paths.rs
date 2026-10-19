@@ -299,6 +299,12 @@ impl Paths {
         self.cache.join("tmp").join(tx.to_string())
     }
 
+    /// `<cache>/omaddons/git-home/`: the empty directory git runs with as its `HOME`, so
+    /// no `.netrc` or other personal setting reaches git or libcurl.
+    pub fn git_home(&self) -> PathBuf {
+        self.cache.join("git-home")
+    }
+
     /// `<cache>/inflight/`: the in-flight locks that guard only cache scratch
     /// (planning, release checks, dry runs), so those never write the state directory.
     pub fn cache_inflight_dir(&self) -> PathBuf {

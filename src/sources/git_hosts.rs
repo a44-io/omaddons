@@ -20,25 +20,30 @@ use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use super::Wanted;
 use crate::error::{Error, ErrorCode, PlanStaleSource, Result, Suggestion};
+use crate::fsx::{Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate};
 use crate::limits::API_RESPONSE_MAX_BYTES;
 use crate::model::{Asset, AssetLocation, Channel, Ref, Release, ReleaseSet};
 use crate::net::NetConfig;
 use crate::net::allowlist::{GitHosts, is_http_host};
 use crate::net::log::{GitLogEntry, NetLog};
 use crate::politeness::{API_READ_TIMEOUT, DOWNLOAD_TIMEOUT};
+use crate::state::paths::Paths;
 
 /// The oldest git that honours `GIT_CONFIG_GLOBAL`.
 const MIN_GIT: (u32, u32) = (2, 32);
 
 /// How often a checkout's size is measured while git runs.
 const WATCH_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Spawns tried again, 10 ms apart, while the binary is "text file busy".
+const TXTBSY_TRIES: u32 = 50;
 
 /// What git may speak: https in production; `file://` exists only for in-crate tests
 /// against local repositories.
@@ -73,6 +78,57 @@ pub struct GitRunner {
     download_max_bytes: u64,
     /// The most kept of each of git's output streams; the rest is read and dropped.
     output_max: u64,
+    /// git's `HOME`: an empty directory omaddons owns (`None` in in-crate tests that
+    /// need none).
+    home: Option<GitHome>,
+}
+
+/// `<cache>/omaddons/git-home/`, made ready (created 0700 through fsx, checked empty)
+/// once, before the first run that touches a repository.
+struct GitHome {
+    paths: Paths,
+    ready: OnceLock<std::result::Result<(), Error>>,
+}
+
+impl GitHome {
+    fn new(paths: &Paths) -> Self {
+        Self {
+            paths: paths.clone(),
+            ready: OnceLock::new(),
+        }
+    }
+
+    fn dir(&self) -> PathBuf {
+        self.paths.git_home()
+    }
+
+    /// Creates it (0700, through fsx) and checks it is a directory with nothing in it:
+    /// a file there could be a `.netrc` or a git setting git would then obey.
+    fn ensure(&self) -> Result<()> {
+        self.ready
+            .get_or_init(|| {
+                let dir = self.dir();
+                let scopes = ScopeTable::new(&self.paths, &[], None)?;
+                let mut s = WriteSession::untracked(Writer::Derived, &scopes, "git-home");
+                ensure_dir_all(&mut s, &dir)?;
+                mutate(&mut s, &dir, Op::Chmod { mode: 0o700 })?;
+                let io = |e: std::io::Error| Error::io(&dir, &e, Suggestion::text("check the cache directory"));
+                let meta = std::fs::symlink_metadata(&dir).map_err(io)?;
+                let empty = meta.is_dir() && std::fs::read_dir(&dir).map_err(io)?.next().is_none();
+                if !empty {
+                    return Err(Error::new(
+                        ErrorCode::Io,
+                        format!("{} is not an empty directory", dir.display()),
+                        Suggestion::text(
+                            "empty this directory; omaddons uses it as git's home so no personal git or curl files apply",
+                        ),
+                    )
+                    .details(serde_json::json!({ "path": dir })));
+                }
+                Ok(())
+            })
+            .clone()
+    }
 }
 
 impl std::fmt::Debug for GitRunner {
@@ -103,8 +159,9 @@ pub struct GitOutput {
 }
 
 impl GitRunner {
-    /// For a run with `config`'s git hosts and offline flag, logging to `log`.
-    pub fn new(config: &NetConfig, log: NetLog) -> Self {
+    /// For a run with `config`'s git hosts and offline flag, logging to `log`, with its
+    /// home under `paths`' cache.
+    pub fn new(config: &NetConfig, log: NetLog, paths: &Paths) -> Self {
         Self {
             hosts: config.git_allowlist(),
             offline: config.offline,
@@ -114,6 +171,7 @@ impl GitRunner {
             version: OnceLock::new(),
             download_max_bytes: config.download_max_bytes,
             output_max: API_RESPONSE_MAX_BYTES,
+            home: Some(GitHome::new(paths)),
         }
     }
 
@@ -129,7 +187,16 @@ impl GitRunner {
             version: OnceLock::new(),
             download_max_bytes: crate::limits::DOWNLOAD_MAX_BYTES,
             output_max: API_RESPONSE_MAX_BYTES,
+            home: None,
         }
+    }
+
+    /// The same runner with its home under `paths`' cache.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_home(mut self, paths: &Paths) -> Self {
+        self.home = Some(GitHome::new(paths));
+        self
     }
 
     /// The same runner with checkouts held to `bytes`.
@@ -145,10 +212,13 @@ impl GitRunner {
         // Always "git" in production; only in-crate tests substitute a stand-in.
         let mut cmd = Command::new(&self.program); // ubs:ignore — fixed executable
         cmd.env_clear();
-        for var in ["PATH", "HOME"] {
-            if let Some(value) = std::env::var_os(var) {
-                cmd.env(var, value);
-            }
+        if let Some(path) = std::env::var_os("PATH") {
+            cmd.env("PATH", path);
+        }
+        // Never the user's home: libcurl would read its `.netrc` (git always asks it to).
+        if let Some(home) = &self.home {
+            cmd.env("HOME", home.dir())
+                .env("XDG_CONFIG_HOME", home.dir());
         }
         let scheme = self.policy.scheme();
         cmd.env("LC_ALL", "C")
@@ -250,6 +320,9 @@ impl GitRunner {
             .details(serde_json::json!({ "host": repo.host })));
         }
         self.check_version()?;
+        if let Some(home) = &self.home {
+            home.ensure()?;
+        }
         let started = Instant::now();
         let watch = checkout.map(|dir| Watch {
             dir,
@@ -261,15 +334,17 @@ impl GitRunner {
             Ok((status, _)) => (status.code(), None),
             Err(e) => (None, Some(e.code)),
         };
+        // Every run is logged, or fails as an unlogged HTTP request does; its output is
+        // then dropped, success or not.
         if let Some(log) = &self.log {
-            let _ = log.record_git(GitLogEntry {
+            log.record_git(GitLogEntry {
                 host: repo.host.clone(),
                 path: repo.path.clone(),
                 exit_code,
                 duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                 purpose,
                 error,
-            });
+            })?;
         }
         let (status, output) = result?;
         if status.success() {
@@ -709,7 +784,22 @@ fn finish(
     output_max: u64,
     watch: Option<Watch<'_>>,
 ) -> Result<(ExitStatus, GitOutput)> {
-    let mut child = cmd.spawn().map_err(|e| {
+    // A binary being replaced at this moment (a package upgrade) is "text file busy"
+    // for a moment: tried again briefly.
+    let mut tries = 0;
+    let spawned = loop {
+        match cmd.spawn() {
+            Err(e)
+                if tries < TXTBSY_TRIES
+                    && rustix::io::Errno::from_io_error(&e) == Some(rustix::io::Errno::TXTBSY) =>
+            {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            spawned => break spawned,
+        }
+    };
+    let mut child = spawned.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             Error::new(
                 ErrorCode::SourceDisabled,
@@ -816,7 +906,19 @@ mod tests {
             version: OnceLock::new(),
             download_max_bytes: crate::limits::DOWNLOAD_MAX_BYTES,
             output_max: API_RESPONSE_MAX_BYTES,
+            home: None,
         }
+    }
+
+    /// Paths rooted in `dir` (a temp dir), for a runner's home and log.
+    fn paths_in(dir: &Path) -> Paths {
+        let root = std::fs::canonicalize(dir).unwrap();
+        Paths::with_roots(
+            &root,
+            root.join(".config"),
+            root.join(".local/state"),
+            root.join(".cache"),
+        )
     }
 
     /// A stand-in for git at `<dir>/git` running `script`.
@@ -881,8 +983,11 @@ mod tests {
 
     #[test]
     fn the_command_is_hygienic() {
-        // Junk in the parent environment must not reach git.
-        let git = runner(ProtocolPolicy::Https, &[]);
+        // Junk in the parent environment must not reach git, nor the user's home.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let mut git = runner(ProtocolPolicy::Https, &[]);
+        git.home = Some(GitHome::new(&paths));
         let cmd = git.command(&[OsStr::new("ls-remote")]);
         let envs: BTreeMap<String, Option<String>> = cmd
             .get_envs()
@@ -899,15 +1004,17 @@ mod tests {
             "GIT_CONFIG_GLOBAL",
             "GIT_CONFIG_NOSYSTEM",
             "GIT_TERMINAL_PROMPT",
+            "HOME",
             "LC_ALL",
+            "XDG_CONFIG_HOME",
         ];
-        expected.extend(
-            ["HOME", "PATH"]
-                .iter()
-                .filter(|v| std::env::var_os(v).is_some()),
-        );
+        expected.extend(["PATH"].iter().filter(|v| std::env::var_os(v).is_some()));
         expected.sort_unstable();
         assert_eq!(keys, expected);
+        let home = paths.git_home().display().to_string();
+        assert_eq!(envs["HOME"].as_deref(), Some(home.as_str()));
+        assert_eq!(envs["XDG_CONFIG_HOME"].as_deref(), Some(home.as_str()));
+        assert_ne!(envs["HOME"].clone(), std::env::var("HOME").ok());
         assert_eq!(envs["GIT_CONFIG_GLOBAL"].as_deref(), Some("/dev/null"));
         assert_eq!(envs["GIT_ALLOW_PROTOCOL"].as_deref(), Some("https"));
         let args: Vec<String> = cmd
@@ -942,6 +1049,8 @@ mod tests {
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
         let mut git = runner(ProtocolPolicy::Https, &[]);
         git.program = fake.into_os_string();
+        let paths = paths_in(dir.path());
+        git.home = Some(GitHome::new(&paths));
         let (status, out) = finish(
             git.command(&[]),
             Duration::from_secs(10),
@@ -967,6 +1076,7 @@ mod tests {
                 "HOME",
                 "LC_ALL",
                 "PATH",
+                "XDG_CONFIG_HOME",
                 // Set by the stand-in shell itself, not inherited.
                 "PWD",
                 "SHLVL",
@@ -976,7 +1086,73 @@ mod tests {
             "{keys:?}"
         );
         assert!(keys.contains(&"GIT_CONFIG_GLOBAL"), "{keys:?}");
+        let home = format!("HOME={}", paths.git_home().display());
+        assert!(out.stdout.lines().any(|l| l == home), "{}", out.stdout);
     }
+
+    /// git's home is created empty (0700) through fsx before the first repository run;
+    /// one with anything in it refuses every run, since a `.netrc` there would be read.
+    #[test]
+    fn the_git_home_is_created_empty_and_a_used_one_refuses() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let mut git = runner(ProtocolPolicy::Https, &["codeberg.org"]);
+        git.program = stand_in(dir.path(), VERSIONED);
+        git.home = Some(GitHome::new(&paths));
+        let repo = git.repo_url("https://codeberg.org/o/r").unwrap();
+        git.run(&[], &repo, "ls-remote", API_READ_TIMEOUT).unwrap();
+        let home = paths.git_home();
+        let meta = fs::metadata(&home).unwrap();
+        assert!(meta.is_dir());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
+
+        fs::write(
+            home.join(".netrc"),
+            "machine codeberg.org login me password x\n",
+        )
+        .unwrap();
+        let mut used = runner(ProtocolPolicy::Https, &["codeberg.org"]);
+        used.program = git.program.clone();
+        used.home = Some(GitHome::new(&paths));
+        let err = used
+            .run(&[], &repo, "ls-remote", API_READ_TIMEOUT)
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Io);
+        assert_eq!(err.details["path"], serde_json::json!(home));
+    }
+
+    /// A git run whose `net.log` line cannot be written fails, as an HTTP request does.
+    #[test]
+    fn a_run_that_cannot_be_logged_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let mut git = runner(ProtocolPolicy::Https, &["codeberg.org"]);
+        git.program = stand_in(dir.path(), VERSIONED);
+        git.log = Some(NetLog::new(&paths).unwrap());
+        let repo = git.repo_url("https://codeberg.org/o/r").unwrap();
+        // Logged, the run succeeds.
+        git.run(&[], &repo, "ls-remote", API_READ_TIMEOUT).unwrap();
+        // net.log made a directory: no line can be appended to it, and the run fails
+        // with that error although git exited 0.
+        fs::remove_file(paths.net_log()).unwrap();
+        fs::create_dir_all(paths.net_log()).unwrap();
+        let err = git
+            .run(&[], &repo, "ls-remote", API_READ_TIMEOUT)
+            .unwrap_err();
+        assert!(
+            err.message.contains("net.log"),
+            "{:?}: {}",
+            err.code,
+            err.message
+        );
+    }
+
+    /// A stand-in git that knows its version and succeeds at everything else.
+    const VERSIONED: &str =
+        "for a in \"$@\"; do [ \"$a\" = --version ] && echo 'git version 2.51.0'; done\nexit 0\n";
 
     #[test]
     fn refusals_spawn_nothing() {

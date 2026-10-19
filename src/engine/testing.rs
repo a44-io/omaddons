@@ -370,7 +370,8 @@ impl TxScene {
         if self.with_git {
             registry = registry.with_git(
                 crate::sources::git_hosts::GitRunner::for_tests()
-                    .with_download_max_bytes(self.git_download_max_bytes),
+                    .with_download_max_bytes(self.git_download_max_bytes)
+                    .with_home(&self.paths),
             );
         }
         let table = RulesTable::builtin();

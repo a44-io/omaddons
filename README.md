@@ -1152,7 +1152,7 @@ omaddons auth github clear                    # forget the stored token
 
 ### `net-log`
 
-Every network request and git subprocess omaddons made, with a summary by host.
+Every network request and git subprocess omaddons made, with a summary by host. A request or git run whose line cannot be written fails, so nothing is contacted unlogged.
 
 ```bash
 omaddons net-log
@@ -1459,7 +1459,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 
 **Search.** Only GitHub receives what you search for, in one `search/repositories` request per run (10 a minute without a token, 30 with one, counted apart from the REST budget). The catalog is built in, and WoWInterface's index and Tukui's list are whole lists, fetched (or reused) and searched on this machine, so neither learns the query.
 
-**The git subprocess** runs with a cleared environment. Only `PATH` and `HOME` are kept, plus `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ALLOW_PROTOCOL=https`. It also gets no credential helper, no askpass, no redirects and https as the only protocol, and it may contact only hosts listed in `git_hosts`, never the hosts above. Arguments go as argv (never through a shell), and the run is in its own process group, which is killed on timeout. A checkout is held to the download limit (`limits.download_max_bytes`, `.git` included): git is stopped, with its process group, once the checkout grows past it (`archive_too_large`). What git prints is kept up to 64 MiB per stream. URLs with embedded credentials are refused.
+**The git subprocess** runs with a cleared environment. Only `PATH` is kept. `HOME` and `XDG_CONFIG_HOME` point at an empty directory omaddons owns (`~/.cache/omaddons/git-home/`, mode 0700; a run refuses with `io` if anything is put in it), so no `.netrc`, git attribute file or other per-user setting reaches git or libcurl. Then `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ALLOW_PROTOCOL=https`. It also gets no credential helper, no askpass, no redirects and https as the only protocol, and it may contact only hosts listed in `git_hosts`, never the hosts above. Arguments go as argv (never through a shell), and the run is in its own process group, which is killed on timeout. A checkout is held to the download limit (`limits.download_max_bytes`, `.git` included): git is stopped, with its process group, once the checkout grows past it (`archive_too_large`). What git prints is kept up to 64 MiB per stream. URLs with embedded credentials are refused.
 
 **`net.log`.** Every request that reaches the network (each redirect hop and each retry) and every git run against a repository is one JSON line in `~/.local/state/omaddons/net.log`, rotated once at 10 MiB. Requests refused before sending (offline, `host_blocked`) and the `git --version` probe are not logged. Query strings and headers are never written. An illustrative line:
 
@@ -1600,7 +1600,7 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_HTTP_FIXTURES`, `OMADDON
 | `~/.local/state/omaddons/lock` | The global lock (never delete while running) | No |
 | `~/.local/state/omaddons/status.json` | A derived summary for the future widget | Yes |
 | `~/.local/state/omaddons/net.log`, `net.log.1` | The request log | Yes |
-| `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `inflight/`, `trash/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, the in-flight locks of planning and dry runs, staged deletions | Yes when no command is running; reinstalls then download again |
+| `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `inflight/`, `trash/`, `git-home/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, the in-flight locks of planning and dry runs, staged deletions, git's empty home directory | Yes when no command is running; reinstalls then download again |
 | `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), failures retrying cannot change, and what downloading candidates taught (each archive's hash, and whether it loads on a client) | Yes; the next commands fetch and download again |
 | `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim, its text decoded and made safe (format 1.1; a 1.0 index is decoded once on load), refreshed after its hour | Yes; the next search or dependency lookup fetches it again |
 | `~/.cache/omaddons/export.json` | The hash of the `addons.toml` `export --write` last wrote, so a hand-edited file is not overwritten | Yes; the next `--write` then needs `--overwrite` |

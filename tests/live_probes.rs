@@ -631,7 +631,7 @@ fn git_hosts_resolve_and_check_out_live() {
         git_hosts: vec!["codeberg.org".to_owned()],
         ..NetConfig::default()
     };
-    let git = GitRunner::new(&net, NetLog::new(&paths).unwrap());
+    let git = GitRunner::new(&net, NetLog::new(&paths).unwrap(), &paths);
     let url = "https://codeberg.org/tullamods/Dominos";
     let set = git
         .fetch(&Wanted::stable(format!("git:{url}").parse().unwrap()))
