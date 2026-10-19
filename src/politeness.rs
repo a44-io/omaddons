@@ -18,7 +18,8 @@ pub const MAX_CONCURRENT_REQUESTS: usize = 6;
 pub const MAX_CONCURRENT_PER_HOST: usize = 3;
 /// TCP and TLS connect timeout.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// Read timeout for JSON API calls.
+/// Timeout for a whole JSON API call: DNS, connect, headers and body (ureq's
+/// `timeout_global`).
 pub const API_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Timeout for a whole archive download.
 pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
