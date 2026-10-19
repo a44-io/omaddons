@@ -110,8 +110,16 @@ impl World {
         found(&resolved.warnings);
         apply_target_overrides(&mut resolved, &config, &table);
         // Unfinished transactions, reported without recovering (D23). A mutating
-        // command recovers them under the lock and reports `journal_recovered` instead.
-        found(&crate::engine::journal::pending_warnings(&paths)?);
+        // command recovers them under the lock and reports `journal_recovered` instead:
+        // the run's notes read them again when it ends.
+        let journal = crate::engine::journal::pending_warnings(&paths)?;
+        found(&journal);
+        if !journal.is_empty() {
+            let at = paths.clone();
+            ctx.notes.journal_found(&journal, move || {
+                crate::engine::journal::pending_warnings(&at).ok()
+            });
+        }
         // Resolved once; a `command` credential runs only when REST first needs it.
         let github_token = GithubToken::resolve(&paths, &config.sources);
         found(&github_token.warnings);

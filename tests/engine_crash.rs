@@ -1585,8 +1585,10 @@ fn a_torn_actions_log_never_stops_recovery() {
 /// no lock; neither does a no-op install with no journal waiting.
 #[test]
 fn every_command_that_changes_something_recovers_first() {
+    use common::home::Run;
     use common::http::paths;
     use omaddons::fsx::GlobalLock;
+    use serde_json::Value;
     use std::time::{Duration, Instant};
 
     let crashed = || {
@@ -1627,6 +1629,23 @@ fn every_command_that_changes_something_recovers_first() {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("addons.toml"), export.stdout).unwrap();
     };
+    // Each reports what it recovered, and no longer calls it pending: the journal
+    // warnings describe the end of the run, on stdout and on stderr.
+    let recovered_only = |r: &Run, envelope: &Value, args: &[&str]| {
+        let codes = warning_codes(envelope);
+        assert!(
+            codes.contains(&"journal_recovered".to_owned()),
+            "{args:?}: {}",
+            r.context()
+        );
+        assert!(
+            !codes.contains(&"journal_pending".to_owned())
+                && !codes.contains(&"tx_in_progress".to_owned())
+                && !r.stderr.contains("journal_pending"),
+            "{args:?}: {}",
+            r.context()
+        );
+    };
     for args in commands {
         let s = crashed();
         if args[0] == "sync" {
@@ -1634,15 +1653,29 @@ fn every_command_that_changes_something_recovers_first() {
         }
         let r = s.run(&argv(&s, args, &[]), "");
         let envelope = r.expect(0);
-        assert!(
-            warning_codes(&envelope).contains(&"journal_recovered".to_owned()),
-            "{args:?}: {}",
-            r.context()
-        );
+        recovered_only(&r, &envelope, args);
         assert!(s.journals().is_empty(), "{args:?}");
         assert!(s.folders()["Foo"].is_some(), "{args:?}: rolled forward");
         assert!(s.addons().join("Bar").is_dir(), "{args:?}");
     }
+    // A command that commits recovers in its commit window.
+    let s = crashed();
+    let args = ["remove", "Bar", "-t", "retail"];
+    let r = s.run(&argv(&s, &args, &[]), "");
+    let envelope = r.expect(0);
+    recovered_only(&r, &envelope, &args);
+    assert!(!s.addons().join("Bar").exists());
+
+    // A dry run recovers nothing, so still reports the journal.
+    let s = crashed();
+    let r = s.run(&argv(&s, noop, &["--dry-run"]), "");
+    let codes = warning_codes(&r.expect(0));
+    assert!(
+        codes.contains(&"journal_pending".to_owned())
+            && !codes.contains(&"journal_recovered".to_owned()),
+        "{}",
+        r.context()
+    );
 
     // Dry runs leave the journal and wait for no lock.
     let s = crashed();

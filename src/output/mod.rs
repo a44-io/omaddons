@@ -84,7 +84,8 @@ pub fn emit<O: Outcome, W: Write>(
 
 /// [`emit`] with an explicit stdout. `command` names the command for failures, which
 /// have no outcome to ask. The run's warnings come first, on success followed by the
-/// outcome's that are not among them, so each is reported once.
+/// outcome's that are not among them, so each is reported once; its journal warnings
+/// describe the end of the run ([`RunNotes::settle_journal`]).
 #[expect(
     clippy::too_many_arguments,
     reason = "emit's arguments plus the stdout it writes to; a struct would only rename them"
@@ -112,6 +113,7 @@ pub fn emit_to<O: Outcome, W: Write>(
                     warnings.push(warning.clone());
                 }
             }
+            notes.settle_journal(&mut warnings);
             for warning in &warnings {
                 reporter.warning(warning);
             }
@@ -156,6 +158,7 @@ pub fn emit_to<O: Outcome, W: Write>(
             }
         }
         Err(error) => {
+            notes.settle_journal(&mut warnings);
             for warning in &warnings {
                 reporter.warning(warning);
             }

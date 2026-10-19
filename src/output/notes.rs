@@ -20,6 +20,18 @@ pub struct RunNotes {
 struct Notes {
     warnings: Vec<Warning>,
     commands: Vec<CommandHint>,
+    /// The journal warnings found at the start of the run, and how to read them again.
+    journal: Option<(Vec<Warning>, Refresh)>,
+}
+
+/// Reads the journal warnings again; `None` when they cannot be read.
+#[derive(Clone)]
+struct Refresh(Arc<dyn Fn() -> Option<Vec<Warning>> + Send + Sync>);
+
+impl std::fmt::Debug for Refresh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Refresh")
+    }
 }
 
 impl RunNotes {
@@ -32,6 +44,45 @@ impl RunNotes {
         for warning in warnings {
             if !notes.warnings.contains(warning) {
                 notes.warnings.push(warning.clone());
+            }
+        }
+    }
+
+    /// The journal warnings found at the start of the run (`journal_pending`,
+    /// `tx_in_progress`), added like any other, and how to read them again when it
+    /// ends: a command that recovered a journal on its way no longer reports it as
+    /// pending (vision §5.5).
+    pub fn journal_found(
+        &self,
+        found: &[Warning],
+        refresh: impl Fn() -> Option<Vec<Warning>> + Send + Sync + 'static,
+    ) {
+        self.warn_all(found);
+        let mut notes = self.lock();
+        let mut all = notes.journal.take().map(|(all, _)| all).unwrap_or_default();
+        for warning in found {
+            if !all.contains(warning) {
+                all.push(warning.clone());
+            }
+        }
+        notes.journal = Some((all, Refresh(Arc::new(refresh))));
+    }
+
+    /// Brings the journal warnings in `warnings` up to date once the run is over: one
+    /// found at its start that no longer holds is dropped, one that holds now and is not
+    /// there is added, and the rest keep their place. Nothing changes when the journal
+    /// cannot be read again.
+    pub fn settle_journal(&self, warnings: &mut Vec<Warning>) {
+        let Some((found, refresh)) = self.lock().journal.clone() else {
+            return;
+        };
+        let Some(now) = (refresh.0)() else {
+            return;
+        };
+        warnings.retain(|w| !found.contains(w) || now.contains(w));
+        for warning in now {
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
             }
         }
     }
@@ -51,5 +102,48 @@ impl RunNotes {
     /// A poisoned lock is used as is: notes are plain data, valid after any panic.
     fn lock(&self) -> MutexGuard<'_, Notes> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::WarningCode;
+
+    fn pending(tx: &str) -> Warning {
+        Warning::new(WarningCode::JournalPending, format!("transaction {tx}"))
+    }
+
+    #[test]
+    fn journal_warnings_describe_the_end_of_the_run() {
+        let notes = RunNotes::default();
+        let other = Warning::new(WarningCode::ConfigUnknownKey, "k");
+        notes.warn(other.clone());
+        let now = Arc::new(Mutex::new(Some(vec![pending("b"), pending("c")])));
+        let read = Arc::clone(&now);
+        notes.journal_found(&[pending("a"), pending("b")], move || {
+            read.lock().unwrap().clone()
+        });
+        let recovered = Warning::new(WarningCode::JournalRecovered, "transaction a");
+        let mut warnings = notes.snapshot().0;
+        warnings.push(recovered.clone());
+        notes.settle_journal(&mut warnings);
+        // `a` was recovered, `b` still waits in its place, `c` appeared since.
+        assert_eq!(
+            warnings,
+            [other.clone(), pending("b"), recovered.clone(), pending("c")]
+        );
+
+        // Unreadable at the end: left as found.
+        *now.lock().unwrap() = None;
+        let mut warnings = notes.snapshot().0;
+        notes.settle_journal(&mut warnings);
+        assert_eq!(warnings, [other.clone(), pending("a"), pending("b")]);
+
+        // No journal warnings at the start: nothing to settle.
+        let quiet = RunNotes::default();
+        let mut warnings = vec![other.clone()];
+        quiet.settle_journal(&mut warnings);
+        assert_eq!(warnings, [other]);
     }
 }
