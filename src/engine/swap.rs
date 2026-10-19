@@ -13,14 +13,18 @@
 //! rest of the transaction uses two plain renames per folder under the journal and the
 //! target reports `atomic_swap: false` with an `atomic_swap_unavailable` warning.
 //!
-//! Before the swap, [`snapshot_saved_variables`] clones the touched folders'
-//! SavedVariables (reflinks where the filesystem can) and [`snapshot_state`] clones the
-//! target's state files. The SavedVariables manifest holds account, realm and
-//! character names; it stays local and only counts are reported.
+//! The touched folders' SavedVariables are cloned (reflinks where the filesystem can)
+//! before the global lock by [`prestage_saved_variables`]; under it,
+//! [`finish_saved_variables`] keeps each copy whose file has the same stat stamp, redoes
+//! the rest and writes the manifest, so the lock costs one `lstat` per unchanged file
+//! (D24). [`snapshot_state`] clones the target's state files under the lock. The
+//! SavedVariables manifest holds account, realm and character names; it stays local
+//! and only counts are reported.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -29,9 +33,10 @@ use super::stage::Staged;
 use crate::discover::find_children;
 use crate::error::{Error, PlanStaleSource, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
-    CloneKind, FsxError, MutateOpts, Op, RenameMode, TreeDigest, WriteSession, ensure_dir_all,
-    failpoint, mutate, mutate_with,
+    CloneKind, FileStamp, FsxError, MutateOpts, Op, RenameMode, TreeDigest, WriteSession,
+    ensure_dir_all, failpoint, mutate, mutate_with,
 };
+use crate::limits::RACY_SLACK_NS;
 use crate::model::{FolderName, MutableFolderName, TargetKey, TxId};
 use crate::state::paths::{ClientPaths, Paths};
 
@@ -144,15 +149,87 @@ pub struct SvEntry {
 // ---------------------------------------------------------------------------------------
 // Snapshots.
 
+/// SavedVariables cloned before the global lock (D24): each present candidate's clone in
+/// `snapshots/<tx>/WTF/`, by its path relative to `WTF/`, with its SHA-256 and the stamp
+/// its file had. [`finish_saved_variables`] keeps each one whose file still has that
+/// stamp and redoes the others under the lock.
+#[derive(Debug, Default)]
+pub struct SvPrestage {
+    entries: BTreeMap<String, Prestaged>,
+}
+
+impl SvPrestage {
+    /// How many files were cloned.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+#[derive(Debug)]
+struct Prestaged {
+    source: PathBuf,
+    stamp: FileStamp,
+    clone: SvClone,
+}
+
+/// A SavedVariables file's copy in a snapshot.
+#[derive(Debug)]
+struct SvClone {
+    sha256: String,
+    reflink: bool,
+}
+
 /// Clones the SavedVariables of `folders` (account and per-character `<Folder>.lua` and
 /// `.lua.bak`, any case; never Blizzard's own `SavedVariables.lua`) into
-/// `snapshots/<tx>/WTF/`, and writes the manifest. Files outside the client directory
-/// are only counted.
-pub fn snapshot_saved_variables(
+/// `snapshots/<tx>/WTF/` before the global lock, reading each file once: its hash is
+/// the copy's. A file written within the racy slack is waited out, as staging does. One
+/// that is still unsettled, vanishes or changes during its copy is left for
+/// [`finish_saved_variables`].
+pub fn prestage_saved_variables(
     s: &mut WriteSession<'_>,
     tx: &TxId,
     client: &ClientPaths,
     folders: &[FolderName],
+) -> Result<SvPrestage> {
+    let snapshot = client.snapshots(tx);
+    let mut prestage = SvPrestage::default();
+    for (rel, present) in sv_candidates(client, folders).files {
+        let Some(source) = present else {
+            continue;
+        };
+        let Some(stamp) = settled_stamp(&source) else {
+            continue;
+        };
+        let clone = clone_sv(s, &snapshot, &rel, &source)?;
+        if FileStamp::read(&source).ok().flatten() == Some(stamp) {
+            let entry = Prestaged {
+                source,
+                stamp,
+                clone,
+            };
+            prestage.entries.insert(rel, entry);
+        } else {
+            set_aside(s, &snapshot, &rel)?;
+        }
+    }
+    Ok(prestage)
+}
+
+/// Snapshots the SavedVariables of `folders` under the global lock, and writes the
+/// manifest. A file prestaged at the stamp it still has keeps its copy and hash, which
+/// costs one `lstat`. Any other (new since, changed, unsettled, or not prestaged) is
+/// cloned and hashed now, and a copy that no longer matches a candidate is set aside.
+/// Files outside the client directory are only counted.
+pub fn finish_saved_variables(
+    s: &mut WriteSession<'_>,
+    tx: &TxId,
+    client: &ClientPaths,
+    folders: &[FolderName],
+    mut prestage: SvPrestage,
 ) -> Result<SvReport> {
     failpoint::hit("engine.snapshot.sv").map_err(|e| fail(&client.wtf(), &e))?;
     let snapshot = client.snapshots(tx);
@@ -163,30 +240,34 @@ pub fn snapshot_saved_variables(
         reflink: true,
         sv_skipped: candidates.skipped,
     };
-    // Errors never name a file: the paths hold account, realm and character names.
-    let private = |e: Error| {
-        Error::new(
-            e.code,
-            "a SavedVariables file could not be snapshotted",
-            Suggestion::command(["omaddons", "status"]),
-        )
-    };
     for (rel, present) in candidates.files {
-        let sha256 = match &present {
+        let sha256 = match present {
             Some(path) => {
-                let dest = snapshot.join("WTF").join(&rel);
-                if let Some(parent) = dest.parent() {
-                    ensure_dir_all(s, parent).map_err(|e| private(e.into()))?;
-                }
-                let record = mutate(s, &dest, Op::CloneFile { from: path })
-                    .map_err(|e| private(e.into()))?;
+                let clone = match prestage.entries.remove(&rel) {
+                    Some(kept)
+                        if kept.source == path
+                            && FileStamp::read(&path).ok().flatten() == Some(kept.stamp) =>
+                    {
+                        kept.clone
+                    }
+                    stale => {
+                        if stale.is_some() {
+                            set_aside(s, &snapshot, &rel)?;
+                        }
+                        clone_sv(s, &snapshot, &rel, &path)?
+                    }
+                };
                 report.sv_files_snapshotted += 1;
-                report.reflink &= matches!(record.clone, Some(CloneKind::Reflink));
-                Some(sha256_file(path).map_err(private)?)
+                report.reflink &= clone.reflink;
+                Some(clone.sha256)
             }
             None => None,
         };
         entries.push(SvEntry { path: rel, sha256 });
+    }
+    // Copies of files that are gone, or no longer candidates.
+    for rel in prestage.entries.into_keys() {
+        set_aside(s, &snapshot, &rel)?;
     }
     let manifest = SvManifest { tx: *tx, entries };
     let json = serde_json::to_vec_pretty(&manifest)
@@ -201,6 +282,92 @@ pub fn snapshot_saved_variables(
         },
     )?;
     Ok(report)
+}
+
+/// [`finish_saved_variables`] with nothing prestaged: every file is cloned and hashed
+/// now.
+pub fn snapshot_saved_variables(
+    s: &mut WriteSession<'_>,
+    tx: &TxId,
+    client: &ClientPaths,
+    folders: &[FolderName],
+) -> Result<SvReport> {
+    finish_saved_variables(s, tx, client, folders, SvPrestage::default())
+}
+
+/// The stamp of the regular file `source` once it is settled: a file written within the
+/// racy slack is waited out once (at most `RACY_SLACK_NS`, before the lock). `None` when
+/// it is gone, not a regular file, or still unsettled (whole-second timestamps, or
+/// written again meanwhile).
+fn settled_stamp(source: &Path) -> Option<FileStamp> {
+    let mut waited = false;
+    loop {
+        let read_at = Timestamp::now().as_nanosecond();
+        let stamp = FileStamp::read(source)
+            .ok()
+            .flatten()
+            .filter(FileStamp::is_file)?;
+        let wait = stamp.unsettled_ns(read_at);
+        if wait < 0 {
+            return Some(stamp);
+        }
+        if waited || wait > RACY_SLACK_NS {
+            return None;
+        }
+        let nanos = u64::try_from(wait + 1).unwrap_or(0);
+        std::thread::sleep(std::time::Duration::from_nanos(nanos));
+        waited = true;
+    }
+}
+
+/// Clones `source` to `<snapshot>/WTF/<rel>`. Its SHA-256 is the copy's after-digest, so
+/// the file is read once.
+fn clone_sv(
+    s: &mut WriteSession<'_>,
+    snapshot: &Path,
+    rel: &str,
+    source: &Path,
+) -> Result<SvClone> {
+    let dest = snapshot.join("WTF").join(rel);
+    if let Some(parent) = dest.parent() {
+        ensure_dir_all(s, parent).map_err(|e| private(e.into()))?;
+    }
+    let record = mutate(s, &dest, Op::CloneFile { from: source }).map_err(|e| private(e.into()))?;
+    let sha256 = match record.after_sha256() {
+        Some(sha256) => sha256.to_owned(),
+        None => sha256_file(&dest).map_err(private)?,
+    };
+    Ok(SvClone {
+        sha256,
+        reflink: matches!(record.clone, Some(CloneKind::Reflink)),
+    })
+}
+
+/// Moves a stale copy from `<snapshot>/WTF/<rel>` to `<snapshot>/sv-stale/<attempt>/`,
+/// so `WTF/` holds exactly the manifest's files and the path is free for a fresh copy.
+fn set_aside(s: &mut WriteSession<'_>, snapshot: &Path, rel: &str) -> Result<()> {
+    let from = snapshot.join("WTF").join(rel);
+    let attempt = ulid::Ulid::generate().to_string();
+    let to = snapshot.join("sv-stale").join(attempt).join(rel);
+    if let Some(parent) = to.parent() {
+        ensure_dir_all(s, parent).map_err(|e| private(e.into()))?;
+    }
+    let aside = Op::Rename {
+        to: &to,
+        mode: RenameMode::NoReplace,
+    };
+    mutate(s, &from, aside).map_err(|e| private(e.into()))?;
+    Ok(())
+}
+
+/// An error that never names the file: SavedVariables paths hold account, realm and
+/// character names.
+fn private(e: Error) -> Error {
+    Error::new(
+        e.code,
+        "a SavedVariables file could not be snapshotted",
+        Suggestion::command(["omaddons", "status"]),
+    )
 }
 
 /// The SavedVariables candidates of some folders.
@@ -690,6 +857,8 @@ pub(super) fn out_of_scope_warnings(
 /// The lowercase hex SHA-256 of the file at `path`, streamed (SavedVariables reach
 /// 64 MiB, and undo staging hashes every restored file).
 pub(crate) fn sha256_file(path: &Path) -> Result<String> {
+    #[cfg(test)]
+    crate::fsx::count_hashed();
     crate::state::files_index::hash_file_streaming(path)
         .map(|(_, sha256)| sha256)
         .map_err(|e| fail(path, &e))
@@ -1030,6 +1199,156 @@ mod tests {
         for private in ["123456", "RealmName", "CharName"] {
             assert!(!wire.contains(private), "{wire}");
         }
+    }
+
+    fn manifest(scene: &Scene, tx: &TxId) -> SvManifest {
+        let path = scene.client.snapshots(tx).join("WTF.manifest.json");
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Every file under `dir`, relative to it, sorted.
+    fn files_under(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(at) = pending.pop() {
+            for entry in std::fs::read_dir(&at).into_iter().flatten() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    let rel = path.strip_prefix(dir).unwrap();
+                    out.push(rel.to_string_lossy().into_owned());
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn prestaged_saved_variables_are_not_read_again_under_the_lock() {
+        let scene = Scene::new();
+        let folders = [name("Foo"), name("Gone"), name("Bar")].map(MutableFolderName::into_folder);
+        let mut s = scene.session();
+        let hashed = crate::fsx::files_hashed();
+        let prestage =
+            prestage_saved_variables(&mut s, &scene.tx, &scene.client, &folders).unwrap();
+        assert_eq!(prestage.len(), 4);
+        assert_eq!(
+            crate::fsx::files_hashed() - hashed,
+            4,
+            "each file hashed once, as its copy"
+        );
+        let hashed = crate::fsx::files_hashed();
+        let report =
+            finish_saved_variables(&mut s, &scene.tx, &scene.client, &folders, prestage).unwrap();
+        assert_eq!(
+            crate::fsx::files_hashed(),
+            hashed,
+            "nothing hashed under the lock"
+        );
+        assert_eq!(
+            (report.sv_files_snapshotted, report.sv_skipped),
+            (4, SvSkipped::default())
+        );
+
+        // The same manifest as a snapshot taken under the lock alone.
+        let other = TxId::new();
+        let mut alone = WriteSession::tx(
+            other,
+            crate::fsx::Writer::Mutating,
+            &scene.scopes,
+            crate::fsx::SnapshotRoots::for_tx(&scene.paths, &other),
+            scene.paths.state_snapshot(&other).join("actions.jsonl"),
+        );
+        snapshot_saved_variables(&mut alone, &other, &scene.client, &folders).unwrap();
+        assert_eq!(
+            manifest(&scene, &scene.tx).entries,
+            manifest(&scene, &other).entries
+        );
+        let wtf = |tx: &TxId| scene.client.snapshots(tx).join("WTF");
+        assert_eq!(files_under(&wtf(&scene.tx)), files_under(&wtf(&other)));
+        assert!(!scene.client.snapshots(&scene.tx).join("sv-stale").exists());
+    }
+
+    #[test]
+    fn what_changed_after_the_prestage_is_snapshotted_under_the_lock() {
+        let scene = Scene::new();
+        let folders = [name("Foo"), name("Gone"), name("Bar")].map(MutableFolderName::into_folder);
+        let account = scene.client.wtf().join("Account/123456#1/SavedVariables");
+        let character = scene
+            .client
+            .wtf()
+            .join("Account/123456#1/RealmName/CharName/SavedVariables");
+        let mut s = scene.session();
+        let prestage =
+            prestage_saved_variables(&mut s, &scene.tx, &scene.client, &folders).unwrap();
+        // A client logged out in between: one file rewritten, one deleted, one new.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(account.join("Foo.lua"), "-- played a session\n").unwrap();
+        std::fs::remove_file(character.join("Gone.lua")).unwrap();
+        std::fs::write(account.join("Bar.lua"), "-- new\n").unwrap();
+        let report =
+            finish_saved_variables(&mut s, &scene.tx, &scene.client, &folders, prestage).unwrap();
+        assert_eq!(report.sv_files_snapshotted, 4, "Foo x3 and Bar");
+
+        let snapshot = scene.client.snapshots(&scene.tx);
+        let entries: BTreeMap<String, Option<String>> = manifest(&scene, &scene.tx)
+            .entries
+            .into_iter()
+            .map(|e| (e.path, e.sha256))
+            .collect();
+        let entry = |rel: &str| entries[&format!("Account/123456#1/{rel}")].clone();
+        for (rel, text) in [
+            ("SavedVariables/Foo.lua", "-- played a session\n"),
+            ("SavedVariables/Bar.lua", "-- new\n"),
+        ] {
+            let copy = snapshot.join("WTF/Account/123456#1").join(rel);
+            assert_eq!(std::fs::read_to_string(&copy).unwrap(), text, "{rel}");
+            assert_eq!(entry(rel), Some(sha256_file(&copy).unwrap()), "{rel}");
+        }
+        assert_eq!(entry("RealmName/CharName/SavedVariables/Gone.lua"), None);
+
+        // WTF/ holds exactly the manifest's files; the stale copies are set aside.
+        let listed: Vec<String> = entries
+            .iter()
+            .filter(|(_, sha)| sha.is_some())
+            .map(|(rel, _)| rel.clone())
+            .collect();
+        assert_eq!(files_under(&snapshot.join("WTF")), listed);
+        let stale = files_under(&snapshot.join("sv-stale"));
+        assert_eq!(stale.len(), 2, "{stale:?}");
+        assert!(
+            stale.iter().any(|f| f.ends_with("SavedVariables/Foo.lua"))
+                && stale.iter().any(|f| f.ends_with("SavedVariables/Gone.lua")),
+            "{stale:?}"
+        );
+    }
+
+    #[test]
+    fn copies_of_folders_no_longer_touched_are_set_aside() {
+        let scene = Scene::new();
+        let planned = [name("Foo"), name("Gone")].map(MutableFolderName::into_folder);
+        let mut s = scene.session();
+        let prestage =
+            prestage_saved_variables(&mut s, &scene.tx, &scene.client, &planned).unwrap();
+        let now = [name("Foo")].map(MutableFolderName::into_folder);
+        let report =
+            finish_saved_variables(&mut s, &scene.tx, &scene.client, &now, prestage).unwrap();
+        assert_eq!(report.sv_files_snapshotted, 3);
+        let snapshot = scene.client.snapshots(&scene.tx);
+        assert!(
+            manifest(&scene, &scene.tx)
+                .entries
+                .iter()
+                .all(|e| !e.path.contains("Gone")),
+        );
+        assert!(
+            files_under(&snapshot.join("WTF"))
+                .iter()
+                .all(|f| !f.contains("Gone"))
+        );
+        assert_eq!(files_under(&snapshot.join("sv-stale")).len(), 1);
     }
 
     /// Moves `from` to `to` and leaves a symlink to it in its place, as a player keeping

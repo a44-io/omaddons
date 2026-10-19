@@ -9,6 +9,7 @@ mod op;
 mod prune;
 mod scope;
 mod session;
+mod stamp;
 pub(crate) mod sys;
 
 #[cfg(debug_assertions)]
@@ -19,8 +20,11 @@ pub use mutate::{
     ActionRecord, Expect, FsxError, MutateOpts, TreeDigest, ensure_dir_all, mutate, mutate_with,
     sync_filesystem,
 };
+#[cfg(test)]
+pub(crate) use mutate::{count_hashed, files_hashed};
 pub use op::Op;
 pub use prune::{LockUse, PruneReason, PruneReport, prune};
 pub use scope::{Access, OwnedFolders, Refusal, Scope, ScopeMatch, ScopeTable, Side, Writer};
 pub use session::{SnapshotRoots, WriteSession};
+pub use stamp::{FileStamp, TreeStamp};
 pub use sys::{CloneKind, Content, Durability, RenameMode, SyncCounts, WriteResult, sync_counts};

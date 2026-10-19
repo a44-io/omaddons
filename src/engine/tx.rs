@@ -2,14 +2,15 @@
 //! lock for a mutation, and only for revalidate → journal → swap → commit (D24).
 //!
 //! Plan (no lock, `plan_tx`'s in-flight lock protects its downloads), then per target,
-//! in key order, one transaction with its own id and in-flight lock: stage (no lock);
-//! lock; recover leftovers; register the target if new; re-check every planned addon
-//! offline against the current record, inventory and running state (a changed
-//! generation that now conflicts is `plan_stale`); journal; snapshot SavedVariables
-//! and state; swap; write the record (`generation + 1`), the files index and history;
-//! mark committed; unlock. Then `status.json`, and cleanup of the journal, stage dir,
-//! temp downloads and in-flight lock. An error after `prepared` is recovered in
-//! process by the journal: before `swapped` it rolls back, after it rolls forward.
+//! in key order, one transaction with its own id and in-flight lock: stage and clone
+//! the planned folders' SavedVariables (no lock); lock; recover leftovers; register the
+//! target if new; re-check every planned addon offline against the current record,
+//! inventory and running state (a changed generation that now conflicts is
+//! `plan_stale`); journal; finish the SavedVariables snapshot (a stat per unchanged
+//! file) and snapshot state; swap; write the record (`generation + 1`), the files index
+//! and history; mark committed; unlock. Then `status.json`, and cleanup of the journal,
+//! stage dir, temp downloads and in-flight lock. An error after `prepared` is recovered
+//! in process by the journal: before `swapped` it rolls back, after it rolls forward.
 //! One target's failure is a per-item failure; committed targets stay committed.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,7 +34,8 @@ use super::plan::{
 };
 use super::stage::{Staged, stage};
 use super::swap::{
-    SvSkipped, SwapOp, out_of_scope_warnings, snapshot_saved_variables, snapshot_state, swap,
+    SvSkipped, SwapOp, finish_saved_variables, out_of_scope_warnings, prestage_saved_variables,
+    snapshot_state, swap,
 };
 use crate::discover::registry::{LockedRegistry, same_dir};
 use crate::discover::running::{RunningScan, detect_running, running_unknown};
@@ -69,6 +71,7 @@ pub const FAILPOINTS: &[&str] = &[
     "engine.stage.begin",
     "engine.stage.file",
     "engine.stage.synced",
+    "engine.snapshot.prestaged",
     "engine.lock.acquired",
     "engine.recovered",
     "engine.registered",
@@ -630,7 +633,8 @@ fn stage_all(
     Ok(merged)
 }
 
-/// The commit window, under the global lock.
+/// The planned folders' SavedVariables cloned, then the commit window under the global
+/// lock.
 #[expect(
     clippy::too_many_arguments,
     reason = "the commit window threads the request, its plan and the staged state; a struct would only rename them"
@@ -654,6 +658,27 @@ fn locked(
             Suggestion::command(["omaddons", "status"]),
         )
     };
+    let actions = paths
+        .state_snapshots_dir()
+        .join(tx.to_string())
+        .join("actions.jsonl");
+    let mut s = WriteSession::tx(
+        *tx,
+        Writer::Mutating,
+        scopes,
+        SnapshotRoots::for_tx(paths, tx),
+        actions,
+    );
+    // Before the lock (D24): under it, an unchanged SavedVariables file costs one lstat.
+    // A copy left by a failure here goes with the transaction's cleanup.
+    let client = ClientPaths::new(&discovered.target.client_dir);
+    let planned_folders: Vec<FolderName> = tp
+        .work
+        .iter()
+        .flat_map(|w| w.swap().iter().map(touched_folder))
+        .collect();
+    let prestage = prestage_saved_variables(&mut s, tx, &client, &planned_folders)?;
+    failpoint::hit("engine.snapshot.prestaged").map_err(fail)?;
     let guard = GlobalLock::acquire(paths, ctx.command)?;
     failpoint::hit("engine.lock.acquired").map_err(fail)?;
     let sv_writable = |dir: &Path| sv_writable(ctx, dir);
@@ -802,7 +827,6 @@ fn locked(
     // A client that has never been launched has no AddOns folder yet. The transaction
     // creates it once `prepared` records that it will; a case variant already there
     // (`interface/addons`) is used instead.
-    let client = ClientPaths::new(&target.client_dir);
     one_addons_dir(&client)?;
     let addons = client.addons();
     let creates_addons_dir = std::fs::symlink_metadata(&addons).is_err()
@@ -845,17 +869,6 @@ fn locked(
             sv_restore: None,
         },
     };
-    let actions = paths
-        .state_snapshots_dir()
-        .join(tx.to_string())
-        .join("actions.jsonl");
-    let mut s = WriteSession::tx(
-        *tx,
-        Writer::Mutating,
-        scopes,
-        SnapshotRoots::for_tx(paths, tx),
-        actions,
-    );
     let mut journal = Journal::create(&mut s, paths, &guard, prepared)?;
 
     // Kept outside the commit so an in-process roll-forward still reports it.
@@ -867,7 +880,7 @@ fn locked(
             failpoint::hit("engine.addons_dir.created").map_err(fail)?;
         }
         let touched: Vec<FolderName> = swap_ops.iter().map(touched_folder).collect();
-        sv_skipped = snapshot_saved_variables(&mut s, tx, &client, &touched)?.sv_skipped;
+        sv_skipped = finish_saved_variables(&mut s, tx, &client, &touched, prestage)?.sv_skipped;
         snapshot_state(&mut s, paths, tx, &key)?;
         let report = swap(&mut s, &mut journal, &swap_ops, staged, &client)?;
         ensure_dir_all(&mut s, &paths.targets_dir())?;

@@ -222,6 +222,14 @@ pub struct ActionRecord {
     pub clone: Option<CloneKind>,
 }
 
+impl ActionRecord {
+    /// The lowercase hex SHA-256 of the regular file at `path` after the operation,
+    /// when its after-digest is one (a `CloneFile`'s copy, say).
+    pub fn after_sha256(&self) -> Option<&str> {
+        self.after_hash.as_deref()?.strip_prefix("sha256:")
+    }
+}
+
 /// What an executed operation reports back.
 #[derive(Debug, Clone, Copy, Default)]
 struct Executed {
@@ -692,7 +700,27 @@ fn log_action(state: &TxState, record: &ActionRecord) -> Result<(), FsxError> {
     sys::append_durable(log, &line).map_err(io_err(log))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Files hashed on this thread, so a test can tell what a commit window reads.
+    static FILES_HASHED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many files this thread has hashed.
+#[cfg(test)]
+pub(crate) fn files_hashed() -> u64 {
+    FILES_HASHED.with(std::cell::Cell::get)
+}
+
+/// Counts one file hashed on this thread; hashing helpers outside fsx call it too.
+#[cfg(test)]
+pub(crate) fn count_hashed() {
+    FILES_HASHED.with(|n| n.set(n.get() + 1));
+}
+
 fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
+    #[cfg(test)]
+    count_hashed();
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0; 64 * 1024];

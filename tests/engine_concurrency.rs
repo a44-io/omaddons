@@ -6,6 +6,7 @@
 mod common;
 
 use std::fs;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use common::archives::zip_text;
@@ -39,6 +40,55 @@ mod support {
                 .unwrap_or_default()
                 .contains("\"type\":\"swapped\"")
         })
+    }
+
+    /// The retail client's account-wide SavedVariables directory.
+    pub fn account_saved_variables(s: &Scene) -> PathBuf {
+        s.home
+            .client("_retail_")
+            .join("WTF/Account/ACCT/SavedVariables")
+    }
+
+    /// 16 MiB of Foo's SavedVariables, as a heavy profile holds them: the account's
+    /// `Foo.lua` and `Foo.lua.bak` (4 MiB each) and four characters' (1 MiB each).
+    pub fn heavy_saved_variables(s: &Scene) -> Vec<PathBuf> {
+        let account = account_saved_variables(s);
+        let realm = account.parent().unwrap().join("Realm");
+        let mut dirs = vec![(account, 4usize << 20)];
+        dirs.extend((1..=4).map(|n| (realm.join(format!("Char{n}/SavedVariables")), 1 << 20)));
+        let line = "FooDB = { [\"profile\"] = { [\"bars\"] = { 1, 2, 3 } } }\n";
+        let mut files = Vec::new();
+        for (dir, size) in dirs {
+            fs::create_dir_all(&dir).unwrap();
+            let text = line.repeat(size / line.len() + 1);
+            for name in ["Foo.lua", "Foo.lua.bak"] {
+                fs::write(dir.join(name), &text.as_bytes()[..size]).unwrap();
+                files.push(dir.join(name));
+            }
+        }
+        files
+    }
+
+    /// The lowercase hex SHA-256 of `bytes`.
+    pub fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::Digest;
+        sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    /// How long a `-v` run held the global lock, from its `lock released` log line.
+    pub fn lock_held_ms(r: &Run) -> Option<u64> {
+        r.stderr
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|v| v["message"].as_str().map(str::to_owned))
+            .find_map(|m| {
+                m.strip_prefix("lock released: ")
+                    .and_then(|rest| rest.rsplit("lock_held_ms ").next())
+                    .and_then(|n| n.trim().parse::<u64>().ok())
+            })
     }
 }
 
@@ -504,16 +554,7 @@ fn multi_addon_commits_hold_the_lock_under_50_ms() {
         args.push("-v".to_owned());
         let r = s.run(&args, "");
         assert_eq!(r.code, 0, "{}", r.context());
-        let ms = r
-            .stderr
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter_map(|v| v["message"].as_str().map(str::to_owned))
-            .find_map(|m| {
-                m.strip_prefix("lock released: ")
-                    .and_then(|rest| rest.rsplit("lock_held_ms ").next())
-                    .and_then(|n| n.trim().parse::<u64>().ok())
-            });
+        let ms = support::lock_held_ms(&r);
         assert!(ms.is_some(), "{what}: no lock log line\n{}", r.context());
         held.extend(ms.map(|ms| (what.to_owned(), ms)));
     }
@@ -537,16 +578,7 @@ fn every_commit_holds_the_lock_under_50_ms() {
         args.push("-v".to_owned());
         let r = s.run(&args, "");
         assert_eq!(r.code, 0, "{}", r.context());
-        let ms = r
-            .stderr
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter_map(|v| v["message"].as_str().map(str::to_owned))
-            .find_map(|m| {
-                m.strip_prefix("lock released: ")
-                    .and_then(|rest| rest.rsplit("lock_held_ms ").next())
-                    .and_then(|n| n.trim().parse::<u64>().ok())
-            });
+        let ms = support::lock_held_ms(&r);
         assert!(ms.is_some(), "no lock log line\n{}", r.context());
         held.extend(ms);
     }
@@ -559,4 +591,110 @@ fn every_commit_holds_the_lock_under_50_ms() {
         ),
     );
     assert!(held.iter().all(|ms| *ms < 50), "lock hold times {held:?}");
+}
+
+#[test]
+fn large_saved_variables_hold_the_lock_under_50_ms() {
+    let s = Scene::new();
+    support::heavy_saved_variables(&s);
+    let mut held: Vec<(&str, u64)> = Vec::new();
+    let mut run = |what: &'static str, mut args: Vec<String>| {
+        args.push("-v".to_owned());
+        // Byte copies even where the filesystem could reflink: the slow path.
+        let r = s.run(&args, "fsx.reflink.unsupported");
+        assert_eq!(r.code, 0, "{what}\n{}", r.context());
+        let ms = support::lock_held_ms(&r);
+        assert!(ms.is_some(), "{what}: no lock log line\n{}", r.context());
+        held.extend(ms.map(|ms| (what, ms)));
+    };
+    run("install", s.install_args("gh:o/foo", "v1"));
+    run("update", s.install_args("gh:o/foo", "v2"));
+    run("remove", s.args(&["remove", "Foo"]));
+    let _ = std::io::Write::write_fmt(
+        &mut std::io::stderr(),
+        format_args!("lock_held_ms with 16 MiB of SavedVariables: {held:?}\n"),
+    );
+    assert!(
+        held.iter().all(|(_, ms)| *ms < 50),
+        "lock hold times {held:?}"
+    );
+    let snapshots = s
+        .home
+        .client("_retail_")
+        .join("Interface/.omaddons/snapshots");
+    let copies = fs::read_dir(&snapshots)
+        .unwrap()
+        .filter(|e| {
+            let dir = e.as_ref().unwrap().path();
+            dir.join("WTF/Account/ACCT/SavedVariables/Foo.lua")
+                .is_file()
+        })
+        .count();
+    assert_eq!(copies, 3, "every transaction snapshotted them");
+}
+
+#[test]
+fn saved_variables_written_after_their_copy_are_snapshotted_as_written() {
+    let s = Scene::new();
+    s.install("gh:o/foo", "v1");
+    let sv = support::account_saved_variables(&s);
+    fs::create_dir_all(&sv).unwrap();
+    fs::write(sv.join("Foo.lua"), "-- before logout\n").unwrap();
+    let v2 = s.zip("v2");
+    let argv = [
+        "install",
+        "gh:o/foo",
+        "--file",
+        &v2,
+        "-t",
+        "retail",
+        "--offline",
+    ];
+    // Paused between the copy made before the lock and the lock.
+    let child = s.home.spawn(
+        &argv,
+        &[(
+            "OMADDONS_FAILPOINTS",
+            "engine.snapshot.prestaged=sleep:1500",
+        )],
+    );
+    let snapshots = s
+        .home
+        .client("_retail_")
+        .join("Interface/.omaddons/snapshots");
+    let copied = || {
+        fs::read_dir(&snapshots).into_iter().flatten().any(|e| {
+            let dir = e.unwrap().path();
+            dir.join("WTF/Account/ACCT/SavedVariables/Foo.lua")
+                .is_file()
+        })
+    };
+    poll("the copy made before the lock", copied);
+    std::thread::sleep(Duration::from_millis(200));
+    let logout = "-- written on logout, after the copy\n";
+    fs::write(sv.join("Foo.lua"), logout).unwrap();
+
+    let done = wait(child, &argv);
+    let envelope = done.expect(0);
+    let snapshot = snapshots.join(envelope["data"]["tx"].as_str().unwrap());
+    let copy = snapshot.join("WTF/Account/ACCT/SavedVariables/Foo.lua");
+    assert_eq!(
+        fs::read_to_string(copy).unwrap(),
+        logout,
+        "{}",
+        done.context()
+    );
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(snapshot.join("WTF.manifest.json")).unwrap()).unwrap();
+    let entry = manifest["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["path"] == "Account/ACCT/SavedVariables/Foo.lua")
+        .unwrap();
+    assert_eq!(
+        entry["sha256"],
+        support::sha256_hex(logout.as_bytes()),
+        "{manifest}"
+    );
 }
