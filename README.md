@@ -1079,7 +1079,7 @@ Install: omaddons install wowi:7000 -t retail        (a hint: install verifies e
 | `--limit N` | Most results (default 20, at most 50) |
 | `--refresh` | Fetch the WoWInterface index and the Tukui list now, even inside their windows |
 
-Results are ranked: an exact catalog name or alias, or an exact WoWInterface or Tukui project name, first; then names that start with the query; then those with every word in the name or folders; then those with every word anywhere, author and description included. Within a rank, the catalog comes first, then popularity (WoWInterface downloads and GitHub stars, each scaled to its source's best), then the newest. A WoWInterface or GitHub hit for a catalog addon (the same ref, or the same name with all its folders) merges into the catalog's.
+Results are ranked: an exact catalog name or alias, or an exact WoWInterface or Tukui project name, first; then names that start with the query; then those with every word in the name or folders; then those with every word anywhere, author and description included. Within a rank, the catalog comes first, then popularity (WoWInterface downloads and GitHub stars, each scaled to its source's best), then the newest. A WoWInterface, Tukui or GitHub hit for a catalog addon merges into the catalog's: the same ref, or the entry's name or one of its aliases (ignoring case, spaces and punctuation) with at least one of its folders. GitHub results are kept only when the repository's name, description or topics mention WoW (`wow` at the start of a word, `warcraft`, `azeroth` or `addon`); `-v` counts the rest.
 
 Each result says, for every selected client, whether it is likely to load. This is a hint; `install` verifies every TOC.
 

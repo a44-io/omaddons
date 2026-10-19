@@ -9,8 +9,9 @@
 //! - **Within a tier:** the catalog first, then popularity (per source, log-scaled to the
 //!   source's best in this result set), then the newest, then name and ref.
 //! - **Duplicates:** a hit whose ref is a catalog entry's, or whose name is the entry's
-//!   and whose folders include all of the entry's, merges into the catalog hit, which
-//!   keeps its name, ref and compatibility and takes the hit's popularity and date.
+//!   name or one of its aliases (ignoring case, spaces and punctuation) and which shares
+//!   at least one of the entry's folders, merges into the catalog hit, which keeps its
+//!   name, ref and compatibility and takes the hit's popularity and date.
 
 use std::collections::BTreeMap;
 
@@ -153,19 +154,32 @@ pub fn tier(query: &str, hit: &Hit) -> Option<u8> {
     words.iter().all(|w| all.contains(w)).then_some(3)
 }
 
-/// Whether `hit` is `entry`'s duplicate: the same ref, or the same name with every one
-/// of the entry's folders.
+/// Whether `hit` is `entry`'s duplicate: the same ref; or the entry's name or one of its
+/// aliases, compared [`compact`]ly ("Deadly Boss Mods" is `deadlybossmods`), with at
+/// least one of the entry's folders (a namesake with none stays apart).
 fn duplicates(entry: &Hit, hit: &Hit) -> bool {
     if hit.r#ref.identity() == entry.r#ref.identity() {
         return true;
     }
-    let folders: Vec<String> = hit.folders.iter().map(|f| f.to_lowercase()).collect();
-    normalize(&entry.name) == normalize(&hit.name)
-        && !entry.folders.is_empty()
-        && entry
+    let name = compact(&hit.name);
+    let named = !name.is_empty()
+        && std::iter::once(&entry.name)
+            .chain(&entry.aliases)
+            .any(|n| compact(n) == name);
+    let folders: Vec<String> = entry.folders.iter().map(|f| f.to_lowercase()).collect();
+    named
+        && hit
             .folders
             .iter()
-            .all(|f| folders.contains(&f.to_lowercase()))
+            .any(|f| folders.contains(&f.to_lowercase()))
+}
+
+/// Lowercase ASCII letters and digits only: spacing, case and punctuation aside.
+fn compact(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 /// `hits` ranked for `query`: merged into the catalog entries they duplicate, dropped
@@ -412,6 +426,46 @@ mod tests {
         );
         assert_eq!(first.basis, CompatBasis::Catalog(vec![Family::Mainline]));
         assert_eq!(ranked[1].hit.r#ref.to_string(), "wowi:999");
+    }
+
+    /// A project named like a catalog entry's alias, spacing and punctuation aside,
+    /// merges when it shares one of the entry's folders, and only then.
+    #[test]
+    fn a_hit_named_like_an_alias_with_a_shared_folder_merges() {
+        let dbm = || {
+            let mut entry = hit(
+                "DBM",
+                "gh:DeadlyBossMods/DeadlyBossMods",
+                HitSource::Catalog,
+            );
+            entry.aliases = vec!["deadlybossmods".into(), "dbm-core".into()];
+            entry.folders = vec!["DBM-Core".into(), "DBM-GUI".into(), "DBM-Raids".into()];
+            entry
+        };
+        let project = |name: &str, folders: &[&str]| {
+            let mut wowi = hit(name, "wowi:8814", HitSource::Wowi);
+            wowi.folders = folders.iter().map(|f| (*f).to_owned()).collect();
+            wowi.popularity = Some(Popularity::Downloads(3_000_000));
+            wowi
+        };
+        for name in ["Deadly Boss Mods", "Deadly-Boss Mods", "DEADLYBOSSMODS"] {
+            let ranked = rank(
+                "dbm",
+                vec![dbm(), project(name, &["dbm-core", "DBM-StatusBarTimers"])],
+            );
+            assert_eq!(ranked.len(), 1, "{name}: merged");
+            assert_eq!(
+                ranked[0].hit.popularity,
+                Some(Popularity::Downloads(3_000_000)),
+                "{name}"
+            );
+        }
+        // The same name and no shared folder: another addon, kept apart.
+        let ranked = rank("dbm", vec![dbm(), project("DBM", &["DBMVoice"])]);
+        assert_eq!(ranked.len(), 2);
+        // A name that is no alias stays apart even with a shared folder.
+        let ranked = rank("dbm", vec![dbm(), project("DBM Voice Pack", &["DBM-Core"])]);
+        assert_eq!(ranked.len(), 2);
     }
 
     #[test]

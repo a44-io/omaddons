@@ -412,18 +412,26 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
                 GithubSearch::with_github_token(std::sync::Arc::clone(&world.github_token))
                     .offline(ctx.offline);
             match search.search(&query, engine.http()) {
-                Ok(repos) => hits.extend(repos.into_iter().map(|r| Hit {
-                    name: r.name,
-                    r#ref: r.r#ref,
-                    source: HitSource::Github,
-                    author: Some(r.owner),
-                    summary: r.description.as_deref().map(cap_summary),
-                    aliases: Vec::new(),
-                    folders: Vec::new(),
-                    popularity: Some(Popularity::Stars(r.stars)),
-                    updated_at: r.pushed_at,
-                    basis: CompatBasis::Github,
-                })),
+                Ok(found) => {
+                    if found.dropped > 0 {
+                        notes.push(format!(
+                            "GitHub: {} repositories without a WoW marker dropped",
+                            found.dropped
+                        ));
+                    }
+                    hits.extend(found.repos.into_iter().map(|r| Hit {
+                        name: r.name,
+                        r#ref: r.r#ref,
+                        source: HitSource::Github,
+                        author: Some(r.owner),
+                        summary: r.description.as_deref().map(cap_summary),
+                        aliases: Vec::new(),
+                        folders: Vec::new(),
+                        popularity: Some(Popularity::Stars(r.stars)),
+                        updated_at: r.pushed_at,
+                        basis: CompatBasis::Github,
+                    }));
+                }
                 Err(error) => match error.code {
                     // Not a failure: said, with when it lifts.
                     ErrorCode::RateLimited | ErrorCode::Offline => {

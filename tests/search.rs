@@ -63,7 +63,7 @@ fn meters() -> Home {
         &[(
             "Skada-Damage-Meter",
             "Skada",
-            "A modular damage meter",
+            "A modular damage meter for World of Warcraft",
             412,
             "2026-09-01T00:00:00Z",
         )],
@@ -74,7 +74,7 @@ fn meters() -> Home {
         &[(
             "WeakAuras",
             "WeakAuras2",
-            "A powerful framework",
+            "A powerful framework to display World of Warcraft information",
             1300,
             "2026-10-01T00:00:00Z",
         )],
@@ -147,7 +147,7 @@ fn damage_meter_ranks_by_tier_and_popularity_and_never_suggests_the_abandoned() 
         (&skada["popularity"], &skada["summary"], &skada["author"]),
         (
             &json!({"stars": 412}),
-            &json!("A modular damage meter"),
+            &json!("A modular damage meter for World of Warcraft"),
             &json!("Skada-Damage-Meter")
         )
     );
@@ -432,5 +432,84 @@ fn source_names_are_decoded_and_never_reach_the_terminal_raw() {
         first_author(&envelope),
         Some(json!("Some&amp;One")),
         "decoded exactly once"
+    );
+}
+
+/// `search dbm`: GitHub's database tools never show; WoWInterface's Deadly Boss Mods
+/// merges into the catalog's DBM, which then shows its downloads and comes first; the
+/// voice packs follow.
+#[test]
+fn dbm_finds_deadly_boss_mods_first_and_no_database_tools() {
+    let home = Home::new(&["wow"]);
+    let mut dbm = FileEntry::new(
+        8814,
+        "Deadly Boss Mods",
+        &["DBM-Core", "DBM-GUI", "DBM-StatusBarTimers"],
+    );
+    dbm.downloads = 3_000_000;
+    let mut yike = FileEntry::new(22000, "DBM Voicepack Yike", &["DBM-VPYike"]);
+    yike.downloads = 20_000;
+    let mut kyle = FileEntry::new(22001, "DBM Voicepack Kyle", &["DBM-VPKyleW"]);
+    kyle.downloads = 10_000;
+    wowi_filelist(&home.http, &[dbm, yike, kyle]);
+    let at = "2026-09-01T00:00:00Z";
+    github_search(
+        &home.http,
+        "dbm",
+        &[
+            (
+                "amacneil",
+                "dbmate",
+                "A lightweight, framework-agnostic database migration tool.",
+                6000,
+                at,
+            ),
+            ("holistics", "dbml", "Database Markup Language", 3000, at),
+            (
+                "DeadlyBossMods",
+                "DeadlyBossMods",
+                "Raid encounter alerts for World of Warcraft",
+                400,
+                at,
+            ),
+            ("someone", "DBM-VPKyle", "A voice pack addon for DBM", 5, at),
+        ],
+    );
+    let argv: Vec<String> = [
+        "search", "dbm", "--source", "catalog", "--source", "wowi", "--source", "github", "-t",
+        "retail", "-v", "--json",
+    ]
+    .iter()
+    .map(|a| (*a).to_owned())
+    .collect();
+    let r = home.exec(&argv);
+    let envelope = r.expect(0);
+    let found = refs(&envelope);
+    assert_eq!(
+        found[0],
+        "gh:DeadlyBossMods/DeadlyBossMods",
+        "{}",
+        r.context()
+    );
+    assert_eq!(
+        results(&envelope)[0]["popularity"],
+        json!({"downloads": 3_000_000}),
+        "the WoWInterface project merged into it"
+    );
+    assert!(
+        !found
+            .iter()
+            .any(|f| f.contains("dbmate") || f.contains("dbml")),
+        "{found:?}"
+    );
+    assert!(!found.contains(&"wowi:8814"), "{found:?}");
+    for pack in ["wowi:22000", "wowi:22001", "gh:someone/DBM-VPKyle"] {
+        assert!(found.contains(&pack), "{pack}: {found:?}");
+    }
+    assert!(
+        r.stderr
+            .contains("GitHub: 2 repositories without a WoW marker dropped"),
+        "{}",
+        r.context()
     );
 }

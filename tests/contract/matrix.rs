@@ -504,7 +504,7 @@ fn search() {
         &[(
             "WeakAuras",
             "WeakAuras2",
-            "A powerful framework",
+            "A powerful framework to display World of Warcraft information",
             1300,
             "2026-10-01T00:00:00Z",
         )],
