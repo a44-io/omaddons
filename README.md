@@ -1155,10 +1155,11 @@ omaddons auth github clear                    # forget the stored token
 
 ### `net-log`
 
-Every network request and git subprocess omaddons made, with a summary by host. A request or git run whose line cannot be written fails, so nothing is contacted unlogged.
+Every network request and git subprocess omaddons made, with a summary by host. A request or git run whose line cannot be written fails, so nothing is contacted unlogged. By default it shows the 50 most recent (`--limit N`; `--since` filters first). The host summary counts every request that matched, and `truncated` says more matched than are shown.
 
 ```bash
 omaddons net-log
+omaddons net-log --limit 200
 omaddons net-log --since 1d --json
 ```
 
@@ -1976,7 +1977,7 @@ Exit codes  0 ok (check partial) · 1 failed (see retryable) · 2 usage · 3 not
 Rules
   - --dry-run first for anything destructive; --force only after reading the refusal.
   - Never write into Interface/AddOns yourself; every change must go through omaddons to stay undoable.
-  - --offline for read-only work; net-log shows every request that reached the network.
+  - --offline for read-only work; net-log shows the requests that reached the network (the 50 most recent; --limit N).
   - update installs the newest releases on every client in one run (pinned ones stay: addon_pinned); one undo reverts it.
   - Only install falls back to a default target; pass -t everywhere else when more than one client matches.
 

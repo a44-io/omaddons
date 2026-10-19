@@ -362,3 +362,57 @@ fn latest_judges_each_client_by_metadata_plans_and_the_catalog() {
     );
     assert_eq!(l["targets"], serde_json::json!(["classic"]));
 }
+
+/// By default the 50 most recent requests, oldest first, `truncated` saying more
+/// matched; the host summary counts them all; `--limit 0` is a usage error.
+#[test]
+fn net_log_shows_the_most_recent_fifty_by_default() {
+    let home = Home::new(&["wow"]);
+    let lines: String = (0..60)
+        .map(|n| {
+            let line = serde_json::json!({
+                "time": format!("2026-10-01T00:{:02}:00Z", n),
+                "method": "GET",
+                "host": "github.com",
+                "path": format!("/{n}"),
+                "status": 200,
+                "bytes": 1,
+                "duration_ms": 1,
+                "purpose": "test",
+                "via": "http",
+                "error": null,
+            });
+            format!("{line}\n")
+        })
+        .collect();
+    fs::create_dir_all(home.state()).unwrap();
+    fs::write(home.state().join("net.log"), lines).unwrap();
+    let shown = |envelope: &Value| {
+        let entries = envelope["data"]["entries"].as_array().unwrap();
+        (
+            entries.len(),
+            envelope["data"]["truncated"].clone(),
+            entries[0]["path"].clone(),
+            envelope["data"]["summary"]["by_host"]["github.com"].clone(),
+        )
+    };
+    let default = home.run(&["net-log"]).expect(0);
+    assert_eq!(
+        shown(&default),
+        (50, Value::from(true), Value::from("/10"), Value::from(60))
+    );
+    let all = home.run(&["net-log", "--limit", "100"]).expect(0);
+    assert_eq!(
+        shown(&all),
+        (60, Value::from(false), Value::from("/0"), Value::from(60))
+    );
+    let windowed = home
+        .run(&["net-log", "--since", "2026-10-01T00:55:00Z", "--limit", "3"])
+        .expect(0);
+    assert_eq!(
+        shown(&windowed),
+        (3, Value::from(true), Value::from("/57"), Value::from(5))
+    );
+    let r = home.run(&["net-log", "--limit", "0"]);
+    assert_eq!(r.expect(2)["error"]["code"], "usage");
+}

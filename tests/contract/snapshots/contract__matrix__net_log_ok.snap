@@ -53,7 +53,8 @@ expression: s.stable(&c.envelope)
       "by_via": {
         "http": 3
       }
-    }
+    },
+    "truncated": false
   },
   "exit_code": 0,
   "ok": true,

@@ -18,9 +18,15 @@ use crate::net::log::read_log;
 use crate::output::{Outcome, Style, table};
 use crate::state::paths::Paths;
 
+/// The default `--limit`: token-frugal, yet a whole run of a few clients.
+const DEFAULT_LIMIT: usize = 50;
+
 /// `net-log`'s own flags.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct NetLogArgs {
+    /// At most this many requests, the most recent (default 50)
+    #[arg(long, value_name = "N")]
+    pub limit: Option<usize>,
     /// Only requests since a duration ago (30m, 12h, 1d, 2w) or an RFC 3339 time
     #[arg(long, value_name = "WHEN")]
     pub since: Option<String>,
@@ -29,8 +35,11 @@ pub struct NetLogArgs {
 /// `net-log`'s data.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct NetLogData {
-    /// Oldest first.
+    /// The most recent `--limit` requests that matched, oldest first.
     pub entries: Vec<NetLogEntry>,
+    /// More requests matched than `entries` shows.
+    pub truncated: bool,
+    /// Every request that matched, by host and by transport.
     pub summary: Summary,
     /// Lines that do not parse.
     pub skipped: usize,
@@ -106,6 +115,11 @@ impl Outcome for NetLogOutcome {
                 })
                 .collect();
             write!(w, "{}", table(&rows))?;
+            if d.truncated {
+                let total: usize = d.summary.by_host.values().sum();
+                let earlier = total.saturating_sub(d.entries.len());
+                writeln!(w, "({earlier} earlier requests: --limit N or --since)")?;
+            }
         }
         let hosts: Vec<String> = d
             .summary
@@ -125,6 +139,14 @@ impl Outcome for NetLogOutcome {
 
 /// Runs `net-log`.
 pub fn run(_ctx: &Context, args: &NetLogArgs) -> Result<NetLogOutcome> {
+    let limit = args.limit.unwrap_or(DEFAULT_LIMIT);
+    if limit == 0 {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            "--limit must be at least 1",
+            Suggestion::command(["omaddons", "net-log", "--limit", "50"]),
+        ));
+    }
     let since = args
         .since
         .as_deref()
@@ -142,13 +164,28 @@ pub fn run(_ctx: &Context, args: &NetLogArgs) -> Result<NetLogOutcome> {
         .transpose()?;
     let read = read_log(&Paths::from_env()?, since)?;
     Ok(NetLogOutcome {
-        data: NetLogData {
-            summary: Summary::of(&read.entries),
-            entries: read.entries,
-            skipped: read.skipped,
-            since,
-        },
+        data: data(read.entries, read.skipped, since, limit),
     })
+}
+
+/// `net-log`'s data from the matching `entries` (oldest first): the last `limit` of
+/// them, and the summary of them all.
+fn data(
+    mut entries: Vec<NetLogEntry>,
+    skipped: usize,
+    since: Option<Timestamp>,
+    limit: usize,
+) -> NetLogData {
+    let summary = Summary::of(&entries);
+    let truncated = entries.len() > limit;
+    entries.drain(..entries.len().saturating_sub(limit));
+    NetLogData {
+        entries,
+        truncated,
+        summary,
+        skipped,
+        since,
+    }
 }
 
 #[cfg(test)]
@@ -182,6 +219,49 @@ mod tests {
                 "by_host": {"codeload.github.com": 1, "github.com": 2},
                 "by_via": {"git": 1, "http": 2},
             })
+        );
+    }
+
+    /// The last `limit` requests, oldest first; the summary counts them all.
+    #[test]
+    fn the_most_recent_requests_are_kept_and_all_are_counted() {
+        let entry = |n: u32| NetLogEntry {
+            time: Timestamp::from_second(1_760_000_000 + i64::from(n)).unwrap(),
+            method: "GET".into(),
+            host: "github.com".into(),
+            path: format!("/{n}"),
+            status: Some(200),
+            bytes: Some(1),
+            wire_bytes: None,
+            duration_ms: 1,
+            purpose: "test".into(),
+            via: Via::Http,
+            error: None,
+        };
+        let entries: Vec<NetLogEntry> = (0..120).map(entry).collect();
+        let d = data(entries.clone(), 0, None, 50);
+        assert_eq!(
+            (
+                d.entries.len(),
+                d.truncated,
+                d.summary.by_host["github.com"]
+            ),
+            (50, true, 120)
+        );
+        assert_eq!(
+            (d.entries[0].path.as_str(), d.entries[49].path.as_str()),
+            ("/70", "/119")
+        );
+        let all = data(entries, 0, None, 200);
+        assert_eq!((all.entries.len(), all.truncated), (120, false));
+        let mut out = Vec::new();
+        NetLogOutcome { data: d }
+            .render_human(&mut out, &Style::default())
+            .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("(70 earlier requests: --limit N or --since)"),
+            "{text}"
         );
     }
 }
