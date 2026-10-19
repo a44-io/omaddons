@@ -498,7 +498,12 @@ fn running_clients_follow_the_running_policy() {
             assert_eq!(t["reload_required"], "reload");
         } else {
             assert_eq!(t["tx"], Value::Null);
-            assert_eq!(t["items"][0]["error"]["code"], "game_running", "{t}");
+            let error = &t["items"][0]["error"];
+            assert_eq!(
+                (&error["code"], &error["details"]["reason"]),
+                (&json!("game_running"), &json!("legacy_client")),
+                "{t}"
+            );
         }
     }
 }

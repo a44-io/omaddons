@@ -1251,7 +1251,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `not_managed` | 3 | no | `remove` of an unmanaged, linked or `Blizzard_*` folder, or a name no managed addon answers to. When the name is an unmanaged folder (`update`, `pin`, `unpin`, `remove`), the fix adopts it: `omaddons adopt <folder> [--ref <catalog ref>] -t <id>`, other clients holding it as alternatives |
 | `plan_not_found` | 3 | no | reserved for stored plans (M4) |
 | `no_compatible_release` | 3 | no | no candidate loads on the client; `details.tried` lists them |
-| `game_running` | 4 | no | the running policy refuses (fix appends `--while-running`), or `undo --saved-variables restore` while the client runs; `details.running: "unknown"` when `/proc` could not be read and the client may be running |
+| `game_running` | 4 | no | the running policy refuses (fix appends `--while-running`), or `undo --saved-variables restore` while the client runs; `details.reason` says why (`loaded_toc`, `legacy_client`, `policy_refuse` or `saved_variables`), and `details.running: "unknown"` appears when `/proc` could not be read and the client may be running. A failed item's error in `update`, `sync` or `copy` carries both too |
 | `protected_folder` | 4 | no | the archive contains a `Blizzard_*` folder |
 | `ownership_conflict` | 4 | no | another addon owns the folder; fix appends `--force` |
 | `unmanaged_folder` | 4 | no | an unmanaged folder exists; for an addon new to the client the fix adopts it (`omaddons adopt <folder> --ref <ref> -t <id>`) with the `--force` retry as alternative, otherwise the fix appends `--force` |

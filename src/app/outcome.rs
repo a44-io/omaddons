@@ -173,21 +173,29 @@ pub struct ItemError {
     /// Only for a conflict between two works of one transaction
     /// (`within_transaction: true`, with each folder and its claimant), an `adopt` item
     /// refused before the engine (`folder`, and `owner`, `class` or `refs`), a rate
-    /// limit (`reset_at`), and a dependency that failed (`required_by`).
+    /// limit (`reset_at`), a dependency that failed (`required_by`), and a client that
+    /// runs (`game_running`: its `reason`, and `running: "unknown"` when `/proc` could
+    /// not be read).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }
 
-/// The details an item error carries: a within-transaction conflict's, a rate limit's
-/// `reset_at`, a dependency's `required_by`; else none.
-fn item_details(details: &serde_json::Value) -> Option<serde_json::Value> {
+/// The details an item error with `code` carries: a within-transaction conflict's, a
+/// rate limit's `reset_at`, a dependency's `required_by`, a running client's `reason`
+/// and `running`; else none.
+fn item_details(code: ErrorCode, details: &serde_json::Value) -> Option<serde_json::Value> {
     if details["within_transaction"] == true {
         return Some(details.clone());
     }
+    let running: &[&str] = if matches!(code, ErrorCode::GameRunning) {
+        &["reason", "running"]
+    } else {
+        &[]
+    };
     let mut kept = serde_json::Map::new();
-    for key in ["reset_at", "required_by"] {
-        if let Some(value) = details.get(key) {
-            kept.insert(key.to_owned(), value.clone());
+    for key in ["reset_at", "required_by"].iter().chain(running) {
+        if let Some(value) = details.get(*key) {
+            kept.insert((*key).to_owned(), value.clone());
         }
     }
     (!kept.is_empty()).then_some(serde_json::Value::Object(kept))
@@ -200,7 +208,7 @@ impl From<&Error> for ItemError {
             message: e.message.clone(),
             fix: e.fix.display().to_owned(),
             fix_argv: e.fix.argv().map(<[String]>::to_vec),
-            details: item_details(&e.details),
+            details: item_details(e.code, &e.details),
         }
     }
 }
@@ -212,19 +220,23 @@ impl From<&ErrorBody> for ItemError {
             message: e.message.clone(),
             fix: e.fix.clone(),
             fix_argv: e.fix_argv.clone(),
-            details: item_details(&e.details),
+            details: item_details(e.code, &e.details),
         }
     }
 }
 
 impl ItemError {
-    /// Back to an error, with its code's exit code.
+    /// Back to an error, with its code's exit code and the details it kept.
     pub fn error(&self) -> Error {
         let fix = match &self.fix_argv {
             Some(argv) => Suggestion::command(argv.clone()),
             None => Suggestion::text(self.fix.clone()),
         };
-        Error::new(self.code, self.message.clone(), fix)
+        Error::new(self.code, self.message.clone(), fix).details(
+            self.details
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({})),
+        )
     }
 }
 
@@ -575,7 +587,8 @@ impl TargetsData {
     }
 
     /// When every item failed (nothing changed, stayed unchanged or was skipped): the
-    /// first failure's error, with every item's error in `details.items`.
+    /// first failure's error, its kept details beside every item's error in
+    /// `details.items`.
     pub fn all_failed(&self) -> Option<Error> {
         let s = &self.summary;
         if s.failed == 0 || s.changed + s.unchanged + s.skipped > 0 {
@@ -598,11 +611,11 @@ impl TargetsData {
                 })
             })
             .collect();
-        Some(
-            first
-                .error()
-                .details(serde_json::json!({ "items": details })),
-        )
+        let mut error = first.error();
+        if let Some(kept) = error.details.as_object_mut() {
+            kept.insert("items".to_owned(), serde_json::Value::Array(details));
+        }
+        Some(error)
     }
 
     /// The undo hints: `undo --run <run>` when more than one transaction committed, then
@@ -1444,6 +1457,48 @@ mod tests {
         assert_eq!(error.code, ErrorCode::GameRunning);
         assert_eq!(error.details["items"].as_array().unwrap().len(), 2);
         assert_eq!(data.run, None, "nothing committed");
+    }
+
+    /// A failed item keeps why a running client refused it, and whether `/proc` could
+    /// tell; other codes keep only their own short list. The run's error, when every
+    /// item failed, keeps them beside `items`.
+    #[test]
+    fn a_running_refusal_keeps_its_reason_on_the_item_and_the_run() {
+        use serde_json::json;
+
+        let details = json!({
+            "target": "retail",
+            "reason": "loaded_toc",
+            "running": "unknown",
+            "ops": ["remove DBM"],
+        });
+        let refused = Error::new(ErrorCode::GameRunning, "running", Suggestion::text("wait"))
+            .details(details.clone());
+        assert_eq!(
+            ItemError::from(&refused).details,
+            Some(json!({ "reason": "loaded_toc", "running": "unknown" }))
+        );
+        let other =
+            Error::new(ErrorCode::NotFound, "gone", Suggestion::text("wait")).details(details);
+        assert_eq!(ItemError::from(&other).details, None);
+
+        let mut failed = failure("retail", Some("DBM"), ErrorCode::GameRunning);
+        failed.error = ErrorBody::from(refused.clone());
+        failed.cause = Some(refused);
+        let data = TargetsData::assemble(
+            &[planned("retail", &[])],
+            &[outcome("retail", None, Vec::new())],
+            &[failed],
+            false,
+            run(),
+            &[request("retail", "DBM")],
+        );
+        let error = data.all_failed().unwrap();
+        assert_eq!(
+            (&error.details["reason"], &error.details["running"]),
+            (&json!("loaded_toc"), &json!("unknown"))
+        );
+        assert_eq!(error.details["items"][0]["request"], "DBM");
     }
 
     #[test]

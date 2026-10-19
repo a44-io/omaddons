@@ -1188,12 +1188,6 @@ fn pruning_a_record_whose_folder_is_gone_forgets_it_undoably() {
     );
 }
 
-/// Whether `error`'s message contains `text`. An item's `game_running` carries no
-/// `details.reason` or `details.running` yet (omad-7dee), so its message tells.
-fn says(error: &Value, text: &str) -> bool {
-    error["message"].as_str().is_some_and(|m| m.contains(text))
-}
-
 /// Under the safe policy, a prune that removes a folder the running client has loaded
 /// fails that item and leaves the folder; `--while-running` removes it and asks for a
 /// restart, and once the client exits undo brings it back.
@@ -1213,17 +1207,18 @@ fn sync_prune_of_a_loaded_addon_is_refused_while_the_client_runs() {
     assert_eq!(envelope["partial"], true, "{}", r.context());
     let bar = item(&envelope, "retail", "Bar");
     assert_eq!(
-        (&bar["status"], &bar["error"]["code"]),
-        (&json!("failed"), &json!("game_running")),
+        (
+            &bar["status"],
+            &bar["error"]["code"],
+            &bar["error"]["details"]
+        ),
+        (
+            &json!("failed"),
+            &json!("game_running"),
+            &json!({ "reason": "loaded_toc" })
+        ),
         "{}",
         r.context()
-    );
-    assert!(
-        says(
-            &bar["error"],
-            "would remove or rename a TOC the client has loaded"
-        ),
-        "{bar}"
     );
     assert_eq!(
         bar["error"]["fix_argv"],
@@ -1304,8 +1299,15 @@ fn sync_fails_closed_when_the_process_table_cannot_be_read() {
     assert_eq!(envelope["partial"], true, "{}", r.context());
     assert_eq!(item(&envelope, "retail", "gh:o/baz")["status"], "installed");
     let bar = &item(&envelope, "retail", "Bar")["error"];
-    assert_eq!(bar["code"], "game_running", "{}", r.context());
-    assert!(says(bar, "may be running"), "{bar}");
+    assert_eq!(
+        (&bar["code"], &bar["details"]),
+        (
+            &json!("game_running"),
+            &json!({ "reason": "loaded_toc", "running": "unknown" })
+        ),
+        "{}",
+        r.context()
+    );
     let t = target(&envelope, "retail");
     assert!(t["tx"].is_string(), "the add commits: {t}");
     assert_eq!(t["reload_required"], "reload");
@@ -1359,10 +1361,11 @@ fn a_legacy_client_refuses_every_change_while_it_runs() {
 
     let r = home.run(&["sync"]);
     let error = &r.expect(4)["error"];
-    assert_eq!(error["code"], "game_running", "{}", r.context());
-    assert!(
-        says(error, "needs a restart to pick up any addon change"),
-        "{error}"
+    assert_eq!(
+        (&error["code"], &error["details"]["reason"]),
+        (&json!("game_running"), &json!("legacy_client")),
+        "{}",
+        r.context()
     );
     assert_eq!(
         (
