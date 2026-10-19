@@ -1,11 +1,16 @@
 //! The cross-process crash matrix (vision §7, M1 checkpoints): every engine failpoint
 //! as a real crash (`abort`: no unwinding, the kernel releases the flocks), for a new
 //! install, a first install into a client never launched (no `Interface/`), an update
-//! that drops a folder, and a removal. After each crash every folder
-//! is wholly old or wholly new; a reader reports the unfinished transaction and changes
-//! nothing; the next command that takes the lock recovers it (`journal_recovered`),
-//! after which all folders sit on one side, consistent with the record generation and
-//! history, and the lock file is the same inode.
+//! that drops a folder, and a removal, each over SavedVariables. A crash before each
+//! journaled rename (`engine.swap.before_rename=abort@N`), with atomic renames and in
+//! the two-rename fallback, reaches every step of a multi-folder swap. After each crash
+//! every folder is wholly old or wholly new (or absent, between the fallback's two
+//! renames), and so are the SavedVariables; a reader reports the unfinished transaction
+//! and changes nothing; the next command that takes the lock recovers it
+//! (`journal_recovered`), after which all folders sit on one side, consistent with the
+//! record generation and history, and the lock file is the same inode. A crash before
+//! `prepared` may leave the SavedVariables copies made before the lock, which the
+//! orphan sweep takes once they are old.
 //!
 //! Records-only transactions (a pin, a forget) change no folder, so their oracle is the
 //! record: the edit is there exactly when history holds the transaction, the generation
@@ -19,7 +24,10 @@ use std::fs;
 use common::archives::zip_text;
 use common::engine::{Scene, shapes, warning_codes};
 use omaddons::engine::FAILPOINTS;
-use support::{Op, RecordsOp, Shape, expected_new, matrix, record_matrix, shape_matrix};
+use support::{
+    Op, RecordsOp, Shape, expected_new, matrix, record_matrix, rename_matrix, shape_matrix,
+    shape_rename_matrix,
+};
 
 #[cfg(test)]
 mod support {
@@ -41,6 +49,11 @@ mod support {
                 Self::Update => "update",
                 Self::Remove => "remove",
             }
+        }
+
+        /// A fresh scene: a retail client with Foo's and FooOld's SavedVariables.
+        pub fn scene(self) -> Scene {
+            Scene::new().with_saved_variables(common::engine::FOLDERS)
         }
 
         /// Sets up the baseline and returns the command.
@@ -66,12 +79,28 @@ mod support {
         }
     }
 
-    /// The folders after `op` runs without a failpoint.
-    pub fn expected_new(op: Op) -> BTreeMap<String, Option<String>> {
-        let s = Scene::new();
+    /// What the Foo oracle judges: each folder's tree hash, and the `WTF/` tree.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Foo {
+        pub folders: BTreeMap<String, Option<String>>,
+        pub wtf: Option<String>,
+    }
+
+    impl Foo {
+        pub fn of(s: &Scene) -> Self {
+            Self {
+                folders: s.folders(),
+                wtf: s.wtf(),
+            }
+        }
+    }
+
+    /// The state after `op` runs without a failpoint.
+    pub fn expected_new(op: Op) -> Foo {
+        let s = op.scene();
         let args = op.prepare(&s);
         s.run(&args, "").expect(0);
-        s.folders()
+        Foo::of(&s)
     }
 
     /// Journals that never reached `committed`.
@@ -86,17 +115,12 @@ mod support {
             .count()
     }
 
-    /// After the recovering command: no snapshot dir of a transaction that never
-    /// committed, and every committed one's still there.
-    pub fn assert_snapshots(s: &Scene, context: &dyn Fn(&str) -> String) {
-        let orphans = s.orphan_snapshots();
-        assert!(
-            orphans.is_empty(),
-            "{}",
-            context(&format!(
-                "snapshots of uncommitted transactions {orphans:?}"
-            ))
-        );
+    /// After the recovering command: every committed transaction keeps its snapshots,
+    /// and no snapshot dir of one that never committed is left, except what a crash
+    /// before `prepared` left (`crash_leftovers`): the SavedVariables copied before the
+    /// lock, which no journal named and which hold no addon folder. [`sweep_aged`] then
+    /// checks that the orphan sweep takes them once they are old.
+    pub fn assert_snapshots(s: &Scene, context: &dyn Fn(&str) -> String, crash_leftovers: bool) {
         let lost = s.lost_snapshots();
         assert!(
             lost.is_empty(),
@@ -105,125 +129,200 @@ mod support {
                 "committed transactions lost their snapshots {lost:?}"
             ))
         );
+        let orphans = s.orphan_snapshots();
+        assert!(
+            orphans.is_empty() || crash_leftovers,
+            "{}",
+            context(&format!(
+                "snapshots of uncommitted transactions {orphans:?}"
+            ))
+        );
+        for dir in orphans {
+            let folders = fs::read_dir(dir.join("AddOns")).map_or(0, Iterator::count);
+            assert_eq!(
+                folders,
+                0,
+                "{}",
+                context(&format!(
+                    "a crash leftover {} holds a folder",
+                    dir.display()
+                ))
+            );
+        }
     }
 
-    /// Every failpoint as a crash of `op`.
+    /// Crash leftovers aged past `ORPHAN_MIN_AGE` are gone after the next commit's
+    /// retention (a pin of Bar, which the recovering command installed). Whether there
+    /// were any.
+    pub fn sweep_aged(s: &Scene, context: &dyn Fn(&str) -> String) -> bool {
+        if s.orphan_snapshots().is_empty() {
+            return false;
+        }
+        s.age_orphan_snapshots();
+        s.run(&s.args(&["pin", "Bar"]), "").expect(0);
+        let left = s.orphan_snapshots();
+        assert!(
+            left.is_empty(),
+            "{}",
+            context(&format!("aged crash leftovers survived the sweep {left:?}"))
+        );
+        true
+    }
+
+    /// What one crashed run did.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Crash {
+        /// The command died at a failpoint; otherwise it ran to the end.
+        pub crashed: bool,
+        /// Until recovery, some folders were new and others not.
+        pub mixed: bool,
+        /// It left SavedVariables copies the sweep took once they were old.
+        pub swept: bool,
+    }
+
+    /// `op` run with the failpoints `spec` armed, then the oracle. Each folder, on its
+    /// own, is wholly old or wholly new at every instant (or absent, between the two
+    /// renames of the `fallback`), and SavedVariables are wholly old or wholly new; a
+    /// reader reports the unfinished transaction and changes nothing; the next command
+    /// that takes the lock recovers; then folders and SavedVariables sit on one side,
+    /// consistent with the generation and history, with nothing stray in AddOns and the
+    /// same lock file.
+    pub fn crash(op: Op, spec: &str, new: &Foo, fallback: bool) -> Crash {
+        let s = op.scene();
+        let args = op.prepare(&s);
+        let old = Foo::of(&s);
+        let (old_generation, old_history, old_inode) =
+            (s.generation(), s.history(), s.lock_inode());
+        let r = s.run(&args, spec);
+        let context = |what: &str| {
+            format!(
+                "{op:?} at {spec}: {what}\nold {old:?}\nnew {new:?}\nnow {:?}\njournals {:?}\n{}",
+                Foo::of(&s),
+                s.journals()
+                    .iter()
+                    .map(|p| fs::read_to_string(p).unwrap_or_default())
+                    .collect::<Vec<_>>(),
+                r.context()
+            )
+        };
+        let crashed = r.code == -1;
+        if !crashed {
+            assert_eq!(
+                r.code,
+                0,
+                "{}",
+                context("not on this path, so it must succeed")
+            );
+        }
+
+        let at_crash = s.folders();
+        for (folder, now) in &at_crash {
+            assert!(
+                *now == old.folders[folder]
+                    || *now == new.folders[folder]
+                    || (fallback && now.is_none()),
+                "{}",
+                context(&format!("{folder} is neither old nor new"))
+            );
+        }
+        let mixed = at_crash != old.folders && at_crash != new.folders;
+        let wtf = s.wtf();
+        assert!(
+            wtf == old.wtf || wtf == new.wtf,
+            "{}",
+            context("SavedVariables neither old nor new")
+        );
+
+        // A reader reports the unfinished transaction and changes nothing.
+        let pending_before = pending(&s);
+        let journals = s.journals();
+        let before = s.snapshot();
+        let status = s
+            .run(&["status".to_owned(), "--json".to_owned()], "")
+            .expect(0);
+        let codes = warning_codes(&status);
+        assert_eq!(
+            codes.iter().any(|c| c == "journal_pending"),
+            pending_before > 0,
+            "{}",
+            context(&format!("status warnings {codes:?}"))
+        );
+        assert_eq!(s.snapshot(), before, "{}", context("status wrote"));
+        assert_eq!(s.journals(), journals, "{}", context("status recovered"));
+
+        // The next command that takes the lock recovers.
+        let bar = s.run(&s.install_args("gh:o/bar", "bar"), "").expect(0);
+        assert_eq!(
+            warning_codes(&bar).iter().any(|c| c == "journal_recovered"),
+            pending_before > 0,
+            "{}",
+            context("recovery warning")
+        );
+        assert!(
+            s.journals().is_empty(),
+            "{}",
+            context("journals left after recovery")
+        );
+        assert_snapshots(&s, &context, crashed && pending_before == 0);
+        // AddOns holds whole addon folders only: nothing staged or half-moved.
+        let stray = s.stray(&["Foo", "FooOld", "Bar"]);
+        assert!(
+            stray.is_empty(),
+            "{}",
+            context(&format!("stray AddOns entries {stray:?}"))
+        );
+
+        // Folders and SavedVariables on one side, consistent with state.
+        let now = Foo::of(&s);
+        let went_new = now == *new;
+        assert!(went_new || now == old, "{}", context("split across sides"));
+        let commits = u64::from(went_new) + 1;
+        assert_eq!(
+            s.generation(),
+            old_generation + commits,
+            "{}",
+            context("generation")
+        );
+        let mut history = old_history.clone();
+        if went_new {
+            history.push(op.kind().to_owned());
+        }
+        history.push("install".to_owned());
+        assert_eq!(s.history(), history, "{}", context("history"));
+        if let Some(inode) = old_inode {
+            assert_eq!(
+                s.lock_inode(),
+                Some(inode),
+                "{}",
+                context("lock file replaced")
+            );
+        }
+        let swept = sweep_aged(&s, &context);
+        Crash {
+            crashed,
+            mixed,
+            swept,
+        }
+    }
+
+    /// Every failpoint as a crash of `op`. Some crash before `prepared` leaves
+    /// SavedVariables copies, which the sweep takes.
     pub fn matrix(op: Op) {
         let new = expected_new(op);
-        let mut crashed_at = Vec::new();
-        for failpoint in FAILPOINTS {
-            let s = Scene::new();
-            let args = op.prepare(&s);
-            let old = s.folders();
-            let (old_generation, old_history, old_inode) =
-                (s.generation(), s.history(), s.lock_inode());
-            let r = s.run(&args, &format!("{failpoint}=abort"));
-            let context = |what: &str| {
-                format!(
-                    "{op:?} at {failpoint}: {what}\nold {old:?}\nnew {new:?}\nnow {:?}\njournals {:?}\n{}",
-                    s.folders(),
-                    s.journals()
-                        .iter()
-                        .map(|p| fs::read_to_string(p).unwrap_or_default())
-                        .collect::<Vec<_>>(),
-                    r.context()
-                )
-            };
-            if r.code == -1 {
-                crashed_at.push(*failpoint);
-            } else {
-                assert_eq!(
-                    r.code,
-                    0,
-                    "{}",
-                    context("not on this path, so it must succeed")
-                );
-            }
-
-            // Each folder, on its own, is wholly old or wholly new at every instant.
-            for (folder, now) in s.folders() {
-                assert!(
-                    now == old[&folder] || now == new[&folder],
-                    "{}",
-                    context(&format!("{folder} is neither old nor new"))
-                );
-            }
-
-            // A reader reports the unfinished transaction and changes nothing.
-            let pending_before = pending(&s);
-            let journals = s.journals();
-            let before = s.snapshot();
-            let status = s
-                .run(&["status".to_owned(), "--json".to_owned()], "")
-                .expect(0);
-            let codes = warning_codes(&status);
-            assert_eq!(
-                codes.iter().any(|c| c == "journal_pending"),
-                pending_before > 0,
-                "{}",
-                context(&format!("status warnings {codes:?}"))
-            );
-            assert_eq!(s.snapshot(), before, "{}", context("status wrote"));
-            assert_eq!(s.journals(), journals, "{}", context("status recovered"));
-
-            // The next command that takes the lock recovers.
-            let bar = s.run(&s.install_args("gh:o/bar", "bar"), "").expect(0);
-            assert_eq!(
-                warning_codes(&bar).iter().any(|c| c == "journal_recovered"),
-                pending_before > 0,
-                "{}",
-                context("recovery warning")
-            );
-            assert!(
-                s.journals().is_empty(),
-                "{}",
-                context("journals left after recovery")
-            );
-            assert_snapshots(&s, &context);
-            // AddOns holds whole addon folders only: nothing staged or half-moved.
-            let mut stray: Vec<String> = fs::read_dir(s.addons())
-                .map(|l| {
-                    l.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-                        .collect()
-                })
-                .unwrap_or_default();
-            stray.retain(|n| !["Foo", "FooOld", "Bar"].contains(&n.as_str()));
-            assert!(
-                stray.is_empty(),
-                "{}",
-                context(&format!("stray AddOns entries {stray:?}"))
-            );
-
-            // All folders on one side, consistent with state.
-            let now = s.folders();
-            let went_new = now == new;
-            assert!(
-                went_new || now == old,
-                "{}",
-                context("folders split across sides")
-            );
-            let commits = u64::from(went_new) + 1;
-            assert_eq!(
-                s.generation(),
-                old_generation + commits,
-                "{}",
-                context("generation")
-            );
-            let mut history = old_history.clone();
-            if went_new {
-                history.push(op.kind().to_owned());
-            }
-            history.push("install".to_owned());
-            assert_eq!(s.history(), history, "{}", context("history"));
-            if let Some(inode) = old_inode {
-                assert_eq!(
-                    s.lock_inode(),
-                    Some(inode),
-                    "{}",
-                    context("lock file replaced")
-                );
-            }
-        }
+        let mut swept = false;
+        let crashed_at: Vec<&str> = FAILPOINTS
+            .iter()
+            .copied()
+            .filter(|failpoint| {
+                let done = crash(op, &format!("{failpoint}=abort"), &new, false);
+                swept |= done.swept;
+                done.crashed
+            })
+            .collect();
+        assert!(
+            swept,
+            "{op:?}: no crash left SavedVariables copies to sweep"
+        );
         let _ = std::io::Write::write_fmt(
             &mut std::io::stderr(),
             format_args!(
@@ -236,6 +335,51 @@ mod support {
             crashed_at.len() >= 10,
             "{op:?}: most failpoints are on the path: {crashed_at:?}"
         );
+    }
+
+    /// The `engine.swap.before_rename` crashes of a run: before each journaled rename,
+    /// with atomic renames and with the two-rename fallback (`fsx.renameat2.einval`).
+    /// `crash` takes a spec and whether the fallback is armed, and runs its oracle; the
+    /// first N that does not crash must run to the end. Some crash after the first
+    /// rename must leave the folders mixed until recovery: the window is reached.
+    pub fn renames(what: &str, crash: impl Fn(&str, bool) -> Crash) {
+        for fallback in [false, true] {
+            let einval = if fallback {
+                "fsx.renameat2.einval=error,"
+            } else {
+                ""
+            };
+            let mut crashes = Vec::new();
+            let mut finished = false;
+            for n in 1..=16 {
+                let done = crash(
+                    &format!("{einval}engine.swap.before_rename=abort@{n}"),
+                    fallback,
+                );
+                if !done.crashed {
+                    finished = true;
+                    break;
+                }
+                crashes.push((n, done.mixed));
+            }
+            let _ = std::io::Write::write_fmt(
+                &mut std::io::stderr(),
+                format_args!("{what} (fallback {fallback}): renames crashed {crashes:?}\n"),
+            );
+            assert!(finished, "{what} (fallback {fallback}): {crashes:?}");
+            assert!(
+                crashes.iter().any(|(n, mixed)| *n > 1 && *mixed),
+                "{what} (fallback {fallback}): no crash after the first rename left the folders mixed: {crashes:?}"
+            );
+        }
+    }
+
+    /// Every journaled rename of `op` as a crash.
+    pub fn rename_matrix(op: Op) {
+        let new = expected_new(op);
+        renames(&format!("{op:?}"), |spec, fallback| {
+            crash(op, spec, &new, fallback)
+        });
     }
 
     /// An M2 transaction shape (H2), from release fixtures through the real CLI.
@@ -282,15 +426,21 @@ mod support {
                 Self::Adopt => shapes::adopt(s),
             }
         }
+
+        /// A fresh scene, with SavedVariables of every folder the shape touches.
+        pub fn scene(self) -> Scene {
+            Scene::new().with_saved_variables(self.folders())
+        }
     }
 
-    /// What a shape is judged by: its folders, every record (volatile fields aside) and
-    /// the files index, Bar's (the recovery's) left out.
+    /// What a shape is judged by: its folders, every record (volatile fields aside), the
+    /// files index, Bar's (the recovery's) left out, and the `WTF/` tree.
     #[derive(Debug, Clone, PartialEq)]
     pub struct Side {
         folders: BTreeMap<String, Option<String>>,
         records: BTreeMap<String, serde_json::Value>,
         indexed: Vec<String>,
+        wtf: Option<String>,
     }
 
     impl Side {
@@ -301,125 +451,162 @@ mod support {
                 folders: s.folders_of(shape.folders()),
                 records: s.view(),
                 indexed,
+                wtf: s.wtf(),
             }
         }
     }
 
     /// The shape after it ran without a failpoint.
     pub fn reference(shape: Shape) -> Side {
-        let s = Scene::new();
+        let s = shape.scene();
         let args = shape.prepare(&s);
         s.run(&args, "").expect(0);
         Side::of(&s, shape)
     }
 
-    /// Every failpoint as a crash of `shape`. Each folder is wholly old or wholly new at
-    /// every instant; a reader reports and writes nothing; the next command recovers;
-    /// then folders, records and the files index sit together on one side, the side
-    /// history says (a mix of new folders and old records fails), every record's folders
-    /// exist, and the generation and lock inode agree. Records-only shapes never move a
-    /// folder.
-    pub fn shape_matrix(shape: Shape) {
-        let new = reference(shape);
-        let mut crashed_at = Vec::new();
-        for failpoint in FAILPOINTS {
-            let s = Scene::new();
-            let args = shape.prepare(&s);
-            let old = Side::of(&s, shape);
-            assert_ne!(old, new, "{shape:?}: the reference run changed nothing");
-            let (old_generation, old_history, old_inode) =
-                (s.generation(), s.history(), s.lock_inode());
-            let r = s.run(&args, &format!("{failpoint}=abort"));
-            let context = |what: &str| {
-                format!(
-                    "{shape:?} at {failpoint}: {what}\nold {old:?}\nnew {new:?}\nnow {:?}\nhistory {:?}\njournals {:?}\n{}",
-                    Side::of(&s, shape),
-                    s.history_ops(),
-                    s.journals()
-                        .iter()
-                        .map(|p| fs::read_to_string(p).unwrap_or_default())
-                        .collect::<Vec<_>>(),
-                    r.context()
-                )
-            };
-            if r.code == -1 {
-                crashed_at.push(*failpoint);
-            } else {
-                assert_eq!(r.code, 0, "{}", context("off the path, so it must succeed"));
-            }
-            for (folder, now) in s.folders_of(shape.folders()) {
+    /// `shape` run with the failpoints `spec` armed, then the shape oracle. Each folder
+    /// is wholly old or wholly new at every instant (or absent, between the two renames
+    /// of the `fallback`); a reader reports and writes nothing; the next command
+    /// recovers; then folders, records, the files index and SavedVariables sit together
+    /// on one side, the side history says (a mix of new folders and old records fails),
+    /// every record's folders exist, and the generation and lock inode agree.
+    /// Records-only shapes never move a folder.
+    pub fn crash_shape(shape: Shape, spec: &str, new: &Side, fallback: bool) -> Crash {
+        let s = shape.scene();
+        let args = shape.prepare(&s);
+        let old = Side::of(&s, shape);
+        assert_ne!(&old, new, "{shape:?}: the reference run changed nothing");
+        let (old_generation, old_history, old_inode) =
+            (s.generation(), s.history(), s.lock_inode());
+        let r = s.run(&args, spec);
+        let context = |what: &str| {
+            format!(
+                "{shape:?} at {spec}: {what}\nold {old:?}\nnew {new:?}\nnow {:?}\nhistory {:?}\njournals {:?}\n{}",
+                Side::of(&s, shape),
+                s.history_ops(),
+                s.journals()
+                    .iter()
+                    .map(|p| fs::read_to_string(p).unwrap_or_default())
+                    .collect::<Vec<_>>(),
+                r.context()
+            )
+        };
+        let crashed = r.code == -1;
+        if !crashed {
+            assert_eq!(r.code, 0, "{}", context("off the path, so it must succeed"));
+        }
+        let at_crash = s.folders_of(shape.folders());
+        for (folder, now) in &at_crash {
+            assert!(
+                *now == old.folders[folder]
+                    || *now == new.folders[folder]
+                    || (fallback && now.is_none()),
+                "{}",
+                context(&format!("{folder} is neither old nor new"))
+            );
+        }
+        let mixed = at_crash != old.folders && at_crash != new.folders;
+        assert_eq!(s.wtf(), old.wtf, "{}", context("SavedVariables changed"));
+
+        // A reader reports the unfinished transaction and changes nothing.
+        let pending_before = pending(&s);
+        let journals = s.journals();
+        let before = s.snapshot();
+        let status = s
+            .run(&["status".to_owned(), "--json".to_owned()], "")
+            .expect(0);
+        assert_eq!(
+            warning_codes(&status)
+                .iter()
+                .any(|c| c == "journal_pending"),
+            pending_before > 0,
+            "{}",
+            context("status warnings")
+        );
+        assert_eq!(s.snapshot(), before, "{}", context("status wrote"));
+        assert_eq!(s.journals(), journals, "{}", context("status recovered"));
+
+        // The next command that takes the lock recovers.
+        let bar = s.run(&s.install_args("gh:o/bar", "bar"), "").expect(0);
+        assert_eq!(
+            warning_codes(&bar).iter().any(|c| c == "journal_recovered"),
+            pending_before > 0,
+            "{}",
+            context("recovery warning")
+        );
+        assert!(s.journals().is_empty(), "{}", context("journals left"));
+        assert_snapshots(&s, &context, crashed && pending_before == 0);
+        let allowed: Vec<&str> = shape.folders().iter().copied().chain(["Bar"]).collect();
+        let stray = s.stray(&allowed);
+        assert!(stray.is_empty(), "{}", context(&format!("stray {stray:?}")));
+
+        // One side for folders, records and index together, the one history says.
+        let history = s.history();
+        let committed = history.len() == old_history.len() + 2
+            && history.get(old_history.len()).map(String::as_str) == Some(shape.kind());
+        let mut expected = old_history.clone();
+        if committed {
+            expected.push(shape.kind().to_owned());
+        }
+        expected.push("install".to_owned());
+        assert_eq!(history, expected, "{}", context("history"));
+        let now = Side::of(&s, shape);
+        let side = if committed { new } else { &old };
+        assert_eq!(&now, side, "{}", context("not one consistent side"));
+        assert_eq!(
+            s.generation(),
+            old_generation + u64::from(committed) + 1,
+            "{}",
+            context("generation")
+        );
+        for (name, record) in s.view() {
+            for folder in record["folders"].as_array().into_iter().flatten() {
+                let folder = folder.as_str().unwrap_or_default();
                 assert!(
-                    now == old.folders[&folder] || now == new.folders[&folder],
+                    s.addons().join(folder).is_dir(),
                     "{}",
-                    context(&format!("{folder} is neither old nor new"))
+                    context(&format!("{name} records {folder}, which is gone"))
                 );
             }
-
-            // A reader reports the unfinished transaction and changes nothing.
-            let pending_before = pending(&s);
-            let journals = s.journals();
-            let before = s.snapshot();
-            let status = s
-                .run(&["status".to_owned(), "--json".to_owned()], "")
-                .expect(0);
-            assert_eq!(
-                warning_codes(&status)
-                    .iter()
-                    .any(|c| c == "journal_pending"),
-                pending_before > 0,
-                "{}",
-                context("status warnings")
-            );
-            assert_eq!(s.snapshot(), before, "{}", context("status wrote"));
-            assert_eq!(s.journals(), journals, "{}", context("status recovered"));
-
-            // The next command that takes the lock recovers.
-            let bar = s.run(&s.install_args("gh:o/bar", "bar"), "").expect(0);
-            assert_eq!(
-                warning_codes(&bar).iter().any(|c| c == "journal_recovered"),
-                pending_before > 0,
-                "{}",
-                context("recovery warning")
-            );
-            assert!(s.journals().is_empty(), "{}", context("journals left"));
-            assert_snapshots(&s, &context);
-            let allowed: Vec<&str> = shape.folders().iter().copied().chain(["Bar"]).collect();
-            let stray = s.stray(&allowed);
-            assert!(stray.is_empty(), "{}", context(&format!("stray {stray:?}")));
-
-            // One side for folders, records and index together, the one history says.
-            let history = s.history();
-            let committed = history.len() == old_history.len() + 2
-                && history.get(old_history.len()).map(String::as_str) == Some(shape.kind());
-            let mut expected = old_history.clone();
-            if committed {
-                expected.push(shape.kind().to_owned());
-            }
-            expected.push("install".to_owned());
-            assert_eq!(history, expected, "{}", context("history"));
-            let now = Side::of(&s, shape);
-            let side = if committed { &new } else { &old };
-            assert_eq!(&now, side, "{}", context("not one consistent side"));
-            assert_eq!(
-                s.generation(),
-                old_generation + u64::from(committed) + 1,
-                "{}",
-                context("generation")
-            );
-            for (name, record) in s.view() {
-                for folder in record["folders"].as_array().into_iter().flatten() {
-                    let folder = folder.as_str().unwrap_or_default();
-                    assert!(
-                        s.addons().join(folder).is_dir(),
-                        "{}",
-                        context(&format!("{name} records {folder}, which is gone"))
-                    );
-                }
-            }
-            if let Some(inode) = old_inode {
-                assert_eq!(s.lock_inode(), Some(inode), "{}", context("lock replaced"));
-            }
         }
+        if let Some(inode) = old_inode {
+            assert_eq!(s.lock_inode(), Some(inode), "{}", context("lock replaced"));
+        }
+        let swept = sweep_aged(&s, &context);
+        Crash {
+            crashed,
+            mixed,
+            swept,
+        }
+    }
+
+    /// Every journaled rename of `shape` as a crash.
+    pub fn shape_rename_matrix(shape: Shape) {
+        let new = reference(shape);
+        renames(&format!("{shape:?}"), |spec, fallback| {
+            crash_shape(shape, spec, &new, fallback)
+        });
+    }
+
+    /// Every failpoint as a crash of `shape`. Unless it is records-only, some crash
+    /// before `prepared` leaves SavedVariables copies, which the sweep takes.
+    pub fn shape_matrix(shape: Shape) {
+        let new = reference(shape);
+        let mut swept = false;
+        let crashed_at: Vec<&str> = FAILPOINTS
+            .iter()
+            .copied()
+            .filter(|failpoint| {
+                let done = crash_shape(shape, &format!("{failpoint}=abort"), &new, false);
+                swept |= done.swept;
+                done.crashed
+            })
+            .collect();
+        let records_only = matches!(shape, Shape::Adopt);
+        assert_eq!(
+            swept, !records_only,
+            "{shape:?}: SavedVariables copies left to sweep"
+        );
         let _ = std::io::Write::write_fmt(
             &mut std::io::stderr(),
             format_args!(
@@ -482,9 +669,9 @@ mod support {
     pub fn record_matrix(op: RecordsOp) {
         let mut crashed_at = Vec::new();
         for failpoint in FAILPOINTS {
-            let s = Scene::new();
+            let s = Scene::new().with_saved_variables(common::engine::FOLDERS);
             let args = op.prepare(&s);
-            let old = s.folders();
+            let (old, old_wtf) = (s.folders(), s.wtf());
             let (old_generation, old_history, old_inode) =
                 (s.generation(), s.history(), s.lock_inode());
             let old_record = s.record("foo");
@@ -501,7 +688,8 @@ mod support {
                     r.context()
                 )
             };
-            if r.code == -1 {
+            let crashed = r.code == -1;
+            if crashed {
                 crashed_at.push(*failpoint);
             } else {
                 assert_eq!(r.code, 0, "{}", context("off the path, so it must succeed"));
@@ -512,6 +700,7 @@ mod support {
                 "{}",
                 context("a records-only crash moved a folder")
             );
+            assert_eq!(s.wtf(), old_wtf, "{}", context("SavedVariables changed"));
 
             // A reader reports the unfinished transaction and changes nothing.
             let pending_before = pending(&s);
@@ -540,7 +729,7 @@ mod support {
                 context("recovery warning")
             );
             assert!(s.journals().is_empty(), "{}", context("journals left"));
-            assert_snapshots(&s, &context);
+            assert_snapshots(&s, &context, crashed && pending_before == 0);
             let stray = s.stray(&["Foo", "FooOld", "Bar"]);
             assert!(stray.is_empty(), "{}", context(&format!("stray {stray:?}")));
 
@@ -578,6 +767,7 @@ mod support {
             if let Some(inode) = old_inode {
                 assert_eq!(s.lock_inode(), Some(inode), "{}", context("lock replaced"));
             }
+            sweep_aged(&s, &context);
         }
         let _ = std::io::Write::write_fmt(
             &mut std::io::stderr(),
@@ -617,6 +807,31 @@ fn crash_matrix_remove() {
 #[test]
 fn crash_matrix_pin() {
     record_matrix(RecordsOp::Pin);
+}
+
+#[test]
+fn a_crash_at_every_rename_of_an_install() {
+    rename_matrix(Op::Install);
+}
+
+#[test]
+fn a_crash_at_every_rename_of_an_update() {
+    rename_matrix(Op::Update);
+}
+
+#[test]
+fn a_crash_at_every_rename_of_a_remove() {
+    rename_matrix(Op::Remove);
+}
+
+#[test]
+fn a_crash_at_every_rename_of_an_update_of_three() {
+    shape_rename_matrix(Shape::UpdateMany);
+}
+
+#[test]
+fn a_crash_at_every_rename_of_a_handover() {
+    shape_rename_matrix(Shape::Handover);
 }
 
 #[test]
@@ -711,6 +926,21 @@ fn the_reference_runs_change_what_they_should() {
     let first = expected_new(Op::FirstInstall);
     let update = expected_new(Op::Update);
     let remove = expected_new(Op::Remove);
+    let sv = Op::Install.scene().wtf();
+    assert!(sv.is_some());
+    for (op, done) in [
+        ("install", &install),
+        ("update", &update),
+        ("remove", &remove),
+    ] {
+        assert_eq!(done.wtf, sv, "{op} never changes SavedVariables");
+    }
+    let (install, first, update, remove) = (
+        install.folders,
+        first.folders,
+        update.folders,
+        remove.folders,
+    );
     assert!(install["Foo"].is_some() && install["FooOld"].is_some());
     assert_eq!(
         first, install,

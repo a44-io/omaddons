@@ -31,6 +31,21 @@ pub const V2: &[(&str, &str)] = &[
 pub const BAR: &[(&str, &str)] = &[("Bar/Bar.toc", "## Interface: 120105\n## Version: 7\n")];
 /// Every folder the Foo scenarios touch.
 pub const FOLDERS: &[&str] = &["Foo", "FooOld"];
+/// A scene's SavedVariables of `folder`, relative to the client dir: the account's
+/// `<folder>.lua` and `.lua.bak` and one character's `<folder>.lua`. Names are fake.
+pub fn saved_variables(folder: &str) -> [String; 3] {
+    [
+        format!("WTF/Account/ACCT/SavedVariables/{folder}.lua"),
+        format!("WTF/Account/ACCT/SavedVariables/{folder}.lua.bak"),
+        format!("WTF/Account/ACCT/Realm/Char/SavedVariables/{folder}.lua"),
+    ]
+}
+
+/// The SavedVariables file of `folder` a play session creates: the character's
+/// `.lua.bak`.
+pub fn saved_variables_created(folder: &str) -> String {
+    format!("WTF/Account/ACCT/Realm/Char/SavedVariables/{folder}.lua.bak")
+}
 
 /// A retail client with the fixture archives on disk.
 pub struct Scene {
@@ -47,6 +62,51 @@ impl Scene {
             fs::write(dl.join(format!("{name}.zip")), zip_text(entries)).unwrap();
         }
         Self { home, dl }
+    }
+
+    /// The scene with SavedVariables of each of `folders` (1 KiB each), so every
+    /// transaction that touches them snapshots them.
+    pub fn with_saved_variables(self, folders: &[&str]) -> Self {
+        for rel in folders.iter().flat_map(|f| saved_variables(f)) {
+            let path = self.home.client("_retail_").join(&rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let line = format!("DB = {{ [\"{rel}\"] = true }}\n");
+            fs::write(&path, line.repeat(1024 / line.len() + 1)).unwrap();
+        }
+        self
+    }
+
+    /// What a play session does to the SavedVariables of `folders`: every file changed,
+    /// and each character's `.lua.bak` created.
+    pub fn play(&self, folders: &[&str]) {
+        for folder in folders {
+            for rel in saved_variables(folder) {
+                let path = self.home.client("_retail_").join(rel);
+                let mut text = fs::read_to_string(&path).unwrap();
+                text.push_str("DB.played = true\n");
+                fs::write(&path, text).unwrap();
+            }
+            let created = self
+                .home
+                .client("_retail_")
+                .join(saved_variables_created(folder));
+            fs::write(created, "DB = { created = true }\n").unwrap();
+        }
+    }
+
+    /// The client's `WTF/` tree hash (paths and bytes), `None` when it has none.
+    pub fn wtf(&self) -> Option<String> {
+        let wtf = self.home.client("_retail_").join("WTF");
+        wtf.is_dir().then(|| tree_hash(&wtf))
+    }
+
+    /// Moves every orphan snapshot dir's mtime two hours back, past the sweep's
+    /// `ORPHAN_MIN_AGE`.
+    pub fn age_orphan_snapshots(&self) {
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
+        for dir in self.orphan_snapshots() {
+            fs::File::open(&dir).unwrap().set_modified(past).unwrap();
+        }
     }
 
     pub fn zip(&self, name: &str) -> String {
