@@ -578,9 +578,9 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--json`, `--robot` | One JSON envelope on stdout (see [The JSON contract](#the-json-contract)) |
 | `--format json\|human` | Overrides `--json`; default `human`, or `OMADDONS_FORMAT=json` |
 | `-t, --target <TARGET>` (alias `--flavor`) | The client to act on: [any selector](#choosing-a-target-with--t) |
-| `--dry-run` | Show the plan without changing anything (mutating commands) |
+| `--dry-run` | Show the plan without changing anything. Every command accepts it; one that changes nothing ignores it |
 | `--actor human\|agent\|widget` | Who is acting, recorded in history by every command that changes something. Default `OMADDONS_ACTOR`, else `human` when stdin is a terminal, else `agent`. In `history` it filters |
-| `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters) |
+| `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters); others accept and ignore it |
 | `--offline` | Fail any network access (`OMADDONS_OFFLINE=1`) |
 | `--while-running` | Allow folder changes while the client runs (never SavedVariables) |
 | `--no-color` | No ANSI color (also `NO_COLOR`) |

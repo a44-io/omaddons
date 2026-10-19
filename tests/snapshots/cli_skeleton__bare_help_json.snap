@@ -226,7 +226,7 @@ expression: envelope
         "takes_value": true
       },
       {
-        "about": "Show the plan without changing anything (mutating commands)",
+        "about": "Show the plan without changing anything (ignored by commands that change nothing)",
         "name": "dry-run",
         "short": null,
         "takes_value": false
@@ -238,7 +238,7 @@ expression: envelope
         "takes_value": true
       },
       {
-        "about": "Why, recorded verbatim in history (at most 200 characters)",
+        "about": "Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)",
         "name": "reason",
         "short": null,
         "takes_value": true

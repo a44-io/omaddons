@@ -309,6 +309,68 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
     ]);
 }
 
+/// Every command that changes nothing accepts `--dry-run` and `--reason` and ignores
+/// them: its envelope is the same with and without them (`meta` aside), and the flagged
+/// run writes nothing to state. A run first warms what the command derives anyway (the
+/// release memo, the cache), so the two compared runs see the same state.
+#[test]
+fn read_only_commands_ignore_dry_run_and_reason() {
+    let s = Scene::new();
+    s.install_foo();
+    let state = s.home.env.state();
+    let invocation = |name: &str| -> Option<&[&str]> {
+        Some(match name {
+            "status" => &["status"],
+            "list" => &["list"],
+            "outdated" => &["outdated"],
+            "info" => &["info", "Foo"],
+            "search" => &["search", "foo"],
+            "history" => &["history"],
+            "net-log" => &["net-log"],
+            "targets" => &["targets"],
+            "config" => &["config"],
+            "config get" => &["config", "get", "default_channel"],
+            "config path" => &["config", "path"],
+            "help" => &["help"],
+            _ => return None,
+        })
+    };
+    let read_only: Vec<&str> = omaddons::app::COMMANDS
+        .iter()
+        .filter(|c| !c.mutates)
+        .map(|c| c.name)
+        .collect();
+    assert!(read_only.len() >= 12, "{read_only:?}");
+    for name in read_only {
+        let args = invocation(name);
+        assert!(args.is_some(), "add a read-only invocation of {name} here");
+        let args = args.unwrap_or_default();
+        let plain = s.home.run(args);
+        let code = plain.code;
+        let plain = s.home.run(args);
+        assert_eq!(plain.code, code, "{args:?}\n{}", plain.context());
+        let before = state_tree(&state);
+        let mut flagged_args = args.to_vec();
+        flagged_args.extend(["--dry-run", "--reason", "x"]);
+        let flagged = s.home.run(&flagged_args);
+        assert_eq!(
+            flagged.code,
+            code,
+            "{flagged_args:?}\n{}",
+            flagged.context()
+        );
+        assert_eq!(
+            support::without_meta(&flagged.stdout),
+            support::without_meta(&plain.stdout),
+            "{name}: the flags changed the envelope"
+        );
+        assert!(
+            state_tree(&state) == before,
+            "{name}: --dry-run --reason wrote to state"
+        );
+    }
+}
+
 #[test]
 fn ci_and_dumb_terminals_get_ndjson_stderr() {
     let s = Scene::new();

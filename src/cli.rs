@@ -70,13 +70,14 @@ pub struct GlobalArgs {
         value_name = "TARGET"
     )]
     pub target: Option<String>,
-    /// Show the plan without changing anything (mutating commands)
+    /// Show the plan without changing anything (ignored by commands that change nothing)
     #[arg(long, global = true)]
     pub dry_run: bool,
     /// Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
     #[arg(long, global = true, value_name = "ACTOR")]
     pub actor: Option<String>,
-    /// Why, recorded verbatim in history (at most 200 characters)
+    /// Why, recorded verbatim in history (at most 200 characters; ignored by commands
+    /// that change nothing)
     #[arg(long, global = true, value_name = "TEXT")]
     pub reason: Option<String>,
     /// Fail any network access [env: OMADDONS_OFFLINE=1]
