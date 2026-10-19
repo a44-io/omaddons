@@ -4,7 +4,6 @@
 use super::*;
 use crate::support::check;
 use common::home::wait;
-use std::time::{Duration, Instant};
 
 /// Arguments and extra environment of one way to ask for JSON.
 type Spelling<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)]);
@@ -22,16 +21,13 @@ fn a_held_lock_is_locked_and_retryable() {
         "-t",
         "retail",
     ];
+    // The holder stops inside its commit, the lock held, until resumed.
+    let pause = common::pause::Pause::new(s.home.env.root());
     let holder = s.home.spawn(
         &argv,
-        &[("OMADDONS_FAILPOINTS", "engine.swapped=sleep:8000")],
+        &[("OMADDONS_FAILPOINTS", "engine.swapped=pause"), pause.env()],
     );
-    let journal = s.home.state().join("journal");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while fs::read_dir(&journal).map(|l| l.count()).unwrap_or(0) == 0 {
-        assert!(Instant::now() < deadline, "the holder never journaled");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    pause.reached("engine.swapped");
     let c = s.json(&["remove", "Foo", "-t", "retail"], 5);
     assert_eq!(c.envelope["error"]["code"], "locked");
     assert_eq!(c.envelope["error"]["retryable"], true);
@@ -40,6 +36,7 @@ fn a_held_lock_is_locked_and_retryable() {
         c.envelope["error"]["fix_argv"],
         serde_json::json!(["omaddons", "remove", "Foo", "-t", "retail"])
     );
+    pause.resume("engine.swapped");
     let done = wait(holder, &argv);
     assert_eq!(done.code, 0, "{}", done.context());
 }

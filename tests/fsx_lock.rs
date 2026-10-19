@@ -33,7 +33,8 @@ mod support {
 
     /// Spawns the `child_holder` helper: it takes the lock named by `mode` (`global` or
     /// an in-flight tx id), writes `held` into `home`, holds for `hold_ms`, writes
-    /// `released` with the release time in nanoseconds, and exits.
+    /// `released` with the release time in nanoseconds, and exits. A `pause` failpoint
+    /// keeps its markers in `home`.
     pub fn spawn_holder(home: &Path, mode: &str, hold_ms: u64, failpoints: &str) -> Child {
         Command::new(std::env::current_exe().unwrap())
             .args([
@@ -47,6 +48,7 @@ mod support {
             .env("OMADDONS_LOCK_TEST_MODE", mode)
             .env("OMADDONS_LOCK_TEST_HOLD_MS", hold_ms.to_string())
             .env("OMADDONS_FAILPOINTS", failpoints)
+            .env("OMADDONS_FAILPOINT_DIR", home)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -98,6 +100,7 @@ fn child_holder() {
         Box::new(InflightLock::create(&p, &mode.parse::<TxId>().unwrap()).unwrap())
     };
     fs::write(home.join("held"), b"").unwrap();
+    // The hold the tests measure a waiter against; `held` above is what orders them.
     std::thread::sleep(hold);
     fs::write(home.join("released"), now_ns().to_string()).unwrap();
     drop(guard);
@@ -190,17 +193,12 @@ fn probe_reports_missing_held_and_free() {
     assert_eq!(probe_global(&p).unwrap(), LockState::Missing);
     assert!(!p.lock_file().exists(), "probing creates nothing");
 
-    // The holder sleeps inside the failpoint between the flock and the holder write,
-    // so the probe sees the lock held while the holder info is still unwritten.
-    let mut child = spawn_holder(dir.path(), "global", 0, "fsx.lock.acquired=sleep:500");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        if matches!(probe_global(&p).unwrap(), LockState::Held { .. }) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the child never held the lock");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // The holder pauses inside the failpoint between the flock and the holder write, so
+    // the probe sees the lock held while the holder info is still unwritten.
+    let mut child = spawn_holder(dir.path(), "global", 0, "fsx.lock.acquired=pause");
+    wait_for(&dir.path().join("fsx.lock.acquired.reached"));
+    assert_eq!(probe_global(&p).unwrap(), LockState::Held { holder: None });
+    fs::write(dir.path().join("fsx.lock.acquired.resume"), b"").unwrap();
     assert!(child.wait().unwrap().success());
     assert_eq!(probe_global(&p).unwrap(), LockState::Free);
 }

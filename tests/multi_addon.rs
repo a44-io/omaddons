@@ -58,18 +58,6 @@ mod support {
         }
     }
 
-    /// Waits until `ready` holds (10 s at most).
-    pub fn poll(what: &str, ready: impl Fn() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !ready() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for {what}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    }
-
     /// `(request, status)` per item of an install envelope.
     pub fn items(envelope: &Value) -> Vec<(String, String)> {
         envelope["data"]["items"]
@@ -227,16 +215,17 @@ fn a_ref_asked_for_twice_installs_once() {
 /// completion, and returns the paused command's result.
 fn while_planned(home: &Home, meanwhile: &[&str]) -> common::home::Run {
     let argv = ["install", "gh:o/a", "gh:o/b", "-t", "retail"];
+    let pause = common::pause::Pause::new(home.env.root());
     let child = home.spawn(
         &argv,
-        &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:2000")],
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.plan.done=pause"),
+            pause.env(),
+        ],
     );
-    let inflight = home.planning_locks();
-    support::poll("the install to plan", || {
-        std::fs::read_dir(&inflight).is_ok_and(|mut d| d.next().is_some())
-    });
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    pause.reached("engine.plan.done");
     home.run(meanwhile).expect(0);
+    pause.resume("engine.plan.done");
     common::home::wait(child, &argv)
 }
 

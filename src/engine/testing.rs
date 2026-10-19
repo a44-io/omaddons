@@ -635,3 +635,41 @@ pub fn tree_snapshot(dir: &Path) -> Vec<TreeEntry> {
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
 }
+
+/// One thread's `pause` failpoint markers (`failpoint::with_spec_in`): the test waits
+/// until the thread [`Pause::reached`] a step, acts, then [`Pause::resume`]s it, so the
+/// interleaving a test names is the one that runs.
+pub struct Pause {
+    dir: tempfile::TempDir,
+}
+
+impl Pause {
+    pub fn new() -> Self {
+        Self {
+            dir: tempfile::tempdir().unwrap(),
+        }
+    }
+
+    /// Where the thread's markers go: pass it to `failpoint::with_spec_in`.
+    pub fn dir(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Waits (30 s at most) until the thread stops at `name`.
+    pub fn reached(&self, name: &str) {
+        let marker = self.dir().join(format!("{name}.reached"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the thread never reached {name}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// Lets the thread go on from `name`; later hits of `name` pass straight through.
+    pub fn resume(&self, name: &str) {
+        std::fs::write(self.dir().join(format!("{name}.resume")), "").unwrap();
+    }
+}

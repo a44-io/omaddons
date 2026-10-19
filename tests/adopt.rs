@@ -65,18 +65,6 @@ mod support {
         out
     }
 
-    /// Waits up to ten seconds for `ready`.
-    pub fn poll(what: &str, ready: impl Fn() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !ready() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for {what}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    }
-
     /// Foo `tag`: `Foo` (its TOC naming the version) and `Foo_Options`, for retail.
     pub fn foo(tag: &str) -> Vec<(String, String)> {
         vec![
@@ -1147,20 +1135,22 @@ fn a_file_changed_between_planning_and_the_lock_is_plan_stale() {
     unpack(&addons, &borrowed(&foo("v1")));
     home.run(&["status"]).expect(0);
     let argv = ["adopt", "--apply", "--no-verify"];
+    let pause = common::pause::Pause::new(home.env.root());
     let child = home.spawn(
         &argv,
-        &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:2000")],
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.plan.done=pause"),
+            pause.env(),
+        ],
     );
-    let inflight = home.planning_locks();
-    support::poll("adopt to plan", || {
-        fs::read_dir(&inflight).is_ok_and(|mut d| d.next().is_some())
-    });
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // Planned, so the folder is hashed; the edit lands before the lock.
+    pause.reached("engine.plan.done");
     fs::write(
         addons.join("Foo/core.lua"),
         "-- edited after indexing, longer\n",
     )
     .unwrap();
+    pause.resume("engine.plan.done");
     let r = common::home::wait(child, &argv);
     let envelope = r.expect(1);
     assert_eq!(

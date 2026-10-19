@@ -226,12 +226,17 @@ fn a_sibling_that_records_it_meanwhile_is_seen_under_the_lock() {
     let s = Shared::new();
     let both = s.both.display().to_string();
     let args = ["install", both.as_str(), "-t", "anniversary", "--force"];
+    let pause = common::pause::Pause::new(s.home.env.root());
     let slow = s.home.spawn(
         &args,
-        &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:1500")],
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.plan.done=pause"),
+            pause.env(),
+        ],
     );
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    pause.reached("engine.plan.done");
     s.run(&["install", &both, "-t", "era"]).expect(0);
+    pause.resume("engine.plan.done");
     let r = wait(slow, &args);
     let envelope = r.envelope();
     assert_eq!(envelope["ok"], false, "{}", r.context());

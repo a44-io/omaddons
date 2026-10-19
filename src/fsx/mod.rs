@@ -14,7 +14,7 @@ pub(crate) mod sys;
 
 #[cfg(debug_assertions)]
 #[doc(hidden)]
-pub use failpoint::with_spec;
+pub use failpoint::{with_spec, with_spec_in};
 pub use lock::{GlobalLock, GlobalLockGuard, HolderInfo, InflightLock, LockState, probe_global};
 pub(crate) use mutate::count_hashed;
 #[cfg(test)]

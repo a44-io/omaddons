@@ -1345,7 +1345,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::engine::testing::TxScene;
+    use crate::engine::testing::{Pause, TxScene};
     use crate::error::ErrorCode;
     use crate::state::history::HistoryFilter;
 
@@ -1774,21 +1774,14 @@ mod tests {
     fn the_lock_is_free_while_staging() {
         let scene = with_v1();
         let v2 = scene.zip("v2.zip", V2);
-        let stage_root = scene.client.meta_dir().join("stage");
+        let pause = Pause::new();
         std::thread::scope(|s| {
             let worker = s.spawn(|| {
-                failpoint::with_spec("engine.stage.synced=sleep:600", || {
+                failpoint::with_spec_in(pause.dir(), "engine.stage.synced=pause", || {
                     scene.run(vec![scene.install("gh:o/foo", &v2)])
                 })
             });
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while std::fs::read_dir(&stage_root).map_or(true, |mut d| d.next().is_none()) {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "staging never started"
-                );
-                std::thread::sleep(Duration::from_millis(5));
-            }
+            pause.reached("engine.stage.synced");
             let lock =
                 GlobalLock::acquire_with_timeout(&scene.paths, "other", Duration::from_millis(200));
             assert!(
@@ -1796,6 +1789,7 @@ mod tests {
                 "another process can take the lock during staging"
             );
             drop(lock);
+            pause.resume("engine.stage.synced");
             let done = worker.join().unwrap().unwrap();
             assert!(done.failures.is_empty(), "{:?}", done.failures);
         });
@@ -1807,15 +1801,17 @@ mod tests {
         // Same release committed meanwhile: a no-op.
         let scene = TxScene::new();
         let v1 = scene.zip("v1.zip", V1);
+        let pause = Pause::new();
         std::thread::scope(|s| {
             let slow = s.spawn(|| {
-                failpoint::with_spec("engine.stage.synced=sleep:400", || {
+                failpoint::with_spec_in(pause.dir(), "engine.stage.synced=pause", || {
                     scene.run(vec![scene.install("gh:o/foo", &v1)])
                 })
             });
-            std::thread::sleep(Duration::from_millis(150));
+            pause.reached("engine.stage.synced");
             let fast = scene.run(vec![scene.install("gh:o/foo", &v1)]).unwrap();
             assert_eq!(fast.outcomes[0].kind, Some(TxKind::Install));
+            pause.resume("engine.stage.synced");
             let slow = slow.join().unwrap().unwrap();
             assert!(slow.failures.is_empty(), "{:?}", slow.failures);
             assert_eq!(
@@ -1833,13 +1829,14 @@ mod tests {
             &[("FooOld/FooOld.toc", "## Interface: 120105\n")],
         );
         let mine = scene.zip("mine.zip", &[("Bar/Bar.toc", "## Interface: 120105\n")]);
+        let pause = Pause::new();
         std::thread::scope(|s| {
             let slow = s.spawn(|| {
-                failpoint::with_spec("engine.stage.synced=sleep:400", || {
+                failpoint::with_spec_in(pause.dir(), "engine.stage.synced=pause", || {
                     scene.run(vec![scene.install("gh:o/bar", &mine)])
                 })
             });
-            std::thread::sleep(Duration::from_millis(150));
+            pause.reached("engine.stage.synced");
             scene
                 .run(vec![plan::RequestedChange::Remove {
                     addon: "Foo".into(),
@@ -1847,6 +1844,7 @@ mod tests {
                 .unwrap();
             // An unmanaged folder now takes Bar's name.
             std::fs::create_dir_all(scene.client.addons().join("Bar")).unwrap();
+            pause.resume("engine.stage.synced");
             let slow = slow.join().unwrap().unwrap();
             let error = slow.failures[0].cause.as_ref().unwrap();
             assert_eq!((error.code, error.retryable), (ErrorCode::PlanStale, true));
@@ -2126,11 +2124,14 @@ mod tests {
         // A pin, while another addon is installed.
         let scene = with_v1();
         let bar = scene.zip("bar.zip", &[("Bar/Bar.toc", "## Interface: 120105\n")]);
+        let pause = Pause::new();
         std::thread::scope(|s| {
-            let slow =
-                s.spawn(|| failpoint::with_spec("engine.plan.done=sleep:400", || pin(&scene)));
-            std::thread::sleep(Duration::from_millis(150));
+            let slow = s.spawn(|| {
+                failpoint::with_spec_in(pause.dir(), "engine.plan.done=pause", || pin(&scene))
+            });
+            pause.reached("engine.plan.done");
             scene.run(vec![scene.install("gh:o/bar", &bar)]).unwrap();
+            pause.resume("engine.plan.done");
             let slow = slow.join().unwrap().unwrap();
             assert!(slow.failures.is_empty(), "{:?}", slow.failures);
             assert_eq!(slow.outcomes[0].kind, Some(TxKind::Pin));
@@ -2143,16 +2144,18 @@ mod tests {
         let add = scene.edit("Foo", RecordEdit::AddRequiredBy("Bar".into()));
         scene.run(vec![add]).unwrap();
         let v2 = scene.zip("v2.zip", V2);
+        let pause = Pause::new();
         let updated = std::thread::scope(|s| {
             let slow = s.spawn(|| {
-                failpoint::with_spec("engine.plan.done=sleep:400", || {
+                failpoint::with_spec_in(pause.dir(), "engine.plan.done=pause", || {
                     let drop = scene.edit("Foo", RecordEdit::RemoveRequiredBy("Bar".into()));
                     scene.run(vec![drop])
                 })
             });
-            std::thread::sleep(Duration::from_millis(150));
+            pause.reached("engine.plan.done");
             scene.run(vec![scene.install("gh:o/foo", &v2)]).unwrap();
             let updated = scene.record().addons["foo"].release_id.clone();
+            pause.resume("engine.plan.done");
             let slow = slow.join().unwrap().unwrap();
             assert!(slow.failures.is_empty(), "{:?}", slow.failures);
             assert!(slow.outcomes[0].tx.is_some());
@@ -2168,11 +2171,14 @@ mod tests {
     fn a_concurrent_update_breaking_a_pin_guard_is_plan_stale() {
         let scene = with_v1();
         let v2 = scene.zip("v2.zip", V2);
+        let pause = Pause::new();
         std::thread::scope(|s| {
-            let slow =
-                s.spawn(|| failpoint::with_spec("engine.plan.done=sleep:400", || pin(&scene)));
-            std::thread::sleep(Duration::from_millis(150));
+            let slow = s.spawn(|| {
+                failpoint::with_spec_in(pause.dir(), "engine.plan.done=pause", || pin(&scene))
+            });
+            pause.reached("engine.plan.done");
             scene.run(vec![scene.install("gh:o/foo", &v2)]).unwrap();
+            pause.resume("engine.plan.done");
             let slow = slow.join().unwrap().unwrap();
             let error = slow.failures[0].cause.as_ref().unwrap();
             assert_eq!((error.code, error.retryable), (ErrorCode::PlanStale, true));
@@ -2188,14 +2194,16 @@ mod tests {
         let baz = scene.client.addons().join("Baz");
         crate::engine::testing::folder(&baz, "mine");
         let adopt = scene.adopt("Baz");
+        let pause = Pause::new();
         std::thread::scope(|s| {
             let slow = s.spawn(|| {
-                failpoint::with_spec("engine.plan.done=sleep:400", || {
+                failpoint::with_spec_in(pause.dir(), "engine.plan.done=pause", || {
                     scene.run_as(vec![adopt.clone()], Some(TxKind::Adopt), TxKind::Install)
                 })
             });
-            std::thread::sleep(Duration::from_millis(150));
+            pause.reached("engine.plan.done");
             std::fs::write(baz.join("extra.lua"), "-- added after indexing").unwrap();
+            pause.resume("engine.plan.done");
             let slow = slow.join().unwrap().unwrap();
             let error = slow.failures[0].cause.as_ref().unwrap();
             assert_eq!((error.code, error.retryable), (ErrorCode::PlanStale, true));
@@ -2212,14 +2220,16 @@ mod tests {
         for folder in ["Foo", "FooOld"] {
             std::fs::remove_dir_all(scene.client.addons().join(folder)).unwrap();
         }
+        let pause = Pause::new();
         std::thread::scope(|s| {
             let slow = s.spawn(|| {
-                failpoint::with_spec("engine.plan.done=sleep:400", || {
+                failpoint::with_spec_in(pause.dir(), "engine.plan.done=pause", || {
                     scene.run_as(vec![scene.remove("Foo")], None, TxKind::Remove)
                 })
             });
-            std::thread::sleep(Duration::from_millis(150));
+            pause.reached("engine.plan.done");
             crate::engine::testing::folder(&scene.client.addons().join("FooOld"), "back");
+            pause.resume("engine.plan.done");
             let slow = slow.join().unwrap().unwrap();
             assert!(slow.failures.is_empty(), "{:?}", slow.failures);
             assert_eq!(
@@ -2308,15 +2318,17 @@ mod tests {
     fn a_pin_racing_an_install_of_the_same_release_still_records_itself() {
         let scene = TxScene::new();
         let v1 = scene.zip("v1.zip", V1);
+        let pause = Pause::new();
         std::thread::scope(|s| {
             let slow = s.spawn(|| {
-                failpoint::with_spec("engine.stage.synced=sleep:400", || {
+                failpoint::with_spec_in(pause.dir(), "engine.stage.synced=pause", || {
                     scene.run(vec![scene.install_pinned("gh:o/foo", &v1, "1")])
                 })
             });
-            std::thread::sleep(Duration::from_millis(150));
+            pause.reached("engine.stage.synced");
             let fast = scene.run(vec![scene.install("gh:o/foo", &v1)]).unwrap();
             assert_eq!(fast.outcomes[0].kind, Some(TxKind::Install));
+            pause.resume("engine.stage.synced");
             let slow = slow.join().unwrap().unwrap();
             assert!(slow.failures.is_empty(), "{:?}", slow.failures);
             assert_eq!(

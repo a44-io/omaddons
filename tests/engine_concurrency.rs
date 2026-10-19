@@ -1,32 +1,24 @@
 //! Concurrency checkpoints (vision §5.12, §7 M1), with real processes synchronized by
-//! `sleep` failpoints and generous margins; assertions are on final state, never on
-//! interleavings: a reader during a live swap, recovery only under the lock, concurrent
-//! installs of the same and of different addons, and the lock-hold budget.
+//! `pause` failpoints: each run stops at a named step until the test resumes it, so the
+//! interleaving a test names is the one that runs. A reader during a live swap, recovery
+//! only under the lock, no lock while planning and staging, concurrent installs of the
+//! same and of different addons, and the lock-hold budget.
 
 mod common;
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use common::archives::zip_text;
 use common::engine::{Scene, shapes, warning_codes};
 use common::home::{Run, wait};
+use common::pause::Pause;
 use serde_json::Value;
-use support::{poll, status};
+use support::status;
 
 #[cfg(test)]
 mod support {
     use super::*;
-
-    /// Waits until `ready` holds (10 s at most).
-    pub fn poll(what: &str, ready: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !ready() {
-            assert!(Instant::now() < deadline, "timed out waiting for {what}");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
 
     pub fn status(s: &Scene) -> Value {
         s.run(&["status".to_owned(), "--json".to_owned()], "")
@@ -106,12 +98,14 @@ fn a_reader_during_a_live_swap_reports_it_and_writes_nothing() {
         "retail",
         "--offline",
     ];
+    let pause = Pause::new(s.home.env.root());
     let child = s.home.spawn(
         &argv,
-        &[("OMADDONS_FAILPOINTS", "engine.swapped=sleep:2000")],
+        &[("OMADDONS_FAILPOINTS", "engine.swapped=pause"), pause.env()],
     );
-    // Swapped and committing nothing yet: the state holds still for two seconds.
-    poll("the swap", || support::swapped(&s));
+    // Swapped and committing nothing until resumed: the state holds still.
+    pause.reached("engine.swapped");
+    assert!(support::swapped(&s));
     let before = s.snapshot();
     let envelope = status(&s);
     assert!(
@@ -124,6 +118,7 @@ fn a_reader_during_a_live_swap_reports_it_and_writes_nothing() {
     assert_eq!(s.snapshot(), before, "the reader wrote nothing");
     assert!(support::swapped(&s), "the reader did not recover");
 
+    pause.resume("engine.swapped");
     let done = wait(child, &argv);
     assert_eq!(done.code, 0, "{}", done.context());
     let core = fs::read_to_string(s.addons().join("Foo/core.lua")).unwrap();
@@ -144,7 +139,7 @@ fn recovery_happens_only_under_the_lock() {
     let journals = s.journals();
     assert_eq!(journals.len(), 1);
 
-    // Another command holds the lock (asleep right after taking it, before recovering).
+    // Another command holds the lock (paused right after taking it, before recovering).
     let argv = [
         "install",
         "gh:o/bar",
@@ -154,14 +149,20 @@ fn recovery_happens_only_under_the_lock() {
         "retail",
         "--offline",
     ];
+    let pause = Pause::new(s.home.env.root());
     let child = s.home.spawn(
         &argv,
-        &[("OMADDONS_FAILPOINTS", "engine.lock.acquired=sleep:2000")],
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.lock.acquired=pause"),
+            pause.env(),
+        ],
     );
-    poll("the lock", || {
-        status(&s)["data"]["journal"]["in_progress"] == true
-    });
+    pause.reached("engine.lock.acquired");
     let envelope = status(&s);
+    assert_eq!(
+        envelope["data"]["journal"]["in_progress"], true,
+        "{envelope}"
+    );
     assert!(
         warning_codes(&envelope)
             .iter()
@@ -174,6 +175,7 @@ fn recovery_happens_only_under_the_lock() {
         "untouched while another process holds the lock"
     );
 
+    pause.resume("engine.lock.acquired");
     let done = wait(child, &argv);
     let envelope = done.expect(0);
     assert!(
@@ -188,9 +190,48 @@ fn recovery_happens_only_under_the_lock() {
     assert_eq!(core, "-- v1\n", "rolled back: it crashed before the swap");
 }
 
-/// Runs two installs at once, both pausing after staging so they overlap.
+/// README's "Planning and staging take no lock", whatever the machine's speed: a run
+/// stopped once planned, and again once staged, leaves the global lock free, and then
+/// commits.
+#[test]
+fn planning_and_staging_take_no_lock() {
+    use omaddons::fsx::{LockState, probe_global};
+    use omaddons::state::paths::Paths;
+
+    let s = Scene::new();
+    s.install("gh:o/foo", "v1"); // registers the target and creates the lock file
+    let env = &s.home.env;
+    let paths = Paths::with_roots(env.home(), env.config(), env.state(), env.cache());
+    let generation = s.generation();
+    let v2 = s.zip("v2");
+    let argv = [
+        "install",
+        "gh:o/foo",
+        "--file",
+        &v2,
+        "-t",
+        "retail",
+        "--offline",
+    ];
+    let pause = Pause::new(env.root());
+    let armed = "engine.plan.done=pause,engine.stage.synced=pause";
+    let child = s
+        .home
+        .spawn(&argv, &[("OMADDONS_FAILPOINTS", armed), pause.env()]);
+    for step in ["engine.plan.done", "engine.stage.synced"] {
+        pause.reached(step);
+        assert_eq!(probe_global(&paths).unwrap(), LockState::Free, "{step}");
+        pause.resume(step);
+    }
+    wait(child, &argv).expect(0);
+    assert_eq!(s.generation(), generation + 1);
+}
+
+/// Runs two installs at once: both stop once staged, and go on together, so they
+/// overlap.
 fn concurrently(s: &Scene, a: (&str, &str), b: (&str, &str)) -> (Run, Run) {
-    let sleep = [("OMADDONS_FAILPOINTS", "engine.stage.synced=sleep:500")];
+    let (pa, pb) = (Pause::new(s.home.env.root()), Pause::new(s.home.env.root()));
+    let armed = ("OMADDONS_FAILPOINTS", "engine.stage.synced=pause");
     let za = s.zip(a.1);
     let zb = s.zip(b.1);
     let argv_a = [
@@ -211,8 +252,14 @@ fn concurrently(s: &Scene, a: (&str, &str), b: (&str, &str)) -> (Run, Run) {
         "retail",
         "--offline",
     ];
-    let first = s.home.spawn(&argv_a, &sleep);
-    let second = s.home.spawn(&argv_b, &sleep);
+    let first = s.home.spawn(&argv_a, &[armed, pa.env()]);
+    let second = s.home.spawn(&argv_b, &[armed, pb.env()]);
+    for p in [&pa, &pb] {
+        p.reached("engine.stage.synced");
+    }
+    for p in [&pa, &pb] {
+        p.resume("engine.stage.synced");
+    }
     (wait(first, &argv_a), wait(second, &argv_b))
 }
 
@@ -286,9 +333,6 @@ fn a_pin_that_commits_while_an_update_plans_wins() {
         ]),
     )
     .unwrap();
-    let inflight = s.home.planning_locks();
-    let planning = || fs::read_dir(&inflight).is_ok_and(|mut d| d.next().is_some());
-    assert!(!planning(), "nothing in flight yet");
 
     // A updates without a version and pauses once it has planned against v1.
     let v2 = s.zip("v2");
@@ -301,18 +345,22 @@ fn a_pin_that_commits_while_an_update_plans_wins() {
         "retail",
         "--offline",
     ];
+    let pause = Pause::new(s.home.env.root());
     let a = s.home.spawn(
         &argv_a,
-        &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:2000")],
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.plan.done=pause"),
+            pause.env(),
+        ],
     );
-    poll("A to start planning", planning);
-    std::thread::sleep(Duration::from_millis(500));
+    pause.reached("engine.plan.done");
     // B pins v3 meanwhile, to completion.
     let mut argv_b = s.install_args("gh:o/foo", "v3");
     argv_b.extend(["--version".to_owned(), "3".to_owned()]);
     let b = s.run(&argv_b, "").expect(0);
     assert_eq!(b["data"]["items"][0]["status"], "updated", "{b}");
 
+    pause.resume("engine.plan.done");
     let a = wait(a, &argv_a);
     let ea = a.expect(0);
     assert_eq!(
@@ -342,16 +390,16 @@ fn a_pin_that_commits_while_an_update_plans_wins() {
 
 /// Which side of the records-only race pauses.
 #[derive(Debug, Clone, Copy)]
-enum Sleeper {
+enum Paused {
     /// The pin, once planned; the install runs to completion meanwhile.
     Pin,
     /// The install, once staged; the pin runs to completion meanwhile.
     Install,
 }
 
-/// Pins Foo while Bar is installed on the same target, `sleeper` paused in the middle,
+/// Pins Foo while Bar is installed on the same target, `paused` stopped in the middle,
 /// and checks the final state only: both commit, neither goes stale.
-fn pin_races_an_install(sleeper: Sleeper) {
+fn pin_races_an_install(paused: Paused) {
     let s = Scene::new();
     s.install("gh:o/foo", "v1");
     let (folders, before) = (s.folders(), s.record("foo"));
@@ -367,26 +415,32 @@ fn pin_races_an_install(sleeper: Sleeper) {
         "retail",
         "--offline",
     ];
-    let inflight = s.home.planning_locks();
-    let stage = s.home.client("_retail_").join("Interface/.omaddons/stage");
-    let busy = |dir: &std::path::Path| fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some());
-    let (pinned, installed) = match sleeper {
-        Sleeper::Pin => {
+    let pause = Pause::new(s.home.env.root());
+    let (pinned, installed) = match paused {
+        Paused::Pin => {
             let child = s.home.spawn(
                 &pin,
-                &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:1500")],
+                &[
+                    ("OMADDONS_FAILPOINTS", "engine.plan.done=pause"),
+                    pause.env(),
+                ],
             );
-            poll("the pin to plan", || busy(&inflight));
+            pause.reached("engine.plan.done");
             let installed = s.home.run(&install);
+            pause.resume("engine.plan.done");
             (wait(child, &pin), installed)
         }
-        Sleeper::Install => {
+        Paused::Install => {
             let child = s.home.spawn(
                 &install,
-                &[("OMADDONS_FAILPOINTS", "engine.stage.synced=sleep:1500")],
+                &[
+                    ("OMADDONS_FAILPOINTS", "engine.stage.synced=pause"),
+                    pause.env(),
+                ],
             );
-            poll("the install to stage", || busy(&stage));
+            pause.reached("engine.stage.synced");
             let pinned = s.home.run(&pin);
+            pause.resume("engine.stage.synced");
             (pinned, wait(child, &install))
         }
     };
@@ -400,27 +454,27 @@ fn pin_races_an_install(sleeper: Sleeper) {
             Ok(i) => &v[i],
             Err(_) => &v[*k],
         });
-        assert!(tx.is_string(), "{sleeper:?}: both commit\n{}", r.context());
+        assert!(tx.is_string(), "{paused:?}: both commit\n{}", r.context());
     }
     let now = s.record("foo");
     assert_eq!(
         (&now["pinned"], &now["release_id"]),
         (&Value::Bool(true), &before["release_id"]),
-        "{sleeper:?}: {now}"
+        "{paused:?}: {now}"
     );
     assert!(!s.record("bar").is_null() && s.addons().join("Bar").is_dir());
-    assert_eq!(s.generation(), generation + 2, "{sleeper:?}");
+    assert_eq!(s.generation(), generation + 2, "{paused:?}");
     let mut added = s.history().split_off(history.len());
     added.sort();
-    assert_eq!(added, ["install", "pin"], "{sleeper:?}");
-    assert_eq!(s.folders(), folders, "{sleeper:?}: Foo's folders untouched");
-    assert!(s.journals().is_empty(), "{sleeper:?}");
+    assert_eq!(added, ["install", "pin"], "{paused:?}");
+    assert_eq!(s.folders(), folders, "{paused:?}: Foo's folders untouched");
+    assert!(s.journals().is_empty(), "{paused:?}");
 }
 
 #[test]
 fn a_pin_and_an_install_of_another_addon_both_commit_either_way() {
-    pin_races_an_install(Sleeper::Pin);
-    pin_races_an_install(Sleeper::Install);
+    pin_races_an_install(Paused::Pin);
+    pin_races_an_install(Paused::Install);
 }
 
 /// Every code an envelope's error and items' errors carry.
@@ -440,15 +494,17 @@ fn an_update_and_an_install_of_another_addon_both_commit() {
     let s = Scene::new();
     let update = shapes::update_many(&s);
     let update: Vec<&str> = update.iter().map(String::as_str).collect();
-    let inflight = s.home.planning_locks();
+    let pause = Pause::new(s.home.env.root());
     let child = s.home.spawn(
         &update[..update.len() - 1],
-        &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:1500")],
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.plan.done=pause"),
+            pause.env(),
+        ],
     );
-    poll("the update to plan", || {
-        fs::read_dir(&inflight).is_ok_and(|mut d| d.next().is_some())
-    });
+    pause.reached("engine.plan.done");
     let install = s.install("gh:o/bar", "bar");
+    pause.resume("engine.plan.done");
     let updated = wait(child, &update);
     let envelope = updated.expect(0);
     assert!(
@@ -473,19 +529,21 @@ fn an_adoption_racing_an_install_of_its_folder_ends_clean() {
     let adopt = shapes::adopt(&s);
     let adopt: Vec<&str> = adopt.iter().map(String::as_str).collect();
     s.release("echo", "v2", &[common::engine::folder("Echo", &[])]);
-    let inflight = s.home.planning_locks();
+    let pause = Pause::new(s.home.env.root());
     let child = s.home.spawn(
         &adopt[..adopt.len() - 1],
-        &[("OMADDONS_FAILPOINTS", "engine.plan.done=sleep:1500")],
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.plan.done=pause"),
+            pause.env(),
+        ],
     );
-    poll("the adoption to plan", || {
-        fs::read_dir(&inflight).is_ok_and(|mut d| d.next().is_some())
-    });
+    pause.reached("engine.plan.done");
     // The install replaces Echo's files (it is unmanaged until the adoption commits).
     let installed = s
         .home
         .run(&["install", "gh:o/echo", "-t", "retail", "--force"]);
     installed.expect(0);
+    pause.resume("engine.plan.done");
     let adopted = wait(child, &adopt);
     let codes = error_codes(&adopted.envelope());
     assert!(
@@ -714,29 +772,29 @@ fn saved_variables_written_after_their_copy_are_snapshotted_as_written() {
         "--offline",
     ];
     // Paused between the copy made before the lock and the lock.
+    let pause = Pause::new(s.home.env.root());
     let child = s.home.spawn(
         &argv,
-        &[(
-            "OMADDONS_FAILPOINTS",
-            "engine.snapshot.prestaged=sleep:1500",
-        )],
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.snapshot.prestaged=pause"),
+            pause.env(),
+        ],
     );
     let snapshots = s
         .home
         .client("_retail_")
         .join("Interface/.omaddons/snapshots");
-    let copied = || {
-        fs::read_dir(&snapshots).into_iter().flatten().any(|e| {
-            let dir = e.unwrap().path();
-            dir.join("WTF/Account/ACCT/SavedVariables/Foo.lua")
-                .is_file()
-        })
-    };
-    poll("the copy made before the lock", copied);
-    std::thread::sleep(Duration::from_millis(200));
+    pause.reached("engine.snapshot.prestaged");
+    let copied = fs::read_dir(&snapshots).into_iter().flatten().any(|e| {
+        let dir = e.unwrap().path();
+        dir.join("WTF/Account/ACCT/SavedVariables/Foo.lua")
+            .is_file()
+    });
+    assert!(copied, "the copy made before the lock");
     let logout = "-- written on logout, after the copy\n";
     fs::write(sv.join("Foo.lua"), logout).unwrap();
 
+    pause.resume("engine.snapshot.prestaged");
     let done = wait(child, &argv);
     let envelope = done.expect(0);
     let snapshot = snapshots.join(envelope["data"]["tx"].as_str().unwrap());

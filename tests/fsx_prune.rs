@@ -3,7 +3,6 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use omaddons::error::ErrorCode;
 use omaddons::fsx::{
@@ -18,6 +17,7 @@ mod support {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
 
     use omaddons::fsx::ScopeTable;
     use omaddons::state::paths::Paths;
@@ -65,10 +65,22 @@ mod support {
             .env("OMADDONS_PRUNE_TEST_ROOT", root)
             .env("OMADDONS_PRUNE_TEST_VICTIM", victim)
             .env("OMADDONS_FAILPOINTS", failpoints)
+            .env("OMADDONS_FAILPOINT_DIR", root)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .unwrap()
+    }
+
+    /// Waits (20 s at most) until the child stops at the `pause` failpoint `name`, its
+    /// marker in `root`.
+    pub fn reached(root: &Path, name: &str) {
+        let marker = root.join(format!("{name}.reached"));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !marker.exists() {
+            assert!(Instant::now() < deadline, "the child never reached {name}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     pub fn entries(dir: &Path) -> usize {
@@ -80,7 +92,7 @@ mod support {
     }
 }
 
-use support::{entries, layout, scopes, snapshot, spawn_prune};
+use support::{entries, layout, reached, scopes, snapshot, spawn_prune};
 
 #[test]
 #[ignore = "child process for the prune tests"]
@@ -131,20 +143,18 @@ fn deletion_runs_without_the_global_lock() {
     let l = layout(dir.path());
     let victim = snapshot(&l, TX);
     let trash = l.client.join("Interface/.omaddons/trash");
-    let mut child = spawn_prune(&l.root, &victim, "fsx.prune.deleting=sleep:1000");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    // The child sleeps at fsx.prune.deleting with its entry still in trash; the lock
-    // must already be free then. The second trash check proves the probe happened
-    // before the delete.
-    let mut seen_free_while_trashed = false;
-    while Instant::now() < deadline && !seen_free_while_trashed {
-        seen_free_while_trashed = !victim.exists()
-            && entries(&trash) == 1
-            && probe_global(&l.paths).unwrap() == LockState::Free
-            && entries(&trash) == 1;
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(seen_free_while_trashed, "the lock was held while deleting");
+    let mut child = spawn_prune(&l.root, &victim, "fsx.prune.deleting=pause");
+    // The child stops at fsx.prune.deleting with its entry still in trash: the lock is
+    // already free then.
+    reached(&l.root, "fsx.prune.deleting");
+    assert!(!victim.exists(), "renamed into trash");
+    assert_eq!(entries(&trash), 1);
+    assert_eq!(
+        probe_global(&l.paths).unwrap(),
+        LockState::Free,
+        "the lock was held while deleting"
+    );
+    fs::write(l.root.join("fsx.prune.deleting.resume"), b"").unwrap();
     assert!(child.wait().unwrap().success());
     assert_eq!(entries(&trash), 0);
 }
