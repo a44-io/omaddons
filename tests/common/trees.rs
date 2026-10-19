@@ -434,9 +434,10 @@ impl CustomRoot {
 // ---------------------------------------------------------------------------------------
 // Tree hashing.
 
-/// SHA-256 over the sorted relative paths under `dir`, each entry's kind, every file's
-/// bytes and every symlink's target (symlinks are not followed).
+/// SHA-256 over the sorted relative paths under `dir`, each entry's kind and permission
+/// bits, every file's bytes and every symlink's target (symlinks are not followed).
 pub fn tree_hash(dir: &Path) -> String {
+    use std::os::unix::fs::PermissionsExt;
     let mut entries = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(at) = stack.pop() {
@@ -446,15 +447,17 @@ pub fn tree_hash(dir: &Path) -> String {
             if meta.is_dir() {
                 stack.push(path.clone());
             }
-            entries.push((path, meta.file_type()));
+            let mode = meta.permissions().mode() & 0o7777;
+            entries.push((path, meta.file_type(), mode));
         }
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let mut hash = Sha256::new();
-    for (path, kind) in entries {
+    for (path, kind, mode) in entries {
         let rel = path.strip_prefix(dir).unwrap();
         hash.update(rel.as_os_str().as_encoded_bytes());
         hash.update([0]);
+        hash.update(mode.to_le_bytes());
         if kind.is_symlink() {
             hash.update(b"L");
             hash.update(fs::read_link(&path).unwrap().as_os_str().as_encoded_bytes());

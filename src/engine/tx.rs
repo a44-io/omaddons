@@ -1522,14 +1522,14 @@ mod tests {
     }
 
     /// The tree after a clean v1 → v2 update.
-    fn updated_tree() -> TreeDigest {
+    fn updated_tree() -> Vec<TreeEntry> {
         let scene = with_v1();
         let v2 = scene.zip("v2.zip", V2);
         scene.run(vec![scene.install("gh:o/foo", &v2)]).unwrap();
         scene.addons()
     }
 
-    use crate::fsx::TreeDigest;
+    use crate::engine::testing::TreeEntry;
 
     #[cfg(debug_assertions)]
     #[test]

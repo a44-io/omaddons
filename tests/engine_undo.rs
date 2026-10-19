@@ -6,6 +6,7 @@
 mod common;
 
 use common::engine::Scene;
+use common::trees::tree_hash;
 
 #[test]
 fn undoing_an_update_restores_every_folder_byte_for_byte() {
@@ -103,4 +104,59 @@ fn removing_an_addon_deleted_by_hand_forgets_it_and_undo_brings_the_record_back(
         !s.addons().join("Foo").exists(),
         "no folder comes back: none was there"
     );
+}
+
+/// A hand-made folder replaced with `--force` exists only in the snapshot, and comes
+/// back as it was: directory modes, a 0600 file, a symlink and an empty directory.
+#[test]
+fn undoing_a_forced_replace_restores_modes_links_and_empty_dirs() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    let s = Scene::new();
+    let hand = s.addons().join("Hand");
+    for sub in ["empty", "libs", "private"] {
+        fs::create_dir_all(hand.join(sub)).unwrap();
+    }
+    fs::write(hand.join("Hand.toc"), "## Interface: 120105\n").unwrap();
+    fs::write(hand.join("libs/lib.lua"), "-- lib").unwrap();
+    std::os::unix::fs::symlink("libs/lib.lua", hand.join("link.lua")).unwrap();
+    fs::write(hand.join("private/p.lua"), "-- private").unwrap();
+    for (path, mode) in [
+        ("libs", 0o775),
+        ("private/p.lua", 0o600),
+        ("private", 0o700),
+    ] {
+        fs::set_permissions(hand.join(path), fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let before = tree_hash(&s.addons());
+
+    let packaged = s.home.env.root().join("packaged/Hand");
+    fs::create_dir_all(&packaged).unwrap();
+    fs::write(
+        packaged.join("Hand.toc"),
+        "## Interface: 120105\n## Notes: new\n",
+    )
+    .unwrap();
+    let packaged = packaged.to_string_lossy();
+    let install = [
+        "install",
+        "gh:o/hand",
+        "--file",
+        &packaged,
+        "-t",
+        "retail",
+        "--force",
+        "--offline",
+        "--json",
+    ]
+    .map(str::to_owned);
+    s.run(&install, "").expect(0);
+    assert_ne!(tree_hash(&s.addons()), before);
+    let undo = ["undo", "--offline", "--json"].map(str::to_owned);
+    let envelope = s.run(&undo, "").expect(0);
+    assert_eq!(
+        envelope["data"]["reverted"]["kind"], "install",
+        "{envelope}"
+    );
+    assert_eq!(tree_hash(&s.addons()), before, "Hand back as it was");
 }

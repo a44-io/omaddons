@@ -192,8 +192,9 @@ pub fn stage(
 
 /// Copies folder trees (undo: an earlier transaction's snapshot) into the
 /// transaction's stage dir, reflinked where the filesystem can, with the same index
-/// staging an archive produces. Symlinks inside are recreated, never followed; anything
-/// but files, directories and symlinks is refused.
+/// staging an archive produces. File bytes and modes, directory modes (owner rwx kept),
+/// empty directories and symlinks (recreated, never followed) come back as they were;
+/// timestamps are new. Anything but files, directories and symlinks is refused.
 pub fn stage_trees(
     inflight: &InflightLock,
     scopes: &ScopeTable,
@@ -220,6 +221,7 @@ pub fn stage_trees(
         create_dir(&mut s, &folder_dir)?;
         let mut entries = Vec::new();
         copy_tree(&mut s, source, &folder_dir, "", &mut entries)?;
+        keep_dir_mode(&mut s, source, &folder_dir)?;
         folders.push(StagedFolder {
             name: name.clone(),
             path: folder_dir,
@@ -265,6 +267,7 @@ fn copy_tree(
         if kind.is_dir() {
             create_dir(s, &dest)?;
             copy_tree(s, &source, &dest, &path, entries)?;
+            keep_dir_mode(s, &source, &dest)?;
         } else if kind.is_file() {
             mutate_with(s, &dest, Op::CloneFile { from: &source }, deferred())?;
             let meta = std::fs::symlink_metadata(&dest).map_err(io(&dest))?;
@@ -288,6 +291,23 @@ fn copy_tree(
             ));
         }
     }
+    Ok(())
+}
+
+/// Gives a copied directory its source's permission bits, once its children are in (a
+/// 0500 source must not block them). Owner rwx always stays, so swaps, retention and
+/// prune can move and delete inside it.
+fn keep_dir_mode(s: &mut WriteSession<'_>, source: &Path, dir: &Path) -> Result<()> {
+    let mode = std::fs::symlink_metadata(source)
+        .map_err(|e| Error::io(source, &e, Suggestion::command(["omaddons", "status"])))?
+        .mode();
+    mutate(
+        s,
+        dir,
+        Op::Chmod {
+            mode: (mode & 0o777) | 0o700,
+        },
+    )?;
     Ok(())
 }
 
@@ -466,6 +486,64 @@ mod tests {
         .unwrap();
         assert!(!stage_dir.exists(), "{report:?}");
         assert_eq!(TreeDigest::compute(&addons).unwrap(), before);
+    }
+
+    /// A copied tree keeps what a restore must: file and directory modes (owner rwx
+    /// forced, so 0500 comes back 0700), the symlink and the empty directory.
+    #[test]
+    fn staged_trees_keep_modes_links_and_empty_dirs() {
+        use crate::engine::testing::{hand_made, tree_snapshot};
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path, mode: u32| {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let client = dir.path().join("_retail_");
+        std::fs::create_dir_all(client.join("Interface/AddOns")).unwrap();
+        let source = dir.path().join("snapshot/Hand");
+        hand_made(&source);
+        std::fs::create_dir_all(source.join("ro")).unwrap();
+        std::fs::write(source.join("ro/r.lua"), "-- ro").unwrap();
+        mode(&source.join("ro"), 0o500);
+        mode(&source, 0o750);
+        let paths = Paths::with_roots(
+            dir.path(),
+            dir.path().join("c"),
+            dir.path().join("s"),
+            dir.path().join("k"),
+        );
+        let scopes = ScopeTable::new(&paths, std::slice::from_ref(&client), None).unwrap();
+        let inflight = InflightLock::create(&paths, &TxId::new()).unwrap();
+        let name = FolderName::new("Hand").unwrap();
+        let staged = stage_trees(
+            &inflight,
+            &scopes,
+            &target(&client),
+            &[(name, source.clone())],
+        );
+        // Writable again, so the temp dir can go whatever happened.
+        mode(&source.join("ro"), 0o700);
+        let staged = staged.unwrap();
+        let copy = &staged.folders[0].path;
+        let mut expected = tree_snapshot(&source);
+        for entry in &mut expected {
+            if entry.path == Path::new("ro") {
+                entry.mode = 0o700;
+            }
+        }
+        assert_eq!(tree_snapshot(copy), expected);
+        let top = std::fs::metadata(copy).unwrap().permissions().mode();
+        assert_eq!(top & 0o777, 0o750);
+        let indexed: Vec<&str> = staged.folders[0]
+            .index
+            .files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect();
+        assert_eq!(
+            indexed,
+            ["Hand.toc", "libs/lib.lua", "private/p.lua", "ro/r.lua"]
+        );
     }
 
     #[test]

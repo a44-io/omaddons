@@ -557,8 +557,80 @@ impl TxScene {
         .value
     }
 
-    /// The AddOns tree's digest.
-    pub fn addons(&self) -> crate::fsx::TreeDigest {
-        crate::fsx::TreeDigest::compute(&self.client.addons()).unwrap()
+    /// The AddOns tree, as [`tree_snapshot`] sees it.
+    pub fn addons(&self) -> Vec<TreeEntry> {
+        tree_snapshot(&self.client.addons())
     }
+}
+
+/// A hand-made addon folder at `dir`, shaped as no archive install is: its TOC, an empty
+/// directory, `libs/` at 0775, a symlink `link.lua -> libs/lib.lua`, and `private/` at
+/// 0700 holding a 0600 file.
+pub fn hand_made(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &Path, mode: u32| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+    for sub in ["empty", "libs", "private"] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+    }
+    std::fs::write(dir.join(format!("{name}.toc")), "## Interface: 120105\n").unwrap();
+    std::fs::write(dir.join("libs/lib.lua"), "-- lib").unwrap();
+    std::os::unix::fs::symlink("libs/lib.lua", dir.join("link.lua")).unwrap();
+    std::fs::write(dir.join("private/p.lua"), "-- private").unwrap();
+    mode(&dir.join("libs"), 0o775);
+    mode(&dir.join("private/p.lua"), 0o600);
+    mode(&dir.join("private"), 0o700);
+}
+
+/// One entry under a [`tree_snapshot`] root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeEntry {
+    pub path: PathBuf,
+    /// `d`, `f`, `l` or `?`.
+    pub kind: char,
+    /// Permission bits, setuid, setgid and sticky included.
+    pub mode: u32,
+    pub link: Option<PathBuf>,
+    pub sha256: Option<String>,
+}
+
+/// Everything a restore must bring back under `dir`, sorted by path: every entry's kind
+/// and mode, symlink targets (never followed), empty directories and file contents.
+/// Timestamps are left out (a restore writes new ones); a missing `dir` is empty.
+pub fn tree_snapshot(dir: &Path) -> Vec<TreeEntry> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut out = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(at) = pending.pop() {
+        let Ok(children) = std::fs::read_dir(&at) else {
+            continue;
+        };
+        for child in children {
+            let path = child.unwrap().path();
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            let kind = meta.file_type();
+            let (kind, link, sha256) = if kind.is_symlink() {
+                ('l', Some(std::fs::read_link(&path).unwrap()), None)
+            } else if kind.is_dir() {
+                pending.push(path.clone());
+                ('d', None, None)
+            } else if kind.is_file() {
+                let (_, sha256) = crate::state::files_index::hash_file_streaming(&path).unwrap();
+                ('f', None, Some(sha256))
+            } else {
+                ('?', None, None)
+            };
+            out.push(TreeEntry {
+                path: path.strip_prefix(dir).unwrap().to_path_buf(),
+                kind,
+                mode: meta.permissions().mode() & 0o7777,
+                link,
+                sha256,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
 }

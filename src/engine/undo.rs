@@ -1700,8 +1700,8 @@ fn present_hash(path: &Path) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::testing::TxScene;
-    use crate::fsx::{TreeDigest, failpoint};
+    use crate::engine::testing::{TreeEntry, TxScene};
+    use crate::fsx::failpoint;
 
     const V1: &[(&str, &str)] = &[
         ("Foo/Foo.toc", "## Interface: 120105\n## Version: 1\n"),
@@ -1742,7 +1742,8 @@ mod tests {
             .entries
     }
 
-    fn tree(scene: &TxScene) -> TreeDigest {
+    /// The AddOns tree: modes, symlinks and empty directories as well as file bytes.
+    fn tree(scene: &TxScene) -> Vec<TreeEntry> {
         scene.addons()
     }
 
@@ -2451,6 +2452,48 @@ mod tests {
         scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
         let addons = record(&scene).addons;
         assert_eq!((tree(&scene), &addons), (installed.0, &installed.1));
+    }
+
+    /// A folder only the snapshot holds comes back as it was: directory modes, the 0600
+    /// file, the symlink and the empty directory.
+    #[test]
+    fn undoing_a_forced_replace_restores_a_hand_made_folder_as_it_was() {
+        let mut scene = TxScene::new();
+        crate::engine::testing::hand_made(&scene.client.addons().join("Hand"));
+        let before = tree(&scene);
+        scene.force = true;
+        install_as(
+            &scene,
+            "gh:o/hand",
+            "hand.zip",
+            &[(
+                "Hand/Hand.toc",
+                "## Interface: 120105\n## Notes: packaged\n",
+            )],
+        );
+        assert_ne!(tree(&scene), before);
+        scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
+        assert_eq!(tree(&scene), before);
+    }
+
+    #[test]
+    fn undoing_a_remove_restores_an_adopted_hand_made_folder_as_it_was() {
+        let scene = TxScene::new();
+        let hand = scene.client.addons().join("Hand");
+        crate::engine::testing::hand_made(&hand);
+        // A folder with a symlink inside cannot be indexed, so it is never adopted.
+        std::fs::remove_file(hand.join("link.lua")).unwrap();
+        let adopt = scene.adopt("Hand");
+        let done = scene
+            .run_as(vec![adopt], Some(TxKind::Adopt), TxKind::Install)
+            .unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let before = tree(&scene);
+        let done = scene.run(vec![scene.remove("hand")]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        assert!(!hand.exists());
+        scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
+        assert_eq!(tree(&scene), before);
     }
 
     #[cfg(debug_assertions)]
