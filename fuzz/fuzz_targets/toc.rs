@@ -1,6 +1,7 @@
-//! TOC files: any bytes parse (lossily) into a `Toc`; its dependencies evaluate on every
-//! builtin rules row into valid folder names, a name never both required and under an
-//! unknown condition; and a plain title never panics or grows.
+//! TOC files: any bytes parse (lossily) into a `Toc`; every builtin rules row reads it
+//! (`for_client`) with the same lines; its dependencies evaluate on every row into valid
+//! folder names, a name never both required and undecided; and a plain title never
+//! panics or grows.
 #![no_main]
 
 use std::sync::OnceLock;
@@ -14,6 +15,8 @@ fuzz_target!(|data: &[u8]| {
     let rows = ROWS.get_or_init(|| RulesTable::builtin().client_rules().to_vec());
     let toc = parse_toc(data);
     for rules in rows {
+        let read = toc.for_client(rules);
+        assert!(read.lines == toc.lines && read.files == toc.files);
         let deps = toc.dependencies_for(rules);
         assert!(
             deps.unknown_condition

@@ -441,9 +441,9 @@ pub struct ClientRules {
     /// Retired suffixes (`BCC`, `WOTLKC`) the client still loads at game level. Empty in
     /// every builtin row; the field exists for overrides.
     pub legacy_suffixes: Vec<String>,
-    /// Whether the client reads directive conditions (`## Dependencies [AllowLoadGameType
-    /// vanilla]: X`, 12.0.7). A client without them reads such a key literally, so no
-    /// conditional variant applies.
+    /// Whether the client reads inline directives (`## Dependencies: X
+    /// [AllowLoadGameType vanilla]`, anywhere in a `##` line, 12.0.7). A client without
+    /// them reads every line as written, its brackets in the key or the value.
     pub directive_conditionals: bool,
     /// Whether the interface number includes the patch digit (12.1.5 → 120105) or not
     /// (legacy 3.3.5 → 30300).
@@ -1287,15 +1287,17 @@ fn builtin_client_rules() -> Vec<ClientRules> {
                 "Classic",
             )
         },
-        // Titan loads `_Wrath` TOCs and its game type is `titan`: WeakAuras 5.22.1 ships
-        // `WeakAuras_Wrath.toc` with `## Interface: 38002` (Titan's alone) and
-        // `## AllowLoadGameType: wrath, titan`, and Questie declares `wrath:38002`
-        // (publishers' archives, 2026-10-15).
+        // Titan loads `_Wrath` TOCs and answers to the game types `titan` and `wrath`:
+        // WeakAuras 5.22.1 ships `WeakAuras_Wrath.toc` with `## Interface: 38002`
+        // (Titan's alone) and `## AllowLoadGameType: wrath, titan`, and Questie declares
+        // `wrath:38002` (publishers' archives, 2026-10-15); warcraft.wiki.gg `TOC_format`
+        // lists Titan Reforged under game type Wrath (fetched 2026-10-18), and ElvUI
+        // titles its Titan build `[AllowLoadGameType wrath]`.
         modern_row(
             "titan",
             Family::Titan,
             ClientVersion::new(3, 80, 0),
-            &["titan"],
+            &["titan", "wrath"],
             &["Wrath"],
             "Classic",
         ),

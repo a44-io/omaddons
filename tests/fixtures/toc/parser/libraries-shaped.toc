@@ -1,0 +1,5 @@
+## Interface: 120105, 50504, 38002, 20506, 11509, 16001
+## Title: Shaped Libraries
+## OptionalDeps: LibHealComm-4.0 [AllowLoadGameType classic]
+
+Load.xml

@@ -202,6 +202,9 @@ fn write_fuzz_seeds() {
         "unreplaced.toc",
         "wotlk.toc",
         "conditional.toc",
+        "elvui-shaped.toc",
+        "libraries-shaped.toc",
+        "gw2-shaped.toc",
     ] {
         write("toc", name, &fs::read(tocs.join(name)).unwrap());
     }

@@ -180,8 +180,9 @@ impl LoadedToc {
 
 /// The TOC `rules`' client loads from the folder: the folder's name (ignoring ASCII
 /// case) with the most specific suffix the row lists (game, then legacy, then family,
-/// each in listed order, `-` or `_` as separator), else the plain TOC. Legacy clients
-/// read only the plain TOC. `None` when there is none.
+/// each in listed order, `-` or `_` as separator), else the plain TOC, read as that
+/// client reads it ([`Toc::for_client`]). Legacy clients read only the plain TOC.
+/// `None` when there is none.
 pub fn loaded_toc(view: &dyn FolderView, rules: &ClientRules) -> io::Result<Option<LoadedToc>> {
     let name = view.folder_name().as_str();
     let mut ranked: Vec<((TocLevel, usize), String, Option<String>)> = Vec::new();
@@ -199,7 +200,7 @@ pub fn loaded_toc(view: &dyn FolderView, rules: &ClientRules) -> io::Result<Opti
         .iter()
         .skip(1)
         .any(|(r, other, _)| *r == best_rank && other.eq_ignore_ascii_case(&file));
-    let toc = parse_toc(&view.read_toc(&file)?);
+    let toc = parse_toc(&view.read_toc(&file)?).for_client(rules);
     Ok(Some(LoadedToc {
         file,
         level: best_rank.0,
@@ -542,6 +543,53 @@ mod tests {
 
     fn reason(report: &VerdictReport) -> serde_json::Value {
         serde_json::to_value(&report.verdict).unwrap()
+    }
+
+    /// A conditional `## Interface` line is judged as the client reads it: the key form
+    /// and the end-of-line form apply on Classic Era, and not on retail, where the
+    /// unconditional line stands; a client without inline directives reads the lines as
+    /// written.
+    #[test]
+    fn conditional_interface_lines_are_judged_per_client() {
+        let key_form = Memory::new(
+            "Foo",
+            &[(
+                "Foo.toc",
+                "## Interface [AllowLoadGameType vanilla]: 11509\n",
+            )],
+        );
+        let tail_form = Memory::new(
+            "Foo",
+            &[(
+                "Foo.toc",
+                "## Interface: 120105\n## Interface: 11509 [AllowLoadGameType vanilla]\n",
+            )],
+        );
+        let compatible = serde_json::json!({ "verdict": "compatible", "out_of_date": false });
+        let (era, retail) = (bnet("1.15.9"), bnet("12.1.5"));
+        assert_eq!(reason(&judge(&key_form, &era)), compatible);
+        assert_eq!(reason(&judge(&tail_form, &era)), compatible);
+        assert_eq!(reason(&judge(&tail_form, &retail)), compatible);
+        assert_eq!(
+            reason(&judge(&key_form, &retail)),
+            serde_json::json!({ "verdict": "wrong_flavor", "reason": "no_interface" })
+        );
+        // 10.2.7 reads the last line as written: one entry that is no number.
+        let old = bnet("10.2.7");
+        assert_eq!(
+            reason(&judge(&tail_form, &old)),
+            serde_json::json!({ "verdict": "wrong_flavor", "reason": "no_interface" })
+        );
+        // Inline game types on `AllowLoadGameType` lines add up per client.
+        let gated = Memory::new(
+            "Foo",
+            &[(
+                "Foo.toc",
+                "## Interface: 120105, 11509\n## AllowLoadGameType: standard\n## AllowLoadGameType: vanilla [AllowLoadGameType vanilla]\n",
+            )],
+        );
+        assert_eq!(reason(&judge(&gated, &era)), compatible);
+        assert_eq!(reason(&judge(&gated, &retail)), compatible);
     }
 
     #[test]

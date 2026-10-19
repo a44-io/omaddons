@@ -575,8 +575,8 @@ fn conditional_dependencies_count_only_where_they_apply() {
     let foo = toc(
         "120105",
         &[
-            "## Dependencies [AllowLoadGameType vanilla]: ClassicOnly",
-            "## Dependencies [SomeFutureCondition x]: FutureLib",
+            "## Dependencies: ClassicOnly [AllowLoadGameType vanilla]",
+            "## Dependencies [AllowLoadTextLocale enUS]: FutureLib",
         ],
     );
     let zip = dl.join("Foo.zip");
@@ -588,7 +588,7 @@ fn conditional_dependencies_count_only_where_they_apply() {
     assert_eq!(missing.len(), 1, "{}", r.context());
     assert!(
         missing[0].contains("FutureLib")
-            && missing[0].contains("under a condition omaddons does not read"),
+            && missing[0].contains("under a condition omaddons cannot decide offline"),
         "{}",
         missing[0]
     );
@@ -597,6 +597,46 @@ fn conditional_dependencies_count_only_where_they_apply() {
         "a vanilla-only dependency does not apply on retail"
     );
     assert!(!home.addons("_retail_").join("FutureLib").exists());
+}
+
+/// Repeated dependency lines add up, as the client reads them; one that applies only on
+/// Classic is not required on retail.
+#[test]
+fn repeated_dependency_lines_add_up() {
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let foo = toc(
+        "120105",
+        &[
+            "## Dependencies: Alpha",
+            "## Dependencies: Beta",
+            "## Dependencies: Ghost [AllowLoadGameType classic]",
+        ],
+    );
+    let zip = dl.join("Foo.zip");
+    fs::write(&zip, zip_text(&[("Foo/Foo.toc", &foo)])).unwrap();
+    let path = zip.display().to_string();
+    let r = home.run(&[
+        "install",
+        "gh:o/foo",
+        "--file",
+        &path,
+        "-t",
+        "retail",
+        "--offline",
+        "--dry-run",
+    ]);
+    let envelope = r.expect(0);
+    let missing = warnings_with(&envelope, "missing_dependency").join("\n");
+    for (name, required) in [("Alpha", true), ("Beta", true), ("Ghost", false)] {
+        assert_eq!(
+            missing.contains(&format!("requires {name}")),
+            required,
+            "{name}\n{}",
+            r.context()
+        );
+    }
 }
 
 #[test]

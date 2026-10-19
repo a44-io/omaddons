@@ -1,20 +1,21 @@
 ## Interface: 120105, 50504, 11509, 160001
-## Title [AllowLoadGameType standard]: |cff1784d1ElvUI|r |TInterface\Icons\elv:16:16|t
-## Title [AllowLoadGameType vanilla, tbc]: |cff1784d1ElvUI|r Classic
-## Title [AllowLoadGameType camelot]: ElvUI |A:atlas-name:12:12|a Forever
-## Title: ElvUI
+## Title: |cff1784d1ElvUI|r |TInterface\Icons\elv:16:16|t [AllowLoadGameType standard]
+## Title: |cff1784d1ElvUI|r Classic [AllowLoadGameType vanilla, tbc]
+## Title: ElvUI |A:atlas-name:12:12|a Forever [AllowLoadGameType camelot][ExcludeLoadGameType standard, classic]
+## Title [AllowLoadGameType mists]: ElvUI Mists
+## X-Display: ElvUI [|cffeda55fCore|r]
 ## Notes: |cffff0000Unclosed |Ttexture and || pipes
 ## Author: Elv, Simpy
 ## Version: 16.00
 ## X-Website: https://tukui.org
 ## X-Tukui-ProjectID: -2
 ## X-Tukui-ProjectFolders: ElvUI, ElvUI_Libraries, ElvUI_Options
-## Dependencies [AllowLoadGameType mainline]: ElvUI_Libraries
+## Dependencies: ElvUI_Libraries [AllowLoadGameType mainline]
 ## Dependencies: ElvUI_Options
-## RequiredDeps [ExcludeLoadGameType vanilla, titan]: LibStub
-## Dep-Extra [AllowLoadGameType vanilla]: ElvUI_ClassicBits
-## Dependencies [SomeFutureCondition x]: FutureLib
-## OptionalDeps [AllowLoadGameType standard]: Masque
+## RequiredDeps: LibStub [ExcludeLoadGameType vanilla, titan]
+## Dep-Extra: ElvUI_ClassicBits [AllowLoadGameType vanilla]
+## Dependencies: FutureLib [AllowLoadTextLocale enUS]
+## OptionalDeps: Masque [AllowLoadGameType standard]
 ## OptionalDeps: BugSack
 ## OptionalDeps [Game:Mainline]: Odd
 ## LoadWith: Blizzard_Nothing
@@ -22,4 +23,4 @@
 
 Core\Init.lua
 Retail.lua [AllowLoadGameType standard]
-Classic.lua [AllowLoadGameType vanilla]
+Classic.lua [AllowLoadGameType vanilla][ExcludeLoadGameType camelot]

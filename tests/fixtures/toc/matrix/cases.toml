@@ -556,9 +556,11 @@ expect_file = "Foo.toc"
 expect_verdict = "wrong_flavor"
 expect_reason = "game_type_excluded"
 
-# Titan (3.80.x, China) loads `_Wrath` TOCs and its game type is `titan`, as
-# WeakAuras 5.22.1 ships them: `WeakAuras_Wrath.toc` with `## Interface: 38002` and
-# `## AllowLoadGameType: wrath, titan` (publishers' archives, 2026-10-15).
+# Titan (3.80.x, China) loads `_Wrath` TOCs and answers to the game types `wrath` and
+# `titan`, as WeakAuras 5.22.1 ships them: `WeakAuras_Wrath.toc` with
+# `## Interface: 38002` and `## AllowLoadGameType: wrath, titan` (publishers' archives,
+# 2026-10-15). warcraft.wiki.gg `TOC_format` lists Titan Reforged under game type Wrath,
+# and no `titan` game type (fetched 2026-10-18).
 
 [[case]]
 group = "game_types"
@@ -579,9 +581,17 @@ expect_reason = "interface_not_in_family"
 
 [[case]]
 group = "game_types"
-name = "titan-excluded-by-wrath-only-game-type"
+name = "titan-is-a-wrath-game-type"
 target = { product = "wow_classic_titan" }
 files = [["Foo_Wrath.toc", "## Interface: 38002\n## AllowLoadGameType: wrath"]]
+expect_file = "Foo_Wrath.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "game_types"
+name = "titan-excluded-by-a-mists-only-game-type"
+target = { product = "wow_classic_titan" }
+files = [["Foo_Wrath.toc", "## Interface: 38002\n## AllowLoadGameType: mists"]]
 expect_file = "Foo_Wrath.toc"
 expect_verdict = "wrong_flavor"
 expect_reason = "game_type_excluded"
@@ -664,3 +674,76 @@ target = { version = "2.0.0", kind = "custom" }
 files = [["Foo.toc", "## Interface: 20000"]]
 expect_file = "Foo.toc"
 expect_verdict = "compatible"
+
+# ---- 11. Inline directives -------------------------------------------------------------
+#
+# A `##` line may carry inline directives anywhere in it (12.0.7+, warcraft.wiki.gg
+# TOC_format, fetched 2026-10-18); it applies only on clients they admit, and for one
+# key the last line that applies wins. Clients before 12.0.7 read the line as written.
+
+[[case]]
+group = "inline_directives"
+name = "key-form-interface-loads-on-era"
+target = { version = "1.15.9", kind = "battlenet" }
+files = [["Foo.toc", "## Interface [AllowLoadGameType vanilla]: 11509"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "inline_directives"
+name = "key-form-interface-is-none-on-retail"
+target = { version = "12.1.5", kind = "battlenet" }
+files = [["Foo.toc", "## Interface [AllowLoadGameType vanilla]: 11509"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "no_interface"
+
+[[case]]
+group = "inline_directives"
+name = "line-end-interface-wins-on-era"
+target = { version = "1.15.9", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 120105\n## Interface: 11509 [AllowLoadGameType vanilla]"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "inline_directives"
+name = "line-end-interface-does-not-apply-on-retail"
+target = { version = "12.1.5", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 120105\n## Interface: 11509 [AllowLoadGameType vanilla]"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "inline_directives"
+name = "the-last-of-two-unconditional-interfaces-wins"
+target = { version = "12.1.5", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 120105\n## Interface: 11509"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "interface_not_in_family"
+
+[[case]]
+group = "inline_directives"
+name = "inline-exclude-drops-the-line-on-forever"
+target = { version = "1.60.1", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 16001\n## Interface: 120105 [ExcludeLoadGameType camelot]"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "inline_directives"
+name = "an-undecided-text-locale-line-is-ignored"
+target = { version = "12.1.5", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 120105\n## Interface: 11509 [AllowLoadTextLocale enUS]"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "inline_directives"
+name = "a-client-before-12.0.7-reads-the-line-as-written"
+target = { version = "10.2.7", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 100207\n## Interface: 11509 [AllowLoadGameType vanilla]"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "no_interface"

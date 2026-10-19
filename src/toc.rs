@@ -5,9 +5,15 @@
 //! (vision §4.2, §4.3). It runs on archives from the internet, so it is infallible and
 //! never panics: anything odd becomes a [`TocIssue`]. Like the client, it reads only the
 //! first [`TOC_LINE_MAX`] bytes of each line. `## Key: Value` lines are directives,
-//! other `#` lines comments, and every other line a file reference. The parser
-//! evaluates no conditionals and does not depend on the client's rules; [`loaded_toc`]
-//! and [`verdict`] apply them.
+//! other `#` lines comments, and every other line a file reference.
+//!
+//! A directive line may carry inline directives, `[AllowLoadGameType classic]`,
+//! anywhere in it (12.0.7+): they make the line apply on some clients only. For one key
+//! the last line that applies wins, except the keys whose lines add up (dependencies,
+//! `LoadWith`, `LoadManagers`, saved variables and the game-type lists). [`parse_toc`]
+//! reads the lines without inline directives, as no particular client;
+//! [`Toc::for_client`] reads the lines a client reads, and [`loaded_toc`] and
+//! [`verdict`] judge that reading.
 
 mod loaded;
 
@@ -26,17 +32,15 @@ use crate::limits::TOC_LINE_MAX;
 use crate::model::FolderName;
 use crate::rules::ClientRules;
 
-/// A parsed TOC.
+/// A parsed TOC: every directive line, and the fields one reading of them gives (no
+/// particular client from [`parse_toc`], one client from [`Toc::for_client`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Toc {
-    /// The unconditional directives, keyed by the lowercased key; the first occurrence
-    /// of a key wins.
+    /// Every `## Key: Value` line, in file order.
+    pub lines: Vec<Directive>,
+    /// The lines read, keyed by the lowercased key: the last one of each key.
     pub directives: BTreeMap<String, Directive>,
-    /// Every directive with a condition (`## Key [AllowLoadGameType x]: Value`, 12.0.7+),
-    /// in line order: they never displace an unconditional one nor count as duplicates.
-    /// [`Toc::dependencies_for`] and [`Toc::title_for`] evaluate them for a client.
-    pub conditional: Vec<Directive>,
-    /// The `## Interface` value as written (never `Interface-Vanilla` and the like).
+    /// The `## Interface` value read (never `Interface-Vanilla` and the like).
     pub interface_raw: Option<String>,
     /// Every number in the comma list (clients since 10.2.7).
     pub interfaces: Vec<u32>,
@@ -47,14 +51,16 @@ pub struct Toc {
     pub version: Option<String>,
     pub author: Option<String>,
     pub notes: Option<String>,
-    /// The unconditional `RequiredDeps`, `Dependencies` and every `Dep*` key, in file
-    /// order, without case-insensitive duplicates. A caller that knows the client uses
-    /// [`Toc::dependencies_for`], which adds the conditional variants that apply.
+    /// `RequiredDeps`, `Dependencies` and every `Dep*` key: every line read adds to it,
+    /// in file order, without case-insensitive duplicates. A caller that knows the
+    /// client uses [`Toc::dependencies_for`].
     pub dependencies: Vec<String>,
+    /// The last `OptionalDeps` read.
     pub optional_deps: Vec<String>,
+    /// Every line read adds to it, as to the other lists but `optional_deps`.
     pub load_with: Vec<String>,
     pub load_managers: Vec<String>,
-    /// `## LoadOnDemand: 1`.
+    /// `## LoadOnDemand: 1`, the last one read.
     pub load_on_demand: bool,
     /// Lowercased.
     pub allow_load_game_type: Vec<String>,
@@ -62,7 +68,7 @@ pub struct Toc {
     pub exclude_load_game_type: Vec<String>,
     pub saved_variables: Vec<String>,
     pub saved_variables_per_character: Vec<String>,
-    /// Every `X-` directive, by its original spelling.
+    /// Every `X-` directive read, by its original spelling.
     pub x_fields: BTreeMap<String, String>,
     pub files: Vec<TocFile>,
     pub issues: Vec<TocIssue>,
@@ -71,20 +77,20 @@ pub struct Toc {
 /// One `## Key: Value` line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Directive {
-    /// As written.
+    /// Without its inline directives, trimmed.
     pub key: String,
     pub value: String,
-    /// Bracketed text between the key and the colon, kept raw for display (directive
-    /// conditionals, 12.0.7+).
-    pub condition: Option<String>,
-    /// The condition, parsed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parsed_condition: Option<Condition>,
+    /// The line as written, split at its first colon outside brackets: what a client
+    /// that reads no inline directives sees.
+    pub raw_key: String,
+    pub raw_value: String,
+    /// Its inline directives (`[AllowLoadGameType classic]`, 12.0.7+), in line order.
+    pub conditions: Vec<Condition>,
     /// 1-based.
     pub line: u32,
 }
 
-/// A directive's condition: `[AllowLoadGameType mainline, vanilla]`.
+/// An inline directive: `[AllowLoadGameType mainline, vanilla]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Condition {
     pub kind: ConditionKind,
@@ -92,7 +98,7 @@ pub struct Condition {
     pub values: Vec<String>,
 }
 
-/// What a condition tests.
+/// What an inline directive tests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ConditionKind {
@@ -100,15 +106,47 @@ pub enum ConditionKind {
     AllowLoadGameType,
     /// The client is none of the values.
     ExcludeLoadGameType,
-    /// Anything else, raw (an unknown keyword, `[Game:Mainline]`, an empty bracket):
-    /// never evaluated as true or false.
+    /// The environment the addon loads in: `game`, `glue` or `both`.
+    AllowLoad,
+    /// `global` or `secure`.
+    AllowLoadEnvironment,
+    /// The client's text locale: unknown offline.
+    AllowLoadTextLocale,
+    /// Unknown offline.
+    Bootstrap,
+    /// Where the addon loads, not whether: no condition.
+    LoadIntoEnvironment,
+    /// A known kind without the values it needs, raw: never evaluated as true or false.
     Other(String),
 }
 
+/// The inline directives a `##` line can carry, anywhere in it (warcraft.wiki.gg
+/// `TOC_format`, "Inline directives", fetched 2026-10-18; added in 12.0.7). Any other
+/// bracket text is part of the line, as a title's `[|cffeda55fCore|r]` is.
+const INLINE_DIRECTIVES: &[(&str, ConditionKind)] = &[
+    ("AllowLoadGameType", ConditionKind::AllowLoadGameType),
+    ("ExcludeLoadGameType", ConditionKind::ExcludeLoadGameType),
+    ("AllowLoad", ConditionKind::AllowLoad),
+    ("AllowLoadEnvironment", ConditionKind::AllowLoadEnvironment),
+    ("AllowLoadTextLocale", ConditionKind::AllowLoadTextLocale),
+    ("Bootstrap", ConditionKind::Bootstrap),
+    ("LoadIntoEnvironment", ConditionKind::LoadIntoEnvironment),
+];
+
+/// The kind of inline directive the bracket text `inner` (without its brackets) is: its
+/// first word, ignoring ASCII case.
+fn inline_kind(inner: &str) -> Option<ConditionKind> {
+    let keyword = inner.split_whitespace().next()?;
+    INLINE_DIRECTIVES
+        .iter()
+        .find(|(name, _)| keyword.eq_ignore_ascii_case(name))
+        .map(|(_, kind)| kind.clone())
+}
+
 impl Condition {
-    /// The bracketed text of a directive (`[AllowLoadGameType mainline]`), parsed. The
-    /// first whitespace-separated token, ignoring ASCII case, is the kind; the rest are
-    /// the values. A known kind without values is `Other`.
+    /// An inline directive's text (`[AllowLoadGameType mainline]`, brackets optional),
+    /// parsed: the first word is the kind, the rest the values. Not an inline
+    /// directive, or one without the values it needs, is `Other`.
     pub fn parse(raw: &str) -> Self {
         let other = || Self {
             kind: ConditionKind::Other(raw.to_owned()),
@@ -117,34 +155,44 @@ impl Condition {
         let inner = raw.trim();
         let inner = inner.strip_prefix('[').unwrap_or(inner);
         let inner = inner.strip_suffix(']').unwrap_or(inner).trim();
-        let (keyword, rest) = inner.split_once(char::is_whitespace).unwrap_or((inner, ""));
-        let kind = if keyword.eq_ignore_ascii_case("AllowLoadGameType") {
-            ConditionKind::AllowLoadGameType
-        } else if keyword.eq_ignore_ascii_case("ExcludeLoadGameType") {
-            ConditionKind::ExcludeLoadGameType
-        } else {
+        let Some(kind) = inline_kind(inner) else {
             return other();
         };
+        let rest = inner
+            .split_once(char::is_whitespace)
+            .map_or("", |(_, rest)| rest);
         let values: Vec<String> = rest
             .split(|c: char| c == ',' || c.is_whitespace())
             .filter(|v| !v.is_empty())
             .map(str::to_ascii_lowercase)
             .collect();
-        if values.is_empty() {
+        if values.is_empty() && kind != ConditionKind::Bootstrap {
             return other();
         }
         Self { kind, values }
     }
 
-    /// Whether the condition holds on a client named `names` (its game types and
-    /// family-level names, lowercased: [`loaded::client_names`]); `None` for a kind
-    /// this build does not know.
+    /// Whether the line may load on a client named `names` (its game types and
+    /// family-level names, lowercased: [`loaded::client_names`]); `None` when that
+    /// cannot be known offline.
+    ///
+    /// Game types are matched strictly: a value must name the client. The client also
+    /// lets an `AllowLoadGameType` pass that names no game type it recognizes (the wiki
+    /// above), but which names each build recognizes is not known here, so this fails
+    /// closed; publishers pair such lines with `ExcludeLoadGameType`. Third-party addons
+    /// load in game and in the global environment.
     pub fn admits(&self, names: &[String]) -> Option<bool> {
         let named = self.values.iter().any(|v| names.contains(v));
+        let any = |wanted: &[&str]| self.values.iter().any(|v| wanted.contains(&v.as_str()));
         match self.kind {
             ConditionKind::AllowLoadGameType => Some(named),
             ConditionKind::ExcludeLoadGameType => Some(!named),
-            ConditionKind::Other(_) => None,
+            ConditionKind::AllowLoad => Some(any(&["game", "both"])),
+            ConditionKind::AllowLoadEnvironment => Some(any(&["global"])),
+            ConditionKind::LoadIntoEnvironment => Some(true),
+            ConditionKind::AllowLoadTextLocale
+            | ConditionKind::Bootstrap
+            | ConditionKind::Other(_) => None,
         }
     }
 }
@@ -152,13 +200,12 @@ impl Condition {
 /// A folder's dependencies on one client.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct DepList {
-    /// Unconditional, plus the conditional variants that admit the client, in line
-    /// order.
+    /// Every dependency line the client reads, in line order.
     pub required: Vec<FolderName>,
-    /// `OptionalDeps`, the same way: never installed.
+    /// The last `OptionalDeps` line it reads: never installed.
     pub optional: Vec<FolderName>,
-    /// Required under a condition of a kind this build does not know: reported, never
-    /// installed.
+    /// Required on a line whose inline directives cannot be decided offline (a text
+    /// locale, say): reported, never installed.
     pub unknown_condition: Vec<FolderName>,
 }
 
@@ -167,11 +214,11 @@ pub struct DepList {
 pub struct TocFile {
     /// The trimmed line.
     pub raw: String,
-    /// With `\` normalized to `/`.
+    /// Without trailing inline directives, `\` normalized to `/`.
     pub path: String,
-    /// A trailing `[...]` block after whitespace, without the brackets, e.g.
-    /// `AllowLoadGameType standard`.
-    pub condition: Option<String>,
+    /// Its trailing inline directives, in order, without brackets, e.g.
+    /// `AllowLoadGameType standard`. Never evaluated: nothing reads a TOC's file list.
+    pub conditions: Vec<String>,
     /// `Family`, `Game` or `TextLocale` for each such token in the path.
     pub path_vars: Vec<String>,
 }
@@ -182,7 +229,7 @@ pub struct TocFile {
 pub enum TocIssue {
     /// The line was longer than the client reads; the rest was ignored.
     LineTruncated { line: u32 },
-    /// A later occurrence of a key the TOC already set.
+    /// A later line sets a key the reading already set, and wins.
     DuplicateDirective { key: String, line: u32 },
     /// An `## Interface` entry that is not a number.
     BadInterface { value: String },
@@ -211,23 +258,7 @@ pub fn parse_toc(bytes: &[u8]) -> Toc {
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("##") {
-            if let Some(directive) = directive(rest, line) {
-                if directive.condition.is_some() {
-                    toc.conditional.push(directive);
-                    continue;
-                }
-                match toc.directives.entry(directive.key.to_ascii_lowercase()) {
-                    std::collections::btree_map::Entry::Occupied(_) => {
-                        toc.issues.push(TocIssue::DuplicateDirective {
-                            key: directive.key,
-                            line,
-                        });
-                    }
-                    std::collections::btree_map::Entry::Vacant(slot) => {
-                        slot.insert(directive);
-                    }
-                }
-            }
+            toc.lines.extend(directive(rest, line));
             continue;
         }
         if trimmed.starts_with('#') {
@@ -235,7 +266,7 @@ pub fn parse_toc(bytes: &[u8]) -> Toc {
         }
         toc.files.push(file(trimmed));
     }
-    derive_fields(&mut toc);
+    resolve(&mut toc, View::Unconditional);
     toc
 }
 
@@ -259,11 +290,30 @@ fn lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-/// `Key [condition]: value` after the `##`; `None` without a colon outside brackets
-/// or with an empty key.
+/// The directive after a line's `##`; `None` without a colon outside brackets, or
+/// with an empty key once its inline directives are taken out.
 fn directive(rest: &str, line: u32) -> Option<Directive> {
+    let (raw_key, raw_value) = split_at_colon(rest)?;
+    let (text, conditions) = take_inline_directives(rest);
+    let (key, value) = split_at_colon(&text)?;
+    if key.is_empty() {
+        return None;
+    }
+    Some(Directive {
+        key,
+        value,
+        raw_key,
+        raw_value,
+        conditions,
+        line,
+    })
+}
+
+/// The key and value of a directive's text, at its first colon outside brackets,
+/// trimmed.
+fn split_at_colon(text: &str) -> Option<(String, String)> {
     let mut depth = 0usize;
-    let colon = rest.char_indices().find_map(|(i, c)| {
+    let colon = text.char_indices().find_map(|(i, c)| {
         match c {
             '[' => depth += 1,
             ']' => depth = depth.saturating_sub(1),
@@ -272,41 +322,51 @@ fn directive(rest: &str, line: u32) -> Option<Directive> {
         }
         None
     })?;
-    let (head, value) = (rest.get(..colon)?, rest.get(colon + 1..)?);
-    let (key, condition) = match head.find('[') {
-        Some(open) => (head.get(..open)?, Some(head.get(open..)?.trim().to_owned())),
-        None => (head, None),
-    };
-    let key = key.trim();
-    if key.is_empty() {
-        return None;
+    let (key, value) = (text.get(..colon)?, text.get(colon + 1..)?);
+    Some((key.trim().to_owned(), value.trim().to_owned()))
+}
+
+/// `text` without the inline directives in it, and those, parsed in order. A bracket
+/// group (the innermost, when brackets nest) is one when its first word names an
+/// inline directive; any other stays in the text.
+fn take_inline_directives(text: &str) -> (String, Vec<Condition>) {
+    let mut kept = String::with_capacity(text.len());
+    let mut conditions = Vec::new();
+    let mut rest = text;
+    while let Some(close) = rest.find(']') {
+        let head = rest.get(..close).unwrap_or_default();
+        let group = head
+            .rfind('[')
+            .and_then(|open| Some((head.get(..open)?, head.get(open + 1..)?)))
+            .filter(|(_, inner)| inline_kind(inner).is_some());
+        match group {
+            Some((before, inner)) => {
+                kept.push_str(before);
+                conditions.push(Condition::parse(inner));
+            }
+            None => {
+                kept.push_str(head);
+                kept.push(']');
+            }
+        }
+        rest = rest.get(close + 1..).unwrap_or_default();
     }
-    Some(Directive {
-        key: key.to_owned(),
-        value: value.trim().to_owned(),
-        parsed_condition: condition.as_deref().map(Condition::parse),
-        condition,
-        line,
-    })
+    kept.push_str(rest);
+    (kept, conditions)
 }
 
 fn file(trimmed: &str) -> TocFile {
-    let (path, condition) = match trimmed
-        .strip_suffix(']')
-        .and_then(|t| t.rfind('[').map(|i| (t, i)))
+    let mut path = trimmed;
+    let mut conditions = Vec::new();
+    // Trailing inline directives, `[A] [B]` or `[A][B]`, last first.
+    while let Some(body) = path.strip_suffix(']')
+        && let Some(open) = body.rfind('[')
+        && let Some(inner) = body.get(open + 1..)
+        && inline_kind(inner).is_some()
     {
-        Some((body, open))
-            if body
-                .get(..open)
-                .is_some_and(|p| p.ends_with(char::is_whitespace)) =>
-        {
-            (
-                body.get(..open).unwrap_or_default().trim_end(),
-                body.get(open + 1..).map(|c| c.trim().to_owned()),
-            )
-        }
-        _ => (trimmed, None),
-    };
+        conditions.insert(0, inner.trim().to_owned());
+        path = body.get(..open).unwrap_or_default().trim_end();
+    }
     let mut path_vars = Vec::new();
     for var in PATH_VARS {
         if path.contains(&format!("[{var}]")) && !path_vars.iter().any(|v: &String| v == var) {
@@ -317,33 +377,145 @@ fn file(trimmed: &str) -> TocFile {
     TocFile {
         raw: trimmed.to_owned(),
         path: path.replace('\\', "/"),
-        condition,
+        conditions,
         path_vars,
     }
 }
 
-/// Fills the typed fields from the directives.
-fn derive_fields(toc: &mut Toc) {
-    let value = |key: &str| toc.directives.get(key).map(|d| d.value.clone());
+/// Which lines a reading takes, and how it reads them.
+#[derive(Debug, Clone, Copy)]
+enum View<'a> {
+    /// No particular client: the lines without inline directives.
+    Unconditional,
+    /// A client that reads inline directives, named by these game-type names.
+    Client(&'a [String]),
+    /// A client that reads none (`directive_conditionals` false): every line as
+    /// written, its brackets in its key or value.
+    Literal,
+}
+
+/// How a view reads one line: its key and value, when it applies or cannot be decided
+/// offline (`Undecided` lines set no field).
+enum Read<'d> {
+    Applies(&'d str, &'d str),
+    Undecided(&'d str, &'d str),
+    Skipped,
+}
+
+impl<'a> View<'a> {
+    /// The view of the client of `rules`, named by `names` ([`loaded::client_names`]).
+    fn of(rules: &ClientRules, names: &'a [String]) -> Self {
+        if rules.directive_conditionals {
+            Self::Client(names)
+        } else {
+            Self::Literal
+        }
+    }
+
+    fn read(self, d: &Directive) -> Read<'_> {
+        match self {
+            Self::Unconditional if d.conditions.is_empty() => Read::Applies(&d.key, &d.value),
+            Self::Unconditional => Read::Skipped,
+            Self::Literal => Read::Applies(&d.raw_key, &d.raw_value),
+            Self::Client(names) => {
+                let mut decided = true;
+                for condition in &d.conditions {
+                    match condition.admits(names) {
+                        Some(true) => {}
+                        Some(false) => return Read::Skipped,
+                        None => decided = false,
+                    }
+                }
+                if decided {
+                    Read::Applies(&d.key, &d.value)
+                } else {
+                    Read::Undecided(&d.key, &d.value)
+                }
+            }
+        }
+    }
+}
+
+/// Whether a lowercased key names a dependency: `RequiredDeps`, or a word beginning
+/// with `Dep` (`Dependencies`, `Deps`, `Dep-Lib`). A key with brackets in it (an inline
+/// directive read literally) is not one word.
+fn is_dependency_key(lower: &str) -> bool {
+    lower == "requireddeps"
+        || (lower.starts_with("dep")
+            && lower
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+}
+
+/// The list a key's lines add up in (warcraft.wiki.gg `TOC_format`, fetched
+/// 2026-10-18: "may be specified multiple times, with later instances appending to the
+/// list"); `None` for a key whose last line wins.
+fn list_key(lower: &str) -> Option<&'static str> {
+    if is_dependency_key(lower) {
+        return Some("dependencies");
+    }
+    [
+        "loadwith",
+        "loadmanagers",
+        "savedvariables",
+        "savedvariablespercharacter",
+        "allowloadgametype",
+        "excludeloadgametype",
+    ]
+    .into_iter()
+    .find(|key| *key == lower)
+}
+
+/// Fills the fields from the lines `view` reads: for one key the last line read wins,
+/// except the keys whose lines add up ([`list_key`]), without case-insensitive
+/// duplicates. A key set again by a later line is a [`TocIssue::DuplicateDirective`].
+fn resolve(toc: &mut Toc, view: View<'_>) {
+    let mut directives = BTreeMap::new();
+    let mut lists: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for d in &toc.lines {
+        let Read::Applies(key, value) = view.read(d) else {
+            continue;
+        };
+        let lower = key.to_ascii_lowercase();
+        match list_key(&lower) {
+            Some(list) => add_up(lists.entry(list).or_default(), value),
+            None if directives.contains_key(&lower) => {
+                toc.issues.push(TocIssue::DuplicateDirective {
+                    key: key.to_owned(),
+                    line: d.line,
+                });
+            }
+            None => {}
+        }
+        let read = Directive {
+            key: key.to_owned(),
+            value: value.to_owned(),
+            ..d.clone()
+        };
+        directives.insert(lower, read);
+    }
+    let value = |key: &str| directives.get(key).map(|d: &Directive| d.value.clone());
+    let mut listed = |key: &str| lists.remove(key).unwrap_or_default();
     toc.interface_raw = value("interface");
     toc.title = value("title");
     toc.version = value("version");
     toc.author = value("author");
     toc.notes = value("notes");
     toc.optional_deps = list(value("optionaldeps"));
-    toc.load_with = list(value("loadwith"));
-    toc.load_managers = list(value("loadmanagers"));
     toc.load_on_demand = value("loadondemand").is_some_and(|v| v == "1");
-    toc.allow_load_game_type = lowercase(list(value("allowloadgametype")));
-    toc.exclude_load_game_type = lowercase(list(value("excludeloadgametype")));
-    toc.saved_variables = list(value("savedvariables"));
-    toc.saved_variables_per_character = list(value("savedvariablespercharacter"));
-    toc.x_fields = toc
-        .directives
+    toc.dependencies = listed("dependencies");
+    toc.load_with = listed("loadwith");
+    toc.load_managers = listed("loadmanagers");
+    toc.allow_load_game_type = lowercase(listed("allowloadgametype"));
+    toc.exclude_load_game_type = lowercase(listed("excludeloadgametype"));
+    toc.saved_variables = listed("savedvariables");
+    toc.saved_variables_per_character = listed("savedvariablespercharacter");
+    toc.x_fields = directives
         .iter()
         .filter(|(lower, _)| lower.starts_with("x-"))
         .map(|(_, d)| (d.key.clone(), d.value.clone()))
         .collect();
+    toc.directives = directives;
 
     if let Some(raw) = &toc.interface_raw {
         for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
@@ -362,29 +534,21 @@ fn derive_fields(toc: &mut Toc) {
         toc.interface_leading = digits.parse().ok();
     }
 
-    let mut deps: Vec<&Directive> = toc
-        .directives
-        .iter()
-        .filter(|(lower, _)| *lower == "requireddeps" || lower.starts_with("dep"))
-        .map(|(_, d)| d)
-        .collect();
-    deps.sort_by_key(|d| d.line);
-    let mut dependencies: Vec<String> = Vec::new();
-    for name in deps.iter().flat_map(|d| list(Some(d.value.clone()))) {
-        if !dependencies
-            .iter()
-            .any(|seen| seen.eq_ignore_ascii_case(&name))
-        {
-            dependencies.push(name);
-        }
-    }
-    for name in &dependencies {
+    for name in &toc.dependencies {
         if FolderName::new(name).is_err() {
             toc.issues
                 .push(TocIssue::BadDependency { name: name.clone() });
         }
     }
-    toc.dependencies = dependencies;
+}
+
+/// Adds a comma list's entries to `into`, each once, ignoring ASCII case.
+fn add_up(into: &mut Vec<String>, value: &str) {
+    for name in list(Some(value.to_owned())) {
+        if !into.iter().any(|seen| seen.eq_ignore_ascii_case(&name)) {
+            into.push(name);
+        }
+    }
 }
 
 /// A title without its UI escapes: colour codes (`|cAARRGGBB` … `|r`), textures
@@ -466,27 +630,35 @@ impl Toc {
             .collect()
     }
 
-    /// The dependencies on the client of `rules`: required (`RequiredDeps`,
-    /// `Dependencies`, `Dep*`) and optional (`OptionalDeps`), unconditional lines and
-    /// the conditional variants whose condition admits the client, in line order and
-    /// without case-insensitive duplicates; invalid names left out. A required name
-    /// under a condition of unknown kind goes to `unknown_condition` (an optional one
-    /// is dropped: never installed anyway).
-    ///
-    /// Several variants of one directive are read as the union of those that apply,
-    /// as inline file conditionals behave. UNVERIFIED against the client. A client
-    /// without directive conditions (`rules.directive_conditionals` false: before 12.0.7,
-    /// and every legacy client) reads such a line's key as another key, so no
-    /// conditional variant applies there.
+    /// This TOC as the client of `rules` reads it: its fields from the lines that apply
+    /// there, or on a client without inline directives (`directive_conditionals`
+    /// false: before 12.0.7, and every legacy client) from every line as written.
+    /// [`loaded_toc`] returns TOCs read this way.
+    pub fn for_client(&self, rules: &ClientRules) -> Toc {
+        let names = loaded::client_names(rules);
+        let mut toc = Toc {
+            lines: self.lines.clone(),
+            files: self.files.clone(),
+            issues: self
+                .issues
+                .iter()
+                .filter(|issue| matches!(issue, TocIssue::LineTruncated { .. }))
+                .cloned()
+                .collect(),
+            ..Toc::default()
+        };
+        resolve(&mut toc, View::of(rules, &names));
+        toc
+    }
+
+    /// The dependencies on the client of `rules`: every required line it reads
+    /// (`RequiredDeps`, `Dependencies`, `Dep*`) adds up, in line order, and the last
+    /// `OptionalDeps` it reads; without case-insensitive duplicates, invalid names left
+    /// out. A required name on a line that cannot be decided offline goes to
+    /// `unknown_condition` (an optional one is dropped: never installed anyway).
     pub fn dependencies_for(&self, rules: &ClientRules) -> DepList {
         let names = loaded::client_names(rules);
-        let conditional: &[Directive] = if rules.directive_conditionals {
-            &self.conditional
-        } else {
-            &[]
-        };
-        let mut lines: Vec<&Directive> = self.directives.values().chain(conditional).collect();
-        lines.sort_by_key(|d| d.line);
+        let view = View::of(rules, &names);
         let mut deps = DepList::default();
         let push = |into: &mut Vec<FolderName>, value: &str| {
             for name in list(Some(value.to_owned())) {
@@ -497,18 +669,23 @@ impl Toc {
                 }
             }
         };
-        for d in lines {
-            let key = d.key.to_ascii_lowercase();
-            let required = key == "requireddeps" || key.starts_with("dep");
-            if !required && key != "optionaldeps" {
-                continue;
-            }
-            let admits = d.parsed_condition.as_ref().map(|c| c.admits(&names));
-            match (admits, required) {
-                (None | Some(Some(true)), true) => push(&mut deps.required, &d.value),
-                (None | Some(Some(true)), false) => push(&mut deps.optional, &d.value),
-                (Some(None), true) => push(&mut deps.unknown_condition, &d.value),
-                (Some(None), false) | (Some(Some(false)), _) => {}
+        for d in &self.lines {
+            let (key, value, decided) = match view.read(d) {
+                Read::Applies(key, value) => (key, value, true),
+                Read::Undecided(key, value) => (key, value, false),
+                Read::Skipped => continue,
+            };
+            let key = key.to_ascii_lowercase();
+            if is_dependency_key(&key) {
+                let into = if decided {
+                    &mut deps.required
+                } else {
+                    &mut deps.unknown_condition
+                };
+                push(into, value);
+            } else if key == "optionaldeps" && decided {
+                deps.optional.clear();
+                push(&mut deps.optional, value);
             }
         }
         deps.unknown_condition
@@ -516,22 +693,14 @@ impl Toc {
         deps
     }
 
-    /// The title the client of `rules` shows: the first conditional `Title` variant
-    /// that admits it (on a client with directive conditions), else the unconditional
-    /// one. Which one the client shows when both exist is UNVERIFIED.
+    /// The title the client of `rules` shows: the last `Title` line it reads.
     pub fn title_for(&self, rules: &ClientRules) -> Option<&str> {
         let names = loaded::client_names(rules);
-        self.conditional
-            .iter()
-            .filter(|d| rules.directive_conditionals && d.key.eq_ignore_ascii_case("title"))
-            .find(|d| {
-                d.parsed_condition
-                    .as_ref()
-                    .and_then(|c| c.admits(&names))
-                    .unwrap_or(false)
-            })
-            .map(|d| d.value.as_str())
-            .or(self.title.as_deref())
+        let view = View::of(rules, &names);
+        self.lines.iter().rev().find_map(|d| match view.read(d) {
+            Read::Applies(key, value) if key.eq_ignore_ascii_case("title") => Some(value),
+            _ => None,
+        })
     }
 
     fn x(&self, key: &str) -> Option<&str> {
@@ -677,7 +846,7 @@ mod tests {
         let toc = parse(
             "## Title: First\n## TITLE: Second\n## no colon here\n# comment: not a directive\n##: empty key\n",
         );
-        assert_eq!(toc.title.as_deref(), Some("First"));
+        assert_eq!(toc.title.as_deref(), Some("Second"), "the last line wins");
         assert_eq!(
             toc.issues,
             [TocIssue::DuplicateDirective {
@@ -685,44 +854,14 @@ mod tests {
                 line: 2
             }]
         );
-        assert_eq!(toc.directives.len(), 1);
+        assert_eq!((toc.directives.len(), toc.lines.len()), (1, 2));
         assert!(toc.files.is_empty());
 
+        // Lines with inline directives are no particular client's: never duplicates.
         let toc = parse(
-            "## Title [AllowLoadGameType standard]: Conditional\n## Notes [Game:Mainline]: colon inside\n",
+            "## Title: A [AllowLoadGameType standard]\n## Title: B [AllowLoadGameType vanilla]\n## Title: C\n## Title: D\n",
         );
-        assert!(toc.directives.is_empty(), "conditional lines live apart");
-        let [title, notes] = toc.conditional.as_slice() else {
-            unreachable!("{:?}", toc.conditional)
-        };
-        assert_eq!(
-            (title.value.as_str(), title.condition.as_deref()),
-            ("Conditional", Some("[AllowLoadGameType standard]"))
-        );
-        assert_eq!(
-            title.parsed_condition,
-            Some(Condition {
-                kind: ConditionKind::AllowLoadGameType,
-                values: vec!["standard".into()]
-            })
-        );
-        assert_eq!(
-            (notes.key.as_str(), notes.value.as_str()),
-            ("Notes", "colon inside")
-        );
-        assert_eq!(notes.condition.as_deref(), Some("[Game:Mainline]"));
-        assert_eq!(
-            notes.parsed_condition.as_ref().map(|c| &c.kind),
-            Some(&ConditionKind::Other("[Game:Mainline]".into()))
-        );
-        assert_eq!(toc.title, None, "only a conditional title");
-
-        // Conditional variants never count as duplicates; an unconditional one does.
-        let toc = parse(
-            "## Title [AllowLoadGameType standard]: A\n## Title [AllowLoadGameType vanilla]: B\n## Title: C\n## Title: D\n",
-        );
-        assert_eq!(toc.conditional.len(), 2);
-        assert_eq!(toc.title.as_deref(), Some("C"));
+        assert_eq!(toc.title.as_deref(), Some("D"));
         assert_eq!(
             toc.issues,
             [TocIssue::DuplicateDirective {
@@ -735,17 +874,206 @@ mod tests {
     }
 
     #[test]
+    fn inline_directives_are_recognized_anywhere_in_a_line() {
+        let toc = parse(
+            "## Title: My AddOn in Classic [AllowLoadGameType classic]\n\
+             ## Interface [allowloadgametype Vanilla]: 11509\n\
+             ## X-Odd: a [AllowLoadGameType mists][ExcludeLoadGameType camelot]\n\
+             ## Notes: [AllowLoad Game] both\n\
+             ## Title: BigWigs [|cffeda55fCore|r]\n\
+             ## Notes [Game:Mainline]: colon inside\n\
+             ## Version: 1 [AllowLoadGameType]\n\
+             ## Author [AllowLoadGameType a:b]: Someone\n",
+        );
+        let lines: Vec<(&str, &str, &str, &str, Vec<ConditionKind>)> = toc
+            .lines
+            .iter()
+            .map(|d| {
+                (
+                    d.key.as_str(),
+                    d.value.as_str(),
+                    d.raw_key.as_str(),
+                    d.raw_value.as_str(),
+                    d.conditions.iter().map(|c| c.kind.clone()).collect(),
+                )
+            })
+            .collect();
+        let allow = ConditionKind::AllowLoadGameType;
+        assert_eq!(
+            lines,
+            [
+                (
+                    "Title",
+                    "My AddOn in Classic",
+                    "Title",
+                    "My AddOn in Classic [AllowLoadGameType classic]",
+                    vec![allow.clone()]
+                ),
+                (
+                    "Interface",
+                    "11509",
+                    "Interface [allowloadgametype Vanilla]",
+                    "11509",
+                    vec![allow.clone()]
+                ),
+                (
+                    "X-Odd",
+                    "a",
+                    "X-Odd",
+                    "a [AllowLoadGameType mists][ExcludeLoadGameType camelot]",
+                    vec![allow.clone(), ConditionKind::ExcludeLoadGameType]
+                ),
+                (
+                    "Notes",
+                    "both",
+                    "Notes",
+                    "[AllowLoad Game] both",
+                    vec![ConditionKind::AllowLoad]
+                ),
+                // Bracket text that is no inline directive stays.
+                (
+                    "Title",
+                    "BigWigs [|cffeda55fCore|r]",
+                    "Title",
+                    "BigWigs [|cffeda55fCore|r]",
+                    vec![]
+                ),
+                (
+                    "Notes [Game:Mainline]",
+                    "colon inside",
+                    "Notes [Game:Mainline]",
+                    "colon inside",
+                    vec![]
+                ),
+                // A known kind without values cannot be decided.
+                (
+                    "Version",
+                    "1",
+                    "Version",
+                    "1 [AllowLoadGameType]",
+                    vec![ConditionKind::Other("AllowLoadGameType".into())]
+                ),
+                // A colon inside an inline directive is not the key's.
+                (
+                    "Author",
+                    "Someone",
+                    "Author [AllowLoadGameType a:b]",
+                    "Someone",
+                    vec![allow]
+                ),
+            ]
+        );
+        assert_eq!(
+            toc.lines[0].conditions[0].values,
+            ["classic"],
+            "values lowercased"
+        );
+        assert_eq!(
+            toc.title.as_deref(),
+            Some("BigWigs [|cffeda55fCore|r]"),
+            "the only title without inline directives"
+        );
+        assert_eq!(toc.interface_raw, None);
+    }
+
+    #[test]
+    fn for_one_key_the_last_line_read_wins_and_lists_add_up() {
+        let toc = parse(
+            "## Interface: 120105\n\
+             ## Interface: 11509 [AllowLoadGameType vanilla]\n\
+             ## Dependencies: Alpha\n\
+             ## Dependencies: Beta, alpha\n\
+             ## RequiredDeps: Gamma [AllowLoadGameType standard]\n\
+             ## OptionalDeps: Old\n\
+             ## OptionalDeps: New\n\
+             ## SavedVariables: A\n\
+             ## SavedVariables: B\n\
+             ## AllowLoadGameType: standard\n\
+             ## AllowLoadGameType: vanilla [AllowLoadGameType vanilla]\n",
+        );
+        // No particular client: the lines without inline directives.
+        assert_eq!(toc.interfaces, [120_105]);
+        assert_eq!(toc.dependencies, ["Alpha", "Beta"]);
+        assert_eq!(toc.optional_deps, ["New"]);
+        assert_eq!(toc.saved_variables, ["A", "B"]);
+        assert_eq!(toc.allow_load_game_type, ["standard"]);
+        assert_eq!(
+            toc.issues,
+            [TocIssue::DuplicateDirective {
+                key: "OptionalDeps".into(),
+                line: 7
+            }],
+            "lists add up without duplicates"
+        );
+
+        let retail = toc.for_client(&rules_of("12.1.5.70391", false));
+        assert_eq!(retail.interfaces, [120_105]);
+        assert_eq!(retail.dependencies, ["Alpha", "Beta", "Gamma"]);
+        assert_eq!(retail.allow_load_game_type, ["standard"]);
+        let era = toc.for_client(&rules_of("1.15.9.64520", false));
+        assert_eq!(era.interfaces, [11_509], "the last line that applies");
+        assert_eq!(era.dependencies, ["Alpha", "Beta"]);
+        assert_eq!(era.allow_load_game_type, ["standard", "vanilla"]);
+        assert_eq!(era.lines, toc.lines, "never adds or drops a line");
+        assert_eq!(era.issues.len(), 2, "{:?}", era.issues);
+
+        // A client without inline directives reads every line as written.
+        let old = toc.for_client(&rules_of("10.2.7", false));
+        assert_eq!(
+            old.interface_raw.as_deref(),
+            Some("11509 [AllowLoadGameType vanilla]")
+        );
+        assert_eq!(old.interface_leading, Some(11_509));
+        assert_eq!(
+            old.dependencies,
+            ["Alpha", "Beta", "Gamma [AllowLoadGameType standard]"]
+        );
+
+        // A line that cannot be decided offline sets nothing.
+        let toc = parse(
+            "## Interface: 120105\n## Interface: 11509 [AllowLoadTextLocale enUS]\n## Title: T [AllowLoadTextLocale deDE]\n",
+        );
+        let retail = toc.for_client(&rules_of("12.1.5.70391", false));
+        assert_eq!(
+            (retail.interfaces.as_slice(), retail.title),
+            (&[120_105][..], None)
+        );
+    }
+
+    #[test]
+    fn inline_directive_kinds_admit_or_cannot_tell() {
+        let names: Vec<String> = ["standard", "mainline"].map(str::to_owned).to_vec();
+        for (raw, admits) in [
+            ("AllowLoadGameType standard", Some(true)),
+            ("AllowLoadGameType vanilla", Some(false)),
+            ("ExcludeLoadGameType mainline", Some(false)),
+            ("ExcludeLoadGameType classic", Some(true)),
+            ("AllowLoad Game", Some(true)),
+            ("AllowLoad both", Some(true)),
+            ("AllowLoad Glue", Some(false)),
+            ("AllowLoadEnvironment Global", Some(true)),
+            ("AllowLoadEnvironment Secure", Some(false)),
+            ("LoadIntoEnvironment Secure", Some(true)),
+            ("AllowLoadTextLocale enUS", None),
+            ("Bootstrap", None),
+            ("AllowLoadGameType", None),
+        ] {
+            assert_eq!(Condition::parse(raw).admits(&names), admits, "{raw}");
+        }
+    }
+
+    #[test]
     fn file_lines() {
         let toc = parse(
-            "libs\\LibStub\\LibStub.lua\nLocales\\[TextLocale].lua\nRetail.lua [AllowLoadGameType standard]\nCore-[Family]-[Game].lua\n  Spaced.lua  \n",
+            "libs\\LibStub\\LibStub.lua\nLocales\\[TextLocale].lua\nRetail.lua [AllowLoadGameType standard]\nCore-[Family]-[Game].lua\n  Spaced.lua  \nBoth.lua [AllowLoadGameType mists][ExcludeLoadGameType camelot]\nLocales\\[TextLocale]\n",
         );
-        let files: Vec<(&str, Option<&str>, Vec<&str>)> = toc
+        let files: Vec<(&str, Vec<&str>, Vec<&str>)> = toc
             .files
             .iter()
             .map(|f| {
                 (
                     f.path.as_str(),
-                    f.condition.as_deref(),
+                    f.conditions.iter().map(String::as_str).collect(),
                     f.path_vars.iter().map(String::as_str).collect(),
                 )
             })
@@ -753,11 +1081,17 @@ mod tests {
         assert_eq!(
             files,
             [
-                ("libs/LibStub/LibStub.lua", None, vec![]),
-                ("Locales/[TextLocale].lua", None, vec!["TextLocale"]),
-                ("Retail.lua", Some("AllowLoadGameType standard"), vec![]),
-                ("Core-[Family]-[Game].lua", None, vec!["Family", "Game"]),
-                ("Spaced.lua", None, vec![]),
+                ("libs/LibStub/LibStub.lua", vec![], vec![]),
+                ("Locales/[TextLocale].lua", vec![], vec!["TextLocale"]),
+                ("Retail.lua", vec!["AllowLoadGameType standard"], vec![]),
+                ("Core-[Family]-[Game].lua", vec![], vec!["Family", "Game"]),
+                ("Spaced.lua", vec![], vec![]),
+                (
+                    "Both.lua",
+                    vec!["AllowLoadGameType mists", "ExcludeLoadGameType camelot"],
+                    vec![]
+                ),
+                ("Locales/[TextLocale]", vec![], vec!["TextLocale"]),
             ]
         );
         assert_eq!(toc.files[0].raw, "libs\\LibStub\\LibStub.lua");
@@ -830,10 +1164,7 @@ mod tests {
         let modern = parse_toc(include_bytes!("../tests/fixtures/toc/parser/modern.toc"));
         assert_eq!(modern.interfaces, [120_105, 50_504, 11_509], "{modern:#?}");
         assert_eq!(modern.files.len(), 4);
-        assert_eq!(
-            modern.files[3].condition.as_deref(),
-            Some("AllowLoadGameType standard")
-        );
+        assert_eq!(modern.files[3].conditions, ["AllowLoadGameType standard"]);
         assert!(modern.issues.is_empty(), "{modern:#?}");
         let wotlk = parse_toc(include_bytes!("../tests/fixtures/toc/parser/wotlk.toc"));
         assert_eq!(
@@ -968,8 +1299,9 @@ mod tests {
             on(&era),
             (
                 vec!["LibStub".into(), "ace3".into()],
-                vec!["Questie".into(), "Details".into()]
-            )
+                vec!["Details".into()]
+            ),
+            "the last OptionalDeps line read"
         );
         assert_eq!(
             on(&titan),
@@ -979,9 +1311,11 @@ mod tests {
             )
         );
 
-        // An unknown condition is never required; an optional one is dropped.
+        // A line that cannot be decided offline is never required; an optional one is
+        // dropped. Bracket text that is no inline directive is part of the key.
         let toc = parse(
-            "## Dependencies [SomeFutureCondition x]: Future, B\n## Dependencies: B\n## OptionalDeps [Odd]: Opt\n",
+            "## Dependencies: Future, B [AllowLoadTextLocale enUS]\n## Dependencies: B\n\
+             ## OptionalDeps: Opt [AllowLoadTextLocale enUS]\n## Dependencies [Game:Mainline]: Odd\n",
         );
         let deps = toc.dependencies_for(&retail);
         assert_eq!(names(&deps.required), ["B"]);
@@ -991,6 +1325,19 @@ mod tests {
             "B is required anyway"
         );
         assert!(deps.optional.is_empty());
+
+        // Repeated lines add up, in either form.
+        let toc = parse(
+            "## Dependencies: Alpha\n## Dependencies: Beta\n## Dependencies: Ghost [AllowLoadGameType classic]\n",
+        );
+        assert_eq!(
+            names(&toc.dependencies_for(&retail).required),
+            ["Alpha", "Beta"]
+        );
+        assert_eq!(
+            names(&toc.dependencies_for(&era).required),
+            ["Alpha", "Beta", "Ghost"]
+        );
     }
 
     /// Conditional variants apply only on a client that reads directive conditions:
@@ -1035,10 +1382,87 @@ mod tests {
         assert_eq!(toc.title_for(&rules_of("1.12.1", true)), None);
         let plain = parse("## Title: Plain\n## Title [AllowLoadGameType vanilla]: Era\n");
         assert_eq!(plain.title_for(&retail), Some("Plain"));
-        assert_eq!(
-            plain.title_for(&era),
-            Some("Era"),
-            "a matching variant first"
+        assert_eq!(plain.title_for(&era), Some("Era"), "the last line read");
+    }
+
+    /// The shapes publishers ship (synthetic files): titles and optional dependencies
+    /// at the end of the line, one per client.
+    #[test]
+    fn publisher_shaped_tocs_read_per_client() {
+        let elvui = parse_toc(include_bytes!(
+            "../tests/fixtures/toc/parser/elvui-shaped.toc"
+        ));
+        let libraries = parse_toc(include_bytes!(
+            "../tests/fixtures/toc/parser/libraries-shaped.toc"
+        ));
+        let gw2 = parse_toc(include_bytes!(
+            "../tests/fixtures/toc/parser/gw2-shaped.toc"
+        ));
+        assert_eq!(elvui.title, None, "no title without inline directives");
+        // (client, title, Libraries' optional dependencies, GW2's)
+        let cases = [
+            (
+                "12.1.5.70391",
+                Some("Shaped Midnight"),
+                vec![],
+                vec!["Masque"],
+            ),
+            (
+                "5.5.4.65000",
+                Some("Shaped Mists"),
+                vec!["LibHealComm-4.0"],
+                vec![],
+            ),
+            (
+                "3.80.2.65000",
+                Some("Shaped Wrath"),
+                vec!["LibHealComm-4.0"],
+                vec!["Questie"],
+            ),
+            (
+                "2.5.6.65000",
+                Some("Shaped TBC"),
+                vec!["LibHealComm-4.0"],
+                vec!["Questie"],
+            ),
+            (
+                "1.15.9.64520",
+                Some("Shaped Classic"),
+                vec!["LibHealComm-4.0"],
+                vec![],
+            ),
+            (
+                "1.60.1.70245",
+                Some("Shaped Forever"),
+                vec![],
+                vec!["Masque"],
+            ),
+        ];
+        for (version, title, libs, gw2_optional) in cases {
+            let rules = rules_of(version, false);
+            assert_eq!(elvui.title_for(&rules), title, "{version}");
+            assert_eq!(
+                elvui.for_client(&rules).title.as_deref(),
+                title,
+                "{version}"
+            );
+            assert_eq!(
+                names(&libraries.dependencies_for(&rules).optional),
+                libs,
+                "{version}"
+            );
+            assert_eq!(
+                names(&gw2.dependencies_for(&rules).optional),
+                gw2_optional,
+                "{version}"
+            );
+        }
+        // A client without inline directives reads the last line as written.
+        let legacy = rules_of("1.12.1", true);
+        assert!(
+            elvui
+                .title_for(&legacy)
+                .is_some_and(|t| t.starts_with("Shaped Forever [AllowLoadGameType camelot]"))
         );
     }
 
@@ -1095,6 +1519,9 @@ mod tests {
             let toc = parse_toc(text.as_bytes());
             for directive in toc.directives.values() {
                 prop_assert!(directive.key.len() <= TOC_LINE_MAX);
+            }
+            for rules in crate::rules::RulesTable::builtin().client_rules() {
+                prop_assert_eq!(&toc.for_client(rules).lines, &toc.lines);
             }
         }
 

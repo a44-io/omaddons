@@ -1301,7 +1301,7 @@ fn missing_dependency(
             )),
         ),
         UnresolvedReason::UnknownCondition => (
-            "its TOC requires it under a condition omaddons does not read".to_owned(),
+            "its TOC requires it only under a condition omaddons cannot decide offline (a text locale, say)".to_owned(),
             Suggestion::text(format!(
                 "install the addon that ships {folder} if this client needs it"
             )),

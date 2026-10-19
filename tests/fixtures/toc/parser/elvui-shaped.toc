@@ -1,0 +1,11 @@
+## Interface: 120105, 50504, 38002, 20506, 11509, 16001
+## Title: Shaped Mists [AllowLoadGameType mists]
+## Title: Shaped Midnight [AllowLoadGameType standard]
+## Title: Shaped Wrath [AllowLoadGameType wrath]
+## Title: Shaped TBC [AllowLoadGameType tbc]
+## Title: Shaped Classic [AllowLoadGameType vanilla]
+## Title: Shaped Forever [AllowLoadGameType camelot][ExcludeLoadGameType standard, classic]
+## Author: Example
+## Version: 1.00
+
+Core.lua

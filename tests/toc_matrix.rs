@@ -313,7 +313,7 @@ fn curated_cases() {
 }
 
 #[test]
-fn all_ten_groups_and_every_builtin_row_are_covered() {
+fn every_group_and_every_builtin_row_are_covered() {
     let table = RulesTable::builtin();
     let env = TestEnv::new();
     let mut groups: BTreeSet<String> = cases().iter().map(|c| c.group.clone()).collect();
@@ -329,6 +329,7 @@ fn all_ten_groups_and_every_builtin_row_are_covered() {
         "out_of_date",
         "game_types",
         "unknown_family",
+        "inline_directives",
     ]
     .iter()
     .map(|s| (*s).to_owned())
