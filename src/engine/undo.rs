@@ -384,6 +384,7 @@ fn commit(
             Err(failed) => return Err(recovery_failed(error, tx, &failed)),
             Ok(Some(Recovered {
                 action: RecoveryAction::RolledForward,
+                atomic_swap,
                 warnings,
                 sv_deferred,
                 ..
@@ -392,7 +393,7 @@ fn commit(
                 let counts = &mut planned.sv.counts;
                 counts.deferred += sv_deferred;
                 counts.restored = counts.restored.saturating_sub(sv_deferred);
-                (true, warnings)
+                super::swap::rolled_forward(atomic_swap, warnings)
             }
             Ok(_) => return Err(error),
         },
@@ -2569,6 +2570,39 @@ mod tests {
                 .filter(|tx| !scene.paths.state_snapshot(tx).is_dir())
                 .collect();
             assert!(lost.is_empty(), "{name}: {lost:?}");
+        }
+    }
+
+    /// An undo completed by the in-process roll-forward reports the swap its journal
+    /// recorded, as an install does.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_rolled_forward_undo_reports_the_swap_it_journaled() {
+        for (spec, atomic) in [
+            ("engine.record.written=error", true),
+            ("fsx.renameat2.einval,engine.record.written=error", false),
+            ("fsx.renameat2.einval,engine.swapped=error", false),
+        ] {
+            let scene = TxScene::new();
+            install(&scene, "v1.zip", V1);
+            let installed = tree(&scene);
+            install(&scene, "v2.zip", V2);
+            let done =
+                failpoint::with_spec(spec, || scene.undo(UndoSelector::Latest, SvPolicy::Auto))
+                    .unwrap();
+            let unavailable = done
+                .outcome
+                .warnings
+                .iter()
+                .filter(|w| matches!(w.code, WarningCode::AtomicSwapUnavailable))
+                .count();
+            assert_eq!(
+                (done.outcome.atomic_swap, unavailable),
+                (atomic, usize::from(!atomic)),
+                "{spec}: {:?}",
+                done.outcome.warnings
+            );
+            assert_eq!(tree(&scene), installed, "{spec}: rolled forward");
         }
     }
 

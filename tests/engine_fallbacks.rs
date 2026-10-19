@@ -38,6 +38,35 @@ fn without_renameat2_flags_the_swap_uses_two_renames_and_says_so() {
     assert!(!s.addons().join("FooOld").exists());
 }
 
+/// An error after the swap, or inside it, is completed in the same process: the update
+/// stands and still says its swap was two renames per folder, as its journal recorded.
+#[test]
+fn a_late_error_in_fallback_mode_is_rolled_forward_and_still_says_so() {
+    for failpoint in ["engine.record.written", "engine.swapped"] {
+        let s = Scene::new();
+        s.install("gh:o/foo", "v1");
+        let r = s.run(
+            &s.install_args("gh:o/foo", "v2"),
+            &format!("{EINVAL},{failpoint}=error"),
+        );
+        let envelope = r.expect(0);
+        assert_eq!(
+            (&envelope["data"]["kind"], &envelope["data"]["atomic_swap"]),
+            (&Value::from("update"), &Value::from(false)),
+            "{failpoint}: {}",
+            r.context()
+        );
+        let unavailable = warning_codes(&envelope)
+            .iter()
+            .filter(|c| c.as_str() == "atomic_swap_unavailable")
+            .count();
+        assert_eq!(unavailable, 1, "{failpoint}: {}", r.context());
+        let core = fs::read_to_string(s.addons().join("Foo/core.lua")).unwrap();
+        assert_eq!(core, "-- v2\n", "{failpoint}");
+        assert!(s.journals().is_empty(), "{failpoint}");
+    }
+}
+
 #[test]
 fn crashes_in_fallback_mode_still_recover_to_one_side() {
     let reference = Scene::new();

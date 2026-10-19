@@ -517,6 +517,9 @@ pub struct RecoveryEnv<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recovered {
     pub action: RecoveryAction,
+    /// Whether the journaled swap was atomic: false when any step is a plain rename (the
+    /// fallback for filesystems without `renameat2` flags).
+    pub atomic_swap: bool,
     /// `saved_variables_deferred`, when roll-forward left an undo's SavedVariables.
     pub warnings: Vec<Warning>,
     /// How many SavedVariables files roll-forward left as they are.
@@ -726,6 +729,10 @@ fn recover_parsed(
     };
     let scopes = env.scopes;
     let mut s = WriteSession::untracked(Writer::Mutating, scopes, "recovery");
+    let atomic_swap = !parsed
+        .steps
+        .iter()
+        .any(|step| matches!(step.op, StepOp::Rename));
     let mut recovered = match (&parsed.prepared, parsed.phase) {
         (None, _) | (_, Phase::Unprepared) => None,
         (Some(_), Phase::Committed) => None,
@@ -733,6 +740,7 @@ fn recover_parsed(
             let left = roll_forward(&mut s, env, path, prepared)?;
             Some(Recovered {
                 action: RecoveryAction::RolledForward,
+                atomic_swap,
                 sv_deferred: left.as_ref().map_or(0, |(files, _)| *files),
                 warnings: left.into_iter().map(|(_, warning)| warning).collect(),
                 snapshot_kept: None,
@@ -742,6 +750,7 @@ fn recover_parsed(
             roll_back(&mut s, &parsed.steps)?;
             Some(Recovered {
                 action: RecoveryAction::RolledBack,
+                atomic_swap,
                 warnings: Vec::new(),
                 sv_deferred: 0,
                 snapshot_kept: None,

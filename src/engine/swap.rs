@@ -786,15 +786,7 @@ impl Run<'_> {
             Ok(_) => Ok(true),
             Err(FsxError::Unsupported) => {
                 self.atomic = false;
-                self.warnings.push(
-                    Warning::new(
-                        WarningCode::AtomicSwapUnavailable,
-                        "this filesystem cannot swap folders atomically, so omaddons used two renames per folder under its journal",
-                    )
-                    .with_fix(Suggestion::text(
-                        "the AddOns filesystem does not support atomic renames; omaddons stays crash-safe through its journal",
-                    )),
-                );
+                self.warnings.push(atomic_swap_unavailable());
                 Ok(false)
             }
             Err(FsxError::Precondition(why)) if purpose == StepPurpose::SwapIn => Err(stale(
@@ -911,6 +903,30 @@ pub(super) fn out_of_scope_warnings(
         );
     }
     warnings
+}
+
+/// `atomic_swap_unavailable`: the swap fell back to two journaled renames per folder,
+/// said by the swap and by an in-process roll-forward of a swap that did.
+pub(super) fn atomic_swap_unavailable() -> Warning {
+    Warning::new(
+        WarningCode::AtomicSwapUnavailable,
+        "this filesystem cannot swap folders atomically, so omaddons used two renames per folder under its journal",
+    )
+    .with_fix(Suggestion::text(
+        "the AddOns filesystem does not support atomic renames; omaddons stays crash-safe through its journal",
+    ))
+}
+
+/// The swap report of a transaction an in-process roll-forward completed (the swap's
+/// own report is lost with the error): `atomic_swap` from its journal, and
+/// `atomic_swap_unavailable` when it was not, before what the roll-forward `left`.
+pub(super) fn rolled_forward(atomic_swap: bool, left: Vec<Warning>) -> (bool, Vec<Warning>) {
+    let mut warnings = Vec::with_capacity(left.len() + 1);
+    if !atomic_swap {
+        warnings.push(atomic_swap_unavailable());
+    }
+    warnings.extend(left);
+    (atomic_swap, warnings)
 }
 
 /// The lowercase hex SHA-256 of the file at `path`, streamed (SavedVariables reach

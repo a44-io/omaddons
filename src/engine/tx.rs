@@ -933,9 +933,10 @@ fn locked(
             // Swapped already: the payload completed it, so the transaction stands.
             Ok(Some(Recovered {
                 action: RecoveryAction::RolledForward,
+                atomic_swap,
                 warnings,
                 ..
-            })) => (true, warnings),
+            })) => super::swap::rolled_forward(atomic_swap, warnings),
             Ok(_) => return Err(error),
             Err(failed) => return Err(recovery_failed(error, tx, &failed)),
         },
@@ -1530,6 +1531,42 @@ mod tests {
     }
 
     use crate::engine::testing::TreeEntry;
+
+    /// An update completed by the in-process roll-forward reports the swap its journal
+    /// recorded: two plain renames per folder are not atomic, also when the error hits
+    /// inside the swap, whose own report is then lost.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_rolled_forward_update_reports_the_swap_it_journaled() {
+        let new_tree = updated_tree();
+        for (spec, atomic) in [
+            ("fsx.renameat2.einval", false),
+            ("engine.record.written=error", true),
+            ("fsx.renameat2.einval,engine.record.written=error", false),
+            ("fsx.renameat2.einval,engine.swapped=error", false),
+        ] {
+            let scene = with_v1();
+            let v2 = scene.zip("v2.zip", V2);
+            let done = crate::fsx::failpoint::with_spec(spec, || {
+                scene.run(vec![scene.install("gh:o/foo", &v2)])
+            })
+            .unwrap();
+            assert!(done.failures.is_empty(), "{spec}: {:?}", done.failures);
+            let outcome = &done.outcomes[0];
+            let unavailable = outcome
+                .warnings
+                .iter()
+                .filter(|w| matches!(w.code, crate::error::WarningCode::AtomicSwapUnavailable))
+                .count();
+            assert_eq!(
+                (outcome.atomic_swap, unavailable),
+                (atomic, usize::from(!atomic)),
+                "{spec}: {:?}",
+                outcome.warnings
+            );
+            assert_eq!(scene.addons(), new_tree, "{spec}");
+        }
+    }
 
     #[cfg(debug_assertions)]
     #[test]
