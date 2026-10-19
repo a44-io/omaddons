@@ -286,15 +286,10 @@ impl Outcome for InstallOutcome {
                     let reinstalled = self.reinstall
                         && item.status == ItemStatus::Updated
                         && item.from_version == item.to_version;
-                    let verb = match item.status {
-                        ItemStatus::Installed => "installed",
-                        _ if reinstalled => "reinstalled",
-                        _ => "updated",
-                    };
-                    let verb = if d.dry_run {
-                        format!("would be {verb}")
-                    } else {
-                        verb.to_owned()
+                    let verb = match (item.status, d.dry_run) {
+                        (_, false) if reinstalled => "reinstalled".to_owned(),
+                        (_, true) if reinstalled => "would reinstall".to_owned(),
+                        (status, dry_run) => status.verb(dry_run),
                     };
                     let from = if reinstalled && self.from_cache.contains(&item.request) {
                         " from the local cache"
@@ -349,12 +344,7 @@ impl Outcome for InstallOutcome {
                 | ItemStatus::Edited
                 | ItemStatus::Removed
                 | ItemStatus::Adopted => {
-                    let verb = item.status.wire();
-                    let verb = if d.dry_run {
-                        format!("would be {verb}")
-                    } else {
-                        verb.to_owned()
-                    };
+                    let verb = item.status.verb(d.dry_run);
                     let version = item.to_version.as_deref().unwrap_or("?");
                     if item.fields.is_empty() {
                         writeln!(w, "{id}: {verb} {name} at {version}")?;
@@ -1413,7 +1403,7 @@ mod tests {
         );
         assert_eq!(
             human(&dry),
-            "retail: would be updated Foo 2.0 (1 folder)\n/reload in game\n"
+            "retail: would update Foo 2.0 (1 folder)\n/reload in game\n"
         );
     }
 
@@ -1442,7 +1432,7 @@ mod tests {
         );
         o.data.dry_run = true;
         o.data.tx = None;
-        assert!(human(&o).starts_with("retail: would be pinned Foo at 1.2\n"));
+        assert!(human(&o).starts_with("retail: would pin Foo at 1.2\n"));
         let json = serde_json::to_value(&o.data.items).unwrap();
         assert_eq!(
             (&json[0]["status"], &json[2]["status"], &json[2]["fields"]),

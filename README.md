@@ -291,8 +291,8 @@ This is real output from a test home with a retail and a Classic Era client and 
 
 ```text
 $ omaddons install ./HelloWorld ./Bar-2.1.0.zip -t retail --dry-run
-retail: would be installed HelloWorld 1.0.0 (1 folder)
-retail: would be installed Bar 2.1.0 (1 folder)
+retail: would install HelloWorld 1.0.0 (1 folder)
+retail: would install Bar 2.1.0 (1 folder)
 
 $ omaddons install ./HelloWorld ./Bar-2.1.0.zip -t retail --reason "set up retail UI"
 retail: installed HelloWorld 1.0.0 (1 folder)

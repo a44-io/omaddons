@@ -72,6 +72,29 @@ pub enum ItemStatus {
 }
 
 impl ItemStatus {
+    /// The verb a human line says it with: what happened (`installed`), or under
+    /// `--dry-run` what would (`would install`). The wire name stays the past form.
+    pub fn verb(self, dry_run: bool) -> String {
+        match (dry_run, self.base()) {
+            (true, Some(base)) => format!("would {base}"),
+            _ => self.wire().to_owned(),
+        }
+    }
+
+    /// The bare verb of a change (`install`), for a dry run's lines.
+    pub const fn base(self) -> Option<&'static str> {
+        match self {
+            Self::Installed => Some("install"),
+            Self::Updated => Some("update"),
+            Self::Removed => Some("remove"),
+            Self::Adopted => Some("adopt"),
+            Self::Pinned => Some("pin"),
+            Self::Unpinned => Some("unpin"),
+            Self::Edited => Some("edit"),
+            Self::Unchanged | Self::Skipped | Self::Failed => None,
+        }
+    }
+
     /// Counted as a change in `summary`.
     pub const fn changed(self) -> bool {
         matches!(
@@ -1010,7 +1033,12 @@ pub fn render(
             .max()
             .unwrap_or(0);
         for i in &t.items {
-            writeln!(w, "  {:<width$}  {}", item_name(i), item_detail(i))?;
+            writeln!(
+                w,
+                "  {:<width$}  {}",
+                item_name(i),
+                item_detail(i, data.dry_run)
+            )?;
             if let Some(error) = &i.error {
                 writeln!(w, "  {:<width$}  fix: {}", "", error.fix)?;
             }
@@ -1073,25 +1101,29 @@ pub(crate) fn header(command: &str, dry_run: bool, t: &TargetResult) -> String {
                 .map(|f| f.recorded.len())
                 .sum();
             let plural = if folders == 1 { "folder" } else { "folders" };
-            format!("adopted {n} {addons} ({folders} {plural})")
+            let verb = ItemStatus::Adopted.verb(dry_run);
+            format!("{verb} {n} {addons} ({folders} {plural})")
         }
-        [only] => format!("{} {n} {addons}", only.wire()),
+        [only] => format!("{} {n} {addons}", only.verb(dry_run)),
         _ => {
+            // A dry run's breakdown counts bare verbs: `1 install, 1 update`.
             let parts: Vec<String> = kinds
                 .iter()
                 .map(|k| {
                     let count = changed.iter().filter(|i| i.status == *k).count();
-                    format!("{count} {}", k.wire())
+                    let verb = if dry_run {
+                        k.base().unwrap_or(k.wire())
+                    } else {
+                        k.wire()
+                    };
+                    format!("{count} {verb}")
                 })
                 .collect();
-            format!("changed {n} {addons} ({})", parts.join(", "))
+            let changed = if dry_run { "would change" } else { "changed" };
+            format!("{changed} {n} {addons} ({})", parts.join(", "))
         }
     };
-    let mut line = if dry_run {
-        format!("{id}: would be {what}")
-    } else {
-        format!("{id}: {what}")
-    };
+    let mut line = format!("{id}: {what}");
     // An adoption records folders as they are: `retail: adopted 2 addons (3 folders), tx
     // 01M5… — no folder was changed`.
     let adoption = t.kind == Some(TxKind::Adopt);
@@ -1128,22 +1160,22 @@ pub fn dependency_suffix(reason: Option<AddonReason>, required_by: &[String]) ->
     format!(" (dependency of {names})")
 }
 
-pub(crate) fn item_detail(i: &ItemResult) -> String {
+pub(crate) fn item_detail(i: &ItemResult, dry_run: bool) -> String {
     let suffix = dependency_suffix(i.reason, i.required_by.as_deref().unwrap_or_default());
-    format!("{}{suffix}", status_detail(i))
+    format!("{}{suffix}", status_detail(i, dry_run))
 }
 
-fn status_detail(i: &ItemResult) -> String {
+fn status_detail(i: &ItemResult, dry_run: bool) -> String {
     let from = i.from_version.as_deref().unwrap_or("?");
     let to = i.to_version.as_deref().unwrap_or("?");
+    let verb = i.status.verb(dry_run);
     match i.status {
         ItemStatus::Updated => format!("{from} → {to}"),
-        ItemStatus::Installed => format!("{to} (installed)"),
-        ItemStatus::Removed => format!("{from} (removed)"),
-        ItemStatus::Adopted => format!("{to} (adopted)"),
-        ItemStatus::Pinned => format!("pinned at {to}"),
-        ItemStatus::Unpinned => format!("unpinned at {to}"),
-        ItemStatus::Edited => format!("{to} (edited)"),
+        ItemStatus::Installed | ItemStatus::Adopted | ItemStatus::Edited => {
+            format!("{to} ({verb})")
+        }
+        ItemStatus::Removed => format!("{from} ({verb})"),
+        ItemStatus::Pinned | ItemStatus::Unpinned => format!("{verb} at {to}"),
         ItemStatus::Unchanged => format!("{to} (unchanged)"),
         ItemStatus::Skipped => match i.skip_reason {
             Some(reason) => format!("skipped: {}", reason.phrase()),
@@ -1522,5 +1554,75 @@ mod tests {
         insta::assert_json_snapshot!("targets_json_0", none);
         insta::assert_json_snapshot!("targets_json_1", one);
         insta::assert_json_snapshot!("targets_json_3", three);
+    }
+
+    fn item_with(name: &str, status: ItemStatus) -> ItemResult {
+        ItemResult {
+            request: name.to_owned(),
+            name: Some(name.to_owned()),
+            r#ref: None,
+            status,
+            skip_reason: None,
+            duplicate_of: None,
+            reason: None,
+            from_version: Some("1".to_owned()),
+            to_version: Some("2".to_owned()),
+            folders: None,
+            required_by: None,
+            deps: ItemDeps::default(),
+            error: None,
+        }
+    }
+
+    /// A dry run's lines say what would happen, never "would be installed".
+    #[test]
+    fn a_dry_run_says_what_would_happen() {
+        use ItemStatus::{
+            Adopted, Edited, Installed, Pinned, Removed, Unchanged, Unpinned, Updated,
+        };
+        for (status, real, dry) in [
+            (Installed, "2 (installed)", "2 (would install)"),
+            (Updated, "1 → 2", "1 → 2"),
+            (Removed, "1 (removed)", "1 (would remove)"),
+            (Adopted, "2 (adopted)", "2 (would adopt)"),
+            (Pinned, "pinned at 2", "would pin at 2"),
+            (Unpinned, "unpinned at 2", "would unpin at 2"),
+            (Edited, "2 (edited)", "2 (would edit)"),
+            (Unchanged, "2 (unchanged)", "2 (unchanged)"),
+        ] {
+            let i = item_with("Foo", status);
+            assert_eq!(
+                (status_detail(&i, false), status_detail(&i, true)),
+                (real.to_owned(), dry.to_owned()),
+                "{status:?}"
+            );
+        }
+        let target = |items| TargetResult {
+            target: TargetRef {
+                id: "retail".to_owned(),
+                key: None,
+                mode: None,
+            },
+            tx: None,
+            kind: None,
+            no_section: false,
+            items,
+            reload_required: ReloadRequired::None,
+            atomic_swap: None,
+            creates_addons_dir: false,
+            error: None,
+        };
+        let one = target(vec![item_with("Foo", Installed)]);
+        assert_eq!(header("sync", true, &one), "retail: would install 1 addon");
+        assert_eq!(header("sync", false, &one), "retail: installed 1 addon");
+        let two = target(vec![item_with("Foo", Installed), item_with("Bar", Updated)]);
+        assert_eq!(
+            header("sync", true, &two),
+            "retail: would change 2 addons (1 install, 1 update)"
+        );
+        assert_eq!(
+            header("sync", false, &two),
+            "retail: changed 2 addons (1 installed, 1 updated)"
+        );
     }
 }

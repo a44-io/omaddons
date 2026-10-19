@@ -219,13 +219,22 @@ fn render_undone(w: &mut dyn Write, u: &Undone, dry_run: bool, hint: bool) -> st
         r.target.id
     )?;
     let sv = &u.sv;
+    let (restore, remove) = if dry_run {
+        ("would restore", "remove")
+    } else {
+        ("restored", "removed")
+    };
     let mut parts = vec![format!(
-        "restored {}, removed {}",
+        "{restore} {}, {remove} {}",
         crate::output::count(u.folders.restored.len(), "folder"),
         u.folders.removed.len()
     )];
     let mut counts = vec![
-        format!("{} restored", sv.restored),
+        if dry_run {
+            format!("would restore {}", sv.restored)
+        } else {
+            format!("{} restored", sv.restored)
+        },
         format!("{} unchanged", sv.unchanged),
     ];
     if sv.deferred > 0 {

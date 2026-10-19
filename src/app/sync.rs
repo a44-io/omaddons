@@ -730,9 +730,13 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     let summary = data.summary;
     let mut footer = Vec::new();
     if summary.changed == 0 && summary.failed == 0 {
-        let clients = if matching == 1 { "client" } else { "clients" };
+        let clients = if matching == 1 {
+            "client matches"
+        } else {
+            "clients match"
+        };
         footer.push(format!(
-            "nothing to do ({matching} {clients} match {})",
+            "nothing to do ({matching} {clients} {})",
             path.display()
         ));
     }

@@ -1112,6 +1112,14 @@ mod runs {
         let r = c.home.exec(&["undo".to_owned(), "--dry-run".to_owned()]);
         assert_eq!(r.code, 0, "{}", r.context());
         assert_eq!(r.stdout.matches("would revert").count(), 3, "{}", r.stdout);
+        // What a dry run counts, it would do: no past tense.
+        assert_eq!(
+            r.stdout.matches("would restore ").count(),
+            6,
+            "{}",
+            r.stdout
+        );
+        assert!(!r.stdout.contains("restored"), "{}", r.stdout);
     }
 
     #[test]

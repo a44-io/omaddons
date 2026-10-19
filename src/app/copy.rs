@@ -119,7 +119,12 @@ impl Outcome for CopyOutcome {
                 .max()
                 .unwrap_or(0);
             for i in &shown {
-                writeln!(w, "  {:<width$}  {}", item_name(i), item_detail(i))?;
+                writeln!(
+                    w,
+                    "  {:<width$}  {}",
+                    item_name(i),
+                    item_detail(i, data.dry_run)
+                )?;
                 if let Some(error) = &i.error {
                     writeln!(w, "  {:<width$}  fix: {}", "", error.fix)?;
                 }
