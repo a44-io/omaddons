@@ -2,6 +2,7 @@
 //! determinism and human-mode failures.
 
 use super::*;
+use crate::support::check;
 use common::home::wait;
 use std::time::{Duration, Instant};
 
@@ -38,19 +39,73 @@ fn a_held_lock_is_locked_and_retryable() {
     assert_eq!(done.code, 0, "{}", done.context());
 }
 
+/// One internal envelope, whose fix never reruns the command that failed: `status`
+/// points to `status --cached`, which in turn leaves only a report.
 #[test]
 fn a_panic_is_one_internal_envelope() {
     let s = Scene::new();
-    let c = s.json_env(
-        &["status"],
-        &[("OMADDONS_FAILPOINTS", "cli.panic=panic")],
-        1,
-    );
-    assert_eq!(c.envelope["error"]["code"], "internal");
+    let panic = [("OMADDONS_FAILPOINTS", "cli.panic=panic")];
+    let error = |args: &[&str]| s.json_env(args, &panic, 1).envelope["error"].clone();
+    let status = error(&["status"]);
+    assert_eq!(status["code"], "internal");
     assert_eq!(
-        c.envelope["error"]["fix_argv"],
+        status["fix_argv"],
+        serde_json::json!(["omaddons", "status", "--cached"])
+    );
+    let cached = error(&["status", "--cached"]);
+    assert_eq!(cached["fix_argv"], Value::Null);
+    assert!(
+        cached["fix"]
+            .as_str()
+            .is_some_and(|f| f.starts_with("this is a bug in omaddons")),
+        "{cached}"
+    );
+    assert_eq!(
+        error(&["list"])["fix_argv"],
         serde_json::json!(["omaddons", "status"])
     );
+}
+
+/// A missing or relative HOME is the environment's fault: `usage` (exit 2), with a fix
+/// no omaddons command can carry out. `help` needs no HOME.
+#[test]
+fn a_home_that_is_unset_or_relative_is_a_usage_error() {
+    let s = Scene::new();
+    let run = |home: Option<&str>, args: &[&str]| {
+        let mut cmd = s.home.env.command();
+        cmd.args(args).arg("--json");
+        match home {
+            Some(home) => cmd.env("HOME", home),
+            None => cmd.env_remove("HOME"),
+        };
+        let out = cmd.output().unwrap();
+        common::home::Run {
+            argv: args.iter().map(|a| (*a).to_owned()).collect(),
+            code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8(out.stdout).unwrap(),
+            stderr: String::from_utf8(out.stderr).unwrap(),
+        }
+    };
+    for (home, args) in [
+        (None, &["status"][..]),
+        (Some("relative/home"), &["config", "path"][..]),
+        (None, &["list"][..]),
+    ] {
+        let c = check(run(home, args), 2);
+        let error = &c.envelope["error"];
+        assert_eq!(
+            (&error["code"], &error["fix_argv"]),
+            (&serde_json::json!("usage"), &Value::Null),
+            "{args:?}: {error}"
+        );
+        assert!(
+            error["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("HOME is not set to an absolute path")),
+            "{error}"
+        );
+    }
+    check(run(None, &["help"]), 0);
 }
 
 #[test]

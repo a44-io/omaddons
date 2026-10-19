@@ -206,6 +206,8 @@ struct Out<'a> {
     started: std::time::Instant,
     offline: bool,
     notes: &'a output::RunNotes,
+    /// For an internal error's fix, which must not rerun what failed.
+    argv: &'a [String],
 }
 
 impl Out<'_> {
@@ -218,6 +220,14 @@ impl Out<'_> {
         name: &'static str,
         result: crate::error::Result<O>,
     ) -> Exit {
+        let result = result.map_err(|mut e| {
+            if matches!(e.code, crate::error::ErrorCode::Internal)
+                && e.fix == crate::error::internal_fix()
+            {
+                e.fix = crate::error::internal_fix_for(name, self.argv);
+            }
+            e
+        });
         let mut reporter = output::lock(self.reporter);
         output::emit(
             self.cfg,
@@ -268,6 +278,7 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         started: ctx.started,
         offline: ctx.offline,
         notes: &ctx.notes,
+        argv: &ctx.argv,
     };
     if cli.global.version {
         return out.emit_as("version", Ok(help::version()));

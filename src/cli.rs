@@ -306,7 +306,7 @@ fn run_with(
     let argv = normalize_argv(raw);
     let fallback = fallback_output(raw, term);
     let early_offline = output::offline_from_argv(raw, env);
-    set_panic_state(fallback, "omaddons", started, early_offline);
+    set_panic_state(fallback, "omaddons", &argv, started, early_offline);
     let cli = match Cli::try_parse_from(raw) {
         Ok(cli) => cli,
         // `-h` on a command with required arguments: help, not a usage error.
@@ -333,9 +333,10 @@ fn run_with(
     let output = output::resolve(&cli.global.output_flags(), term);
     let command = crate::app::command_name(cli.command.as_ref());
     let offline = cli.global.offline || env("OMADDONS_OFFLINE").as_deref() == Some("1");
-    set_panic_state(output, command, started, offline);
+    set_panic_state(output, command, &argv, started, offline);
     if let Err(err) = crate::fsx::failpoint::hit("cli.panic") {
-        let error = Error::internal(err.to_string());
+        let mut error = Error::internal(err.to_string());
+        error.fix = crate::error::internal_fix_for(command, &argv);
         return render_error(&output, command, started, offline, error);
     }
     let mut ctx = match Context::new(&cli.global, output, &argv, env, stdin_is_tty, started) {
@@ -1051,6 +1052,8 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
 struct PanicState {
     output: OutputConfig,
     command: &'static str,
+    /// For the fix, which must not rerun what failed.
+    argv: Vec<String>,
     started: Instant,
     offline: bool,
 }
@@ -1058,11 +1061,18 @@ struct PanicState {
 static PANIC_STATE: Mutex<Option<PanicState>> = Mutex::new(None);
 static PANIC_RENDERED: AtomicBool = AtomicBool::new(false);
 
-fn set_panic_state(output: OutputConfig, command: &'static str, started: Instant, offline: bool) {
+fn set_panic_state(
+    output: OutputConfig,
+    command: &'static str,
+    argv: &[String],
+    started: Instant,
+    offline: bool,
+) {
     if let Ok(mut state) = PANIC_STATE.lock() {
         *state = Some(PanicState {
             output,
             command,
+            argv: argv.to_vec(),
             started,
             offline,
         });
@@ -1086,12 +1096,25 @@ fn install_panic_hook() {
             .location()
             .map(|l| format!(" at {}:{}", l.file(), l.line()))
             .unwrap_or_default();
-        let error = Error::internal(format!("internal error: {payload}{at}"));
-        let (cfg, command, started, offline) =
+        let (cfg, command, argv, started, offline) =
             match PANIC_STATE.lock().ok().as_deref().and_then(Option::as_ref) {
-                Some(state) => (state.output, state.command, state.started, state.offline),
-                None => (OutputConfig::machine(), "omaddons", Instant::now(), false),
+                Some(state) => (
+                    state.output,
+                    state.command,
+                    state.argv.clone(),
+                    state.started,
+                    state.offline,
+                ),
+                None => (
+                    OutputConfig::machine(),
+                    "omaddons",
+                    Vec::new(),
+                    Instant::now(),
+                    false,
+                ),
             };
+        let mut error = Error::internal(format!("internal error: {payload}{at}"));
+        error.fix = crate::error::internal_fix_for(command, &argv);
         if output::stdout_written() {
             Reporter::stderr(&cfg).error(&error);
         } else {

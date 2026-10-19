@@ -325,6 +325,22 @@ pub fn internal_fix() -> Suggestion {
     Suggestion::command(["omaddons", "status"])
 }
 
+/// The fix for an internal error raised while `command` ran with `argv`, never the
+/// failing command itself: `status` points to `status --cached` (no discovery, no
+/// network), which failing in turn leaves only a report; any other command gets
+/// [`internal_fix`].
+pub fn internal_fix_for(command: &str, argv: &[String]) -> Suggestion {
+    match command {
+        "status" if !argv.iter().any(|a| a == "--cached") => {
+            Suggestion::command(["omaddons", "status", "--cached"])
+        }
+        "status" => Suggestion::text(
+            "this is a bug in omaddons: report the message above with the output of omaddons --version",
+        ),
+        _ => internal_fix(),
+    }
+}
+
 /// An executable suggestion: a shell-quoted display string plus the argv that runs it,
 /// or a non-CLI instruction (`/reload in game`) with no argv. The display is never
 /// empty.
@@ -852,6 +868,24 @@ mod tests {
         let fix = Suggestion::command(hostile);
         assert_eq!(shell_words::split(fix.display()).unwrap(), hostile);
         assert_eq!(fix.argv().unwrap(), hostile);
+    }
+
+    #[test]
+    fn an_internal_fix_never_reruns_the_failing_command() {
+        let argv = |args: &[&str]| -> Vec<String> {
+            std::iter::once("omaddons")
+                .chain(args.iter().copied())
+                .map(str::to_owned)
+                .collect()
+        };
+        assert_eq!(
+            internal_fix_for("status", &argv(&["status", "--json"])).argv(),
+            Some(&["omaddons", "status", "--cached"].map(str::to_owned)[..])
+        );
+        let cached = internal_fix_for("status", &argv(&["status", "--cached"]));
+        assert_eq!(cached.argv(), None);
+        assert!(cached.display().starts_with("this is a bug in omaddons"));
+        assert_eq!(internal_fix_for("list", &argv(&["list"])), internal_fix());
     }
 
     #[test]

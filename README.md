@@ -1240,7 +1240,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 
 | Code | Exit | Retryable | When |
 |---|---|---|---|
-| `usage` | 2 | no | bad flag, value, `--since`, `--limit`, `--actor`, `--reason`, config key or id |
+| `usage` | 2 | no | bad flag, value, `--since`, `--limit`, `--actor`, `--reason`, config key or id; a missing or relative `HOME` |
 | `ref_invalid` | 2 | no | malformed ref: `gh:owner`, `git:` without https, `http://` |
 | `desired_state_invalid` | 2 | no | `sync`'s `addons.toml` cannot be read: broken TOML, a bad value, an unknown family, an entry listed twice, or a newer schema (`details: {path, line, key, reason}`); also a failed `sync` item when two entries name the same addon, and `export --write` refusing a file edited since it was written (`reason: "edited"`) or an empty export (`reason: "empty"`), and `sync --prune` refusing a file with a section for no known client (`reason: "unknown_target_section"`) |
 | `target_not_found` | 3 | no | no target matches the selector; a known game mode whose client is missing |
@@ -1278,7 +1278,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `auth_rejected` | 1 | no | reserved for credentialed sources |
 | `state_corrupt` | 1 | no | an unreadable state or config file (with line and column); a SavedVariables snapshot copy that no longer matches its manifest, refused before an undo moves anything (`details.reason: "snapshot_mismatch"`) |
 | `io` | 1 | no | filesystem error; `details.path` |
-| `internal` | 1 | no | a bug or panic; fix is `omaddons status` |
+| `internal` | 1 | no | a bug or panic; fix is `omaddons status` (`omaddons status --cached` when `status` itself failed, and a report when that failed too) |
 
 </details>
 

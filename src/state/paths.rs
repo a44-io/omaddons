@@ -13,7 +13,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::discover::{find_child, find_children};
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::{PlanId, TargetKey, TxId};
 
 const APP: &str = "omaddons";
@@ -40,9 +40,18 @@ impl Paths {
 
     /// From an environment lookup, so tests need not mutate the process environment.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<OsString>) -> Result<Self> {
+        // A broken environment, not a bug: `usage`, and only the user can fix it.
         let home = absolute(lookup("HOME")).ok_or_else(|| {
-            Error::internal(
-                "HOME is not set to an absolute path; omaddons derives every path from it",
+            let is = lookup("HOME").map_or_else(
+                || "it is unset".to_owned(),
+                |v| format!("it is {:?}", v.to_string_lossy()),
+            );
+            Error::new(
+                ErrorCode::Usage,
+                format!(
+                    "HOME is not set to an absolute path ({is}); omaddons derives every path from it"
+                ),
+                Suggestion::text("set HOME to your home directory as an absolute path, then rerun"),
             )
         })?;
         let xdg = |name: &str, default: &str| {
@@ -614,13 +623,19 @@ mod tests {
         assert_eq!(empty_or_relative, defaults);
     }
 
+    /// A broken environment, not a bug: `usage`, saying what HOME is, with a fix no
+    /// omaddons command carries out.
     #[test]
-    fn missing_home_is_an_internal_error() {
-        for vars in [&[][..], &[("HOME", "")][..], &[("HOME", "relative")][..]] {
+    fn a_missing_or_relative_home_is_a_usage_error() {
+        for (vars, is) in [
+            (&[][..], "it is unset"),
+            (&[("HOME", "")][..], "it is \"\""),
+            (&[("HOME", "relative")][..], "it is \"relative\""),
+        ] {
             let err = Paths::from_lookup(lookup(vars)).unwrap_err();
-            assert_eq!(err.code, crate::error::ErrorCode::Internal, "{vars:?}");
-            assert!(!err.fix.display().is_empty());
-            assert!(err.message.contains("HOME"), "{}", err.message);
+            assert_eq!(err.code, ErrorCode::Usage, "{vars:?}");
+            assert_eq!(err.fix.argv(), None);
+            assert!(err.message.contains(is), "{}", err.message);
         }
     }
 
