@@ -421,3 +421,39 @@ fn a_family_override_on_an_unreadable_client_takes_the_familys_rules() {
     assert_eq!(target(&listed, "era")["details"]["rules"], "forever");
     installs("Fv");
 }
+
+/// An Anniversary folder without `.flavor.info`, named only by `product.db`, whose uid
+/// (`wow_classic_anniversary`) is not its product code: the target is
+/// `wow_anniversary`'s, with its game mode, its `.build.info` version, and both names.
+#[test]
+fn an_anniversary_folder_named_only_by_product_db_gets_its_product_code() {
+    let env = TestEnv::new();
+    let prefix = Prefix::new(&env, "battlenet");
+    BattlenetRoot::at(prefix.wow_root())
+        .product("wow_anniversary")
+        .without_flavor_info("_anniversary_")
+        .build();
+    common::product_db::multi_product().write(prefix.path());
+    let (code, listed) = run(&env, &["targets"]);
+    assert_eq!(code, 0, "{listed}");
+    let anniversary = target(&listed, "anniversary");
+    assert_eq!(
+        (
+            &anniversary["product"],
+            &anniversary["found_by"],
+            &anniversary["version"],
+            &anniversary["modes"][0]["id"]
+        ),
+        (
+            &json!("wow_anniversary"),
+            &json!("product_db"),
+            &json!("2.5.6.64702"),
+            &json!("tbc-anniversary")
+        ),
+        "{listed}"
+    );
+    for selector in ["wow_anniversary", "tbc-anniversary"] {
+        let (code, status) = run(&env, &["status", "-t", selector]);
+        assert_eq!(code, 0, "{selector}: {status}");
+    }
+}

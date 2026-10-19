@@ -132,6 +132,11 @@ fn write_fuzz_seeds() {
         .bytes();
     write("product_db", "two-installs.db", &db);
     write("product_db", "malformed-truncated.db", &db[..db.len() / 2]);
+    write(
+        "product_db",
+        "multi-product.db",
+        &common::product_db::multi_product().bytes(),
+    );
 
     // Launcher configs.
     write(

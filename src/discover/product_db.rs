@@ -2,18 +2,22 @@
 //! discovery's best hint, since it names install paths directly, including installs on
 //! other drive letters (vision §4.1, §5.2 step 1a).
 //!
-//! The field layout (WowUp's reader) is unverified, so extraction is by shape, not by
-//! field number: each top-level message is one candidate install, and its strings are
-//! classified as an install path, a `wow*` product code, a four-part version or a
-//! `_flavor_` folder. The protobuf wire reader is inline (vision §5.12): bounds-checked,
-//! depth-limited and tolerant; a malformed message yields what decoded before it.
+//! Read by field number, the layout verified on 2026-10-18 against a real Agent
+//! database and two upstream readers (overtools/TACTLib
+//! `TACTLib/Agent/Protobuf/ProtoDatabase.cs` at 129f977, generated from the Agent's
+//! schema; lutris/lutris `lutris/util/battlenet/product_db.py` at 3307967): the
+//! database's installs are its field 1 (`ProductInstall`: uid 1, product code 2,
+//! settings 3 with install path 1 and game subfolder 13, cached state 4 → base state 1
+//! → version string 7, product family 6). Other top-level fields (handshakes of
+//! installs in progress, configs, settings) are not installs. The uid is never the
+//! product: Anniversary's is `wow_classic_anniversary`, its code `wow_anniversary`.
+//! Each value is also checked for its shape, so a garbage field is never a product or
+//! a path. The protobuf wire reader is inline (vision §5.12): bounds-checked and
+//! tolerant; a malformed message yields what decoded before it.
 
 use std::path::Path;
 
 use super::read_bytes;
-
-/// Nested messages deeper than this are not walked.
-const MAX_DEPTH: usize = 16;
 
 /// One WoW install that `product.db` lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,62 +48,70 @@ pub fn product_db_path(prefix: &Path) -> std::path::PathBuf {
         .join("product.db")
 }
 
-/// The WoW installs in a `product.db`, in file order. Never fails: a malformed file
-/// yields the entries before the damage, or none.
+/// The WoW installs in a `product.db`, in file order: its top-level field 1. Never
+/// fails: a malformed file yields the entries before the damage, or none.
 pub fn parse_product_db(bytes: &[u8]) -> Vec<ProductDbEntry> {
     decode_message(bytes)
         .0
         .into_iter()
+        .filter(|field| field.number == 1)
         .filter_map(|field| match field.value {
-            Value::Bytes(entry) => classify(entry),
+            Value::Bytes(install) => read_install(install),
             _ => None,
         })
         .collect()
 }
 
-fn classify(entry: &[u8]) -> Option<ProductDbEntry> {
-    let mut strings = Vec::new();
-    walk(entry, 1, &mut strings);
-    let first = |test: fn(&str) -> bool| strings.iter().copied().find(|s| test(s));
-    let install_path = first(is_install_path)?;
-    let product = first(is_product_code);
+/// One `ProductInstall`, kept when it has an install path and is WoW's: a `wow*`
+/// product code, the product family `wow`, or a `World of Warcraft` path. A missing or
+/// misshapen value is `None`.
+fn read_install(install: &[u8]) -> Option<ProductDbEntry> {
+    let fields = decode_message(install).0;
+    let settings = sub(&fields, 3);
+    let base_state = sub(&sub(&fields, 4), 1);
+    let install_path = text(&settings, 1).filter(|s| is_install_path(s))?;
+    let product = text(&fields, 2).filter(|s| is_product_code(s));
+    let family_wow = text(&fields, 6) == Some("wow");
     let wow_path = install_path
         .to_ascii_lowercase()
         .contains("world of warcraft");
-    if product.is_none() && !wow_path {
+    if product.is_none() && !family_wow && !wow_path {
         return None;
     }
     Some(ProductDbEntry {
         product: product.map(str::to_owned),
         install_path: install_path.to_owned(),
-        flavor_folder: first(is_flavor_folder).map(str::to_owned),
-        version: first(is_version).map(str::to_owned),
+        flavor_folder: text(&settings, 13)
+            .filter(|s| is_flavor_folder(s))
+            .map(str::to_owned),
+        version: text(&base_state, 7)
+            .filter(|s| is_version(s))
+            .map(str::to_owned),
     })
 }
 
-/// Collects the printable strings in a message, depth first. A length-delimited value
-/// is read both ways: as a string when it is printable UTF-8, and as a nested message
-/// when it decodes cleanly to at least one field.
-fn walk<'a>(message: &'a [u8], depth: usize, out: &mut Vec<&'a str>) {
-    if depth > MAX_DEPTH {
-        return;
-    }
-    let (fields, _) = decode_message(message);
-    for field in fields {
-        let Value::Bytes(bytes) = field.value else {
-            continue;
-        };
-        if let Ok(text) = std::str::from_utf8(bytes)
-            && !text.is_empty()
-            && !text.chars().any(char::is_control)
-        {
-            out.push(text);
-        }
-        let (nested, clean) = decode_message(bytes);
-        if clean && !nested.is_empty() {
-            walk(bytes, depth + 1, out);
-        }
-    }
+/// The first field `number` of `fields` as UTF-8 text.
+fn text<'a>(fields: &[Field<'a>], number: u32) -> Option<&'a str> {
+    fields
+        .iter()
+        .find(|f| f.number == number)
+        .and_then(|f| match f.value {
+            Value::Bytes(bytes) => std::str::from_utf8(bytes).ok(),
+            _ => None,
+        })
+}
+
+/// The fields of the first field `number` of `fields` read as a message (what decodes);
+/// none when it is absent or not length-delimited.
+fn sub<'a>(fields: &[Field<'a>], number: u32) -> Vec<Field<'a>> {
+    fields
+        .iter()
+        .find(|f| f.number == number)
+        .and_then(|f| match f.value {
+            Value::Bytes(bytes) => Some(decode_message(bytes).0),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 /// `C:/…` or `C:\…`.
@@ -246,9 +258,10 @@ mod tests {
         out
     }
 
-    /// A WowUp-shaped install: uid, product code, settings {path, …, flavor folder},
-    /// cached state {base state {installed, version}}.
-    fn install(code: &str, path: &str, folder: &str, version: &str) -> Vec<u8> {
+    /// An install as the Agent writes it: uid 1, product code 2, settings 3 {path, …,
+    /// game subfolder}, cached state 4 {base state {installed, version}}, operations 5,
+    /// product family 6, hidden 7 and persistent JSON 8.
+    fn install(uid: &str, code: &str, path: &str, folder: &str, version: &str) -> Vec<u8> {
         let settings = [
             string(1, path),
             string(2, "us"),
@@ -267,12 +280,16 @@ mod tests {
         ]
         .concat();
         let state = message(1, &base);
+        let family = if code.starts_with("wow") { "wow" } else { code };
         [
-            string(1, code),
+            string(1, uid),
             string(2, code),
             message(3, &settings),
             message(4, &state),
-            string(6, code),
+            message(5, &uint(1, 1)),
+            string(6, family),
+            uint(7, 0),
+            string(8, "{}"),
         ]
         .concat()
     }
@@ -283,6 +300,7 @@ mod tests {
                 1,
                 &install(
                     "agent",
+                    "agent",
                     "C:/ProgramData/Battle.net/Agent",
                     "",
                     "2.41.1.9824",
@@ -292,6 +310,7 @@ mod tests {
                 1,
                 &install(
                     "wow",
+                    "wow",
                     "C:/Program Files (x86)/World of Warcraft",
                     "_retail_",
                     "12.1.0.69933",
@@ -300,6 +319,7 @@ mod tests {
             message(
                 1,
                 &install(
+                    "wow_classic_era",
                     "wow_classic_era",
                     "D:\\Games\\World of Warcraft",
                     "_classic_era_",
@@ -369,23 +389,101 @@ mod tests {
         );
     }
 
+    /// Anniversary's uid is `wow_classic_anniversary`, its product code
+    /// `wow_anniversary`: the product is field 2, whatever field 1 holds.
     #[test]
-    fn extraction_ignores_field_numbers_and_depth() {
-        let shuffled = [
-            string(9, "wow"),
-            message(2, &message(7, &message(3, &string(40, "12.1.0.69933")))),
-            message(
-                15,
-                &[
-                    string(2, "_retail_"),
-                    string(1_000, "C:/Program Files (x86)/World of Warcraft"),
-                ]
-                .concat(),
+    fn the_product_code_is_field_2_not_the_uid() {
+        let db = message(
+            1,
+            &install(
+                "wow_classic_anniversary",
+                "wow_anniversary",
+                "C:/Program Files (x86)/World of Warcraft",
+                "_anniversary_",
+                "2.5.6.70006",
             ),
+        );
+        let entries = parse_product_db(&db);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| e.product.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("wow_anniversary")],
+            "{}",
+            tree(&db, 0)
+        );
+        // A misshapen code is no product; the family and path still keep the install.
+        let odd = message(
+            1,
+            &install(
+                "wow",
+                "Not A Code",
+                "C:/World of Warcraft",
+                "_retail_",
+                "1.2.3.4",
+            ),
+        );
+        assert_eq!(parse_product_db(&odd)[0].product, None);
+    }
+
+    /// Only top-level field 1 is an install: a handshake (field 2, product before uid)
+    /// and the Agent's other fields are not, and values elsewhere in an install are not
+    /// read as its path, folder or version.
+    #[test]
+    fn handshakes_and_other_top_level_fields_are_not_installs() {
+        let path = "C:/Program Files (x86)/World of Warcraft";
+        let handshake = message(
+            2,
+            &[
+                string(1, "wow_classic_titan"),
+                string(2, "wow_classic_titan"),
+                message(3, &string(1, path)),
+            ]
+            .concat(),
+        );
+        let configs = message(4, &install("wow", "wow", path, "_retail_", "1.2.3.4"));
+        let db = [handshake, configs, string(7, "wow")].concat();
+        assert!(parse_product_db(&db).is_empty(), "{}", tree(&db, 0));
+        let shuffled = [
+            string(2, "wow"),
+            message(9, &string(1, path)),
+            message(3, &[string(2, path), string(14, "_retail_")].concat()),
         ]
         .concat();
-        let db = message(3, &shuffled);
-        assert_eq!(parse_product_db(&db), [retail()], "{}", tree(&db, 0));
+        assert!(parse_product_db(&message(1, &shuffled)).is_empty());
+    }
+
+    /// The seed every kind of field is in: five WoW installs, the Agent's, a Titan
+    /// handshake and the Agent's other fields (`tests/common/product_db.rs`).
+    #[test]
+    fn a_database_with_every_kind_of_field() {
+        let db: &[u8] = include_bytes!("../../fuzz/seeds/product_db/multi-product.db");
+        let entries = parse_product_db(db);
+        assert_eq!(entries.len(), 5, "{}", tree(db, 0));
+        let codes: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| e.product.as_deref())
+            .collect();
+        assert_eq!(
+            codes,
+            [
+                "wow",
+                "wowf",
+                "wow_classic",
+                "wow_classic_era",
+                "wow_anniversary"
+            ]
+        );
+        let anniversary = &entries[4];
+        assert_eq!(
+            (
+                anniversary.flavor_folder.as_deref(),
+                anniversary.version.as_deref()
+            ),
+            (Some("_anniversary_"), Some("2.5.6.70006"))
+        );
+        assert_eq!(entries[3].install_path, "D:\\Games\\World of Warcraft");
     }
 
     #[test]
@@ -420,10 +518,11 @@ mod tests {
             2,
             "trailing damage"
         );
-        let cut = message(1, &install("wow", "C:/WoW", "_retail_", "1.2.3.4")).len();
+        let cut = message(1, &install("wow", "wow", "C:/WoW", "_retail_", "1.2.3.4")).len();
         let wow_end = message(
             1,
             &install(
+                "agent",
                 "agent",
                 "C:/ProgramData/Battle.net/Agent",
                 "",
@@ -465,14 +564,14 @@ mod tests {
     }
 
     #[test]
-    fn deep_nesting_stops_at_the_limit() {
+    fn deep_nesting_is_never_walked() {
         let mut db = string(1, "C:/World of Warcraft");
         for _ in 0..100 {
             db = message(1, &db);
         }
         assert!(
             parse_product_db(&db).is_empty(),
-            "the path is below the depth limit"
+            "only settings.1 is a path, not one 100 messages down"
         );
     }
 

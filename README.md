@@ -1816,7 +1816,7 @@ Journals are recovered by the next command that changes something: install, upda
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
 - Private GitHub repositories and HTTP proxies are not supported.
 - Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) keep separate records: a folder one records is `shared` on the other, which cannot record it too, so manage those addons from one client. Records made on both before this check stay doubled: `status` warns `target_addons_shared`, a change through either warns the same, and M4's doctor will report them.
-- The legacy running behavior and several upstream file layouts (product.db, Steam Flatpak paths) are marked UNVERIFIED in the code. The Bottles layout was verified against Bottles 67.4.
+- The legacy running behavior and the Steam Flatpak paths are marked UNVERIFIED in the code. The Bottles layout was verified against Bottles 67.4, and `product.db` against a real Agent database and two upstream readers.
 
 ### Known issues
 
