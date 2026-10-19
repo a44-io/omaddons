@@ -160,9 +160,10 @@ fn sigkill_frees_the_lock_at_once() {
     assert!(matches!(probe_global(&p).unwrap(), LockState::Held { .. }));
     child.kill().unwrap();
     child.wait().unwrap();
-    let started = Instant::now();
-    GlobalLock::acquire_with_timeout(&p, "update", Duration::from_secs(2)).unwrap();
-    assert!(started.elapsed() < Duration::from_millis(500));
+    // The kernel freed the flock when the holder died: free at once, and a zero timeout
+    // (one try) takes it.
+    assert_eq!(probe_global(&p).unwrap(), LockState::Free);
+    GlobalLock::acquire_with_timeout(&p, "update", Duration::ZERO).unwrap();
 }
 
 #[test]

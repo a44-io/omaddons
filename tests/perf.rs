@@ -1,7 +1,10 @@
 //! Time budgets, measured on release builds only:
-//! `cargo test --release --test perf -- --ignored` (H3 runs them at the checkpoint).
-//! A debug build is several times slower and proves nothing, so each test is ignored.
-//! Every budget lives here, and nothing timing-based anywhere else.
+//! `cargo test --release --test perf -- --ignored --skip bench_home --skip live_home`
+//! (the milestone checkpoint runs them and quotes the printed numbers). A debug build is
+//! several times slower and proves nothing, so each test is ignored. Every speed budget
+//! lives here. Elsewhere, time appears only as a correctness bound with a wide margin: a
+//! wait that must last at least its timeout, a sanity ceiling of a second or more, or a
+//! killed child that must not run its course. Never as a speed target.
 //!
 //! Also here: `argc bench`'s home generator (ignored, and a no-op without `BENCH_HOME`),
 //! and the request-economy assertions the other suites do not make, which run in the
@@ -15,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use common::addons::toc;
 use common::archives::zip_text;
+use common::engine::{Scene, lock_held_ms};
 use common::env::TestEnv;
 use common::home::Home;
 use common::http::{Asset, paths, replay, scenario};
@@ -25,7 +29,7 @@ use omaddons::model::{Channel, FolderName, Ref};
 use omaddons::sources::wowi::index::{IndexPolicy, StoredIndex, WowiEntry, WowiIndex};
 use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use omaddons::state::memo::{self, MemoEntry, ReleaseMemo};
-use support::{addon_release, drift_report};
+use support::{addon_release, drift_report, measured, median_of_21};
 
 #[cfg(test)]
 mod support {
@@ -37,6 +41,26 @@ mod support {
     use super::common::home::Home;
     use super::common::http::{Asset, gh_latest, gh_release_v};
     use super::common::state::{files_index, record};
+
+    /// One measurement line on stderr, written directly so libtest does not capture it:
+    /// the checkpoint quotes these numbers.
+    pub fn measured(line: std::fmt::Arguments<'_>) {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{line}");
+    }
+
+    /// The median of 21 runs of `f`, and every run's time, sorted.
+    pub fn median_of_21(mut f: impl FnMut()) -> (std::time::Duration, Vec<std::time::Duration>) {
+        let mut times: Vec<std::time::Duration> = (0..21)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                f();
+                start.elapsed()
+            })
+            .collect();
+        times.sort();
+        (times[times.len() / 2], times)
+    }
 
     /// Retail checked against its records and files index.
     pub fn drift_report(home: &Home, mode: DriftMode) -> DriftReport {
@@ -174,10 +198,10 @@ fn five_thousand_files_check_in_thirty_milliseconds() {
     let started = std::time::Instant::now();
     let r = drift_report(&home, DriftMode::Stat);
     let elapsed = started.elapsed();
-    eprintln!(
+    measured(format_args!(
         "drift Stat over 5,000 files: {elapsed:?}, {} re-hashed",
         r.files_rehashed
-    );
+    ));
     assert!(r.files_rehashed <= 50, "{} re-hashed", r.files_rehashed);
     assert!(
         elapsed < std::time::Duration::from_millis(30),
@@ -233,7 +257,9 @@ fn a_full_wowi_index_loads_under_40_ms() {
         .collect();
     times.sort();
     let median = times[times.len() / 2];
-    eprintln!("WoWInterface index: {bytes} bytes, median load {median:?}");
+    measured(format_args!(
+        "WoWInterface index: {bytes} bytes, median load {median:?}"
+    ));
     assert!(median < Duration::from_millis(40), "{median:?} ({times:?})");
 }
 
@@ -374,9 +400,259 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
         .collect();
     times.sort();
     let median = times[times.len() / 2];
-    eprintln!("status --cached: median {median:?}, memo {memo_bytes} bytes, 100 records");
+    measured(format_args!(
+        "status --cached: median {median:?}, memo {memo_bytes} bytes, 100 records"
+    ));
     assert!(
         median < Duration::from_millis(5),
         "status --cached median {median:?} (memo {memo_bytes} bytes; runs {times:?})"
+    );
+}
+
+/// Every commit holds the global lock under 50 ms (vision §7 M1): 20 updates of one
+/// addon, then three addons installed in one transaction, removed together, and that
+/// remove undone. Local archives only: release builds replay no fixture.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+fn commits_hold_the_lock_under_50_ms() {
+    let s = Scene::new();
+    for name in ["Baz", "Qux"] {
+        let zip = s.dl.join(format!("{}.zip", name.to_ascii_lowercase()));
+        fs::write(
+            &zip,
+            zip_text(&[(&format!("{name}/{name}.toc"), "## Interface: 120105\n")]),
+        )
+        .unwrap();
+    }
+    let mut held: Vec<(String, u64)> = Vec::new();
+    let mut run = |what: String, mut args: Vec<String>| {
+        args.push("-v".to_owned());
+        let r = s.run(&args, "");
+        assert_eq!(r.code, 0, "{what}\n{}", r.context());
+        let ms = lock_held_ms(&r);
+        assert!(ms.is_some(), "{what}: no lock log line\n{}", r.context());
+        held.extend(ms.map(|ms| (what, ms)));
+    };
+    for i in 0..20 {
+        let zip = if i % 2 == 0 { "v1" } else { "v2" };
+        run(format!("update {i}"), s.install_args("gh:o/foo", zip));
+    }
+    let (bar, baz, qux) = (s.zip("bar"), s.zip("baz"), s.zip("qux"));
+    run(
+        "install of three".into(),
+        s.args(&["install", &bar, &baz, &qux]),
+    );
+    run(
+        "remove of three".into(),
+        s.args(&["remove", "Bar", "Baz", "Qux"]),
+    );
+    run("undo of the remove".into(), s.args(&["undo"]));
+    let mut ms: Vec<u64> = held.iter().map(|(_, ms)| *ms).collect();
+    ms.sort_unstable();
+    measured(format_args!(
+        "lock_held_ms over {} commits: min {} median {} max {}; {held:?}",
+        ms.len(),
+        ms[0],
+        ms[ms.len() / 2],
+        ms[ms.len() - 1]
+    ));
+    assert!(
+        held.iter().all(|(_, ms)| *ms < 50),
+        "lock hold times {held:?}"
+    );
+}
+
+/// 16 MiB of SavedVariables and a 64 MiB folder still hold the lock under 50 ms: what
+/// can be copied or hashed is done before the lock. A release build ignores failpoints,
+/// so SavedVariables are copied the way this filesystem allows (reflinks where it can).
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+fn large_saved_variables_and_folders_hold_the_lock_under_50_ms() {
+    let s = Scene::new();
+    s.heavy_saved_variables();
+    let [one, two] = s.big_folders();
+    let mut held: Vec<(&str, u64)> = Vec::new();
+    let mut run = |what: &'static str, mut args: Vec<String>| {
+        args.push("-v".to_owned());
+        let r = s.run(&args, "");
+        assert_eq!(r.code, 0, "{what}\n{}", r.context());
+        let ms = lock_held_ms(&r);
+        assert!(ms.is_some(), "{what}: no lock log line\n{}", r.context());
+        held.extend(ms.map(|ms| (what, ms)));
+    };
+    run(
+        "install with SavedVariables",
+        s.install_args("gh:o/foo", "v1"),
+    );
+    run(
+        "update with SavedVariables",
+        s.install_args("gh:o/foo", "v2"),
+    );
+    run(
+        "install over a 64 MiB folder",
+        s.args(&["install", "gh:o/big", "--file", &one, "--force"]),
+    );
+    run(
+        "update of a 64 MiB folder",
+        s.args(&["install", "gh:o/big", "--file", &two]),
+    );
+    run("undo of that update", s.args(&["undo"]));
+    measured(format_args!("lock_held_ms with large data: {held:?}"));
+    assert!(
+        held.iter().all(|(_, ms)| *ms < 50),
+        "lock hold times {held:?}"
+    );
+}
+
+/// `status --cached` budgets 5 ms, so classes depth over 500 folders stays under it.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+fn classes_inventory_of_500_folders_under_5_ms() {
+    use omaddons::inventory::{Depth, inventory};
+    use omaddons::rules::RulesTable;
+
+    let env = TestEnv::new();
+    let target = common::targets::battlenet(&env, "wow");
+    for i in 0..500 {
+        fs::create_dir_all(target.addons_dir().join(format!("Addon{i:03}"))).unwrap();
+    }
+    let table = RulesTable::builtin();
+    let check = inventory(&target, None, &table, Depth::Classes).unwrap();
+    assert_eq!(check.counts.unmanaged, 500);
+    let (median, times) = median_of_21(|| {
+        inventory(&target, None, &table, Depth::Classes).unwrap();
+    });
+    measured(format_args!(
+        "classes inventory of 500 folders: median {median:?}"
+    ));
+    assert!(
+        median < Duration::from_millis(5),
+        "median {median:?} (runs {times:?})"
+    );
+}
+
+/// Discovery from the cache, with nothing scanned, takes under 5 ms for 10 roots.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+fn cached_discovery_of_10_roots_under_5_ms() {
+    use omaddons::discover::cache::{DiscoveryMode, discover_cached};
+    use omaddons::discover::{DiscoveryInput, ScanLimits};
+    use omaddons::rules::RulesTable;
+    use omaddons::state::paths::Paths;
+
+    let env = TestEnv::new();
+    for i in 0..10 {
+        common::trees::CustomRoot::at(env.home().join(format!("Games/client{i}"))).build();
+    }
+    let paths = Paths::with_roots(env.home(), env.config(), env.state(), env.cache());
+    let input = DiscoveryInput {
+        home: env.home(),
+        ..DiscoveryInput::default()
+    };
+    let table = RulesTable::builtin();
+    let run = |mode| discover_cached(&input, &table, &paths, ScanLimits::default(), mode);
+    run(DiscoveryMode::Full);
+    let (d, stats) = run(DiscoveryMode::NoScan);
+    assert_eq!(
+        (d.targets.len(), stats.reused, stats.scanned),
+        (10, 10, false)
+    );
+    let (median, times) = median_of_21(|| {
+        run(DiscoveryMode::NoScan);
+    });
+    measured(format_args!(
+        "cached discovery of 10 roots: median {median:?}"
+    ));
+    assert!(
+        median < Duration::from_millis(5),
+        "median {median:?} (runs {times:?})"
+    );
+}
+
+/// Staging an archive of 5,001 small files takes under a second.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+fn staging_5001_files_under_1_s() {
+    use omaddons::engine::inspect::{ArchiveLimits, inspect};
+    use omaddons::engine::stage::stage;
+    use omaddons::fsx::{InflightLock, ScopeTable};
+    use omaddons::model::TxId;
+    use omaddons::rules::RulesTable;
+
+    let env = TestEnv::new();
+    let target = common::targets::battlenet(&env, "wow");
+    let paths = paths(&env);
+    let scopes = ScopeTable::new(&paths, std::slice::from_ref(&target.client_dir), None).unwrap();
+    let files: Vec<(String, Vec<u8>)> = (0..5_000)
+        .map(|i| {
+            (
+                format!("Big/d{}/f{i}.lua", i % 50),
+                format!("return {i}\n").into_bytes(),
+            )
+        })
+        .chain([("Big/Big.toc".to_owned(), b"## Interface: 120105\n".to_vec())])
+        .collect();
+    let entries: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(n, c)| (n.as_str(), c.as_slice()))
+        .collect();
+    let blob = env.root().join("big.zip");
+    fs::write(&blob, common::archives::zip_of(&entries)).unwrap();
+    let inspected = inspect(&blob, &ArchiveLimits::default(), &RulesTable::builtin()).unwrap();
+    let inflight = InflightLock::create(&paths, &TxId::new()).unwrap();
+    let started = Instant::now();
+    let staged = stage(&inflight, &scopes, &target, Some(&blob), &inspected).unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(staged.folders[0].index.files.len(), 5_001);
+    measured(format_args!("staging 5,001 files: {elapsed:?}"));
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "staging 5,001 files took {elapsed:?}"
+    );
+}
+
+/// Running-client detection on the real `/proc` takes under 2 ms
+/// (omad-m1-working-slice-ejl.3.10). It only reads `/proc`.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+fn detect_running_on_the_real_proc_under_2_ms() {
+    use omaddons::discover::DiscoverySource;
+    use omaddons::discover::battlenet::{BattlenetHints, discover_root};
+    use omaddons::discover::running::detect_running;
+    use omaddons::model::Target;
+    use omaddons::rules::RulesTable;
+
+    let env = TestEnv::new();
+    let prefix = common::trees::Prefix::new(&env, "battlenet");
+    let mut root = common::trees::BattlenetRoot::at(prefix.wow_root());
+    for code in ["wow", "wow_classic", "wow_classic_era", "wowf"] {
+        root = root.product(code);
+    }
+    let (found, _) = discover_root(
+        &root.build(),
+        &RulesTable::builtin(),
+        &BattlenetHints::default(),
+        "battlenet",
+        &DiscoverySource::Scan,
+    );
+    let targets: Vec<Target> = found.into_iter().map(|t| t.target).collect();
+    let _warm = detect_running(&targets);
+    let started = Instant::now();
+    let result = detect_running(&targets);
+    let elapsed = started.elapsed();
+    assert!(
+        result.clients.is_empty(),
+        "the synthetic targets are not running"
+    );
+    assert_eq!(
+        result.unavailable, None,
+        "the real /proc lists this process"
+    );
+    measured(format_args!(
+        "detect_running on the real /proc: {elapsed:?}"
+    ));
+    assert!(
+        elapsed < Duration::from_millis(2),
+        "detect_running took {elapsed:?}"
     );
 }

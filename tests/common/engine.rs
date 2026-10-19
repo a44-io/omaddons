@@ -510,6 +510,64 @@ pub mod shapes {
     }
 }
 
+/// How long a `-v` run held the global lock, from its `lock released` log line.
+pub fn lock_held_ms(r: &Run) -> Option<u64> {
+    r.stderr
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| v["message"].as_str().map(str::to_owned))
+        .find_map(|m| {
+            m.strip_prefix("lock released: ")
+                .and_then(|rest| rest.rsplit("lock_held_ms ").next())
+                .and_then(|n| n.trim().parse::<u64>().ok())
+        })
+}
+
+impl Scene {
+    /// The retail client's account-wide SavedVariables directory.
+    pub fn account_saved_variables(&self) -> PathBuf {
+        self.home
+            .client("_retail_")
+            .join("WTF/Account/ACCT/SavedVariables")
+    }
+
+    /// 16 MiB of Foo's SavedVariables, as a heavy profile holds them: the account's
+    /// `Foo.lua` and `Foo.lua.bak` (4 MiB each) and four characters' (1 MiB each).
+    pub fn heavy_saved_variables(&self) -> Vec<PathBuf> {
+        let account = self.account_saved_variables();
+        let realm = account.parent().unwrap().join("Realm");
+        let mut dirs = vec![(account, 4usize << 20)];
+        dirs.extend((1..=4).map(|n| (realm.join(format!("Char{n}/SavedVariables")), 1 << 20)));
+        let line = "FooDB = { [\"profile\"] = { [\"bars\"] = { 1, 2, 3 } } }\n";
+        let mut files = Vec::new();
+        for (dir, size) in dirs {
+            fs::create_dir_all(&dir).unwrap();
+            let text = line.repeat(size / line.len() + 1);
+            for name in ["Foo.lua", "Foo.lua.bak"] {
+                fs::write(dir.join(name), &text.as_bytes()[..size]).unwrap();
+                files.push(dir.join(name));
+            }
+        }
+        files
+    }
+
+    /// A 64 MiB addon in 16 files, three times: a copy put in AddOns by hand, and two
+    /// releases as folders to install with `--file` (returned: release 1, release 2).
+    pub fn big_folders(&self) -> [String; 2] {
+        let chunk = "-- data\n".repeat(4 << 17);
+        let big = |version: &str| self.dl.join(format!("big{version}/Big"));
+        for dir in [big("1"), big("2"), self.addons().join("Big")] {
+            fs::create_dir_all(&dir).unwrap();
+            let toc = format!("## Interface: 120105\n## Notes: {}\n", dir.display());
+            fs::write(dir.join("Big.toc"), toc).unwrap();
+            for n in 0..16 {
+                fs::write(dir.join(format!("data{n}.lua")), &chunk).unwrap();
+            }
+        }
+        [big("1"), big("2")].map(|dir| dir.display().to_string())
+    }
+}
+
 /// The codes of an envelope's warnings.
 pub fn warning_codes(envelope: &Value) -> Vec<String> {
     envelope["warnings"]

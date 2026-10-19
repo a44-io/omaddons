@@ -430,9 +430,10 @@ fn mixed_inventory_snapshot() {
     insta::assert_json_snapshot!("mixed_inventory", inv);
 }
 
-/// `status --cached` budgets 5 ms for classes; a debug build gets 10x slack.
+/// Classes depth counts 500 folders, the same on a second run (its 5 ms budget is a
+/// release-build check in `tests/perf.rs`).
 #[test]
-fn classes_depth_is_fast() {
+fn classes_depth_counts_500_folders() {
     let env = TestEnv::new();
     let root = BattlenetRoot::at(env.root().join("wow"))
         .product("wow")
@@ -443,13 +444,10 @@ fn classes_depth_is_fast() {
         fs::create_dir_all(addons.join(format!("Addon{i:03}"))).unwrap();
     }
     let table = RulesTable::builtin();
-    let _ = inventory(&target, None, &table, Depth::Classes).unwrap();
-    let start = std::time::Instant::now();
+    let first = inventory(&target, None, &table, Depth::Classes).unwrap();
     let inv = inventory(&target, None, &table, Depth::Classes).unwrap();
-    let took = start.elapsed();
     assert_eq!(inv.counts.unmanaged, 500);
-    let budget = if cfg!(debug_assertions) { 50 } else { 5 };
-    assert!(took.as_millis() < budget, "{took:?} for 500 folders");
+    assert_eq!(inv, first, "deterministic");
 }
 
 /// A folder only a client sharing this AddOns directory records is `shared`, naming

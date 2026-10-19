@@ -5,7 +5,6 @@ mod common;
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use common::env::TestEnv;
 use common::procfs::{FakeProc, running_as_root};
@@ -14,7 +13,7 @@ use omaddons::discover::DiscoverySource;
 use omaddons::discover::battlenet::{BattlenetHints, discover_root};
 use omaddons::discover::custom::discover_custom_root;
 use omaddons::discover::running::{
-    RunningEvidence, RunningInfo, detect_running, detect_running_in, running_prefixes,
+    RunningEvidence, RunningInfo, detect_running_in, running_prefixes,
 };
 use omaddons::model::Target;
 use omaddons::rules::RulesTable;
@@ -261,29 +260,5 @@ fn exited_and_odd_processes_are_skipped() {
         running(&result, &default_targets[0].client_dir),
         [(5, RunningEvidence::ExePath)],
         "~/.wine is the default prefix"
-    );
-}
-
-#[test]
-#[ignore = "measures the real /proc; run at checkpoints"]
-fn real_proc_within_budget() {
-    let env = TestEnv::new();
-    let prefix = Prefix::new(&env, "battlenet");
-    let targets = battlenet_targets(&prefix, &["wow", "wow_classic", "wow_classic_era", "wowf"]);
-    let _warm = detect_running(&targets);
-    let started = Instant::now();
-    let result = detect_running(&targets);
-    let elapsed = started.elapsed();
-    assert!(
-        result.clients.is_empty(),
-        "the synthetic targets are not running"
-    );
-    assert_eq!(
-        result.unavailable, None,
-        "the real /proc lists this process"
-    );
-    assert!(
-        elapsed.as_micros() < 2_000,
-        "detect_running took {elapsed:?}"
     );
 }

@@ -319,21 +319,19 @@ fn a_cache_from_another_binary_re_parses_once() {
     }
 }
 
+/// No-scan mode reuses all 10 cached roots and walks nothing (its 5 ms budget is a
+/// release-build check in `tests/perf.rs`).
 #[test]
-fn no_scan_mode_is_fast() {
+fn no_scan_mode_reuses_every_root_without_scanning() {
     let env = TestEnv::new();
     for i in 0..10 {
         CustomRoot::at(env.home().join(format!("Games/client{i}"))).build();
     }
     run(&env, DiscoveryMode::Full);
     run(&env, DiscoveryMode::NoScan);
-    let start = std::time::Instant::now();
     let (d, stats) = run(&env, DiscoveryMode::NoScan);
-    let took = start.elapsed();
     assert_eq!(
         (d.targets.len(), stats.reused, stats.scanned),
         (10, 10, false)
     );
-    let budget = if cfg!(debug_assertions) { 50 } else { 5 };
-    assert!(took.as_millis() < budget, "{took:?} for 10 cached roots");
 }

@@ -7,7 +7,6 @@ mod common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use common::archives::{RawEntry, raw_zip, zip_of, zip_text};
 use common::env::TestEnv;
@@ -252,8 +251,10 @@ fn concurrent_transactions_stage_side_by_side() {
     assert_eq!(tree(&b.stage_dir), ["B/", "B/B.toc", "B/b.lua"]);
 }
 
+/// 5,001 small files stage and are all indexed (the 1 s budget is a release-build
+/// check in `tests/perf.rs`).
 #[test]
-fn five_thousand_small_files_within_budget() {
+fn five_thousand_small_files_are_staged_and_indexed() {
     let fx = Fixture::new();
     let files: Vec<(String, Vec<u8>)> = (0..5_000)
         .map(|i| {
@@ -269,12 +270,6 @@ fn five_thousand_small_files_within_budget() {
         .map(|(n, c)| (n.as_str(), c.as_slice()))
         .collect();
     let (blob, inspected) = fx.blob("big.zip", &zip_of(&entries));
-    let started = Instant::now();
     let staged = fx.stage(&blob, &inspected).unwrap();
-    let elapsed = started.elapsed();
     assert_eq!(staged.folders[0].index.files.len(), 5_001);
-    assert!(
-        elapsed.as_secs_f64() < 5.0,
-        "staging 5 001 files took {elapsed:?} (about 0.3 s on tmpfs in a debug build; the margin absorbs parallel test load)"
-    );
 }

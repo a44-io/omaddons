@@ -2,15 +2,15 @@
 //! `pause` failpoints: each run stops at a named step until the test resumes it, so the
 //! interleaving a test names is the one that runs. A reader during a live swap, recovery
 //! only under the lock, no lock while planning and staging, concurrent installs of the
-//! same and of different addons, and the lock-hold budget.
+//! same and of different addons, and the lock hold of commits, measured and printed (its
+//! 50 ms budget is a release-build check in `tests/perf.rs`).
 
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
 
 use common::archives::zip_text;
-use common::engine::{Scene, shapes, warning_codes};
+use common::engine::{Scene, lock_held_ms, shapes, warning_codes};
 use common::home::{Run, wait};
 use common::pause::Pause;
 use serde_json::Value;
@@ -34,33 +34,6 @@ mod support {
         })
     }
 
-    /// The retail client's account-wide SavedVariables directory.
-    pub fn account_saved_variables(s: &Scene) -> PathBuf {
-        s.home
-            .client("_retail_")
-            .join("WTF/Account/ACCT/SavedVariables")
-    }
-
-    /// 16 MiB of Foo's SavedVariables, as a heavy profile holds them: the account's
-    /// `Foo.lua` and `Foo.lua.bak` (4 MiB each) and four characters' (1 MiB each).
-    pub fn heavy_saved_variables(s: &Scene) -> Vec<PathBuf> {
-        let account = account_saved_variables(s);
-        let realm = account.parent().unwrap().join("Realm");
-        let mut dirs = vec![(account, 4usize << 20)];
-        dirs.extend((1..=4).map(|n| (realm.join(format!("Char{n}/SavedVariables")), 1 << 20)));
-        let line = "FooDB = { [\"profile\"] = { [\"bars\"] = { 1, 2, 3 } } }\n";
-        let mut files = Vec::new();
-        for (dir, size) in dirs {
-            fs::create_dir_all(&dir).unwrap();
-            let text = line.repeat(size / line.len() + 1);
-            for name in ["Foo.lua", "Foo.lua.bak"] {
-                fs::write(dir.join(name), &text.as_bytes()[..size]).unwrap();
-                files.push(dir.join(name));
-            }
-        }
-        files
-    }
-
     /// The lowercase hex SHA-256 of `bytes`.
     pub fn sha256_hex(bytes: &[u8]) -> String {
         use sha2::Digest;
@@ -68,19 +41,6 @@ mod support {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect()
-    }
-
-    /// How long a `-v` run held the global lock, from its `lock released` log line.
-    pub fn lock_held_ms(r: &Run) -> Option<u64> {
-        r.stderr
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter_map(|v| v["message"].as_str().map(str::to_owned))
-            .find_map(|m| {
-                m.strip_prefix("lock released: ")
-                    .and_then(|rest| rest.rsplit("lock_held_ms ").next())
-                    .and_then(|n| n.trim().parse::<u64>().ok())
-            })
     }
 }
 
@@ -595,8 +555,14 @@ fn two_outdated_runs_at_once_leave_a_valid_memo() {
     assert!(problem.is_none(), "{problem:?}");
 }
 
+/// A sanity ceiling on a commit's lock hold in a debug build under parallel test load:
+/// the 50 ms budget is measured on a release build in `tests/perf.rs`, never here.
+const LOCK_HOLD_CEILING_MS: u64 = 2_000;
+
+/// The lock hold of multi-addon commits, measured and printed (checkpoint evidence);
+/// only a sanity ceiling fails here.
 #[test]
-fn multi_addon_commits_hold_the_lock_under_50_ms() {
+fn multi_addon_commits_report_their_lock_hold() {
     let mut held: Vec<(String, u64)> = Vec::new();
     for (what, prepare) in [
         (
@@ -612,7 +578,7 @@ fn multi_addon_commits_hold_the_lock_under_50_ms() {
         args.push("-v".to_owned());
         let r = s.run(&args, "");
         assert_eq!(r.code, 0, "{}", r.context());
-        let ms = support::lock_held_ms(&r);
+        let ms = lock_held_ms(&r);
         assert!(ms.is_some(), "{what}: no lock log line\n{}", r.context());
         held.extend(ms.map(|ms| (what.to_owned(), ms)));
     }
@@ -621,40 +587,18 @@ fn multi_addon_commits_hold_the_lock_under_50_ms() {
         format_args!("lock_held_ms of multi-addon commits: {held:?}\n"),
     );
     assert!(
-        held.iter().all(|(_, ms)| *ms < 50),
+        held.iter().all(|(_, ms)| *ms < LOCK_HOLD_CEILING_MS),
         "lock hold times {held:?}"
     );
 }
 
+/// The lock hold with 16 MiB of SavedVariables, copied byte by byte, measured and
+/// printed; the snapshots and the undo are checked, and only a sanity ceiling fails on
+/// time.
 #[test]
-fn every_commit_holds_the_lock_under_50_ms() {
+fn large_saved_variables_report_their_lock_hold() {
     let s = Scene::new();
-    let mut held: Vec<u64> = Vec::new();
-    for i in 0..20 {
-        let zip = if i % 2 == 0 { "v1" } else { "v2" };
-        let mut args = s.install_args("gh:o/foo", zip);
-        args.push("-v".to_owned());
-        let r = s.run(&args, "");
-        assert_eq!(r.code, 0, "{}", r.context());
-        let ms = support::lock_held_ms(&r);
-        assert!(ms.is_some(), "no lock log line\n{}", r.context());
-        held.extend(ms);
-    }
-    held.sort_unstable();
-    let _ = std::io::Write::write_fmt(
-        &mut std::io::stderr(),
-        format_args!(
-            "lock_held_ms over 20 commits: min {} median {} max {}\n",
-            held[0], held[10], held[19]
-        ),
-    );
-    assert!(held.iter().all(|ms| *ms < 50), "lock hold times {held:?}");
-}
-
-#[test]
-fn large_saved_variables_hold_the_lock_under_50_ms() {
-    let s = Scene::new();
-    let files = support::heavy_saved_variables(&s);
+    let files = s.heavy_saved_variables();
     let sizes: Vec<u64> = files
         .iter()
         .map(|f| fs::metadata(f).unwrap().len())
@@ -665,7 +609,7 @@ fn large_saved_variables_hold_the_lock_under_50_ms() {
         // Byte copies even where the filesystem could reflink: the slow path.
         let r = s.run(&args, "fsx.reflink.unsupported");
         assert_eq!(r.code, 0, "{what}\n{}", r.context());
-        let ms = support::lock_held_ms(&r);
+        let ms = lock_held_ms(&r);
         assert!(ms.is_some(), "{what}: no lock log line\n{}", r.context());
         held.extend(ms.map(|ms| (what, ms)));
     };
@@ -688,7 +632,7 @@ fn large_saved_variables_hold_the_lock_under_50_ms() {
         format_args!("lock_held_ms with 16 MiB of SavedVariables: {held:?}\n"),
     );
     assert!(
-        held.iter().all(|(_, ms)| *ms < 50),
+        held.iter().all(|(_, ms)| *ms < LOCK_HOLD_CEILING_MS),
         "lock hold times {held:?}"
     );
     let snapshots = s
@@ -706,35 +650,23 @@ fn large_saved_variables_hold_the_lock_under_50_ms() {
     assert_eq!(copies, 4, "every transaction snapshotted them");
 }
 
+/// The lock hold with a 64 MiB folder (a copy put in AddOns by hand, then two
+/// releases), measured and printed; the undo is checked, and only a sanity ceiling fails
+/// on time.
 #[test]
-fn large_folders_hold_the_lock_under_50_ms() {
+fn large_folders_report_their_lock_hold() {
     let s = Scene::new();
-    // 64 MiB in 16 files: a copy put in AddOns by hand, then two releases.
-    let chunk = "-- data\n".repeat(4 << 17);
-    let big = |version: &str| s.dl.join(format!("big{version}/Big"));
-    let by_hand = s.addons().join("Big");
-    for dir in [big("1"), big("2"), by_hand] {
-        fs::create_dir_all(&dir).unwrap();
-        let toc = format!("## Interface: 120105\n## Notes: {}\n", dir.display());
-        fs::write(dir.join("Big.toc"), toc).unwrap();
-        for n in 0..16 {
-            fs::write(dir.join(format!("data{n}.lua")), &chunk).unwrap();
-        }
-    }
+    let [one, two] = s.big_folders();
     let mut held: Vec<(&str, u64)> = Vec::new();
     let mut run = |what: &'static str, args: &[&str]| {
         let mut argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
         argv.extend(["-t", "retail", "--offline", "--json", "-v"].map(str::to_owned));
         let r = s.run(&argv, "");
         assert_eq!(r.code, 0, "{what}\n{}", r.context());
-        let ms = support::lock_held_ms(&r);
+        let ms = lock_held_ms(&r);
         assert!(ms.is_some(), "{what}: no lock log line\n{}", r.context());
         held.extend(ms.map(|ms| (what, ms)));
     };
-    let (one, two) = (
-        big("1").display().to_string(),
-        big("2").display().to_string(),
-    );
     // The unmanaged copy has no files index: it is hashed before the lock.
     run(
         "install --force",
@@ -747,7 +679,7 @@ fn large_folders_hold_the_lock_under_50_ms() {
         format_args!("lock_held_ms with a 64 MiB folder: {held:?}\n"),
     );
     assert!(
-        held.iter().all(|(_, ms)| *ms < 50),
+        held.iter().all(|(_, ms)| *ms < LOCK_HOLD_CEILING_MS),
         "lock hold times {held:?}"
     );
     let toc = fs::read_to_string(s.addons().join("Big/Big.toc")).unwrap();
@@ -758,7 +690,7 @@ fn large_folders_hold_the_lock_under_50_ms() {
 fn saved_variables_written_after_their_copy_are_snapshotted_as_written() {
     let s = Scene::new();
     s.install("gh:o/foo", "v1");
-    let sv = support::account_saved_variables(&s);
+    let sv = s.account_saved_variables();
     fs::create_dir_all(&sv).unwrap();
     fs::write(sv.join("Foo.lua"), "-- before logout\n").unwrap();
     let v2 = s.zip("v2");
