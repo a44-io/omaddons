@@ -522,11 +522,11 @@ fn a_stored_github_token_never_follows_a_redirect_to_another_host() {
         TokenSource::File,
         Some("ghp_st0red".into()),
     ));
-    h.http
-        .send(rest.api_request("/repos/o/r/releases"))
-        .unwrap()
-        .bytes()
+    let (req, authorized) = rest
+        .authorized(rest.api_request("/repos/o/r/releases"))
         .unwrap();
+    assert!(authorized);
+    h.http.send(req).unwrap().bytes().unwrap();
     let seen = h.seen.lock().unwrap();
     let bearer = |r: &Request| {
         r.headers

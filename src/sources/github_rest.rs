@@ -44,6 +44,8 @@ pub struct GithubRest {
     /// Held across each request, so the next one sees the budget this one's answer
     /// left (parallel fetches would otherwise all pass an unknown budget).
     gate: Mutex<()>,
+    /// `--offline`: every request is refused before the token is resolved.
+    offline: bool,
 }
 
 impl std::fmt::Debug for GithubRest {
@@ -102,7 +104,15 @@ impl GithubRest {
             token,
             budget: Mutex::new(Budget::default()),
             gate: Mutex::new(()),
+            offline: false,
         }
+    }
+
+    /// For a command run `--offline` (or not).
+    #[must_use]
+    pub fn offline(mut self, offline: bool) -> Self {
+        self.offline = offline;
+        self
     }
 
     /// The budget as last reported.
@@ -110,28 +120,36 @@ impl GithubRest {
         self.budget.lock().map_or_else(|p| *p.into_inner(), |b| *b)
     }
 
-    /// A GET of `path` on the API host, with the API headers and the token.
+    /// A GET of `path` on the API host, with the API headers; the token is added only
+    /// as it is sent ([`GithubRest::authorized`]).
     pub fn api_request(&self, path: &str) -> Request {
-        let mut req = Request::get(format!("{API}{path}"), "rest-releases")
+        Request::get(format!("{API}{path}"), "rest-releases")
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28");
-        if let Ok(Some(token)) = self.token.value() {
-            // ubs:ignore — an outbound request header; github_token::valid rejects controls and spaces
-            req = req.header("Authorization", format!("Bearer {token}"));
-        }
-        req
+            .header("X-GitHub-Api-Version", "2022-11-28")
     }
 
-    /// Sends an API request unless the budget is spent, then records the new budget (a
-    /// 304's own rate-limit headers, which `Validating` merges into the cached answer's).
-    /// One request at a time.
+    /// `req` with the token, resolved now (a credential command runs on the first
+    /// request that needs it); `Err` when a configured credential cannot be had.
+    pub(crate) fn authorized(&self, req: Request) -> Result<(Request, bool)> {
+        let Some(token) = self.token.value()? else {
+            return Ok((req, false));
+        };
+        // ubs:ignore — an outbound request header; github_token::valid rejects controls and spaces
+        Ok((req.header("Authorization", format!("Bearer {token}")), true))
+    }
+
+    /// Sends an API request unless offline or the budget is spent, then records the new
+    /// budget (a 304's own rate-limit headers, which `Validating` merges into the
+    /// cached answer's). One request at a time. Offline, nothing is resolved: a
+    /// credential command never runs.
     fn send(&self, req: Request, http: &dyn Http) -> Result<Response> {
         let _gate = self
             .gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // A configured credential that cannot be resolved stops the first REST request.
-        let token = self.token.value()?;
+        if self.offline {
+            return Err(crate::net::offline_refusal(&req.url));
+        }
         let budget = self.budget();
         if !budget.allows() {
             let reset = budget.reset.unwrap_or_else(Timestamp::now);
@@ -146,11 +164,13 @@ impl GithubRest {
                 )),
             ));
         }
+        // A configured credential that cannot be resolved stops the first REST request.
+        let (req, authorized) = self.authorized(req)?;
         let resp = http.send(req)?;
         if let Ok(mut b) = self.budget.lock() {
             b.update(&resp);
         }
-        if resp.status == 401 && token.is_some() {
+        if resp.status == 401 && authorized {
             return Err(self.token.rejected());
         }
         Ok(resp)
@@ -483,6 +503,56 @@ mod tests {
         }
     }
 
+    /// Answers every request `200 []`, counting them.
+    struct Empty(std::sync::atomic::AtomicUsize);
+
+    impl Http for Empty {
+        fn send(&self, req: Request) -> Result<Response> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Response::new(
+                200,
+                Vec::new(),
+                req.url,
+                Box::new(std::io::Cursor::new(b"[]".to_vec())),
+            ))
+        }
+    }
+
+    /// Offline, a request is refused before its credential is resolved, so a command
+    /// credential never runs; online it runs once, on the first request.
+    #[test]
+    fn offline_never_runs_a_credential_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let command = vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            format!("echo x >> '{}'; echo ghp_ok", marker.display()),
+        ];
+        let http = Empty(std::sync::atomic::AtomicUsize::new(0));
+        let offline =
+            GithubRest::with_github_token(GithubToken::command(command.clone())).offline(true);
+        let err = offline
+            .send(offline.api_request("/repos/o/r/releases"), &http)
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Offline);
+        assert_eq!(
+            err.message,
+            "offline: not requesting https://api.github.com/repos/o/r/releases"
+        );
+        assert!(!marker.exists(), "the command ran offline");
+        assert_eq!(http.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        let online = GithubRest::with_github_token(GithubToken::command(command));
+        for _ in 0..2 {
+            online
+                .send(online.api_request("/repos/o/r/releases"), &http)
+                .unwrap();
+        }
+        let runs = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(runs.lines().count(), 1, "once per command");
+    }
+
     #[test]
     fn channel_selection() {
         let list = [
@@ -633,8 +703,16 @@ mod tests {
         );
 
         let auth = |rest: &GithubRest| {
-            let req = rest.api_request("/repos/o/r/releases");
-            assert!(req.url.starts_with("https://api.github.com/"));
+            let bare = rest.api_request("/repos/o/r/releases");
+            assert!(bare.url.starts_with("https://api.github.com/"));
+            assert!(
+                !bare
+                    .headers
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("authorization")),
+                "the token is added only as it is sent"
+            );
+            let (req, _) = rest.authorized(bare).unwrap();
             req.headers
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))

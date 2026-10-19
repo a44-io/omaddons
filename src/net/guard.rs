@@ -95,14 +95,19 @@ impl Guarded {
     }
 }
 
+/// `offline` for a request to `url` that `--offline` refuses.
+pub fn offline_refusal(url: &str) -> Error {
+    Error::new(
+        ErrorCode::Offline,
+        format!("offline: not requesting {}", super::redact(url)),
+        Suggestion::text("run without --offline and with OMADDONS_OFFLINE unset"),
+    )
+}
+
 impl Http for Guarded {
     fn send(&self, req: Request) -> Result<Response> {
         if self.offline {
-            return Err(Error::new(
-                ErrorCode::Offline,
-                format!("offline: not requesting {}", super::redact(&req.url)),
-                Suggestion::text("run without --offline and with OMADDONS_OFFLINE unset"),
-            ));
+            return Err(offline_refusal(&req.url));
         }
         let target = parse_target(&req.url, req.hop)?;
         if !self.allowlist.permits(&target.host) {

@@ -174,21 +174,26 @@ pub fn run(ctx: &Context, args: &AuthArgs) -> Result<AuthOutcome> {
     let token = GithubToken::resolve(&paths, &config.config.sources);
     warnings.extend(token.warnings.iter().cloned());
     ctx.notes.warn_all(&warnings);
+    // Offline, a credential command never runs: `configured` then says one is
+    // configured, not that it works. One that is had without running anything (env,
+    // file) is still checked.
     let rate_limit = match action {
+        AuthAction::Status if ctx.offline => {
+            if let Some(resolved) = token.peek() {
+                resolved?;
+            }
+            None
+        }
         AuthAction::Status => {
             // A configured token that cannot be had is the answer.
             token.value()?;
-            if ctx.offline {
-                None
-            } else {
-                Some(rate_limit(ctx, &paths, &config.config, &token)?)
-            }
+            Some(rate_limit(ctx, &paths, &config.config, &token)?)
         }
         AuthAction::Set | AuthAction::Clear => None,
     };
     Ok(AuthOutcome {
         data: AuthData {
-            configured: matches!(token.value(), Ok(Some(_))),
+            configured: token.configured(),
             source: token.source(),
             rate_limit,
         },

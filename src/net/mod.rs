@@ -27,7 +27,7 @@ use std::sync::atomic::AtomicU64;
 
 pub use allowlist::{Allowlist, GitHosts};
 pub use client::UreqTransport;
-pub use guard::{Guarded, Redirecting, download_too_large};
+pub use guard::{Guarded, Redirecting, download_too_large, offline_refusal};
 pub use limit::Limited;
 pub use log::{GitLogEntry, NetLog, NetLogEntry, Via};
 pub use pool::run_bounded;

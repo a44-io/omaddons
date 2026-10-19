@@ -30,6 +30,8 @@ pub struct RepoHit {
 pub struct GithubSearch {
     token: Arc<GithubToken>,
     budget: Mutex<Budget>,
+    /// `--offline`: a search is refused before the token is resolved.
+    offline: bool,
 }
 
 impl std::fmt::Debug for GithubSearch {
@@ -78,7 +80,15 @@ impl GithubSearch {
         Self {
             token,
             budget: Mutex::new(Budget::default()),
+            offline: false,
         }
+    }
+
+    /// For a command run `--offline` (or not).
+    #[must_use]
+    pub fn offline(mut self, offline: bool) -> Self {
+        self.offline = offline;
+        self
     }
 
     /// The search budget as last reported.
@@ -89,16 +99,9 @@ impl GithubSearch {
     /// The request for `query`: addon-ish repositories (`wow`, `warcraft` or `addon` in
     /// the name, description or topics), by stars.
     pub fn request(&self, query: &str) -> Request {
-        let q = format!("{query} (wow OR warcraft OR addon) in:name,description,topics");
-        let mut req = Request::get(
-            format!(
-                "https://api.github.com/search/repositories?q={}&sort=stars&per_page={GITHUB_SEARCH_PER_PAGE}",
-                query_component(&q)
-            ),
-            "github-search",
-        )
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28");
+        let mut req = Request::get(request_url(query), "github-search")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28");
         if let Ok(Some(token)) = self.token.value() {
             // ubs:ignore — an outbound request header; github_token::valid rejects controls and spaces
             req = req.header("Authorization", format!("Bearer {token}"));
@@ -109,8 +112,10 @@ impl GithubSearch {
     /// The repositories GitHub finds for `query`, best first. A spent search budget, or a
     /// 403 or 429 with no requests left, is `rate_limited` with its reset time.
     pub fn search(&self, query: &str, http: &dyn Http) -> Result<Vec<RepoHit>> {
-        // A configured credential that cannot be resolved stops the search.
-        let token = self.token.value()?.is_some();
+        // Offline, nothing is resolved: a credential command never runs.
+        if self.offline {
+            return Err(crate::net::offline_refusal(&request_url(query)));
+        }
         let budget = self.budget();
         if budget.remaining == Some(0) {
             let reset = budget.reset.unwrap_or_else(Timestamp::now);
@@ -122,6 +127,8 @@ impl GithubSearch {
                 )),
             ));
         }
+        // A configured credential that cannot be resolved stops the search.
+        let token = self.token.value()?.is_some();
         let resp = match http.send(self.request(query)) {
             Ok(resp) => resp,
             // The retry layer answered a spent search for us: remember it is spent.
@@ -169,6 +176,16 @@ impl GithubSearch {
             })
             .collect())
     }
+}
+
+/// The search URL for `query`: addon-ish repositories (`wow`, `warcraft` or `addon` in
+/// the name, description or topics), by stars.
+fn request_url(query: &str) -> String {
+    let q = format!("{query} (wow OR warcraft OR addon) in:name,description,topics");
+    format!(
+        "https://api.github.com/search/repositories?q={}&sort=stars&per_page={GITHUB_SEARCH_PER_PAGE}",
+        query_component(&q)
+    )
 }
 
 /// `s` as a URL query value: unreserved characters kept, spaces as `+`, the rest

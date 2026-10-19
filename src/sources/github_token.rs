@@ -153,6 +153,38 @@ impl GithubToken {
             .map_err(Clone::clone)
     }
 
+    /// A `command` credential from config, not run yet (tests).
+    #[cfg(test)]
+    pub(crate) fn command(command: Vec<String>) -> Arc<Self> {
+        Arc::new(Self {
+            source: TokenSource::Config,
+            value: OnceLock::new(),
+            command: Some(command),
+            warnings: Vec::new(),
+        })
+    }
+
+    /// The token when having it runs nothing (an `env` or `file` credential, or a
+    /// command that already ran); `None` for a `command` credential not run yet.
+    pub fn peek(&self) -> Option<Result<Option<&str>>> {
+        self.value.get().map(|resolved| {
+            resolved
+                .as_ref()
+                .map(Option::as_deref)
+                .map_err(Clone::clone)
+        })
+    }
+
+    /// Whether a credential is configured, without running a `command` credential: a
+    /// token resolved, or a command not run yet (whether it works is known only when a
+    /// REST request runs it). `false` for none, and for one that could not be had.
+    pub fn configured(&self) -> bool {
+        match self.value.get() {
+            Some(resolved) => matches!(resolved, Ok(Some(_))),
+            None => self.command.is_some(),
+        }
+    }
+
     /// `auth_rejected`, for a 401 answered to this token: the fix undoes where it came
     /// from.
     pub fn rejected(&self) -> Error {
@@ -308,5 +340,31 @@ mod tests {
         let env = GithubToken::fixed(TokenSource::Env, Some("t".into())).rejected();
         assert!(env.fix.display().contains(TOKEN_VAR));
         assert_eq!(env.alternatives.len(), 1);
+    }
+
+    /// `configured` never runs a command credential: unrun, it counts as configured;
+    /// once run, it is what the command gave.
+    #[test]
+    fn configured_never_runs_a_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let script = |out: &str| {
+            vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                format!("echo x >> '{}'; {out}", marker.display()),
+            ]
+        };
+        let works = GithubToken::command(script("echo ghp_ok"));
+        assert!(works.configured());
+        assert!(!marker.exists(), "configured() ran the command");
+        assert_eq!(works.value().unwrap(), Some("ghp_ok"));
+        assert!(works.configured());
+        let broken = GithubToken::command(script("exit 3"));
+        assert!(broken.configured(), "unrun: configured");
+        assert!(broken.value().is_err());
+        assert!(!broken.configured(), "run, and it gave nothing");
+        assert!(!GithubToken::none().configured());
+        assert!(GithubToken::fixed(TokenSource::Env, Some("t".into())).configured());
     }
 }

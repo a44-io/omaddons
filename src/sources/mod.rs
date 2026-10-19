@@ -147,6 +147,9 @@ pub struct SourceConfigView {
     disabled: BTreeSet<SourceId>,
     /// The GitHub token REST requests carry; none unless given.
     github: TokenSlot,
+    /// `--offline`: the GitHub clients refuse before resolving a credential, so a
+    /// credential command never runs.
+    offline: bool,
 }
 
 /// The token a view hands to the GitHub clients; views compare by where it comes from.
@@ -171,6 +174,7 @@ impl SourceConfigView {
                 .filter_map(|(name, _)| SourceId::from_wire(name))
                 .collect(),
             github: TokenSlot::default(),
+            offline: false,
         }
     }
 
@@ -184,6 +188,17 @@ impl SourceConfigView {
     pub fn with_github_token(mut self, token: Arc<github_token::GithubToken>) -> Self {
         self.github = TokenSlot(Some(token));
         self
+    }
+
+    /// For a command run `--offline` (or not).
+    #[must_use]
+    pub fn with_offline(mut self, offline: bool) -> Self {
+        self.offline = offline;
+        self
+    }
+
+    pub fn offline(&self) -> bool {
+        self.offline
     }
 
     /// The GitHub token (none when the view was given none).
@@ -352,7 +367,8 @@ impl SourceRegistry {
         let tukui = std::sync::Arc::new(tukui::TukuiSource::default());
         let shipped: [Box<dyn Source>; 6] = [
             Box::new(github::GithubSource::with_rest(Box::new(
-                github_rest::GithubRest::with_github_token(config.github_token()),
+                github_rest::GithubRest::with_github_token(config.github_token())
+                    .offline(config.offline()),
             ))),
             Box::new(git::GitSource::default()),
             Box::new(local::LocalSource),

@@ -174,6 +174,83 @@ fn env_then_config_then_file_and_never_github_token() {
     assert_eq!(envelope(&run)["error"]["code"], "auth_required");
 }
 
+/// A `command` credential runs only when a REST request needs it: never offline, and
+/// never for `set` or `clear`; online, `status` runs it once.
+#[test]
+fn a_credential_command_never_runs_offline_or_for_set_and_clear() {
+    let home = Home::new(&["wow"]);
+    let ran = home.env.root().join("cred-ran.log");
+    let cred = home.env.root().join("cred");
+    fs::write(
+        &cred,
+        format!("#!/bin/sh\necho x >> '{}'\necho {TOKEN}\n", ran.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&cred, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::create_dir_all(home.env.config().join("omaddons")).unwrap();
+    fs::write(
+        home.env.config().join("omaddons/config.toml"),
+        format!(
+            "[sources.github]\ncredential = {{ command = [\"{}\"] }}\n",
+            cred.display()
+        ),
+    )
+    .unwrap();
+
+    let run = home.exec(&argv(&["auth", "github", "--offline"]));
+    let status = envelope(&run);
+    assert_eq!(
+        (&status["data"]["configured"], &status["data"]["source"]),
+        (&json!(true), &json!("config")),
+        "{}",
+        run.context()
+    );
+    home.exec_input(&argv(&["auth", "github", "set"]), &[], b"ghp_stored\n");
+    home.run(&["auth", "github", "clear"]).expect(0);
+    let rest = home.exec(&argv(&[
+        "install",
+        "gh:o/r",
+        "--channel",
+        "beta",
+        "-t",
+        "retail",
+        "--dry-run",
+        "--offline",
+    ]));
+    assert_eq!(
+        envelope(&rest)["error"]["code"],
+        "offline",
+        "{}",
+        rest.context()
+    );
+    assert!(
+        envelope(&rest)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("offline: not requesting https://api.github.com/"),
+        "{}",
+        rest.context()
+    );
+    assert!(
+        !ran.exists(),
+        "the command ran: {:?}",
+        fs::read_to_string(&ran)
+    );
+
+    // Online, status's one request needs it: it runs, once.
+    fixture(
+        &home.http,
+        "rate-limit",
+        "https://api.github.com/rate_limit",
+        200,
+        &[],
+        Some("{\"resources\":{\"core\":{\"limit\":5000,\"remaining\":4999,\"reset\":1791824100}}}"),
+    );
+    let run = home.exec(&argv(&["auth", "github"]));
+    assert_eq!(run.code, 0, "{}", run.context());
+    assert_eq!(fs::read_to_string(&ran).unwrap().lines().count(), 1);
+}
+
 #[test]
 fn a_file_others_can_read_warns() {
     let home = Home::new(&["wow"]);

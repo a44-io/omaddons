@@ -347,7 +347,8 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
     };
     let log = NetLog::new(&world.paths)?;
     let http = stack(&net, log.clone(), &world.paths);
-    let registry = SourceRegistry::builtin(&world.sources()).with_git(GitRunner::new(&net, log));
+    let sources = world.sources().with_offline(ctx.offline);
+    let registry = SourceRegistry::builtin(&sources).with_git(GitRunner::new(&net, log));
     // Read-only: an answer from the last 15 minutes is good enough.
     let freshness = if ctx.offline {
         Freshness::OfflineOnly
