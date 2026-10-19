@@ -1,5 +1,6 @@
 //! `git:` refs to hosts other than GitHub, through the `git` binary (vision §5.4, §5.7).
-//! A host must be listed in config `git_hosts` (else `host_blocked`); the URL is https
+//! A host must be listed in config `git_hosts` (else `host_blocked`), which HTTP never
+//! reaches and git reaches alone: no host of HTTP's allowlist is git's. The URL is https
 //! only. Resolution is `git ls-remote` and writes nothing; [`GitRunner::materialize`]
 //! clones into a directory the engine created through fsx, the one place a subprocess
 //! writes.
@@ -29,7 +30,7 @@ use crate::error::{Error, ErrorCode, PlanStaleSource, Result, Suggestion};
 use crate::limits::API_RESPONSE_MAX_BYTES;
 use crate::model::{Asset, AssetLocation, Channel, Ref, Release, ReleaseSet};
 use crate::net::NetConfig;
-use crate::net::allowlist::Allowlist;
+use crate::net::allowlist::{GitHosts, is_http_host};
 use crate::net::log::{GitLogEntry, NetLog};
 use crate::politeness::{API_READ_TIMEOUT, DOWNLOAD_TIMEOUT};
 
@@ -60,7 +61,8 @@ impl ProtocolPolicy {
 
 /// Runs git for one command invocation.
 pub struct GitRunner {
-    allowlist: Allowlist,
+    /// The hosts git may reach: exactly config `git_hosts`.
+    hosts: GitHosts,
     offline: bool,
     log: Option<NetLog>,
     program: OsString,
@@ -101,10 +103,10 @@ pub struct GitOutput {
 }
 
 impl GitRunner {
-    /// For a run with `config`'s allowlist and offline flag, logging to `log`.
+    /// For a run with `config`'s git hosts and offline flag, logging to `log`.
     pub fn new(config: &NetConfig, log: NetLog) -> Self {
         Self {
-            allowlist: config.allowlist(),
+            hosts: config.git_allowlist(),
             offline: config.offline,
             log: Some(log),
             program: OsString::from("git"),
@@ -119,7 +121,7 @@ impl GitRunner {
     #[cfg(test)]
     pub(crate) fn for_tests() -> Self {
         Self {
-            allowlist: NetConfig::default().allowlist(),
+            hosts: NetConfig::default().git_allowlist(),
             offline: false,
             log: None,
             program: OsString::from("git"),
@@ -231,10 +233,15 @@ impl GitRunner {
                 Suggestion::text("run without --offline and with OMADDONS_OFFLINE unset"),
             ));
         }
-        if self.policy == ProtocolPolicy::Https && !self.allowlist.permits(&repo.host) {
+        if self.policy == ProtocolPolicy::Https && !self.hosts.permits(&repo.host) {
+            let http = if is_http_host(&repo.host) {
+                " (it is allowed for HTTP downloads, not for the git binary)"
+            } else {
+                ""
+            };
             return Err(Error::new(
                 ErrorCode::HostBlocked,
-                format!("{} is not a git host omaddons may contact", repo.host),
+                format!("{} is not a git host omaddons may contact{http}", repo.host),
                 Suggestion::text(format!(
                     "add it to git_hosts: omaddons config set git_hosts '[\"{}\"]' (keep any hosts already listed)",
                     repo.host
@@ -801,7 +808,7 @@ mod tests {
             ..NetConfig::default()
         };
         GitRunner {
-            allowlist: config.allowlist(),
+            hosts: config.git_allowlist(),
             offline: false,
             log: None,
             program: OsString::from("git"),
@@ -982,6 +989,27 @@ mod tests {
         assert_eq!((err.code, err.exit().code()), (ErrorCode::HostBlocked, 4));
         assert!(err.fix.argv().is_none());
         assert!(err.fix.display().contains("git_hosts"));
+        // HTTP's hosts are never git's, even with no git_hosts at all.
+        let mut none = runner(ProtocolPolicy::Https, &[]);
+        none.program = OsString::from("/nonexistent/git");
+        for url in [
+            "https://api.tukui.org/v1/x",
+            "https://cdn.wowinterface.com/x",
+            "https://codeload.github.com/x",
+            "https://github.com/o/r",
+        ] {
+            let repo = none.repo_url(url).unwrap();
+            let err = none
+                .run(&[], &repo, "ls-remote", API_READ_TIMEOUT)
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::HostBlocked, "{url}");
+            assert!(
+                err.message
+                    .contains("allowed for HTTP downloads, not for the git binary"),
+                "{url}: {}",
+                err.message
+            );
+        }
         git.offline = true;
         let repo = git.repo_url("https://codeberg.org/o/r").unwrap();
         let err = git

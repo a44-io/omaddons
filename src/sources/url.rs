@@ -22,10 +22,10 @@ impl Default for UrlSource {
 }
 
 impl UrlSource {
-    /// The hard allowlist: no CurseForge, no Wago, no user git hosts.
+    /// The hard allowlist: no CurseForge, no Wago (and never a git host).
     pub fn new() -> Self {
         Self {
-            allowlist: Allowlist::new(false, false, &[]),
+            allowlist: Allowlist::new(false, false),
         }
     }
 }

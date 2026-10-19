@@ -1248,7 +1248,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `unsafe_archive` | 4 | no | traversal, absolute paths, symlinks, devices, duplicate or case-colliding entries, the compression-ratio limit |
 | `archive_too_large` | 4 | no | over the entry, uncompressed-size or download limit (also a download past it while streaming); `details.limit`, and `details.config_key` when `config.toml` can raise it |
 | `undo_conflict` | 4 | no | a later transaction touched the same folders, already undone, or a removed folder put back by hand |
-| `host_blocked` | 4 | no | host not on the allowlist or in `git_hosts` |
+| `host_blocked` | 4 | no | an HTTP request or redirect to a host not on the allowlist, or a `git:` ref to a host not in `git_hosts` |
 | `scope_denied` | 4 | no | the filesystem writer refused a path outside its scope |
 | `state_too_new` | 4 | no | a state file written by a newer omaddons |
 | `locked` | 5 | yes | lock held past 5 s; `details.holder` |
@@ -1441,7 +1441,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 | `api.tukui.org` | Tukui: the project list, download links, downloads | used (also allowed for `url:`); responses are never cached (`no-store`) |
 | `api.curseforge.com`, `edge.forgecdn.net`, `mediafilez.forgecdn.net` | CurseForge | off until enabled (M5) |
 | `addons.wago.io` | Wago | off until enabled (M5) |
-| every host in `git_hosts` | `git:` refs through the git binary | only when you list them |
+| every host in `git_hosts` | `git:` refs through the git binary, never contacted over HTTP, not even by a redirect | only when you list them |
 
 **What a stable GitHub install costs:** zero REST calls. omaddons reads `releases/latest` without following its redirect, then fetches `release.json` and the asset. Both of those redirect to `release-assets.githubusercontent.com`, so `net.log` shows five lines per repository, plus one more download for each candidate that does not load. Requests are limited to 6 at a time overall and 3 per host. Retries cover 429, 5xx and network errors, up to 3 times with full-jitter backoff (0.5 s base, 8 s cap), and honor `Retry-After` up to 60 s.
 
@@ -1449,7 +1449,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 
 **Search.** Only GitHub receives what you search for, in one `search/repositories` request per run (10 a minute without a token, 30 with one, counted apart from the REST budget). The catalog is built in, and WoWInterface's index and Tukui's list are whole lists, fetched (or reused) and searched on this machine, so neither learns the query.
 
-**The git subprocess** runs with a cleared environment. Only `PATH` and `HOME` are kept, plus `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ALLOW_PROTOCOL=https`. It also gets no credential helper, no askpass, no redirects and https as the only protocol. Arguments go as argv (never through a shell), and the run is in its own process group, which is killed on timeout. A checkout is held to the download limit (`limits.download_max_bytes`, `.git` included): git is stopped, with its process group, once the checkout grows past it (`archive_too_large`). What git prints is kept up to 64 MiB per stream. URLs with embedded credentials are refused.
+**The git subprocess** runs with a cleared environment. Only `PATH` and `HOME` are kept, plus `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ALLOW_PROTOCOL=https`. It also gets no credential helper, no askpass, no redirects and https as the only protocol, and it may contact only hosts listed in `git_hosts`, never the hosts above. Arguments go as argv (never through a shell), and the run is in its own process group, which is killed on timeout. A checkout is held to the download limit (`limits.download_max_bytes`, `.git` included): git is stopped, with its process group, once the checkout grows past it (`archive_too_large`). What git prints is kept up to 64 MiB per stream. URLs with embedded credentials are refused.
 
 **`net.log`.** Every request that reaches the network (each redirect hop and each retry) and every git run against a repository is one JSON line in `~/.local/state/omaddons/net.log`, rotated once at 10 MiB. Requests refused before sending (offline, `host_blocked`) and the `git --version` probe are not logged. Query strings and headers are never written. An illustrative line:
 

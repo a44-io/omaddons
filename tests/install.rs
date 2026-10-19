@@ -1937,6 +1937,101 @@ fn forcing_over_an_unmanaged_folder_says_the_snapshot_holds_its_only_copy() {
     );
 }
 
+/// HTTP and the git binary never share a host: a `git:` ref to one of HTTP's hosts is
+/// refused without running git, and an HTTP redirect to a configured git host is refused
+/// on its hop.
+#[test]
+fn git_and_http_reach_disjoint_hosts() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A stand-in git first on PATH records any run.
+    let home = Home::new(&["wow"]);
+    let bin = home.env.root().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let ran = home.env.root().join("git-ran");
+    let git = bin.join("git");
+    fs::write(
+        &git,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\n[ \"$1\" = --version ] && echo 'git version 2.51.0'\nexit 128\n",
+            ran.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    for r in [
+        "git:https://api.tukui.org/v1/x",
+        "git:https://cdn.wowinterface.com/x",
+        "git:https://codeload.github.com/x",
+    ] {
+        let argv: Vec<String> = ["install", r, "-t", "retail", "--dry-run", "--json"]
+            .iter()
+            .map(|a| (*a).to_owned())
+            .collect();
+        let run = home.exec_with(&argv, &[("PATH", path.as_str())]);
+        let envelope = run.expect(4);
+        assert_eq!(
+            envelope["error"]["code"],
+            "host_blocked",
+            "{}",
+            run.context()
+        );
+        assert!(
+            envelope["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not for the git binary"),
+            "{}",
+            run.context()
+        );
+    }
+    assert!(!ran.exists(), "git ran: {:?}", fs::read_to_string(&ran));
+    assert!(net_log(&home).is_empty(), "refusals are not logged");
+
+    // git_hosts lists codeberg.org; a WoWInterface download redirects there.
+    let home = Home::new(&["wow"]);
+    home.run(&["config", "set", "git_hosts", "[\"codeberg.org\"]"])
+        .expect(0);
+    common::http::fixture(
+        &home.http,
+        "wowi-to-codeberg",
+        "https://cdn.wowinterface.com/downloads/x.zip",
+        302,
+        &[("location", "https://codeberg.org/x.zip")],
+        None,
+    );
+    common::http::fixture(
+        &home.http,
+        "codeberg-zip",
+        "https://codeberg.org/x.zip",
+        200,
+        &[],
+        Some("never"),
+    );
+    let r = home.run(&[
+        "install",
+        "url:https://cdn.wowinterface.com/downloads/x.zip",
+        "-t",
+        "retail",
+        "--dry-run",
+    ]);
+    let envelope = r.expect(4);
+    let message = envelope["error"]["message"].as_str().unwrap_or_default();
+    assert_eq!(envelope["error"]["code"], "host_blocked", "{}", r.context());
+    assert!(message.contains("redirect hop 1"), "{}", r.context());
+    let log = net_log(&home);
+    assert!(
+        log.entries.iter().all(|e| e.host != "codeberg.org"),
+        "{}",
+        log.context()
+    );
+}
+
 /// Reinstalling a local directory byte for byte replaces nothing that is lost.
 #[test]
 fn a_byte_identical_reinstall_of_a_directory_is_no_only_copy() {

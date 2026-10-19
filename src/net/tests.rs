@@ -72,7 +72,7 @@ fn harness_capped(
         None => core_stack_with(&config, log.clone(), Box::new(script)),
         Some(cap) => Box::new(Redirecting::new(Guarded::new(
             Box::new(decode::Decoding::new(Box::new(script))),
-            config.allowlist(),
+            config.http_allowlist(),
             log.clone(),
             config.offline,
             config.download_max_bytes,
@@ -169,6 +169,43 @@ fn a_hop_to_an_unlisted_host_is_blocked_after_logging_the_earlier_hop() {
         "nothing was sent to example.org"
     );
     assert_eq!(h.log.read(None).unwrap().len(), 1);
+}
+
+/// A configured git host is git's alone: HTTP never reaches it, not even by a redirect
+/// from an allowed host, nor by a request of its own.
+#[test]
+fn a_git_host_is_never_reached_over_http() {
+    let config = NetConfig {
+        git_hosts: vec!["codeberg.org".to_owned()],
+        ..NetConfig::default()
+    };
+    let h = harness(
+        config.clone(),
+        vec![redirect("https://codeberg.org/x.zip"), ok(b"never")],
+    );
+    let err = h
+        .http
+        .send(Request::get(
+            "https://cdn.wowinterface.com/downloads/x.zip",
+            "asset",
+        ))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::HostBlocked);
+    assert!(err.message.contains("redirect hop 1"), "{}", err.message);
+    assert_eq!(
+        h.seen.lock().unwrap().len(),
+        1,
+        "nothing went to codeberg.org"
+    );
+    assert_eq!(h.log.read(None).unwrap().len(), 1, "the 302 alone");
+
+    let h = harness(config, vec![]);
+    let err = h
+        .http
+        .send(Request::get("https://codeberg.org/o/r", "probe"))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::HostBlocked);
+    assert!(h.seen.lock().unwrap().is_empty());
 }
 
 #[test]

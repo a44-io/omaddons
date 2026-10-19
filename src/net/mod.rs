@@ -25,7 +25,7 @@ use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-pub use allowlist::Allowlist;
+pub use allowlist::{Allowlist, GitHosts};
 pub use client::UreqTransport;
 pub use guard::{Guarded, Redirecting, download_too_large};
 pub use limit::Limited;
@@ -253,7 +253,7 @@ pub struct NetConfig {
     pub offline: bool,
     pub curseforge: bool,
     pub wago: bool,
-    /// Extra hosts for git subprocesses, from config.
+    /// The hosts git subprocesses may reach, from config; never HTTP's.
     pub git_hosts: Vec<String>,
     /// `EffectiveLimits::download_max_bytes`.
     pub download_max_bytes: u64,
@@ -272,8 +272,15 @@ impl Default for NetConfig {
 }
 
 impl NetConfig {
-    pub fn allowlist(&self) -> Allowlist {
-        Allowlist::new(self.curseforge, self.wago, &self.git_hosts)
+    /// What HTTP may reach: the always-list and the enabled optional sources, never a
+    /// `git_hosts` host.
+    pub fn http_allowlist(&self) -> Allowlist {
+        Allowlist::new(self.curseforge, self.wago)
+    }
+
+    /// What the git binary may reach: exactly `git_hosts`.
+    pub fn git_allowlist(&self) -> GitHosts {
+        GitHosts::new(&self.git_hosts)
     }
 }
 
@@ -352,7 +359,7 @@ pub fn stack_with(
 pub fn core_stack_with(config: &NetConfig, log: NetLog, transport: Box<dyn Http>) -> Box<dyn Http> {
     let guarded = Guarded::new(
         Box::new(decode::Decoding::new(transport)),
-        config.allowlist(),
+        config.http_allowlist(),
         log,
         config.offline,
         config.download_max_bytes,
