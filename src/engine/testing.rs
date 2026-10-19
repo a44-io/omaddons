@@ -11,14 +11,26 @@ use jiff::Timestamp;
 use super::inspect::{ArchiveLimits, inspect_dir};
 use super::journal::{self, CommitPayload, IndexChanges, Journal, Prepared};
 use super::stage::{Staged, stage};
+use super::swap::{SvPrestage, SvReport, finish_saved_variables};
 use crate::fsx::{
     GlobalLock, GlobalLockGuard, InflightLock, ScopeTable, SnapshotRoots, WriteSession, Writer,
 };
-use crate::model::{Actor, Target, TargetKey, TxId, TxKind};
+use crate::model::{Actor, FolderName, Target, TargetKey, TxId, TxKind};
 use crate::rules::{ClientRules, ClientVersion, Family, InstallKind, RulesTable, TargetKind};
 use crate::state::history::{self, HistoryEntry, TxResult};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::TargetRecord;
+
+/// The SavedVariables snapshot as a commit window takes it with nothing copied before
+/// the lock: every file cloned and hashed there.
+pub fn snapshot_saved_variables(
+    s: &mut WriteSession<'_>,
+    tx: &TxId,
+    client: &ClientPaths,
+    folders: &[FolderName],
+) -> crate::error::Result<SvReport> {
+    finish_saved_variables(s, tx, client, folders, SvPrestage::default())
+}
 
 /// A retail target whose client dir is `client_dir`.
 pub fn target(client_dir: &Path) -> Target {

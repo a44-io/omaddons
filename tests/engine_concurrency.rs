@@ -596,7 +596,11 @@ fn every_commit_holds_the_lock_under_50_ms() {
 #[test]
 fn large_saved_variables_hold_the_lock_under_50_ms() {
     let s = Scene::new();
-    support::heavy_saved_variables(&s);
+    let files = support::heavy_saved_variables(&s);
+    let sizes: Vec<u64> = files
+        .iter()
+        .map(|f| fs::metadata(f).unwrap().len())
+        .collect();
     let mut held: Vec<(&str, u64)> = Vec::new();
     let mut run = |what: &'static str, mut args: Vec<String>| {
         args.push("-v".to_owned());
@@ -609,6 +613,17 @@ fn large_saved_variables_hold_the_lock_under_50_ms() {
     };
     run("install", s.install_args("gh:o/foo", "v1"));
     run("update", s.install_args("gh:o/foo", "v2"));
+    // A play session: every file changed, so the undo restores all ten.
+    for file in &files {
+        let mut f = fs::OpenOptions::new().append(true).open(file).unwrap();
+        std::io::Write::write_all(&mut f, b"FooDB.played = true\n").unwrap();
+    }
+    run("undo", s.args(&["undo"]));
+    let restored: Vec<u64> = files
+        .iter()
+        .map(|f| fs::metadata(f).unwrap().len())
+        .collect();
+    assert_eq!(restored, sizes, "the undo restored them");
     run("remove", s.args(&["remove", "Foo"]));
     let _ = std::io::Write::write_fmt(
         &mut std::io::stderr(),
@@ -630,7 +645,55 @@ fn large_saved_variables_hold_the_lock_under_50_ms() {
                 .is_file()
         })
         .count();
-    assert_eq!(copies, 3, "every transaction snapshotted them");
+    assert_eq!(copies, 4, "every transaction snapshotted them");
+}
+
+#[test]
+fn large_folders_hold_the_lock_under_50_ms() {
+    let s = Scene::new();
+    // 64 MiB in 16 files: a copy put in AddOns by hand, then two releases.
+    let chunk = "-- data\n".repeat(4 << 17);
+    let big = |version: &str| s.dl.join(format!("big{version}/Big"));
+    let by_hand = s.addons().join("Big");
+    for dir in [big("1"), big("2"), by_hand] {
+        fs::create_dir_all(&dir).unwrap();
+        let toc = format!("## Interface: 120105\n## Notes: {}\n", dir.display());
+        fs::write(dir.join("Big.toc"), toc).unwrap();
+        for n in 0..16 {
+            fs::write(dir.join(format!("data{n}.lua")), &chunk).unwrap();
+        }
+    }
+    let mut held: Vec<(&str, u64)> = Vec::new();
+    let mut run = |what: &'static str, args: &[&str]| {
+        let mut argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        argv.extend(["-t", "retail", "--offline", "--json", "-v"].map(str::to_owned));
+        let r = s.run(&argv, "");
+        assert_eq!(r.code, 0, "{what}\n{}", r.context());
+        let ms = support::lock_held_ms(&r);
+        assert!(ms.is_some(), "{what}: no lock log line\n{}", r.context());
+        held.extend(ms.map(|ms| (what, ms)));
+    };
+    let (one, two) = (
+        big("1").display().to_string(),
+        big("2").display().to_string(),
+    );
+    // The unmanaged copy has no files index: it is hashed before the lock.
+    run(
+        "install --force",
+        &["install", "gh:o/big", "--file", &one, "--force"],
+    );
+    run("update", &["install", "gh:o/big", "--file", &two]);
+    run("undo", &["undo"]);
+    let _ = std::io::Write::write_fmt(
+        &mut std::io::stderr(),
+        format_args!("lock_held_ms with a 64 MiB folder: {held:?}\n"),
+    );
+    assert!(
+        held.iter().all(|(_, ms)| *ms < 50),
+        "lock hold times {held:?}"
+    );
+    let toc = fs::read_to_string(s.addons().join("Big/Big.toc")).unwrap();
+    assert!(toc.contains("big1"), "the undo put release 1 back: {toc}");
 }
 
 #[test]

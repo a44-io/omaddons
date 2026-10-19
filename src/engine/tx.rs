@@ -34,8 +34,8 @@ use super::plan::{
 };
 use super::stage::{Staged, stage};
 use super::swap::{
-    SvSkipped, SwapOp, finish_saved_variables, out_of_scope_warnings, prestage_saved_variables,
-    snapshot_state, swap,
+    SvSkipped, SwapOp, finish_saved_variables, out_of_scope_warnings, predigest,
+    prestage_saved_variables, snapshot_state, swap, with_predigests,
 };
 use crate::discover::registry::{LockedRegistry, same_dir};
 use crate::discover::running::{RunningScan, detect_running, running_unknown};
@@ -669,14 +669,13 @@ fn locked(
         SnapshotRoots::for_tx(paths, tx),
         actions,
     );
-    // Before the lock (D24): under it, an unchanged SavedVariables file costs one lstat.
-    // A copy left by a failure here goes with the transaction's cleanup.
+    // Before the lock (D24): under it, an unchanged SavedVariables file or unindexed
+    // folder costs a stat. A copy left by a failure here goes with the transaction's
+    // cleanup.
     let client = ClientPaths::new(&discovered.target.client_dir);
-    let planned_folders: Vec<FolderName> = tp
-        .work
-        .iter()
-        .flat_map(|w| w.swap().iter().map(touched_folder))
-        .collect();
+    let planned_ops: Vec<SwapOp> = tp.work.iter().flat_map(|w| w.swap().to_vec()).collect();
+    let planned_folders: Vec<FolderName> = planned_ops.iter().map(touched_folder).collect();
+    let predigests = predigest(&client.addons(), &planned_ops);
     let prestage = prestage_saved_variables(&mut s, tx, &client, &planned_folders)?;
     failpoint::hit("engine.snapshot.prestaged").map_err(fail)?;
     let guard = GlobalLock::acquire(paths, ctx.command)?;
@@ -819,7 +818,7 @@ fn locked(
 
     let now = Timestamp::now();
     let record = next_record(&current.value, &works, tx, now);
-    let swap_ops: Vec<SwapOp> = works.iter().flat_map(|w| w.swap().to_vec()).collect();
+    let mut swap_ops: Vec<SwapOp> = works.iter().flat_map(|w| w.swap().to_vec()).collect();
     // Stamped here, under the lock and after the racy wait, so the journal carries the
     // stamps and roll-forward writes exactly these.
     let mut index_changes = index_changes(&swap_ops, staged, now.as_nanosecond());
@@ -829,6 +828,7 @@ fn locked(
     // (`interface/addons`) is used instead.
     one_addons_dir(&client)?;
     let addons = client.addons();
+    with_predigests(&mut swap_ops, &addons, &predigests);
     let creates_addons_dir = std::fs::symlink_metadata(&addons).is_err()
         && swap_ops
             .iter()

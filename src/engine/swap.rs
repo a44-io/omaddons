@@ -33,8 +33,8 @@ use super::stage::Staged;
 use crate::discover::find_children;
 use crate::error::{Error, PlanStaleSource, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
-    CloneKind, FileStamp, FsxError, MutateOpts, Op, RenameMode, TreeDigest, WriteSession,
-    ensure_dir_all, failpoint, mutate, mutate_with,
+    CloneKind, FileStamp, FsxError, MutateOpts, Op, RenameMode, TreeDigest, TreeStamp,
+    WriteSession, ensure_dir_all, failpoint, mutate, mutate_with,
 };
 use crate::limits::RACY_SLACK_NS;
 use crate::model::{FolderName, MutableFolderName, TargetKey, TxId};
@@ -167,6 +167,13 @@ impl SvPrestage {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// Each copied file, with the stamp it had and its SHA-256.
+    pub(super) fn hashes(&self) -> impl Iterator<Item = (&Path, FileStamp, &str)> {
+        self.entries
+            .values()
+            .map(|p| (p.source.as_path(), p.stamp, p.clone.sha256.as_str()))
+    }
 }
 
 #[derive(Debug)]
@@ -284,17 +291,6 @@ pub fn finish_saved_variables(
     Ok(report)
 }
 
-/// [`finish_saved_variables`] with nothing prestaged: every file is cloned and hashed
-/// now.
-pub fn snapshot_saved_variables(
-    s: &mut WriteSession<'_>,
-    tx: &TxId,
-    client: &ClientPaths,
-    folders: &[FolderName],
-) -> Result<SvReport> {
-    finish_saved_variables(s, tx, client, folders, SvPrestage::default())
-}
-
 /// The stamp of the regular file `source` once it is settled: a file written within the
 /// racy slack is waited out once (at most `RACY_SLACK_NS`, before the lock). `None` when
 /// it is gone, not a regular file, or still unsettled (whole-second timestamps, or
@@ -345,6 +341,7 @@ fn clone_sv(
 
 /// Moves a stale copy from `<snapshot>/WTF/<rel>` to `<snapshot>/sv-stale/<attempt>/`,
 /// so `WTF/` holds exactly the manifest's files and the path is free for a fresh copy.
+/// A plain rename: the attempt dir is new, and it works where renameat2 flags do not.
 fn set_aside(s: &mut WriteSession<'_>, snapshot: &Path, rel: &str) -> Result<()> {
     let from = snapshot.join("WTF").join(rel);
     let attempt = ulid::Ulid::generate().to_string();
@@ -354,7 +351,7 @@ fn set_aside(s: &mut WriteSession<'_>, snapshot: &Path, rel: &str) -> Result<()>
     }
     let aside = Op::Rename {
         to: &to,
-        mode: RenameMode::NoReplace,
+        mode: RenameMode::Replace,
     };
     mutate(s, &from, aside).map_err(|e| private(e.into()))?;
     Ok(())
@@ -517,6 +514,68 @@ fn resolved(path: &Path) -> Option<PathBuf> {
                 rest.push(at.file_name()?);
                 at = at.parent()?;
             }
+        }
+    }
+}
+
+/// Digests of live folders without a files-index entry (an unmanaged folder that
+/// `install --force` replaces, say), hashed before the global lock, each with the stamp
+/// of the tree it read (D24). By folder key.
+#[derive(Debug, Default)]
+pub struct PreDigests(BTreeMap<String, (TreeStamp, TreeDigest)>);
+
+/// Hashes, before the lock, each live folder a replace or remove will move whose digest
+/// the files index does not give. One written within the racy slack, or changed while
+/// it was hashed, is left for the swap to hash.
+pub fn predigest(addons: &Path, ops: &[SwapOp]) -> PreDigests {
+    let mut out = PreDigests::default();
+    for op in ops {
+        let (SwapOp::Replace {
+            live,
+            old_tree: None,
+            ..
+        }
+        | SwapOp::Remove {
+            live,
+            old_tree: None,
+        }) = op
+        else {
+            continue;
+        };
+        let dir = addons.join(live.as_str());
+        let read_at = Timestamp::now().as_nanosecond();
+        let Ok(stamp) = TreeStamp::read(&dir) else {
+            continue;
+        };
+        if !stamp.settled(read_at) {
+            continue;
+        }
+        let Ok(digest) = TreeDigest::compute(&dir) else {
+            continue;
+        };
+        if TreeStamp::read(&dir).is_ok_and(|now| now == stamp) {
+            out.0.insert(live.key().to_owned(), (stamp, digest));
+        }
+    }
+    out
+}
+
+/// Under the lock: fills in the missing digest of each op whose live folder still has
+/// the stamp it was hashed at before the lock. The others stay `None`, for the swap to
+/// hash.
+pub fn with_predigests(ops: &mut [SwapOp], addons: &Path, pre: &PreDigests) {
+    for op in ops {
+        let (SwapOp::Replace { live, old_tree, .. } | SwapOp::Remove { live, old_tree }) = op
+        else {
+            continue;
+        };
+        if old_tree.is_some() {
+            continue;
+        }
+        if let Some((stamp, digest)) = pre.0.get(live.key())
+            && TreeStamp::read(&addons.join(live.as_str())).is_ok_and(|now| now == *stamp)
+        {
+            *old_tree = Some(*digest);
         }
     }
 }
@@ -857,7 +916,6 @@ pub(super) fn out_of_scope_warnings(
 /// The lowercase hex SHA-256 of the file at `path`, streamed (SavedVariables reach
 /// 64 MiB, and undo staging hashes every restored file).
 pub(crate) fn sha256_file(path: &Path) -> Result<String> {
-    #[cfg(test)]
     crate::fsx::count_hashed();
     crate::state::files_index::hash_file_streaming(path)
         .map(|(_, sha256)| sha256)
@@ -898,7 +956,7 @@ fn entries(dir: &Path, want_dirs: bool) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::engine::journal::{Phase, RecoveryEnv, StepRecord, parse, recover_all};
-    use crate::engine::testing::{Scene, folder};
+    use crate::engine::testing::{Scene, folder, snapshot_saved_variables};
     use crate::error::ErrorCode;
     use crate::state::files_index::FolderIndex;
 
@@ -1349,6 +1407,66 @@ mod tests {
                 .all(|f| !f.contains("Gone"))
         );
         assert_eq!(files_under(&snapshot.join("sv-stale")).len(), 1);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn stale_copies_are_set_aside_without_renameat2_flags() {
+        let scene = Scene::new();
+        let planned = [name("Foo"), name("Gone")].map(MutableFolderName::into_folder);
+        let now = [name("Foo")].map(MutableFolderName::into_folder);
+        let mut s = scene.session();
+        failpoint::with_spec("fsx.renameat2.einval", || {
+            let prestage =
+                prestage_saved_variables(&mut s, &scene.tx, &scene.client, &planned).unwrap();
+            finish_saved_variables(&mut s, &scene.tx, &scene.client, &now, prestage).unwrap();
+        });
+        let snapshot = scene.client.snapshots(&scene.tx);
+        assert_eq!(files_under(&snapshot.join("sv-stale")).len(), 1);
+    }
+
+    /// Each op's old digest, `None` for an add.
+    fn old_trees(ops: &[SwapOp]) -> Vec<Option<TreeDigest>> {
+        ops.iter()
+            .map(|op| match op {
+                SwapOp::Replace { old_tree, .. } | SwapOp::Remove { old_tree, .. } => *old_tree,
+                SwapOp::Add { .. } => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn unindexed_folders_are_hashed_before_the_lock_and_trusted_while_unchanged() {
+        let scene = Scene::new();
+        let addons = scene.client.addons();
+        // Older than the racy slack, as a folder installed earlier is.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let pre = predigest(&addons, &ops());
+        let mut planned = ops();
+        let hashed = crate::fsx::files_hashed();
+        with_predigests(&mut planned, &addons, &pre);
+        assert_eq!(
+            crate::fsx::files_hashed(),
+            hashed,
+            "only stats under the lock"
+        );
+        let (foo, gone) = (tree(&addons.join("Foo")), tree(&addons.join("Gone")));
+        assert_eq!(old_trees(&planned), [Some(foo), None, Some(gone)]);
+
+        // A folder changed since it was hashed gets no digest: the swap hashes it.
+        std::fs::write(addons.join("Gone/new.lua"), "--").unwrap();
+        let mut planned = ops();
+        with_predigests(&mut planned, &addons, &pre);
+        assert_eq!(old_trees(&planned), [Some(foo), None, None]);
+
+        // A digest from the files index is kept as it is.
+        let indexed = TreeDigest::from_entries([("x.lua", 1, [7u8; 32])]);
+        let mut planned = vec![SwapOp::Remove {
+            live: name("Foo"),
+            old_tree: Some(indexed),
+        }];
+        with_predigests(&mut planned, &addons, &pre);
+        assert_eq!(old_trees(&planned), [Some(indexed)]);
     }
 
     /// Moves `from` to `to` and leaves a symlink to it in its place, as a player keeping

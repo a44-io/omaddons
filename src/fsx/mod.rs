@@ -16,12 +16,13 @@ pub(crate) mod sys;
 #[doc(hidden)]
 pub use failpoint::with_spec;
 pub use lock::{GlobalLock, GlobalLockGuard, HolderInfo, InflightLock, LockState, probe_global};
+pub(crate) use mutate::count_hashed;
+#[cfg(test)]
+pub(crate) use mutate::files_hashed;
 pub use mutate::{
     ActionRecord, Expect, FsxError, MutateOpts, TreeDigest, ensure_dir_all, mutate, mutate_with,
-    sync_filesystem,
+    sha256_from_hex, sync_filesystem,
 };
-#[cfg(test)]
-pub(crate) use mutate::{count_hashed, files_hashed};
 pub use op::Op;
 pub use prune::{LockUse, PruneReason, PruneReport, prune};
 pub use scope::{Access, OwnedFolders, Refusal, Scope, ScopeMatch, ScopeTable, Side, Writer};

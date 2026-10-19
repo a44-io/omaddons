@@ -98,6 +98,12 @@ pub struct MutateOpts {
     pub tree_before: Option<TreeDigest>,
     /// The same, for what is at the path afterwards (an exchange).
     pub tree_after: Option<TreeDigest>,
+    /// The SHA-256 of a regular file at the path before the operation, when the caller
+    /// knows it (a copy it verified, or a file whose stat stamp has not changed since it
+    /// hashed it), so large files need not be re-hashed.
+    pub sha256_before: Option<[u8; 32]>,
+    /// The same, for what is at the path afterwards (an exchange).
+    pub sha256_after: Option<[u8; 32]>,
     /// [`Durability::Deferred`] is accepted only in untracked sessions, for
     /// `WriteFile`/`CreateDir` under a client's `Interface/.omaddons/stage/`.
     pub durability: Durability,
@@ -310,7 +316,11 @@ pub fn mutate_with(
     let seq = state.next_seq();
 
     // 2. Before-digest.
-    let before = digest(&target, &op, opts.tree_before).map_err(io_err(&target))?;
+    let known_before = Known {
+        tree: opts.tree_before,
+        sha256: opts.sha256_before,
+    };
+    let before = digest(&target, &op, known_before).map_err(io_err(&target))?;
 
     // 3. Verbatim backup of content the operation overwrites.
     let backup_dir = state.snapshot_roots.dir_for(&matched.side, &state.tx);
@@ -331,7 +341,10 @@ pub fn mutate_with(
     failpoint::hit("fsx.mutate.backed_up").map_err(io_err(&target))?;
 
     // 4–5. Execute.
-    let tree_after = opts.tree_after;
+    let known_after = Known {
+        tree: opts.tree_after,
+        sha256: opts.sha256_after,
+    };
     let digest_op = DigestOp::of(&op);
     let executed = execute(&target, to.as_deref(), op, opts.durability).and_then(|written| {
         failpoint::hit("fsx.mutate.executed").map_err(io_err(&target))?;
@@ -345,7 +358,7 @@ pub fn mutate_with(
             sha256: Some(sha256),
             ..
         }) => Some(StateDigest::File(*sha256)),
-        Ok(_) => digest_after(&target, digest_op, tree_after).ok().flatten(),
+        Ok(_) => digest_after(&target, digest_op, known_after).ok().flatten(),
         Err(_) => None,
     };
 
@@ -566,16 +579,20 @@ impl DigestOp {
     }
 }
 
-fn digest(path: &Path, op: &Op<'_>, tree: Option<TreeDigest>) -> io::Result<Option<StateDigest>> {
-    digest_after(path, DigestOp::of(op), tree)
+/// What the caller already knows of a path's content: a directory's tree digest or a
+/// regular file's SHA-256, used instead of reading it.
+#[derive(Debug, Clone, Copy, Default)]
+struct Known {
+    tree: Option<TreeDigest>,
+    sha256: Option<[u8; 32]>,
+}
+
+fn digest(path: &Path, op: &Op<'_>, known: Known) -> io::Result<Option<StateDigest>> {
+    digest_after(path, DigestOp::of(op), known)
 }
 
 /// The state of `path` as the operation sees it; `None` when nothing is there.
-fn digest_after(
-    path: &Path,
-    op: DigestOp,
-    tree: Option<TreeDigest>,
-) -> io::Result<Option<StateDigest>> {
+fn digest_after(path: &Path, op: DigestOp, known: Known) -> io::Result<Option<StateDigest>> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         // ubs:ignore — an io::ErrorKind, not a secret
@@ -589,11 +606,14 @@ fn digest_after(
             StateDigest::Link(fs::read_link(path)?)
         }
         DigestOp::Link => return Ok(None),
-        DigestOp::Content if meta.is_dir() => StateDigest::Tree(match tree {
+        DigestOp::Content if meta.is_dir() => StateDigest::Tree(match known.tree {
             Some(tree) => tree,
             None => TreeDigest::compute(path)?,
         }),
-        DigestOp::Content => StateDigest::File(hash_file(path)?),
+        DigestOp::Content => StateDigest::File(match known.sha256 {
+            Some(sha256) => sha256,
+            None => hash_file(path)?,
+        }),
     }))
 }
 
@@ -712,14 +732,14 @@ pub(crate) fn files_hashed() -> u64 {
     FILES_HASHED.with(std::cell::Cell::get)
 }
 
-/// Counts one file hashed on this thread; hashing helpers outside fsx call it too.
-#[cfg(test)]
+/// Counts one file hashed on this thread, for [`files_hashed`]; hashing helpers outside
+/// fsx call it too. A no-op outside tests, so callers need no `cfg`.
 pub(crate) fn count_hashed() {
+    #[cfg(test)]
     FILES_HASHED.with(|n| n.set(n.get() + 1));
 }
 
 fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
-    #[cfg(test)]
     count_hashed();
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
@@ -731,6 +751,22 @@ fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
         }
         hasher.update(buf.get(..n).unwrap_or(&buf));
     }
+}
+
+/// A SHA-256 from its hex form (either case); `None` unless it is exactly 64 hex digits.
+pub fn sha256_from_hex(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    let digit = |b: &u8| char::from(*b).to_digit(16);
+    for (byte, pair) in out.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+        let [high, low] = pair else {
+            return None;
+        };
+        *byte = u8::try_from(digit(high)? * 16 + digit(low)?).ok()?;
+    }
+    Some(out)
 }
 
 /// Lowercase hex.
@@ -1098,6 +1134,52 @@ mod tests {
             TreeDigest::compute(dir.path()).unwrap(),
             TreeDigest::from_entries(other)
         );
+    }
+
+    #[test]
+    fn provided_file_digests_are_logged_without_reading_the_files() {
+        let f = Fixture::new();
+        let mut s = f.tx_session(Writer::Mutating);
+        let state = f.paths.state_dir().to_path_buf();
+        ensure_dir_all(&mut s, &state).unwrap();
+        let (a, b) = (state.join("a"), state.join("b"));
+        fs::write(&a, b"aaa").unwrap();
+        fs::write(&b, b"bbb").unwrap();
+        let hashed = files_hashed();
+        let known = MutateOpts {
+            sha256_before: Some(sha(b"aaa")),
+            sha256_after: Some(sha(b"bbb")),
+            ..MutateOpts::default()
+        };
+        let exchange = Op::Rename {
+            to: &b,
+            mode: RenameMode::Exchange,
+        };
+        let record = mutate_with(&mut s, &a, exchange, known).unwrap();
+        assert_eq!(files_hashed(), hashed, "neither file read");
+        assert_eq!(
+            (record.before_hash, record.after_hash, record.backup),
+            (
+                Some(format!("sha256:{}", hex(&sha(b"aaa")))),
+                Some(format!("sha256:{}", hex(&sha(b"bbb")))),
+                None
+            ),
+            "an exchange takes no backup"
+        );
+        assert_eq!(fs::read(&a).unwrap(), b"bbb");
+    }
+
+    #[test]
+    fn sha256_hex_round_trips() {
+        let digest = sha(b"saved variables");
+        assert_eq!(sha256_from_hex(&hex(&digest)), Some(digest));
+        assert_eq!(
+            sha256_from_hex(&hex(&digest).to_ascii_uppercase()),
+            Some(digest)
+        );
+        for bad in ["", "abc", &"g".repeat(64), &"ab".repeat(33)] {
+            assert_eq!(sha256_from_hex(bad), None, "{bad}");
+        }
     }
 
     #[cfg(debug_assertions)]

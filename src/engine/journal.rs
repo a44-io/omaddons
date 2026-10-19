@@ -813,7 +813,14 @@ fn finish_saved_variables(
             .and_then(|()| {
                 let mut undo = WriteSession::untracked(Writer::Undo, env.scopes, "recovery")
                     .with_owned_folders(sv.owned_folders());
-                super::undo::restore_saved_variables(&mut undo, &client, sv, &tx)
+                super::undo::restore_saved_variables(
+                    &mut undo,
+                    &client,
+                    sv,
+                    &tx,
+                    &super::undo::SvCopies::default(),
+                    &mut super::undo::SvHashes::default(),
+                )
             });
         match restored {
             Ok(_) => return None,
@@ -1630,7 +1637,8 @@ mod tests {
     /// already sits in the client snapshot's `AddOns/`. Its writer is gone.
     #[cfg(debug_assertions)]
     fn interrupted_swap() -> crate::engine::testing::Scene {
-        use crate::engine::swap::{SwapOp, snapshot_saved_variables, snapshot_state, swap};
+        use crate::engine::swap::{SwapOp, snapshot_state, swap};
+        use crate::engine::testing::snapshot_saved_variables;
         use crate::model::FolderName;
         let name = |n: &str| FolderName::new(n).unwrap().into_mutable().unwrap();
         let ops = [

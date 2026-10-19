@@ -38,8 +38,9 @@ use super::plan::{Change, ChangeKind, FolderSummary};
 use super::running::{self, PolicyContext, PolicyOp};
 use super::stage::{Staged, stage_trees};
 use super::swap::{
-    SvEntry, SvManifest, SvSkip, SvSkipped, SwapOp, out_of_scope_warnings, sha256_file,
-    snapshot_saved_variables, snapshot_state, sv_candidates, sv_skip, swap,
+    SvEntry, SvManifest, SvPrestage, SvSkip, SvSkipped, SwapOp, finish_saved_variables,
+    out_of_scope_warnings, predigest, prestage_saved_variables, sha256_file, snapshot_state,
+    sv_candidates, sv_skip, swap, with_predigests,
 };
 use super::tx::{
     EngineCtx, RunningNow, TxOutcome, cleanup, millis, recovery_failed, running_now, sv_writable,
@@ -48,8 +49,9 @@ use super::tx::{
 use crate::discover::target::DiscoveredTarget;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
-    GlobalLock, InflightLock, Op, OwnedFolders, RenameMode, ScopeTable, SnapshotRoots,
-    WriteSession, Writer, ensure_dir_all, failpoint, mutate,
+    FileStamp, FsxError, GlobalLock, InflightLock, MutateOpts, Op, OwnedFolders, RenameMode,
+    ScopeTable, SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint, mutate,
+    mutate_with, sha256_from_hex,
 };
 use crate::model::{Actor, FolderName, ReloadRequired, RunId, Target, TxId, TxKind};
 use crate::state::files_index::FilesIndex;
@@ -176,7 +178,8 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
         })?;
     let target = &discovered.target;
     let running = running_now(ctx, std::slice::from_ref(target));
-    let planned = plan(ctx, req, &entries, at, target, &running)?;
+    let mut hashes = SvHashes::default();
+    let planned = plan(ctx, req, &entries, at, target, &running, &mut hashes)?;
     if req.dry_run {
         return Ok(planned.outcome(target, None, true, true, Vec::new(), None));
     }
@@ -195,7 +198,9 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     // The index stamps taken under the lock must postdate every staged mtime by the
     // racy slack.
     staged.wait_out_racy_slack();
-    let result = commit(ctx, req, &scopes, discovered, reverted.tx, &tx, &staged);
+    let result = commit(
+        ctx, req, &scopes, discovered, &planned, &tx, &staged, hashes,
+    );
     let committed = result.as_ref().is_ok_and(|done| done.outcome.tx.is_some());
     cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), committed);
     let mut done = result?;
@@ -206,16 +211,22 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     Ok(done)
 }
 
-/// The commit window, under the global lock: recover, plan again against the state
-/// now, journal, snapshot, swap, restore SavedVariables, write state, commit.
+/// What `before` (the plan made without the lock) reads and copies before the lock,
+/// then the commit window under it: recover, plan again against the state now,
+/// journal, snapshot, swap, restore SavedVariables, write state, commit.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the commit window threads the request, its plan and the staged state; a struct would only rename them"
+)]
 fn commit(
     ctx: &EngineCtx<'_>,
     req: &UndoRequest,
     scopes: &ScopeTable,
     discovered: &DiscoveredTarget,
-    reverts: TxId,
+    before: &Planned,
     tx: &TxId,
     staged: &Staged,
+    mut hashes: SvHashes,
 ) -> Result<UndoOutcome> {
     let paths = ctx.paths;
     let fail = |e: std::io::Error| {
@@ -225,6 +236,24 @@ fn commit(
             Suggestion::command(["omaddons", "status"]),
         )
     };
+    let target = &discovered.target;
+    let client = ClientPaths::new(&target.client_dir);
+    let actions = paths.state_snapshot(tx).join("actions.jsonl");
+    let mut s = WriteSession::tx(
+        *tx,
+        Writer::Undo,
+        scopes,
+        SnapshotRoots::for_tx(paths, tx),
+        actions,
+    );
+    // Before the lock (D24): the undo's own SavedVariables snapshot, the copies its
+    // restore brings back (checked against the manifest), and the digests of folders the
+    // files index does not give. Under the lock, what is unchanged since costs a stat.
+    let prestage = prestage_saved_variables(&mut s, tx, &client, &before.folders.touched)?;
+    hashes.absorb(&prestage);
+    let copies = prestage_restores(&mut s, &client, before, tx)?;
+    let predigests = predigest(&client.addons(), &before.folders.swap);
+    failpoint::hit("engine.snapshot.prestaged").map_err(fail)?;
     let guard = GlobalLock::acquire(paths, ctx.command)?;
     failpoint::hit("engine.lock.acquired").map_err(fail)?;
     let sv_writable = |dir: &Path| sv_writable(ctx, dir);
@@ -238,15 +267,15 @@ fn commit(
     let recovered = recover_all(&recovery)?;
     failpoint::hit("engine.recovered").map_err(fail)?;
 
-    let target = &discovered.target;
+    let reverts = before.reverts;
     let entries = history::read(paths, &HistoryFilter::default())?.entries;
     let at = select(&entries, UndoSelector::Tx(reverts))?;
     let running = running_now(ctx, std::slice::from_ref(target));
-    let mut planned = plan(ctx, req, &entries, at, target, &running)?;
+    let mut planned = plan(ctx, req, &entries, at, target, &running, &mut hashes)?;
+    with_predigests(&mut planned.folders.swap, &client.addons(), &predigests);
     failpoint::hit("engine.revalidated").map_err(fail)?;
 
     let key = planned.key;
-    let client = ClientPaths::new(&target.client_dir);
     let now = Timestamp::now();
     // The folders swapped back in are the staged copies (new mtimes): record those
     // entries, stamped now, rather than the reverted transaction's before entries.
@@ -297,24 +326,16 @@ fn commit(
     if let Some(sv) = &sv_restore {
         owned.extend(sv.files.iter().filter_map(|f| sv_folder(&f.path)));
     }
-    let actions = paths.state_snapshot(tx).join("actions.jsonl");
-    let mut s = WriteSession::tx(
-        *tx,
-        Writer::Undo,
-        scopes,
-        SnapshotRoots::for_tx(paths, tx),
-        actions,
-    )
-    .with_owned_folders(OwnedFolders::new(&owned));
+    let mut s = s.with_owned_folders(OwnedFolders::new(&owned));
     let mut journal = Journal::create(&mut s, paths, &guard, prepared)?;
 
     let committed = (|| -> Result<(bool, Vec<Warning>)> {
         failpoint::hit("engine.journal.prepared").map_err(fail)?;
-        snapshot_saved_variables(&mut s, tx, &client, &touched)?;
+        finish_saved_variables(&mut s, tx, &client, &touched, prestage)?;
         snapshot_state(&mut s, paths, tx, &key)?;
         let report = swap(&mut s, &mut journal, &planned.folders.swap, staged, &client)?;
         if let Some(sv) = &sv_restore {
-            restore_saved_variables(&mut s, &client, sv, tx)?;
+            restore_saved_variables(&mut s, &client, sv, tx, &copies, &mut hashes)?;
         }
         ensure_dir_all(&mut s, &paths.targets_dir())?;
         let current = load_record(paths, &key)?;
@@ -389,6 +410,8 @@ struct Planned {
     index: IndexChanges,
     changes: Vec<Change>,
     sv: SvPlan,
+    /// The SavedVariables follow-up of a deferred undo: no folder changes.
+    sv_only: bool,
     reload_required: ReloadRequired,
     warnings: Vec<Warning>,
 }
@@ -431,7 +454,8 @@ impl Planned {
 }
 
 /// Plans the undo of `entries[at]`: its conflicts, folders, record, index and
-/// SavedVariables, judged by the running policy.
+/// SavedVariables, judged by the running policy. SavedVariables are hashed through
+/// `hashes`, so a second plan reads only what changed since the first.
 fn plan(
     ctx: &EngineCtx<'_>,
     req: &UndoRequest,
@@ -439,6 +463,7 @@ fn plan(
     at: usize,
     target: &Target,
     running_now: &RunningNow,
+    hashes: &mut SvHashes,
 ) -> Result<Planned> {
     let running = running_now.contains(&target.client_dir);
     let reverted = &entries[at];
@@ -462,7 +487,10 @@ fn plan(
     let current = load_record(paths, &key)?.value;
     let mut folders = match sv_only {
         Some(_) => FolderPlan::record_only(reverted),
-        None => FolderPlan::inverse(reverted, &client, target)?,
+        None => {
+            let index = store::load::<FilesIndex>(&paths.files_index(&key))?.map(|l| l.value);
+            FolderPlan::inverse(reverted, &client, target, index.as_ref())?
+        }
     };
     let (record, index, changes) = match sv_only {
         Some(_) => (current.clone(), IndexChanges::default(), Vec::new()),
@@ -489,7 +517,15 @@ fn plan(
     )?;
     let mut warnings: Vec<Warning> = running_now.warning().into_iter().collect();
     warnings.extend(judged.warnings);
-    let sv = plan_saved_variables(&client, reverted, req.sv_policy, running, &policy_ctx, ctx)?;
+    let sv = plan_saved_variables(
+        &client,
+        reverted,
+        req.sv_policy,
+        running,
+        &policy_ctx,
+        ctx,
+        hashes,
+    )?;
     if sv.counts.deferred > 0 {
         let is = if running_now.unknown.is_some() {
             "may be running"
@@ -520,6 +556,7 @@ fn plan(
         index,
         changes,
         sv,
+        sv_only: sv_only.is_some(),
         reload_required: judged.reload_required,
         warnings,
     })
@@ -739,11 +776,24 @@ impl FolderPlan {
         }
     }
 
-    /// The inverse of every folder op of `reverted`, against AddOns now.
-    fn inverse(reverted: &HistoryEntry, client: &ClientPaths, target: &Target) -> Result<Self> {
+    /// The inverse of every folder op of `reverted`, against AddOns now. A live folder's
+    /// digest comes from the files `index`, as the install planner takes it, so the
+    /// swap need not hash it under the lock.
+    fn inverse(
+        reverted: &HistoryEntry,
+        client: &ClientPaths,
+        target: &Target,
+        index: Option<&FilesIndex>,
+    ) -> Result<Self> {
         let addons = client.addons();
         let snapshots = client.snapshots(&reverted.tx).join("AddOns");
         let mut plan = Self::default();
+        let old_tree = |live: &FolderName| {
+            index?
+                .folders
+                .get(live.key())
+                .map(crate::state::files_index::FolderIndex::digest)
+        };
         let loaded = |live: &FolderName| {
             DiskFolder::new(addons.join(live.as_str()))
                 .ok()
@@ -782,7 +832,7 @@ impl FolderPlan {
                 (FolderOp::Add, Some(live)) => (
                     Some(SwapOp::Remove {
                         live: mutable(&live)?,
-                        old_tree: None,
+                        old_tree: old_tree(&live),
                     }),
                     Some(PolicyOp::RemoveFolder {
                         loaded_toc_before: loaded(&live),
@@ -794,7 +844,7 @@ impl FolderPlan {
                     Some(SwapOp::Replace {
                         name: mutable(folder)?,
                         live: mutable(&live)?,
-                        old_tree: None,
+                        old_tree: old_tree(&live),
                     }),
                     Some(PolicyOp::ReplaceFolder {
                         loaded_toc_before: loaded(&live),
@@ -1154,6 +1204,7 @@ fn plan_saved_variables(
     running: bool,
     policy_ctx: &PolicyContext<'_>,
     ctx: &EngineCtx<'_>,
+    hashes: &mut SvHashes,
 ) -> Result<SvPlan> {
     let manifest_path = client.snapshots(&reverted.tx).join("WTF.manifest.json");
     let bytes = std::fs::read(&manifest_path).map_err(|_| pruned(&reverted.tx))?;
@@ -1177,7 +1228,7 @@ fn plan_saved_variables(
             skipped.count(skip, usize::from(entry.sha256.is_some() || exists));
             continue;
         }
-        let now = present_hash(&live)?;
+        let now = hashes.present_hash(&live)?;
         if now == entry.sha256 {
             plan.counts.unchanged += 1;
         } else {
@@ -1241,65 +1292,220 @@ pub(super) fn unrestored(client: &ClientPaths, sv: &SvRestore) -> usize {
         .count()
 }
 
+/// SHA-256s of SavedVariables files, each with the stamp its file had when hashed, so
+/// a file whose stamp has not changed is not read again (D24). Only settled stamps that
+/// held while their file was hashed are kept.
+#[derive(Debug, Default)]
+pub(super) struct SvHashes(BTreeMap<PathBuf, (FileStamp, String)>);
+
+impl SvHashes {
+    /// The hashes a SavedVariables prestage took of the files it copied.
+    fn absorb(&mut self, prestage: &SvPrestage) {
+        for (path, stamp, sha256) in prestage.hashes() {
+            self.0
+                .insert(path.to_path_buf(), (stamp, sha256.to_owned()));
+        }
+    }
+
+    /// [`present_hash`], reading the file only when its stamp is not one it was hashed
+    /// at here.
+    fn present_hash(&mut self, path: &Path) -> Result<Option<String>> {
+        let read_at = Timestamp::now().as_nanosecond();
+        let stamp = match FileStamp::read(path) {
+            Ok(Some(stamp)) if stamp.is_file() => stamp,
+            _ => return Ok(None),
+        };
+        if let Some((known, sha256)) = self.0.get(path)
+            && *known == stamp
+        {
+            return Ok(Some(sha256.clone()));
+        }
+        let sha256 = present_hash(path)?;
+        if let Some(sha256) = &sha256
+            && stamp.settled(read_at)
+            && FileStamp::read(path).ok().flatten() == Some(stamp)
+        {
+            self.0.insert(path.to_path_buf(), (stamp, sha256.clone()));
+        }
+        Ok(sha256)
+    }
+}
+
+/// Copies of the files a restore brings back, cloned from the reverted snapshot before
+/// the global lock and checked against its manifest: by manifest path, with the SHA-256
+/// each was checked for.
+#[derive(Debug, Default)]
+pub(super) struct SvCopies(BTreeMap<String, (String, PathBuf)>);
+
+impl SvCopies {
+    /// The checked copy of `entry`'s file, while it is still there.
+    fn get(&self, entry: &SvEntry) -> Option<&Path> {
+        let (checked, path) = self.0.get(&entry.path)?;
+        let current = entry
+            .sha256
+            .as_deref()
+            .is_some_and(|want| want.eq_ignore_ascii_case(checked));
+        let there = std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
+        (current && there).then_some(path.as_path())
+    }
+}
+
+/// Before the lock: clones each file `before` restores that existed before the reverted
+/// transaction out of its snapshot, into `snapshots/<undo_tx>/sv-restore/<attempt>/`,
+/// and checks the copy's hash against the manifest. A copy that does not match means
+/// the snapshot was changed or damaged: the undo fails `state_corrupt` before anything
+/// moves.
+fn prestage_restores(
+    s: &mut WriteSession<'_>,
+    client: &ClientPaths,
+    before: &Planned,
+    undo_tx: &TxId,
+) -> Result<SvCopies> {
+    let attempt = ulid::Ulid::generate().to_string();
+    let mut copies = SvCopies::default();
+    for entry in &before.sv.restore {
+        let Some(expected) = &entry.sha256 else {
+            continue;
+        };
+        let rel = relative(&entry.path)?;
+        let (staged, copy_hash) =
+            clone_restore(s, client, &before.reverts, undo_tx, &attempt, &rel)
+                .map_err(not_restored)?;
+        let copy_hash = match copy_hash {
+            Some(copy_hash) => copy_hash,
+            None => sha256_file(&staged).map_err(not_restored)?,
+        };
+        if !copy_hash.eq_ignore_ascii_case(expected) {
+            return Err(snapshot_mismatch(&before.reverts, before.sv_only));
+        }
+        copies
+            .0
+            .insert(entry.path.clone(), (expected.clone(), staged));
+    }
+    Ok(copies)
+}
+
+/// Clones `rel` out of `from`'s SavedVariables snapshot into
+/// `snapshots/<undo_tx>/sv-restore/<attempt>/`: the copy, and its SHA-256 when the
+/// session hashed it.
+fn clone_restore(
+    s: &mut WriteSession<'_>,
+    client: &ClientPaths,
+    from: &TxId,
+    undo_tx: &TxId,
+    attempt: &str,
+    rel: &Path,
+) -> Result<(PathBuf, Option<String>)> {
+    let source = client.snapshots(from).join("WTF").join(rel);
+    let staged = client
+        .snapshots(undo_tx)
+        .join("sv-restore")
+        .join(attempt)
+        .join(rel);
+    if let Some(parent) = staged.parent() {
+        ensure_dir_all(s, parent)?;
+    }
+    let cloned = mutate(s, &staged, Op::CloneFile { from: &source })?;
+    let copy_hash = cloned.after_sha256().map(str::to_owned);
+    Ok((staged, copy_hash))
+}
+
+/// A SavedVariables copy in `from`'s snapshot that its manifest does not describe. The
+/// fix reverts the folders without it, unless only SavedVariables were left to restore.
+fn snapshot_mismatch(from: &TxId, sv_only: bool) -> Error {
+    let fix = if sv_only {
+        Suggestion::text(
+            "the SavedVariables cannot be restored from this snapshot; they stay as they are",
+        )
+    } else {
+        Suggestion::command([
+            "omaddons".to_owned(),
+            "undo".to_owned(),
+            from.to_string(),
+            "--saved-variables".to_owned(),
+            "keep".to_owned(),
+        ])
+    };
+    Error::new(
+        ErrorCode::StateCorrupt,
+        format!(
+            "a SavedVariables file in the snapshot of {from} no longer matches its manifest, so undo cannot restore it"
+        ),
+        fix,
+    )
+    .details(serde_json::json!({ "tx": from, "reason": "snapshot_mismatch" }))
+}
+
+/// An error that never names the file: its path holds account and character names.
+fn not_restored(e: Error) -> Error {
+    Error::new(
+        e.code,
+        "a SavedVariables file could not be restored",
+        Suggestion::command(["omaddons", "status"]),
+    )
+}
+
 /// Brings each file of `sv` back to its state before `sv.from`; a file already there
-/// is skipped, so roll-forward can run it again. A file that existed is cloned from the
-/// reverted transaction's snapshot into the undo's own and renamed over the live one;
-/// a file that did not exist moves into the undo's snapshot. Errors never name the
-/// file: its path holds account and character names.
-pub fn restore_saved_variables(
+/// is skipped, so roll-forward can run it again. A file that existed comes back from its
+/// checked copy in `copies` (else a copy cloned now) by an exchange with the live one:
+/// no backup copy is needed, and the live file stays at the copy's path, inside the
+/// undo's snapshot. A rename replaces it instead where the filesystem cannot exchange
+/// or nothing is there. A file that did not exist moves into the undo's snapshot. Files
+/// are hashed through `hashes`, so one unchanged since its last hash is not read again.
+pub(super) fn restore_saved_variables(
     s: &mut WriteSession<'_>,
     client: &ClientPaths,
     sv: &SvRestore,
     undo_tx: &TxId,
+    copies: &SvCopies,
+    hashes: &mut SvHashes,
 ) -> Result<usize> {
     let wtf = client.wtf();
     let attempt = ulid::Ulid::generate().to_string();
+    let restore = Restore {
+        client,
+        from: &sv.from,
+        undo_tx,
+        attempt: &attempt,
+        copies,
+    };
     let mut restored = 0;
     for entry in &sv.files {
-        let rel = relative(&entry.path)?;
-        let live = wtf.join(&rel);
-        if present_hash(&live)? == entry.sha256 {
+        let live = wtf.join(relative(&entry.path)?);
+        let now = hashes.present_hash(&live)?;
+        if now == entry.sha256 {
             continue;
         }
-        let existed = entry.sha256.is_some();
-        restore_one(s, client, sv, undo_tx, &attempt, &rel, existed).map_err(|e| {
-            Error::new(
-                e.code,
-                "a SavedVariables file could not be restored",
-                Suggestion::command(["omaddons", "status"]),
-            )
-        })?;
+        restore_one(s, &restore, entry, now.as_deref()).map_err(not_restored)?;
         restored += 1;
     }
     Ok(restored)
 }
 
-/// One file of [`restore_saved_variables`]: `existed` before `sv.from`, or not.
+/// Where [`restore_one`] takes files from and puts them.
+struct Restore<'a> {
+    client: &'a ClientPaths,
+    /// The reverted transaction.
+    from: &'a TxId,
+    undo_tx: &'a TxId,
+    attempt: &'a str,
+    copies: &'a SvCopies,
+}
+
+/// One file of [`restore_saved_variables`], whose live file's SHA-256 is now
+/// `live_sha256` (`None`: absent).
 fn restore_one(
     s: &mut WriteSession<'_>,
-    client: &ClientPaths,
-    sv: &SvRestore,
-    undo_tx: &TxId,
-    attempt: &str,
-    rel: &Path,
-    existed: bool,
+    r: &Restore<'_>,
+    entry: &SvEntry,
+    live_sha256: Option<&str>,
 ) -> Result<()> {
-    let live = client.wtf().join(rel);
-    let undo_snapshot = client.snapshots(undo_tx);
-    if existed {
-        let source = client.snapshots(&sv.from).join("WTF").join(rel);
-        let staged = undo_snapshot.join("sv-restore").join(attempt).join(rel);
-        if let Some(parent) = staged.parent() {
-            ensure_dir_all(s, parent)?;
-        }
-        mutate(s, &staged, Op::CloneFile { from: &source })?;
-        let replace = Op::Rename {
-            to: &live,
-            mode: RenameMode::Replace,
-        };
-        mutate(s, &staged, replace)?;
-    } else {
-        let away = undo_snapshot.join("sv-created").join(rel);
+    let rel = relative(&entry.path)?;
+    let live = r.client.wtf().join(&rel);
+    let known = |sha256: Option<&str>| sha256.and_then(sha256_from_hex);
+    let Some(expected) = entry.sha256.as_deref() else {
+        // The reverted transaction's code created it: it moves into the undo's snapshot.
+        let away = r.client.snapshots(r.undo_tx).join("sv-created").join(&rel);
         if let Some(parent) = away.parent() {
             ensure_dir_all(s, parent)?;
         }
@@ -1307,8 +1513,44 @@ fn restore_one(
             to: &away,
             mode: RenameMode::Replace,
         };
-        mutate(s, &live, aside)?;
+        let opts = MutateOpts {
+            sha256_before: known(live_sha256),
+            ..MutateOpts::default()
+        };
+        mutate_with(s, &live, aside, opts)?;
+        return Ok(());
+    };
+    let (staged, staged_sha256) = match r.copies.get(entry) {
+        Some(copy) => (copy.to_path_buf(), Some(expected.to_owned())),
+        None => clone_restore(s, r.client, r.from, r.undo_tx, r.attempt, &rel)?,
+    };
+    let staged_known = known(staged_sha256.as_deref());
+    if live_sha256.is_some() {
+        let exchange = Op::Rename {
+            to: &live,
+            mode: RenameMode::Exchange,
+        };
+        let opts = MutateOpts {
+            sha256_before: staged_known,
+            sha256_after: known(live_sha256),
+            ..MutateOpts::default()
+        };
+        match mutate_with(s, &staged, exchange, opts) {
+            Ok(_) => return Ok(()),
+            // No exchange on this filesystem: a rename replaces it, after a backup copy.
+            Err(FsxError::Unsupported) => {}
+            Err(e) => return Err(e.into()),
+        }
     }
+    let replace = Op::Rename {
+        to: &live,
+        mode: RenameMode::Replace,
+    };
+    let opts = MutateOpts {
+        sha256_before: staged_known,
+        ..MutateOpts::default()
+    };
+    mutate_with(s, &staged, replace, opts)?;
     Ok(())
 }
 
@@ -1773,6 +2015,144 @@ mod tests {
         );
     }
 
+    /// The `actions.jsonl` lines of `tx` that renamed onto a path ending in `to` (an
+    /// attempt the filesystem refused is logged too, with `ok: false`).
+    fn renames_onto(scene: &TxScene, tx: &TxId, to: &str) -> Vec<serde_json::Value> {
+        let log = scene.paths.state_snapshot(tx).join("actions.jsonl");
+        std::fs::read_to_string(log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .filter(|a| {
+                a["ok"] == true
+                    && a["op"].as_str().unwrap().starts_with("rename")
+                    && a["to"].as_str().is_some_and(|t| t.ends_with(to))
+            })
+            .collect()
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn saved_variables_come_back_by_an_exchange_or_a_rename_without_one() {
+        for spec in ["", "fsx.renameat2.einval"] {
+            let scene = TxScene::new();
+            saved_variables(&scene);
+            let t1 = install(&scene, "v1.zip", V1);
+            play(&scene);
+            let done =
+                failpoint::with_spec(spec, || scene.undo(UndoSelector::Latest, SvPolicy::Auto))
+                    .unwrap();
+            assert_eq!(done.sv.restored, 2, "{spec}");
+            assert_eq!(
+                read(&scene, &format!("{ACCOUNT}/Foo.lua")).as_deref(),
+                Some("-- before"),
+                "{spec}"
+            );
+            assert_eq!(read(&scene, &format!("{ACCOUNT}/Foo.lua.bak")), None);
+            let undo_tx = done.outcome.tx.unwrap();
+            let renames = renames_onto(&scene, &undo_tx, &format!("{ACCOUNT}/Foo.lua"));
+            assert_eq!(renames.len(), 1, "{spec}: {renames:?}");
+            let rename = &renames[0];
+            if spec.is_empty() {
+                // Swapped with the live file: no backup copy, and the played file stays
+                // in the undo's snapshot where the copy was.
+                assert_eq!(rename["op"], "rename_exchange");
+                assert_eq!(rename["backup"], serde_json::Value::Null);
+                let displaced = std::path::Path::new(rename["path"].as_str().unwrap());
+                assert!(displaced.starts_with(scene.client.snapshots(&undo_tx)));
+                assert_eq!(std::fs::read_to_string(displaced).unwrap(), "-- after");
+            } else {
+                assert_eq!(rename["op"], "rename_replace", "{spec}");
+                assert!(rename["backup"].is_string(), "{spec}");
+            }
+            // The restored copy's digest is the manifest's, checked before the lock.
+            let manifest: SvManifest = serde_json::from_slice(
+                &std::fs::read(scene.client.snapshots(&t1).join("WTF.manifest.json")).unwrap(),
+            )
+            .unwrap();
+            let entry = manifest
+                .entries
+                .iter()
+                .find(|e| e.path == format!("{ACCOUNT}/Foo.lua"))
+                .unwrap();
+            let sha256 = entry.sha256.as_deref().unwrap();
+            assert_eq!(rename["before_hash"], format!("sha256:{sha256}"), "{spec}");
+            assert!(
+                leftovers(&scene).is_empty(),
+                "{spec}: {:?}",
+                leftovers(&scene)
+            );
+        }
+    }
+
+    #[test]
+    fn a_saved_variables_snapshot_that_no_longer_matches_fails_before_anything_moves() {
+        let scene = TxScene::new();
+        saved_variables(&scene);
+        let t1 = install(&scene, "v1.zip", V1);
+        play(&scene);
+        let copy = scene
+            .client
+            .snapshots(&t1)
+            .join("WTF")
+            .join(ACCOUNT)
+            .join("Foo.lua");
+        std::fs::write(&copy, "-- damaged").unwrap();
+        let before = tree(&scene);
+        let err = scene
+            .undo(UndoSelector::Latest, SvPolicy::Auto)
+            .unwrap_err();
+        assert_eq!((err.code, err.exit().code()), (ErrorCode::StateCorrupt, 1));
+        let keep = [
+            "omaddons".to_owned(),
+            "undo".to_owned(),
+            t1.to_string(),
+            "--saved-variables".to_owned(),
+            "keep".to_owned(),
+        ];
+        assert_eq!(err.fix.argv().unwrap(), keep);
+        assert_eq!(err.details["reason"], "snapshot_mismatch");
+        for private in ["123456", "RealmName", "CharName"] {
+            assert!(!err.message.contains(private), "{}", err.message);
+        }
+        assert_eq!(tree(&scene), before, "no folder moved");
+        assert_eq!(
+            read(&scene, &format!("{ACCOUNT}/Foo.lua")).as_deref(),
+            Some("-- after")
+        );
+        assert!(leftovers(&scene).is_empty(), "{:?}", leftovers(&scene));
+
+        // The fix reverts the folders and leaves the SavedVariables as they are.
+        let done = scene.undo(UndoSelector::Tx(t1), SvPolicy::Keep).unwrap();
+        assert_eq!((done.sv.kept, done.sv.restored), (2, 0));
+        assert!(!scene.client.addons().join("Foo").exists());
+    }
+
+    #[test]
+    fn saved_variables_are_hashed_again_only_when_they_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Foo.lua");
+        std::fs::write(&path, "-- one").unwrap();
+        // Older than the racy slack.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let mut hashes = SvHashes::default();
+        let hashed = crate::fsx::files_hashed();
+        let first = hashes.present_hash(&path).unwrap();
+        assert!(first.is_some());
+        assert_eq!(hashes.present_hash(&path).unwrap(), first);
+        assert_eq!(
+            crate::fsx::files_hashed() - hashed,
+            1,
+            "unchanged: read once"
+        );
+        std::fs::write(&path, "-- two, longer").unwrap();
+        let second = hashes.present_hash(&path).unwrap();
+        assert!(second.is_some() && second != first);
+        assert_eq!(crate::fsx::files_hashed() - hashed, 2);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(hashes.present_hash(&path).unwrap(), None);
+    }
+
     #[test]
     fn a_running_client_defers_or_refuses_saved_variables() {
         // auto: folders revert (with --while-running), SavedVariables wait.
@@ -1970,6 +2350,7 @@ mod tests {
         let names = [
             "engine.stage.begin",
             "engine.stage.synced",
+            "engine.snapshot.prestaged",
             "engine.lock.acquired",
             "engine.recovered",
             "engine.revalidated",
