@@ -28,9 +28,6 @@ use crate::state::store::{self, SchemaVersion, VersionStatus, Versioned};
 /// How much of the cache to trust.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscoveryMode {
-    /// No scan: re-stat the cached roots only. New installs wait for a non-cached run.
-    /// Without a cache this is `Full`.
-    Cached,
     /// No scan and no cache write (`status --cached`): the cached roots re-stat'ed, or
     /// without a cache only the registered roots, parsed directly.
     NoScan,
@@ -153,15 +150,15 @@ pub fn discover_cached(
     let mut stats = CacheStats::default();
     let cache = match mode {
         DiscoveryMode::Rescan => None,
-        DiscoveryMode::Cached | DiscoveryMode::NoScan | DiscoveryMode::Full => load_cache(paths),
+        DiscoveryMode::NoScan | DiscoveryMode::Full => load_cache(paths),
     };
     let basis = basis(table);
-    // The cache's roots are still where to look (no scan for `Cached` and `NoScan`), but
-    // none of its parses is reused on another basis.
+    // The cache's roots are still where to look (no scan for `NoScan`), but none of its
+    // parses is reused on another basis.
     let reusable = cache.as_ref().filter(|c| c.basis == basis);
     let mut diagnostics = Vec::new();
     let (requests, mut warnings) = match (mode, &cache) {
-        (DiscoveryMode::Cached | DiscoveryMode::NoScan, Some(cache)) => (
+        (DiscoveryMode::NoScan, Some(cache)) => (
             cache.roots.iter().map(CachedRoot::request).collect(),
             Vec::new(),
         ),

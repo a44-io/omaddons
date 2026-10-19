@@ -138,16 +138,18 @@ fn a_changed_last_addon_version_invalidates_a_legacy_root() {
 }
 
 #[test]
-fn cached_mode_never_scans() {
+fn no_scan_mode_never_scans() {
     let env = TestEnv::new();
     home(&env);
     run(&env, DiscoveryMode::Full);
     CustomRoot::at(env.home().join("Games/newcomer"))
         .version(2, 4, 3, 8606)
         .build();
-    let (cached, stats) = run(&env, DiscoveryMode::Cached);
-    assert!(!stats.scanned);
-    assert_eq!(stats.reused, 2);
+    let (cached, stats) = run(&env, DiscoveryMode::NoScan);
+    assert_eq!(
+        (stats.scanned, stats.reused, stats.written),
+        (false, 2, false)
+    );
     assert!(
         !cached.targets.iter().any(|t| t.default_id == "tbc"),
         "new roots wait for a full run"
@@ -156,17 +158,18 @@ fn cached_mode_never_scans() {
     assert!(full.targets.iter().any(|t| t.default_id == "tbc"));
 
     fs::remove_dir_all(env.home().join("Games/newcomer")).unwrap();
-    let (gone, _) = run(&env, DiscoveryMode::Cached);
+    let (gone, _) = run(&env, DiscoveryMode::NoScan);
     assert!(
         !gone.targets.iter().any(|t| t.default_id == "tbc"),
         "a vanished root is dropped"
     );
     assert!(gone.diagnostics.iter().any(|d| d.contains("is gone")));
 
+    // Without a cache, only the registered roots (none here) are parsed.
     let fresh = TestEnv::new();
     home(&fresh);
-    let (_, stats) = run(&fresh, DiscoveryMode::Cached);
-    assert!(stats.scanned, "without a cache, Cached behaves like Full");
+    let (none, stats) = run(&fresh, DiscoveryMode::NoScan);
+    assert_eq!((stats.scanned, none.targets.len()), (false, 0));
 }
 
 #[test]
@@ -236,15 +239,16 @@ fn a_rules_change_re_parses_every_root_once() {
     let (again, stats) = run_with(&env, DiscoveryMode::Full, &table);
     assert_eq!((stats.parsed, stats.reused), (0, 2));
     assert_eq!(custom_family(&again), "titan");
-    // `Cached` and `NoScan` look only at the cached roots, but re-parse them too.
-    let (cached, stats) = run(&env, DiscoveryMode::Cached);
-    assert_eq!((stats.scanned, stats.parsed), (false, 2));
-    assert_eq!(custom_family(&cached), builtin);
-    let (no_scan, stats) = run_with(&env, DiscoveryMode::NoScan, &table);
+    // `NoScan` looks only at the cached roots, but re-parses them on another basis (and
+    // writes nothing, so the cache still rests on the remapped rules).
+    let (no_scan, stats) = run(&env, DiscoveryMode::NoScan);
     assert_eq!(
         (stats.scanned, stats.parsed, stats.written),
         (false, 2, false)
     );
+    assert_eq!(custom_family(&no_scan), builtin);
+    let (no_scan, stats) = run_with(&env, DiscoveryMode::NoScan, &table);
+    assert_eq!((stats.scanned, stats.parsed, stats.reused), (false, 0, 2));
     assert_eq!(custom_family(&no_scan), "titan");
 }
 
@@ -316,15 +320,15 @@ fn a_cache_from_another_binary_re_parses_once() {
 }
 
 #[test]
-fn cached_mode_is_fast() {
+fn no_scan_mode_is_fast() {
     let env = TestEnv::new();
     for i in 0..10 {
         CustomRoot::at(env.home().join(format!("Games/client{i}"))).build();
     }
     run(&env, DiscoveryMode::Full);
-    run(&env, DiscoveryMode::Cached);
+    run(&env, DiscoveryMode::NoScan);
     let start = std::time::Instant::now();
-    let (d, stats) = run(&env, DiscoveryMode::Cached);
+    let (d, stats) = run(&env, DiscoveryMode::NoScan);
     let took = start.elapsed();
     assert_eq!(
         (d.targets.len(), stats.reused, stats.scanned),

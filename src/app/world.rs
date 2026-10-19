@@ -92,7 +92,7 @@ impl World {
         // Running clients' prefixes, for the modes that look for roots.
         let extra_prefixes = match mode {
             DiscoveryMode::Full | DiscoveryMode::Rescan => process_prefixes(&table, paths.home()),
-            DiscoveryMode::Cached | DiscoveryMode::NoScan => Vec::new(),
+            DiscoveryMode::NoScan => Vec::new(),
         };
         let input = DiscoveryInput {
             home: paths.home().to_path_buf(),
