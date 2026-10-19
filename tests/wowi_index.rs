@@ -137,7 +137,8 @@ fn a_first_load_fetches_once_and_stores_a_slim_sanitised_index() {
     );
 
     let stored: Value = serde_json::from_slice(&fs::read(s.paths.wowi_index()).unwrap()).unwrap();
-    assert_eq!(stored["schema_version"], "1.0");
+    // 1.1: names, authors and versions are stored decoded.
+    assert_eq!(stored["schema_version"], "1.1");
     assert_eq!(stored["max_age_s"], 3600);
     assert!(stored["fetched_at"].is_string());
     let first = &stored["entries"][0];

@@ -106,6 +106,8 @@ pub const RACY_SLACK_COARSE_NS: i128 = 2_000_000_000;
 pub const SEARCH_MAX_RESULTS: usize = 50;
 /// Characters a search result's `summary` keeps.
 pub const SEARCH_SUMMARY_MAX_CHARS: usize = 200;
+/// Characters kept from one name, author or version a source sends.
+pub const SOURCE_TEXT_MAX_CHARS: usize = 200;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -412,6 +414,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Characters a search result's summary keeps",
     ),
+    limit(
+        "SOURCE_TEXT_MAX_CHARS",
+        LimitValue::Count(SOURCE_TEXT_MAX_CHARS as u64),
+        "count",
+        None,
+        "Characters kept from a source's name, author or version",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -593,6 +602,7 @@ mod tests {
         "RACY_SLACK_COARSE_NS",
         "SEARCH_MAX_RESULTS",
         "SEARCH_SUMMARY_MAX_CHARS",
+        "SOURCE_TEXT_MAX_CHARS",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

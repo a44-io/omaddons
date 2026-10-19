@@ -323,6 +323,15 @@ pub fn decode_addon(body: &[u8]) -> Result<(TukuiAddon, Option<String>)> {
     Ok((found, url))
 }
 
+/// One line of Tukui's text, untrusted: made safe to show and match, as written.
+pub(crate) fn safe(text: &str) -> String {
+    crate::text::source_line(
+        text,
+        crate::limits::SOURCE_TEXT_MAX_CHARS,
+        crate::text::Entities::Keep,
+    )
+}
+
 /// A project object, or `None` without a usable slug.
 fn addon(item: &Value) -> Option<TukuiAddon> {
     let slug = item["slug"].as_str()?.trim().to_ascii_lowercase();
@@ -349,9 +358,11 @@ fn addon(item: &Value) -> Option<TukuiAddon> {
             Value::String(s) => s.trim().parse().unwrap_or(0),
             _ => 0,
         },
-        name: text("name"),
-        author: text("author"),
-        version: Some(text("version"))
+        // Shown and matched: made safe at once. Tukui's JSON is not HTML-escaped, so an
+        // `&amp;` there is literal.
+        name: safe(&text("name")),
+        author: safe(&text("author")),
+        version: Some(safe(&text("version")))
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| "unknown".to_owned()),
         patch: list("patch"),

@@ -1,12 +1,14 @@
 //! Release notes as plain text: GitHub's Atom HTML and WoWInterface's BBCode, turned
-//! into bounded text with no markup, safe for terminals, agents and the widget.
+//! into bounded text with no markup, safe for terminals, agents and the widget; and one
+//! line of a source's text (a name, author or version) made safe the same way
+//! ([`source_line`]).
 //!
-//! Both functions are pure, infallible, linear-time state machines (no regex, no HTML
-//! parser). Their output never holds `<` before an ASCII letter, `/`, `!` or `?`, never
-//! a known BBCode tag, and no control character but `\n` and `\t` (so a changelog
-//! cannot send terminal escapes). Links are only ever text. Output is at most
-//! `max_chars + 1` characters: longer text is cut on a character boundary and ends
-//! with `…`.
+//! Every function is a pure, infallible, linear-time state machine (no regex, no HTML
+//! parser). The changelog functions' output never holds `<` before an ASCII letter, `/`,
+//! `!` or `?`, never a known BBCode tag, and no control character but `\n` and `\t` (so
+//! a changelog cannot send terminal escapes); a source line holds no control character
+//! at all. Links are only ever text. Output is at most `max_chars + 1` characters:
+//! longer text is cut on a character boundary and ends with `…`.
 
 /// The BBCode tags WoWInterface's editor knows, matched ignoring case: these are
 /// dropped (their content kept); any other bracketed word (`[Fixed]`) is prose.
@@ -123,6 +125,54 @@ pub fn html_to_text(input: &str, max_chars: usize) -> String {
     finish(out.text, max_chars, false)
 }
 
+/// Whether [`source_line`] decodes HTML entities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Entities {
+    /// Decoded: WoWInterface's API HTML-escapes its text.
+    Decode,
+    /// Kept as written: a JSON API that does not escape (a literal `&amp;` stays).
+    Keep,
+}
+
+/// One line of a source's untrusted text (a name, author or version), safe to show and
+/// to match: entities decoded with [`Entities::Decode`] (a decoded character is plain
+/// text, never read again); every control character, and every character that reorders
+/// or hides text, dropped; line breaks and tabs as spaces, whitespace runs as one;
+/// trimmed and cut to `max_chars` (then `…`).
+pub fn source_line(input: &str, max_chars: usize, entities: Entities) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let (c, len) = match chars[i] {
+            '&' if entities == Entities::Decode => entity(&chars[i..]).unwrap_or(('&', 1)),
+            c => (c, 1),
+        };
+        i += len;
+        if c.is_whitespace() || matches!(c, '\u{2028}' | '\u{2029}') {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+        } else if !c.is_control() && !hides_text(c) {
+            out.push(c);
+        }
+    }
+    truncate(out.trim(), max_chars)
+}
+
+/// The format characters that reorder or hide text: zero-width characters and marks,
+/// bidirectional embeddings, overrides and isolates, invisible operators, the BOM.
+fn hides_text(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
+}
+
 /// BBCode as plain text, at most `max_chars + 1` characters.
 ///
 /// CRLF and lone CRs become LF; `[*]` starts a `- ` line; `[url=X]Y[/url]` (or
@@ -161,6 +211,17 @@ pub fn bbcode_to_text(input: &str, max_chars: usize) -> String {
                 }
                 (true, "list") | (false, "hr") if !out.ends_with('\n') => out.push('\n'),
                 _ => {}
+            }
+            continue;
+        }
+        // WoWInterface's changelogs are HTML-escaped BBCode: an entity is its character,
+        // as text (never read again as a tag).
+        if c == '&'
+            && let Some((decoded, len)) = entity(&chars[i..])
+        {
+            i += len;
+            if !decoded.is_control() || matches!(decoded, '\n' | '\t') {
+                out.push(decoded);
             }
             continue;
         }
@@ -617,5 +678,77 @@ mod tests {
             let _ = html_to_text(&input, max);
             let _ = bbcode_to_text(&input, max);
         }
+
+        /// A source line never holds a control or text-hiding character, nor a line
+        /// break, and keeps its bound, whatever comes in (raw or as entities).
+        #[test]
+        fn a_source_line_is_always_safe(input in "(\\PC|[\\x00-\\x1f\\x7f-\\x9f\\u{202e}\\u{200b}&#;x])*", max in 1usize..64) {
+            for entities in [Entities::Decode, Entities::Keep] {
+                let out = source_line(&input, max, entities);
+                prop_assert!(
+                    out.chars().all(|c| !c.is_control() && !hides_text(c)),
+                    "{out:?} from {input:?}"
+                );
+                prop_assert!(out.chars().count() <= max + 1);
+                prop_assert_eq!(out.trim(), out.as_str());
+            }
+        }
+    }
+
+    #[test]
+    fn source_lines_decode_once_and_drop_what_a_terminal_obeys() {
+        for (input, expected) in [
+            (
+                "DBM &#54392;&#52852; (DBM-VPPukaKR)",
+                "DBM \u{d478}\u{ce74} (DBM-VPPukaKR)",
+            ),
+            (
+                "DBM Voicepack &quot;Yike&quot; &#x41;",
+                "DBM Voicepack \"Yike\" A",
+            ),
+            ("Some&amp;One", "Some&One"),
+            // Once: an escaped entity stays an entity.
+            ("&amp;amp;", "&amp;"),
+            // An escape as an entity or raw, C1 included: gone.
+            ("DBM evil &#27;[31mRED", "DBM evil [31mRED"),
+            ("&#x9b;2J x", "2J x"),
+            ("\u{1b}[31mRED\u{1b}[0m\u{7}", "[31mRED[0m"),
+            // Text that reorders or hides itself, and line breaks.
+            ("evil\u{202e}gnp.exe", "evilgnp.exe"),
+            ("a\u{200b}b\u{feff}", "ab"),
+            ("  one\r\n\ttwo\u{2028}three  ", "one two three"),
+            // A `<` from an entity is text: nothing reads it again.
+            ("&lt;b&gt;bold&lt;/b&gt;", "<b>bold</b>"),
+            // Unknown and overlong entities stay as written.
+            ("&nope; &#x110000;", "&nope; &#x110000;"),
+        ] {
+            assert_eq!(
+                source_line(input, 200, Entities::Decode),
+                expected,
+                "{input:?}"
+            );
+        }
+        // Keep: a JSON API's literal `&amp;` is literal, controls still go.
+        let keep = |s: &str| source_line(s, 200, Entities::Keep);
+        assert_eq!(keep("Tukui &amp; ElvUI\u{1b}"), "Tukui &amp; ElvUI");
+        // Cut on a character boundary.
+        assert_eq!(source_line("Hello wide world", 5, Entities::Keep), "Hello…");
+        assert_eq!(
+            source_line("\u{d478}\u{ce74}\u{d478}", 2, Entities::Keep),
+            "\u{d478}\u{ce74}…"
+        );
+    }
+
+    #[test]
+    fn bbcode_changelogs_decode_their_entities() {
+        assert_eq!(
+            bbcode_to_text(
+                "[b]Fixed[/b] &quot;bars&quot; &amp; &#27;[31mmore &lt;b&gt;",
+                200
+            ),
+            "Fixed \"bars\" & [31mmore &lt;b>"
+        );
+        // A decoded known tag is prose: its brackets turn to parentheses.
+        assert_eq!(bbcode_to_text("&#91;b&#93;x", 200), "(b)x");
     }
 }

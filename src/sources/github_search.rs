@@ -165,11 +165,20 @@ impl GithubSearch {
                 let r#ref: Ref = format!("gh:{}/{}", item.owner.login, item.name)
                     .parse()
                     .ok()?;
+                // Untrusted text, made safe at once (names are restricted already;
+                // this makes it hold whatever GitHub sends).
+                let safe = |text: &str| {
+                    crate::text::source_line(
+                        text,
+                        crate::limits::SOURCE_TEXT_MAX_CHARS,
+                        crate::text::Entities::Keep,
+                    )
+                };
                 Some(RepoHit {
                     r#ref,
-                    name: item.name,
-                    owner: item.owner.login,
-                    description: item.description.filter(|d| !d.trim().is_empty()),
+                    name: safe(&item.name),
+                    owner: safe(&item.owner.login),
+                    description: item.description.map(|d| safe(&d)).filter(|d| !d.is_empty()),
                     stars: item.stargazers_count,
                     pushed_at: item.pushed_at.and_then(|t| t.parse().ok()),
                 })

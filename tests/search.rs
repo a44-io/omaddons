@@ -360,3 +360,77 @@ fn limit_is_bounded_and_the_output_is_deterministic() {
     assert_eq!(a["data"], b["data"]);
     assert_eq!(a["commands"], b["commands"]);
 }
+
+/// WoWInterface's names are HTML-escaped and untrusted: shown decoded, and nothing a
+/// terminal would obey (an escape, raw or as an entity) ever reaches it. An index an
+/// older build stored as sent is decoded once on load.
+#[test]
+fn source_names_are_decoded_and_never_reach_the_terminal_raw() {
+    let home = Home::new(&["wow"]);
+    let mut korean = FileEntry::new(1, "DBM &#54392;&#52852; (DBM-VPPukaKR)", &["DBM-VPPukaKR"]);
+    korean.author = "Some&amp;One".into();
+    let quoted = FileEntry::new(2, "DBM Voicepack &quot;Yike&quot; &#x41;", &["DBM-VPYike"]);
+    let entity_escape = FileEntry::new(3, "DBM evil &#27;[31mRED", &["DBM-Evil"]);
+    let raw_escape = FileEntry::new(4, "DBM raw \u{1b}[31mRED\u{1b}[0m\u{7}", &["DBM-Raw"]);
+    wowi_filelist(&home.http, &[korean, quoted, entity_escape, raw_escape]);
+    let names = |envelope: &Value| -> Vec<String> {
+        let mut names: Vec<String> = results(envelope)
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let expected = [
+        "DBM Voicepack \"Yike\" A",
+        "DBM evil [31mRED",
+        "DBM raw [31mRED[0m",
+        "DBM \u{d478}\u{ce74} (DBM-VPPukaKR)",
+    ];
+
+    let r = home.run(&["search", "dbm", "--source", "wowi"]);
+    let envelope = r.expect(0);
+    assert_eq!(names(&envelope), expected, "{}", r.context());
+    let first_author = |envelope: &Value| {
+        results(envelope)
+            .iter()
+            .find(|r| matches!(r["ref"].as_str(), Some("wowi:1")))
+            .map(|r| r["author"].clone())
+    };
+    assert_eq!(first_author(&envelope), Some(json!("Some&One")));
+    let human = home.exec(&["search", "dbm", "--source", "wowi"].map(str::to_owned));
+    assert_eq!(human.code, 0, "{}", human.context());
+    assert!(
+        !human.stdout.chars().any(|c| c.is_control() && c != '\n'),
+        "{:?}",
+        human.stdout
+    );
+
+    // An index written by an older build (1.0) holds the API's text as sent.
+    let index = common::http::paths(&home.env).wowi_index();
+    let mut stored: Value = serde_json::from_slice(&std::fs::read(&index).unwrap()).unwrap();
+    stored["schema_version"] = json!("1.0");
+    for entry in stored["entries"].as_array_mut().unwrap() {
+        if entry["uid"] == 1 {
+            entry["name"] = json!("DBM &#54392;&#52852; (DBM-VPPukaKR)");
+            entry["author"] = json!("Some&amp;amp;One");
+        }
+        if entry["uid"] == 4 {
+            entry["name"] = json!("DBM raw \u{1b}[31mRED\u{7}");
+        }
+    }
+    std::fs::write(&index, serde_json::to_vec(&stored).unwrap()).unwrap();
+    let r = home.run(&["search", "dbm", "--source", "wowi", "--offline"]);
+    let envelope = r.expect(0);
+    let migrated = names(&envelope);
+    assert!(
+        migrated.contains(&"DBM \u{d478}\u{ce74} (DBM-VPPukaKR)".to_owned())
+            && migrated.contains(&"DBM raw [31mRED".to_owned()),
+        "{migrated:?}"
+    );
+    assert_eq!(
+        first_author(&envelope),
+        Some(json!("Some&amp;One")),
+        "decoded exactly once"
+    );
+}

@@ -1,6 +1,5 @@
 ---
 source: src/limits.rs
-assertion_line: 788
 expression: "(politeness, REGISTRY)"
 ---
 [
@@ -500,6 +499,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Characters a search result's summary keeps"
+    },
+    {
+      "name": "SOURCE_TEXT_MAX_CHARS",
+      "value": {
+        "count": 200
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Characters kept from a source's name, author or version"
     }
   ]
 ]

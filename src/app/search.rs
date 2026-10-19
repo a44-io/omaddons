@@ -493,11 +493,13 @@ fn tukui_hits<'a>(list: &'a TukuiList, table: &'a RulesTable) -> impl Iterator<I
     list.entries.iter().filter_map(move |e| {
         let r#ref: Ref = format!("tukui:{}", e.slug).parse().ok()?;
         let families = e.patch.iter().filter_map(|p| family_of(table, p)).collect();
+        // A memo from before this build kept the text as sent: made safe here too.
+        let safe = crate::sources::tukui::safe;
         Some(Hit {
-            name: e.name.clone(),
+            name: safe(&e.name),
             r#ref,
             source: HitSource::Tukui,
-            author: Some(e.author.clone()).filter(|a| !a.is_empty()),
+            author: Some(safe(&e.author)).filter(|a| !a.is_empty()),
             summary: None,
             aliases: Vec::new(),
             folders: e.directories.clone(),

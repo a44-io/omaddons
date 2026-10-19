@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{Content, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate};
+use crate::limits::SOURCE_TEXT_MAX_CHARS;
 use crate::model::FolderName;
 use crate::net::{Http, Request};
 use crate::politeness::WOWI_FILELIST_MIN_AGE;
@@ -26,6 +27,7 @@ use crate::resolve::cache::Freshness;
 use crate::sources::{SourceId, SourceSkipReason, SourceSkipped};
 use crate::state::paths::Paths;
 use crate::state::store::{self, SchemaVersion, VersionStatus, Versioned};
+use crate::text::{Entities, source_line};
 
 /// The one file list.
 pub const FILELIST_URL: &str = "https://api.mmoui.com/v3/game/WOW/filelist.json";
@@ -70,7 +72,39 @@ pub struct StoredIndex {
 
 impl Versioned for StoredIndex {
     const KIND: &'static str = "wowi_index";
-    const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
+    /// 1.1: names, authors, versions and compatibility names are stored decoded and
+    /// made safe ([`source_text`]).
+    const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
+
+    /// A 1.0 index, fetched by an older build, holds the API's text as sent: it is
+    /// decoded here, once (a 1.1 index never is again).
+    fn migrate(from: SchemaVersion, mut raw: Value) -> Result<Value> {
+        if from >= SchemaVersion::new(1, 1) {
+            return Ok(raw);
+        }
+        let make_safe = |field: &mut Value| {
+            if let Some(text) = field.as_str() {
+                *field = Value::String(source_line(text, SOURCE_TEXT_MAX_CHARS, Entities::Decode));
+            }
+        };
+        let entries = raw.get_mut("entries").and_then(Value::as_array_mut);
+        for entry in entries.into_iter().flatten() {
+            for key in ["name", "author", "version"] {
+                if let Some(field) = entry.get_mut(key) {
+                    make_safe(field);
+                }
+            }
+            let compat = entry.get_mut("compat").and_then(Value::as_array_mut);
+            for c in compat.into_iter().flatten() {
+                for key in ["name", "version"] {
+                    if let Some(field) = c.get_mut(key) {
+                        make_safe(field);
+                    }
+                }
+            }
+        }
+        Ok(raw)
+    }
 }
 
 /// How a command wants the index.
@@ -334,15 +368,15 @@ pub fn decode_filelist(body: &[u8]) -> Result<(Vec<WowiEntry>, usize)> {
             .into_iter()
             .flatten()
             .map(|c| WowiCompat {
-                version: text(&c["version"]),
-                name: text(&c["name"]),
+                version: source_text(&c["version"]),
+                name: source_text(&c["name"]),
             })
             .collect();
         entries.push(WowiEntry {
             uid,
-            name: text(&item["UIName"]),
-            author: text(&item["UIAuthorName"]),
-            version: text(&item["UIVersion"]),
+            name: source_text(&item["UIName"]),
+            author: source_text(&item["UIAuthorName"]),
+            version: source_text(&item["UIVersion"]),
             date_ms: number(&item["UIDate"]).unwrap_or(0),
             downloads: number(&item["UIDownloadTotal"]).unwrap_or(0),
             monthly: number(&item["UIDownloadMonthly"]).unwrap_or(0),
@@ -364,6 +398,12 @@ pub(super) fn number(value: &Value) -> Option<u64> {
         Value::String(s) => s.trim().parse().ok(),
         _ => None,
     }
+}
+
+/// [`text`] as WoWInterface's API sends it, HTML-escaped and untrusted: decoded and made
+/// safe to show and match ([`source_line`]).
+pub(super) fn source_text(value: &Value) -> String {
+    source_line(&text(value), SOURCE_TEXT_MAX_CHARS, Entities::Decode)
 }
 
 /// A string, or a number written as one; anything else is empty.

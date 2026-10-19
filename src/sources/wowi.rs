@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use self::index::{number, text};
+use self::index::{number, source_text, text};
 use super::{Source, SourceId, Wanted};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::limits::CHANGELOG_MAX_CHARS;
@@ -142,8 +142,9 @@ pub fn decode_details(body: &[u8]) -> Result<Vec<WowiDetails>> {
         .filter_map(|item| {
             Some(WowiDetails {
                 uid: number(&item["UID"])?,
-                name: text(&item["UIName"]),
-                version: text(&item["UIVersion"]),
+                // Shown and matched: decoded and made safe at once.
+                name: source_text(&item["UIName"]),
+                version: source_text(&item["UIVersion"]),
                 date_ms: number(&item["UIDate"]),
                 md5: text(&item["UIMD5"]),
                 file_name: text(&item["UIFileName"]),

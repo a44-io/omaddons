@@ -1089,6 +1089,8 @@ Each result says, for every selected client, whether it is likely to load. This 
 - `abandoned`: a WoWInterface project not updated in two years.
 - `unknown`: GitHub.
 
+Names, authors and versions from WoWInterface are shown with their HTML entities decoded (`&amp;` is `&`). Text from any source loses its control characters (so it cannot send terminal escapes) and the characters that reorder or hide text, and is cut at 200 characters.
+
 `commands` holds `omaddons install <ref> -t <client>` for up to three results, each on its best client, never for `no`, `unlikely` or `abandoned`. A source not consulted is listed in `sources_skipped` (`offline`, `rate_limited` with `reset_at`, `disabled`, `no_index`). A spent GitHub search is not a failure; any other source failure makes the run `partial`. `--offline` searches the catalog, the stored index and the remembered Tukui list.
 
 ### `info <REF>`
@@ -1598,7 +1600,7 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_HTTP_FIXTURES`, `OMADDON
 | `~/.local/state/omaddons/net.log`, `net.log.1` | The request log | Yes |
 | `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `inflight/`, `trash/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, the in-flight locks of planning and dry runs, staged deletions | Yes when no command is running; reinstalls then download again |
 | `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), failures retrying cannot change, and what downloading candidates taught (each archive's hash, and whether it loads on a client) | Yes; the next commands fetch and download again |
-| `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim (refreshed after its hour) | Yes; the next search or dependency lookup fetches it again |
+| `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim, its text decoded and made safe (format 1.1; a 1.0 index is decoded once on load), refreshed after its hour | Yes; the next search or dependency lookup fetches it again |
 | `~/.cache/omaddons/export.json` | The hash of the `addons.toml` `export --write` last wrote, so a hand-edited file is not overwritten | Yes; the next `--write` then needs `--overwrite` |
 | `<client>/Interface/.omaddons/target.json` | The client's identity, so a moved install keeps its id | Loses identity |
 | `<client>/Interface/.omaddons/snapshots/<tx>/` | `AddOns/` (replaced and removed folders) and `WTF/` (SavedVariables copies with a manifest): most of the undo data | Loses undo |
