@@ -12,6 +12,7 @@ mod exit_sites;
 mod matrix;
 mod recommendations;
 mod special;
+mod usage_fixes;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -200,6 +201,7 @@ mod support {
             assert_eq!(argv.first().map(String::as_str), Some("omaddons"), "{ctx}");
             assert_eq!(command["command"], shell_words::join(&argv), "{ctx}");
             no_presentation_flags(&argv, &ctx);
+            parses(&argv, &ctx);
             assert!(
                 command["action"].is_string() && command["destructive"].is_boolean(),
                 "{ctx}"
@@ -252,6 +254,24 @@ mod support {
             "fix argv round trip\n{ctx}"
         );
         no_presentation_flags(&argv, ctx);
+        parses(&argv, ctx);
+    }
+
+    /// A suggested argv parses as an omaddons command line (a help or version request
+    /// counts). Parsing only: a command that would then fail (an addon that is not
+    /// installed) is fine.
+    pub fn parses(argv: &[String], ctx: &str) {
+        use clap::Parser as _;
+        use clap::error::ErrorKind;
+        let failure = omaddons::cli::Cli::try_parse_from(argv)
+            .err()
+            .filter(|e| !matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion))
+            .map(|e| e.to_string());
+        assert!(
+            failure.is_none(),
+            "a suggestion does not parse: {argv:?}\n{}\n{ctx}",
+            failure.unwrap_or_default()
+        );
     }
 
     /// A suggested argv runs as is: none of the failing run's presentation flags.
@@ -544,6 +564,13 @@ fn the_harness_rejects_broken_envelopes() {
     assert!(
         std::panic::catch_unwind(|| support::check(failing, 3)).is_err(),
         "empty fix"
+    );
+    let unparsable = r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"t","exit_code":3,"error":{"code":"not_found","message":"m","fix":"omaddons targets pin a b","fix_argv":["omaddons","targets","pin","a","b"],"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let mut failing = run(unparsable, 3);
+    failing.stderr = r#"{"event":"error"}"#.into();
+    assert!(
+        std::panic::catch_unwind(|| support::check(failing, 3)).is_err(),
+        "a fix that does not parse"
     );
     let reordered = r#"{"schema_version":"1.0","ok":true,"tool_version":"x","command":"t","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
     assert!(

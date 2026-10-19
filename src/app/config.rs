@@ -240,10 +240,16 @@ pub fn list() -> Result<Done<ConfigData>> {
     })
 }
 
-fn unknown_key(key: &str, action: &str) -> Error {
+/// `usage` for an unknown key: the same `config <action>` with the closest key, `rest`
+/// (a value) after it, else the listing of every key.
+fn unknown_key(key: &str, action: &str, rest: &[&str]) -> Error {
     let fix = closest_key(key).map_or_else(
         || Suggestion::command(["omaddons", "config"]),
-        |c| Suggestion::command(["omaddons".to_owned(), "config".into(), action.into(), c]),
+        |c| {
+            let mut argv = vec!["omaddons".to_owned(), "config".into(), action.into(), c];
+            argv.extend(rest.iter().map(|a| (*a).to_owned()));
+            Suggestion::command(argv)
+        },
     );
     Error::new(ErrorCode::Usage, format!("{key} is not a config key"), fix)
 }
@@ -251,7 +257,7 @@ fn unknown_key(key: &str, action: &str) -> Error {
 /// `config get <key>`.
 pub fn get(key: &str) -> Result<Done<GetData>> {
     if spec_for(key).is_none() {
-        return Err(unknown_key(key, "get"));
+        return Err(unknown_key(key, "get", &[]));
     }
     let paths = Paths::from_env()?;
     let (raw, _, warnings, _) = read(&paths)?;
@@ -274,13 +280,7 @@ pub fn get(key: &str) -> Result<Done<GetData>> {
 /// `config set <key> <value>`.
 pub fn set(ctx: &Context, key: &str, raw_value: &str) -> Result<Done<SetData>> {
     if spec_for(key).is_none() {
-        let mut err = unknown_key(key, "set");
-        if let Some(argv) = err.fix.argv().map(<[String]>::to_vec) {
-            let mut argv = argv;
-            argv.push(raw_value.to_owned());
-            err.fix = Suggestion::command(argv);
-        }
-        return Err(err);
+        return Err(unknown_key(key, "set", &[raw_value]));
     }
     let paths = Paths::from_env()?;
     let guard = if ctx.dry_run {

@@ -9,11 +9,10 @@ expression: s.stable(&c.envelope)
     "alternatives": [],
     "code": "usage",
     "details": {},
-    "fix": "omaddons config 1",
+    "fix": "omaddons config",
     "fix_argv": [
       "omaddons",
-      "config",
-      "1"
+      "config"
     ],
     "message": "nosuch.key is not a config key",
     "retryable": false

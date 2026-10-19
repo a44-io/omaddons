@@ -1329,7 +1329,7 @@ Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` l
 
 ### Stability
 
-The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the contract can still change. From that tag on, it is frozen. The contract suite (`tests/contract/`) runs a matrix of success and failure cases across the commands. It checks key order, `ok`/`exit_code` agreement and registered codes, and that every `fix_argv` and `commands[].argv` round-trips through shell quoting to its display string. 24 snapshots pin representative envelopes.
+The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the contract can still change. From that tag on, it is frozen. The contract suite (`tests/contract/`) runs a matrix of success and failure cases across the commands. It checks key order, `ok`/`exit_code` agreement and registered codes. Every `fix_argv`, `alternatives[].argv` and `commands[].argv` must parse as an omaddons command line and round-trip through shell quoting to its display string. A corpus of mistyped commands, and every one-letter typo of every command name, check that a fix never names a different command that changes something. Snapshots pin representative envelopes.
 
 ---
 
@@ -1850,7 +1850,7 @@ At the time of writing there are 760 tests: 464 unit tests in `src/`, 295 integr
 
 | Suite | What it covers |
 |---|---|
-| `tests/contract/` | A matrix of success and failure envelopes across the commands: key order, exit codes, registered codes, fix argv round-trips (24 snapshots) |
+| `tests/contract/` | A matrix of success and failure envelopes across the commands: key order, exit codes, registered codes, suggested argvs that parse and round-trip, usage fixes that never name another changing command; snapshots |
 | `tests/engine_crash.rs` | All 27 engine failpoints, every journaled rename (atomic and two-rename), and crashes during recovery, armed as real `abort`s in a child process over SavedVariables; undo included; torn journal, history and actions lines |
 | `tests/engine_concurrency.rs` | Parallel runs, duplicate installs, lock hold time under 50 ms for commits and undo (16 MiB of SavedVariables and a 64 MiB folder included) |
 | `tests/discover_*.rs` | The discovery matrix, launchers, scanning, custom clients, the cache |
