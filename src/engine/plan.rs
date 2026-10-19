@@ -747,50 +747,95 @@ pub fn bookkeeping_warnings(
             .filter(|n| stays(n))
             .map(String::as_str)
             .collect();
-        if dependents.is_empty() {
-            continue;
-        }
-        let message = format!(
-            "On {target}, {} is required by {}, which will not load without it",
-            gone.name,
-            dependents.join(", ")
-        );
-        let fix = match tx {
-            Some(tx) => {
-                Suggestion::command(["omaddons".to_owned(), "undo".to_owned(), tx.to_string()])
-            }
-            None => Suggestion::text(
-                "nothing is removed under --dry-run; after the remove, `omaddons undo <tx>` restores it",
-            ),
-        };
-        warnings.push(Warning::new(WarningCode::StillRequired, message).with_fix(fix));
+        warnings.extend(still_required(target, &gone.name, &dependents, tx));
     }
     let orphans = sorted_names(works.iter().filter_map(|w| {
         let after = w.record()?;
         let before = record.addons.get(&key(&w.addon))?;
         (!before.is_orphan() && after.is_orphan()).then(|| after.name.clone())
     }));
-    if !orphans.is_empty() {
-        let message = match orphans.as_slice() {
-            [one] => format!(
-                "On {target}, {one} was installed as a dependency, and nothing requires it any more"
-            ),
-            many => format!(
-                "On {target}, {} were installed as dependencies, and nothing requires them any more",
-                many.join(", ")
-            ),
-        };
-        let argv = ["omaddons", "remove"]
-            .into_iter()
-            .map(str::to_owned)
-            .chain(orphans)
-            .chain(["-t".to_owned(), target.to_owned()]);
-        warnings.push(
-            Warning::new(WarningCode::OrphanedDependency, message)
-                .with_fix(Suggestion::command(argv.collect::<Vec<_>>())),
-        );
-    }
+    warnings.extend(orphaned(target, orphans));
     warnings
+}
+
+/// [`bookkeeping_warnings`] for a change of `target`'s record from `before` to `after`
+/// (an undo, which restores records rather than planning works). `still_required` takes
+/// each removed addon's requesters from `before`, so a requester recorded only by a
+/// later in-place edit counts.
+pub fn record_change_warnings(
+    before: &TargetRecord,
+    after: &TargetRecord,
+    target: &str,
+    tx: Option<TxId>,
+) -> Vec<Warning> {
+    let stays = |name: &str| after.addons.contains_key(&TargetRecord::addon_key(name));
+    let mut warnings = Vec::new();
+    for (key, gone) in &before.addons {
+        if after.addons.contains_key(key) {
+            continue;
+        }
+        let dependents: Vec<&str> = gone
+            .required_by
+            .iter()
+            .filter(|n| stays(n))
+            .map(String::as_str)
+            .collect();
+        warnings.extend(still_required(target, &gone.name, &dependents, tx));
+    }
+    let orphans = sorted_names(after.addons.iter().filter_map(|(key, now)| {
+        let then = before.addons.get(key)?;
+        (!then.is_orphan() && now.is_orphan()).then(|| now.name.clone())
+    }));
+    warnings.extend(orphaned(target, orphans));
+    warnings
+}
+
+/// `still_required` for `gone` on `target` while `dependents` stay (none: no warning).
+/// Committed as `tx`, its fix is `omaddons undo <tx>`.
+fn still_required(
+    target: &str,
+    gone: &str,
+    dependents: &[&str],
+    tx: Option<TxId>,
+) -> Option<Warning> {
+    if dependents.is_empty() {
+        return None;
+    }
+    let message = format!(
+        "On {target}, {gone} is required by {}, which will not load without it",
+        dependents.join(", ")
+    );
+    let fix = match tx {
+        Some(tx) => Suggestion::command(["omaddons".to_owned(), "undo".to_owned(), tx.to_string()]),
+        None => Suggestion::text(
+            "nothing is removed under --dry-run; after the remove, `omaddons undo <tx>` restores it",
+        ),
+    };
+    Some(Warning::new(WarningCode::StillRequired, message).with_fix(fix))
+}
+
+/// One `orphaned_dependency` naming every one of `orphans` (none: no warning), with one
+/// `omaddons remove` for all of them as its fix.
+fn orphaned(target: &str, orphans: Vec<String>) -> Option<Warning> {
+    let message = match orphans.as_slice() {
+        [] => return None,
+        [one] => format!(
+            "On {target}, {one} was installed as a dependency, and nothing requires it any more"
+        ),
+        many => format!(
+            "On {target}, {} were installed as dependencies, and nothing requires them any more",
+            many.join(", ")
+        ),
+    };
+    let argv = ["omaddons", "remove"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(orphans)
+        .chain(["-t".to_owned(), target.to_owned()]);
+    Some(
+        Warning::new(WarningCode::OrphanedDependency, message)
+            .with_fix(Suggestion::command(argv.collect::<Vec<_>>())),
+    )
 }
 
 /// A change to the record alone.
@@ -4597,6 +4642,56 @@ mod tests {
         // Removed with everything that requires it: nothing to say.
         let works = [forget("Big"), forget("Plater"), forget("Little")];
         assert!(bookkeeping_warnings(&record, &works, "retail", None).is_empty());
+    }
+
+    /// The same warnings from two records, as an undo raises them.
+    #[test]
+    fn record_changes_warn_as_bookkeeping_does() {
+        use AddonReason::{Dependency, Explicit};
+        let of = |records: &[AddonRecord]| {
+            let mut record = TargetRecord::empty(TargetKey::new());
+            for r in records {
+                record
+                    .addons
+                    .insert(TargetRecord::addon_key(&r.name), r.clone());
+            }
+            record
+        };
+        let little = requiring("Little", Explicit, &[]);
+        let other = requiring("Other", Explicit, &[]);
+        let big = requiring("Big", Dependency, &["Little", "Other"]);
+        let before = of(&[little.clone(), other.clone(), big.clone()]);
+        let codes = |warnings: &[Warning]| -> Vec<WarningCode> {
+            warnings.iter().map(|w| w.code).collect()
+        };
+
+        // Big goes with Little, while Other stays.
+        let tx = TxId::new();
+        let stays = of(std::slice::from_ref(&other));
+        let warnings = record_change_warnings(&before, &stays, "retail", Some(tx));
+        assert_eq!(codes(&warnings), [WarningCode::StillRequired]);
+        assert_eq!(
+            warnings[0].message,
+            "On retail, Big is required by Other, which will not load without it"
+        );
+        let undo = ["omaddons".to_owned(), "undo".to_owned(), tx.to_string()];
+        assert_eq!(warnings[0].fix.as_ref().unwrap().argv().unwrap(), undo);
+        let planned = record_change_warnings(&before, &stays, "retail", None);
+        assert!(planned[0].fix.as_ref().unwrap().argv().is_none());
+
+        // Big goes with everything that requires it: nothing to say.
+        assert!(record_change_warnings(&before, &of(&[]), "retail", None).is_empty());
+
+        // Big stays, required by nothing now.
+        let alone = of(&[requiring("Big", Dependency, &[])]);
+        let warnings = record_change_warnings(&before, &alone, "retail", None);
+        assert_eq!(codes(&warnings), [WarningCode::OrphanedDependency]);
+        assert_eq!(
+            warnings[0].fix.as_ref().unwrap().argv().unwrap(),
+            ["omaddons", "remove", "Big", "-t", "retail"]
+        );
+        // Already an orphan before: not news.
+        assert!(record_change_warnings(&alone, &alone, "retail", None).is_empty());
     }
 
     /// The release a request chose: what the planner's template holds.

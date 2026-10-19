@@ -864,7 +864,7 @@ Unmanaged, linked (symlinked) and `Blizzard_*` folders, and names that match no 
 
 An addon whose folders were all deleted by hand is forgotten: its record and index entries go, in a transaction that records each folder (`record` ops) and that `undo` reverts. Such a remove changes no folder, so it also goes through while the game runs.
 
-**Dependencies.** Removing an addon others still require goes ahead, with `still_required` naming them: they will not load without it, and its fix is `omaddons undo <tx>`. Every addon that listed the removed one in `required_by` drops it in the same transaction (a `record` op with `edit: {"required_by_remove": "<name>"}`). A dependency that nothing requires any more is an orphan, and `orphaned_dependency` names them all with one `omaddons remove <names…> -t <id>` as its fix. Orphans are never removed by themselves. `undo` restores `required_by` exactly, even if the dependency was updated in between. Removing an addon together with what it requires (`remove LittleWigs BigWigs`) raises neither warning.
+**Dependencies.** Removing an addon others still require goes ahead, with `still_required` naming them: they will not load without it, and its fix is `omaddons undo <tx>`. Every addon that listed the removed one in `required_by` drops it in the same transaction (a `record` op with `edit: {"required_by_remove": "<name>"}`). A dependency that nothing requires any more is an orphan, and `orphaned_dependency` names them all with one `omaddons remove <names…> -t <id>` as its fix. Orphans are never removed by themselves. `undo` restores `required_by` exactly, even if the dependency was updated in between, and keeps requesters added after the transaction it reverts. Undoing an older install of a dependency that a later addon requires warns `still_required` too (see [`undo`](#undo-tx)). Removing an addon together with what it requires (`remove LittleWigs BigWigs`) raises neither warning.
 
 ### `undo [TX]`
 
@@ -892,6 +892,8 @@ omaddons undo 01M51F4QY5KB --saved-variables restore   # finish a deferred resto
 When one transaction of a run cannot be undone (`undo_conflict`, say), the others still are. The result is then `partial`, and `transactions[]` in the JSON data holds one result per transaction. The fields before it describe the first transaction undone, as they always did. When every transaction fails, `undo` fails with the first error.
 
 Undoing the newest change never conflicts with a later transaction. Undoing an older one is refused with `undo_conflict` if a later transaction touched the same folders, and the fix names the newer one to undo first. A later transaction that was itself undone no longer counts, so undoing your own transactions newest first, by id, always works. `undo_conflict` also covers a transaction already undone, and a folder it removed that was put back by hand.
+
+A later transaction that only added or dropped a requester in a dependency's `required_by` never conflicts. An addon the undo brings back keeps those later requesters. Undoing a transaction that installed a dependency an addon installed later still requires goes ahead with `still_required`, as `remove` does, and its fix undoes the undo. A dependency the undo leaves required by nothing warns `orphaned_dependency`.
 
 ### `history`
 
@@ -1307,8 +1309,8 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `export_local_source` | `export`: an addon installed from a local file or folder was left out |
 | `not_locked` | `sync --locked`: entries without a version installed their newest release (one warning per client, naming them) |
 | `local_changes_replaced` | an install or update replaced folders whose files had changed on disk (it names up to 10 and counts them all); the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that the snapshot keeps them |
-| `still_required` | a removed addon is required by addons that stay, which will not load without it; the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that undo restores it |
-| `orphaned_dependency` | a remove or update left dependencies required by nothing; the fix is one `omaddons remove <names…> -t <id>` naming them all |
+| `still_required` | an addon removed (by `remove` or `undo`) is required by addons that stay, which will not load without it; the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that undo restores it |
+| `orphaned_dependency` | a remove, update or undo left dependencies required by nothing; the fix is one `omaddons remove <names…> -t <id>` naming them all |
 | `bridge_dependency` | a newly installed addon's other folder (a bridge or plugin) works with an addon that is not installed; nothing is installed for it, and the fix installs it (`omaddons install <name or ref> -t <id>`), or searches for it (`omaddons search <folder>`) when no keyless source ships it. Only on the addon's first install |
 | `target_addons_shared` | `status`: two or more clients share one AddOns directory (an `Interface/AddOns` symlinked between them); a folder one client records is `shared` on the others, which may not record it too; the fix is advice: manage those addons from one client, or stop sharing the directory. Also on `install`, `update` and `remove` of a folder both clients recorded before that was refused: the change shows on the other client too (fix `omaddons status -t <other>`) |
 | `history_lines_skipped` | `history` and `undo`: lines of `history.jsonl` could not be read (a hand edit or other damage, not a write a crash cut short) and were skipped, so the transactions on them are not listed and cannot be undone; it counts them, and the fix is advice, since omaddons never rewrites the file |

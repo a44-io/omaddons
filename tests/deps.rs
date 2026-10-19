@@ -18,7 +18,8 @@ use omaddons::model::{AddonReason, Channel};
 use omaddons::state::history::HistoryEdit;
 use serde_json::{Value, json};
 use support::{
-    RETAIL, catalog, fetches, folder, graph, items, last_line, record_of, warnings_with, wigs,
+    RETAIL, catalog, fetches, folder, graph, items, last_line, last_tx, record_of, warnings_with,
+    wigs,
 };
 
 #[cfg(test)]
@@ -208,6 +209,15 @@ mod support {
         (serde_json::to_value(line.kind).unwrap(), edit)
     }
 
+    /// The newest transaction's id.
+    pub fn last_tx(home: &Home) -> String {
+        super::common::state::history(home)
+            .pop()
+            .unwrap()
+            .tx
+            .to_string()
+    }
+
     /// The retail record of the addon named `name`.
     pub fn record_of(home: &Home, name: &str) -> Option<omaddons::model::AddonRecord> {
         let record = super::common::state::record(home, "retail");
@@ -225,6 +235,21 @@ const fn node<'a>(base: &'a str, folders: &'a [common::graph::Folder<'a>]) -> No
         tag: "v1",
         folders,
     }
+}
+
+/// LittleWigs and Other each require BigWigs.
+fn wigs_and_other() -> Home {
+    graph(&[
+        node(
+            "https://github.com/o/littlewigs",
+            &[folder("LittleWigs", &["BigWigs"])],
+        ),
+        node(
+            "https://github.com/o/other",
+            &[folder("Other", &["BigWigs"])],
+        ),
+        node("https://github.com/o/bigwigs", &[folder("BigWigs", &[])]),
+    ])
 }
 
 fn names(required_by: &[String]) -> Vec<&str> {
@@ -2082,4 +2107,206 @@ mod via_indexes {
             r.context()
         );
     }
+}
+
+/// Undoing the install of LittleWigs and BigWigs after Other came to require BigWigs:
+/// the undo goes ahead as `remove` would, warning `still_required` for Other (planned
+/// and committed), and undoing it brings both back as they were.
+#[test]
+fn undo_of_an_older_dependency_install_warns_still_required() {
+    let home = wigs_and_other();
+    home.run(&["install", "littlewigs"]).expect(0);
+    let tx1 = last_tx(&home);
+    home.run(&["install", "other"]).expect(0);
+    let bw = record_of(&home, "BigWigs").unwrap();
+    assert_eq!(names(&bw.required_by), ["LittleWigs", "Other"]);
+    let expected = "On retail, BigWigs is required by Other, which will not load without it";
+
+    let r = home.run(&["undo", &tx1, "--dry-run"]);
+    let planned = r.expect(0);
+    assert_eq!(
+        warnings_with(&planned, "still_required"),
+        [expected],
+        "{}",
+        r.context()
+    );
+
+    let r = home.run(&["undo", &tx1]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        warnings_with(&envelope, "still_required"),
+        [expected],
+        "{}",
+        r.context()
+    );
+    let undo = last_tx(&home);
+    let fix = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["code"] == "still_required")
+        .map(|w| w["fix_argv"].clone())
+        .unwrap();
+    assert_eq!(fix, json!(["omaddons", "undo", undo]));
+    let addons = home.addons("_retail_");
+    assert!(!addons.join("BigWigs").exists() && !addons.join("LittleWigs").exists());
+    assert!(addons.join("Other").is_dir());
+    assert!(record_of(&home, "BigWigs").is_none());
+
+    // The fix: BigWigs and LittleWigs come back, BigWigs required by both again.
+    home.run(&["undo", &undo]).expect(0);
+    let bw = record_of(&home, "BigWigs").unwrap();
+    assert_eq!(names(&bw.required_by), ["LittleWigs", "Other"]);
+    assert!(addons.join("BigWigs").is_dir() && addons.join("LittleWigs").is_dir());
+}
+
+/// One `update` run installs BigWigs as LittleWigs v2's new dependency on retail and
+/// classic; Other then comes to require it on both. `undo --run` reports
+/// `still_required` once per transaction, each naming its target and its own undo.
+#[test]
+fn undo_of_a_run_warns_still_required_per_transaction() {
+    use common::graph::Folder;
+    const BOTH: &str = "120105, 50504";
+    let on_both = |name: &'static str, deps: &'static [&'static str]| Folder {
+        name,
+        interface: BOTH,
+        deps,
+        optional: &[],
+    };
+    let home = Home::new(&["wow", "wow_classic"]);
+    let (lw1, other, bw) = (
+        [on_both("LittleWigs", &[])],
+        [on_both("Other", &["BigWigs"])],
+        [on_both("BigWigs", &[])],
+    );
+    release_graph(
+        &home.http,
+        &[
+            node("https://github.com/o/littlewigs", &lw1),
+            node("https://github.com/o/other", &other),
+            node("https://github.com/o/bigwigs", &bw),
+        ],
+    );
+    catalog(
+        &home,
+        &[
+            ("LittleWigs", "littlewigs", &["LittleWigs"]),
+            ("Other", "other", &["Other"]),
+            ("BigWigs", "bigwigs", &["BigWigs"]),
+        ],
+    );
+    for target in ["retail", "classic"] {
+        home.run(&["install", "littlewigs", "-t", target]).expect(0);
+    }
+    let lw2 = [on_both("LittleWigs", &["BigWigs"])];
+    release_graph(
+        &home.http,
+        &[Node {
+            base: "https://github.com/o/littlewigs",
+            tag: "v2",
+            folders: &lw2,
+        }],
+    );
+    let r = home.run(&["update", "--refresh"]);
+    let updated = r.expect(0);
+    let run = updated["data"]["run"].as_str().unwrap().to_owned();
+    for client in ["_retail_", "_classic_"] {
+        assert!(
+            home.addons(client).join("BigWigs").is_dir(),
+            "{}",
+            r.context()
+        );
+    }
+    for target in ["retail", "classic"] {
+        home.run(&["install", "other", "-t", target]).expect(0);
+    }
+
+    let r = home.run(&["undo", "--run", &run]);
+    let envelope = r.expect(0);
+    let mut warned = warnings_with(&envelope, "still_required");
+    warned.sort();
+    assert_eq!(
+        warned,
+        [
+            "On classic, BigWigs is required by Other, which will not load without it",
+            "On retail, BigWigs is required by Other, which will not load without it",
+        ],
+        "{}",
+        r.context()
+    );
+    let undos: Vec<Value> = envelope["data"]["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["tx"].clone())
+        .collect();
+    let fixes: Vec<Value> = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "still_required")
+        .map(|w| w["fix_argv"][2].clone())
+        .collect();
+    assert_eq!(fixes.len(), 2);
+    assert!(
+        fixes.iter().all(|f| undos.contains(f)),
+        "{fixes:?} {undos:?}"
+    );
+    assert_ne!(fixes[0], fixes[1], "each names its own undo");
+}
+
+/// Undoing BigWigs' update after Other came to require it: BigWigs is back at v1 and
+/// still required by both, so removing LittleWigs orphans nothing and removing BigWigs
+/// warns for Other.
+#[test]
+fn undo_of_an_older_dependency_update_keeps_a_later_requester() {
+    let home = wigs_and_other();
+    home.run(&["install", "littlewigs"]).expect(0);
+    release_graph(
+        &home.http,
+        &[Node {
+            base: "https://github.com/o/bigwigs",
+            tag: "v2",
+            folders: &[folder("BigWigs", &[])],
+        }],
+    );
+    let r = home.run(&["update", "bigwigs", "--refresh"]);
+    r.expect(0);
+    assert_eq!(
+        record_of(&home, "BigWigs").unwrap().version,
+        "v2",
+        "{}",
+        r.context()
+    );
+    let tx1 = last_tx(&home);
+    home.run(&["install", "other"]).expect(0);
+
+    let r = home.run(&["undo", &tx1]);
+    let envelope = r.expect(0);
+    assert!(
+        warnings_with(&envelope, "still_required").is_empty(),
+        "{}",
+        r.context()
+    );
+    let bw = record_of(&home, "BigWigs").unwrap();
+    assert_eq!(
+        (bw.version.as_str(), names(&bw.required_by)),
+        ("v1", vec!["LittleWigs", "Other"])
+    );
+
+    let r = home.run(&["remove", "littlewigs"]);
+    let envelope = r.expect(0);
+    assert!(
+        warnings_with(&envelope, "orphaned_dependency").is_empty(),
+        "{}",
+        r.context()
+    );
+    let r = home.run(&["remove", "bigwigs"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        warnings_with(&envelope, "still_required"),
+        ["On retail, BigWigs is required by Other, which will not load without it"],
+        "{}",
+        r.context()
+    );
 }

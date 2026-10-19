@@ -53,7 +53,7 @@ use crate::fsx::{
     ScopeTable, SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint, mutate,
     mutate_with, sha256_from_hex,
 };
-use crate::model::{Actor, FolderName, ReloadRequired, RunId, Target, TxId, TxKind};
+use crate::model::{Actor, AddonRecord, FolderName, ReloadRequired, RunId, Target, TxId, TxKind};
 use crate::state::files_index::FilesIndex;
 use crate::state::history::{
     self, FolderOp, HistoryEdit, HistoryEntry, HistoryFilter, HistoryOp, TxResult,
@@ -179,7 +179,7 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     let target = &discovered.target;
     let running = running_now(ctx, std::slice::from_ref(target));
     let mut hashes = SvHashes::default();
-    let planned = plan(ctx, req, &entries, at, target, &running, &mut hashes)?;
+    let planned = plan(ctx, req, &entries, at, target, &running, &mut hashes, None)?;
     if req.dry_run {
         return Ok(planned.outcome(target, None, true, true, Vec::new(), None));
     }
@@ -271,7 +271,16 @@ fn commit(
     let entries = history::read(paths, &HistoryFilter::default())?.entries;
     let at = select(&entries, UndoSelector::Tx(reverts))?;
     let running = running_now(ctx, std::slice::from_ref(target));
-    let mut planned = plan(ctx, req, &entries, at, target, &running, &mut hashes)?;
+    let mut planned = plan(
+        ctx,
+        req,
+        &entries,
+        at,
+        target,
+        &running,
+        &mut hashes,
+        Some(*tx),
+    )?;
     with_predigests(&mut planned.folders.swap, &client.addons(), &predigests);
     failpoint::hit("engine.revalidated").map_err(fail)?;
 
@@ -454,8 +463,14 @@ impl Planned {
 }
 
 /// Plans the undo of `entries[at]`: its conflicts, folders, record, index and
-/// SavedVariables, judged by the running policy. SavedVariables are hashed through
-/// `hashes`, so a second plan reads only what changed since the first.
+/// SavedVariables, judged by the running policy, and the dependency warnings `remove`
+/// would raise for the same records (committed as `tx`, their fix undoes this undo).
+/// SavedVariables are hashed through `hashes`, so a second plan reads only what changed
+/// since the first.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the plan reads the request, the history, the target and the run's state; a struct would only rename them"
+)]
 fn plan(
     ctx: &EngineCtx<'_>,
     req: &UndoRequest,
@@ -464,6 +479,7 @@ fn plan(
     target: &Target,
     running_now: &RunningNow,
     hashes: &mut SvHashes,
+    tx: Option<TxId>,
 ) -> Result<Planned> {
     let running = running_now.contains(&target.client_dir);
     let reverted = &entries[at];
@@ -496,7 +512,7 @@ fn plan(
         Some(_) => (current.clone(), IndexChanges::default(), Vec::new()),
         None => {
             let (record, index, changes, edit_ops) =
-                restored_state(paths, &current, reverted, &folders)?;
+                restored_state(paths, &current, entries, at, &folders)?;
             folders.history.extend(edit_ops);
             (record, index, changes)
         }
@@ -547,6 +563,28 @@ fn plan(
         &target.id,
         sv.out_of_scope,
         "undo left them as they are",
+    ));
+    // An undo goes ahead like `remove`: a dependency it takes away from an addon that
+    // stays is `still_required`, one it leaves to nothing `orphaned_dependency`. What it
+    // takes away the reverted transaction installed, so an addon that transaction also
+    // changed comes back as it was before, when it did not require it: only later
+    // requesters count.
+    let direct: BTreeSet<String> = reverted
+        .ops
+        .iter()
+        .filter(|o| o.edit.is_none())
+        .map(|o| TargetRecord::addon_key(&o.addon))
+        .collect();
+    let mut was = current.clone();
+    for (key, addon) in &mut was.addons {
+        if !record.addons.contains_key(key) {
+            addon
+                .required_by
+                .retain(|by| !direct.contains(&TargetRecord::addon_key(by)));
+        }
+    }
+    warnings.extend(super::plan::record_change_warnings(
+        &was, &record, &target.id, tx,
     ));
     Ok(Planned {
         reverts: reverted.tx,
@@ -982,13 +1020,17 @@ fn undo_index(
 /// there); an owner it took folders from (`--force`) gets them back with its old state;
 /// an in-place `required_by` edit is reversed on the addon as it is now, its index left
 /// alone (M2-D35); everything else stays as it is now. A record restored from the
-/// snapshot keeps only `required_by` names still recorded. The generation goes up.
+/// snapshot gets the later transactions' in-place edits replayed onto it, then keeps
+/// only `required_by` names still recorded. The generation goes up. `entries[at]` is
+/// the reverted transaction.
 fn restored_state(
     paths: &Paths,
     current: &TargetRecord,
-    reverted: &HistoryEntry,
+    entries: &[HistoryEntry],
+    at: usize,
     folders: &FolderPlan,
 ) -> Result<Restored> {
+    let reverted = &entries[at];
     let key = reverted.target;
     let snapshot = paths.state_snapshot(&reverted.tx);
     let named = |path: PathBuf| path.file_name().map(|n| snapshot.join(n));
@@ -1011,8 +1053,9 @@ fn restored_state(
         }
     }
     // Records that come back from the snapshot, whose `required_by` may name addons
-    // gone since.
+    // gone since (and, for `from_snapshot`, lacks what later transactions edited).
     let mut restored: Vec<String> = Vec::new();
+    let mut from_snapshot: Vec<String> = Vec::new();
     let mut record = current.clone();
     let mut changes = Vec::new();
     for addon_key in &direct {
@@ -1052,6 +1095,7 @@ fn restored_state(
             Some(then) => {
                 record.addons.insert(addon_key.clone(), then.clone());
                 restored.push(addon_key.clone());
+                from_snapshot.push(addon_key.clone());
             }
             None => {
                 record.addons.remove(addon_key);
@@ -1080,6 +1124,7 @@ fn restored_state(
             restored.push(addon_key.clone());
         }
     }
+    replay_later_edits(&mut record, &from_snapshot, entries, at);
     // A restored record forgets requesters that are no longer recorded.
     let recorded: BTreeSet<String> = record.addons.keys().cloned().collect();
     for addon_key in &restored {
@@ -1126,26 +1171,7 @@ fn reverse_edits(
             continue;
         };
         let inverse = edit.inverse();
-        match &inverse {
-            HistoryEdit::RequiredByRemove(by) => {
-                let by = TargetRecord::addon_key(by);
-                addon
-                    .required_by
-                    .retain(|n| TargetRecord::addon_key(n) != by);
-            }
-            HistoryEdit::RequiredByAdd(by) => {
-                if !addon
-                    .required_by
-                    .iter()
-                    .any(|n| TargetRecord::addon_key(n) == TargetRecord::addon_key(by))
-                {
-                    addon.required_by.push(by.clone());
-                }
-                addon
-                    .required_by
-                    .sort_by_key(|n| TargetRecord::addon_key(n));
-            }
-        }
+        apply_history_edit(addon, &inverse);
         folders.sort_by(|a, b| a.key().cmp(b.key()));
         folders.dedup();
         for folder in &folders {
@@ -1175,6 +1201,59 @@ fn reverse_edits(
         }
     }
     ops
+}
+
+/// Applies an in-place `required_by` edit to `addon`.
+fn apply_history_edit(addon: &mut AddonRecord, edit: &HistoryEdit) {
+    match edit {
+        HistoryEdit::RequiredByRemove(by) => {
+            let by = TargetRecord::addon_key(by);
+            addon
+                .required_by
+                .retain(|n| TargetRecord::addon_key(n) != by);
+        }
+        HistoryEdit::RequiredByAdd(by) => {
+            if !addon
+                .required_by
+                .iter()
+                .any(|n| TargetRecord::addon_key(n) == TargetRecord::addon_key(by))
+            {
+                addon.required_by.push(by.clone());
+            }
+            addon
+                .required_by
+                .sort_by_key(|n| TargetRecord::addon_key(n));
+        }
+    }
+}
+
+/// Applies the in-place `required_by` edits that transactions after `entries[at]` made
+/// on its target, in history order, to each addon of `from_snapshot` (records the undo
+/// brings back from before `entries[at]`): such a record keeps what later transactions
+/// did to it (M2-D35). A later transaction that a later undo reverted cancels out with
+/// that undo, as in conflict detection ([`cancelled_after`]).
+fn replay_later_edits(
+    record: &mut TargetRecord,
+    from_snapshot: &[String],
+    entries: &[HistoryEntry],
+    at: usize,
+) {
+    let reverted = &entries[at];
+    let later = &entries[at + 1..];
+    let cancelled = cancelled_after(later, reverted.tx);
+    let edits = later
+        .iter()
+        .filter(|e| e.target == reverted.target && !cancelled.contains(&e.tx))
+        .flat_map(|e| &e.ops)
+        .filter_map(|op| Some((TargetRecord::addon_key(&op.addon), op.edit.as_ref()?)));
+    for (key, edit) in edits {
+        if !from_snapshot.contains(&key) {
+            continue;
+        }
+        if let Some(addon) = record.addons.get_mut(&key) {
+            apply_history_edit(addon, edit);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2798,6 +2877,124 @@ mod tests {
                 check_conflicts(&entries, at, None).unwrap_err().code,
                 ErrorCode::UndoConflict
             );
+        }
+
+        /// D (required by Req) updated to v2 as tx2; then S installed as tx3.
+        fn scene_with_update() -> (TxScene, TxId) {
+            let (scene, _) = scene_with_requirement();
+            let tx2 = install_as(&scene, "gh:o/dep", "d2.zip", D2);
+            install_as(
+                &scene,
+                "gh:o/s",
+                "s.zip",
+                &[("S/S.toc", "## Interface: 120105\n")],
+            );
+            (scene, tx2)
+        }
+
+        #[test]
+        fn a_restored_record_keeps_the_requirements_added_after_it() {
+            let (scene, tx2) = scene_with_update();
+            ok(
+                &scene,
+                vec![scene.edit("Dep", RecordEdit::AddRequiredBy("S".into()))],
+            );
+            assert_eq!(required_by(&scene), ["Req", "S"]);
+            let undo2 = undo(&scene, tx2);
+            let dep = &record(&scene).addons["dep"];
+            assert_eq!(dep.version, "1");
+            assert_eq!(
+                dep.required_by,
+                ["Req", "S"],
+                "S's later requirement replayed"
+            );
+            // Undoing the undo restores the state before it exactly.
+            undo(&scene, undo2);
+            let dep = &record(&scene).addons["dep"];
+            assert_eq!(
+                (dep.version.as_str(), &dep.required_by[..]),
+                ("2", &["Req".to_owned(), "S".to_owned()][..])
+            );
+        }
+
+        #[test]
+        fn later_edits_replay_in_order_and_undone_ones_cancel() {
+            // Added, then dropped again: not there.
+            let (scene, tx2) = scene_with_update();
+            let add = |s: &TxScene| {
+                ok(
+                    s,
+                    vec![s.edit("Dep", RecordEdit::AddRequiredBy("S".into()))],
+                )
+            };
+            add(&scene);
+            ok(
+                &scene,
+                vec![scene.edit("Dep", RecordEdit::RemoveRequiredBy("S".into()))],
+            );
+            undo(&scene, tx2);
+            assert_eq!(required_by(&scene), ["Req"]);
+
+            // Added by a transaction since undone: not there either.
+            let (scene, tx2) = scene_with_update();
+            let tx3 = add(&scene);
+            undo(&scene, tx3);
+            undo(&scene, tx2);
+            assert_eq!(required_by(&scene), ["Req"]);
+
+            // That undo undone in turn: the requirement holds again.
+            let (scene, tx2) = scene_with_update();
+            let tx3 = add(&scene);
+            let undo3 = undo(&scene, tx3);
+            undo(&scene, undo3);
+            undo(&scene, tx2);
+            assert_eq!(required_by(&scene), ["Req", "S"]);
+        }
+
+        #[test]
+        fn undoing_a_dependency_install_that_a_later_addon_requires_warns_still_required() {
+            // D installed as tx0; Req, installed after it, requires it.
+            let scene = TxScene::new();
+            let tx0 = install_as(&scene, "gh:o/dep", "d1.zip", D1);
+            let zip = scene.zip("r.zip", R);
+            ok(
+                &scene,
+                vec![
+                    scene.install("gh:o/req", &zip),
+                    scene.edit("Dep", RecordEdit::AddRequiredBy("Req".into())),
+                ],
+            );
+            let still = |warnings: &[Warning]| -> Vec<Warning> {
+                warnings
+                    .iter()
+                    .filter(|w| w.code == WarningCode::StillRequired)
+                    .cloned()
+                    .collect()
+            };
+            let planned = scene
+                .undo_with(UndoSelector::Tx(tx0), SvPolicy::Auto, true)
+                .unwrap();
+            let warned = still(&planned.outcome.warnings);
+            assert_eq!(warned.len(), 1, "{:?}", planned.outcome.warnings);
+            assert!(
+                warned[0].fix.as_ref().unwrap().argv().is_none(),
+                "dry run: text"
+            );
+
+            let done = scene.undo(UndoSelector::Tx(tx0), SvPolicy::Auto).unwrap();
+            let warned = still(&done.outcome.warnings);
+            assert_eq!(warned.len(), 1, "{:?}", done.outcome.warnings);
+            assert_eq!(
+                warned[0].message,
+                "On retail, Dep is required by Req, which will not load without it"
+            );
+            let undo_tx = done.outcome.tx.unwrap().to_string();
+            assert_eq!(
+                warned[0].fix.as_ref().unwrap().argv().unwrap(),
+                ["omaddons", "undo", undo_tx.as_str()]
+            );
+            let after = record(&scene);
+            assert!(!after.addons.contains_key("dep") && after.addons.contains_key("req"));
         }
     }
 }
