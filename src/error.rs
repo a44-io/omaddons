@@ -307,6 +307,8 @@ warning_codes! {
     /// A download installed without the hash its source normally publishes; TLS
     /// protected the transfer, and the TOCs were verified.
     DownloadUnverified          = "download_unverified";
+    /// A settings change was made, but its history line could not be written.
+    HistoryNotRecorded          = "history_not_recorded";
 }
 
 impl fmt::Display for WarningCode {
@@ -788,7 +790,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 40);
+        assert_eq!(WarningCode::ALL.len(), 41);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

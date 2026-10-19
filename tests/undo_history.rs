@@ -11,7 +11,7 @@ use common::addons::{addon_folder, toc};
 use common::archives::zip_text;
 use common::home::{Home, Run};
 use common::trees::tree_hash;
-use serde_json::Value;
+use serde_json::{Value, json};
 use support::{Session, argv_of};
 
 #[cfg(test)]
@@ -766,6 +766,121 @@ fn history_filters_orders_and_truncates() {
         lines[2]
     );
     s.assert_private();
+}
+
+/// Every command that changes a setting leaves a history line of its kind, with who,
+/// why and the argv, and none for a dry run or a change to nothing; undo never reverts
+/// one and steps over it.
+#[test]
+fn settings_changes_are_recorded_and_never_undone() {
+    let mut s = Session::new();
+    let foo = s.install("Foo", "1", &[]);
+    let settings = |s: &mut Session| -> Vec<Value> {
+        let envelope = s.run(&["history", "--limit", "100"]).expect(0);
+        envelope["data"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| !matches!(l["kind"].as_str(), Some("install" | "undo")))
+            .cloned()
+            .collect()
+    };
+
+    s.run(&[
+        "config",
+        "set",
+        "default_channel",
+        "beta",
+        "--actor",
+        "agent",
+        "--reason",
+        "x",
+    ])
+    .expect(0);
+    let lines = settings(&mut s);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let config = &lines[0];
+    assert_eq!(
+        (
+            &config["kind"],
+            &config["actor"],
+            &config["reason"],
+            &config["target"]
+        ),
+        (&json!("config"), &json!("agent"), &json!("x"), &Value::Null)
+    );
+    assert_eq!(
+        config["argv"],
+        json!([
+            "omaddons",
+            "config",
+            "set",
+            "default_channel",
+            "beta",
+            "--actor",
+            "agent",
+            "--reason",
+            "x",
+            "--json"
+        ])
+    );
+    let config_tx = config["tx"].as_str().unwrap().to_owned();
+
+    // A dry run, and a change to nothing, record nothing.
+    s.run(&["config", "set", "default_channel", "alpha", "--dry-run"])
+        .expect(0);
+    s.run(&["config", "set", "default_channel", "beta"])
+        .expect(0);
+    assert_eq!(settings(&mut s).len(), 1);
+
+    // Each settings command, one line of its kind.
+    s.run(&["targets", "rename", "retail", "main"]).expect(0);
+    s.run(&["targets", "default", "main"]).expect(0);
+    s.run(&["targets", "default", "main"]).expect(0);
+    s.home.exec_input(
+        &["auth", "github", "set", "--json"].map(str::to_owned),
+        &[],
+        b"ghp_x\n",
+    );
+    s.run(&["auth", "github", "clear"]).expect(0);
+    s.run(&["export", "--write"]).expect(0);
+    s.run(&["export", "--write"]).expect(0);
+    let kinds: Vec<String> = settings(&mut s)
+        .iter()
+        .rev()
+        .map(|l| l["kind"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["config", "target", "target", "auth", "auth", "export"],
+        "an unchanged default and an unchanged export record nothing"
+    );
+    let target_lines = settings(&mut s);
+    let renamed = target_lines
+        .iter()
+        .find(|l| matches!(l["kind"].as_str(), Some("target")))
+        .unwrap();
+    assert_eq!(renamed["target"]["id"], "main");
+    let human = s.home.exec(&["history".to_owned()]);
+    assert!(
+        human.stdout.contains("config set default_channel beta"),
+        "{}",
+        human.stdout
+    );
+
+    // Undo steps over them, and never reverts one.
+    let r = s.run(&["undo", &config_tx]);
+    let refused = r.expect(3);
+    assert_eq!(
+        refused["error"]["message"],
+        format!("transaction {config_tx} is a config change, which undo does not revert"),
+        "{}",
+        r.context()
+    );
+    // The newest change by the agent is a setting; its install of Foo is what reverts.
+    let undone = s.run(&["undo", "--last-by", "agent"]).expect(0);
+    assert_eq!(undone["data"]["reverted"]["tx"], foo.as_str());
+    assert!(!s.addons().join("Foo").exists());
 }
 
 /// Runs: one command invocation's transactions across targets, undone together. The

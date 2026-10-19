@@ -17,7 +17,9 @@ use crate::cli::Context;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{Actor, RunId, TargetKey, TxId, TxKind};
 use crate::output::{Outcome, Style, table};
-use crate::state::history::{self, FolderOp, HistoryEntry, HistoryFilter, HistoryOp, TxResult};
+use crate::state::history::{
+    self, FolderOp, HistoryEntry, HistoryFilter, HistoryOp, SettingEntry, TxResult,
+};
 
 /// The default `--limit`: token-frugal; agents raise it when they need more.
 const DEFAULT_LIMIT: usize = 20;
@@ -57,7 +59,8 @@ pub struct HistoryLine {
     pub kind: TxKind,
     #[schemars(with = "String")]
     pub at: Timestamp,
-    pub target: TargetRef,
+    /// `null` for a settings change about no client (`config`, `auth`, `export`).
+    pub target: Option<TargetRef>,
     pub actor: Actor,
     pub reason: Option<String>,
     pub argv: Vec<String>,
@@ -150,6 +153,12 @@ impl Outcome for HistoryOutcome {
                 let c = e
                     .changes
                     .unwrap_or_else(|| ChangeCounts::of(e.ops.as_deref().unwrap_or_default()));
+                // A settings change touches no folder: what was run says what it did.
+                let what = if e.kind.is_setting() {
+                    e.argv.get(1..).unwrap_or_default().join(" ")
+                } else {
+                    c.human()
+                };
                 vec![
                     short_tx(&e.tx),
                     e.run
@@ -157,8 +166,10 @@ impl Outcome for HistoryOutcome {
                     local_time(e.at),
                     e.actor.as_str().to_owned(),
                     kind_name(e.kind),
-                    e.target.id.clone(),
-                    c.human(),
+                    e.target
+                        .as_ref()
+                        .map_or_else(|| "-".to_owned(), |t| t.id.clone()),
+                    what,
                     e.reason
                         .as_ref()
                         .map(|r| format!("{r:?}"))
@@ -270,14 +281,20 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
         )?,
     };
     let verbose = ctx.output.style.verbose > 0;
-    let truncated = read.entries.len() > limit;
-    let entries = read
+    // Transactions and settings changes, in the order they were recorded.
+    let mut lines: Vec<HistoryLine> = read
         .entries
         .iter()
-        .rev()
-        .take(limit)
         .map(|e| line(&world, e, verbose))
+        .chain(
+            read.settings
+                .iter()
+                .map(|e| setting_line(&world, e, verbose)),
+        )
         .collect();
+    lines.sort_by_key(|l| (l.at, l.tx));
+    let truncated = lines.len() > limit;
+    let entries = lines.into_iter().rev().take(limit).collect();
     let mut warnings = world.warnings.clone();
     warnings.extend(read.skipped_warning());
     Ok(HistoryOutcome {
@@ -287,16 +304,36 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
     })
 }
 
+fn setting_line(world: &World, e: &SettingEntry, verbose: bool) -> HistoryLine {
+    HistoryLine {
+        tx: e.tx,
+        run: Some(e.run),
+        kind: e.kind,
+        at: e.at,
+        target: e.target.map(|key| TargetRef {
+            id: world.target_id(key),
+            key,
+        }),
+        actor: e.actor,
+        reason: e.reason.clone(),
+        argv: e.argv.clone(),
+        changes: (!verbose).then(ChangeCounts::default),
+        ops: verbose.then(Vec::new),
+        reverts: None,
+        result: e.result,
+    }
+}
+
 fn line(world: &World, e: &HistoryEntry, verbose: bool) -> HistoryLine {
     HistoryLine {
         tx: e.tx,
         run: e.run,
         kind: e.kind,
         at: e.at,
-        target: TargetRef {
+        target: Some(TargetRef {
             id: world.target_id(e.target),
             key: e.target,
-        },
+        }),
         actor: e.actor,
         reason: e.reason.clone(),
         argv: e.argv.clone(),

@@ -427,11 +427,28 @@ pub enum TxKind {
     Backup,
     /// Pins or unpins addons: a records-only change, undoable like any other.
     Pin,
+    /// `config set`: a settings change, recorded in history, never undone.
+    Config,
+    /// `targets add`, `rm`, `rename` and `default`: recorded, never undone.
+    Target,
+    /// `auth github set` and `clear`: recorded, never undone.
+    Auth,
+    /// `export --write`: recorded, never undone.
+    Export,
 }
 
 impl TxKind {
     pub fn is_undoable(self) -> bool {
-        self != Self::Backup
+        !matches!(self, Self::Backup) && !self.is_setting()
+    }
+
+    /// A settings change (`config`, `target`, `auth`, `export`): a history line that
+    /// changes no addon folder, so undo never reverts it (vision §5.9 Attribution).
+    pub fn is_setting(self) -> bool {
+        matches!(
+            self,
+            Self::Config | Self::Target | Self::Auth | Self::Export
+        )
     }
 }
 

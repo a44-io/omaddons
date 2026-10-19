@@ -461,6 +461,7 @@ fn write(
     if let Err(error) = memo.record(&mut s, paths, &file, &sha256_hex(data.content.as_bytes())) {
         notes.push(format!("export memo not written: {}", error.message));
     }
+    super::record_setting(ctx, &mut s, paths, crate::model::TxKind::Export, None);
     drop(guard);
     Ok(match &data.backup {
         Some(backup) => format!("wrote {shown} ({n} {entries}); the previous file is {backup}"),

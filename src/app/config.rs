@@ -333,6 +333,7 @@ pub fn set(ctx: &Context, key: &str, raw_value: &str) -> Result<Done<SetData>> {
             mode: Some(0o644),
         };
         mutate(&mut s, &path, op)?;
+        super::record_setting(ctx, &mut s, &paths, crate::model::TxKind::Config, None);
     }
     drop(guard);
     Ok(Done {

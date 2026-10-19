@@ -73,6 +73,9 @@ pub enum Scope {
     State,
     /// `<state>/omaddons/net.log` and `net.log.1`.
     NetLog,
+    /// `<state>/omaddons/history.jsonl` alone: settings changes append their line in
+    /// the session of the command that made them (vision §5.9 Attribution).
+    History,
     /// `<cache>/omaddons/`
     Cache,
     /// `<client dir>/Interface/AddOns/<non-protected folder>/…`
@@ -102,6 +105,10 @@ impl Scope {
                 W::Mutating | W::Undo | W::Backup | W::BackupRestore | W::Doctor
             ),
             Self::NetLog | Self::Cache => true,
+            Self::History => matches!(
+                writer,
+                W::Mutating | W::Undo | W::Config | W::Auth | W::Backup | W::Doctor
+            ),
             Self::AddOns => matches!(writer, W::Mutating | W::Undo | W::Doctor),
             Self::ClientMeta => matches!(
                 writer,
@@ -201,6 +208,7 @@ pub struct ScopeTable {
     state: PathBuf,
     cache: PathBuf,
     lock_file: PathBuf,
+    history: PathBuf,
     net_log: PathBuf,
     net_log_previous: PathBuf,
     omarchy_plugin: PathBuf,
@@ -221,6 +229,7 @@ impl ScopeTable {
             home: canonical(paths.home())?,
             config: canonical(paths.config_dir())?,
             lock_file: state.join("lock"),
+            history: state.join("history.jsonl"),
             net_log: state.join("net.log"),
             net_log_previous: state.join("net.log.1"),
             state,
@@ -376,6 +385,9 @@ impl ScopeTable {
                 // A missing XDG base such as `<state>`, but never home or above it.
                 found.push(Candidate::new(scope, Position::Ancestor, Side::Home));
             }
+        }
+        if path == self.history {
+            found.push(Candidate::new(Scope::History, Position::Below, Side::Home));
         }
         if path == self.net_log || path == self.net_log_previous {
             found.push(Candidate::new(Scope::NetLog, Position::Below, Side::Home));

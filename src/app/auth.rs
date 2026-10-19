@@ -314,6 +314,8 @@ fn write(ctx: &Context, paths: &Paths, content: &[u8]) -> Result<()> {
             mode: Some(0o600),
         },
     )?;
+    // Who stored or cleared it, never the token: it came on standard input.
+    super::record_setting(ctx, &mut s, paths, crate::model::TxKind::Auth, None);
     Ok(())
 }
 

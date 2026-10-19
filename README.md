@@ -575,8 +575,8 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--format json\|human` | Overrides `--json`; default `human`, or `OMADDONS_FORMAT=json` |
 | `-t, --target <TARGET>` (alias `--flavor`) | The client to act on: [any selector](#choosing-a-target-with--t) |
 | `--dry-run` | Show the plan without changing anything (mutating commands) |
-| `--actor human\|agent\|widget` | Who is acting, recorded in history. Default `OMADDONS_ACTOR`, else `human` when stdin is a terminal, else `agent`. In `history` it filters |
-| `--reason <TEXT>` | Why, recorded verbatim in history (at most 200 characters) |
+| `--actor human\|agent\|widget` | Who is acting, recorded in history by every command that changes something. Default `OMADDONS_ACTOR`, else `human` when stdin is a terminal, else `agent`. In `history` it filters |
+| `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters) |
 | `--offline` | Fail any network access (`OMADDONS_OFFLINE=1`) |
 | `--while-running` | Allow folder changes while the client runs (never SavedVariables) |
 | `--no-color` | No ANSI color (also `NO_COLOR`) |
@@ -893,11 +893,15 @@ When one transaction of a run cannot be undone (`undo_conflict`, say), the other
 
 Undoing the newest change never conflicts with a later transaction. Undoing an older one is refused with `undo_conflict` if a later transaction touched the same folders, and the fix names the newer one to undo first. A later transaction that was itself undone no longer counts, so undoing your own transactions newest first, by id, always works. `undo_conflict` also covers a transaction already undone, and a folder it removed that was put back by hand.
 
+Settings changes in the history (`config`, `target`, `auth` and `export` lines) are never undone: bare `undo`, `--last-by` and `--run` step over them, and `undo <tx>` of one is `not_found` ("transaction <tx> is a config change, which undo does not revert").
+
 A later transaction that only added or dropped a requester in a dependency's `required_by` never conflicts. An addon the undo brings back keeps those later requesters. Undoing a transaction that installed a dependency an addon installed later still requires goes ahead with `still_required`, as `remove` does, and its fix undoes the undo. A dependency the undo leaves required by nothing warns `orphaned_dependency`.
 
 ### `history`
 
 What changed, when, by whom and why, newest first (`log` is an alias).
+
+Settings changes appear too: `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write` each record a line of kind `config`, `target`, `auth` or `export`, with no folder counts (human output shows what was run instead). A dry run, or a change to nothing, records none. Their `target` is the client for a `target` line and `null` otherwise, so `-t` shows only `target` lines. `undo` never reverts them and steps over them; `undo <tx>` of one is `not_found`. A line that cannot be written after the change was made warns `history_not_recorded`.
 
 ```bash
 omaddons history
@@ -1272,7 +1276,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 </details>
 
 <details>
-<summary><strong>Every warning code (40)</strong></summary>
+<summary><strong>Every warning code (41)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -1316,6 +1320,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `target_addons_shared` | `status`: two or more clients share one AddOns directory (an `Interface/AddOns` symlinked between them); a folder one client records is `shared` on the others, which may not record it too; the fix is advice: manage those addons from one client, or stop sharing the directory. Also on `install`, `update` and `remove` of a folder both clients recorded before that was refused: the change shows on the other client too (fix `omaddons status -t <other>`) |
 | `history_lines_skipped` | `history` and `undo`: lines of `history.jsonl` could not be read (a hand edit or other damage, not a write a crash cut short) and were skipped, so the transactions on them are not listed and cannot be undone; it counts them, and the fix is advice, since omaddons never rewrites the file |
 | `download_unverified` | a WoWInterface file whose details published no usable MD5, or a Tukui download without a usable `ETag` MD5 (none, weak, unquoted or not an MD5), installed unchecked: TLS protected the transfer and the TOCs were verified. A later reuse of its cached archive (another client, a reinstall) says it again; no fix |
+| `history_not_recorded` | a settings change (`config set`, a `targets` change, `auth github set` or `clear`, `export --write`) was made, but its history line could not be written; the fix is advice to check that the state directory is writable |
 
 </details>
 
@@ -1586,7 +1591,7 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_HTTP_FIXTURES`, `OMADDON
 | `~/.config/omaddons/credentials/github` | The GitHub token `auth github set` stores (mode 0600, in a 0700 directory) | Yes (forgets the token) |
 | `~/.local/state/omaddons/registry.json` | Registered targets and the default | Loses ids and registrations |
 | `~/.local/state/omaddons/targets/<key>.json`, `<key>.files.json` | Per-target addon records, and every managed file's size and hash | Loses management |
-| `~/.local/state/omaddons/history.jsonl` | One line per committed transaction. A line a crash cut short is closed off by the next write, and recovery appends that transaction's line again; other unreadable lines are skipped and counted in a `history_lines_skipped` warning on `history` and `undo` | Loses history |
+| `~/.local/state/omaddons/history.jsonl` | One line per committed transaction, and per settings change (`config`, `target`, `auth`, `export`, never undone; `target` is `null` when it names no client). A line a crash cut short is closed off by the next write, and recovery appends that transaction's line again; other unreadable lines are skipped and counted in a `history_lines_skipped` warning on `history` and `undo` | Loses history |
 | `~/.local/state/omaddons/snapshots/<tx>/`, `journal/`, `inflight/`, `trash/` | Undo data for state files, journals, in-flight locks, staged deletions | No |
 | `~/.local/state/omaddons/lock` | The global lock (never delete while running) | No |
 | `~/.local/state/omaddons/status.json` | A derived summary for the future widget | Yes |

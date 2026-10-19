@@ -21,7 +21,7 @@ use crate::discover::registry::{
 use crate::discover::{DiscoveredTarget, DiscoverySource};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::fsx::{GlobalLock, ScopeTable, WriteSession, Writer};
-use crate::model::TargetKey;
+use crate::model::{TargetKey, TxKind};
 use crate::output::{Outcome, Style, table};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
 use crate::state::config::Config;
@@ -400,6 +400,15 @@ pub fn add(ctx: &Context, path: &Path, name: Option<&str>) -> Result<Done<AddDat
     let dirs: Vec<PathBuf> = found.iter().map(|d| d.target.client_dir.clone()).collect();
     let (added, after) = locked(ctx, paths, "targets add", &dirs, |reg, s| {
         let (added, _) = reg.add_manual(s, table, &path, name)?;
+        // One line per client this registered (none when every one already was).
+        for d in &added {
+            let now = registered_at(reg.registry(), &d.target.client_dir).map(|e| e.key);
+            if registered_at(&registry, &d.target.client_dir).is_none()
+                && let Some(key) = now
+            {
+                super::record_setting(ctx, s, paths, TxKind::Target, Some(key));
+            }
+        }
         Ok((added, reg.registry().clone()))
     })?;
     let targets = added
@@ -438,7 +447,11 @@ pub fn rm(ctx: &Context, id: &str) -> Result<Done<RmData>> {
     // ubs:ignore — a target key is a public ULID identifier, not a secret
     let was_default = registry.default == Some(entry.key);
     if !ctx.dry_run {
-        locked(ctx, &paths, "targets rm", &[], |reg, s| reg.remove(s, id))?;
+        locked(ctx, &paths, "targets rm", &[], |reg, s| {
+            let removed = reg.remove(s, id)?;
+            super::record_setting(ctx, s, &paths, TxKind::Target, Some(removed.key));
+            Ok(removed)
+        })?;
     }
     Ok(Done {
         command: "targets rm",
@@ -540,7 +553,12 @@ pub fn rename(ctx: &Context, id: &str, new: &str) -> Result<Done<RenameData>> {
             &dirs,
             |reg, s| {
                 let current = registered_id(reg, s, &target)?;
-                Ok(reg.rename(s, &world.table, &current, new)?.key)
+                let key = reg.rename(s, &world.table, &current, new)?.key;
+                // ubs:ignore — comparing target ids, not secrets
+                if current != new {
+                    super::record_setting(ctx, s, &world.paths, TxKind::Target, Some(key));
+                }
+                Ok(key)
             },
         )?)
     };
@@ -567,7 +585,13 @@ pub fn default(ctx: &Context, id: &str) -> Result<Done<DefaultData>> {
     } else {
         locked(ctx, &world.paths, "targets default", &dirs, |reg, s| {
             let current = registered_id(reg, s, &target)?;
-            Ok((Some(reg.set_default(s, &current)?), current))
+            let was = reg.registry().default;
+            let key = reg.set_default(s, &current)?;
+            // ubs:ignore — target keys are public ULID identifiers, not secrets
+            if was != Some(key) {
+                super::record_setting(ctx, s, &world.paths, TxKind::Target, Some(key));
+            }
+            Ok((Some(key), current))
         })?
     };
     let overridden_by_config = world

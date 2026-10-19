@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use super::paths::Paths;
 use super::store::SchemaVersion;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
-use crate::fsx::{Op, WriteSession, mutate};
+use crate::fsx::{Op, WriteSession, ensure_dir_all, mutate};
 use crate::limits::REASON_MAX_CHARS;
 use crate::model::{Actor, FolderName, RunId, TargetKey, TxId, TxKind};
 
@@ -62,6 +62,55 @@ impl HistoryEntry {
     /// The run this transaction belongs to: its own `run`, or the transaction alone.
     pub fn run_key(&self) -> RunKey {
         self.run.map_or(RunKey::Single(self.tx), RunKey::Run)
+    }
+}
+
+/// One settings change ([`TxKind::is_setting`]: `config set`, a `targets` change,
+/// `auth github set` or `clear`, `export --write`), on the same line format as a
+/// transaction: who, why, the argv, no folder ops, and the client's key for a `targets`
+/// change (`null` otherwise). Never undone; undo, retention and recovery never see it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SettingEntry {
+    pub schema_version: SchemaVersion,
+    pub tx: TxId,
+    pub kind: TxKind,
+    #[schemars(with = "String")]
+    pub at: Timestamp,
+    /// The client a `targets` change is about; `null` for the others.
+    pub target: Option<TargetKey>,
+    pub actor: Actor,
+    /// `--reason`, verbatim; omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub argv: Vec<String>,
+    /// Always empty: a settings change touches no folder.
+    pub ops: Vec<HistoryOp>,
+    pub result: TxResult,
+    pub run: RunId,
+}
+
+impl SettingEntry {
+    /// A settings change of `kind` made now by `actor` with `argv`, about `target`.
+    pub fn now(
+        kind: TxKind,
+        target: Option<TargetKey>,
+        actor: Actor,
+        reason: Option<String>,
+        argv: Vec<String>,
+    ) -> Self {
+        Self {
+            schema_version: CURRENT,
+            tx: TxId::new(),
+            kind,
+            at: Timestamp::now(),
+            target,
+            actor,
+            reason,
+            argv,
+            ops: Vec::new(),
+            result: TxResult::Committed,
+            run: RunId::new(),
+        }
     }
 }
 
@@ -129,7 +178,50 @@ pub enum TxResult {
 /// a crash cut short is closed off in the same write, so the new line never merges
 /// with it.
 pub fn append(s: &mut WriteSession<'_>, paths: &Paths, entry: &HistoryEntry) -> Result<()> {
-    if let Some(reason) = &entry.reason
+    append_line(s, paths, entry, entry.reason.as_deref())
+}
+
+/// [`append`] for a settings change, in the session of the command that made it, under
+/// the global lock it holds.
+pub fn append_setting(s: &mut WriteSession<'_>, paths: &Paths, entry: &SettingEntry) -> Result<()> {
+    append_line(s, paths, entry, entry.reason.as_deref())
+}
+
+/// Records a settings change in the session of the command that made it, under the
+/// global lock: its line, or, when that cannot be written, `history_not_recorded` (the
+/// change itself stands).
+pub fn record_setting(
+    s: &mut WriteSession<'_>,
+    paths: &Paths,
+    entry: &SettingEntry,
+) -> Option<Warning> {
+    let written = (|| -> Result<()> {
+        ensure_dir_all(s, paths.state_dir())?;
+        append_setting(s, paths, entry)
+    })();
+    let error = written.err()?;
+    Some(
+        Warning::new(
+            WarningCode::HistoryNotRecorded,
+            format!(
+                "the change was made, but its history line could not be written: {}",
+                error.message
+            ),
+        )
+        .with_fix(Suggestion::text(format!(
+            "check that {} is writable",
+            paths.state_dir().display()
+        ))),
+    )
+}
+
+fn append_line<T: Serialize>(
+    s: &mut WriteSession<'_>,
+    paths: &Paths,
+    entry: &T,
+    reason: Option<&str>,
+) -> Result<()> {
+    if let Some(reason) = reason
         && reason.chars().count() > REASON_MAX_CHARS
     {
         return Err(Error::new(
@@ -192,12 +284,24 @@ impl HistoryFilter {
             && self.since.is_none_or(|since| entry.at >= since)
             && self.run.is_none_or(|run| entry.run == Some(run))
     }
+
+    /// The same for a settings change: one with no target never matches a target.
+    fn matches_setting(&self, entry: &SettingEntry) -> bool {
+        self.target.is_none_or(|t| entry.target == Some(t))
+            && self.actor.is_none_or(|a| a == entry.actor)
+            && self.kind.is_none_or(|k| k == entry.kind)
+            && self.since.is_none_or(|since| entry.at >= since)
+            && self.run.is_none_or(|run| entry.run == run)
+    }
 }
 
 /// The matching entries, oldest first, and what was skipped.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HistoryRead {
     pub entries: Vec<HistoryEntry>,
+    /// The matching settings changes, oldest first (`--limit` applies to `entries`
+    /// alone): `history` lists them, undo never sees them.
+    pub settings: Vec<SettingEntry>,
     /// The last line has no newline yet (cut short by a crash, or still being written)
     /// and was skipped.
     pub torn_tail: bool,
@@ -268,6 +372,11 @@ pub fn parse(text: &str, filter: &HistoryFilter) -> HistoryRead {
                     read.entries.push(*entry);
                 }
             }
+            Line::Setting(entry) => {
+                if filter.matches_setting(&entry) {
+                    read.settings.push(*entry);
+                }
+            }
             Line::Torn => read.torn_lines += 1,
             Line::Unreadable => read.skipped_lines += 1,
         }
@@ -286,6 +395,7 @@ const LINE_START: &str = "{\"schema_version\":";
 /// One complete line, read.
 enum Line {
     Entry(Box<HistoryEntry>),
+    Setting(Box<SettingEntry>),
     /// The JSON ends early: a write a crash cut short.
     Torn,
     /// Anything else that does not read.
@@ -296,19 +406,30 @@ enum Line {
 /// merging the two (`<fragment><line>`); when the whole does not read, the part from
 /// the last line start on is tried, which salvages the line appended after it.
 fn read_line(line: &str) -> Line {
-    let error = match serde_json::from_str::<HistoryEntry>(line) {
-        Ok(entry) => return Line::Entry(Box::new(entry)),
+    let error = match whole(line) {
+        Ok(read) => return read,
         Err(error) => error,
     };
     if let Some(at) = line.rfind(LINE_START).filter(|at| *at > 0)
-        && let Ok(entry) = serde_json::from_str::<HistoryEntry>(&line[at..])
+        && let Ok(read) = whole(&line[at..])
     {
-        return Line::Entry(Box::new(entry));
+        return read;
     }
     match error.classify() {
         serde_json::error::Category::Eof => Line::Torn,
         _ => Line::Unreadable,
     }
+}
+
+/// `text` as one line: a settings change by its kind (its target may be `null`), else
+/// a transaction.
+fn whole(text: &str) -> std::result::Result<Line, serde_json::Error> {
+    if let Ok(setting) = serde_json::from_str::<SettingEntry>(text)
+        && setting.kind.is_setting()
+    {
+        return Ok(Line::Setting(Box::new(setting)));
+    }
+    serde_json::from_str::<HistoryEntry>(text).map(|entry| Line::Entry(Box::new(entry)))
 }
 
 /// The most recent matching entry (`undo`, `undo --last-by`).
@@ -731,5 +852,86 @@ mod tests {
             HistoryRead::default()
         );
         assert_eq!(last(&f.paths, &HistoryFilter::default()).unwrap(), None);
+    }
+
+    /// Settings changes share the log with transactions: written by their command's own
+    /// writer, read back apart (with or without a target), never among `entries`, and
+    /// filtered the same way; a `null` target never matches `-t`.
+    #[test]
+    fn settings_changes_are_lines_of_their_own() {
+        let f = fixture();
+        let mut s = WriteSession::untracked(Writer::Mutating, &f.scopes, "test");
+        append(
+            &mut s,
+            &f.paths,
+            &entry(1, Actor::Human, TxKind::Install, "2026-10-15T10:00:00Z"),
+        )
+        .unwrap();
+        let argv = |args: &[&str]| args.iter().map(|a| (*a).to_owned()).collect();
+        let config = SettingEntry::now(
+            TxKind::Config,
+            None,
+            Actor::Agent,
+            Some("x".into()),
+            argv(&["omaddons", "config", "set", "default_channel", "beta"]),
+        );
+        // `config set` writes as `Config`, which may append to history and nothing else
+        // in state.
+        let mut as_config = WriteSession::untracked(Writer::Config, &f.scopes, "config.toml");
+        assert_eq!(record_setting(&mut as_config, &f.paths, &config), None);
+        let refused = mutate(
+            &mut as_config,
+            &f.paths.registry_file(),
+            Op::WriteFile {
+                content: crate::fsx::Content::Bytes(b"{}"),
+                mode: None,
+            },
+        );
+        assert!(refused.is_err(), "Config may not write the registry");
+        let key: TargetKey = TARGET.parse().unwrap();
+        let target = SettingEntry::now(
+            TxKind::Target,
+            Some(key),
+            Actor::Human,
+            None,
+            argv(&["omaddons", "targets", "default", "retail"]),
+        );
+        assert_eq!(record_setting(&mut s, &f.paths, &target), None);
+
+        let text = std::fs::read_to_string(f.paths.history_file()).unwrap();
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines[1]["kind"], "config");
+        assert_eq!(lines[1]["target"], serde_json::Value::Null);
+        assert_eq!(lines[1]["ops"], serde_json::json!([]));
+        assert_eq!(lines[1]["result"], "committed");
+        assert!(
+            text.starts_with(LINE_START),
+            "every line starts the same way"
+        );
+
+        let all = read(&f.paths, &HistoryFilter::default()).unwrap();
+        assert_eq!(all.entries.len(), 1, "undo never sees a settings change");
+        assert_eq!(all.settings, [config.clone(), target.clone()]);
+        assert_eq!(all.skipped_lines, 0);
+        let on_target = HistoryFilter {
+            target: Some(key),
+            ..HistoryFilter::default()
+        };
+        assert_eq!(read(&f.paths, &on_target).unwrap().settings, [target]);
+        let by_agent = HistoryFilter {
+            actor: Some(Actor::Agent),
+            ..HistoryFilter::default()
+        };
+        assert_eq!(read(&f.paths, &by_agent).unwrap().settings, [config]);
+        for kind in [TxKind::Config, TxKind::Target, TxKind::Auth, TxKind::Export] {
+            assert!(kind.is_setting() && !kind.is_undoable(), "{kind:?}");
+        }
+        for kind in [TxKind::Install, TxKind::Undo, TxKind::Pin, TxKind::Sync] {
+            assert!(!kind.is_setting() && kind.is_undoable(), "{kind:?}");
+        }
+        assert!(!TxKind::Backup.is_undoable() && !TxKind::Backup.is_setting());
     }
 }

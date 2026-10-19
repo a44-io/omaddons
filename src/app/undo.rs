@@ -28,7 +28,7 @@ use crate::engine::{SvPolicy, UndoOutcome as EngineUndo, UndoRequest, UndoSelect
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{Actor, FolderName, ReloadRequired, RunId, TargetKey, TxId, TxKind};
 use crate::output::{Outcome, Style};
-use crate::state::history::{self, HistoryEntry, HistoryFilter};
+use crate::state::history::{self, HistoryEntry, HistoryFilter, SettingEntry};
 
 /// `undo`'s own flags.
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -279,6 +279,20 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
     // What it chooses from may lack the transactions on lines that did not read: said
     // even when choosing then fails (`undo <tx>` of such a transaction).
     ctx.notes.warn_all(read.skipped_warning().as_slice());
+    // A settings change is in the history, but undo never reverts it.
+    if let Some(prefix) = args.tx.as_deref()
+        && let Some(setting) = setting_by_prefix(&read.settings, prefix)
+    {
+        let kind = crate::app::history::kind_name(setting.kind);
+        return Err(Error::new(
+            ErrorCode::NotFound,
+            format!(
+                "transaction {} is a {kind} change, which undo does not revert",
+                setting.tx
+            ),
+            Suggestion::command(["omaddons", "history"]),
+        ));
+    }
     let entries = read.entries;
     let selection = select(
         &entries,
@@ -390,6 +404,21 @@ fn select<'e>(entries: &'e [HistoryEntry], s: &Selector<'_>) -> Result<Selection
             .collect(),
         reverted_run: newest.run,
     })
+}
+
+/// The one settings change whose id is `prefix` or starts with it (8+ characters).
+fn setting_by_prefix<'e>(settings: &'e [SettingEntry], prefix: &str) -> Option<&'e SettingEntry> {
+    let wanted = prefix.to_ascii_uppercase();
+    if wanted.len() < MIN_PREFIX {
+        return None;
+    }
+    let mut matching = settings
+        .iter()
+        .filter(|e| e.tx.to_string().starts_with(&wanted));
+    match (matching.next(), matching.next()) {
+        (Some(one), None) => Some(one),
+        _ => None,
+    }
 }
 
 /// The entry whose id is `prefix` or starts with it (8+ characters, any case).
