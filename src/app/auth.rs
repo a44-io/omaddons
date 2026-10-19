@@ -60,13 +60,16 @@ pub enum AuthAction {
     Clear,
 }
 
-/// `auth github`'s data: the token in use after the command, never the token itself.
+/// `auth github`'s data: the token in use after the command (under `--dry-run`, as it
+/// would be), never the token itself.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct AuthData {
     pub configured: bool,
     pub source: TokenSource,
     /// `status` online: the core REST budget; `null` offline and after `set` or `clear`.
     pub rate_limit: Option<RateLimit>,
+    /// `--dry-run`: nothing was written.
+    pub dry_run: bool,
 }
 
 /// GitHub's core REST budget.
@@ -106,10 +109,12 @@ impl Outcome for AuthOutcome {
     fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
         let d = &self.data;
         let path = self.path.display();
-        match self.action {
-            AuthAction::Set => writeln!(w, "stored the GitHub token in {path}")?,
-            AuthAction::Clear => writeln!(w, "cleared {path}")?,
-            AuthAction::Status => {}
+        match (self.action, d.dry_run) {
+            (AuthAction::Set, false) => writeln!(w, "stored the GitHub token in {path}")?,
+            (AuthAction::Set, true) => writeln!(w, "would store the GitHub token in {path}")?,
+            (AuthAction::Clear, false) => writeln!(w, "cleared {path}")?,
+            (AuthAction::Clear, true) => writeln!(w, "would clear {path}")?,
+            (AuthAction::Status, _) => {}
         }
         let whence = match d.source {
             TokenSource::Env => format!("from {TOKEN_VAR}"),
@@ -191,11 +196,21 @@ pub fn run(ctx: &Context, args: &AuthArgs) -> Result<AuthOutcome> {
         }
         AuthAction::Set | AuthAction::Clear => None,
     };
+    // A dry run describes the token as the write would leave it: the environment and a
+    // config.toml credential outrank the file, so only a file token (or none) changes.
+    let (configured, source) = match (action, ctx.dry_run, token.source()) {
+        (AuthAction::Set, true, TokenSource::File | TokenSource::None) => (true, TokenSource::File),
+        (AuthAction::Clear, true, TokenSource::File | TokenSource::None) => {
+            (false, TokenSource::None)
+        }
+        _ => (token.configured(), token.source()),
+    };
     Ok(AuthOutcome {
         data: AuthData {
-            configured: token.configured(),
-            source: token.source(),
+            configured,
+            source,
             rate_limit,
+            dry_run: ctx.dry_run,
         },
         warnings,
         action,
@@ -403,5 +418,43 @@ mod tests {
         }
         let long = "x".repeat(AUTH_TOKEN_MAX_BYTES as usize + 10);
         assert_eq!(read(&long).unwrap_err().code, ErrorCode::Usage);
+    }
+
+    /// What a run prints: a dry run says what it would do, and the token as it would be.
+    #[test]
+    fn a_dry_run_says_would() {
+        let render = |action, dry_run, configured, source| {
+            let outcome = AuthOutcome {
+                data: AuthData {
+                    configured,
+                    source,
+                    rate_limit: None,
+                    dry_run,
+                },
+                warnings: Vec::new(),
+                action,
+                path: PathBuf::from("/c/omaddons/credentials/github"),
+            };
+            let mut out = Vec::new();
+            outcome.render_human(&mut out, &Style::default()).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        let file = "/c/omaddons/credentials/github";
+        let set = render(AuthAction::Set, true, true, TokenSource::File);
+        assert_eq!(
+            set,
+            format!("would store the GitHub token in {file}\nGitHub token: from {file}\n")
+        );
+        let stored = render(AuthAction::Set, false, true, TokenSource::File);
+        assert!(stored.starts_with(&format!("stored the GitHub token in {file}\n")));
+        let clear = render(AuthAction::Clear, true, false, TokenSource::None);
+        assert!(
+            clear.starts_with(&format!("would clear {file}\nno GitHub token")),
+            "{clear}"
+        );
+        let cleared = render(AuthAction::Clear, false, false, TokenSource::None);
+        assert!(cleared.starts_with(&format!("cleared {file}\n")));
+        let status = render(AuthAction::Status, true, true, TokenSource::File);
+        assert_eq!(status, format!("GitHub token: from {file}\n"));
     }
 }

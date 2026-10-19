@@ -97,7 +97,7 @@ fn set_status_and_clear() {
     assert_eq!(set.code, 0, "{}", set.context());
     assert_eq!(
         e["data"],
-        json!({"configured": true, "source": "file", "rate_limit": null})
+        json!({"configured": true, "source": "file", "rate_limit": null, "dry_run": false})
     );
     let file = credentials(&home).join("github");
     assert_eq!(fs::read_to_string(&file).unwrap(), TOKEN);
@@ -108,7 +108,7 @@ fn set_status_and_clear() {
     let status = home.run(&["auth", "github", "--offline"]).expect(0);
     assert_eq!(
         status["data"],
-        json!({"configured": true, "source": "file", "rate_limit": null})
+        json!({"configured": true, "source": "file", "rate_limit": null, "dry_run": false})
     );
     assert_eq!(net_log(&home).len(), before);
 
@@ -139,7 +139,7 @@ fn set_status_and_clear() {
     let clear = home.run(&["auth", "github", "clear"]).expect(0);
     assert_eq!(
         clear["data"],
-        json!({"configured": false, "source": "none", "rate_limit": null})
+        json!({"configured": false, "source": "none", "rate_limit": null, "dry_run": false})
     );
     assert_eq!(fs::read(&file).unwrap(), b"");
     assert_eq!(mode(&file), 0o600);
@@ -382,5 +382,48 @@ fn the_token_is_never_shown_logged_or_stored_elsewhere() {
     assert_eq!(
         holders,
         [credentials(&home).join("github").display().to_string()]
+    );
+}
+
+/// `--dry-run` writes nothing, says so in `data`, and describes the token as the write
+/// would leave it.
+#[test]
+fn a_dry_run_set_or_clear_writes_nothing_and_says_what_would_be() {
+    let home = Home::new(&["wow"]);
+    let token = format!("{TOKEN}\n");
+    let state = |run: &common::home::Run| {
+        let e = envelope(run);
+        (
+            e["data"]["dry_run"].clone(),
+            e["data"]["configured"].clone(),
+            e["data"]["source"].clone(),
+        )
+    };
+    let set = argv(&["auth", "github", "set", "--dry-run"]);
+    let run = home.exec_input(&set, &[], token.as_bytes());
+    assert_eq!(
+        state(&run),
+        (json!(true), json!(true), json!("file")),
+        "{}",
+        run.context()
+    );
+    assert!(!credentials(&home).exists(), "nothing written");
+
+    home.exec_input(&argv(&["auth", "github", "set"]), &[], token.as_bytes());
+    let file = credentials(&home).join("github");
+    let before = fs::read(&file).unwrap();
+    let run = home.exec(&argv(&["auth", "github", "clear", "--dry-run"]));
+    assert_eq!(
+        state(&run),
+        (json!(true), json!(false), json!("none")),
+        "{}",
+        run.context()
+    );
+    assert_eq!(fs::read(&file).unwrap(), before, "the file is unchanged");
+    let human = home.exec(&["auth", "github", "clear", "--dry-run"].map(str::to_owned));
+    assert!(
+        human.stdout.starts_with("would clear "),
+        "{}",
+        human.context()
     );
 }

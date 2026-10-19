@@ -470,7 +470,8 @@ Examples:
   omaddons auth github clear                  forget the stored token
 
 The main GitHub path needs no token. A token goes only to api.github.com; GITHUB_TOKEN
-and gh's credentials are never read unless you ask with --from-gh.";
+and gh's credentials are never read unless you ask with --from-gh. With --dry-run, set
+and clear check the token and write nothing.";
 
 /// `sync`'s long help: the file it reads.
 const SYNC_HELP: &str = "\

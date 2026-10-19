@@ -8,6 +8,7 @@ expression: s.stable(&c.envelope)
   "commands": [],
   "data": {
     "configured": false,
+    "dry_run": false,
     "rate_limit": null,
     "source": "none"
   },
