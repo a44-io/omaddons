@@ -1,17 +1,20 @@
 //! `Retrying`: transient failures (HTTP 429, any 5xx, transport `network` errors) are
 //! retried up to [`MAX_RETRIES`] times with full-jitter exponential backoff, and a
 //! `Retry-After` up to [`RETRY_AFTER_CAP`] replaces the computed delay (vision §5.13,
-//! D22). A longer `Retry-After`, or a primary rate limit (`X-RateLimit-Remaining: 0`),
-//! fails at once with `rate_limited` and its reset time. The net layer only has GET and
-//! HEAD, so every retried request is idempotent; each attempt is its own wire request
-//! and its own `net.log` line.
+//! D22). An API body is read here, so a connection that fails while it arrives is
+//! retried too, within the same budget; a download streams on, and its caller restarts
+//! it ([`backoff_delay`] is shared). A longer `Retry-After`, or a primary rate limit
+//! (`X-RateLimit-Remaining: 0`), fails at once with `rate_limited` and its reset time.
+//! The net layer only has GET and HEAD, so every retried request is idempotent; each
+//! attempt is its own wire request and its own `net.log` line.
 
+use std::io::Read;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use jiff::Timestamp;
 
-use super::{Http, Request, Response, redact};
+use super::{Http, Request, Response, TimeoutKind, redact};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::politeness::{BACKOFF_BASE, BACKOFF_MAX, MAX_RETRIES, RETRY_AFTER_CAP};
 
@@ -111,18 +114,38 @@ impl Retrying {
         }
     }
 
-    /// A uniformly random delay in `0..=min(BACKOFF_MAX, BACKOFF_BASE × 2^attempt)`.
     fn backoff(&self, attempt: u32) -> Duration {
-        let cap = BACKOFF_BASE
-            .saturating_mul(2u32.saturating_pow(attempt))
-            .min(BACKOFF_MAX);
-        let cap_ms = u64::try_from(cap.as_millis()).unwrap_or(u64::MAX);
         let random = match self.rng.lock() {
             Ok(mut rng) => rng.next_u64(),
             Err(poisoned) => poisoned.into_inner().next_u64(),
         };
-        Duration::from_millis(random % cap_ms.saturating_add(1))
+        backoff_delay(attempt, random)
     }
+}
+
+/// The full-jitter delay before retry `attempt` (0-based): uniformly random, from
+/// `random`, in `0..=min(BACKOFF_MAX, BACKOFF_BASE × 2^attempt)`.
+pub fn backoff_delay(attempt: u32, random: u64) -> Duration {
+    let cap = BACKOFF_BASE
+        .saturating_mul(2u32.saturating_pow(attempt))
+        .min(BACKOFF_MAX);
+    let cap_ms = u64::try_from(cap.as_millis()).unwrap_or(u64::MAX);
+    Duration::from_millis(random % cap_ms.saturating_add(1))
+}
+
+/// Reads an API response's body whole into memory (every caller reads it whole anyway,
+/// under `API_RESPONSE_MAX_BYTES`), so a connection that fails while it arrives fails
+/// here, where it can be retried. A download's body is left to stream.
+fn buffer_api_body(req: &Request, resp: &mut Response) -> Result<()> {
+    if req.timeout != TimeoutKind::Api {
+        return Ok(());
+    }
+    let mut body = Vec::new();
+    resp.take_body()
+        .read_to_end(&mut body)
+        .map_err(super::body_error)?;
+    resp.set_body(Box::new(std::io::Cursor::new(body)));
+    Ok(())
 }
 
 impl Http for Retrying {
@@ -130,13 +153,24 @@ impl Http for Retrying {
         let mut attempt = 0u32;
         loop {
             match self.inner.send(req.clone()) {
-                Ok(resp) => {
+                Ok(mut resp) => {
                     let now = self.clock.now();
                     if let Some(err) = primary_limit(&resp, now) {
                         return Err(err);
                     }
                     if resp.status != 429 && !(500..600).contains(&resp.status) {
-                        return Ok(resp);
+                        // A connection that fails mid-body is retried from the start, as
+                        // one that fails before the headers.
+                        match buffer_api_body(&req, &mut resp) {
+                            Ok(()) => return Ok(resp),
+                            Err(err) if err.code == ErrorCode::Network && attempt < MAX_RETRIES => {
+                                drop(resp);
+                                self.sleeper.sleep(self.backoff(attempt));
+                                attempt += 1;
+                                continue;
+                            }
+                            Err(err) => return Err(err),
+                        }
                     }
                     let wait = resp.header("retry-after").and_then(|v| retry_after(v, now));
                     if let Some(wait) = wait
@@ -409,5 +443,127 @@ mod tests {
                 assert!(retrying.backoff(attempt) <= cap);
             }
         }
+    }
+
+    /// A body that yields its bytes, then fails as `then` says (or ends).
+    struct Flaky {
+        bytes: std::io::Cursor<Vec<u8>>,
+        then: Option<std::io::Error>,
+    }
+
+    impl Read for Flaky {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.bytes.read(buf)?;
+            match (n, self.then.take()) {
+                (0, Some(err)) => Err(err),
+                (_, then) => {
+                    self.then = then;
+                    Ok(n)
+                }
+            }
+        }
+    }
+
+    fn whole(text: &str) -> std::result::Result<Flaky, ErrorCode> {
+        Ok(Flaky {
+            bytes: std::io::Cursor::new(text.as_bytes().to_vec()),
+            then: None,
+        })
+    }
+
+    /// 100 bytes, then the connection resets.
+    fn reset() -> std::result::Result<Flaky, ErrorCode> {
+        Ok(Flaky {
+            bytes: std::io::Cursor::new(vec![b'x'; 100]),
+            then: Some(std::io::ErrorKind::ConnectionReset.into()),
+        })
+    }
+
+    /// Answers 200 with scripted bodies (or a transport error) and counts the attempts.
+    struct Bodies {
+        answers: Mutex<VecDeque<std::result::Result<Flaky, ErrorCode>>>,
+        attempts: Arc<Mutex<usize>>,
+    }
+
+    impl Http for Bodies {
+        fn send(&self, req: Request) -> Result<Response> {
+            *self.attempts.lock().unwrap() += 1;
+            match self.answers.lock().unwrap().pop_front().unwrap() {
+                Ok(body) => Ok(Response::new(200, Vec::new(), req.url, Box::new(body))),
+                Err(code) => Err(Error::new(code, "transport", Suggestion::text("x"))),
+            }
+        }
+    }
+
+    /// Sends `req` over `answers`: the result with its body read, the sleeps, and the
+    /// attempts.
+    fn read_through(
+        req: Request,
+        answers: Vec<std::result::Result<Flaky, ErrorCode>>,
+    ) -> (Result<Vec<u8>>, usize, usize) {
+        let sleeps = Arc::new(Mutex::new(Vec::new()));
+        let attempts = Arc::new(Mutex::new(0));
+        let retrying = Retrying::with(
+            Box::new(Bodies {
+                answers: Mutex::new(answers.into()),
+                attempts: Arc::clone(&attempts),
+            }),
+            Box::new(Recorder(Arc::clone(&sleeps))),
+            Box::new(Fixed(NOW.parse().unwrap())),
+            Box::new(XorShift::new(42)),
+        );
+        let result = retrying.send(req).and_then(Response::bytes);
+        let sleeps = sleeps.lock().unwrap().len();
+        let attempts = *attempts.lock().unwrap();
+        (result, sleeps, attempts)
+    }
+
+    #[test]
+    fn an_api_body_that_fails_midway_is_requested_again() {
+        let api = || Request::get("https://example.org/x", "test");
+        let (result, sleeps, attempts) = read_through(api(), vec![reset(), whole("all of it")]);
+        assert_eq!(
+            (result.unwrap(), sleeps, attempts),
+            (b"all of it".to_vec(), 1, 2)
+        );
+        // One budget for both phases: a transport error, then three resets.
+        let answers = vec![Err(ErrorCode::Network), reset(), reset(), reset()];
+        let (result, sleeps, attempts) = read_through(api(), answers);
+        let err = result.unwrap_err();
+        assert_eq!(
+            (err.code, err.retryable, sleeps, attempts),
+            (ErrorCode::Network, true, 3, 4)
+        );
+        // The size cap is final.
+        let capped = Flaky {
+            bytes: std::io::Cursor::new(Vec::new()),
+            then: Some(std::io::Error::other(
+                super::super::guard::SizeCapExceeded {
+                    max_bytes: 10,
+                    api_host: Some("example.org".into()),
+                },
+            )),
+        };
+        let (result, sleeps, attempts) = read_through(api(), vec![Ok(capped)]);
+        assert_eq!(
+            (result.unwrap_err().code, sleeps, attempts),
+            (ErrorCode::ArchiveTooLarge, 0, 1)
+        );
+        // A download streams on: its caller restarts it.
+        let download = api().download();
+        let (result, sleeps, attempts) = read_through(download, vec![reset(), whole("unused")]);
+        assert_eq!(
+            (result.unwrap_err().code, sleeps, attempts),
+            (ErrorCode::Network, 0, 1)
+        );
+    }
+
+    #[test]
+    fn backoff_delay_is_full_jitter_under_the_cap() {
+        assert_eq!(backoff_delay(0, 0), Duration::ZERO);
+        let base = u64::try_from(BACKOFF_BASE.as_millis()).unwrap();
+        assert_eq!(backoff_delay(0, base), BACKOFF_BASE);
+        assert_eq!(backoff_delay(0, base + 1), Duration::ZERO);
+        assert!(backoff_delay(30, u64::MAX) <= BACKOFF_MAX);
     }
 }

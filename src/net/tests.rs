@@ -690,3 +690,72 @@ fn transport_selection_truth_table() {
         );
     }
 }
+
+/// Answers 200 with `body`, but the first time the connection resets after 7 bytes.
+struct ResetsOnce {
+    body: Vec<u8>,
+    reset: std::sync::atomic::AtomicBool,
+}
+
+impl Http for ResetsOnce {
+    fn send(&self, req: Request) -> Result<Response> {
+        let first = !self.reset.swap(true, std::sync::atomic::Ordering::Relaxed);
+        let body: Box<dyn std::io::Read + Send> = if first {
+            let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+            let failing = std::io::Cursor::new(b"partial".to_vec()).chain(FailingRead(Some(reset)));
+            Box::new(failing)
+        } else {
+            Box::new(Cursor::new(self.body.clone()))
+        };
+        Ok(Response::new(200, Vec::new(), req.url, body))
+    }
+}
+
+/// Fails once with its error, then ends.
+struct FailingRead(Option<std::io::Error>);
+
+impl std::io::Read for FailingRead {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        self.0.take().map_or(Ok(0), Err)
+    }
+}
+
+/// An API body that resets midway is requested again by `Retrying`: the caller gets the
+/// whole body, and `net.log` has a line per attempt, the first failed `network`.
+#[test]
+fn an_api_body_reset_midway_is_retried_and_both_attempts_logged() {
+    struct NoSleep;
+    impl retry::Sleeper for NoSleep {
+        fn sleep(&self, _: std::time::Duration) {}
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_path_buf();
+    let paths = Paths::with_roots(
+        &home,
+        home.join(".config"),
+        home.join(".local/state"),
+        home.join(".cache"),
+    );
+    let log = NetLog::new(&paths).unwrap();
+    let transport = ResetsOnce {
+        body: b"{\"all\":true}".to_vec(),
+        reset: std::sync::atomic::AtomicBool::new(false),
+    };
+    let core = core_stack_with(&NetConfig::default(), log.clone(), Box::new(transport));
+    let http = Retrying::with(
+        core,
+        Box::new(NoSleep),
+        Box::new(retry::SystemClock),
+        Box::new(retry::XorShift::new(7)),
+    );
+    let url = "https://api.github.com/repos/o/r/releases/latest";
+    let body = http
+        .send(Request::get(url, "release"))
+        .unwrap()
+        .bytes()
+        .unwrap();
+    assert_eq!(body, b"{\"all\":true}");
+    let lines = log.read(None).unwrap();
+    let errors: Vec<Option<&str>> = lines.iter().map(|l| l.error.as_deref()).collect();
+    assert_eq!(errors, [Some("network"), None], "{lines:?}");
+}

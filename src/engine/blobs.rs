@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use md5::Md5;
@@ -34,7 +35,9 @@ use crate::fsx::{
 };
 use crate::limits::DOWNLOAD_MAX_BYTES;
 use crate::model::{ExpectedHash, HashFromHeader, TxId};
+use crate::net::retry::{RealSleeper, Rng, Sleeper, XorShift, backoff_delay};
 use crate::net::{Http, Request};
+use crate::politeness::MAX_RETRIES;
 use crate::state::paths::Paths;
 
 /// A stored archive.
@@ -98,6 +101,9 @@ pub struct BlobCache {
     max_download: u64,
     clock: fn() -> i128,
     counter: AtomicU64,
+    /// Waits out the backoff before a download restarts.
+    sleeper: Box<dyn Sleeper>,
+    rng: Mutex<XorShift>,
 }
 
 impl BlobCache {
@@ -107,7 +113,25 @@ impl BlobCache {
             max_download: DOWNLOAD_MAX_BYTES,
             clock: now_ns,
             counter: AtomicU64::new(0),
+            sleeper: Box::new(RealSleeper),
+            rng: Mutex::new(XorShift::seeded()),
         }
+    }
+
+    /// Another sleeper for download restarts (tests).
+    #[must_use]
+    pub fn with_sleeper(mut self, sleeper: Box<dyn Sleeper>) -> Self {
+        self.sleeper = sleeper;
+        self
+    }
+
+    /// The full-jitter backoff before download restart `restart` (0-based).
+    fn backoff(&self, restart: u32) -> std::time::Duration {
+        let random = match self.rng.lock() {
+            Ok(mut rng) => rng.next_u64(),
+            Err(poisoned) => poisoned.into_inner().next_u64(),
+        };
+        backoff_delay(restart, random)
     }
 
     /// The download cap in force (`limits.download_max_bytes`; the engine passes the
@@ -232,9 +256,10 @@ impl BlobCache {
     }
 
     /// [`BlobCache::download`] from a target `resolve` gives afresh before each attempt
-    /// (a deferred asset's token URL). The one retry follows a hash mismatch or, when
-    /// `refreshable`, a 403 or 404 (the token died), so `resolve` runs at most twice.
-    /// What made the attempt that succeeded unverified is its own.
+    /// (a deferred asset's token URL). One retry follows a hash mismatch or, when
+    /// `refreshable`, a 403 or 404 (the token died). A connection that fails mid-body
+    /// restarts the download from the first byte, up to `MAX_RETRIES` times with
+    /// full-jitter backoff. What made the attempt that succeeded unverified is its own.
     pub fn download_resolving(
         &self,
         scopes: &ScopeTable,
@@ -244,6 +269,7 @@ impl BlobCache {
         refreshable: bool,
     ) -> Result<Fetched> {
         let mut attempt = 1;
+        let mut restarts = 0;
         loop {
             let target = resolve()?;
             let resp = http.send(Request::get(&target.url, "asset").download())?;
@@ -268,6 +294,11 @@ impl BlobCache {
                 Err(e) if e.code == ErrorCode::HashMismatch && attempt == 1 => attempt += 1,
                 // ubs:ignore — comparing error codes, not secrets
                 Err(e) if e.code == ErrorCode::HashMismatch => return Err(e.retryable(false)),
+                // The aborted write left nothing; the GET again, from the first byte.
+                Err(e) if matches!(e.code, ErrorCode::Network) && restarts < MAX_RETRIES => {
+                    self.sleeper.sleep(self.backoff(restarts));
+                    restarts += 1;
+                }
                 done => return done.map(|blob| Fetched { blob, unverified }),
             }
         }
@@ -952,6 +983,86 @@ mod tests {
                 req.url,
                 Box::new(Cursor::new(body)),
             ))
+        }
+    }
+
+    /// Answers its first `resets` requests with a body that resets midway, then `body`.
+    struct Resets {
+        resets: AtomicU64,
+        body: Vec<u8>,
+        sent: AtomicU64,
+    }
+
+    impl Http for Resets {
+        fn send(&self, req: Request) -> Result<crate::net::Response> {
+            self.sent.fetch_add(1, Ordering::Relaxed);
+            let body: Box<dyn Read + Send> = if self.resets.load(Ordering::Relaxed) > 0 {
+                self.resets.fetch_sub(1, Ordering::Relaxed);
+                let reset = io::Error::from(io::ErrorKind::ConnectionReset);
+                Box::new(Failing(5_000, Some(reset)))
+            } else {
+                Box::new(Cursor::new(self.body.clone()))
+            };
+            Ok(crate::net::Response::new(200, Vec::new(), req.url, body))
+        }
+    }
+
+    /// Counts the sleeps instead of sleeping.
+    struct Sleeps(std::sync::Arc<AtomicU64>);
+
+    impl Sleeper for Sleeps {
+        fn sleep(&self, _: std::time::Duration) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// A connection that fails mid-body restarts the download from a fresh `resolve`, up
+    /// to `MAX_RETRIES` times, leaving nothing behind.
+    #[test]
+    fn a_download_that_fails_midway_starts_over() {
+        for (resets, succeeds) in [(1, true), (3, true), (4, false)] {
+            let f = fixture();
+            let slept = std::sync::Arc::new(AtomicU64::new(0));
+            let cache = BlobCache::new(&f.paths)
+                .with_sleeper(Box::new(Sleeps(std::sync::Arc::clone(&slept))));
+            let http = Resets {
+                resets: AtomicU64::new(resets),
+                body: b"elvui".to_vec(),
+                sent: AtomicU64::new(0),
+            };
+            let mut resolves = 0;
+            let mut resolve = || {
+                resolves += 1;
+                Ok(DownloadTarget {
+                    url: format!("https://api.tukui.org/v1/download/elvui/token{resolves}"),
+                    declared: None,
+                    from_header: None,
+                })
+            };
+            let got = cache.download_resolving(&f.scopes, &TxId::new(), &http, &mut resolve, true);
+            let attempts = resets.min(4) + u64::from(succeeds);
+            let counts = (
+                http.sent.load(Ordering::Relaxed),
+                resolves,
+                slept.load(Ordering::Relaxed),
+            );
+            let expected_resolves = usize::try_from(attempts).unwrap();
+            assert_eq!(
+                counts,
+                (attempts, expected_resolves, attempts - 1),
+                "{resets} resets"
+            );
+            if succeeds {
+                assert_eq!(got.unwrap().blob.sha256, sha(b"elvui"), "{resets} resets");
+            } else {
+                let err = got.unwrap_err();
+                assert_eq!((err.code, err.retryable), (ErrorCode::Network, true));
+                assert!(
+                    files(f.paths.cache_dir()).is_empty(),
+                    "{:?}",
+                    files(f.paths.cache_dir())
+                );
+            }
         }
     }
 
