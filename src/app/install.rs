@@ -758,13 +758,8 @@ fn choose_target<'w>(
     if let Some(selector) = &ctx.target {
         return resolve_one(selector, targets, &world.table, &ctx.argv);
     }
-    if let Some(selector) = &world.config.default_target {
-        return resolve_one(selector, targets, &world.table, &ctx.argv);
-    }
-    if let Some(key) = world.registry.default
-        && let Some(found) = targets.iter().find(|d| d.target.key == Some(key))
-    {
-        return Ok(found);
+    if let Some(found) = world.default_target(&ctx.argv) {
+        return found;
     }
     let mut live: Vec<&DiscoveredTarget> = targets
         .iter()

@@ -602,3 +602,45 @@ fn a_rate_limited_tukui_list_makes_the_run_partial() {
         "{texts:?}"
     );
 }
+
+/// An entry the catalog says is `yes` on retail and another client: the hint goes to
+/// the default target, else the client with the most addons, else retail, never just
+/// the first id (`classic` sorts before `retail`, `titan` after).
+#[test]
+fn an_install_hint_prefers_the_default_then_the_played_client() {
+    let home_with = |other: &str, family: &str| {
+        let home = Home::new(&["wow", other]);
+        let dir = home.env.config().join("omaddons/catalog.d");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("50-both.toml"),
+            format!("schema_version = \"1.0\"\n\n[[addon]]\nname = \"Both\"\nref = \"gh:o/both\"\nfamilies = [\"mainline\", \"{family}\"]\nfolders = [\"Both\"]\n"),
+        )
+        .unwrap();
+        home
+    };
+    let hinted = |home: &Home| -> Value {
+        let r = home.run(&["search", "both", "--offline"]);
+        let envelope = r.expect(0);
+        envelope["commands"][0]["argv"][4].clone()
+    };
+    let classic = home_with("wow_classic", "mists");
+    assert_eq!(
+        hinted(&classic),
+        json!("retail"),
+        "no default, no addons: retail"
+    );
+
+    let titan = home_with("wow_classic_titan", "titan");
+    assert_eq!(hinted(&titan), json!("retail"));
+    titan.run(&["targets", "default", "titan"]).expect(0);
+    assert_eq!(hinted(&titan), json!("titan"), "the default target");
+
+    let titan = home_with("wow_classic_titan", "titan");
+    let addon = titan.env.root().join("addons/Mine");
+    fs::create_dir_all(&addon).unwrap();
+    fs::write(addon.join("Mine.toc"), "## Interface: 38002\n").unwrap();
+    let addon = addon.to_string_lossy().into_owned();
+    titan.run(&["install", &addon, "-t", "titan"]).expect(0);
+    assert_eq!(hinted(&titan), json!("titan"), "the client with addons");
+}

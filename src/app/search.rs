@@ -15,6 +15,7 @@ use serde::Serialize;
 use super::engine::Engine;
 use super::world::World;
 use crate::cli::Context;
+use crate::discover::DiscoveredTarget;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::Ref;
 use crate::output::{Outcome, Phase, Style};
@@ -24,7 +25,7 @@ use crate::resolve::catalog::Catalog;
 use crate::resolve::search::{
     Compat, CompatBasis, Hit, HitSource, Popularity, cap_summary, compat, rank,
 };
-use crate::rules::{ClientVersion, Family, InstallKind, RulesTable};
+use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind};
 use crate::sources::github_search::GithubSearch;
 use crate::sources::wowi::index::{IndexPolicy, WowiIndex};
 use crate::sources::{SourceId, SourceSkipReason, SourceSkipped};
@@ -485,7 +486,7 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
             }
         })
         .collect();
-    let commands = install_hints(&results);
+    let commands = install_hints(&results, &hint_preference(ctx, &world, &targets));
     sources_skipped.sort_by_key(|s| s.source);
     // One memo write per command: the Tukui list it fetched, for the next run.
     let remembered = cache.remember(&[]);
@@ -541,9 +542,40 @@ fn parse_time(s: &str) -> Option<Timestamp> {
     })
 }
 
-/// `install <ref> -t <target>` for up to three results, best first, each on the first
-/// client (by id) with its best suggestible hint (`yes`, then `likely`, then `unknown`).
-fn install_hints(results: &[SearchResult]) -> Vec<CommandHint> {
+/// The selected clients' ids in the order an install hint prefers them among equal
+/// hints: the install default target, a live client before a test one, the one with the
+/// most managed addons (the one played), retail, then by id. A default that names no
+/// client is `install`'s to report, and a record that cannot be read counts no addons.
+fn hint_preference(ctx: &Context, world: &World, targets: &[&DiscoveredTarget]) -> Vec<String> {
+    let default = world
+        .default_target(&ctx.argv)
+        .and_then(Result::ok)
+        .map(|d| d.target.id.clone());
+    let records = world.records().unwrap_or_default();
+    let mut ordered = targets.to_vec();
+    ordered.sort_by_key(|d| {
+        let t = &d.target;
+        (
+            default.as_ref() != Some(&t.id),
+            t.kind != TargetKind::Live,
+            std::cmp::Reverse(records.get(&t.id).map_or(0, |r| r.addons.len())),
+            t.family != Family::Mainline,
+            t.id.clone(),
+        )
+    });
+    ordered.into_iter().map(|d| d.target.id.clone()).collect()
+}
+
+/// `install <ref> -t <target>` for up to three results, best first, each on the client
+/// with its best suggestible hint (`yes`, then `likely`, then `unknown`), the first in
+/// `preference` among equals ([`hint_preference`]).
+fn install_hints(results: &[SearchResult], preference: &[String]) -> Vec<CommandHint> {
+    let rank = |id: &String| {
+        preference
+            .iter()
+            .position(|p| p == id)
+            .unwrap_or(usize::MAX)
+    };
     results
         .iter()
         .filter_map(|r| {
@@ -551,7 +583,7 @@ fn install_hints(results: &[SearchResult]) -> Vec<CommandHint> {
                 .compat
                 .iter()
                 .filter(|(_, c)| c.suggestible())
-                .min_by_key(|(id, c)| (**c, (*id).clone()))?;
+                .min_by_key(|(id, c)| (**c, rank(id), (*id).clone()))?;
             Some(CommandHint::new(
                 "install",
                 [
@@ -566,4 +598,68 @@ fn install_hints(results: &[SearchResult]) -> Vec<CommandHint> {
         })
         .take(INSTALL_HINTS)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(r: &str, compat: &[(&str, Compat)]) -> SearchResult {
+        SearchResult {
+            name: r.to_owned(),
+            r#ref: r.parse().unwrap(),
+            source: HitSource::Catalog,
+            author: None,
+            summary: None,
+            popularity: None,
+            updated_at: None,
+            compat: compat
+                .iter()
+                .map(|(id, c)| ((*id).to_owned(), *c))
+                .collect(),
+        }
+    }
+
+    /// The `-t` of each hint.
+    fn hinted(results: &[SearchResult], preference: &[&str]) -> Vec<String> {
+        let preference: Vec<String> = preference.iter().map(|p| (*p).to_owned()).collect();
+        install_hints(results, &preference)
+            .iter()
+            .filter_map(|h| h.argv().last().cloned())
+            .collect()
+    }
+
+    #[test]
+    fn a_hint_takes_the_strongest_compat_then_the_preferred_client() {
+        let tie = result(
+            "gh:o/tie",
+            &[("anniversary", Compat::Yes), ("retail", Compat::Yes)],
+        );
+        let stronger = result(
+            "gh:o/strong",
+            &[("retail", Compat::Unknown), ("era", Compat::Likely)],
+        );
+        let none = result(
+            "gh:o/none",
+            &[("retail", Compat::No), ("era", Compat::Unlikely)],
+        );
+        assert_eq!(
+            hinted(
+                &[tie.clone(), stronger, none],
+                &["retail", "era", "anniversary"]
+            ),
+            ["retail", "era"],
+            "the preferred among equals; a stronger hint wins; nothing for no or unlikely"
+        );
+        assert_eq!(
+            hinted(std::slice::from_ref(&tie), &["anniversary", "retail"]),
+            ["anniversary"]
+        );
+        // Clients outside the preference come last, by id.
+        assert_eq!(hinted(std::slice::from_ref(&tie), &[]), ["anniversary"]);
+        let many: Vec<SearchResult> = (0..5)
+            .map(|i| result(&format!("gh:o/r{i}"), &[("retail", Compat::Yes)]))
+            .collect();
+        assert_eq!(hinted(&many, &["retail"]).len(), INSTALL_HINTS);
+    }
 }

@@ -161,6 +161,18 @@ impl World {
         Ok(records)
     }
 
+    /// The default target, as `install` reads it without `-t`: config.toml's
+    /// `default_target` (an error when it names no client), else the registry's default;
+    /// `None` when neither is set.
+    pub fn default_target(&self, argv: &[String]) -> Option<Result<&DiscoveredTarget>> {
+        let targets = &self.resolved.targets;
+        if let Some(selector) = &self.config.default_target {
+            return Some(resolve_one(selector, targets, &self.table, argv));
+        }
+        let key = self.registry.default?;
+        targets.iter().find(|d| d.target.key == Some(key)).map(Ok)
+    }
+
     /// The records of the registered clients sharing `target`'s AddOns directory, by
     /// target id: what [`crate::inventory::inventory_shared`] classifies `shared` by.
     pub fn sibling_records(&self, target: &Target) -> Result<Vec<(String, TargetRecord)>> {
