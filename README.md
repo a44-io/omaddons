@@ -17,12 +17,13 @@ $ omaddons status
 anniversary  tbc                                           2.5.6.70006   live  anniversary (battlenet)  0 managed · 0 unmanaged · 0 protected
 classic      mists                                         5.5.4.70268   live  classic (battlenet)      0 managed · 0 unmanaged · 0 protected
 era          Classic Era · Hardcore · Season of Discovery  1.15.9.70003  live  era (battlenet)          0 managed · 0 unmanaged · 0 protected
-forever      forever                                       1.60.1.70245  live  forever (battlenet)      0 managed · 12 unmanaged · 0 protected
-retail       mainline                                      12.1.5.70391  live  retail (battlenet)       0 managed · 0 unmanaged · 0 protected
+forever      forever                                       1.60.1.70245  live  forever (battlenet)      0 managed · 3 unmanaged · 0 protected · 3 adoptable
+retail       mainline                                      12.1.5.70391  live  retail (battlenet)       2 managed · 0 unmanaged · 0 protected
 wotlk        wrath-legacy                                  3.3.5.12340   live  localhost                0 managed · 0 unmanaged · 23 protected
+Next: omaddons adopt -t forever
 ```
 
-<sub>Real output from the development machine: five Battle.net clients in one Proton prefix and a 3.3.5a private-server client in another, found with no configuration.</sub>
+<sub>Output from a test home laid out like the development machine: five Battle.net clients in one Proton prefix and a 3.3.5a private-server client in another, found with no configuration.</sub>
 
 <div align="center">
 <h3>Build and install</h3>
@@ -164,7 +165,7 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 
 **4. The CLI is the product.** Humans read the terminal output, agents read the JSON envelope, and the future Omarchy widget will render the same envelope without logic of its own. Commands never print: they return typed outcomes that one output layer renders, and clippy denies `print!`. Every error names its fix: an argv an agent can run, or a sentence when no command would help.
 
-**5. Detection is data.** Products, the version-to-family table, interface ranges and client-rules rows are tables in `src/rules.rs`. Each can be patched from `config.toml`, so a new Classic client or a misdetected private server is a config change, not a release.
+**5. Detection is data.** Products, the version-to-family table, interface ranges and client-rules rows are tables in `src/rules.rs`. Each can be patched from `config.toml`: a new product code, a changed version range or load rule for a known family, or a misdetected private server is a config change, not a release. A new family (an expansion line with its own `release.json` flavor) still needs a release, because families are a closed set in code.
 
 ---
 
@@ -297,34 +298,36 @@ retail: would install Bar 2.1.0 (1 folder)
 $ omaddons install ./HelloWorld ./Bar-2.1.0.zip -t retail --reason "set up retail UI"
 retail: installed HelloWorld 1.0.0 (1 folder)
 retail: installed Bar 2.1.0 (1 folder)
-tx 01M51F4QXQRZQAP2KKSAKZ71QK · undo: omaddons undo 01M51F4QXQRZQAP2KKSAKZ71QK
+tx 01M59Z5RTVMBBHR4FKNZ3FN39K · undo: omaddons undo 01M59Z5RTVMBBHR4FKNZ3FN39K
 
 $ omaddons list -t retail
 retail (12.1.5.70391, mainline)
-  Bar         2.1.0  file:~/Downloads/Bar-2.1.0.zip  stable
-  HelloWorld  1.0.0  file:~/Downloads/HelloWorld     stable
+  Bar         2.1.0    file:~/Downloads/Bar-2.1.0.zip  stable
+  HelloWorld  1.0.0    file:~/Downloads/HelloWorld     stable
   2 managed · 1 unmanaged · 1 protected · 0 linked
 
 $ omaddons remove Bar -t retail --actor agent --reason "Bar conflicts with ElvUI"
+warning: On retail, 01M59Z5RWG5MH458YF524HJPG5's snapshot holds the only copy of Bar: `omaddons undo 01M59Z5RWG5MH458YF524HJPG5` brings them back until retention prunes it (kept at least 24 hours; then pruned once 10 newer transactions on this client exist, after 7 days, or past the 2 GiB snapshot cap)
+  fix: omaddons undo 01M59Z5RWG5MH458YF524HJPG5
 retail: removed Bar 2.1.0 (1 folder)
-tx 01M51F4QY5KBKP70YF3DZV69ZN · undo: omaddons undo 01M51F4QY5KBKP70YF3DZV69ZN
+tx 01M59Z5RWG5MH458YF524HJPG5 · undo: omaddons undo 01M59Z5RWG5MH458YF524HJPG5
 
 $ omaddons undo --last-by agent --actor agent --reason "the user wants Bar back"
-reverted 01M51F4QY5KBKP70… (remove by agent, 2026-10-15 23:22) on retail
+reverted 01M59Z5RWG5MH458… (remove by agent, 2026-10-19 06:36) on retail
 restored 1 folder, removed 0 · SavedVariables: 0 restored, 0 unchanged
-tx 01M51F4QYBQEXB2HECCHD1728N · undo this: omaddons undo 01M51F4QYBQEXB2HECCHD1728N
+tx 01M59Z5RX2ECD3E5ZVXFYZPVH0 · undo this: omaddons undo 01M59Z5RX2ECD3E5ZVXFYZPVH0
 
 $ omaddons history
-01M51F4QYBQEXB2H…  2026-10-15 23:22  agent  undo     retail  +1 ~0 -0  "the user wants Bar back"
-01M51F4QY5KBKP70…  2026-10-15 23:22  agent  remove   retail  +0 ~0 -1  "Bar conflicts with ElvUI"
-01M51F4QXQ7RJ2C5…  2026-10-15 23:22  human  install  retail  +2 ~0 -0  "set up retail UI"
+01M59Z5RX2ECD3E5…  2026-10-19 06:36  agent  undo     retail  +1 ~0 -0  "the user wants Bar back"
+01M59Z5RWG5MH458…  2026-10-19 06:36  agent  remove   retail  +0 ~0 -1  "Bar conflicts with ElvUI"
+01M59Z5RTVMBBHR4…  2026-10-19 06:36  human  install  retail  +2 ~0 -0  "set up retail UI"
 ```
 
 And what a refusal looks like:
 
 ```text
 $ omaddons install ./EraOnly.zip -t retail
-error[wrong_flavor]: file:~/Downloads/./EraOnly.zip does not load on retail (Mainline)
+error[wrong_flavor]: file:~/Downloads/EraOnly.zip does not load on retail (Mainline)
 fix: use an archive built for this client
 
 $ omaddons install gh:o/oldthing -t retail
@@ -1182,7 +1185,7 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 ```json
 {"ok":true,"schema_version":"1.0","tool_version":"0.1.0","command":"install","exit_code":0,"partial":false,
  "data":{"dry_run":false,"target":{"id":"retail","key":"01M51EX04HHWM46XE9F2B9JXED"},"tx":"01M51EX645RCVFN6Z4ZV5GRWVS","kind":"install",
-   "items":[{"request":"./Bar-2.1.0.zip","ref":"file:/home/me/src/./Bar-2.1.0.zip","name":"Bar","status":"installed",
+   "items":[{"request":"./Bar-2.1.0.zip","ref":"file:/home/me/src/Bar-2.1.0.zip","name":"Bar","status":"installed",
      "from_version":null,"to_version":"2.1.0","version_confidence":"toc","channel":"stable",
      "folders":{"added":["Bar"],"replaced":[],"removed":[],"skipped":[],"recorded":[]},"error":null}],
    "reload_required":"none","atomic_swap":true,"creates_addons_dir":false},
@@ -1275,8 +1278,8 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `bad_archive` | 1 | no | malformed, encrypted, or not Stored/Deflate |
 | `distribution_disabled` | 1 | no | reserved for CurseForge (M5) |
 | `source_disabled` | 1 | no | a source turned off in `config.toml` (the fix turns it back on); CurseForge or Wago (M5); a `git:` ref on another host when `git` is missing or older than 2.32 |
-| `auth_required` | 1 | no | reserved for credentialed sources |
-| `auth_rejected` | 1 | no | reserved for credentialed sources |
+| `auth_required` | 1 | no | a GitHub token is configured or stored but cannot be used: an unset `{ env = … }` variable, an unreadable `{ file = … }`, an empty or malformed token, or `auth github --from-gh` without a working `gh` |
+| `auth_rejected` | 1 | no | GitHub answered 401 to the token (the fix clears or replaces it where it came from), or a `{ command = … }` credential failed |
 | `state_corrupt` | 1 | no | an unreadable state or config file (with line and column); a SavedVariables snapshot copy that no longer matches its manifest, refused before an undo moves anything (`details.reason: "snapshot_mismatch"`) |
 | `io` | 1 | no | filesystem error; `details.path` |
 | `internal` | 1 | no | a bug or panic; fix is `omaddons status` (`omaddons status --cached` when `status` itself failed, and a report when that failed too) |
@@ -1311,9 +1314,9 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `target_key_duplicate` | two clients carry the same marker (a copied install) |
 | `catalog_override_invalid` | a `catalog.d` file was skipped |
 | `ownership_transferred` | `--force` moved a folder from one addon to another |
-| `credential_file_mode` | reserved for credential files other users can read (no command reads credentials yet) |
+| `credential_file_mode` | a credential file (config.toml's `{ file = … }` credential, or the token `auth github set` stores) is readable by other users; the fix is `chmod 600 <file>` |
 | `addon_pinned` | a pinned addon was left at its release; the fix shows it with `info`, and `--version` moves it |
-| `stale_check` | an offline answer came from the release memo, whatever its age; it names the oldest remembered check |
+| `stale_check` | an answer came from stored data, not from the source now: offline from the release memo, or from the stored WoWInterface index (offline, or after a failed refresh); it names how old. When `--offline` alone made the run offline, its `fix_argv` reruns the command online |
 | `desired_unknown_key` | `addons.toml` has a key omaddons does not know (named, with its line); it is ignored |
 | `desired_unknown_target` | an `addons.toml` `[target.<id>]` section names no known client; its entries are skipped |
 | `adopt_name_changed` | an adopted addon's name was taken on its client; it is recorded as `<name> (<primary folder>)` |
@@ -1452,7 +1455,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 | `codeload.github.com` | zips of exact commits for `git:` refs | used |
 | `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | release asset downloads | used |
 | `api.mmoui.com`, `cdn.wowinterface.com` | WoWInterface: project details, downloads | used (also allowed for `url:`) |
-| `api.tukui.org` | Tukui: the project list, download links, downloads | used (also allowed for `url:`); responses are never cached (`no-store`) |
+| `api.tukui.org` | Tukui: the project list, download links, downloads | used (also allowed for `url:`); responses are never stored by the HTTP cache (`no-store`); the project list, without its download links, is kept in the release memo (15 minutes, and for `--offline`) |
 | `api.curseforge.com`, `edge.forgecdn.net`, `mediafilez.forgecdn.net` | CurseForge | off until enabled (M5) |
 | `addons.wago.io` | Wago | off until enabled (M5) |
 | every host in `git_hosts` | `git:` refs through the git binary, never contacted over HTTP, not even by a redirect | only when you list them |
@@ -1502,9 +1505,10 @@ running_policy = "safe"
 # Extra https git hosts for git: refs, as bare host names. Needs git 2.32+.
 git_hosts = ["codeberg.org"]
 
-# Read today, used from milestone 3 (WTF backups and the widget's check interval).
-auto_backup = "off"          # "off" or "daily"
-check_interval_hours = 6     # 0–48; 0 checks only when the panel opens
+auto_backup = "off"          # "off" or "daily"; read today, used from milestone 3 (WTF backups)
+# How old an update check may be before status calls it stale (updates.stale):
+# 1–48 hours; 0 keeps the default of 6.
+check_interval_hours = 6
 
 [limits]                     # sizes are integers or "KiB" / "MiB" / "GiB" strings
 archive_max_entries = 20000
@@ -1533,7 +1537,7 @@ label = "my 3.3.5a server"
 | `running_policy` | `safe` | `safe`, `refuse` or `allow` |
 | `git_hosts` | `[]` | Hosts allowed for `git:` refs through the git binary |
 | `auto_backup` | `off` | Read; used in milestone 3 |
-| `check_interval_hours` | `6` | Read; used in milestone 3 |
+| `check_interval_hours` | `6` | `status` reports `updates.stale` when the oldest check is older than this (1–48; 0 keeps the default) |
 | `limits.archive_max_entries` | `20000` | Entries per archive |
 | `limits.archive_max_uncompressed` | `1GiB` | Expanded size per archive |
 | `limits.archive_max_ratio` | `200` | Compression ratio, checked past 32 MiB |
@@ -1713,7 +1717,7 @@ omaddons targets add ~/path/to/client --name mine # a root, client dir, Interfac
 omaddons config set extra_roots '["/mnt/games"]'  # scan this root every run
 ```
 
-Wine prefixes are found only as direct children of `~/Games`, as `~/.wine`, or where a launcher config names them. A nested prefix such as Heroic's `~/Games/Heroic/Prefixes/…` is found only through Heroic: its configs, or its per-game prefix folder when Heroic is installed. Outside prefixes, `~/Games` is walked 4 levels deep, and `extra_roots`, manually added roots and `product.db` paths are used as well. A custom client needs an `Interface/` folder next to its `wow*.exe`. A warning `discovery_truncated` means the 50,000-directory budget ran out; add the client by path.
+Wine prefixes are found as direct children of `~/Games`, as `~/.wine`, where a launcher config names them, and, while a WoW or Battle.net process runs, as that process's `WINEPREFIX` under your home; once registered, such a client stays found after it exits. A nested prefix such as Heroic's `~/Games/Heroic/Prefixes/…` is found through Heroic: its configs, or its per-game prefix folder when Heroic is installed. Outside prefixes, `~/Games` is walked 4 levels deep, and `extra_roots`, manually added roots and `product.db` paths are used as well. A custom client needs an `Interface/` folder next to its `wow*.exe`. A warning `discovery_truncated` means the 50,000-directory budget ran out; add the client by path.
 
 ### `target_ambiguous`: several clients match
 
@@ -1812,7 +1816,7 @@ Journals are recovered by the next command that changes something: install, upda
 
 ### Known limitations
 
-- Discovery reads only the direct children of `~/Games` as prefixes, apart from those a launcher names. A relative Lutris `exe` is resolved against the game's `working_dir` or `prefix`, where Lutris itself uses the game directory in its `pga.db`, which omaddons does not read.
+- Discovery scans only the direct children of `~/Games` as prefixes (a nested prefix is found through a launcher config or while its client runs). A relative Lutris `exe` is resolved against the game's `working_dir` or `prefix`, where Lutris itself uses the game directory in its `pga.db`, which omaddons does not read.
 - Drive-letter mapping applies to clients that Battle.net's `product.db` names. A custom client on another drive letter needs `targets add` or `extra_roots`.
 - Custom clients between the five legacy versions (2.0–2.3, 3.0–3.2, 4.0–4.2, 5.0–5.3) get family `unknown`, which matches only their exact major.minor.
 - On unknown custom clients, the `safe` running policy behaves as for legacy clients and refuses every change while they run.
@@ -1820,7 +1824,7 @@ Journals are recovered by the next command that changes something: install, upda
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
 - Private GitHub repositories and HTTP proxies are not supported.
 - Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) keep separate records: a folder one records is `shared` on the other, which cannot record it too, so manage those addons from one client. Records made on both before this check stay doubled: `status` warns `target_addons_shared`, a change through either warns the same, and M4's doctor will report them.
-- The legacy running behavior is marked UNVERIFIED in the code. The Lutris, Heroic and Steam readers follow their upstream source (Lutris v0.5.22, Heroic v2.22.4, and for closed-source Steam the readers of Lutris, protontricks and ValvePython `vdf`), cited in each reader; the Bottles layout was verified against Bottles 67.4, and `product.db` against a real Agent database and two upstream readers.
+- The legacy running behavior is marked UNVERIFIED in the code, and Wine's process naming under Proton or umu while the game runs, which running detection depends on, has not yet been observed on a real install. The Lutris, Heroic and Steam readers follow their upstream source (Lutris v0.5.22, Heroic v2.22.4, and for closed-source Steam the readers of Lutris, protontricks and ValvePython `vdf`), cited in each reader; the Bottles layout was verified against Bottles 67.4, and `product.db` against a real Agent database and two upstream readers.
 
 ### Known issues
 
@@ -1866,7 +1870,7 @@ Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`.
 
 ### Tests
 
-At the time of writing there are 760 tests: 464 unit tests in `src/`, 295 integration tests in 46 test binaries, and one doctest. They include 29 proptest properties. 28 are `#[ignore]`d and run only at checkpoints: live probes, real-machine tests, fixture recorders and child-process helpers.
+At the M2 checkpoint (2026-10-16) there were 1,333 tests: 699 unit tests in `src/`, 633 integration tests in 72 test binaries and one doctest, with 37 proptest properties. `cargo test -- --list` counts today's. 45 were `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine and real-client checks, time budgets and the bench homes (`tests/perf.rs`), fixture recorders, the fuzz-seed writer and child-process helpers.
 
 | Suite | What it covers |
 |---|---|
@@ -1875,7 +1879,7 @@ At the time of writing there are 760 tests: 464 unit tests in `src/`, 295 integr
 | `tests/engine_concurrency.rs` | Parallel runs, duplicate installs, races between plan and commit (each run stopped at a named step), no lock while planning and staging, and the lock hold of commits and undo, measured (16 MiB of SavedVariables and a 64 MiB folder included) |
 | `tests/perf.rs` | Time budgets (release build, checkpoint only) and the request-economy checks that run in the gate |
 | `tests/discover_*.rs` | The discovery matrix, launchers, scanning, custom clients, the cache |
-| `tests/catalog.rs` | The 19 GitHub and `git:` catalog entries replayed offline from recorded HTTP fixtures, with no REST calls |
+| `tests/catalog.rs` | The 19 GitHub and `git:` catalog entries replayed offline from recorded HTTP fixtures, with no REST calls (the two Tukui entries: `tests/sources_tukui.rs`) |
 | `tests/single_writer.rs` | Only `src/fsx/` writes to the filesystem |
 
 Recorded HTTP fixtures live in `tests/fixtures/http/<scenario>/`. Debug builds replay them with `OMADDONS_HTTP_FIXTURES=<dir>` and re-record them with `OMADDONS_RECORD=1`. Recording never stores request headers, drops `set-cookie`, and strips secret query parameters from URLs and `location` headers.

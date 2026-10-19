@@ -1,5 +1,6 @@
-//! Every catalog entry resolves through its source, replayed from upstream responses
-//! recorded in `tests/fixtures/http/catalog/`.
+//! Every GitHub and `git:` catalog entry resolves through its source, replayed from
+//! upstream responses recorded in `tests/fixtures/http/catalog/` (the Tukui entries are
+//! `tests/sources_tukui.rs`'s).
 
 mod common;
 

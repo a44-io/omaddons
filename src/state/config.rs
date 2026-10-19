@@ -35,12 +35,14 @@ use crate::rules::{ClientRulesOverride, Family, RulesOverrides, RulesTable};
 pub struct Config {
     /// Extra discovery roots (absolute paths).
     pub extra_roots: Vec<PathBuf>,
-    /// The target for commands without `-t`: an id, key or any `-t` form.
+    /// `install`'s target when `-t` is absent, and the client `search`'s install hints
+    /// prefer: an id, key or any `-t` form.
     pub default_target: Option<String>,
     pub default_channel: Option<Channel>,
     pub running_policy: Option<RunningPolicy>,
     pub auto_backup: Option<AutoBackup>,
-    /// 0–48; 0 checks only when the panel opens.
+    /// Hours before `status` calls an update check stale (`updates.stale`), 0–48; 0
+    /// keeps the default.
     pub check_interval_hours: Option<u32>,
     /// Extra https git hosts allowed for `git:` refs.
     pub git_hosts: Vec<String>,
@@ -231,7 +233,7 @@ pub const KEYS: &[KeySpec] = &[
     spec(
         "default_target",
         KeyKind::Text,
-        "The target for commands without -t",
+        "install's target when -t is absent",
     ),
     spec(
         "default_channel",
@@ -247,7 +249,7 @@ pub const KEYS: &[KeySpec] = &[
     spec(
         "check_interval_hours",
         KeyKind::Hours,
-        "Hours between background update checks",
+        "Hours before status calls an update check stale",
     ),
     spec(
         "git_hosts",
