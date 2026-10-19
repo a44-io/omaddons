@@ -161,12 +161,19 @@ impl Home {
 
     /// A retail client process in the fake `/proc`.
     pub fn retail_running(&mut self) {
+        self.client_running("_retail_", "Wow.exe");
+    }
+
+    /// The Battle.net client in `folder` (`_anniversary_`) runs as `exe` in the prefix,
+    /// and nothing else does.
+    pub fn client_running(&mut self, folder: &str, exe: &str) {
         let prefix = self.prefix.display().to_string();
+        let path = format!("C:\\Program Files (x86)\\World of Warcraft\\{folder}\\{exe}");
         let proc = FakeProc::new(self.env.root().join("proc")).process(
             4242,
             true,
-            "Wow.exe",
-            &["C:\\Program Files (x86)\\World of Warcraft\\_retail_\\Wow.exe"],
+            exe,
+            &[&path],
             &[("WINEPREFIX", &prefix)],
         );
         self.proc = Some(proc.root().to_path_buf());

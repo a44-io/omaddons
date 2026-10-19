@@ -15,7 +15,7 @@ use common::netlog::net_log;
 use common::trees::tree_hash;
 use omaddons::model::{Channel, TxKind};
 use serde_json::{Value, json};
-use support::{ON_BOTH, exported, items, prune_home, record_of, statuses, target};
+use support::{ON_BOTH, exported, item, items, prune_home, record_of, statuses, target, warned};
 
 #[cfg(test)]
 mod support {
@@ -93,6 +93,24 @@ mod support {
     /// Target `id`'s items.
     pub fn items<'v>(envelope: &'v Value, id: &str) -> &'v Vec<Value> {
         target(envelope, id)["items"].as_array().unwrap()
+    }
+
+    /// Target `id`'s item for `request`; null when there is none.
+    pub fn item<'v>(envelope: &'v Value, id: &str, request: &str) -> &'v Value {
+        items(envelope, id)
+            .iter()
+            .find(|i| i["request"] == request)
+            .unwrap_or(&Value::Null)
+    }
+
+    /// How many warnings carry `code`.
+    pub fn warned(envelope: &Value, code: &str) -> usize {
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == code)
+            .count()
     }
 
     /// `(request, status)` of target `id`'s items.
@@ -1168,4 +1186,206 @@ fn pruning_a_record_whose_folder_is_gone_forgets_it_undoably() {
         record_of(&home, "retail", "Bar").is_some(),
         "the record is back"
     );
+}
+
+/// Whether `error`'s message contains `text`. An item's `game_running` carries no
+/// `details.reason` or `details.running` yet (omad-7dee), so its message tells.
+fn says(error: &Value, text: &str) -> bool {
+    error["message"].as_str().is_some_and(|m| m.contains(text))
+}
+
+/// Under the safe policy, a prune that removes a folder the running client has loaded
+/// fails that item and leaves the folder; `--while-running` removes it and asks for a
+/// restart, and once the client exits undo brings it back.
+#[test]
+fn sync_prune_of_a_loaded_addon_is_refused_while_the_client_runs() {
+    let mut home = prune_home();
+    for r in ["gh:o/foo", "gh:o/bar"] {
+        home.run(&["install", r, "-t", "retail"]).expect(0);
+    }
+    let addons = home.addons("_retail_");
+    let (tree, txs) = (tree_hash(&addons), common::state::history(&home).len());
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
+    home.retail_running();
+
+    let r = home.run(&["sync", "--prune"]);
+    let envelope = r.expect(0);
+    assert_eq!(envelope["partial"], true, "{}", r.context());
+    let bar = item(&envelope, "retail", "Bar");
+    assert_eq!(
+        (&bar["status"], &bar["error"]["code"]),
+        (&json!("failed"), &json!("game_running")),
+        "{}",
+        r.context()
+    );
+    assert!(
+        says(
+            &bar["error"],
+            "would remove or rename a TOC the client has loaded"
+        ),
+        "{bar}"
+    );
+    assert_eq!(
+        bar["error"]["fix_argv"],
+        json!(["omaddons", "sync", "--prune", "--while-running"])
+    );
+    assert_eq!(
+        target(&envelope, "retail")["tx"],
+        Value::Null,
+        "nothing else changed"
+    );
+    assert_eq!(
+        warned(&envelope, "game_running"),
+        1,
+        "the failure, mirrored"
+    );
+    assert_eq!(tree_hash(&addons), tree);
+    assert_eq!(common::state::history(&home).len(), txs);
+
+    let r = home.run(&["sync", "--prune", "--while-running"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        statuses(&envelope, "retail"),
+        [pair("Bar", "removed")],
+        "{}",
+        r.context()
+    );
+    assert_eq!(target(&envelope, "retail")["reload_required"], "restart");
+    assert_eq!(warned(&envelope, "reload_required"), 1, "{}", r.context());
+    assert!(!addons.join("Bar").exists());
+
+    home.nothing_running();
+    home.run(&["undo"]).expect(0);
+    assert_eq!(tree_hash(&addons), tree);
+}
+
+/// A new addon installs while the client runs, and the client must reload its UI.
+#[test]
+fn sync_install_of_a_new_addon_while_running_needs_reload() {
+    let mut home = prune_home();
+    home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\", \"gh:o/baz\"]\n");
+    home.retail_running();
+
+    let r = home.run(&["sync"]);
+    let envelope = r.expect(0);
+    assert_eq!(envelope["partial"], false, "{}", r.context());
+    assert_eq!(item(&envelope, "retail", "gh:o/baz")["status"], "installed");
+    let t = target(&envelope, "retail");
+    assert!(t["tx"].is_string(), "{t}");
+    assert_eq!(t["reload_required"], "reload");
+    assert_eq!(warned(&envelope, "reload_required"), 1, "{}", r.context());
+    assert!(home.addons("_retail_").join("Baz").is_dir());
+}
+
+/// A process table omaddons cannot read counts every client as running: the add goes
+/// through with a reload, removing the loaded folder fails with `running: "unknown"`,
+/// and `running_unknown` is warned once.
+#[test]
+fn sync_fails_closed_when_the_process_table_cannot_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if common::procfs::running_as_root() {
+        return; // chmod 000 hides nothing from root
+    }
+    let home = prune_home();
+    for r in ["gh:o/foo", "gh:o/bar"] {
+        home.run(&["install", r, "-t", "retail"]).expect(0);
+    }
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\", \"gh:o/baz\"]\n");
+    let locked = home.env.root().join("proc-locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let argv = ["sync", "--prune", "--json"].map(str::to_owned);
+    let r = home.exec_with(&argv, &[("OMADDONS_PROC_ROOT", locked.to_str().unwrap())]);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let envelope = r.expect(0);
+    assert_eq!(envelope["partial"], true, "{}", r.context());
+    assert_eq!(item(&envelope, "retail", "gh:o/baz")["status"], "installed");
+    let bar = &item(&envelope, "retail", "Bar")["error"];
+    assert_eq!(bar["code"], "game_running", "{}", r.context());
+    assert!(says(bar, "may be running"), "{bar}");
+    let t = target(&envelope, "retail");
+    assert!(t["tx"].is_string(), "the add commits: {t}");
+    assert_eq!(t["reload_required"], "reload");
+    assert_eq!(warned(&envelope, "running_unknown"), 1, "{}", r.context());
+    assert!(home.addons("_retail_").join("Bar").is_dir());
+}
+
+/// On a legacy client every change waits for it to exit, an add too (`legacy_client`):
+/// with nothing else in the run, that is the run's error, each item in
+/// `details.items`. `--while-running` installs it and asks for a restart.
+#[test]
+fn a_legacy_client_refuses_every_change_while_it_runs() {
+    let mut home = prune_home();
+    let legacy = home.with_custom(common::trees::CustomRoot::at(
+        home.env.root().join("wow-335"),
+    ));
+    let targets = home.run(&["targets"]).expect(0);
+    let wotlk = targets["data"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["family"] != "mainline")
+        .and_then(|t| t["id"].as_str())
+        .unwrap()
+        .to_owned();
+    release_graph(
+        &home.http,
+        &[Node {
+            base: "https://github.com/o/leg",
+            tag: "v1",
+            folders: &[Folder {
+                name: "Leg",
+                interface: "30300",
+                deps: &[],
+                optional: &[],
+            }],
+        }],
+    );
+    home.write_desired(&format!("[target.{wotlk:?}]\naddons = [\"gh:o/leg\"]\n"));
+    let exe = legacy.join("Wow.exe").display().to_string();
+    let proc = common::procfs::FakeProc::new(home.env.root().join("proc")).process(
+        9,
+        true,
+        "Wow.exe",
+        &["/usr/bin/wine", &exe],
+        &[],
+    );
+    home.proc = Some(proc.root().to_path_buf());
+    let interface = legacy.join("Interface");
+    let (tree, txs) = (tree_hash(&interface), common::state::history(&home).len());
+
+    let r = home.run(&["sync"]);
+    let error = &r.expect(4)["error"];
+    assert_eq!(error["code"], "game_running", "{}", r.context());
+    assert!(
+        says(error, "needs a restart to pick up any addon change"),
+        "{error}"
+    );
+    assert_eq!(
+        (
+            &error["details"]["items"][0]["target"],
+            &error["details"]["items"][0]["request"]
+        ),
+        (&json!(wotlk), &json!("gh:o/leg"))
+    );
+    assert_eq!(
+        error["fix_argv"],
+        json!(["omaddons", "sync", "--while-running"])
+    );
+    assert_eq!(tree_hash(&interface), tree);
+    assert_eq!(common::state::history(&home).len(), txs);
+
+    let r = home.run(&["sync", "--while-running"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        item(&envelope, &wotlk, "gh:o/leg")["status"],
+        "installed",
+        "{}",
+        r.context()
+    );
+    assert_eq!(target(&envelope, &wotlk)["reload_required"], "restart");
+    assert!(interface.join("AddOns/Leg").is_dir());
 }

@@ -12,7 +12,7 @@ use common::state::record;
 use common::trees::tree_hash;
 use omaddons::model::AddonReason;
 use serde_json::{Value, json};
-use support::{BOTH, era_and_anniversary, fail_latest, items, publish, triples};
+use support::{BOTH, era_and_anniversary, fail_latest, items, publish, triples, warned};
 
 #[cfg(test)]
 mod support {
@@ -106,6 +106,16 @@ mod support {
                 )
             })
             .collect()
+    }
+
+    /// How many warnings carry `code`.
+    pub fn warned(envelope: &Value, code: &str) -> usize {
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == code)
+            .count()
     }
 
     pub fn triples(
@@ -410,4 +420,92 @@ fn each_side_is_one_other_client() {
         "{}",
         r.context()
     );
+}
+
+/// Only `--to`'s client matters: copying from a running client needs nothing, and
+/// copying onto one installs (copy only adds) and asks for a reload. Copy never
+/// replaces what `--to` has (an addon there is skipped), so it cannot drop a loaded TOC.
+#[test]
+fn only_the_destination_s_running_client_matters() {
+    let mut home = era_and_anniversary();
+    let addons = home.addons("_anniversary_");
+
+    let running = |home: &Home| -> Vec<(String, Value)> {
+        home.run(&["status"]).expect(0)["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t["id"].as_str().unwrap().to_owned(), t["running"].clone()))
+            .collect()
+    };
+    home.client_running("_classic_era_", "WowClassic.exe");
+    assert_eq!(
+        running(&home),
+        [
+            ("anniversary".to_owned(), json!(false)),
+            ("era".to_owned(), json!(true))
+        ]
+    );
+    let r = home.run(&["copy", "--from", "era", "--to", "anniversary", "Foo"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        items(&envelope),
+        triples(&[("Foo", "installed", None)]),
+        "{}",
+        r.context()
+    );
+    assert_eq!(envelope["data"]["targets"][0]["reload_required"], "none");
+    assert_eq!(warned(&envelope, "reload_required"), 0, "{}", r.context());
+
+    home.client_running("_anniversary_", "WowClassic.exe");
+    let r = home.run(&["copy", "--from", "era", "--to", "anniversary", "Pin"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        items(&envelope),
+        triples(&[("Pin", "installed", None)]),
+        "{}",
+        r.context()
+    );
+    let t = &envelope["data"]["targets"][0];
+    assert!(t["tx"].is_string(), "{t}");
+    assert_eq!(t["reload_required"], "reload");
+    assert_eq!(warned(&envelope, "reload_required"), 1, "{}", r.context());
+    assert!(addons.join("Pin").is_dir());
+}
+
+/// A process table omaddons cannot read counts `--to` as running: the copy installs,
+/// asks for a reload, and says once that it could not tell.
+#[test]
+fn copy_counts_the_destination_as_running_when_the_process_table_cannot_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if common::procfs::running_as_root() {
+        return; // chmod 000 hides nothing from root
+    }
+    let home = era_and_anniversary();
+    let locked = home.env.root().join("proc-locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let argv = [
+        "copy",
+        "--from",
+        "era",
+        "--to",
+        "anniversary",
+        "Foo",
+        "--json",
+    ]
+    .map(str::to_owned);
+    let r = home.exec_with(&argv, &[("OMADDONS_PROC_ROOT", locked.to_str().unwrap())]);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let envelope = r.expect(0);
+    assert_eq!(
+        items(&envelope),
+        triples(&[("Foo", "installed", None)]),
+        "{}",
+        r.context()
+    );
+    assert_eq!(envelope["data"]["targets"][0]["reload_required"], "reload");
+    assert_eq!(warned(&envelope, "running_unknown"), 1, "{}", r.context());
 }
