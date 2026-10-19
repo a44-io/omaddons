@@ -169,4 +169,25 @@ impl Engine {
     pub fn undo(&self, req: &UndoRequest) -> Result<UndoOutcome> {
         crate::engine::undo(req, &self.ctx(None))
     }
+
+    /// For a change command that ends with nothing to send to the engine: a journal a
+    /// crash left is recovered as a commit would have, into the run's warnings. A dry
+    /// run never recovers.
+    pub fn recover_waiting(&self, ctx: &Context) {
+        if !ctx.dry_run {
+            ctx.notes
+                .warn_all(&crate::engine::tx::recover_waiting(&self.ctx(None)));
+        }
+    }
+}
+
+/// [`Engine::recover_waiting`] for a command that has built no engine: one is built only
+/// when a journal waits.
+pub fn recover_waiting(ctx: &Context, world: &World, command: &'static str) {
+    if ctx.dry_run || !crate::engine::journal::recoverable(&world.paths).unwrap_or(false) {
+        return;
+    }
+    if let Ok(engine) = Engine::new(ctx, world, command) {
+        engine.recover_waiting(ctx);
+    }
 }

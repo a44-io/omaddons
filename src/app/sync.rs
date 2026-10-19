@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use super::engine::Engine;
+use super::engine::{Engine, recover_waiting};
 use super::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetResult, TargetsData,
     TargetsOutcome, sort_keeping_dependencies,
@@ -636,8 +636,10 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     }
 
     let run = RunId::new();
-    // Nothing to change anywhere: no engine, no cache, no request.
+    // Nothing to change anywhere: no engine, no cache, no request (unless a crash left a
+    // journal to recover).
     let done: Option<TxOutcomes> = if changes.is_empty() {
+        recover_waiting(ctx, &world, "sync");
         None
     } else {
         let engine = Engine::new(ctx, &world, "sync")?;

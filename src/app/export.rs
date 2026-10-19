@@ -405,6 +405,11 @@ fn write(
             err
         })?)
     };
+    if let Some(guard) = &guard {
+        use crate::engine::journal::{no_saved_variables, recover_under};
+        ctx.notes
+            .warn_all(&recover_under(guard, paths, &no_saved_variables));
+    }
     let existing = match std::fs::read(&file) {
         Ok(bytes) => Some(bytes),
         // ubs:ignore — an io::ErrorKind, not a secret

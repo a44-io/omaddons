@@ -360,6 +360,9 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
             .iter()
             .map(|tp| unchanged(tp, req.dry_run))
             .collect();
+        if !req.dry_run {
+            warnings.extend(recover_waiting(ctx));
+        }
     } else {
         let mut order: Vec<usize> = (0..plan.targets.len()).collect();
         order.sort_by_key(|i| {
@@ -408,6 +411,13 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         failures,
         warnings,
     })
+}
+
+/// [`journal::recover_waiting`] for a run that commits nothing, writing SavedVariables
+/// as a commit's recovery would: only in a discovered client that is not running.
+pub fn recover_waiting(ctx: &EngineCtx<'_>) -> Vec<Warning> {
+    let sv_writable = |dir: &Path| sv_writable(ctx, dir);
+    journal::recover_waiting(ctx.paths, ctx.command, &sv_writable)
 }
 
 /// A target's outcome when nothing is committed.

@@ -1578,3 +1578,149 @@ fn a_torn_actions_log_never_stops_recovery() {
     let v1 = s.folders();
     assert!(v1["Foo"].is_some() && v1["FooOld"].is_some(), "{v1:?}");
 }
+
+/// Every command that takes the global lock to change something recovers a journal
+/// left by a crash first: a setting, a target, the credentials, the export file, and a
+/// change command that turns out to change nothing. Their dry runs never do, and take
+/// no lock; neither does a no-op install with no journal waiting.
+#[test]
+fn every_command_that_changes_something_recovers_first() {
+    use common::http::paths;
+    use omaddons::fsx::GlobalLock;
+    use std::time::{Duration, Instant};
+
+    let crashed = || {
+        let s = Scene::new();
+        s.install("gh:o/bar", "bar");
+        let crashed = s.run(&s.install_args("gh:o/foo", "v1"), "engine.swapped=abort");
+        assert_eq!(crashed.code, -1, "{}", crashed.context());
+        assert_eq!(s.journals().len(), 1);
+        s
+    };
+    let noop: &[&str] = &["install", "gh:o/bar", "--file", "<bar>", "-t", "retail"];
+    let commands: [&[&str]; 10] = [
+        &["config", "set", "running_policy", "refuse"],
+        &["targets", "rename", "retail", "main"],
+        &["targets", "default", "retail"],
+        &["auth", "github", "clear"],
+        &["export", "--write"],
+        noop,
+        &["update", "-t", "retail", "--offline"],
+        &["unpin", "Bar", "-t", "retail", "--offline"],
+        &["adopt", "--apply", "-t", "retail", "--offline"],
+        &["sync", "-t", "retail", "--offline"],
+    ];
+    let argv = |s: &Scene, args: &[&str], extra: &[&str]| -> Vec<String> {
+        let bar = s.zip("bar");
+        args.iter()
+            .map(|a| if *a == "<bar>" { bar.as_str() } else { a })
+            .chain(extra.iter().copied())
+            .chain(["--json"])
+            .map(str::to_owned)
+            .collect()
+    };
+    // What `sync` reads, written by a read-only export (which recovers nothing).
+    let desired = |s: &Scene| {
+        let export = s.home.exec(&["export".to_owned()]);
+        assert_eq!(export.code, 0, "{}", export.context());
+        let dir = s.home.env.config().join("omaddons");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("addons.toml"), export.stdout).unwrap();
+    };
+    for args in commands {
+        let s = crashed();
+        if args[0] == "sync" {
+            desired(&s);
+        }
+        let r = s.run(&argv(&s, args, &[]), "");
+        let envelope = r.expect(0);
+        assert!(
+            warning_codes(&envelope).contains(&"journal_recovered".to_owned()),
+            "{args:?}: {}",
+            r.context()
+        );
+        assert!(s.journals().is_empty(), "{args:?}");
+        assert!(s.folders()["Foo"].is_some(), "{args:?}: rolled forward");
+        assert!(s.addons().join("Bar").is_dir(), "{args:?}");
+    }
+
+    // Dry runs leave the journal and wait for no lock.
+    let s = crashed();
+    let lock = GlobalLock::acquire(&paths(&s.home.env), "test").unwrap();
+    for args in commands {
+        if args[0] == "sync" {
+            desired(&s);
+        }
+        let started = Instant::now();
+        let r = s.run(&argv(&s, args, &["--dry-run"]), "");
+        let envelope = r.expect(0);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{args:?}: waited for the lock"
+        );
+        assert!(
+            !warning_codes(&envelope).contains(&"journal_recovered".to_owned()),
+            "{args:?}: {}",
+            r.context()
+        );
+        assert_eq!(s.journals().len(), 1, "{args:?}");
+    }
+    drop(lock);
+
+    // With no journal waiting, a no-op install never takes the lock.
+    let s = Scene::new();
+    s.install("gh:o/bar", "bar");
+    let lock = GlobalLock::acquire(&paths(&s.home.env), "test").unwrap();
+    let started = Instant::now();
+    s.run(&argv(&s, noop, &[]), "").expect(0);
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "waited for the lock"
+    );
+    drop(lock);
+}
+
+/// A journal that recovery cannot finish never fails a command outside the engine: it
+/// goes ahead and names the reason in `journal_pending`, and the journal stays.
+#[test]
+fn a_journal_recovery_cannot_finish_only_warns_outside_the_engine() {
+    use serde_json::Value;
+
+    let s = Scene::new();
+    s.install("gh:o/foo", "v1");
+    let crashed = s.run(
+        &s.install_args("gh:o/foo", "v2"),
+        "engine.swap.after_exchange=abort",
+    );
+    assert_eq!(crashed.code, -1, "{}", crashed.context());
+    let journal = s.journals().pop().unwrap();
+    // A step that matches neither its before nor its after state.
+    let mut text = String::new();
+    for line in fs::read_to_string(&journal).unwrap().lines() {
+        let mut value: Value = serde_json::from_str(line).unwrap();
+        if value["type"] == "step" && value["from_id"].is_object() {
+            value["from_id"]["ino"] = Value::from(1u64);
+        }
+        text.push_str(&value.to_string());
+        text.push('\n');
+    }
+    fs::write(&journal, text).unwrap();
+
+    let r = s.home.run(&["config", "set", "running_policy", "refuse"]);
+    let envelope = r.expect(0);
+    let pending: Vec<&str> = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "journal_pending")
+        .filter_map(|w| w["message"].as_str())
+        .collect();
+    assert!(
+        pending.iter().any(|m| m.contains("could not be recovered")),
+        "{}",
+        r.context()
+    );
+    assert!(journal.exists(), "kept for repair");
+    let config = fs::read_to_string(s.home.env.config().join("omaddons/config.toml")).unwrap();
+    assert!(config.contains("refuse"), "{config}");
+}

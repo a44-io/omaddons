@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use super::adopt::hints::{adopt_fixes, adopting};
-use super::engine::Engine;
+use super::engine::{Engine, recover_waiting};
 use super::outcome::{
     ItemDeps, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetsData, TargetsOutcome,
 };
@@ -294,6 +294,8 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
             }
         }
         data.recount();
+    } else {
+        recover_waiting(ctx, &world, command);
     }
     for (target, item) in unchanged {
         data.push_item(target, item);

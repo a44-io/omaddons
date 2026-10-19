@@ -295,6 +295,11 @@ pub fn set(ctx: &Context, key: &str, raw_value: &str) -> Result<Done<SetData>> {
             })?,
         )
     };
+    if let Some(guard) = &guard {
+        use crate::engine::journal::{no_saved_variables, recover_under};
+        ctx.notes
+            .warn_all(&recover_under(guard, &paths, &no_saved_variables));
+    }
     let path = paths.config_file();
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,

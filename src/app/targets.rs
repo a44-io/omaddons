@@ -349,6 +349,11 @@ fn locked<T>(
         }
         err
     })?;
+    {
+        use crate::engine::journal::{no_saved_variables, recover_under};
+        ctx.notes
+            .warn_all(&recover_under(&guard, paths, &no_saved_variables));
+    }
     let scopes = ScopeTable::new(paths, dirs, None)?;
     let mut s = WriteSession::untracked(Writer::Mutating, &scopes, "registry");
     let mut registry = LockedRegistry::load(&guard, paths)?;

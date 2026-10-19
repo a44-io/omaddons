@@ -281,12 +281,17 @@ fn write(ctx: &Context, paths: &Paths, content: &[u8]) -> Result<()> {
     if ctx.dry_run {
         return Ok(());
     }
-    let _guard = GlobalLock::acquire(paths, "auth github").map_err(|mut err| {
+    let guard = GlobalLock::acquire(paths, "auth github").map_err(|mut err| {
         if matches!(err.code, ErrorCode::Locked) {
             err.fix = Suggestion::command(fix_argv(&ctx.argv));
         }
         err
     })?;
+    {
+        use crate::engine::journal::{no_saved_variables, recover_under};
+        ctx.notes
+            .warn_all(&recover_under(&guard, paths, &no_saved_variables));
+    }
     let scopes = ScopeTable::new(paths, &[], None)?;
     let mut s = WriteSession::untracked(Writer::Auth, &scopes, "credentials");
     ensure_dir_all(&mut s, paths.config_dir())?;

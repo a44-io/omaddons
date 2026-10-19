@@ -742,6 +742,8 @@ pub(super) fn commit(
             }
         }
         out.warnings.extend(done.warnings.iter().cloned());
+    } else {
+        engine.recover_waiting(ctx);
     }
     for (target, item) in decided {
         out.data.push_item(target, item);

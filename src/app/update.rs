@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 
 use super::adopt::hints::{adopt_fixes, adopting};
-use super::engine::Engine;
+use super::engine::{Engine, recover_waiting};
 use super::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef, TargetResult,
     TargetsData, TargetsOutcome, sort_keeping_dependencies,
@@ -296,6 +296,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
 
     let run = RunId::new();
     let done: Option<TxOutcomes> = if changes.is_empty() {
+        recover_waiting(ctx, &world, "update");
         None
     } else {
         let req = TxRequest {

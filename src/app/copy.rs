@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use super::engine::Engine;
+use super::engine::{Engine, recover_waiting};
 use super::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef, TargetResult,
     TargetsData, TargetsOutcome, header, item_detail, item_name, sort_keeping_dependencies,
@@ -257,6 +257,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
     };
     let cache = engine.cache(freshness);
     let done: Option<TxOutcomes> = if changes.is_empty() {
+        recover_waiting(ctx, &world, "copy");
         None
     } else {
         let req = TxRequest {

@@ -131,7 +131,7 @@ expression: s.stable(&c.envelope)
         "omaddons",
         "status"
       ],
-      "message": "transaction <ulid> on target <ulid> did not finish; the next command that changes addons recovers it"
+      "message": "transaction <ulid> on target <ulid> did not finish; the next omaddons command that changes addons, settings or targets recovers it (dry runs never do)"
     }
   ]
 }
