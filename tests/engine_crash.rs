@@ -12,7 +12,8 @@
 //! after which all folders sit on one side, consistent with the record generation and
 //! history, and the lock file is the same inode. A crash before `prepared` may leave
 //! the SavedVariables copies made before the lock, which the orphan sweep takes once
-//! they are old.
+//! they are old. Recovery itself is crashed too (`engine.recover.*`), and the command
+//! after it must finish; so is a journal, history or actions line cut in half.
 //!
 //! Records-only transactions (a pin, a forget) change no folder, so their oracle is the
 //! record: the edit is there exactly when history holds the transaction, the generation
@@ -27,8 +28,8 @@ use common::archives::zip_text;
 use common::engine::{Scene, shapes, warning_codes};
 use omaddons::engine::FAILPOINTS;
 use support::{
-    Op, RecordsOp, Shape, expected_new, matrix, record_matrix, rename_matrix, shape_matrix,
-    shape_rename_matrix,
+    Op, RecordsOp, Shape, expected_new, matrix, record_matrix, recovery_matrix, rename_matrix,
+    shape_matrix, shape_rename_matrix,
 };
 
 #[cfg(test)]
@@ -97,6 +98,20 @@ mod support {
                 }
             }
         }
+    }
+
+    /// Cuts the file at `path` in the middle of its last line, as a crash during that
+    /// line's write leaves it.
+    pub fn cut_last_line(path: &std::path::Path) {
+        let text = fs::read(path).unwrap();
+        let body = text.strip_suffix(b"\n").unwrap_or(&text);
+        let start = body
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .map_or(0, |at| at + 1);
+        let cut = start + (body.len() - start) / 2;
+        assert!(cut > start, "{} has an empty last line", path.display());
+        fs::write(path, &text[..cut]).unwrap();
     }
 
     /// What the Foo oracle judges: each folder's tree hash, and the `WTF/` tree.
@@ -198,16 +213,21 @@ mod support {
         pub mixed: bool,
         /// It left SavedVariables copies the sweep took once they were old.
         pub swept: bool,
+        /// It left a journal for the next command to recover.
+        pub pending: bool,
+        /// The first recovering command died mid-recovery (its `recover` failpoints).
+        pub recovering_crashed: bool,
     }
 
     /// `op` run with the failpoints `spec` armed, then the oracle. Each folder, on its
     /// own, is wholly old or wholly new at every instant (or absent, between the two
     /// renames of the `fallback`), and SavedVariables are wholly old or wholly new; a
     /// reader reports the unfinished transaction and changes nothing; the next command
-    /// that takes the lock recovers; then folders and SavedVariables sit on one side,
-    /// consistent with the generation and history, with nothing stray in AddOns and the
-    /// same lock file.
-    pub fn crash(op: Op, spec: &str, new: &Foo, fallback: bool) -> Crash {
+    /// that takes the lock recovers (with `recover` armed it may die mid-recovery,
+    /// keeping the journal, and the command after it finishes); then folders and
+    /// SavedVariables sit on one side, consistent with the generation and history, with
+    /// nothing stray in AddOns and the same lock file.
+    pub fn crash(op: Op, spec: &str, recover: &str, new: &Foo, fallback: bool) -> Crash {
         let mut s = op.scene();
         let args = op.prepare(&mut s);
         let s = s;
@@ -217,7 +237,7 @@ mod support {
         let r = s.run(&args, spec);
         let context = |what: &str| {
             format!(
-                "{op:?} at {spec}: {what}\nold {old:?}\nnew {new:?}\nnow {:?}\njournals {:?}\n{}",
+                "{op:?} at {spec}, then {recover:?}: {what}\nold {old:?}\nnew {new:?}\nnow {:?}\njournals {:?}\n{}",
                 Foo::of(&s),
                 s.journals()
                     .iter()
@@ -271,8 +291,29 @@ mod support {
         assert_eq!(s.snapshot(), before, "{}", context("status wrote"));
         assert_eq!(s.journals(), journals, "{}", context("status recovered"));
 
-        // The next command that takes the lock recovers.
-        let bar = s.run(&s.install_args("gh:o/bar", "bar"), "").expect(0);
+        // The next command that takes the lock recovers. One armed with `recover` may die
+        // mid-recovery: the journal stays for the command after it.
+        let install_bar = s.install_args("gh:o/bar", "bar");
+        let mut recovering_crashed = false;
+        let mut recovered_by = None;
+        if !recover.is_empty() {
+            let first = s.run(&install_bar, recover);
+            recovering_crashed = first.code == -1;
+            if recovering_crashed {
+                assert_eq!(
+                    pending(&s),
+                    pending_before,
+                    "{}",
+                    context(&format!(
+                        "a recovery that died dropped the journal\n{}",
+                        first.context()
+                    ))
+                );
+            } else {
+                recovered_by = Some(first.expect(0));
+            }
+        }
+        let bar = recovered_by.unwrap_or_else(|| s.run(&install_bar, "").expect(0));
         assert_eq!(
             warning_codes(&bar).iter().any(|c| c == "journal_recovered"),
             pending_before > 0,
@@ -323,6 +364,8 @@ mod support {
             crashed,
             mixed,
             swept,
+            pending: pending_before > 0,
+            recovering_crashed,
         }
     }
 
@@ -335,7 +378,7 @@ mod support {
             .iter()
             .copied()
             .filter(|failpoint| {
-                let done = crash(op, &format!("{failpoint}=abort"), &new, false);
+                let done = crash(op, &format!("{failpoint}=abort"), "", &new, false);
                 swept |= done.swept;
                 done.crashed
             })
@@ -399,8 +442,52 @@ mod support {
     pub fn rename_matrix(op: Op) {
         let new = expected_new(op);
         renames(&format!("{op:?}"), |spec, fallback| {
-            crash(op, spec, &new, fallback)
+            crash(op, spec, "", &new, fallback)
         });
+    }
+
+    /// Every crash of `op` that leaves a journal, recovered by a command that dies in
+    /// that recovery too: after each step a rollback undoes (`engine.recover.step=abort@K`
+    /// for every K it reaches), as a roll-forward starts (`engine.recover.forward`), and
+    /// before an undo's SavedVariables restore (`engine.recover.sv`). The command after it
+    /// finishes, and the oracle holds then. Each kind of recovery crash must happen.
+    pub fn recovery_matrix(op: Op, kinds: &[&str]) {
+        let new = expected_new(op);
+        let mut crashed: Vec<(&str, String)> = Vec::new();
+        for failpoint in FAILPOINTS {
+            let spec = format!("{failpoint}=abort");
+            let mut recovers: Vec<String> = Vec::new();
+            for k in 1..=8 {
+                let recover = format!("engine.recover.step=abort@{k}");
+                let done = crash(op, &spec, &recover, &new, false);
+                if !done.recovering_crashed {
+                    recovers.clear();
+                    if done.pending {
+                        recovers.extend(
+                            ["engine.recover.forward", "engine.recover.sv"]
+                                .map(|r| format!("{r}=abort")),
+                        );
+                    }
+                    break;
+                }
+                crashed.push((failpoint, recover));
+            }
+            for recover in recovers {
+                if crash(op, &spec, &recover, &new, false).recovering_crashed {
+                    crashed.push((failpoint, recover));
+                }
+            }
+        }
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!("{op:?}: recoveries crashed {crashed:?}\n"),
+        );
+        for kind in kinds {
+            assert!(
+                crashed.iter().any(|(_, r)| r.starts_with(kind)),
+                "{op:?}: no recovery crashed at {kind}: {crashed:?}"
+            );
+        }
     }
 
     /// An M2 transaction shape (H2), from release fixtures through the real CLI.
@@ -598,6 +685,8 @@ mod support {
             crashed,
             mixed,
             swept,
+            pending: pending_before > 0,
+            recovering_crashed: false,
         }
     }
 
@@ -848,6 +937,34 @@ fn crash_matrix_undo_while_the_client_runs() {
 #[test]
 fn a_crash_at_every_rename_of_an_undo() {
     rename_matrix(Op::Undo);
+}
+
+#[test]
+fn a_crash_during_recovery_of_an_install() {
+    recovery_matrix(
+        Op::Install,
+        &["engine.recover.step", "engine.recover.forward"],
+    );
+}
+
+#[test]
+fn a_crash_during_recovery_of_an_update() {
+    recovery_matrix(
+        Op::Update,
+        &["engine.recover.step", "engine.recover.forward"],
+    );
+}
+
+#[test]
+fn a_crash_during_recovery_of_an_undo() {
+    recovery_matrix(
+        Op::Undo,
+        &[
+            "engine.recover.step",
+            "engine.recover.forward",
+            "engine.recover.sv",
+        ],
+    );
 }
 
 #[test]
@@ -1351,4 +1468,113 @@ fn a_history_line_cut_short_by_a_crash_hides_no_transaction() {
         assert_eq!(second["data"]["reverted"]["tx"], bar.as_str(), "cut {cut}");
         assert!(!s.addons().join("Bar").exists(), "cut {cut}: {second}");
     }
+}
+
+/// Half a history line after a clean commit (an append a power loss cut short): a read
+/// lists the commit and writes nothing, and the next change closes the fragment off.
+/// Both transactions are listed, nothing is warned about, and both undo.
+#[test]
+fn a_torn_history_tail_is_closed_off_by_the_next_change() {
+    let s = Scene::new().with_saved_variables(common::engine::FOLDERS);
+    s.install("gh:o/foo", "v1");
+    let history = s.home.state().join("history.jsonl");
+    let mut f = fs::OpenOptions::new().append(true).open(&history).unwrap();
+    std::io::Write::write_all(&mut f, br#"{"schema_version":"1.0","tx":"01M5"#).unwrap();
+    drop(f);
+
+    let before = s.snapshot();
+    let listed = s.ok(&["history"]);
+    assert_eq!(s.snapshot(), before, "a read wrote");
+    assert_eq!(listed["data"]["entries"].as_array().unwrap().len(), 1);
+    assert!(warning_codes(&listed).is_empty(), "{listed}");
+
+    s.install("gh:o/bar", "bar");
+    let listed = s.ok(&["history"]);
+    let entries = listed["data"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{listed}");
+    assert!(warning_codes(&listed).is_empty(), "{listed}");
+    assert!(fs::read(&history).unwrap().ends_with(b"\n"));
+    let foo = s.history_txs()[0].clone();
+    s.ok(&["undo"]);
+    s.ok(&["undo", &foo]);
+    assert_eq!(s.stray(&[]), Vec::<String>::new(), "both undone");
+}
+
+/// A crash while the journal's last line was written (a step record before its rename,
+/// or the `swapped` mark after the last one), the line cut in half: the next command
+/// reads the journal up to the cut and rolls back, so folders and SavedVariables are
+/// all old, history holds no line of the crashed transaction, and nothing is left.
+#[test]
+fn a_journal_cut_short_by_a_crash_rolls_back() {
+    let old = {
+        let mut s = Op::Update.scene();
+        Op::Update.prepare(&mut s);
+        support::Foo::of(&s)
+    };
+    for failpoint in ["engine.swap.before_rename", "engine.swapped"] {
+        let mut s = Op::Update.scene();
+        let args = Op::Update.prepare(&mut s);
+        let history = s.history();
+        let crashed = s.run(&args, &format!("{failpoint}=abort"));
+        assert_eq!(crashed.code, -1, "{failpoint}: {}", crashed.context());
+        let journals = s.journals();
+        assert_eq!(journals.len(), 1, "{failpoint}");
+        support::cut_last_line(&journals[0]);
+
+        let before = s.snapshot();
+        let status = s.ok(&["status"]);
+        assert!(
+            warning_codes(&status).contains(&"journal_pending".to_owned()),
+            "{failpoint}: {status}"
+        );
+        assert_eq!(s.snapshot(), before, "{failpoint}: a read wrote");
+
+        let bar = s.install("gh:o/bar", "bar");
+        assert!(
+            warning_codes(&bar).contains(&"journal_recovered".to_owned()),
+            "{failpoint}: {bar}"
+        );
+        assert_eq!(support::Foo::of(&s), old, "{failpoint}: rolled back");
+        assert!(s.journals().is_empty(), "{failpoint}");
+        let mut expected = history.clone();
+        expected.push("install".to_owned());
+        assert_eq!(s.history(), expected, "{failpoint}");
+        assert_eq!(s.stray(&["Foo", "FooOld", "Bar"]), Vec::<String>::new());
+    }
+}
+
+/// A crash after the swap with `actions.jsonl`, the audit log, cut mid-line: recovery
+/// never reads it, so the transaction rolls forward, is listed, and undoes.
+#[test]
+fn a_torn_actions_log_never_stops_recovery() {
+    let mut s = Op::Update.scene();
+    let args = Op::Update.prepare(&mut s);
+    let crashed = s.run(&args, "engine.swapped=abort");
+    assert_eq!(crashed.code, -1, "{}", crashed.context());
+    let journal = s.journals().pop().unwrap();
+    let tx = journal.file_stem().unwrap().to_str().unwrap().to_owned();
+    let actions = s
+        .home
+        .state()
+        .join("snapshots")
+        .join(&tx)
+        .join("actions.jsonl");
+    support::cut_last_line(&actions);
+
+    let bar = s.install("gh:o/bar", "bar");
+    assert!(
+        warning_codes(&bar).contains(&"journal_recovered".to_owned()),
+        "{bar}"
+    );
+    assert_eq!(
+        support::Foo::of(&s),
+        expected_new(Op::Update),
+        "rolled forward"
+    );
+    assert!(s.history_txs().contains(&tx));
+    s.ok(&["undo"]);
+    let undone = s.ok(&["undo", &tx]);
+    assert_eq!(undone["data"]["reverted"]["tx"], tx.as_str(), "{undone}");
+    let v1 = s.folders();
+    assert!(v1["Foo"].is_some() && v1["FooOld"].is_some(), "{v1:?}");
 }
