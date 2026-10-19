@@ -150,6 +150,34 @@ fn last_addon_version_overrides_the_legacy_interface() {
     );
 }
 
+/// Turtle WoW's client is 1.12 with its own version stamp (1.17.x, 1.18.1 build 7272):
+/// `vanilla-legacy` and its rules, at interface 11200, whose addons declare; its own
+/// `lastAddonVersion` still wins.
+#[test]
+fn builds_of_the_1_12_client_that_stamp_their_own_version_are_vanilla_legacy() {
+    let env = TestEnv::new();
+    for (major, minor, patch, build) in [(1, 18, 1, 7272), (1, 17, 2, 7234)] {
+        let root = CustomRoot::at(env.home().join(format!("Games/turtle-{minor}")))
+            .version(major, minor, patch, build)
+            .build();
+        let d = found(&root);
+        let t = &d.target;
+        let what = format!("{major}.{minor}.{patch}");
+        assert_eq!(
+            (t.family, t.interface, t.rules.name.as_str()),
+            (Family::VanillaLegacy, 11_200, "vanilla-legacy"),
+            "{what}"
+        );
+        assert!(t.rules.legacy && !t.rules.multi_toc, "{what}");
+        assert_eq!(d.default_id, "vanilla", "{what}");
+    }
+    let played = CustomRoot::at(env.home().join("Games/turtle-played"))
+        .version(1, 18, 1, 7272)
+        .last_addon_version(11_201)
+        .build();
+    assert_eq!(found(&played).target.interface, 11_201);
+}
+
 #[test]
 fn exe_names_and_versions() {
     let env = TestEnv::new();

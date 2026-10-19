@@ -393,6 +393,11 @@ pub struct VersionFamilyRule {
     pub major: NumRange,
     pub minor: NumRange,
     pub family: Family,
+    /// The client's addon interface when its version stamp does not give it: a build
+    /// that reports its own version over an older client's addon interface. `None`
+    /// computes it from the version ([`interface_for`]).
+    #[serde(default)]
+    pub interface: Option<u32>,
 }
 
 impl VersionFamilyRule {
@@ -623,10 +628,32 @@ impl RulesTable {
 
     /// The family of a client: the first matching version → family row, else `unknown`.
     pub fn family_for(&self, version: &ClientVersion, kind: InstallKind) -> Family {
+        self.version_rule(version, kind)
+            .map_or(Family::Unknown, |rule| rule.family)
+    }
+
+    /// A client's addon interface: the matching version → family row's pinned
+    /// `interface`, else computed from the version under `rules` ([`interface_for`]).
+    pub fn interface_for_client(
+        &self,
+        version: &ClientVersion,
+        kind: InstallKind,
+        rules: &ClientRules,
+    ) -> u32 {
+        self.version_rule(version, kind)
+            .and_then(|rule| rule.interface)
+            .unwrap_or_else(|| interface_for(version, rules))
+    }
+
+    /// The first version → family row matching a client.
+    fn version_rule(
+        &self,
+        version: &ClientVersion,
+        kind: InstallKind,
+    ) -> Option<&VersionFamilyRule> {
         self.version_families
             .iter()
             .find(|rule| rule.matches(version, kind))
-            .map_or(Family::Unknown, |rule| rule.family)
     }
 
     /// The rules of a client: the first row of the version's family whose install kind
@@ -783,6 +810,16 @@ impl RulesTable {
                         range: range.to_string(),
                     });
                 }
+            }
+            if let (Some(interface), Some(range)) = (rule.interface, self.family_range(rule.family))
+                && !range.contains(interface)
+            {
+                return Err(RulesError::InterfaceOutsideFamily {
+                    row: i + 1,
+                    interface,
+                    family: rule.family,
+                    range: range.to_string(),
+                });
             }
         }
         for row in &self.families {
@@ -949,6 +986,15 @@ pub enum RulesError {
     InvertedRange { what: String, range: String },
     #[error("family unknown cannot have an interface range")]
     UnknownFamilyRange,
+    #[error(
+        "version family row {row}: interface {interface} is outside family {family}'s range {range}"
+    )]
+    InterfaceOutsideFamily {
+        row: usize,
+        interface: u32,
+        family: Family,
+        range: String,
+    },
     #[error("new rules row {row} is missing {field}")]
     MissingField { row: String, field: &'static str },
 }
@@ -1011,35 +1057,50 @@ fn builtin_products() -> Vec<Product> {
         .collect()
 }
 
-/// install kind, major, minor, family; first match wins (vision §4.1). Custom clients
-/// outside the legacy generations fall through to the general rows (custom 3.4.x is
-/// `wrath`).
+/// One builtin [`VersionFamilyRule`]: install kind, major, minor, family, pinned
+/// interface.
+type VersionFamilyRow = (Option<InstallKind>, NumRange, NumRange, Family, Option<u32>);
+
+/// install kind, major, minor, family, pinned interface; first match wins (vision
+/// §4.1). Custom clients outside the legacy generations fall through to the general
+/// rows (custom 3.4.x is `wrath`).
+///
+/// Custom 1.16–1.49 are builds of the 1.12 client that stamp their own version. Turtle
+/// WoW reports 1.17.x, then 1.18.1 build 7272 (WoWee's `expansions/turtle` data,
+/// tortoise-wow; checked 2026-10-18), while its addons, its own UI's included, declare
+/// `## Interface: 11200`: the 1.12 loading rules, with the interface pinned at 11200.
+/// Custom 1.13–1.15 is a Classic Era client copied out of its Battle.net root, and
+/// 1.50 and up is Forever.
 #[rustfmt::skip]
-const VERSION_FAMILIES: &[(Option<InstallKind>, NumRange, NumRange, Family)] = &[
-    (Some(InstallKind::Custom), NumRange::exactly(1),  NumRange::exactly(12),    Family::VanillaLegacy),
-    (Some(InstallKind::Custom), NumRange::exactly(2),  NumRange::exactly(4),     Family::TbcLegacy),
-    (Some(InstallKind::Custom), NumRange::exactly(3),  NumRange::exactly(3),     Family::WrathLegacy),
-    (Some(InstallKind::Custom), NumRange::exactly(4),  NumRange::exactly(3),     Family::CataLegacy),
-    (Some(InstallKind::Custom), NumRange::exactly(5),  NumRange::exactly(4),     Family::MistsLegacy),
-    (None,                      NumRange::exactly(1),  NumRange::between(0, 49), Family::Vanilla),
-    (None,                      NumRange::exactly(1),  NumRange::at_least(50),   Family::Forever),
-    (None,                      NumRange::exactly(2),  NumRange::exactly(5),     Family::Tbc),
-    (None,                      NumRange::exactly(3),  NumRange::exactly(4),     Family::Wrath),
-    (None,                      NumRange::exactly(3),  NumRange::exactly(80),    Family::Titan),
-    (None,                      NumRange::exactly(4),  NumRange::exactly(4),     Family::Cata),
-    (None,                      NumRange::exactly(5),  NumRange::exactly(5),     Family::Mists),
-    (None,                      NumRange::at_least(6), NumRange::at_least(0),    Family::Mainline),
+const VERSION_FAMILIES: &[VersionFamilyRow] = &[
+    (Some(InstallKind::Custom), NumRange::exactly(1),  NumRange::exactly(12),     Family::VanillaLegacy, None),
+    (Some(InstallKind::Custom), NumRange::exactly(1),  NumRange::between(16, 49), Family::VanillaLegacy, Some(11_200)),
+    (Some(InstallKind::Custom), NumRange::exactly(2),  NumRange::exactly(4),      Family::TbcLegacy,     None),
+    (Some(InstallKind::Custom), NumRange::exactly(3),  NumRange::exactly(3),      Family::WrathLegacy,   None),
+    (Some(InstallKind::Custom), NumRange::exactly(4),  NumRange::exactly(3),      Family::CataLegacy,    None),
+    (Some(InstallKind::Custom), NumRange::exactly(5),  NumRange::exactly(4),      Family::MistsLegacy,   None),
+    (None,                      NumRange::exactly(1),  NumRange::between(0, 49),  Family::Vanilla,       None),
+    (None,                      NumRange::exactly(1),  NumRange::at_least(50),    Family::Forever,       None),
+    (None,                      NumRange::exactly(2),  NumRange::exactly(5),      Family::Tbc,           None),
+    (None,                      NumRange::exactly(3),  NumRange::exactly(4),      Family::Wrath,         None),
+    (None,                      NumRange::exactly(3),  NumRange::exactly(80),     Family::Titan,         None),
+    (None,                      NumRange::exactly(4),  NumRange::exactly(4),      Family::Cata,          None),
+    (None,                      NumRange::exactly(5),  NumRange::exactly(5),      Family::Mists,         None),
+    (None,                      NumRange::at_least(6), NumRange::at_least(0),     Family::Mainline,      None),
 ];
 
 fn builtin_version_families() -> Vec<VersionFamilyRule> {
     VERSION_FAMILIES
         .iter()
-        .map(|&(install_kind, major, minor, family)| VersionFamilyRule {
-            install_kind,
-            major,
-            minor,
-            family,
-        })
+        .map(
+            |&(install_kind, major, minor, family, interface)| VersionFamilyRule {
+                install_kind,
+                major,
+                minor,
+                family,
+                interface,
+            },
+        )
         .collect()
 }
 
@@ -1577,6 +1638,89 @@ mod tests {
             table.product_by_code("wow_classic_beta").unwrap().folder,
             "_classic_beta_"
         );
+    }
+
+    #[test]
+    fn custom_builds_of_the_1_12_client_are_vanilla_legacy_at_interface_11200() {
+        let table = table();
+        let custom = InstallKind::Custom;
+        let bn = InstallKind::Battlenet;
+        // (version, install kind, family, rules row, interface)
+        let cases = [
+            (
+                "1.12.1",
+                custom,
+                Family::VanillaLegacy,
+                "vanilla-legacy",
+                11_200,
+            ),
+            // Turtle WoW's stamps: the 1.12 rules, the interface pinned at 11200.
+            (
+                "1.16.0",
+                custom,
+                Family::VanillaLegacy,
+                "vanilla-legacy",
+                11_200,
+            ),
+            (
+                "1.17.2.7234",
+                custom,
+                Family::VanillaLegacy,
+                "vanilla-legacy",
+                11_200,
+            ),
+            (
+                "1.18.1.7272",
+                custom,
+                Family::VanillaLegacy,
+                "vanilla-legacy",
+                11_200,
+            ),
+            (
+                "1.49.0",
+                custom,
+                Family::VanillaLegacy,
+                "vanilla-legacy",
+                11_200,
+            ),
+            // A Classic Era client copied out of its root, and Forever: unchanged.
+            ("1.13.0", custom, Family::Vanilla, "vanilla", 11_300),
+            ("1.15.9", custom, Family::Vanilla, "vanilla", 11_509),
+            ("1.60.1", custom, Family::Forever, "forever", 16_001),
+            // Battle.net clients never take a custom row.
+            ("1.15.9", bn, Family::Vanilla, "vanilla", 11_509),
+            ("1.18.1", bn, Family::Vanilla, "vanilla", 11_801),
+        ];
+        for (version, kind, family, row, interface) in cases {
+            let version = v(version);
+            let what = format!("{version} {kind:?}");
+            assert_eq!(table.family_for(&version, kind), family, "{what}");
+            let rules = table.rules_for(&version, kind);
+            assert_eq!(rules.name, row, "{what}");
+            assert_eq!(
+                table.interface_for_client(&version, kind, rules),
+                interface,
+                "{what}"
+            );
+        }
+
+        // A config row can pin an interface too, and is tried first.
+        let overrides: RulesOverrides = toml::from_str(
+            r#"
+            [[version_families]]
+            install_kind = "custom"
+            major = { min = 1, max = 1 }
+            minor = { min = 14, max = 14 }
+            family = "vanilla-legacy"
+            interface = 11201
+            "#,
+        )
+        .unwrap();
+        let table = table.with_overrides(&overrides).unwrap();
+        let version = v("1.14.2");
+        let rules = table.rules_for(&version, custom);
+        assert_eq!(rules.name, "vanilla-legacy");
+        assert_eq!(table.interface_for_client(&version, custom, rules), 11_201);
     }
 
     #[test]
@@ -2127,12 +2271,31 @@ mod tests {
                         major: NumRange::between(7, 6),
                         minor: NumRange::at_least(0),
                         family: Family::Mainline,
+                        interface: None,
                     }],
                     ..RulesOverrides::default()
                 },
                 RulesError::InvertedRange {
                     what: "version family row 1 (major)".into(),
                     range: "7..=6".into(),
+                },
+            ),
+            (
+                RulesOverrides {
+                    version_families: vec![VersionFamilyRule {
+                        install_kind: Some(InstallKind::Custom),
+                        major: NumRange::exactly(1),
+                        minor: NumRange::exactly(18),
+                        family: Family::VanillaLegacy,
+                        interface: Some(11_801),
+                    }],
+                    ..RulesOverrides::default()
+                },
+                RulesError::InterfaceOutsideFamily {
+                    row: 1,
+                    interface: 11_801,
+                    family: Family::VanillaLegacy,
+                    range: "11200..=11299".into(),
                 },
             ),
             (

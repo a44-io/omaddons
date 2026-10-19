@@ -161,7 +161,21 @@ expression: "RulesTable::builtin()"
         "min": 12,
         "max": 12
       },
-      "family": "vanilla-legacy"
+      "family": "vanilla-legacy",
+      "interface": null
+    },
+    {
+      "install_kind": "custom",
+      "major": {
+        "min": 1,
+        "max": 1
+      },
+      "minor": {
+        "min": 16,
+        "max": 49
+      },
+      "family": "vanilla-legacy",
+      "interface": 11200
     },
     {
       "install_kind": "custom",
@@ -173,7 +187,8 @@ expression: "RulesTable::builtin()"
         "min": 4,
         "max": 4
       },
-      "family": "tbc-legacy"
+      "family": "tbc-legacy",
+      "interface": null
     },
     {
       "install_kind": "custom",
@@ -185,7 +200,8 @@ expression: "RulesTable::builtin()"
         "min": 3,
         "max": 3
       },
-      "family": "wrath-legacy"
+      "family": "wrath-legacy",
+      "interface": null
     },
     {
       "install_kind": "custom",
@@ -197,7 +213,8 @@ expression: "RulesTable::builtin()"
         "min": 3,
         "max": 3
       },
-      "family": "cata-legacy"
+      "family": "cata-legacy",
+      "interface": null
     },
     {
       "install_kind": "custom",
@@ -209,7 +226,8 @@ expression: "RulesTable::builtin()"
         "min": 4,
         "max": 4
       },
-      "family": "mists-legacy"
+      "family": "mists-legacy",
+      "interface": null
     },
     {
       "install_kind": null,
@@ -221,7 +239,8 @@ expression: "RulesTable::builtin()"
         "min": 0,
         "max": 49
       },
-      "family": "vanilla"
+      "family": "vanilla",
+      "interface": null
     },
     {
       "install_kind": null,
@@ -233,7 +252,8 @@ expression: "RulesTable::builtin()"
         "min": 50,
         "max": null
       },
-      "family": "forever"
+      "family": "forever",
+      "interface": null
     },
     {
       "install_kind": null,
@@ -245,7 +265,8 @@ expression: "RulesTable::builtin()"
         "min": 5,
         "max": 5
       },
-      "family": "tbc"
+      "family": "tbc",
+      "interface": null
     },
     {
       "install_kind": null,
@@ -257,7 +278,8 @@ expression: "RulesTable::builtin()"
         "min": 4,
         "max": 4
       },
-      "family": "wrath"
+      "family": "wrath",
+      "interface": null
     },
     {
       "install_kind": null,
@@ -269,7 +291,8 @@ expression: "RulesTable::builtin()"
         "min": 80,
         "max": 80
       },
-      "family": "titan"
+      "family": "titan",
+      "interface": null
     },
     {
       "install_kind": null,
@@ -281,7 +304,8 @@ expression: "RulesTable::builtin()"
         "min": 4,
         "max": 4
       },
-      "family": "cata"
+      "family": "cata",
+      "interface": null
     },
     {
       "install_kind": null,
@@ -293,7 +317,8 @@ expression: "RulesTable::builtin()"
         "min": 5,
         "max": 5
       },
-      "family": "mists"
+      "family": "mists",
+      "interface": null
     },
     {
       "install_kind": null,
@@ -305,7 +330,8 @@ expression: "RulesTable::builtin()"
         "min": 0,
         "max": null
       },
-      "family": "mainline"
+      "family": "mainline",
+      "interface": null
     }
   ],
   "families": [

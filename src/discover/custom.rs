@@ -9,7 +9,7 @@ use std::path::Path;
 use super::{DiscoveredTarget, DiscoverySource, config_wtf, find_child, pe, realmlist};
 use crate::error::{Suggestion, Warning, WarningCode};
 use crate::model::Target;
-use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind, interface_for};
+use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind};
 
 /// Whether `dir` is a custom client root: no `.build.info`, a client exe and an
 /// `Interface/` directory (names ignore ASCII case), and not a Battle.net flavor folder,
@@ -81,7 +81,7 @@ pub fn discover_custom_root(
         ),
     };
     let mut interface = if read.is_some() {
-        interface_for(&version, &rules)
+        table.interface_for_client(&version, InstallKind::Custom, &rules)
     } else {
         0
     };

@@ -13,7 +13,7 @@ use super::bpsv::{self, BuildInfoRow};
 use super::{DiscoveredTarget, DiscoverySource, config_wtf, read_text};
 use crate::error::{Suggestion, Warning, WarningCode};
 use crate::model::Target;
-use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind, interface_for};
+use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind};
 
 /// What `product.db` knows about a root, passed in by the scan; empty without hints.
 #[derive(
@@ -70,7 +70,7 @@ pub fn discover_root(
         let interface = if family == Family::Unknown && version == ClientVersion::new(0, 0, 0) {
             0
         } else {
-            interface_for(&version, &rules)
+            table.interface_for_client(&version, InstallKind::Battlenet, &rules)
         };
         let kind = known.map_or_else(
             || {

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use common::env::TestEnv;
 use common::targets::battlenet;
 use omaddons::rules::{
-    ClientRules, ClientVersion, Family, InstallKind, KNOWN_TOC_SUFFIXES, RulesTable, interface_for,
+    ClientRules, ClientVersion, Family, InstallKind, KNOWN_TOC_SUFFIXES, RulesTable,
 };
 use omaddons::toc::{DiskFolder, loaded_toc, verdict};
 use serde::Deserialize;
@@ -63,7 +63,7 @@ mod support {
             let rules = table.rules_for(&version, kind).clone();
             Self {
                 family: table.family_for(&version, kind),
-                interface: interface_for(&version, &rules),
+                interface: table.interface_for_client(&version, kind, &rules),
                 rules,
             }
         }

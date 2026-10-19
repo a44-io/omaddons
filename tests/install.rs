@@ -1768,3 +1768,69 @@ fn a_release_that_loads_only_as_declared_is_reinstalled_from_its_source_metadata
         "the release was asked for: the cached archive alone was refused"
     );
 }
+
+/// Turtle WoW's client stamps its exe 1.18.1 (build 7272) over the 1.12 client: it is
+/// `vanilla-legacy` at interface 11200, so a 1.12 addon installs, with no `out_of_date`,
+/// and a Classic Era build of it is refused.
+#[test]
+fn a_1_12_addon_installs_on_a_client_stamped_1_18_1() {
+    let mut home = Home::new(&[]);
+    let root = CustomRoot::at(home.env.home().join("Games/turtle")).version(1, 18, 1, 7272);
+    let client = home.with_custom(root);
+    let targets = home.run(&["targets"]).expect(0);
+    let target = &targets["data"]["targets"][0];
+    assert_eq!(
+        (&target["id"], &target["family"], &target["interface"]),
+        (
+            &Value::from("vanilla"),
+            &Value::from("vanilla-legacy"),
+            &Value::from(11_200)
+        ),
+        "{targets}"
+    );
+
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let archive = |name: &str, entries: &[(&str, &str)]| {
+        let path = dl.join(name);
+        fs::write(&path, zip_text(entries)).unwrap();
+        path.display().to_string()
+    };
+    let legacy = archive("Legacy.zip", &[("Legacy/Legacy.toc", &toc("11200", &[]))]);
+    let r = home.run(&["install", "gh:o/legacy", "--file", &legacy, "-t", "vanilla"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        items(&envelope)[0]["status"],
+        "installed",
+        "{}",
+        r.context()
+    );
+    assert!(
+        !warning_codes(&envelope).contains(&"out_of_date"),
+        "{}",
+        r.context()
+    );
+    assert!(client.join("Interface/AddOns/Legacy").is_dir());
+
+    let era = archive("Era.zip", &[("Era/Era.toc", &toc("11509", &[]))]);
+    let r = home.run(&["install", "gh:o/era", "--file", &era, "-t", "vanilla"]);
+    assert_eq!(
+        r.expect(4)["error"]["code"],
+        "wrong_flavor",
+        "{}",
+        r.context()
+    );
+
+    // A config rule can pin another interface, and is tried first.
+    let config = home.env.config().join("omaddons/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    let rule = "[[rules.version_families]]\ninstall_kind = \"custom\"\n\
+                major = { min = 1, max = 1 }\nminor = { min = 18, max = 18 }\n\
+                family = \"vanilla-legacy\"\ninterface = 11201\n";
+    fs::write(&config, rule).unwrap();
+    let targets = home.run(&["targets"]).expect(0);
+    assert_eq!(
+        targets["data"]["targets"][0]["interface"], 11_201,
+        "{targets}"
+    );
+}

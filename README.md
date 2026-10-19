@@ -410,8 +410,9 @@ The product code does not decide the family; the version does. `wow_classic_era_
 | 3.3.5a (WotLK) | `wrath-legacy` | `wotlk` | same |
 | 4.3.4 (Cataclysm) | `cata-legacy` | `cata` | same |
 | 5.4.8 (MoP) | `mists-legacy` | `mists` | same |
+| 1.16–1.49 (builds of the 1.12 client that stamp their own version, such as Turtle WoW 1.17 and 1.18) | `vanilla-legacy` | `vanilla` | same, interface 11200 |
 
-Legacy clients are found by their executable (`wow.exe`, then `wow-64.exe`, then any `wow*.exe`) next to an `Interface/` folder. Turtle WoW and other 1.12.1 servers are plain `vanilla-legacy` clients; name them with `targets add … --name turtle` or `targets rename`. While a legacy client runs, the default running policy refuses every change (see [Running clients](#running-clients)).
+Legacy clients are found by their executable (`wow.exe`, then `wow-64.exe`, then any `wow*.exe`) next to an `Interface/` folder. Turtle WoW and other 1.12.1 servers are plain `vanilla-legacy` clients, whichever version their executable reports; name them with `targets add … --name turtle` or `targets rename`. While a legacy client runs, the default running policy refuses every change (see [Running clients](#running-clients)).
 
 ### Families and interface ranges
 
@@ -432,7 +433,7 @@ Legacy clients are found by their executable (`wow.exe`, then `wow-64.exe`, then
 | `mists-legacy` | 50400–50499 | 5.4.8 private servers |
 | `unknown` | the client's own major.minor | anything else |
 
-A client's interface number is `major×10000 + minor×100 (+ patch on modern clients)`, so 12.1.5 is 120105 and 3.3.5a is 30300. On legacy clients, `lastAddonVersion` in `WTF/Config.wtf` overrides the computed number.
+A client's interface number is `major×10000 + minor×100 (+ patch on modern clients)`, so 12.1.5 is 120105 and 3.3.5a is 30300. A version rule can pin it instead: a custom 1.16–1.49 client is 11200, the interface its addons declare. On legacy clients, `lastAddonVersion` in `WTF/Config.wtf` overrides either.
 
 ### Choosing a target with `-t`
 
@@ -1539,7 +1540,16 @@ family = "wrath-legacy"      # a misdetected or unreadable client: re-picks its 
 The detection tables can be patched without a new release:
 
 - `[client_rules.<row>]` (or `[rules.client_rules.<row>]`) patches one load-rules row; an unknown row name adds a new row, which then needs every required field. Rows are `mainline`, `mainline-12.0.7`, `mainline-10.2.7`, `mainline-9.1`, `forever`, `vanilla`, `tbc`, `wrath`, `titan`, `cata`, `mists`, the five `*-legacy` rows, `fallback-battlenet` and `fallback-custom`. The fields are `family`, `install_kind`, `version_min`, `version_max`, `game_types`, `multi_toc`, `comma_interface`, `game_suffixes`, `family_suffixes`, `legacy_suffixes`, `directive_conditionals` (whether conditional TOC lines such as `## Dependencies [AllowLoadGameType vanilla]: X` apply; true for every current client), `interface_includes_patch` and `legacy`. A new row needs `family`, `version_min`, `multi_toc`, `comma_interface`, `interface_includes_patch` and `legacy`.
-- `[rules]` can add or replace `products`, prepend `version_families` rules, and replace `family_ranges`.
+- `[rules]` can add or replace `products`, prepend `version_families` rules, and replace `family_ranges`. A `version_families` rule may set `interface`, the client's addon interface when its version does not give it; it must lie in the family's range.
+
+```toml
+[[rules.version_families]]          # a 1.12-based client that reports 1.70
+install_kind = "custom"
+major = { min = 1, max = 1 }
+minor = { min = 70, max = 70 }
+family = "vanilla-legacy"
+interface = 11200
+```
 
 Every rules edit applies on the next command. The discovery cache records the rules and the omaddons version it was built with, and re-parses every client once when either changes.
 
@@ -1890,7 +1900,7 @@ Run `omaddons outdated` to see what has updates on every client, then `omaddons 
 
 ### Does it work with Turtle WoW, Warmane or other private servers?
 
-Any client from 1.12.1, 2.4.3, 3.3.5a, 4.3.4 or 5.4.8 with an `Interface/` folder is a first-class target, identified by its executable. Its label comes from `realmlist.wtf`. Server-specific patches are not special-cased: Turtle WoW is a `vanilla-legacy` client. Give it a name with `targets add <path> --name turtle` or `targets rename`.
+Any client from 1.12.1, 2.4.3, 3.3.5a, 4.3.4 or 5.4.8 with an `Interface/` folder is a first-class target, identified by its executable. Its label comes from `realmlist.wtf`. Server-specific patches are not special-cased: Turtle WoW is a `vanilla-legacy` client, whether its executable reports 1.12.1 or its own 1.17 or 1.18. Give it a name with `targets add <path> --name turtle` or `targets rename`.
 
 ### Can I use CurseForge addons?
 
