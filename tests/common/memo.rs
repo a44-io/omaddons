@@ -26,6 +26,7 @@ pub fn entry_with_asset(
         flavors: vec![AssetFlavor {
             flavor: "mainline".into(),
             interface: Some(120_105),
+            source: omaddons::model::FlavorSource::ReleaseJson,
         }],
         name_flavors: Vec::new(),
         nolib: false,

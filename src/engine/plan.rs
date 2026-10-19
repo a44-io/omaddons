@@ -4015,10 +4015,15 @@ impl TargetPlanner<'_> {
         let all: Vec<FolderName> = inspected.folders.iter().map(|f| f.name.clone()).collect();
         let primary = primary_folder(r#ref, &all, name_hint);
         // The publisher's release.json names this client for this very file.
+        // A source's list (Tukui's patches) only ranks: the folders are judged strictly.
         let declared = matches!(
             candidate.rank,
             RankReason::MetadataInterface | RankReason::MetadataFlavor
-        );
+        ) && candidate
+            .asset
+            .flavors
+            .iter()
+            .any(|f| f.source.is_release_json());
         let loads = primary.is_some_and(|p| accepts(&split, declared, p));
         if let Some(blob) = &downloaded {
             let verdict = verdicts.iter().find(|v| Some(&v.folder) == primary);

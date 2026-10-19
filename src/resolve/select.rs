@@ -251,6 +251,7 @@ mod tests {
                 .map(|(flavor, interface)| AssetFlavor {
                     flavor: (*flavor).into(),
                     interface: *interface,
+                    source: crate::model::FlavorSource::ReleaseJson,
                 })
                 .collect(),
             name_flavors: hints.to_vec(),

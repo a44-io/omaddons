@@ -504,6 +504,7 @@ mod tests {
                 .map(|(flavor, interface)| AssetFlavor {
                     flavor: flavor.into(),
                     interface: Some(interface),
+                    source: crate::model::FlavorSource::ReleaseJson,
                 })
                 .collect(),
             name_flavors: Vec::new(),

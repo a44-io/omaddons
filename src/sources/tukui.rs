@@ -5,7 +5,8 @@
 //! response's `ETag`, the MD5 of the bytes, is checked. No token is ever stored: the
 //! decoders drop every `url`, and `net::redact` cuts them from logs and messages.
 //!
-//! The list's `patch[]` only ranks candidates (it lags behind patches); the TOCs decide.
+//! The list's `patch[]` only ranks candidates (it lags behind patches; its flavors are
+//! `source_list`, never a declaration): the TOCs decide, by the strict rule.
 
 use std::sync::{Mutex, OnceLock, PoisonError};
 
@@ -16,7 +17,8 @@ use super::changelog::{Changelog, ChangelogEntry, notes_text};
 use super::{ResolvedAsset, Source, SourceId, Wanted};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::{
-    Asset, AssetFlavor, AssetLocation, Channel, HashFromHeader, Ref, Release, ReleaseSet,
+    Asset, AssetFlavor, AssetLocation, Channel, FlavorSource, HashFromHeader, Ref, Release,
+    ReleaseSet,
 };
 use crate::net::{Http, Request};
 use crate::rules::{ClientVersion, InstallKind, RulesTable, interface_for};
@@ -159,6 +161,7 @@ impl TukuiSource {
             let flavor = AssetFlavor {
                 flavor: flavor.to_owned(),
                 interface: Some(interface),
+                source: FlavorSource::SourceList,
             };
             if !flavors.contains(&flavor) {
                 flavors.push(flavor);
@@ -549,6 +552,21 @@ mod tests {
             (asset.expected_hash.as_ref(), asset.flavors.len()),
             (None, 4)
         );
+        // The list ranks; it never declares (only release.json does).
+        assert!(
+            asset
+                .flavors
+                .iter()
+                .all(|f| matches!(f.source, FlavorSource::SourceList))
+        );
+        // Written as such, and a flavor from before the field reads as release.json's.
+        let json = serde_json::to_value(&asset.flavors[0]).unwrap();
+        assert_eq!(json["source"], "source_list");
+        let old: AssetFlavor =
+            serde_json::from_value(serde_json::json!({"flavor": "mainline", "interface": 1}))
+                .unwrap();
+        assert!(old.source.is_release_json());
+        assert!(serde_json::to_value(&old).unwrap().get("source").is_none());
     }
 
     #[test]

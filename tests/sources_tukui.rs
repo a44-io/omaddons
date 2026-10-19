@@ -444,3 +444,34 @@ fn a_download_without_a_usable_etag_installs_and_says_it_was_not_checked() {
         "{envelope}"
     );
 }
+
+/// The list names retail, but only the library loads there, not the addon's own folder:
+/// a list only ranks, so the strict rule refuses it, as for the same file from disk.
+#[test]
+fn a_listed_client_never_waives_the_own_folder_rule() {
+    let home = Home::new(&["wow"]);
+    let zip = zip_text(&[
+        ("Foo/Foo_Vanilla.toc", "## Interface: 11509\n"),
+        ("Foo/Foo.lua", "--"),
+        ("FooLib/FooLib.toc", "## Interface: 120105\n"),
+        ("FooLib/lib.lua", "--"),
+    ]);
+    let foo = common::tukui::entry(7, "foo", "Foo", "1.0", &["12.1.5"], &["Foo", "FooLib"]);
+    tukui_list(&home.http, std::slice::from_ref(&foo));
+    tukui_addon(&home.http, &foo, &["TOKEN1"]);
+    tukui_download(&home.http, "foo", "TOKEN1", &zip, Some(&etag(&zip)));
+    let r = home.run(&["install", "tukui:foo", "-t", "retail", "--dry-run"]);
+    let envelope = r.expect(3);
+    assert_eq!(
+        envelope["error"]["code"],
+        "no_compatible_release",
+        "{}",
+        r.context()
+    );
+    let tried = envelope["error"]["details"]["tried"].to_string();
+    assert!(
+        tried.contains("foo-1.0.zip") && tried.contains("wrong_flavor"),
+        "{tried}"
+    );
+    assert!(folders(&home, "_retail_").is_empty());
+}

@@ -983,11 +983,31 @@ pub enum AssetLocation {
     },
 }
 
-/// One `release.json` metadata entry.
+/// One client metadata entry: `release.json`'s, or a source list's (`source`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AssetFlavor {
     pub flavor: String,
     pub interface: Option<u32>,
+    /// Who claims it; omitted for `release.json` (and absent in memos written before).
+    #[serde(default, skip_serializing_if = "FlavorSource::is_release_json")]
+    pub source: FlavorSource,
+}
+
+/// Who claims an asset's flavor. Only the publisher's `release.json`, naming the client
+/// for this very file, declares it (and so may skip folders the client does not load);
+/// a source's project list (Tukui's `patch[]`) only ranks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FlavorSource {
+    #[default]
+    ReleaseJson,
+    SourceList,
+}
+
+impl FlavorSource {
+    pub fn is_release_json(&self) -> bool {
+        matches!(self, Self::ReleaseJson)
+    }
 }
 
 /// A flavor guessed from an asset file name. Names follow the packager's flavors.
@@ -1653,6 +1673,7 @@ mod tests {
             flavors: vec![AssetFlavor {
                 flavor: "mainline".into(),
                 interface: Some(120_105),
+                source: FlavorSource::ReleaseJson,
             }],
             name_flavors: vec![FlavorHint::ClassicAny],
             nolib: false,

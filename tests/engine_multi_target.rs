@@ -246,6 +246,7 @@ mod support {
                                     .map(|(flavor, interface)| AssetFlavor {
                                         flavor: (*flavor).into(),
                                         interface: Some(*interface),
+                                        source: omaddons::model::FlavorSource::ReleaseJson,
                                     })
                                     .collect(),
                                 name_flavors: Vec::new(),

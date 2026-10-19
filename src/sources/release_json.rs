@@ -10,7 +10,7 @@
 
 use serde_json::Value;
 
-use crate::model::AssetFlavor;
+use crate::model::{AssetFlavor, FlavorSource};
 
 /// One zip described by a `release.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +94,11 @@ fn flavor(item: &Value) -> Option<AssetFlavor> {
         Value::String(s) => s.trim().parse().ok(),
         _ => None,
     });
-    Some(AssetFlavor { flavor, interface })
+    Some(AssetFlavor {
+        flavor,
+        interface,
+        source: FlavorSource::ReleaseJson,
+    })
 }
 
 /// A plain file name: no path separators, control characters, or `.`/`..`.
