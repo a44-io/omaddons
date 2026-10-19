@@ -44,5 +44,16 @@ expression: s.stable(&c.envelope)
   "partial": false,
   "schema_version": "1.0",
   "tool_version": "<version>",
-  "warnings": []
+  "warnings": [
+    {
+      "code": "snapshot_only_copy",
+      "fix": "omaddons undo <ulid>",
+      "fix_argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "message": "On retail, <ulid>'s snapshot holds the only copy of Foo: `omaddons undo <ulid>` brings them back until retention prunes it (kept at least 24 hours; then pruned once 10 newer transactions on this client exist, after 7 days, or past the 2 GiB snapshot cap)"
+    }
+  ]
 }

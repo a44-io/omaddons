@@ -251,6 +251,7 @@ pub fn check_releases(jobs: &[CheckJob], ctx: &EngineCtx<'_>) -> Result<CheckedR
         known_targets: ctx.known_targets,
         policy: ctx.policy,
         limits: ctx.limits,
+        retention: ctx.retention,
         actor: ctx.actor,
         argv: ctx.argv,
         catalog: ctx.catalog.unwrap_or(&no_catalog),
@@ -334,6 +335,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         known_targets: ctx.known_targets,
         policy: ctx.policy,
         limits: ctx.limits,
+        retention: ctx.retention,
         actor: ctx.actor,
         argv: ctx.argv,
         catalog: ctx.catalog.unwrap_or(&no_catalog),
@@ -739,6 +741,7 @@ fn locked(
         known_targets: ctx.known_targets,
         policy: ctx.policy,
         limits: ctx.limits,
+        retention: ctx.retention,
         actor: ctx.actor,
         argv: ctx.argv,
         catalog: &no_catalog,
@@ -953,7 +956,12 @@ fn locked(
     let snapshots = ClientPaths::new(&target.client_dir).snapshots(tx);
     for work in &works {
         if let Some(changes) = work.local_changes() {
-            warnings.push(plan::local_changes_warning(&work.addon, changes, Some(*tx)));
+            warnings.push(plan::local_changes_warning(
+                &work.addon,
+                changes,
+                Some(*tx),
+                &ctx.retention,
+            ));
             for folder in &changes.folders {
                 notes.push(format!(
                     "{}'s replaced files are kept in {}",
@@ -962,6 +970,22 @@ fn locked(
                 ));
             }
         }
+    }
+    // Folders that exist nowhere else now live only in the snapshot, which retention
+    // prunes in time; `-v` names where, for a copy to keep.
+    let only = plan::only_copies(&current.value, &works);
+    warnings.extend(plan::only_copy_warning(
+        &target.id,
+        &only,
+        Some(*tx),
+        &ctx.retention,
+    ));
+    for folder in &only {
+        notes.push(format!(
+            "the only copy of {} is kept in {}",
+            folder.as_str(),
+            snapshots.join("AddOns").join(folder.as_str()).display()
+        ));
     }
     let held = millis(&guard);
     drop(guard);
@@ -2325,5 +2349,50 @@ mod tests {
                 "{name} did not roll forward: {rolled_forward:?}"
             );
         }
+    }
+
+    /// `--force` over an unmanaged folder: the snapshot holds its only copy, which the
+    /// commit says once, with the configured retention, and `-v` says where.
+    #[test]
+    fn a_forced_replace_of_an_unmanaged_folder_says_its_snapshot_holds_the_only_copy() {
+        let mut scene = TxScene::new();
+        scene.force = true;
+        scene.retention.tx.keep_last = 4;
+        let hand = scene.client.addons().join("Hand");
+        std::fs::create_dir_all(&hand).unwrap();
+        std::fs::write(hand.join("Hand.toc"), "## Interface: 120105\n").unwrap();
+        std::fs::write(hand.join("Hand.lua"), "-- mine\n").unwrap();
+        let zip = scene.zip(
+            "hand.zip",
+            &[("Hand/Hand.toc", "## Interface: 120105\n## Version: 2\n")],
+        );
+        let done = scene.run(vec![scene.install("gh:o/hand", &zip)]).unwrap();
+        let outcome = &done.outcomes[0];
+        let tx = outcome.tx.unwrap();
+        let only: Vec<&Warning> = outcome
+            .warnings
+            .iter()
+            .filter(|w| matches!(w.code, crate::error::WarningCode::SnapshotOnlyCopy))
+            .collect();
+        assert_eq!(only.len(), 1, "{:?}", outcome.warnings);
+        assert!(
+            only[0]
+                .message
+                .contains(&format!("{tx}'s snapshot holds the only copy of Hand:")),
+            "{}",
+            only[0].message
+        );
+        assert!(
+            only[0].message.contains("pruned once 4 newer transactions"),
+            "{}",
+            only[0].message
+        );
+        let kept = scene.client.snapshots(&tx).join("AddOns").join("Hand");
+        assert_eq!(
+            std::fs::read_to_string(kept.join("Hand.lua")).unwrap(),
+            "-- mine\n"
+        );
+        let note = format!("the only copy of Hand is kept in {}", kept.display());
+        assert!(outcome.notes.contains(&note), "{:?}", outcome.notes);
     }
 }

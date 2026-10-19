@@ -84,7 +84,7 @@ There is no packaged release, installer or prebuilt binary yet; see [Installatio
 | **The game's rules decide** | TOC suffix precedence (`_Mainline`, `_Vanilla`, `_Forever`, …), `## Interface:` lists, `AllowLoadGameType`, interface ranges per family and the legacy single-TOC rules, applied to what is actually inside the archive. A build for another flavor is never installed. |
 | **Multi-flavor archives** | DBM and BigWigs ship retail-only boss modules in the same zip as their Classic modules. On Classic or Forever, the folders that client would not load are skipped and listed in `folders.skipped`. This happens when the publisher's `release.json` declares that client, or when the extra folders rule themselves out with their own TOCs. |
 | **Transactions, not file copies** | Folders are staged on the same filesystem, then swapped in with `renameat2(RENAME_EXCHANGE)` under a journal. A crash leaves each folder wholly old or wholly new, and the next change command finishes the work or rolls it back. |
-| **Undo any change** | Each install, remove and undo snapshots what it replaces. `undo` restores folders byte for byte and restores SavedVariables only where they changed. An undo is itself undoable, and `undo --last-by agent` reverts the last thing an agent did. |
+| **Undo any change** | Each install, remove and undo snapshots what it replaces. `undo` restores folders byte for byte and restores SavedVariables only where they changed, until retention prunes its snapshot. An undo is itself undoable, and `undo --last-by agent` reverts the last thing an agent did. |
 | **Keyless** | Stable GitHub releases are read from `release.json` without the REST API, and git branches through GitHub's commits feed and codeload, without the git binary. No account, token or API key is needed for anything that works today. |
 | **Safe around a running game** | With the default policy, updates that keep the loaded TOC can land while you play (`/reload` to pick them up). Removing a loaded addon is refused until the client exits, and SavedVariables are never written while it runs. |
 | **Verifiable privacy** | A hard host allowlist is checked on every redirect hop. Every request that reaches the network and every git run is logged locally (`omaddons net-log`), `--offline` refuses all network access, and there is no telemetry. |
@@ -628,7 +628,7 @@ Install or update addons in one target (`add` is an alias). Each ref is fetched 
 | `--version <V>` | Exactly this release, pinned: a tag for `gh:`, a rev for `git:` |
 | `--file <ZIP>` | Use this downloaded archive as the release of the one given ref |
 | `--reinstall` | Install the recorded release again, replacing its folders: repairs modified or missing files (undoable) |
-| `--force` | Take over a folder another addon owns, or replace an unmanaged folder (both undoable) |
+| `--force` | Take over a folder another addon owns, or replace an unmanaged folder (both undoable until retention prunes the snapshot; `snapshot_only_copy` says when it holds the only copy) |
 | `--strict` | Exit 6 when only some of the addons install |
 | `--refresh` | Fetch every release from its source, never from remembered metadata |
 | `--no-deps` | Install only the named addons, not the ones their TOCs require (what they require is still checked, and warned about) |
@@ -853,7 +853,7 @@ Each side is exactly one client: a selector that matches two is `target_ambiguou
 
 ### `remove <ADDON>...`
 
-Remove managed addons from one target, as an undoable transaction (`uninstall`, `rm` and `delete` are aliases). An addon is named by its name, its ref or a folder it owns.
+Remove managed addons from one target, as a transaction undoable until retention prunes its snapshot (`uninstall`, `rm` and `delete` are aliases). Removing what no source gives again (an addon adopted as it was, or installed from a local archive or directory) warns `snapshot_only_copy`. An addon is named by its name, its ref or a folder it owns.
 
 ```bash
 omaddons remove DBM -t retail
@@ -1308,7 +1308,8 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101.
 | `export_missing_target` | `export`: a registered client whose directory is gone was exported from its records |
 | `export_local_source` | `export`: an addon installed from a local file or folder was left out |
 | `not_locked` | `sync --locked`: entries without a version installed their newest release (one warning per client, naming them) |
-| `local_changes_replaced` | an install or update replaced folders whose files had changed on disk (it names up to 10 and counts them all); the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that the snapshot keeps them |
+| `local_changes_replaced` | an install or update replaced folders whose files had changed on disk (it names up to 10 and counts them all, and says how long retention keeps the snapshot); the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that the snapshot keeps them |
+| `snapshot_only_copy` | a transaction moved folders that exist nowhere else into its snapshot (an unmanaged folder replaced under `--force`, an addon adopted as it was or installed from a local archive or directory, removed or replaced); undo can restore them only until retention prunes it, and the message states the configured bounds. It names up to 10 folders; `-v` says where the snapshot keeps each. The fix is `omaddons undo <tx>`, or under `--dry-run` a reminder |
 | `still_required` | an addon removed (by `remove` or `undo`) is required by addons that stay, which will not load without it; the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that undo restores it |
 | `orphaned_dependency` | a remove, update or undo left dependencies required by nothing; the fix is one `omaddons remove <names…> -t <id>` naming them all |
 | `bridge_dependency` | a newly installed addon's other folder (a bridge or plugin) works with an addon that is not installed; nothing is installed for it, and the fix installs it (`omaddons install <name or ref> -t <id>`), or searches for it (`omaddons search <folder>`) when no keyless source ships it. Only on the addon's first install |
@@ -1376,7 +1377,7 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
 - Every history line carries the run (command invocation) it belongs to. Bare `undo` reverts a whole run, one undo transaction per client in its own lock window. Runs are attribution, not atomicity: each client's transaction commits and undoes on its own.
 - Folders come back byte for byte from `<client>/Interface/.omaddons/snapshots/<tx>/AddOns/`; tests compare tree digests. Each addon's record and files index are restored, while other addons' later changes stand.
 - **SavedVariables.** Only the touched addons' own files (`WTF/…/SavedVariables/<Folder>.lua` and `.lua.bak`, account-wide and per character) are snapshotted, with a SHA-256 manifest. On undo, a file that is unchanged since is left alone, a changed one is restored, and one the new version created is moved aside. A snapshot copy that no longer matches its manifest fails the undo with `state_corrupt` before anything moves; `omaddons undo <tx> --saved-variables keep`, its fix, reverts the folders without it. With `--saved-variables auto` and the game running, folders revert (if the running policy allows), and the SavedVariables restore is deferred. You get a `saved_variables_deferred` warning carrying the command to run after quitting: `omaddons undo <tx> --saved-variables restore`. SavedVariables directories that lead outside the client directory through a symlink (a `WTF/` kept in a sync folder) are never snapshotted or written; `saved_variables_out_of_scope` counts the files undo cannot restore. Folder names under `WTF/` are matched ignoring case, as Wine does (`wtf/account/…/savedvariables/` works); a folder spelled two ways (`WTF` and `wtf`) is left alone and counted in `saved_variables_out_of_scope`, because the game reads only one of them.
-- **Conflicts.** `undo_conflict` (exit 4) when a later transaction touched the same folders (undo the newest first), when the transaction was already undone, or when a folder it removed has been put back by hand. A snapshot pruned by retention gives `not_found`.
+- **Conflicts.** `undo_conflict` (exit 4) when a later transaction touched the same folders (undo the newest first), when the transaction was already undone, or when a folder it removed has been put back by hand. A snapshot pruned by retention gives `not_found`; for folders with no other copy, the commit said so with `snapshot_only_copy`.
 - Registry changes and `target.json` are not reverted.
 
 ### Ownership and protected folders
@@ -1389,7 +1390,7 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
 | Two AddOns folders that differ only in case (`AddOns` and `addons`) | Refused. An existing lowercase `interface/addons` alone is used as the AddOns folder |
 | Another managed addon's folder | `ownership_conflict`; `--force` transfers it and marks the old owner degraded |
 | A folder another client's records own, in an AddOns directory the two share (class `shared`) | `ownership_conflict` naming that client (`details.owner_target`), even with `--force`; the fix runs the same command on that client. `adopt` skips such folders and refuses them by name |
-| An unmanaged folder | `unmanaged_folder`, whose fix adopts it under the ref being installed (`omaddons adopt <folder> --ref <ref> -t <id>`); `--force`, the alternative, replaces it, and the snapshot keeps the original for undo. An update of an addon already managed has only the `--force` fix |
+| An unmanaged folder | `unmanaged_folder`, whose fix adopts it under the ref being installed (`omaddons adopt <folder> --ref <ref> -t <id>`); `--force`, the alternative, replaces it, and the snapshot keeps the original for undo until retention prunes it (`snapshot_only_copy` says so). An update of an addon already managed has only the `--force` fix |
 
 Ownership comes only from omaddons' own records. Other managers' metadata is not read; [`adopt`](#adopt) identifies their folders and records them as they are.
 
@@ -1418,6 +1419,7 @@ Retention runs after every commit, for the target just changed:
 - At most the newest 10 snapshots within 7 days are kept, the protected ones included; everything outside that set is pruned.
 - If the kept set exceeds 2 GiB for the target, its oldest unprotected snapshots are pruned until it fits.
 - History lines are never pruned.
+- Undo of a pruned transaction fails `not_found`. For folders with no other copy (an unmanaged folder replaced under `--force`, an addon adopted as it was or installed from a local archive or directory), the commit says so with `snapshot_only_copy`, stating these bounds as configured.
 - The download cache is an LRU capped at 1 GiB. Archives of releases installed on any target are pinned, so the cache can exceed the cap.
 - Orphaned stage directories, in-flight locks and the snapshots of transactions that never committed are swept: a rolled-back or failed transaction's snapshots at once, anything a crash left once it is an hour old. A snapshot that still holds an addon folder is never swept.
 
@@ -1730,7 +1732,7 @@ A folder with that name already exists and omaddons does not own it, or another 
 omaddons adopt <folder> --ref <ref> -t retail
 ```
 
-Replacing it instead is undoable:
+Replacing it instead is undoable until retention prunes the transaction's snapshot, which then holds the folder's only copy (`snapshot_only_copy` says so, and `-v` says where):
 
 ```bash
 omaddons install <ref> -t retail --force
@@ -1891,7 +1893,7 @@ It is built alongside [Omarchy](https://omarchy.org), the Arch-based desktop tha
 
 ### Will it touch the addons I already have?
 
-No. Folders it did not install are reported as unmanaged and left alone. Replacing one requires `--force`, and even that is undoable. Adopting existing addons into management is milestone 2.
+No. Folders it did not install are reported as unmanaged and left alone. Replacing one requires `--force`, and even that is undoable for as long as the snapshot is kept (at least 24 hours; `snapshot_only_copy` says when a snapshot holds the only copy). `adopt` brings existing addons under management as they are, without touching their files.
 
 ### Is it safe to use while WoW is running?
 

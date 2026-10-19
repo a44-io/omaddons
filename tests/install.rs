@@ -726,7 +726,13 @@ fn an_addon_of_the_same_name_from_another_ref_is_replaced_only_as_its_rule_says(
         "{}",
         r.context()
     );
-    assert!(warning_codes(&envelope).is_empty(), "{}", r.context());
+    // The replaced Bar came from a local archive: its snapshot holds the only copy.
+    assert_eq!(
+        warning_codes(&envelope),
+        ["snapshot_only_copy"],
+        "{}",
+        r.context()
+    );
     assert_eq!(
         bar(&home),
         Some((format!("file:{new}"), "2.2.0".to_owned()))
@@ -1832,5 +1838,138 @@ fn a_1_12_addon_installs_on_a_client_stamped_1_18_1() {
     assert_eq!(
         targets["data"]["targets"][0]["interface"], 11_201,
         "{targets}"
+    );
+}
+
+/// `--force` over a folder no addon manager installed: what it replaces lives on only
+/// in the transaction's snapshot, which a dry run and the commit both say, in JSON and
+/// to a human; undo brings it back.
+#[test]
+fn forcing_over_an_unmanaged_folder_says_the_snapshot_holds_its_only_copy() {
+    let scene = || {
+        let home = Home::new(&["wow"]);
+        let hand = home.addons("_retail_").join("Hand");
+        fs::create_dir_all(&hand).unwrap();
+        fs::write(hand.join("Hand.toc"), toc("120105", &[])).unwrap();
+        fs::write(hand.join("Hand.lua"), "-- mine\n").unwrap();
+        let dl = home.env.root().join("dl");
+        fs::create_dir_all(&dl).unwrap();
+        let zip = dl.join("Hand.zip");
+        let text = toc("120105", &["## Version: 2"]);
+        fs::write(&zip, zip_text(&[("Hand/Hand.toc", text.as_str())])).unwrap();
+        let args: Vec<String> = [
+            "install",
+            "gh:o/hand",
+            "--file",
+            &zip.display().to_string(),
+            "-t",
+            "retail",
+            "--force",
+        ]
+        .iter()
+        .map(|a| (*a).to_owned())
+        .collect();
+        (home, args)
+    };
+    let with = |args: &[String], extra: &[&str]| -> Vec<String> {
+        args.iter()
+            .cloned()
+            .chain(extra.iter().map(|a| (*a).to_owned()))
+            .collect()
+    };
+    let only = |envelope: &Value| -> Value {
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["code"] == "snapshot_only_copy")
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+
+    let (home, args) = scene();
+    let r = home.exec(&with(&args, &["--dry-run", "--json"]));
+    let planned = only(&r.expect(0));
+    assert_eq!(planned["fix_argv"], Value::Null, "{}", r.context());
+    assert!(
+        planned["fix"]
+            .as_str()
+            .is_some_and(|f| f.starts_with("nothing is moved under --dry-run")),
+        "{}",
+        r.context()
+    );
+    let human = home.exec(&with(&args, &["--dry-run"]));
+    assert_eq!(human.code, 0, "{}", human.context());
+    assert!(
+        human.stderr.contains("will hold the only copy of Hand"),
+        "{}",
+        human.context()
+    );
+
+    let r = home.exec(&with(&args, &["--json"]));
+    let envelope = r.expect(0);
+    let tx = envelope["data"]["tx"].as_str().unwrap().to_owned();
+    let warned = only(&envelope);
+    assert!(
+        warned["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(&format!("{tx}'s snapshot holds the only copy of Hand:"))),
+        "{}",
+        r.context()
+    );
+    assert_eq!(
+        warned["fix_argv"],
+        serde_json::json!(["omaddons", "undo", tx])
+    );
+    home.run(&["undo", &tx]).expect(0);
+    let lua = home.addons("_retail_").join("Hand/Hand.lua");
+    assert_eq!(fs::read_to_string(lua).unwrap(), "-- mine\n");
+
+    let (home, args) = scene();
+    let human = home.exec(&args);
+    assert_eq!(human.code, 0, "{}", human.context());
+    assert!(
+        human
+            .stderr
+            .contains("snapshot holds the only copy of Hand"),
+        "{}",
+        human.context()
+    );
+}
+
+/// Reinstalling a local directory byte for byte replaces nothing that is lost.
+#[test]
+fn a_byte_identical_reinstall_of_a_directory_is_no_only_copy() {
+    let home = Home::new(&["wow"]);
+    let src = home.env.root().join("src");
+    addon_folder(
+        &src,
+        "Dir",
+        &[("Dir.toc", &toc("120105", &[]))],
+        &[("a.lua", b"--\n")],
+    );
+    let dir = src.join("Dir").display().to_string();
+    home.run(&["install", "gh:o/dir", "--file", &dir, "-t", "retail"])
+        .expect(0);
+    let r = home.run(&[
+        "install",
+        "gh:o/dir",
+        "--file",
+        &dir,
+        "-t",
+        "retail",
+        "--reinstall",
+    ]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        items(&envelope)[0]["folders"]["replaced"],
+        serde_json::json!(["Dir"]),
+        "{}",
+        r.context()
+    );
+    assert!(
+        !warning_codes(&envelope).contains(&"snapshot_only_copy"),
+        "{}",
+        r.context()
     );
 }

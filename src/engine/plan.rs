@@ -32,6 +32,7 @@ use super::inspect::{
     partition, verify,
 };
 use super::ownership::{self, AllowedOp, FolderChange, Transfer, WorkingView};
+use super::retention::RetentionLimits;
 use super::running::{self, PolicyContext, PolicyOp};
 use super::swap::SwapOp;
 use crate::error::{Error, ErrorBody, ErrorCode, Result, Suggestion, Warning, WarningCode};
@@ -53,6 +54,7 @@ use crate::resolve::deps::{
     resolve,
 };
 use crate::resolve::select::{EmptyReason, select};
+use crate::resolve::updates::is_static;
 use crate::rules::RulesTable;
 use crate::sources::{SourceRegistry, Wanted};
 use crate::state::config::RunningPolicy;
@@ -353,6 +355,8 @@ pub struct PlanCtx<'a> {
     pub known_targets: &'a [Target],
     pub policy: RunningPolicy,
     pub limits: ArchiveLimits,
+    /// How long snapshots are kept, which warnings promising an undo state.
+    pub retention: RetentionLimits,
     pub actor: Actor,
     pub argv: &'a [String],
     /// Where dependencies resolve (with the Tukui and WoWInterface indexes once they
@@ -686,10 +690,18 @@ pub struct LocalChanges {
 /// Changed paths a `local_changes_replaced` warning names.
 const LOCAL_CHANGES_SHOWN: usize = 10;
 
+/// Folders a `snapshot_only_copy` warning names.
+const ONLY_COPY_SHOWN: usize = 10;
+
 /// `local_changes_replaced` for `addon`: its replaced folders held files changed by
 /// hand. Committed as `tx`, the fix is `omaddons undo <tx>`; planned only (a dry run),
-/// where the files are kept.
-pub fn local_changes_warning(addon: &str, changes: &LocalChanges, tx: Option<TxId>) -> Warning {
+/// where the files are kept. The message states how long `retention` keeps them.
+pub fn local_changes_warning(
+    addon: &str,
+    changes: &LocalChanges,
+    tx: Option<TxId>,
+    retention: &RetentionLimits,
+) -> Warning {
     let n = changes.count;
     let files = if n == 1 { "file" } else { "files" };
     let more = if (changes.paths.len() as u64) < n {
@@ -698,8 +710,9 @@ pub fn local_changes_warning(addon: &str, changes: &LocalChanges, tx: Option<TxI
         ""
     };
     let message = format!(
-        "{addon}: replaced {n} locally changed {files} ({}{more})",
-        changes.paths.join(", ")
+        "{addon}: replaced {n} locally changed {files} ({}{more}); undo brings them back until retention prunes the snapshot ({})",
+        changes.paths.join(", "),
+        retention_bound(retention)
     );
     let fix = match tx {
         Some(tx) => Suggestion::command(["omaddons".to_owned(), "undo".to_owned(), tx.to_string()]),
@@ -708,6 +721,161 @@ pub fn local_changes_warning(addon: &str, changes: &LocalChanges, tx: Option<TxI
         ),
     };
     Warning::new(WarningCode::LocalChangesReplaced, message).with_fix(fix)
+}
+
+/// Whether a folder a transaction moves into its snapshot (replaced or removed) exists
+/// nowhere else, judged by `owner`, the addon that recorded it before: none (an
+/// unmanaged folder replaced under `--force`), or one with no cached archive that no
+/// source gives again (adopted as it was, or from a local archive or directory).
+pub fn only_copy(owner: Option<&AddonRecord>) -> bool {
+    owner.is_none_or(|o| o.blob_sha256.is_none() && (o.release_id.is_none() || is_static(o)))
+}
+
+/// The live folder `op` moves into the snapshot when that is its only copy
+/// ([`only_copy`], the owner taken from `record`, the target's record before).
+pub fn moves_only_copy<'s>(record: &TargetRecord, op: &'s SwapOp) -> Option<&'s MutableFolderName> {
+    let live = match op {
+        SwapOp::Replace { live, .. } | SwapOp::Remove { live, .. } => live,
+        SwapOp::Add { .. } => return None,
+    };
+    let owner = record
+        .addons
+        .values()
+        .find(|a| a.folders.iter().any(|f| f.key() == live.key()));
+    only_copy(owner).then_some(live)
+}
+
+/// The folders `works` move into the snapshot that exist nowhere else, by key, once
+/// each, judged against `record` (the target's record before). A folder whose files
+/// changed by hand is `local_changes_replaced`'s; one replaced by the same bytes (its
+/// indexed digest equals the incoming folder's) loses nothing.
+pub fn only_copies(record: &TargetRecord, works: &[AddonWork]) -> Vec<FolderName> {
+    let mut found: Vec<FolderName> = Vec::new();
+    for work in works {
+        let WorkMode::Folders(f) = &work.mode else {
+            continue;
+        };
+        let changed = f
+            .local_changes
+            .as_ref()
+            .map_or(&[][..], |local| &local.folders[..]);
+        for op in &f.swap {
+            let Some(live) = moves_only_copy(record, op) else {
+                continue;
+            };
+            // ubs:ignore — comparing folder name keys, not secrets
+            let listed = |among: &[FolderName]| among.iter().any(|x| x.key() == live.key());
+            if listed(changed) || listed(&found) || same_bytes(op, f.inspected.as_ref()) {
+                continue;
+            }
+            found.push(live.as_folder().clone());
+        }
+    }
+    found.sort_by(|a, b| a.key().cmp(b.key()));
+    found
+}
+
+/// Whether `op` replaces its live folder with the same bytes: the live folder's indexed
+/// digest equals the incoming folder's in `inspected`.
+fn same_bytes(op: &SwapOp, inspected: Option<&Inspected>) -> bool {
+    let SwapOp::Replace {
+        name: staged,
+        old_tree: Some(live_tree),
+        ..
+    } = op
+    else {
+        return false;
+    };
+    let Some(folder) =
+        inspected.and_then(|i| i.folders.iter().find(|x| x.name.key() == staged.key()))
+    else {
+        return false;
+    };
+    let staged_tree = TreeDigest::from_hex_entries(
+        folder
+            .files
+            .iter()
+            .map(|e| (e.rel_path.as_str(), e.size, &e.sha256)),
+    );
+    // ubs:ignore — tree digests of addon files, public content, not secrets
+    staged_tree == *live_tree
+}
+
+/// `snapshot_only_copy` naming `folders` (the first `ONLY_COPY_SHOWN`, then a count)
+/// on `target`: committed as `tx`, its snapshot holds their only copy and the fix is
+/// `omaddons undo <tx>`; planned only (a dry run), a reminder. `None` for no folders.
+pub fn only_copy_warning(
+    target: &str,
+    folders: &[FolderName],
+    tx: Option<TxId>,
+    retention: &RetentionLimits,
+) -> Option<Warning> {
+    if folders.is_empty() {
+        return None;
+    }
+    let shown: Vec<&str> = folders
+        .iter()
+        .take(ONLY_COPY_SHOWN)
+        .map(FolderName::as_str)
+        .collect();
+    let list = match folders.len() - shown.len() {
+        0 => shown.join(", "),
+        more => format!("{} and {more} more", shown.join(", ")),
+    };
+    let bound = retention_bound(retention);
+    let (message, fix) = match tx {
+        Some(tx) => (
+            format!(
+                "On {target}, {tx}'s snapshot holds the only copy of {list}: `omaddons undo {tx}` brings them back until retention prunes it ({bound})"
+            ),
+            Suggestion::command(["omaddons".to_owned(), "undo".to_owned(), tx.to_string()]),
+        ),
+        None => (
+            format!(
+                "On {target}, the transaction's snapshot will hold the only copy of {list}: undo brings them back until retention prunes it ({bound})"
+            ),
+            Suggestion::text(
+                "nothing is moved under --dry-run; after the run, its snapshot holds the only copy until retention prunes it",
+            ),
+        ),
+    };
+    Some(Warning::new(WarningCode::SnapshotOnlyCopy, message).with_fix(fix))
+}
+
+/// How long `retention` keeps a transaction's snapshot, in words.
+fn retention_bound(retention: &RetentionLimits) -> String {
+    format!(
+        "kept at least {}; then pruned once {} newer transactions on this client exist, after {}, or past the {} snapshot cap",
+        span(retention.tx.min_age),
+        retention.tx.keep_last,
+        span(retention.tx.window),
+        size(retention.snapshot_max_bytes)
+    )
+}
+
+/// `d` in the largest whole unit up to days (hours below two days: "24 hours").
+fn span(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    let (n, unit) = if s >= 2 * 86_400 && s.is_multiple_of(86_400) {
+        (s / 86_400, "day")
+    } else if s >= 3_600 && s.is_multiple_of(3_600) {
+        (s / 3_600, "hour")
+    } else if s >= 60 && s.is_multiple_of(60) {
+        (s / 60, "minute")
+    } else {
+        (s, "second")
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// `bytes` in the largest binary unit that divides it.
+fn size(bytes: u64) -> String {
+    for (unit, n) in [("GiB", 1u64 << 30), ("MiB", 1 << 20), ("KiB", 1 << 10)] {
+        if bytes >= n && bytes.is_multiple_of(n) {
+            return format!("{} {unit}", bytes / n);
+        }
+    }
+    format!("{bytes} bytes")
 }
 
 /// The warnings dependency bookkeeping raises for `works` on `target`, whose record
@@ -1199,6 +1367,9 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         // A dry run shows them; a commit raises them again with its transaction.
         let bookkept = bookkeeping_warnings(&record, &tp.work, &target.id, None);
         push_new(&mut tp.warnings, bookkept);
+        let only = only_copies(&record, &tp.work);
+        let only = only_copy_warning(&target.id, &only, None, &ctx.retention);
+        push_new(&mut tp.warnings, only.into_iter().collect());
         tp.kind = target_kind(&tp.changes, req.kind, tp.default_kind);
         tp.creates_addons_dir =
             live.addons_dir_missing && tp.work.iter().any(|w| w.inspected().is_some());
@@ -3265,9 +3436,12 @@ impl TargetPlanner<'_> {
             // that `rejudge` holds the lock for.
             f.local_changes = self.local_changes(&f.swap);
             if let Some(changes) = &f.local_changes {
-                planned
-                    .warnings
-                    .push(local_changes_warning(&planned.work.addon, changes, None));
+                planned.warnings.push(local_changes_warning(
+                    &planned.work.addon,
+                    changes,
+                    None,
+                    &self.ctx.retention,
+                ));
             }
         }
         Ok(planned)
@@ -4694,6 +4868,185 @@ mod tests {
         assert!(record_change_warnings(&alone, &alone, "retail", None).is_empty());
     }
 
+    /// An owner of `Foo` installed from `r` as `release_id`, with `blob`.
+    fn owned(r: &str, release_id: Option<&str>, blob: Option<&str>) -> AddonRecord {
+        AddonRecord {
+            r#ref: r.parse().unwrap(),
+            release_id: release_id.map(str::to_owned),
+            blob_sha256: blob.map(str::to_owned),
+            ..requiring("Foo", AddonReason::Explicit, &[])
+        }
+    }
+
+    #[test]
+    fn only_copies_are_what_no_source_gives_again() {
+        for (case, owner, expected) in [
+            ("unmanaged", None, true),
+            (
+                "adopted as it is",
+                Some(owned("gh:o/foo", None, None)),
+                true,
+            ),
+            (
+                "a local archive",
+                Some(owned("gh:o/foo", Some("gh:o/foo@sha256:ab"), None)),
+                true,
+            ),
+            (
+                "a local directory",
+                Some(owned("gh:o/foo", Some("gh:o/foo@dir:ab"), None)),
+                true,
+            ),
+            (
+                "a file: ref",
+                Some(owned("file:/dl/Foo.zip", Some("x"), None)),
+                true,
+            ),
+            (
+                "a release with its archive",
+                Some(owned("gh:o/foo", Some("gh:o/foo@1"), Some("aa"))),
+                false,
+            ),
+            (
+                "a release whose archive was evicted",
+                Some(owned("gh:o/foo", Some("gh:o/foo@1"), None)),
+                false,
+            ),
+        ] {
+            assert_eq!(only_copy(owner.as_ref()), expected, "{case}");
+        }
+    }
+
+    #[test]
+    fn only_copies_skip_what_the_transaction_keeps_or_another_warning_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let foo = dir.path().join("Foo");
+        std::fs::create_dir_all(&foo).unwrap();
+        std::fs::write(foo.join("Foo.toc"), "## Interface: 120105\n").unwrap();
+        let inspected = inspect_dir(
+            dir.path(),
+            &ArchiveLimits::default(),
+            &RulesTable::builtin(),
+        )
+        .unwrap();
+        let identical = TreeDigest::compute(&foo).unwrap();
+        let other = TreeDigest::from_hex_entries([("Foo.toc", 1, "00")]);
+        let foo_folder = || FolderName::new("Foo").unwrap().into_mutable().unwrap();
+        let work = |op: SwapOp, local: bool| AddonWork {
+            addon: "Foo".into(),
+            mode: WorkMode::Folders(Box::new(FolderWork {
+                record: None,
+                blob: None,
+                inspected: Some(inspected.clone()),
+                skipped: Vec::new(),
+                swap: vec![op],
+                transfers: Vec::new(),
+                degraded: Vec::new(),
+                intent: None,
+                edits: Vec::new(),
+                handed_over: Vec::new(),
+                deps: DepFacts::default(),
+                local_changes: local.then(|| LocalChanges {
+                    paths: vec!["Foo/Foo.lua".into()],
+                    count: 1,
+                    folders: vec![FolderName::new("Foo").unwrap()],
+                }),
+            })),
+        };
+        let replace = |indexed: Option<TreeDigest>| SwapOp::Replace {
+            name: foo_folder(),
+            live: foo_folder(),
+            old_tree: indexed,
+        };
+        let mut record = TargetRecord::empty(TargetKey::new());
+        let local = owned("gh:o/foo", Some("gh:o/foo@dir:ab"), None);
+        record.addons.insert("foo".into(), local);
+        let foo_only = |record: &TargetRecord, works: &[AddonWork]| -> Vec<String> {
+            only_copies(record, works)
+                .iter()
+                .map(|f| f.as_str().to_owned())
+                .collect()
+        };
+        let changed = [work(replace(Some(other)), false)];
+        assert_eq!(foo_only(&record, &changed), ["Foo"]);
+        let unindexed = [work(replace(None), false)];
+        assert_eq!(foo_only(&record, &unindexed), ["Foo"]);
+        let removed = SwapOp::Remove {
+            live: foo_folder(),
+            old_tree: None,
+        };
+        assert_eq!(foo_only(&record, &[work(removed.clone(), false)]), ["Foo"]);
+        // Once, however many works move it.
+        let twice = [work(removed.clone(), false), work(removed, false)];
+        assert_eq!(foo_only(&record, &twice), ["Foo"]);
+        // The same bytes come back: nothing is lost.
+        assert!(foo_only(&record, &[work(replace(Some(identical)), false)]).is_empty());
+        // Changed by hand: `local_changes_replaced` says it.
+        assert!(foo_only(&record, &[work(replace(Some(other)), true)]).is_empty());
+        // Added only: nothing moves.
+        let added = SwapOp::Add { name: foo_folder() };
+        assert!(foo_only(&record, &[work(added, false)]).is_empty());
+        // A release's archive is cached: not the only copy.
+        record.addons.insert(
+            "foo".into(),
+            owned("gh:o/foo", Some("gh:o/foo@1"), Some("aa")),
+        );
+        assert!(foo_only(&record, &changed).is_empty());
+    }
+
+    #[test]
+    fn the_only_copy_warning_states_the_configured_retention() {
+        let retention = RetentionLimits {
+            tx: crate::limits::TxRetention {
+                min_age: std::time::Duration::from_secs(86_400),
+                keep_last: 3,
+                window: std::time::Duration::from_secs(14 * 86_400),
+            },
+            snapshot_max_bytes: 512 << 20,
+            ..RetentionLimits::default()
+        };
+        let twelve: Vec<FolderName> = (0..12)
+            .map(|i| FolderName::new(&format!("F{i:02}")).unwrap())
+            .collect();
+        let tx = TxId::new();
+        let w = only_copy_warning("retail", &twelve, Some(tx), &retention).unwrap();
+        assert!(matches!(w.code, WarningCode::SnapshotOnlyCopy));
+        assert!(
+            w.message.starts_with(&format!(
+                "On retail, {tx}'s snapshot holds the only copy of F00, F01,"
+            )),
+            "{}",
+            w.message
+        );
+        assert!(w.message.contains("F09 and 2 more:"), "{}", w.message);
+        assert!(
+            w.message.ends_with(
+                "(kept at least 24 hours; then pruned once 3 newer transactions on this client exist, after 14 days, or past the 512 MiB snapshot cap)"
+            ),
+            "{}",
+            w.message
+        );
+        let undo = ["omaddons".to_owned(), "undo".to_owned(), tx.to_string()];
+        assert_eq!(w.fix.as_ref().unwrap().argv().unwrap(), undo);
+        let planned = only_copy_warning("retail", &twelve[..1], None, &retention).unwrap();
+        assert!(planned.fix.as_ref().unwrap().argv().is_none());
+        assert!(only_copy_warning("retail", &[], Some(tx), &retention).is_none());
+        // The default limits, as README states them.
+        let edited = LocalChanges {
+            paths: vec!["Foo/a.lua".into()],
+            count: 1,
+            folders: Vec::new(),
+        };
+        let local = local_changes_warning("Foo", &edited, None, &RetentionLimits::default());
+        assert!(
+            local.message.contains(
+                "until retention prunes the snapshot (kept at least 24 hours; then pruned once 10 newer transactions on this client exist, after 7 days, or past the 2 GiB snapshot cap)"
+            ),
+            "{}",
+            local.message
+        );
+    }
+
     /// The release a request chose: what the planner's template holds.
     fn chosen() -> AddonRecord {
         let mut chosen = installed("2.0", false, Channel::Stable, AddonReason::Explicit);
@@ -5003,6 +5356,7 @@ mod tests {
             known_targets: &[],
             policy: RunningPolicy::Safe,
             limits: ArchiveLimits::default(),
+            retention: RetentionLimits::default(),
             actor: Actor::Agent,
             argv: &argv,
             catalog: &catalog,

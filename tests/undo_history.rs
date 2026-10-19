@@ -649,10 +649,19 @@ fn undo_and_targets_report_what_the_run_found() {
     let config = s.home.env.config().join("omaddons/config.toml");
     fs::create_dir_all(config.parent().unwrap()).unwrap();
     fs::write(&config, "bogus_key = 1\n").unwrap();
-    for (args, code) in [
-        (&["undo", "--dry-run"][..], 0),
-        (&["targets", "default", "retail"], 0),
-        (&["targets", "rm", "nosuch"], 3),
+    // Undoing the install of a local archive would move Foo's only copy away.
+    for (args, code, expected) in [
+        (
+            &["undo", "--dry-run"][..],
+            0,
+            &["config_unknown_key", "snapshot_only_copy"][..],
+        ),
+        (
+            &["targets", "default", "retail"],
+            0,
+            &["config_unknown_key"],
+        ),
+        (&["targets", "rm", "nosuch"], 3, &["config_unknown_key"]),
     ] {
         let envelope = s.run(args).expect(code);
         let codes: Vec<&str> = envelope["warnings"]
@@ -661,7 +670,7 @@ fn undo_and_targets_report_what_the_run_found() {
             .iter()
             .map(|w| w["code"].as_str().unwrap())
             .collect();
-        assert_eq!(codes, ["config_unknown_key"], "{args:?}: {envelope}");
+        assert_eq!(codes, expected, "{args:?}: {envelope}");
     }
 }
 

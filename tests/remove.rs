@@ -374,3 +374,55 @@ fn an_unreadable_process_table_fails_closed() {
     assert!(!home.addons("_retail_").join("Foo").exists());
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
 }
+
+/// Removing what no source gives again (an addon adopted as it is) says the snapshot
+/// holds its only copy; removing a release whose archive is cached does not.
+#[test]
+fn removing_an_only_copy_says_so_and_a_cached_release_does_not() {
+    use common::http::{Asset, gh_release};
+
+    let home = Home::new(&["wow"]);
+    let only = |envelope: &Value| -> Vec<String> {
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == "snapshot_only_copy")
+            .map(|w| w["message"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // Zed, unpacked by hand and adopted as it is: no release, no archive.
+    let zed_toc = toc("120105", &["## Version: z1"]);
+    addon_folder(
+        &home.addons("_retail_"),
+        "Zed",
+        &[("Zed.toc", zed_toc.as_str())],
+        &[],
+    );
+    home.run(&["adopt", "Zed", "--ref", "gh:o/zed", "--no-verify"])
+        .expect(0);
+    let zed = common::state::record(&home, "retail").addons["zed"].clone();
+    assert_eq!((zed.release_id, zed.blob_sha256), (None, None));
+    let r = home.run(&["remove", "Zed", "-t", "retail"]);
+    let envelope = r.expect(0);
+    let warned = only(&envelope);
+    assert_eq!(warned.len(), 1, "{}", r.context());
+    assert!(
+        warned[0].contains("holds the only copy of Zed:"),
+        "{warned:?}"
+    );
+
+    // Foo from a GitHub release, its archive in the blob cache.
+    let text = toc("120105", &["## Version: 1.0"]);
+    let assets: [Asset<'_>; 1] = [(
+        "Foo-1.0.zip",
+        &[("mainline", 120_105)],
+        vec![("Foo/Foo.toc", text.as_str())],
+    )];
+    gh_release(&home.http, "https://github.com/o/foo", "1.0", &assets);
+    home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+    let r = home.run(&["remove", "Foo", "-t", "retail"]);
+    let envelope = r.expect(0);
+    assert!(only(&envelope).is_empty(), "{}", r.context());
+}

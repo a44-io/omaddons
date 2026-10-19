@@ -320,6 +320,8 @@ pub struct TxScene {
     pub while_running: bool,
     /// Gives the registry a git runner that may read `file://` repositories.
     pub with_git: bool,
+    /// The effective `[limits]` retention.
+    pub retention: super::retention::RetentionLimits,
 }
 
 impl TxScene {
@@ -347,6 +349,7 @@ impl TxScene {
             force: false,
             while_running: false,
             with_git: false,
+            retention: super::retention::RetentionLimits::default(),
         }
     }
 
@@ -376,7 +379,7 @@ impl TxScene {
             table: &table,
             policy: crate::state::config::RunningPolicy::Safe,
             limits: ArchiveLimits::default(),
-            retention: super::retention::RetentionLimits::default(),
+            retention: self.retention,
             actor: self.actor,
             argv: &argv,
             command,

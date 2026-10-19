@@ -286,6 +286,9 @@ warning_codes! {
     ExportLocalSource           = "export_local_source";
     /// Files of a replaced folder had changed on disk; undo brings them back.
     LocalChangesReplaced        = "local_changes_replaced";
+    /// A transaction moved folders that exist nowhere else into its snapshot: undo can
+    /// restore them only until retention prunes it.
+    SnapshotOnlyCopy            = "snapshot_only_copy";
     /// `sync --locked`: entries without a version installed their newest release.
     NotLocked                   = "not_locked";
     /// A removed addon is still required by addons that stay; undo brings it back.
@@ -782,7 +785,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 38);
+        assert_eq!(WarningCode::ALL.len(), 39);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

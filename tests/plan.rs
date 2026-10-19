@@ -130,6 +130,7 @@ mod support {
                 known_targets: &[],
                 policy: RunningPolicy::Safe,
                 limits: ArchiveLimits::default(),
+                retention: omaddons::engine::retention::RetentionLimits::default(),
                 actor: Actor::Agent,
                 argv: &argv,
                 catalog: &catalog,

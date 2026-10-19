@@ -423,6 +423,8 @@ struct Planned {
     sv_only: bool,
     reload_required: ReloadRequired,
     warnings: Vec<Warning>,
+    /// `-v` lines: where the undo's snapshot keeps a folder's only copy.
+    notes: Vec<String>,
 }
 
 impl Planned {
@@ -455,7 +457,7 @@ impl Planned {
                 warnings,
                 creates_addons_dir: false,
                 lock_held_ms,
-                notes: Vec::new(),
+                notes: self.notes.clone(),
             },
             sv: self.sv.counts,
         }
@@ -586,6 +588,40 @@ fn plan(
     warnings.extend(super::plan::record_change_warnings(
         &was, &record, &target.id, tx,
     ));
+    // A folder the undo moves out that exists nowhere else lives on only in the undo's
+    // snapshot, until retention prunes it.
+    let mut only: Vec<FolderName> = Vec::new();
+    for op in &folders.swap {
+        if let Some(live) = super::plan::moves_only_copy(&current, op)
+            && !only.iter().any(|f| f.key() == live.key())
+        {
+            only.push(live.as_folder().clone());
+        }
+    }
+    only.sort_by(|a, b| a.key().cmp(b.key()));
+    warnings.extend(super::plan::only_copy_warning(
+        &target.id,
+        &only,
+        tx,
+        &ctx.retention,
+    ));
+    let notes = match tx {
+        Some(tx) => only
+            .iter()
+            .map(|folder| {
+                format!(
+                    "the only copy of {} is kept in {}",
+                    folder.as_str(),
+                    client
+                        .snapshots(&tx)
+                        .join("AddOns")
+                        .join(folder.as_str())
+                        .display()
+                )
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     Ok(Planned {
         reverts: reverted.tx,
         key,
@@ -597,6 +633,7 @@ fn plan(
         sv_only: sv_only.is_some(),
         reload_required: judged.reload_required,
         warnings,
+        notes,
     })
 }
 
