@@ -4580,9 +4580,7 @@ pub fn addon_name(r#ref: &Ref, inspected: &Inspected) -> String {
 
 /// The folder an archive is the addon of: the folder named like `name_hint` (a catalog
 /// name, a WoWInterface `UIName` or a Tukui slug; normalised), else the folder named
-/// like the repository, else the folder the others extend (`WeakAuras` for
-/// `WeakAurasOptions`), else the one core folder (`DBM-Core` beside `DBM-GUI`), else the
-/// shortest.
+/// like the repository, else the folder its names point at ([`primary_by_shape`]).
 pub fn primary_folder<'a>(
     r#ref: &Ref,
     folders: &'a [FolderName],
@@ -4606,8 +4604,9 @@ pub fn primary_folder<'a>(
 }
 
 /// The primary folder by the folders' names alone (no ref, no hint): the folder the
-/// others extend (`WeakAuras` for `WeakAurasOptions`), else the one core folder
-/// (`DBM-Core` beside `DBM-GUI`), else the shortest.
+/// others extend (`WeakAuras` for `WeakAurasOptions`), unless it is a module beside the
+/// one core folder (`DBM-Test`, extended by `DBM-Test-WarWithin`, beside `DBM-Core`),
+/// else the one core folder (`DBM-Core` beside `DBM-GUI`), else the shortest.
 pub fn primary_by_shape(folders: &[FolderName]) -> Option<&FolderName> {
     let extended = |n: &FolderName| {
         let n = n.as_str();
@@ -4630,12 +4629,27 @@ pub fn primary_by_shape(folders: &[FolderName]) -> Option<&FolderName> {
         let n = n.as_str().to_ascii_lowercase();
         n.ends_with("-core") || n.ends_with("_core")
     };
-    if ranked.first().is_some_and(|top| extended(top) == 0)
+    // `DBM-Test` shares `DBM-Core`'s stem; `BigWigs` is the stem `BigWigs_Core` extends.
+    let beside = |top: &FolderName, core: &FolderName| {
+        let (top, core) = (
+            top.as_str().to_ascii_lowercase(),
+            core.as_str().to_ascii_lowercase(),
+        );
+        let stem = core
+            .strip_suffix("-core")
+            .or_else(|| core.strip_suffix("_core"))
+            .unwrap_or(&core);
+        top.strip_prefix(stem)
+            .is_some_and(|rest| rest.starts_with(['-', '_']))
+    };
+    let top = ranked.first().copied();
+    if let Some(top) = top
         && let [only] = folders.iter().filter(core).collect::<Vec<_>>().as_slice()
+        && (extended(top) == 0 || beside(top, only))
     {
         return Some(only);
     }
-    ranked.first().copied()
+    top
 }
 
 #[cfg(test)]
@@ -4726,6 +4740,24 @@ mod tests {
             addon_name(&"gh:o/bw".parse().unwrap(), &bw),
             "BigWigs",
             "the extended folder beats the core folder"
+        );
+        // WoWInterface's DBM 11.2.15 (no release.json, so no repository name to match).
+        let dbm_wowi = inspected(&[
+            "DBM-Affixes",
+            "DBM-Brawlers",
+            "DBM-Core",
+            "DBM-GUI",
+            "DBM-KhazAlgar",
+            "DBM-Raids-WarWithin",
+            "DBM-StatusBarTimers",
+            "DBM-Test",
+            "DBM-Test-WarWithin",
+            "DBM-VPVEM",
+        ]);
+        assert_eq!(
+            addon_name(&"wowi:8814".parse().unwrap(), &dbm_wowi),
+            "DBM-Core",
+            "a module family beside the core folder does not take its place"
         );
         let plain = inspected(&["Zeta", "Alpha"]);
         assert_eq!(

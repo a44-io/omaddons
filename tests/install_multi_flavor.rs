@@ -466,6 +466,41 @@ fn without_metadata_only_gated_folders_are_skipped() {
     assert_eq!(folders["skipped"], serde_json::json!([]));
 }
 
+/// Without release.json the addon's own folder must load, and a module family beside the
+/// core folder (`DBM-Test`, extended by `DBM-Test-WarWithin`) is not the addon's own
+/// folder: WoWInterface's DBM 11.2.15 was refused on every classic client for it
+/// (keyless-coverage study, 2026-10-20).
+#[test]
+fn a_module_family_beside_the_core_folder_is_not_the_addons_own_folder() {
+    let home = Home::new(&["wow", "wow_classic_era"]);
+    let mut files = folder("DBM-Core", EVERY, &[]);
+    files.extend(folder("DBM-GUI", EVERY, &["## Dependencies: DBM-Core"]));
+    for module in ["DBM-Test", "DBM-Test-WarWithin"] {
+        let lua = format!("{module}.lua");
+        files.push((
+            format!("{module}/{module}_Mainline.toc"),
+            toc(RETAIL, &["## Dependencies: DBM-Core", &lua]),
+        ));
+        files.push((format!("{module}/{lua}"), format!("-- {module}\n")));
+    }
+    release(&home.http, FOO, "v1", "DBM-Core-11.2.15.zip", &[], &files);
+    let r = home.run(&["install", "gh:o/foo", "-t", "era"]);
+    let envelope = r.expect(0);
+    let item = &envelope["data"]["items"][0];
+    assert_eq!(item["name"], "DBM-Core", "{}", r.context());
+    assert_eq!(strings(&item["folders"]["added"]), ["DBM-Core", "DBM-GUI"]);
+    assert_eq!(
+        skipped(&item["folders"]),
+        [
+            "DBM-Test=no_loadable_toc",
+            "DBM-Test-WarWithin=no_loadable_toc"
+        ],
+        "{}",
+        r.context()
+    );
+    assert_eq!(on_disk(&home, "_classic_era_"), ["DBM-Core", "DBM-GUI"]);
+}
+
 /// WeakAuras' release.json declares no retail or Forever build, and its zip loads
 /// nowhere else: it is still refused there.
 #[test]
