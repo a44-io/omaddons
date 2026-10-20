@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "request": {
     "method": "GET",
-    "url": "https://release-assets.githubusercontent.com/github-production-release-asset/122694615/70f918b2-5907-4f79-bc1f-3f1a1996e56e?response-content-disposition=attachment%3B%20filename%3Drelease.json&response-content-type=application%2Foctet-stream&rscd=attachment%3B+filename%3Drelease.json&rsct=application%2Foctet-stream&spr=https"
+    "url": "https://release-assets.githubusercontent.com/github-production-release-asset/66207633/6f84eada-53cc-4d98-88f3-7038f865aacc?response-content-disposition=attachment%3B%20filename%3Drelease.json&response-content-type=application%2Foctet-stream&rscd=attachment%3B+filename%3Drelease.json&rsct=application%2Foctet-stream&spr=https"
   },
   "responses": [
     {
@@ -14,15 +14,15 @@
         ],
         [
           "content-length",
-          "222"
+          "314"
         ],
         [
           "last-modified",
-          "Thu, 15 Oct 2026 13:38:18 GMT"
+          "Sun, 18 Oct 2026 20:33:58 GMT"
         ],
         [
           "etag",
-          "\"0x8DF2AC19278433A\""
+          "\"0x8DF2D5722DE5322\""
         ],
         [
           "server",
@@ -30,7 +30,7 @@
         ],
         [
           "x-ms-request-id",
-          "a10ddb33-701e-0052-60aa-5c9dbd000000"
+          "a8665e7f-d01e-0039-2657-5f1a49000000"
         ],
         [
           "x-ms-version",
@@ -38,11 +38,11 @@
         ],
         [
           "x-ms-creation-time",
-          "Thu, 15 Oct 2026 13:38:18 GMT"
+          "Sun, 18 Oct 2026 20:33:58 GMT"
         ],
         [
           "x-ms-blob-content-md5",
-          "cxubXyvVG/e3tl5I+aucjw=="
+          "mVnZfQ0kA+FX2Qs1bQTgQA=="
         ],
         [
           "x-ms-lease-status",
@@ -78,15 +78,15 @@
         ],
         [
           "age",
-          "199"
+          "1718"
         ],
         [
           "date",
-          "Fri, 16 Oct 2026 18:42:30 GMT"
+          "Tue, 20 Oct 2026 05:43:59 GMT"
         ],
         [
           "x-served-by",
-          "cache-iad-kiad7000104-IAD, cache-pdk-kpdk2140022-PDK"
+          "cache-iad-kcgs7200105-IAD, cache-pdk-kpdk2140033-PDK"
         ],
         [
           "x-cache",
@@ -94,11 +94,11 @@
         ],
         [
           "x-cache-hits",
-          "44, 0"
+          "2, 0"
         ],
         [
           "x-timer",
-          "S1792176151.801545,VS0,VE14"
+          "S1792475040.936382,VS0,VE2"
         ],
         [
           "content-disposition",
@@ -109,7 +109,7 @@
           "application/octet-stream"
         ]
       ],
-      "body_file": "get-github-production-release-asset-122694615-70f918b2-5907-4f79-bc1f-3f1a1996e56e-3342f7ac.body"
+      "body_file": "get-github-production-release-asset-66207633-6f84eada-53cc-4d98-88f3-7038f865aacc-92f872e0.body"
     }
   ]
 }

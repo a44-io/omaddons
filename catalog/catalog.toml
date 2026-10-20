@@ -1,7 +1,7 @@
 # The built-in addon catalog (vision §5.4), embedded in the binary.
 #
 # Every value here was verified, not remembered (2026-10-14; BugSack, ElvUI and Tukui
-# 2026-10-16):
+# 2026-10-16; TellMeWhen through ClassicCastbars 2026-10-20):
 # - the GitHub release.json publishers: the repository's releases/latest tag, its
 #   release.json, and the addon roots of the actual release zip;
 # - the Tukui entries: the API's list (api.tukui.org/v1/addons), then the zip that
@@ -112,6 +112,69 @@ ref = "gh:funkydude/BugSack"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
 folders = ["BugSack"]
 notes = "!BugGrabber is an optional dependency with no official GitHub releases; install it yourself if you want it"
+
+[[addon]]
+name = "TellMeWhen"
+aliases = ["tmw"]
+ref = "gh:ascott18/TellMeWhen"
+families = ["mainline", "vanilla", "tbc", "mists", "forever"]
+folders = ["TellMeWhen", "TellMeWhen_Options"]
+
+[[addon]]
+name = "ThreatPlates"
+ref = "gh:Backupiseasy/ThreatPlates"
+families = ["mainline", "vanilla", "tbc", "mists", "forever"]
+folders = ["TidyPlates_ThreatPlates"]
+notes = "the release zip's TOC carries the WoWInterface (15749), CurseForge (21217) and Wago ids of Threat Plates"
+
+[[addon]]
+name = "SilverDragon"
+ref = "gh:kemayo/wow-silverdragon"
+families = ["mainline", "vanilla", "tbc", "wrath", "mists", "forever"]
+folders = ["SilverDragon", "SilverDragon_History", "SilverDragon_Overlay", "SilverDragon_RangeExtender"]
+
+[[addon]]
+name = "Capping"
+ref = "gh:BigWigsMods/Capping"
+families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
+folders = ["Capping", "Capping_Options"]
+
+[[addon]]
+name = "IceHUD"
+ref = "gh:parnic/ice-hud"
+families = ["mainline", "vanilla", "tbc", "titan", "mists"]
+folders = ["IceHUD", "IceHUD_Options"]
+
+[[addon]]
+name = "Quartz"
+ref = "gh:Nevcairiel/Quartz"
+families = ["mainline", "vanilla", "tbc", "mists"]
+folders = ["Quartz"]
+notes = "3.7.17: Quartz.toc carries Interface 11508, 20505, 50503, 110207, so 12.x clients load it only as out of date"
+
+[[addon]]
+name = "Mapster"
+ref = "gh:Nevcairiel/Mapster"
+families = ["mainline", "forever"]
+folders = ["Mapster"]
+
+[[addon]]
+name = "BadBoy"
+ref = "gh:funkydude/BadBoy"
+families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists"]
+folders = ["BadBoy"]
+
+[[addon]]
+name = "NPCScan"
+ref = "gh:Torhal/NPCScan"
+families = ["mainline"]
+folders = ["NPCScan"]
+
+[[addon]]
+name = "ClassicCastbars"
+ref = "gh:wardz/ClassicCastbars"
+families = ["vanilla", "tbc", "wrath", "cata", "mists"]
+folders = ["ClassicCastbars", "ClassicCastbars_Options"]
 
 # ---- Tukui -----------------------------------------------------------------------------
 

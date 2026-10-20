@@ -130,7 +130,7 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | The TOC load-rule engine (`ClientRules`) for all 12 Battle.net products and five legacy private-server versions | ✅ Done |
 | The transaction engine: plan, stage, journal, atomic swap, crash recovery, undo, retention | ✅ Done |
 | Keyless sources: GitHub releases, git (GitHub without the binary, other hosts with it), direct URLs, local zips and folders | ✅ Done |
-| A catalog of 21 verified addons (14 GitHub release entries, ElvUI and Tukui from Tukui, 5 legacy private-server addons from git) | ✅ Done |
+| A catalog of 31 verified addons (24 GitHub release entries, ElvUI and Tukui from Tukui, 5 legacy private-server addons from git) | ✅ Done |
 | The CLI contract: one JSON envelope, typed errors with fixes (an argv whenever the fix is a command), exit codes 0 to 6, contract snapshot tests | ✅ Done (freezes in M4) |
 | Commands: `status`, `install`, `remove`, `undo`, `history`, `list`, `targets`, `info`, `config`, `net-log`, `help` | ✅ Done |
 | `outdated` (alias `check`): what has updates, on every client | ✅ Done (milestone 2) |
@@ -518,7 +518,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 
 ## The built-in catalog
 
-21 entries are embedded in the binary. Each was checked against its publisher on 2026-10-14 (BugSack, ElvUI and Tukui on 2026-10-16): the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip; the Tukui entries against the Tukui API's list and the folders and TOCs of the zip it hands out; and the legacy entries against their TOC's `## Interface` line. The last column is the families the publisher declares (in `release.json`, or the TOCs' interfaces). It is shown by `info`, gives `search`'s `yes` or `no`, and orders lookups. A dependency or an adopted folder is matched first to entries declaring the client's family. Other entries of the same generation are matched only after Tukui and WoWInterface (for adoption, only when no entry declares the family). An entry is never matched across generations, legacy on a modern client or the reverse. It never refuses an install: TOC verification decides. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but its TOCs also load on vanilla and mists.
+31 entries are embedded in the binary. Each was checked against its publisher on 2026-10-14 (BugSack, ElvUI and Tukui on 2026-10-16; TellMeWhen through ClassicCastbars on 2026-10-20): the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip; the Tukui entries against the Tukui API's list and the folders and TOCs of the zip it hands out; and the legacy entries against their TOC's `## Interface` line. The last column is the families the publisher declares (in `release.json`, or the TOCs' interfaces). It is shown by `info`, gives `search`'s `yes` or `no`, and orders lookups. A dependency or an adopted folder is matched first to entries declaring the client's family. Other entries of the same generation are matched only after Tukui and WoWInterface (for adoption, only when no entry declares the family). An entry is never matched across generations, legacy on a modern client or the reverse. It never refuses an install: TOC verification decides. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but its TOCs also load on vanilla and mists.
 
 | Name | Aliases | Ref | Declared families |
 |---|---|---|---|
@@ -536,6 +536,16 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 | MythicDungeonTools | `mdt` | `gh:Nnoggie/MythicDungeonTools` | mainline |
 | AllTheThings | `att` | `gh:ATTWoWAddon/AllTheThings` | mainline, vanilla, tbc, wrath, titan, cata, mists, forever |
 | BugSack | | `gh:funkydude/BugSack` | mainline, vanilla, tbc, wrath, titan, cata, mists, forever (its optional `!BugGrabber` has no official release and is never installed for it) |
+| TellMeWhen | `tmw` | `gh:ascott18/TellMeWhen` | mainline, vanilla, tbc, mists, forever |
+| ThreatPlates | | `gh:Backupiseasy/ThreatPlates` | mainline, vanilla, tbc, mists, forever |
+| SilverDragon | | `gh:kemayo/wow-silverdragon` | mainline, vanilla, tbc, wrath, mists, forever |
+| Capping | | `gh:BigWigsMods/Capping` | mainline, vanilla, tbc, wrath, titan, cata, mists, forever |
+| IceHUD | | `gh:parnic/ice-hud` | mainline, vanilla, tbc, titan, mists |
+| Quartz | | `gh:Nevcairiel/Quartz` | mainline, vanilla, tbc, mists (3.7.17's mainline interface is 11.2, so 12.x loads it only as out of date) |
+| Mapster | | `gh:Nevcairiel/Mapster` | mainline, forever |
+| BadBoy | | `gh:funkydude/BadBoy` | mainline, vanilla, tbc, wrath, titan, cata, mists |
+| NPCScan | | `gh:Torhal/NPCScan` | mainline |
+| ClassicCastbars | | `gh:wardz/ClassicCastbars` | vanilla, tbc, wrath, cata, mists |
 | ElvUI | `elv` | `tukui:elvui` | mainline, vanilla, tbc, titan, mists, forever (one zip for every client) |
 | Tukui | | `tukui:tukui` | mainline, vanilla, mists |
 | pfUI | | `git:https://github.com/shagu/pfUI#master` | vanilla-legacy (1.12.1) |
