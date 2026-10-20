@@ -488,8 +488,11 @@ fn local_or_name(input: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
         (0, _) | (_, None) => Err(Error::new(
             ErrorCode::NotFound,
             format!("no installed addon or catalog entry is named {input:?}"),
-            Suggestion::command(["omaddons", "help", "install"]),
-        )),
+            // Most addons are not in the catalog; search finds their refs. Searching here
+            // would send the query to GitHub from a plan-time refusal.
+            Suggestion::command(["omaddons", "search", input]),
+        )
+        .alternative(Suggestion::command(["omaddons", "help", "install"]))),
         (1, Some((r, _, kind))) => Ok(parsed(r.clone(), *kind)),
         _ => {
             let mut candidates: Vec<(Ref, String)> = Vec::new();
@@ -784,6 +787,28 @@ mod tests {
                     }
                     Err(e) => assert_eq!(e.code.wire(), expected, "{input:?}: {}", e.message),
                 }
+            }
+        });
+    }
+
+    /// A name nothing knows is looked up with search, which finds what the catalog lacks
+    /// (TomTom is `wowi:7032`); the name stays one argument, spaces and all.
+    #[test]
+    fn an_unknown_name_points_at_search() {
+        let dir = tempfile::tempdir().unwrap();
+        with_ctx(dir.path(), |ctx| {
+            for name in ["tomtom", "Titan Panel"] {
+                let err = parse_user_ref(name, ctx).unwrap_err();
+                assert_eq!(err.code, ErrorCode::NotFound, "{name}");
+                assert_eq!(
+                    err.message,
+                    format!("no installed addon or catalog entry is named {name:?}")
+                );
+                assert_eq!(err.fix.argv().unwrap(), ["omaddons", "search", name]);
+                assert_eq!(
+                    err.alternatives[0].argv().unwrap(),
+                    ["omaddons", "help", "install"]
+                );
             }
         });
     }

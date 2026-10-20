@@ -848,6 +848,32 @@ fn human_output_and_the_lock_log() {
     assert!(r.stderr.contains("lock released"), "{}", r.context());
 }
 
+/// A name neither installed nor in the catalog is refused before any request, and the
+/// fix is the search that finds its ref.
+#[test]
+fn an_unknown_name_is_refused_offline_with_search_as_the_fix() {
+    let home = Home::new(&["wow"]);
+    let r = home.run(&["install", "tomtom", "-t", "retail"]);
+    let envelope = r.expect(3);
+    assert_eq!(envelope["error"]["code"], "not_found", "{}", r.context());
+    assert_eq!(
+        envelope["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "search", "tomtom"])
+    );
+    let args: Vec<String> = ["install", "tomtom", "-t", "retail"]
+        .iter()
+        .map(|a| (*a).to_owned())
+        .collect();
+    let r = home.exec(&args);
+    assert_eq!(r.code, 3, "{}", r.context());
+    assert!(
+        r.stderr.contains("omaddons search tomtom"),
+        "{}",
+        r.context()
+    );
+    assert_eq!(net_log(&home).len(), 0, "no request");
+}
+
 #[test]
 fn a_catalog_addon_is_recorded_under_the_catalog_name() {
     let catalog = "schema_version = \"1.0\"\n\n[[addon]]\nname = \"FooSuite\"\naliases = [\"fs\"]\nref = \"gh:o/foo\"\n";

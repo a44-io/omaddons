@@ -483,7 +483,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 
 | You type | It becomes | Where the release comes from |
 |---|---|---|
-| `weakauras`, `dbm`, `bw` | a catalog entry | [the built-in catalog](#the-built-in-catalog), by name or alias (case-insensitive); an installed addon's name also works |
+| `weakauras`, `dbm`, `bw` | a catalog entry | [the built-in catalog](#the-built-in-catalog), by name or alias (case-insensitive); an installed addon's name also works. Any other name is `not_found`, with `omaddons search <name>` as the fix (no request is sent) |
 | `gh:Owner/Repo` or `Owner/Repo` | GitHub | the stable path reads `releases/latest` and its `release.json` from github.com, with **no REST API calls**. The REST API (60 requests an hour without a token) is used only for `--channel beta`/`alpha`, for releases without a usable `release.json` (their `.zip` assets become the candidates), and for pinned tags that lack one |
 | `https://github.com/o/r` | `gh:o/r` | as above. `/releases/tag/T` pins tag `T`, `/releases/download/T/F` pins tag `T` and installs exactly the asset `F` (or nothing: `not_found` naming the release's assets, or refused when it does not load), and `/tree/branch` becomes a `git:` ref. A tag may hold `/` and `+`, written as GitHub writes them or percent-encoded. A link that names no repository (`https://github.com/o`) is `ref_invalid` |
 | `git:https://github.com/o/r#branch` | git on GitHub | the commits Atom feed resolves the branch or tag to a commit, and codeload serves a zip of that exact commit (a rev the feed does not serve is fetched as a tag by name). **No git binary.** A 40-hex sha is used as is. No `#rev` means the default branch |
