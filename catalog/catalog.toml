@@ -1,12 +1,16 @@
 # The built-in addon catalog (vision §5.4), embedded in the binary.
 #
 # Every value here was verified, not remembered (2026-10-14; BugSack, ElvUI and Tukui
-# 2026-10-16; TellMeWhen through BattlePetBreedID 2026-10-20):
+# 2026-10-16; TellMeWhen through BattlePetBreedID, and the WoWInterface entries,
+# 2026-10-20):
 # - the GitHub release.json publishers: the repository's releases/latest tag, its
 #   release.json, and the addon roots of the actual release zip;
 # - the Tukui entries: the API's list (api.tukui.org/v1/addons), then the zip that
 #   /v1/addon/<slug> hands out, downloaded at once: its top-level folders and each TOC's
 #   "## Interface" (the list's patch[] lags the TOCs);
+# - the WoWInterface entries: the API's filedetails (the project's current file and its
+#   MD5), then that file, downloaded and MD5-checked: its top-level folders and the
+#   families its TOCs load on (the site's compatibility tags lag the TOCs);
 # - the legacy entries: the TOC's "## Interface" line in the repository.
 # `families` lists where an entry is known to work (from release.json flavors, or the
 # TOCs' Interface); TOC verification still decides every install.
@@ -320,6 +324,65 @@ aliases = ["bpbid"]
 ref = "gh:MMOSimca/BattlePetBreedID"
 families = ["mainline", "mists"]
 folders = ["BattlePetBreedID"]
+
+# ---- WoWInterface: the project page is the publisher's, and its file is the release ----
+
+[[addon]]
+name = "TomTom"
+ref = "wowi:7032"
+families = ["mainline", "vanilla", "tbc", "titan", "mists", "forever"]
+folders = ["TomTom"]
+
+[[addon]]
+name = "Atlas"
+ref = "wowi:3896"
+families = ["mainline", "vanilla", "tbc", "mists", "forever"]
+folders = ["Atlas"]
+
+[[addon]]
+name = "HealBot"
+ref = "wowi:6096"
+families = ["mainline", "vanilla", "tbc", "mists", "forever"]
+folders = ["HealBot", "HealBot_ExtraSkins", "HealBot_Tips"]
+notes = "HealBot Continued"
+
+[[addon]]
+name = "TitanPanel"
+ref = "wowi:8092"
+families = ["mainline", "vanilla", "mists", "forever"]
+folders = ["Titan", "TitanAlts", "TitanAmmo", "TitanBag", "TitanClassic", "TitanClock", "TitanGold", "TitanLocation", "TitanLootType", "TitanPerformance", "TitanPost", "TitanRegen", "TitanRepair", "TitanUI", "TitanVolume", "TitanXP"]
+notes = "9.3.5: Anniversary is refused because TitanAmmo's TOC lists 205056 beside the other clients' interfaces"
+
+[[addon]]
+name = "Clique"
+ref = "wowi:5108"
+families = ["mainline", "vanilla", "tbc", "titan", "mists"]
+folders = ["Clique"]
+
+[[addon]]
+name = "Prat"
+aliases = ["prat-3.0"]
+ref = "wowi:10783"
+families = ["mainline", "vanilla", "tbc", "mists", "forever"]
+folders = ["Prat-3.0"]
+
+[[addon]]
+name = "WIM"
+ref = "wowi:5342"
+families = ["mainline", "vanilla", "tbc", "titan", "mists", "forever"]
+folders = ["WIM"]
+
+[[addon]]
+name = "GTFO"
+ref = "wowi:17996"
+families = ["mainline", "vanilla", "tbc", "titan", "mists", "forever"]
+folders = ["GTFO"]
+
+[[addon]]
+name = "HandyNotes"
+ref = "wowi:15716"
+families = ["mainline", "vanilla", "tbc", "mists"]
+folders = ["HandyNotes"]
 
 # ---- Tukui -----------------------------------------------------------------------------
 

@@ -853,21 +853,21 @@ fn human_output_and_the_lock_log() {
 #[test]
 fn an_unknown_name_is_refused_offline_with_search_as_the_fix() {
     let home = Home::new(&["wow"]);
-    let r = home.run(&["install", "tomtom", "-t", "retail"]);
+    let r = home.run(&["install", "nosuchaddon", "-t", "retail"]);
     let envelope = r.expect(3);
     assert_eq!(envelope["error"]["code"], "not_found", "{}", r.context());
     assert_eq!(
         envelope["error"]["fix_argv"],
-        serde_json::json!(["omaddons", "search", "tomtom"])
+        serde_json::json!(["omaddons", "search", "nosuchaddon"])
     );
-    let args: Vec<String> = ["install", "tomtom", "-t", "retail"]
+    let args: Vec<String> = ["install", "nosuchaddon", "-t", "retail"]
         .iter()
         .map(|a| (*a).to_owned())
         .collect();
     let r = home.exec(&args);
     assert_eq!(r.code, 3, "{}", r.context());
     assert!(
-        r.stderr.contains("omaddons search tomtom"),
+        r.stderr.contains("omaddons search nosuchaddon"),
         "{}",
         r.context()
     );

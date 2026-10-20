@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://api.mmoui.com/v3/game/WOW/filedetails/7032,3896,6096,8092,5108,10783,5342,17996,15716.json"
+  },
+  "responses": [
+    {
+      "status": 200,
+      "headers": [
+        [
+          "date",
+          "Tue, 20 Oct 2026 06:15:47 GMT"
+        ],
+        [
+          "content-type",
+          "application/json; charset=utf-8"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "server",
+          "cloudflare"
+        ],
+        [
+          "expires",
+          "Tue, 20 Oct 2026 07:15:47 GMT"
+        ],
+        [
+          "pragma",
+          "cache"
+        ],
+        [
+          "cache-control",
+          "max-age=3600"
+        ],
+        [
+          "content-encoding",
+          "gzip"
+        ],
+        [
+          "vary",
+          "Accept-Encoding"
+        ],
+        [
+          "nel",
+          "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}"
+        ],
+        [
+          "cf-cache-status",
+          "DYNAMIC"
+        ],
+        [
+          "report-to",
+          "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=CBYQ6mS19RqMuXv5uMzN2IgWQxtNv4d2VrkTFJr%2BB6N%2BOVhvRYVArBbpmYSLW67%2F8VCV%2FphEYnEcVm17eIO9HJPa0DFAbbrBl7bJ9ecCRpYoWv1GtwI704CtHBnzOZQ%3D\"}]}"
+        ],
+        [
+          "cf-ray",
+          "a4d5e3da58ec3881-ATL"
+        ],
+        [
+          "alt-svc",
+          "h3=\":443\"; ma=86400"
+        ]
+      ],
+      "body_file": "get-v3-game-WOW-filedetails-7032-3896-6096-8092-5108-10783-5342-17996-15716.json-53cc6c4f.body"
+    }
+  ]
+}

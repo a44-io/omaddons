@@ -130,7 +130,7 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | The TOC load-rule engine (`ClientRules`) for all 12 Battle.net products and five legacy private-server versions | ✅ Done |
 | The transaction engine: plan, stage, journal, atomic swap, crash recovery, undo, retention | ✅ Done |
 | Keyless sources: GitHub releases, git (GitHub without the binary, other hosts with it), direct URLs, local zips and folders | ✅ Done |
-| A catalog of 53 verified addons (46 GitHub release entries, ElvUI and Tukui from Tukui, 5 legacy private-server addons from git) | ✅ Done |
+| A catalog of 62 verified addons (46 GitHub release entries, 9 WoWInterface entries, ElvUI and Tukui from Tukui, 5 legacy private-server addons from git) | ✅ Done |
 | The CLI contract: one JSON envelope, typed errors with fixes (an argv whenever the fix is a command), exit codes 0 to 6, contract snapshot tests | ✅ Done (freezes in M4) |
 | Commands: `status`, `install`, `remove`, `undo`, `history`, `list`, `targets`, `info`, `config`, `net-log`, `help` | ✅ Done |
 | `outdated` (alias `check`): what has updates, on every client | ✅ Done (milestone 2) |
@@ -518,7 +518,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 
 ## The built-in catalog
 
-53 entries are embedded in the binary. Each was checked against its publisher on 2026-10-14 (BugSack, ElvUI and Tukui on 2026-10-16; TellMeWhen through BattlePetBreedID on 2026-10-20): the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip; the Tukui entries against the Tukui API's list and the folders and TOCs of the zip it hands out; and the legacy entries against their TOC's `## Interface` line. The last column is the families the publisher declares (in `release.json`, or the TOCs' interfaces). It is shown by `info`, gives `search`'s `yes` or `no`, and orders lookups. A dependency or an adopted folder is matched first to entries declaring the client's family. Other entries of the same generation are matched only after Tukui and WoWInterface (for adoption, only when no entry declares the family). An entry is never matched across generations, legacy on a modern client or the reverse. It never refuses an install: TOC verification decides. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but its TOCs also load on vanilla and mists.
+62 entries are embedded in the binary. Each was checked against its publisher on 2026-10-14 (BugSack, ElvUI and Tukui on 2026-10-16; TellMeWhen through BattlePetBreedID, and the WoWInterface entries, on 2026-10-20): the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip; the Tukui entries against the Tukui API's list and the folders and TOCs of the zip it hands out; the WoWInterface entries against the API's file details (the project's current file and its MD5) and the folders and TOCs of that file, MD5-checked (their families are where those TOCs load, since the site's compatibility tags lag); and the legacy entries against their TOC's `## Interface` line. The last column is the families the publisher declares (in `release.json`, or the TOCs' interfaces). It is shown by `info`, gives `search`'s `yes` or `no`, and orders lookups. A dependency or an adopted folder is matched first to entries declaring the client's family. Other entries of the same generation are matched only after Tukui and WoWInterface (for adoption, only when no entry declares the family). An entry is never matched across generations, legacy on a modern client or the reverse. It never refuses an install: TOC verification decides. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but its TOCs also load on vanilla and mists.
 
 | Name | Aliases | Ref | Declared families |
 |---|---|---|---|
@@ -568,6 +568,15 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 | AdvancedInterfaceOptions | `aio` | `gh:Stanzilla/AdvancedInterfaceOptions` | mainline, vanilla, tbc, wrath, cata, mists, forever |
 | MountJournalEnhanced | | `gh:exochron/MountJournalEnhanced` | mainline, mists |
 | BattlePetBreedID | `bpbid` | `gh:MMOSimca/BattlePetBreedID` | mainline, mists |
+| TomTom | | `wowi:7032` | mainline, vanilla, tbc, titan, mists, forever |
+| Atlas | | `wowi:3896` | mainline, vanilla, tbc, mists, forever |
+| HealBot | | `wowi:6096` | mainline, vanilla, tbc, mists, forever (HealBot Continued) |
+| TitanPanel | | `wowi:8092` | mainline, vanilla, mists, forever (9.3.5's TitanAmmo lists 205056 among its interfaces, so Anniversary refuses the archive) |
+| Clique | | `wowi:5108` | mainline, vanilla, tbc, titan, mists |
+| Prat | `prat-3.0` | `wowi:10783` | mainline, vanilla, tbc, mists, forever |
+| WIM | | `wowi:5342` | mainline, vanilla, tbc, titan, mists, forever |
+| GTFO | | `wowi:17996` | mainline, vanilla, tbc, titan, mists, forever |
+| HandyNotes | | `wowi:15716` | mainline, vanilla, tbc, mists |
 | ElvUI | `elv` | `tukui:elvui` | mainline, vanilla, tbc, titan, mists, forever (one zip for every client) |
 | Tukui | | `tukui:tukui` | mainline, vanilla, mists |
 | pfUI | | `git:https://github.com/shagu/pfUI#master` | vanilla-legacy (1.12.1) |

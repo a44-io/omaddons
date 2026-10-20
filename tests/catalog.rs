@@ -36,6 +36,10 @@ fn git(r: &Ref) -> bool {
     matches!(r, Ref::Git { .. })
 }
 
+fn wowi(r: &Ref) -> bool {
+    matches!(r, Ref::Wowi { .. })
+}
+
 /// Re-records the scenario from live GitHub. Delete the directory first, then review
 /// the diff (fixtures are public; trim contributor names from changelogs).
 /// `OMADDONS_RECORD=1 cargo test --test catalog -- --ignored record`
@@ -79,6 +83,58 @@ fn record_catalog_git() {
     for (w, result) in results {
         assert!(result.is_ok(), "{}: {result:?}", w.r#ref);
     }
+}
+
+/// Re-records the WoWInterface entries' file details into the same scenario, without
+/// touching the others: one `filedetails` request names every id. Then empty each
+/// file's `UIChangeLog` and `UIDescription` in the gzipped body: nothing reads them
+/// here, and they can name contributors.
+/// `OMADDONS_RECORD=1 cargo test --test catalog -- --ignored record_catalog_wowi`
+#[test]
+#[ignore = "records live fixtures: OMADDONS_RECORD=1"]
+fn record_catalog_wowi() {
+    // A recorder run on purpose, not a checkpoint check: unset, it has nothing to do.
+    if std::env::var("OMADDONS_RECORD").as_deref() != Ok("1") {
+        return;
+    }
+    let env = TestEnv::new();
+    let http = record(&env, &scenario("catalog"));
+    let results = fetch_once(
+        wanted(wowi),
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    );
+    for (w, result) in results {
+        assert!(result.is_ok(), "{}: {result:?}", w.r#ref);
+    }
+}
+
+#[test]
+fn every_wowi_entry_resolves_in_one_request_with_its_md5() {
+    let env = TestEnv::new();
+    let http = replay(&env, &scenario("catalog"));
+    let wanted = wanted(wowi);
+    assert_eq!(wanted.len(), 9, "the WoWInterface entries");
+    let results = fetch_once(
+        wanted,
+        &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
+        http.as_ref(),
+    );
+    for (w, result) in &results {
+        assert!(result.is_ok(), "{}: {result:?}", w.r#ref);
+        let set = result.as_ref().unwrap();
+        assert!(
+            set.releases
+                .first()
+                .and_then(|r| r.assets.first())
+                .is_some_and(|a| a.expected_hash.is_some()),
+            "{}: the file and its published MD5: {set:?}",
+            w.r#ref
+        );
+    }
+    let log = read_net_log(&common::http::paths(&env));
+    assert_eq!(log.len(), 1, "one filedetails request: {log:?}");
+    assert_eq!(log[0].purpose, "wowi-details");
 }
 
 #[test]

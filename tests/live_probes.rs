@@ -130,8 +130,8 @@ fn declared_families_map_by_interface_first() {
 /// (omad-classic-forever-gaps-xud.7), on synthetic copies of every live client and every
 /// legacy generation: a GitHub entry installs exactly on the families its release.json
 /// declares (interface first, then flavor name) and is refused with
-/// `no_compatible_release` everywhere else; a Tukui entry (live) and a legacy git entry
-/// likewise against their catalog `families`. Prints the matrix (✓ installs as declared, · refused as declared,
+/// `no_compatible_release` everywhere else; a Tukui or WoWInterface entry (live) and a
+/// legacy git entry likewise against their catalog `families`. Prints the matrix (✓ installs as declared, · refused as declared,
 /// ✗ mismatch, ~ known publisher mismatch, - no release.json), then asserts no mismatch
 /// and zero REST. A standing milestone-checkpoint check.
 #[test]
@@ -256,9 +256,10 @@ fn catalog_matches_declared_flavors() {
                     });
                 rows.push((entry.name.clone(), false, declared, listed.join(", ")));
             }
-            // Live entries whose TOCs are the only declaration (Tukui's patch[] lags):
-            // judged by their catalog families, read from those TOCs.
-            Ref::Tukui { .. } => {
+            // Live entries whose TOCs are the only declaration (Tukui's patch[] and
+            // WoWInterface's compatibility tags lag): judged by their catalog families,
+            // read from those TOCs.
+            Ref::Tukui { .. } | Ref::Wowi { .. } => {
                 let declared: BTreeSet<Family> = entry.families.iter().copied().collect();
                 let listed: Vec<&str> = entry.families.iter().map(|f| f.as_str()).collect();
                 rows.push((entry.name.clone(), false, Some(declared), listed.join(", ")));

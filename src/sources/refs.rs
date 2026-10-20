@@ -792,12 +792,12 @@ mod tests {
     }
 
     /// A name nothing knows is looked up with search, which finds what the catalog lacks
-    /// (TomTom is `wowi:7032`); the name stays one argument, spaces and all.
+    /// (Outfitter is `wowi:5467`); the name stays one argument, spaces and all.
     #[test]
     fn an_unknown_name_points_at_search() {
         let dir = tempfile::tempdir().unwrap();
         with_ctx(dir.path(), |ctx| {
-            for name in ["tomtom", "Titan Panel"] {
+            for name in ["outfitter", "Scrolling Combat Text"] {
                 let err = parse_user_ref(name, ctx).unwrap_err();
                 assert_eq!(err.code, ErrorCode::NotFound, "{name}");
                 assert_eq!(
