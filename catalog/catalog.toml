@@ -1,7 +1,7 @@
 # The built-in addon catalog (vision §5.4), embedded in the binary.
 #
 # Every value here was verified, not remembered (2026-10-14; BugSack, ElvUI and Tukui
-# 2026-10-16; TellMeWhen through ClassicCastbars 2026-10-20):
+# 2026-10-16; TellMeWhen through Decursive 2026-10-20):
 # - the GitHub release.json publishers: the repository's releases/latest tag, its
 #   release.json, and the addon roots of the actual release zip;
 # - the Tukui entries: the API's list (api.tukui.org/v1/addons), then the zip that
@@ -175,6 +175,33 @@ name = "ClassicCastbars"
 ref = "gh:wardz/ClassicCastbars"
 families = ["vanilla", "tbc", "wrath", "cata", "mists"]
 folders = ["ClassicCastbars", "ClassicCastbars_Options"]
+
+[[addon]]
+name = "AtlasQuest"
+ref = "gh:nanderson11/AtlasQuest"
+families = ["mainline", "vanilla", "tbc", "forever"]
+folders = ["AtlasQuest"]
+notes = "its TOCs link github.com/thandrenn/AtlasQuest, which GitHub redirects here; it needs Atlas, from WoWInterface"
+
+[[addon]]
+name = "VendorPrice"
+ref = "gh:ketho-wow/VendorPrice"
+families = ["vanilla", "tbc", "mists"]
+folders = ["VendorPrice"]
+
+[[addon]]
+name = "DBM-Vanilla"
+ref = "gh:DeadlyBossMods/DBM-Vanilla"
+families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
+folders = ["DBM-Azeroth", "DBM-Raids-Vanilla"]
+notes = "DBM's Vanilla and Season of Discovery mods (DBM-Vanilla_SoD-r833.zip); they need DBM"
+
+[[addon]]
+name = "Decursive"
+ref = "gh:2072/Decursive"
+families = ["mainline", "titan", "forever"]
+folders = ["Decursive"]
+notes = "2.9.0-RC3, GitHub's latest stable release, ships retail, Titan and Forever zips only"
 
 # ---- Tukui -----------------------------------------------------------------------------
 
