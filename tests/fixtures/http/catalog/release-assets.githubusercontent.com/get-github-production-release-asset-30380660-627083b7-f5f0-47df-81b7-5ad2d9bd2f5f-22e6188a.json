@@ -77,16 +77,16 @@
           "bytes"
         ],
         [
-          "age",
-          "2690"
+          "date",
+          "Tue, 20 Oct 2026 06:07:33 GMT"
         ],
         [
-          "date",
-          "Tue, 20 Oct 2026 06:00:11 GMT"
+          "age",
+          "3132"
         ],
         [
           "x-served-by",
-          "cache-iad-kiad7000114-IAD, cache-pdk-kpdk2140047-PDK"
+          "cache-iad-kiad7000114-IAD, cache-pdk-kpdk2140035-PDK"
         ],
         [
           "x-cache",
@@ -94,11 +94,11 @@
         ],
         [
           "x-cache-hits",
-          "44, 0"
+          "44, 11"
         ],
         [
           "x-timer",
-          "S1792476012.534592,VS0,VE0"
+          "S1792476453.486636,VS0,VE0"
         ],
         [
           "content-disposition",
