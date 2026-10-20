@@ -1,7 +1,7 @@
 # The built-in addon catalog (vision §5.4), embedded in the binary.
 #
 # Every value here was verified, not remembered (2026-10-14; BugSack, ElvUI and Tukui
-# 2026-10-16; TellMeWhen through Decursive 2026-10-20):
+# 2026-10-16; TellMeWhen through LiteMount 2026-10-20):
 # - the GitHub release.json publishers: the repository's releases/latest tag, its
 #   release.json, and the addon roots of the actual release zip;
 # - the Tukui entries: the API's list (api.tukui.org/v1/addons), then the zip that
@@ -202,6 +202,73 @@ ref = "gh:2072/Decursive"
 families = ["mainline", "titan", "forever"]
 folders = ["Decursive"]
 notes = "2.9.0-RC3, GitHub's latest stable release, ships retail, Titan and Forever zips only"
+
+[[addon]]
+name = "PremadeGroupsFilter"
+aliases = ["pgf"]
+ref = "gh:0xbs/premade-groups-filter"
+families = ["mainline", "mists"]
+folders = ["PremadeGroupsFilter"]
+
+[[addon]]
+name = "Rarity"
+ref = "gh:WowRarity/Rarity"
+families = ["mainline", "vanilla", "mists"]
+folders = ["Rarity", "Rarity_Options"]
+notes = "r751: Rarity.toc carries Interface 110207, 50503, 11508, so 12.x clients load it only as out of date"
+
+[[addon]]
+name = "SavedInstances"
+ref = "gh:SavedInstances/SavedInstances"
+families = ["mainline"]
+folders = ["SavedInstances"]
+
+[[addon]]
+name = "Simulationcraft"
+aliases = ["simc"]
+ref = "gh:simulationcraft/simc-addon"
+families = ["mainline", "forever"]
+folders = ["Simulationcraft"]
+
+[[addon]]
+name = "WarpDeplete"
+ref = "gh:happenslol/WarpDeplete"
+families = ["mainline"]
+folders = ["WarpDeplete"]
+
+[[addon]]
+name = "RCLootCouncil"
+aliases = ["rclc"]
+ref = "gh:evil-morfar/RCLootCouncil2"
+families = ["mainline"]
+folders = ["RCLootCouncil"]
+
+[[addon]]
+name = "BigDebuffs"
+ref = "gh:jordonwow/bigdebuffs"
+families = ["mainline", "vanilla", "tbc", "titan", "mists"]
+folders = ["BigDebuffs"]
+notes = "v68: its newest mainline interface is 120001, so 12.1 clients load it only as out of date"
+
+[[addon]]
+name = "OmniBar"
+ref = "gh:jordonwow/omnibar"
+families = ["mainline", "vanilla", "tbc", "wrath", "cata", "mists"]
+folders = ["OmniBar"]
+notes = "v34: OmniBar.toc carries Interface 110200, so 12.x clients load it only as out of date"
+
+[[addon]]
+name = "Cell"
+ref = "gh:enderneko/Cell"
+families = ["mainline", "vanilla", "tbc", "titan", "cata", "mists"]
+folders = ["Cell"]
+notes = "r274-release: Cell.toc carries Interface 110207, so 12.x clients load it only as out of date"
+
+[[addon]]
+name = "LiteMount"
+ref = "gh:xod-wow/LiteMount"
+families = ["mainline", "mists", "forever"]
+folders = ["LiteMount"]
 
 # ---- Tukui -----------------------------------------------------------------------------
 

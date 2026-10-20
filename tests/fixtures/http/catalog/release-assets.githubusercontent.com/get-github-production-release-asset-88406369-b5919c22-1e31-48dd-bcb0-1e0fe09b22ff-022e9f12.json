@@ -1,0 +1,115 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://release-assets.githubusercontent.com/github-production-release-asset/88406369/b5919c22-1e31-48dd-bcb0-1e0fe09b22ff?response-content-disposition=attachment%3B%20filename%3Drelease.json&response-content-type=application%2Foctet-stream&rscd=attachment%3B+filename%3Drelease.json&rsct=application%2Foctet-stream&spr=https"
+  },
+  "responses": [
+    {
+      "status": 200,
+      "headers": [
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "content-length",
+          "167"
+        ],
+        [
+          "last-modified",
+          "Thu, 03 Sep 2026 18:38:07 GMT"
+        ],
+        [
+          "etag",
+          "\"0x8DF09EA7F2FC5B2\""
+        ],
+        [
+          "server",
+          "Windows-Azure-Blob/1.0 Microsoft-HTTPAPI/2.0"
+        ],
+        [
+          "x-ms-request-id",
+          "ccc7581a-001e-003a-5238-50fb2d000000"
+        ],
+        [
+          "x-ms-version",
+          "2018-11-09"
+        ],
+        [
+          "x-ms-creation-time",
+          "Thu, 03 Sep 2026 18:38:07 GMT"
+        ],
+        [
+          "x-ms-blob-content-md5",
+          "4mNUF6nDaYgNox4nRk0f6g=="
+        ],
+        [
+          "x-ms-lease-status",
+          "unlocked"
+        ],
+        [
+          "x-ms-lease-state",
+          "available"
+        ],
+        [
+          "x-ms-blob-type",
+          "BlockBlob"
+        ],
+        [
+          "x-ms-server-encrypted",
+          "true"
+        ],
+        [
+          "x-ms-access-tier",
+          "Hot"
+        ],
+        [
+          "x-ms-access-tier-inferred",
+          "true"
+        ],
+        [
+          "via",
+          "1.1 varnish, 1.1 varnish"
+        ],
+        [
+          "accept-ranges",
+          "bytes"
+        ],
+        [
+          "date",
+          "Tue, 20 Oct 2026 06:00:12 GMT"
+        ],
+        [
+          "age",
+          "3109"
+        ],
+        [
+          "x-served-by",
+          "cache-iad-kiad7000051-IAD, cache-pdk-kpdk2140047-PDK"
+        ],
+        [
+          "x-cache",
+          "HIT, HIT"
+        ],
+        [
+          "x-cache-hits",
+          "65, 1"
+        ],
+        [
+          "x-timer",
+          "S1792476012.398510,VS0,VE1"
+        ],
+        [
+          "content-disposition",
+          "attachment; filename=release.json"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ]
+      ],
+      "body_file": "get-github-production-release-asset-88406369-b5919c22-1e31-48dd-bcb0-1e0fe09b22ff-022e9f12.body"
+    }
+  ]
+}

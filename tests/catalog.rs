@@ -86,7 +86,7 @@ fn every_github_entry_resolves_without_rest() {
     let env = TestEnv::new();
     let http = replay(&env, &scenario("catalog"));
     let wanted = wanted(github);
-    assert_eq!(wanted.len(), 28, "the release.json publishers");
+    assert_eq!(wanted.len(), 38, "the release.json publishers");
     let results = fetch_once(
         wanted,
         &SourceRegistry::builtin(&SourceConfigView::all_enabled()),
