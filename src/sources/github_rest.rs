@@ -191,6 +191,18 @@ impl GithubRest {
         }
         let body = resp.error_for_status("GitHub's releases API")?.bytes()?;
         let releases: Vec<ApiRelease> = from_json(&body, &w.r#ref)?;
+        // No channel helps an empty list: the repository publishes no releases.
+        if releases.is_empty() {
+            return Err(Error::new(
+                ErrorCode::NoCompatibleRelease,
+                format!("{} has no published releases", w.r#ref),
+                Suggestion::command([
+                    "omaddons".to_owned(),
+                    "install".to_owned(),
+                    format!("git:https://github.com/{owner}/{repo}"),
+                ]),
+            ));
+        }
         let Some(release) = choose(&releases, w.channel) else {
             return Err(Error::new(
                 ErrorCode::NoCompatibleRelease,
@@ -551,6 +563,28 @@ mod tests {
         }
         let runs = std::fs::read_to_string(&marker).unwrap();
         assert_eq!(runs.lines().count(), 1, "once per command");
+    }
+
+    /// A repository with no published releases (Bagnon, 2026-10-20): `--channel beta`
+    /// cannot help, so the fix is its `git:` ref, never the beta channel again.
+    #[test]
+    fn an_empty_release_list_points_at_git() {
+        let http = Empty(std::sync::atomic::AtomicUsize::new(0));
+        let wanted = Wanted {
+            r#ref: "gh:o/r".parse().unwrap(),
+            channel: Channel::Beta,
+            version: None,
+        };
+        let err = GithubRest::with_token(None)
+            .fetch(&wanted, &RestReason::Prerelease, &http)
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::NoCompatibleRelease);
+        assert_eq!(err.message, "gh:o/r has no published releases");
+        assert_eq!(
+            err.fix.argv().unwrap(),
+            ["omaddons", "install", "git:https://github.com/o/r"]
+        );
+        assert_eq!(http.0.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     #[test]

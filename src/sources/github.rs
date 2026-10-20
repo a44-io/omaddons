@@ -334,12 +334,19 @@ fn latest_tag(w: &Wanted, base: &str, http: &dyn Http) -> Result<(String, String
             }
             return Ok((base, tag));
         }
+        // GitHub redirects here when no release is the latest one: every release is a
+        // prerelease, or there is no published release at all.
         if path.trim_end_matches('/').ends_with("/releases") {
             return Err(Error::new(
                 ErrorCode::NoCompatibleRelease,
-                format!("{r} has releases but no stable one (only prereleases)"),
+                format!("{r} has no stable release (only prereleases, or none published)"),
                 Suggestion::command(["omaddons", "install", &r.to_string(), "--channel", "beta"]),
-            ));
+            )
+            .alternative(Suggestion::command([
+                "omaddons".to_owned(),
+                "install".to_owned(),
+                format!("git:https://github.com/{}", repo_path(r)),
+            ])));
         }
         match path.strip_suffix("/releases/latest") {
             Some(moved) if moved.starts_with("https://github.com/") => base = moved.to_owned(),
@@ -715,9 +722,19 @@ mod tests {
         );
         let err = fetch(&http, wanted("gh:o/pre")).unwrap_err();
         assert_eq!(err.code, ErrorCode::NoCompatibleRelease);
+        // The redirect cannot tell prereleases from no releases at all, so it claims
+        // neither and offers both ways on.
+        assert_eq!(
+            err.message,
+            "gh:o/pre has no stable release (only prereleases, or none published)"
+        );
         assert_eq!(
             err.fix.argv().unwrap(),
             ["omaddons", "install", "gh:o/pre", "--channel", "beta"]
+        );
+        assert_eq!(
+            err.alternatives[0].argv().unwrap(),
+            ["omaddons", "install", "git:https://github.com/o/pre"]
         );
     }
 
