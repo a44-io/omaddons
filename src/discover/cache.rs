@@ -58,8 +58,9 @@ impl Versioned for DiscoveryCache {
 
 /// What a root's parse yields, beyond the rules: bumped when it changes while the
 /// package version does not. 2: `unknown_flavor` is no longer the parse's but the
-/// World's, said once config overrides applied.
-const PARSE_REVISION: u8 = 2;
+/// World's, said once config overrides applied. 3: other Blizzard games' flavor folders
+/// are no targets.
+const PARSE_REVISION: u8 = 3;
 
 /// SHA-256 of this binary's version, [`PARSE_REVISION`] and the effective rules table
 /// (builtin plus `[rules]` and `[client_rules.*]`): a rules edit or an upgrade re-parses

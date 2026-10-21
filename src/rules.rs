@@ -582,6 +582,14 @@ impl RulesTable {
             .find(|p| p.code.eq_ignore_ascii_case(code))
     }
 
+    /// Whether `code` is a WoW product: one of this table's, or any `wow*` code (a WoW
+    /// product the table does not know yet). Battle.net installs other Blizzard games
+    /// in WoW's layout (Warcraft III's `_retail_` is product `w3`); they are no client.
+    pub fn is_wow_product(&self, code: &str) -> bool {
+        self.product_by_code(code).is_some()
+            || code.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("wow"))
+    }
+
     /// The product whose flavor folder is `folder`, ignoring ASCII case.
     pub fn product_by_folder(&self, folder: &str) -> Option<&Product> {
         self.products
@@ -1883,6 +1891,12 @@ mod tests {
         assert!(table.product_by_folder("_xyz_").is_none());
         assert_eq!(table.product_by_code("WOWF").unwrap().folder, "_forever_");
         assert!(table.product_by_code("wowz").is_none());
+        for wow in ["wow", "WOW_CLASSIC_ERA", "wowf", "wowz", "wow_future"] {
+            assert!(table.is_wow_product(wow), "{wow}");
+        }
+        for other in ["w3", "w3t", "fenris", "hs_beta", "pro", "osi", "wo", ""] {
+            assert!(!table.is_wow_product(other), "{other}");
+        }
 
         let classic: Vec<&str> = table
             .products_by_exe("wowclassic.exe")

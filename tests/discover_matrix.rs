@@ -648,6 +648,32 @@ fn an_unknown_flavor_folder_is_a_usable_unknown_target() {
     );
 }
 
+/// Battle.net installs other Blizzard games in WoW's layout: Warcraft III: Reforged has
+/// a `.build.info` and a `_retail_` folder whose product is `w3`. It is no client, so
+/// it is skipped without a word, and the WoW root beside it is found as before.
+#[test]
+fn another_blizzard_game_in_the_prefix_is_no_client() {
+    let env = TestEnv::new();
+    let prefix = Prefix::new(&env, "battlenet");
+    BattlenetRoot::at(prefix.wow_root()).product("wow").build();
+    BattlenetRoot::at(prefix.drive_c().join("Program Files (x86)/Warcraft III"))
+        .unknown_folder("_retail_", Some("w3"), Some("3.0.1.24371"))
+        .build();
+    let run = run(&env);
+    check(
+        "w3",
+        &env,
+        &run,
+        &[bnet(
+            BNET, "_retail_", "wow", "wow.exe", "mainline", 120_105, "live", "retail",
+        )],
+    );
+    assert!(run.warning_codes().is_empty(), "{}", run.context());
+    let output = env.command().args(["status", "--json"]).output().unwrap();
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["warnings"], json!([]), "{status:#}");
+}
+
 #[test]
 fn a_last_addon_version_disagreement_is_a_warning_not_a_failure() {
     let env = TestEnv::new();

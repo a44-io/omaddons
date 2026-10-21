@@ -31,7 +31,8 @@ pub fn is_battlenet_root(dir: &Path) -> bool {
     std::fs::metadata(dir.join(".build.info")).is_ok_and(|m| m.is_file())
 }
 
-/// Every flavor folder of `root` as a target, sorted by folder name, plus warnings
+/// Every flavor folder of `root` as a target, sorted by folder name, except those of
+/// other Blizzard games ([`RulesTable::is_wow_product`]), plus warnings
 /// (`client_not_launched_since_patch`; `unknown_flavor` is said once config overrides
 /// applied, [`super::unknown_flavor`]). Reads only.
 pub fn discover_root(
@@ -52,6 +53,11 @@ pub fn discover_root(
             .and_then(|text| bpsv::flavor_product(&text))
             .or_else(|| hints.product_by_folder.get(&folder).cloned())
             .or_else(|| table.product_by_folder(&folder).map(|p| p.code.clone()));
+        // Another Blizzard game's folder is skipped without a word; one whose product
+        // cannot be read stays a target.
+        if product.as_deref().is_some_and(|p| !table.is_wow_product(p)) {
+            continue;
+        }
         let known = product.as_deref().and_then(|p| table.product_by_code(p));
         let version = version_for(product.as_deref(), &rows, hints)
             .and_then(|v| v.parse::<ClientVersion>().ok());
