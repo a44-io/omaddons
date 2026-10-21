@@ -5,9 +5,11 @@
 //!
 //! Listing reads `backup.json` files and checks that each manifest exists; it never
 //! walks or hashes a tree (M3-D47). A full structure check is [`check_structure`], for
-//! restores and `backup verify`. The tree copy is [`tree`], the bounded summary
-//! `status --cached` reads is [`inventory`], and the filesystem hints are [`fs`].
+//! restores and `backup verify`. One capture is [`create`], the tree copy is [`tree`],
+//! the bounded summary `status --cached` reads is [`inventory`], and the filesystem
+//! hints are [`fs`].
 
+pub mod create;
 pub mod fs;
 pub mod inventory;
 pub mod tree;
@@ -511,6 +513,52 @@ pub fn check_structure(b: &BackupRef) -> Result<TreeCheck> {
     Ok(check)
 }
 
+/// Whether `wtf` holds a SavedVariables file, account-wide or a character's: the settings
+/// a backup is for. Names match ignoring case, as Wine's do; it reads one directory per
+/// account, realm and character, never a file.
+pub fn has_saved_variables(wtf: &Path) -> bool {
+    let dirs = |dir: &Path| -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .map(|listing| {
+                listing
+                    .filter_map(std::result::Result::ok)
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .map(|e| e.path())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let named = |dir: &Path, name: &str| -> Vec<PathBuf> {
+        dirs(dir)
+            .into_iter()
+            .filter(|d| d.file_name().is_some_and(|n| n.eq_ignore_ascii_case(name)))
+            .collect()
+    };
+    let holds_lua = |dir: &Path| {
+        std::fs::read_dir(dir).is_ok_and(|mut listing| {
+            listing.any(|e| {
+                e.is_ok_and(|e| {
+                    e.file_type().is_ok_and(|t| t.is_file())
+                        && Path::new(&e.file_name())
+                            .extension()
+                            .is_some_and(|x| x.eq_ignore_ascii_case("lua"))
+                })
+            })
+        })
+    };
+    let saved_variables = |dir: &Path| named(dir, "SavedVariables").iter().any(|sv| holds_lua(sv));
+    named(wtf, "Account").iter().any(|accounts| {
+        dirs(accounts).iter().any(|account| {
+            saved_variables(account)
+                || dirs(account).iter().any(|realm| {
+                    dirs(realm)
+                        .iter()
+                        .any(|character| saved_variables(character))
+                })
+        })
+    })
+}
+
 /// Where a backup lives.
 pub fn backup_dir(client: &ClientPaths, id: &BackupId) -> PathBuf {
     client.backups().join(id.to_string())
@@ -744,6 +792,25 @@ mod tests {
             body.alternatives[0].argv(),
             Some(argv(&["omaddons", "backup", "list", B, "-t", "era"]).as_slice())
         );
+    }
+
+    #[test]
+    fn saved_variables_are_found_account_wide_or_per_character_in_any_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let wtf = dir.path().join("WTF");
+        assert!(!has_saved_variables(&wtf), "no WTF/");
+        std::fs::create_dir_all(wtf.join("Account/FAKEACCT/SavedVariables")).unwrap();
+        std::fs::write(wtf.join("Config.wtf"), b"SET a 1").unwrap();
+        assert!(!has_saved_variables(&wtf), "settings, but no addon's");
+        std::fs::write(wtf.join("Account/FAKEACCT/SavedVariables/Foo.lua.bak"), b"").unwrap();
+        assert!(!has_saved_variables(&wtf), "a .bak alone");
+        let character = wtf.join("Account/FAKEACCT/FakeRealm/FakeChar/savedvariables");
+        std::fs::create_dir_all(&character).unwrap();
+        std::fs::write(character.join("Foo.LUA"), b"FooDB = {}").unwrap();
+        assert!(has_saved_variables(&wtf), "a character's, any case");
+        std::fs::remove_file(character.join("Foo.LUA")).unwrap();
+        std::fs::write(wtf.join("Account/FAKEACCT/SavedVariables/Foo.lua"), b"").unwrap();
+        assert!(has_saved_variables(&wtf), "account-wide");
     }
 
     #[test]

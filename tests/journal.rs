@@ -199,6 +199,7 @@ mod support {
                         sv_deferred: false,
                         created_addons_dir: false,
                         run: None,
+                        backup: None,
                     },
                     stage_dir: self.stage.clone(),
                     sv_restore: None,

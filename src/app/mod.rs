@@ -129,6 +129,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("undo", Group::Change, true),
     entry("backup", Group::Change, true),
     entry("backup list", Group::Change, false),
+    entry("backup create", Group::Change, true),
     entry("targets", Group::Setup, false),
     entry("targets add", Group::Setup, true),
     entry("targets rm", Group::Setup, true),
@@ -416,6 +417,7 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
             match &args.action {
                 None => out.emit(backup::list(ctx, &backup::BackupListArgs::default())),
                 Some(BackupAction::List(list)) => out.emit(backup::list(ctx, list)),
+                Some(BackupAction::Create(create)) => out.emit(backup::create(ctx, create)),
             }
         }
         Some(Command::Info(args)) => {

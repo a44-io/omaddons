@@ -8,7 +8,8 @@
 //! Commands rebuild it ([`rebuild`]); `status --cached` never does. It is derived and
 //! best effort, like the release memo: a failed write never fails a command, and
 //! deleting it costs one "stale" until the next writer. `auto.capability` and
-//! `auto.last` have no other authority, so a rebuild carries them over.
+//! `auto.last` have no other authority, so a rebuild carries them over. A write that
+//! changed it rings the doorbell, since `status --cached` reads it (M3-D4).
 
 use std::collections::BTreeMap;
 
@@ -20,9 +21,17 @@ use super::{BackupKind, BackupMeta, Trigger};
 use crate::error::Result;
 use crate::fsx::{Content, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate};
 use crate::limits::{BACKUP_TREE_MAX_DEPTH, BACKUP_TREE_MAX_ENTRIES};
-use crate::model::{BackupId, TargetKey, TxId};
+use crate::model::{Actor, BackupId, TargetKey, TxId};
+use crate::state::doorbell;
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::store::{self, SchemaVersion, VersionStatus, Versioned};
+
+/// The command and actor a projection write rings the doorbell for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ring<'a> {
+    pub command: &'a str,
+    pub actor: Actor,
+}
 
 /// The projection file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -143,11 +152,12 @@ pub fn load_validated(paths: &Paths, client: &ClientPaths, key: &TargetKey) -> I
 }
 
 /// Rebuilds `key`'s projection from every `backup.json` and the `WTF.previous` trees
-/// (a bounded stat walk each), carrying `auto` over, and writes it (best effort).
-pub fn rebuild(paths: &Paths, client: &ClientPaths, key: &TargetKey) -> Rebuilt {
+/// (a bounded stat walk each), carrying `auto` over, and writes it (best effort),
+/// ringing for `ring` when that changed it.
+pub fn rebuild(paths: &Paths, client: &ClientPaths, key: &TargetKey, ring: Ring<'_>) -> Rebuilt {
     let file = load(paths);
     let inventory = build(client, file.targets.get(key));
-    store(paths, file, key, inventory)
+    store(paths, file, key, inventory, ring)
 }
 
 /// `client`'s projection from its backups' metadata; `auto` from `old`. A backup whose
@@ -186,17 +196,22 @@ fn build(client: &ClientPaths, old: Option<&TargetInventory>) -> TargetInventory
     inventory
 }
 
-/// Puts `inventory` in `file` for `key` and writes the file when that changed it.
+/// Puts `inventory` in `file` for `key` and writes the file when that changed it, then
+/// rings the doorbell for `ring`.
 fn store(
     paths: &Paths,
     mut file: InventoryFile,
     key: &TargetKey,
     inventory: TargetInventory,
+    ring: Ring<'_>,
 ) -> Rebuilt {
     // ubs:ignore — comparing projections by target key, not secrets
     let changed = file.targets.get(key) != Some(&inventory);
     file.targets.insert(*key, inventory.clone());
     let written = changed && write(paths, &file).is_ok();
+    if written {
+        doorbell::ring(paths, ring.command, ring.actor);
+    }
     Rebuilt {
         inventory,
         changed: written,
@@ -214,8 +229,15 @@ pub enum Change {
 
 /// Applies `change` to `key`'s projection when the projection explains the directories
 /// but for it, else rebuilds (then applies an `Auto`, which a rebuild cannot know);
-/// writes the result (best effort). Returns what [`rebuild`] does.
-pub fn record(paths: &Paths, client: &ClientPaths, key: &TargetKey, change: Change) -> Rebuilt {
+/// writes the result (best effort), ringing for `ring` when that changed it. Returns
+/// what [`rebuild`] does.
+pub fn record(
+    paths: &Paths,
+    client: &ClientPaths,
+    key: &TargetKey,
+    change: Change,
+    ring: Ring<'_>,
+) -> Rebuilt {
     let file = load(paths);
     let on_disk = covers(client);
     let old = file.targets.get(key).cloned();
@@ -233,7 +255,7 @@ pub fn record(paths: &Paths, client: &ClientPaths, key: &TargetKey, change: Chan
             old => build(client, old.as_ref()),
         },
     };
-    store(paths, file, key, inventory)
+    store(paths, file, key, inventory, ring)
 }
 
 /// Whether `covers` plus the backup `id` is exactly `on_disk`.
@@ -358,6 +380,18 @@ mod tests {
     use std::fs;
 
     const KEY: &str = "01JB8Q2V9W0000000000000000";
+    const RING: Ring<'static> = Ring {
+        command: "backup list",
+        actor: Actor::Human,
+    };
+
+    fn rebuild(paths: &Paths, client: &ClientPaths, key: &TargetKey) -> Rebuilt {
+        super::rebuild(paths, client, key, RING)
+    }
+
+    fn record(paths: &Paths, client: &ClientPaths, key: &TargetKey, change: Change) -> Rebuilt {
+        super::record(paths, client, key, change, RING)
+    }
 
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -521,6 +555,36 @@ mod tests {
         let recorded = record(&f.paths, &f.client, &f.key, Change::Added(Box::new(third)));
         assert_eq!(recorded.inventory.count(), 3);
         assert_eq!(recorded.inventory.auto, auto);
+    }
+
+    #[test]
+    fn a_write_that_changed_the_projection_rings_and_no_other_does() {
+        let f = fixture();
+        let bell = f.paths.doorbell_file();
+        seed(
+            &f.client,
+            &meta(
+                id("01M6Q2VA000000000000000000"),
+                "2026-10-18T21:15:00Z",
+                BackupKind::Manual,
+            ),
+        );
+        let ring = Ring {
+            command: "backup create",
+            actor: Actor::Agent,
+        };
+        assert!(super::rebuild(&f.paths, &f.client, &f.key, ring).changed);
+        let rung: serde_json::Value = serde_json::from_slice(&fs::read(&bell).unwrap()).unwrap();
+        assert_eq!(
+            (&rung["command"], &rung["actor"]),
+            (
+                &serde_json::json!("backup create"),
+                &serde_json::json!("agent")
+            )
+        );
+        fs::remove_file(&bell).unwrap();
+        assert!(!super::rebuild(&f.paths, &f.client, &f.key, ring).changed);
+        assert!(!bell.exists(), "nothing changed: no ring");
     }
 
     #[test]

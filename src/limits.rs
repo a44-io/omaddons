@@ -115,6 +115,16 @@ pub const REDACTOR_MAX_NAMES: usize = 4_096;
 pub const BACKUP_TREE_MAX_ENTRIES: usize = 200_000;
 /// Directory depth walked in one `WTF/` tree a backup copies; then `archive_too_large`.
 pub const BACKUP_TREE_MAX_DEPTH: usize = 16;
+/// Captures of one `WTF/` tried before one that changed while it was copied is
+/// published `best_effort`.
+pub const BACKUP_CAPTURE_ATTEMPTS: u32 = 2;
+/// Free space beside a client's backups below which a manual backup warns
+/// (`backup_space_low`) and automatic ones reclaim, then skip. (config, as
+/// `limits.backup_min_free_mb`; 0 turns the check off)
+pub const BACKUP_MIN_FREE: u64 = 2_048 * MIB;
+/// A client whose newest qualifying backup was captured longer ago than this (or that
+/// has none) is offered `backup create`.
+pub const BACKUP_STALE_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -449,6 +459,28 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Directory depth walked in one WTF/ a backup copies",
     ),
+    limit(
+        "BACKUP_CAPTURE_ATTEMPTS",
+        LimitValue::Count(BACKUP_CAPTURE_ATTEMPTS as u64),
+        "count",
+        None,
+        "Captures tried before one is published best_effort",
+    ),
+    limit(
+        "BACKUP_MIN_FREE",
+        LimitValue::Bytes(BACKUP_MIN_FREE),
+        "bytes",
+        Some("backup_min_free"),
+        "Free space below which automatic backups reclaim, then skip, and a manual one warns \
+         (config.toml: limits.backup_min_free_mb, in MiB; 0 turns the check off)",
+    ),
+    limit(
+        "BACKUP_STALE_AFTER",
+        LimitValue::Millis(ms(BACKUP_STALE_AFTER)),
+        "ms",
+        None,
+        "A client with no qualifying backup captured this recently is offered backup create",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -465,6 +497,8 @@ pub struct EffectiveLimits {
     pub tx_retention: TxRetention,
     pub snapshot_max_bytes: u64,
     pub blob_cache_max_bytes: u64,
+    /// Bytes; 0 turns the free-space check off.
+    pub backup_min_free: u64,
 }
 
 impl Default for EffectiveLimits {
@@ -478,6 +512,7 @@ impl Default for EffectiveLimits {
             tx_retention: TX_RETENTION,
             snapshot_max_bytes: SNAPSHOT_MAX_BYTES,
             blob_cache_max_bytes: BLOB_CACHE_MAX_BYTES,
+            backup_min_free: BACKUP_MIN_FREE,
         }
     }
 }
@@ -496,10 +531,11 @@ pub enum LimitOverrideError {
 }
 
 impl EffectiveLimits {
-    /// Applies one `[limits]` entry. Values must be positive. Byte, count and ratio
-    /// limits take integers; `default_check_interval` takes a duration string such as
-    /// `"6h"` or `"PT6H"`; `tx_retention` takes `{ keep_last = N, window_days = N }`
-    /// (either key may be left out). Its 24 h minimum age is not overridable.
+    /// Applies one `[limits]` entry. Values must be positive, except `backup_min_free`,
+    /// whose 0 turns its check off. Byte, count and ratio limits take integers;
+    /// `default_check_interval` takes a duration string such as `"6h"` or `"PT6H"`;
+    /// `tx_retention` takes `{ keep_last = N, window_days = N }` (either key may be left
+    /// out). Its 24 h minimum age is not overridable.
     pub fn apply(&mut self, key: &str, value: &toml::Value) -> Result<(), LimitOverrideError> {
         match key {
             "default_check_interval" => {
@@ -514,6 +550,7 @@ impl EffectiveLimits {
             "snapshot_max_bytes" => self.snapshot_max_bytes = positive_integer(key, value)?,
             "blob_cache_max_bytes" => self.blob_cache_max_bytes = positive_integer(key, value)?,
             "tx_retention" => self.tx_retention = retention(key, value, self.tx_retention)?,
+            "backup_min_free" => self.backup_min_free = non_negative_integer(key, value)?,
             _ => {
                 let known = REGISTRY
                     .iter()
@@ -535,18 +572,26 @@ impl EffectiveLimits {
 }
 
 fn positive_integer(key: &str, value: &toml::Value) -> Result<u64, LimitOverrideError> {
+    let n = non_negative_integer(key, value)?;
+    if n == 0 {
+        return Err(LimitOverrideError::NotPositive {
+            key: key.to_owned(),
+        });
+    }
+    Ok(n)
+}
+
+/// An integer of at least 0; a negative one is [`LimitOverrideError::NotPositive`].
+fn non_negative_integer(key: &str, value: &toml::Value) -> Result<u64, LimitOverrideError> {
     let n = value
         .as_integer()
         .ok_or_else(|| LimitOverrideError::WrongType {
             key: key.to_owned(),
             expected: "an integer",
         })?;
-    u64::try_from(n)
-        .ok()
-        .filter(|&n| n > 0)
-        .ok_or_else(|| LimitOverrideError::NotPositive {
-            key: key.to_owned(),
-        })
+    u64::try_from(n).map_err(|_| LimitOverrideError::NotPositive {
+        key: key.to_owned(),
+    })
 }
 
 fn positive_duration(key: &str, value: &toml::Value) -> Result<Duration, LimitOverrideError> {
@@ -634,6 +679,9 @@ mod tests {
         "REDACTOR_MAX_NAMES",
         "BACKUP_TREE_MAX_ENTRIES",
         "BACKUP_TREE_MAX_DEPTH",
+        "BACKUP_CAPTURE_ATTEMPTS",
+        "BACKUP_MIN_FREE",
+        "BACKUP_STALE_AFTER",
     ];
 
     const CONFIG_NAMES: &[&str] = &[
@@ -645,6 +693,7 @@ mod tests {
         "TX_RETENTION",
         "SNAPSHOT_MAX_BYTES",
         "BLOB_CACHE_MAX_BYTES",
+        "BACKUP_MIN_FREE",
     ];
 
     fn names(registry: &[LimitInfo]) -> Vec<&'static str> {
@@ -728,6 +777,18 @@ mod tests {
                 keep_last: 20,
                 window: 14 * DAY,
             }
+        );
+
+        // 0 turns the free-space check off; a negative value is refused.
+        limits
+            .apply("backup_min_free", &toml::Value::Integer(0))
+            .unwrap();
+        assert_eq!(limits.backup_min_free, 0);
+        assert_eq!(
+            limits.apply("backup_min_free", &toml::Value::Integer(-1)),
+            Err(LimitOverrideError::NotPositive {
+                key: "backup_min_free".into()
+            })
         );
     }
 

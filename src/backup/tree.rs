@@ -34,6 +34,9 @@ use crate::privacy::WtfPathRedactor;
 /// The fixed label of `copy` progress (M3-D21: never a path).
 pub const COPY_LABEL: &str = "WTF/ files";
 
+/// The fixed label of hashing progress (`backup create --verify`).
+pub const VERIFY_LABEL: &str = "verifying";
+
 /// Files between two `copy` progress events.
 const PROGRESS_EVERY: u64 = 256;
 
@@ -373,6 +376,37 @@ pub(crate) fn clone_tree_with(
         stamp_digest,
         manifest,
     })
+}
+
+/// The lowercase hex SHA-256 of each regular file `entries` lists below `root`, in their
+/// order; `None` for a directory or a symlink. Reports `verify` progress under
+/// [`VERIFY_LABEL`] (a phase of its own: counts never step back within one, and a copy's
+/// have already reached their total). `backup create --verify` records them in its
+/// manifest, and `backup verify` compares them with one.
+pub fn hash_files(
+    root: &Path,
+    entries: &[ManifestEntry],
+    progress: &ProgressSink,
+) -> Result<Vec<Option<String>>, CloneError> {
+    let total = entries.iter().filter(|e| e.kind == EntryKind::File).count() as u64;
+    let mut hashed = 0;
+    let mut hashes = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if entry.kind != EntryKind::File {
+            hashes.push(None);
+            continue;
+        }
+        crate::fsx::count_hashed();
+        let (_, sha256) = crate::state::files_index::hash_file_streaming(&join(root, &entry.path))
+            .map_err(|e| io_error(&entry.path, &e))?;
+        hashes.push(Some(sha256));
+        hashed += 1;
+        if hashed % PROGRESS_EVERY == 0 {
+            progress.count(Phase::Verify, hashed, total, VERIFY_LABEL);
+        }
+    }
+    progress.count(Phase::Verify, hashed, total, VERIFY_LABEL);
+    Ok(hashes)
 }
 
 #[derive(Debug, Default)]

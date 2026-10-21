@@ -309,6 +309,14 @@ warning_codes! {
     DownloadUnverified          = "download_unverified";
     /// A settings change was made, but its history line could not be written.
     HistoryNotRecorded          = "history_not_recorded";
+    /// A backup's files were byte-copied, some or all: the filesystem could not clone
+    /// them, so they take their full size on disk.
+    BackupCopied                = "backup_copied";
+    /// `WTF/` changed while it was copied, again on a second capture: the backup is
+    /// `best_effort`.
+    BackupUnsettled             = "backup_unsettled";
+    /// The free space beside a client's backups is below `limits.backup_min_free_mb`.
+    BackupSpaceLow              = "backup_space_low";
 }
 
 impl fmt::Display for WarningCode {
@@ -806,7 +814,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 41);
+        assert_eq!(WarningCode::ALL.len(), 44);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

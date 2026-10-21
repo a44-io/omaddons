@@ -266,6 +266,7 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
                 sv_deferred: false,
                 created_addons_dir: false,
                 run: None,
+                backup: None,
             },
             stage_dir: m
                 .home

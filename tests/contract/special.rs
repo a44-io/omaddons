@@ -288,6 +288,7 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
         &["install", "gh:o/foo", "-t", "retail", "--dry-run"],
         &["install", "weakauras", "-t", "classic", "--dry-run"],
         &["targets", "default", "retail", "--dry-run"],
+        &["backup", "create", "--dry-run"],
     ]);
     // With an install to change, remove, update and undo.
     let tx = s.install_foo();

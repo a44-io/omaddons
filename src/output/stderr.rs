@@ -37,7 +37,8 @@ pub enum Phase {
     Fetch,
     /// An archive downloaded.
     Download,
-    /// An archive verified against a client's load rules.
+    /// An archive verified against a client's load rules, or a backup's files hashed
+    /// (under a fixed label, as for `Copy`).
     Verify,
     /// A target's folders staged.
     Stage,

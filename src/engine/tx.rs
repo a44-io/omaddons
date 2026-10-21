@@ -889,6 +889,7 @@ fn locked(
         sv_deferred: false,
         created_addons_dir: creates_addons_dir,
         run: Some(req.run),
+        backup: None,
     };
     let prepared = Prepared {
         schema_version: journal::CURRENT,

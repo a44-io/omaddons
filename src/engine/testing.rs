@@ -205,6 +205,7 @@ impl Scene {
                     sv_deferred: false,
                     created_addons_dir: false,
                     run: None,
+                    backup: None,
                 },
                 stage_dir: self.staged.stage_dir.clone(),
                 sv_restore: None,

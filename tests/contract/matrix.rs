@@ -735,3 +735,25 @@ fn backup_list() {
     let c = s.json(&["backup", "list", "01ZZZZZ"], 2);
     assert_eq!(c.envelope["error"]["code"], "usage", "seven characters");
 }
+
+#[test]
+fn backup_create() {
+    let s = Scene::new();
+    common::wtf::Wtf::at(s.home.client("_retail_"))
+        .config_wtf("SET locale \"enUS\"\n")
+        .saved_variables("Foo", 100)
+        .build();
+    // Byte copies and the free space as a debug build is told them, so the envelope is
+    // the same on any filesystem.
+    let env = [
+        ("OMADDONS_FS_FREE_MB", "1024"),
+        ("OMADDONS_FAILPOINTS", "fsx.reflink.unsupported"),
+    ];
+    let c = s.json_env(&["backup", "create", "-t", "retail"], &env, 0);
+    insta::assert_json_snapshot!("backup_create_ok", s.stable(&c.envelope));
+    let c = s.json_env(&["backup", "create", "-t", "retail", "--dry-run"], &env, 0);
+    insta::assert_json_snapshot!("backup_create_dry_run", s.stable(&c.envelope));
+    std::fs::remove_dir_all(s.home.client("_classic_").join("WTF")).unwrap();
+    let c = s.json_env(&["backup", "create", "-t", "classic"], &env, 3);
+    insta::assert_json_snapshot!("backup_create_no_wtf", s.stable(&c.envelope));
+}

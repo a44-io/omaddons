@@ -1,0 +1,63 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup create",
+  "commands": [],
+  "data": {
+    "dry_run": false,
+    "run": "<ulid>",
+    "targets": [
+      {
+        "backup": {
+          "actor": "agent",
+          "baseline": null,
+          "busy": false,
+          "bytes": 218,
+          "captured_at": "<time>",
+          "client_running": false,
+          "consistency": "stable",
+          "created_at": "<time>",
+          "files": 3,
+          "id": "<ulid>",
+          "integrity": "metadata_only",
+          "kind": "manual",
+          "qualifying": true,
+          "reason": null,
+          "reflinked": "none",
+          "restorable": true,
+          "trigger": null,
+          "unsettled": 0,
+          "verified_at": null
+        },
+        "error": null,
+        "skipped": null,
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "backup_space_low",
+      "fix": "free some space, or lower limits.backup_min_free_mb in config.toml",
+      "fix_argv": null,
+      "message": "retail: only 1.1 GB is free beside its backups, below limits.backup_min_free_mb (2048 MiB)"
+    },
+    {
+      "code": "backup_copied",
+      "fix": null,
+      "fix_argv": null,
+      "message": "retail: the filesystem could not clone every file of WTF/, so 218 bytes were copied and take their full size on disk"
+    }
+  ]
+}

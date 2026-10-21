@@ -310,6 +310,7 @@ fn commit(
         sv_deferred: planned.sv.counts.deferred > 0,
         created_addons_dir: false,
         run: Some(req.run),
+        backup: None,
     };
     let sv_restore = (!planned.sv.restore.is_empty()).then(|| SvRestore {
         from: reverts,

@@ -365,8 +365,19 @@ fn select<'e>(entries: &'e [HistoryEntry], s: &Selector<'_>) -> Result<Selection
         None => true,
     };
     if let Some(prefix) = s.tx {
+        let entry = by_prefix(entries, prefix)?;
+        if entry.kind == TxKind::Backup {
+            return Err(Error::new(
+                ErrorCode::NotFound,
+                format!(
+                    "transaction {} made a backup, which undo does not revert",
+                    entry.tx
+                ),
+                Suggestion::command(["omaddons", "backup", "list"]),
+            ));
+        }
         return Ok(Selection {
-            entries: vec![by_prefix(entries, prefix)?],
+            entries: vec![entry],
             reverted_run: None,
         });
     }
@@ -652,6 +663,7 @@ mod tests {
             sv_deferred: false,
             created_addons_dir: false,
             run: None,
+            backup: None,
         }
     }
 
@@ -722,8 +734,13 @@ mod tests {
 
         // Prefixes: unique, any case; ambiguous and unknown are not found; short is usage.
         assert_eq!(
+            pick(&entries, Some("01jb8q2va00000000000000002"), None, None),
+            Ok(vec![id(2)])
+        );
+        assert_eq!(
             pick(&entries, Some("01jb8q2vb"), None, None),
-            Ok(vec!["01JB8Q2VB00000000000000003".into()])
+            Err(ErrorCode::NotFound),
+            "a backup's line is no transaction to undo"
         );
         assert_eq!(pick(&entries, Some(&id(2)), None, None), Ok(vec![id(2)]));
         let ambiguous = by_prefix(&entries, "01JB8Q2VA").unwrap_err();

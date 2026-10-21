@@ -1,0 +1,24 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup create",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_found",
+    "details": {
+      "target": "classic"
+    },
+    "fix": "launch this client once; it creates WTF/",
+    "fix_argv": null,
+    "message": "classic has no WTF/ yet: it has not been launched",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

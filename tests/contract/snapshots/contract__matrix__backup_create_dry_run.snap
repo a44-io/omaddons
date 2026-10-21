@@ -1,0 +1,43 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup create",
+  "commands": [],
+  "data": {
+    "dry_run": true,
+    "run": null,
+    "targets": [
+      {
+        "backup": null,
+        "error": null,
+        "skipped": null,
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": null,
+        "would": {
+          "bytes": 218,
+          "copy": "byte_copy",
+          "files": 3,
+          "free_bytes": 1073741824
+        }
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "backup_space_low",
+      "fix": "free some space, or lower limits.backup_min_free_mb in config.toml",
+      "fix_argv": null,
+      "message": "retail: only 1.1 GB is free beside its backups, below limits.backup_min_free_mb (2048 MiB)"
+    }
+  ]
+}

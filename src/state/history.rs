@@ -17,10 +17,11 @@ use serde::{Deserialize, Serialize};
 
 use super::paths::Paths;
 use super::store::SchemaVersion;
+use crate::backup::BackupKind;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{Op, WriteSession, ensure_dir_all, mutate};
 use crate::limits::REASON_MAX_CHARS;
-use crate::model::{Actor, FolderName, RunId, TargetKey, TxId, TxKind};
+use crate::model::{Actor, BackupId, FolderName, RunId, TargetKey, TxId, TxKind};
 
 /// The version of the line format.
 pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
@@ -56,6 +57,19 @@ pub struct HistoryEntry {
     /// targets; absent on lines written before M2, each of which is a run by itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<RunId>,
+    /// The backup a `backup` line published (M3-D33); absent on every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<BackupNote>,
+}
+
+/// What a `backup` history line says about the backup it published.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BackupNote {
+    pub id: BackupId,
+    pub kind: BackupKind,
+    pub files: u64,
+    /// The apparent size of its files.
+    pub bytes: u64,
 }
 
 impl HistoryEntry {
@@ -495,6 +509,7 @@ mod tests {
             sv_deferred: false,
             created_addons_dir: false,
             run: None,
+            backup: None,
         }
     }
 
@@ -552,6 +567,31 @@ mod tests {
         };
         let read = read(&f.paths, &filter).unwrap();
         assert_eq!(read.entries, [e]);
+    }
+
+    #[test]
+    fn a_backup_line_carries_its_note_and_older_lines_read_without_one() {
+        let mut e = entry(1, Actor::Human, TxKind::Backup, "2026-10-21T18:00:00Z");
+        e.ops.clear();
+        e.run = Some(RunId::new());
+        e.backup = Some(BackupNote {
+            id: "01M6Q2VA000000000000000000".parse().unwrap(),
+            kind: BackupKind::Manual,
+            files: 412,
+            bytes: 15_937_536,
+        });
+        let line = serde_json::to_string(&e).unwrap();
+        assert!(
+            line.ends_with(r#","backup":{"id":"01M6Q2VA000000000000000000","kind":"manual","files":412,"bytes":15937536}}"#),
+            "{line}"
+        );
+        let back: HistoryEntry = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, e);
+        let older = entry(2, Actor::Human, TxKind::Install, "2026-10-21T18:00:00Z");
+        let line = serde_json::to_string(&older).unwrap();
+        assert!(!line.contains("backup"), "omitted when absent: {line}");
+        let back: HistoryEntry = serde_json::from_str(&line).unwrap();
+        assert_eq!(back.backup, None);
     }
 
     fn append_all(f: &Fixture, entries: &[HistoryEntry]) {

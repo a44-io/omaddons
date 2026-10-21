@@ -535,6 +535,33 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Directory depth walked in one WTF/ a backup copies"
+    },
+    {
+      "name": "BACKUP_CAPTURE_ATTEMPTS",
+      "value": {
+        "count": 2
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Captures tried before one is published best_effort"
+    },
+    {
+      "name": "BACKUP_MIN_FREE",
+      "value": {
+        "bytes": 2147483648
+      },
+      "unit": "bytes",
+      "config_key": "backup_min_free",
+      "notes": "Free space below which automatic backups reclaim, then skip, and a manual one warns (config.toml: limits.backup_min_free_mb, in MiB; 0 turns the check off)"
+    },
+    {
+      "name": "BACKUP_STALE_AFTER",
+      "value": {
+        "millis": 604800000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "A client with no qualifying backup captured this recently is offered backup create"
     }
   ]
 ]

@@ -840,6 +840,10 @@ const PRUNE_CALLERS: &[(&str, &str)] = &[
         "src/engine/blobs.rs",
         "blob eviction, and temp blobs that lost a same-hash race",
     ),
+    (
+        "src/backup/create.rs",
+        "a capture's own stage and in-flight lock, under its own lock",
+    ),
 ];
 
 #[test]

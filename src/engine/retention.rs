@@ -30,7 +30,7 @@ use crate::limits::{
     BLOB_CACHE_MAX_BYTES, EffectiveLimits, ORPHAN_MIN_AGE, SNAPSHOT_MAX_BYTES, TX_RETENTION,
     TxRetention,
 };
-use crate::model::{TargetKey, TxId};
+use crate::model::{TargetKey, TxId, TxKind};
 use crate::state::history::{self, HistoryEntry, HistoryFilter};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::load_record;
@@ -147,7 +147,12 @@ pub fn run(
     let all = history::parse(&text, &HistoryFilter::default()).entries;
     let pinned = super::undo::pending_sv_restores(&all);
     let entries: Vec<&HistoryEntry> = all.iter().filter(|e| e.target == key).collect();
-    let latest = entries.last().map(|e| e.tx);
+    // A backup line has no snapshot: the most recent transaction is the last other one.
+    let latest = entries
+        .iter()
+        .rev()
+        .find(|e| e.kind != TxKind::Backup)
+        .map(|e| e.tx);
     let txs: Vec<SnapshotTx> = entries
         .iter()
         .filter_map(|e| {
@@ -384,8 +389,8 @@ fn apparent_size(path: &Path) -> u64 {
 mod tests {
     use super::*;
     use crate::fsx::{WriteSession, Writer};
-    use crate::model::{Actor, TxKind};
-    use crate::state::history::{HistoryEntry, TxResult};
+    use crate::model::Actor;
+    use crate::state::history::{BackupNote, HistoryEntry, TxResult};
 
     const HOUR: i64 = 3_600;
     const DAY: i64 = 24 * HOUR;
@@ -535,6 +540,7 @@ mod tests {
                 sv_deferred: false,
                 created_addons_dir: false,
                 run: None,
+                backup: None,
             };
             let mut s = WriteSession::untracked(Writer::Mutating, &self.scopes, "test");
             history::append(&mut s, &self.paths, &entry).unwrap();
@@ -588,6 +594,46 @@ mod tests {
             .unwrap()
             .entries;
         assert_eq!(entries.len(), 3, "history is append-only");
+    }
+
+    #[test]
+    fn a_backup_line_never_takes_most_recent_protection() {
+        let f = fixture();
+        let old = f.commit(10 * DAY, 10);
+        let last = f.commit(9 * DAY, 10);
+        // A backup published after the last install: a history line with no snapshot.
+        let entry = HistoryEntry {
+            schema_version: history::CURRENT,
+            tx: TxId::new(),
+            kind: TxKind::Backup,
+            at: Timestamp::from_second(f.clock.as_second() - HOUR).unwrap(),
+            target: f.key,
+            actor: Actor::Human,
+            reason: None,
+            argv: vec!["omaddons".into(), "backup".into(), "create".into()],
+            ops: Vec::new(),
+            result: TxResult::Committed,
+            reverts: None,
+            sv_deferred: false,
+            created_addons_dir: false,
+            run: None,
+            backup: Some(BackupNote {
+                id: crate::model::BackupId::new(),
+                kind: crate::backup::BackupKind::Manual,
+                files: 1,
+                bytes: 1,
+            }),
+        };
+        let mut s = WriteSession::untracked(Writer::Backup, &f.scopes, "test");
+        history::append(&mut s, &f.paths, &entry).unwrap();
+        let report = f.run(&RetentionLimits::default(), &BTreeSet::new());
+        assert_eq!((report.pruned_tx, report.kept_tx), (1, 1), "{report:?}");
+        assert_eq!(f.has_snapshot(&old), (false, false));
+        assert_eq!(
+            f.has_snapshot(&last),
+            (true, true),
+            "the last install stays the most recent"
+        );
     }
 
     #[test]

@@ -86,7 +86,13 @@ pub struct LimitsConfig {
     pub tx_retention_days: Option<u64>,
     pub snapshot_max_bytes: Option<Size>,
     pub blob_cache_max_bytes: Option<Size>,
+    /// MiB free beside a client's backups below which backups warn or skip,
+    /// 0–[`BACKUP_MIN_FREE_MB_MAX`]; 0 turns the check off.
+    pub backup_min_free_mb: Option<u64>,
 }
+
+/// The largest `limits.backup_min_free_mb`: 1 TiB.
+pub const BACKUP_MIN_FREE_MB_MAX: u64 = 1_048_576;
 
 /// A byte size: an integer, or a string with a `KiB`, `MiB` or `GiB` suffix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -185,6 +191,8 @@ pub enum KeyKind {
     HostList,
     Count,
     Size,
+    /// MiB, where 0 turns a check off.
+    Mebibytes,
     Bool,
     Credential,
     Family,
@@ -205,6 +213,7 @@ impl KeyKind {
             Self::HostList => "a TOML array of host names, e.g. '[\"codeberg.org\"]'",
             Self::Count => "a positive integer",
             Self::Size => "a positive number of bytes, or one with a KiB, MiB or GiB suffix",
+            Self::Mebibytes => "a number of MiB from 0 to 1048576, where 0 turns the check off",
             Self::Bool => "true or false",
             Self::Credential => {
                 "{ env = \"VAR\" }, { file = \"/path\" } or { command = [\"argv\", …] }"
@@ -295,6 +304,11 @@ pub const KEYS: &[KeySpec] = &[
         "limits.blob_cache_max_bytes",
         KeyKind::Size,
         "Blob cache size cap",
+    ),
+    spec(
+        "limits.backup_min_free_mb",
+        KeyKind::Mebibytes,
+        "MiB free beside backups below which they warn or skip",
     ),
     spec(
         "sources.*.enabled",
@@ -437,6 +451,18 @@ impl Config {
                 "must be from 0 to 48",
             ));
         }
+        if config
+            .limits
+            .backup_min_free_mb
+            .is_some_and(|mb| mb > BACKUP_MIN_FREE_MB_MAX)
+        {
+            return Err(invalid(
+                path,
+                text,
+                "limits.backup_min_free_mb",
+                &format!("must be from 0 to {BACKUP_MIN_FREE_MB_MAX}"),
+            ));
+        }
         if let Some(bad) = config.git_hosts.iter().find(|h| !is_host_name(h)) {
             return Err(invalid(
                 path,
@@ -493,6 +519,9 @@ impl Config {
                 table.insert("window_days".into(), int(n));
             }
             apply("tx_retention", toml::Value::Table(table))?;
+        }
+        if let Some(mb) = l.backup_min_free_mb {
+            apply("backup_min_free", int(mb.saturating_mul(1 << 20)))?;
         }
         if let Some(hours) = self.check_interval_hours.filter(|h| *h > 0) {
             apply(
@@ -956,6 +985,7 @@ tx_retention_count = 20
 tx_retention_days = 14
 snapshot_max_bytes = "3GiB"
 blob_cache_max_bytes = "512MiB"
+backup_min_free_mb = 512
 
 [sources.github]
 enabled = true
@@ -1020,7 +1050,18 @@ multi_toc = true
             limits.default_check_interval,
             std::time::Duration::from_secs(12 * 3600)
         );
+        assert_eq!(
+            limits.backup_min_free,
+            512 << 20,
+            "MiB in the file, bytes inside"
+        );
         assert_eq!(parse("").unwrap().0, Config::default());
+        let off = parse("[limits]\nbackup_min_free_mb = 0\n").unwrap().0;
+        assert_eq!(
+            off.effective_limits().unwrap().backup_min_free,
+            0,
+            "0 turns the check off"
+        );
     }
 
     #[test]
@@ -1056,6 +1097,14 @@ multi_toc = true
         let err = parse("[limits]\narchive_max_ratio = 0\n").unwrap_err();
         assert!(err.message.contains("archive_max_ratio"), "{}", err.message);
         assert_eq!(err.fix.argv(), None);
+        let err = parse("[limits]\nbackup_min_free_mb = 1048577\n").unwrap_err();
+        assert!(
+            err.message.contains("backup_min_free_mb"),
+            "{}",
+            err.message
+        );
+        let err = parse("[limits]\nbackup_min_free_mb = -1\n").unwrap_err();
+        assert_eq!(err.code, ErrorCode::StateCorrupt);
     }
 
     #[test]

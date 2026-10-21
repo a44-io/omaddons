@@ -19,7 +19,7 @@ use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{Actor, RunId, TargetKey, TxId, TxKind};
 use crate::output::{Outcome, Style, table};
 use crate::state::history::{
-    self, FolderOp, HistoryEntry, HistoryFilter, HistoryOp, SettingEntry, TxResult,
+    self, BackupNote, FolderOp, HistoryEntry, HistoryFilter, HistoryOp, SettingEntry, TxResult,
 };
 
 /// The default `--limit`: token-frugal; agents raise it when they need more.
@@ -75,6 +75,9 @@ pub struct HistoryLine {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reverts: Option<TxId>,
     pub result: TxResult,
+    /// The backup a `backup` line published.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup: Option<BackupNote>,
 }
 
 /// A target as history names it: its id now (the key when no longer registered).
@@ -162,9 +165,19 @@ impl Outcome for HistoryOutcome {
                 let c = e
                     .changes
                     .unwrap_or_else(|| ChangeCounts::of(e.ops.as_deref().unwrap_or_default()));
-                // A settings change touches no folder: what was run says what it did.
+                // A settings change touches no folder: what was run says what it did. A
+                // backup touches none either: its note does.
                 let what = if e.kind.is_setting() {
                     e.argv.get(1..).unwrap_or_default().join(" ")
+                } else if let Some(b) = &e.backup {
+                    format!(
+                        "WTF/ as {} ({})",
+                        short_id(&b.id.to_string()),
+                        crate::output::count(
+                            usize::try_from(b.files).unwrap_or(usize::MAX),
+                            "file"
+                        )
+                    )
                 } else {
                     c.human()
                 };
@@ -353,6 +366,7 @@ fn setting_line(world: &World, e: &SettingEntry, verbose: bool) -> HistoryLine {
         ops: verbose.then(Vec::new),
         reverts: None,
         result: e.result,
+        backup: None,
     }
 }
 
@@ -373,6 +387,7 @@ fn line(world: &World, e: &HistoryEntry, verbose: bool) -> HistoryLine {
         ops: verbose.then(|| e.ops.clone()),
         reverts: e.reverts,
         result: e.result,
+        backup: e.backup.clone(),
     }
 }
 
