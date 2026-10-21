@@ -9,6 +9,7 @@
 #![cfg_attr(all(test, not(debug_assertions)), allow(unused_imports, dead_code))]
 
 pub mod app;
+pub mod backup;
 pub mod cli;
 pub mod clock;
 pub mod discover;

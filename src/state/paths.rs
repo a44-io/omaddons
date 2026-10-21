@@ -303,6 +303,11 @@ impl Paths {
         self.cache.join("export.json")
     }
 
+    /// The backup inventory projection `status --cached` reads.
+    pub fn backup_inventory(&self) -> PathBuf {
+        self.cache.join("backups.json")
+    }
+
     /// The bar widget's doorbell: rung by every write that can change `status --cached`.
     pub fn doorbell_file(&self) -> PathBuf {
         self.cache.join("doorbell.json")

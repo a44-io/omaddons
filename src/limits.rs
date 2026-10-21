@@ -111,6 +111,10 @@ pub const SOURCE_TEXT_MAX_CHARS: usize = 200;
 /// Account, realm and character names the privacy redactor learns per client (or
 /// archive); any other maps to `account ?`, `realm ?` or `character ?`.
 pub const REDACTOR_MAX_NAMES: usize = 4_096;
+/// Entries walked in one `WTF/` tree a backup copies; then `archive_too_large`.
+pub const BACKUP_TREE_MAX_ENTRIES: usize = 200_000;
+/// Directory depth walked in one `WTF/` tree a backup copies; then `archive_too_large`.
+pub const BACKUP_TREE_MAX_DEPTH: usize = 16;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -431,6 +435,20 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Account, realm and character names the privacy redactor learns per client; others map to … ?",
     ),
+    limit(
+        "BACKUP_TREE_MAX_ENTRIES",
+        LimitValue::Count(BACKUP_TREE_MAX_ENTRIES as u64),
+        "count",
+        None,
+        "Entries walked in one WTF/ a backup copies",
+    ),
+    limit(
+        "BACKUP_TREE_MAX_DEPTH",
+        LimitValue::Count(BACKUP_TREE_MAX_DEPTH as u64),
+        "count",
+        None,
+        "Directory depth walked in one WTF/ a backup copies",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -614,6 +632,8 @@ mod tests {
         "SEARCH_SUMMARY_MAX_CHARS",
         "SOURCE_TEXT_MAX_CHARS",
         "REDACTOR_MAX_NAMES",
+        "BACKUP_TREE_MAX_ENTRIES",
+        "BACKUP_TREE_MAX_DEPTH",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

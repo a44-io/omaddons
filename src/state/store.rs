@@ -149,6 +149,22 @@ pub const KINDS: &[(&str, SchemaVersion)] = &[
         <super::doorbell::Doorbell as Versioned>::KIND,
         <super::doorbell::Doorbell as Versioned>::CURRENT,
     ),
+    (
+        <crate::backup::BackupMeta as Versioned>::KIND,
+        <crate::backup::BackupMeta as Versioned>::CURRENT,
+    ),
+    (
+        <crate::backup::Manifest as Versioned>::KIND,
+        <crate::backup::Manifest as Versioned>::CURRENT,
+    ),
+    (
+        <crate::backup::AddonsFile as Versioned>::KIND,
+        <crate::backup::AddonsFile as Versioned>::CURRENT,
+    ),
+    (
+        <crate::backup::inventory::InventoryFile as Versioned>::KIND,
+        <crate::backup::inventory::InventoryFile as Versioned>::CURRENT,
+    ),
     ("history", super::history::CURRENT),
 ];
 

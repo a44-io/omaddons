@@ -130,6 +130,24 @@ impl ProgressSink {
         lock(&inner.reporter).progress(phase.wire(), item, Some(current), Some(total));
     }
 
+    /// Reports that `current` of `total` units of `phase` are done, under `message`, a
+    /// fixed label (never a name or a path): for a phase that counts files rather than
+    /// items (`copy`). Counts only move forward; a repeat or a step back is dropped.
+    pub fn count(&self, phase: Phase, current: u64, total: u64, message: &str) {
+        let Some(inner) = &self.inner else {
+            return;
+        };
+        let mut phases = inner.phases.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = phases.entry(phase).or_default();
+        let total = *count.total.get_or_insert(total);
+        let current = current.min(total);
+        if current <= count.current {
+            return;
+        }
+        count.current = current;
+        lock(&inner.reporter).progress(phase.wire(), message, Some(current), Some(total));
+    }
+
     /// Announces `phase` before any of its `total` items: one event at `current: 0`
     /// saying `message` (what is about to happen, e.g. how much will download).
     pub fn announce(&self, phase: Phase, total: u64, message: &str) {
@@ -437,6 +455,39 @@ mod tests {
         let captured = Captured::default();
         let sink: Box<dyn Write + Send> = Box::new(captured.clone());
         (Arc::new(Mutex::new(Reporter::new(sink, cfg))), captured)
+    }
+
+    #[test]
+    fn file_counts_only_move_forward_under_one_label() {
+        let config = cfg(StderrMode::Ndjson, ProgressMode::Json, false);
+        let (reporter, captured) = shared(&config);
+        let sink = ProgressSink::new(&reporter, &config);
+        for current in [256, 256, 100, 512, 900, 1_000] {
+            sink.count(Phase::Copy, current, 600, "WTF/ files");
+        }
+        let counts: Vec<(String, u64, u64)> = captured
+            .text()
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .map(|v| {
+                (
+                    v["message"].as_str().unwrap().to_owned(),
+                    v["current"].as_u64().unwrap(),
+                    v["total"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        let label = || "WTF/ files".to_owned();
+        assert_eq!(
+            counts,
+            [
+                (label(), 256, 600),
+                (label(), 512, 600),
+                (label(), 600, 600)
+            ],
+            "no repeat, no step back, never past the total"
+        );
+        ProgressSink::none().count(Phase::Copy, 1, 1, "WTF/ files");
     }
 
     #[test]

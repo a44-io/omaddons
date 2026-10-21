@@ -298,6 +298,11 @@ ulid_id!(
     RunId,
     "run id"
 );
+ulid_id!(
+    /// A `WTF/` backup, named by its directory `<meta>/backups/<id>/` (M3-D23).
+    BackupId,
+    "backup id"
+);
 
 // ---------------------------------------------------------------------------------------
 // Small enums.

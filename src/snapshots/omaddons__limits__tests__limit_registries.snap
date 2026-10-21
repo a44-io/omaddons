@@ -517,6 +517,24 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Account, realm and character names the privacy redactor learns per client; others map to … ?"
+    },
+    {
+      "name": "BACKUP_TREE_MAX_ENTRIES",
+      "value": {
+        "count": 200000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Entries walked in one WTF/ a backup copies"
+    },
+    {
+      "name": "BACKUP_TREE_MAX_DEPTH",
+      "value": {
+        "count": 16
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Directory depth walked in one WTF/ a backup copies"
     }
   ]
 ]
