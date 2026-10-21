@@ -202,6 +202,49 @@ fn an_unresolved_exe_marks_every_matching_target_in_the_prefix() {
     assert_eq!(result.len(), 3, "retail (Wow.exe) is not running");
 }
 
+/// umu points `WINEPREFIX` at `<prefix>/pfx/`, a symlink to the prefix: an exe that
+/// does not map still marks every matching target in the prefix, as the prefix itself
+/// would.
+#[test]
+fn an_unresolved_exe_under_umus_pfx_link_marks_the_prefix_targets() {
+    let env = TestEnv::new();
+    let prefix = Prefix::new(&env, "battlenet");
+    std::os::unix::fs::symlink(".", prefix.path().join("pfx")).unwrap();
+    let targets = battlenet_targets(&prefix, &["wow", "wow_classic_era", "wow_anniversary"]);
+    let pfx = format!("{}/pfx/", prefix.path().display());
+    let proc = FakeProc::new(env.root().join("proc")).process(
+        55,
+        true,
+        "WoWClassic.exe",
+        &["WoWClassic.exe"],
+        &[("WINEPREFIX", &pfx)],
+    );
+    let result = detect_running_in(proc.root(), uid(&proc), &targets, None);
+    let classic = targets
+        .iter()
+        .filter(|t| t.flavor_dir.as_deref() != Some("_retail_"));
+    for target in classic {
+        assert_eq!(
+            running(&result, &target.client_dir),
+            [(55, RunningEvidence::PrefixOnly)],
+            "{:?}",
+            target.flavor_dir
+        );
+    }
+    assert_eq!(result.len(), 2, "retail (WoW.exe) is not running");
+
+    // A prefix that is not there resolves to nothing, as spelled.
+    let gone = format!("{}/gone/pfx/", env.root().display());
+    let proc = FakeProc::new(env.root().join("proc-gone")).process(
+        56,
+        true,
+        "WoWClassic.exe",
+        &["WoWClassic.exe"],
+        &[("WINEPREFIX", &gone)],
+    );
+    assert!(detect_running_in(proc.root(), uid(&proc), &targets, None).is_empty());
+}
+
 #[test]
 fn a_custom_client_outside_any_prefix() {
     let env = TestEnv::new();

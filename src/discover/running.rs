@@ -201,11 +201,16 @@ pub fn running_prefixes(proc_root: &Path, own_uid: u32, names: &[String]) -> Vec
     let listing = list(proc_root).unwrap_or_default();
     let mut prefixes: Vec<PathBuf> = processes(&listing, own_uid, &known, &read)
         .filter_map(|p| p.prefix)
-        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .map(|p| canonical(&p))
         .collect();
     prefixes.sort();
     prefixes.dedup();
     prefixes
+}
+
+/// `path` canonical, or as it is when it cannot be resolved.
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn detect(
@@ -221,10 +226,13 @@ fn detect(
         return running;
     }
     for process in processes(listing, own_uid, &known, read) {
+        // Canonical, as the install roots compared with it: umu's `<prefix>/pfx/` is a
+        // symlink to the prefix, and no install root starts with it as spelled.
         let prefix = process
             .prefix
             .clone()
-            .or_else(|| home.map(|h| h.join(".wine")).filter(|p| p.is_dir()));
+            .or_else(|| home.map(|h| h.join(".wine")).filter(|p| p.is_dir()))
+            .map(|p| canonical(&p));
         let exe_path = exe_path(&process.cmdline, &process.exe, prefix.as_deref());
         let matched: Vec<&Target> = match &exe_path {
             Some(path) => {
@@ -242,7 +250,7 @@ fn detect(
                         .is_some_and(|e| e.eq_ignore_ascii_case(&process.exe))
                         && (prefix
                             .as_deref()
-                            .is_some_and(|p| t.install_root.starts_with(p))
+                            .is_some_and(|p| canonical(&t.install_root).starts_with(p))
                             || process
                                 .cmdline
                                 .iter()
