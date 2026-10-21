@@ -334,6 +334,71 @@ fn a_release_that_does_not_load_is_skipped_as_blocked() {
     );
 }
 
+/// Newer releases whose TOCs a client reads with a warning: retail's is older than the
+/// client (it loads only as out of date), and the 3.3.5a client's lists several
+/// interfaces. The committed update says both as its dry run does.
+#[test]
+fn an_update_warns_what_its_new_tocs_say_as_its_dry_run_does() {
+    let mut home = Home::new(&["wow"]);
+    home.with_custom(common::trees::CustomRoot::at(
+        home.env.root().join("wow-335"),
+    ));
+    let (foo1, foo2) = (
+        Rel::new("Foo", "v1", "120105", MAINLINE),
+        Rel::new("Foo", "v2", "110207", &[("mainline", 110_207)]),
+    );
+    home.installed_behind(
+        FOO,
+        ("v1", &foo1.assets()),
+        ("v2", &foo2.assets()),
+        &["retail"],
+    );
+    let (leg1, leg2) = (
+        Rel::new("Leg", "v1", "30300", &[]),
+        Rel::new("Leg", "v2", "30300, 30400", &[]),
+    );
+    home.installed_behind(
+        LEG,
+        ("v1", &leg1.assets()),
+        ("v2", &leg2.assets()),
+        &["wotlk"],
+    );
+    // Sorted: a dry run reports its targets in plan order, commits run in key order.
+    let read_warnings = |envelope: &Value| -> Vec<String> {
+        let mut read: Vec<String> = envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == "out_of_date" || w["code"] == "toc_comma_on_legacy")
+            .map(Value::to_string)
+            .collect();
+        read.sort();
+        read
+    };
+    let dry = home.run(&["update", "--dry-run"]);
+    let planned = read_warnings(&dry.expect(0));
+    assert_eq!(planned.len(), 2, "{}", dry.context());
+    for code in ["\"out_of_date\"", "\"toc_comma_on_legacy\""] {
+        assert!(
+            planned.iter().any(|w| w.contains(code)),
+            "{code}\n{}",
+            dry.context()
+        );
+    }
+    let r = home.run(&["update"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        items(&envelope),
+        [
+            row("retail", "Foo", "updated", "-"),
+            row("wotlk", "Leg", "updated", "-")
+        ],
+        "{}",
+        r.context()
+    );
+    assert_eq!(read_warnings(&envelope), planned, "{}", r.context());
+}
+
 #[test]
 fn an_adopted_build_is_never_replaced_by_an_older_one() {
     let mut home = Home::new(&["wow"]);

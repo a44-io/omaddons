@@ -677,9 +677,10 @@ pub struct FolderWork {
     /// Files of the folders it replaces that changed on disk since they were indexed,
     /// found at plan time (M2-D17): the commit warns `local_changes_replaced`.
     pub local_changes: Option<LocalChanges>,
-    /// `download_unverified` when its archive's download was not checked against the
-    /// hash its source normally publishes, found at plan time: the commit warns again.
-    pub unverified: Option<Warning>,
+    /// What checking its archive warned at plan time: the verdicts of the folders that
+    /// install (`out_of_date`, `toc_comma_on_legacy`) and `download_unverified`. The
+    /// commit inspects and downloads nothing, so it warns again from the work.
+    pub archive_warnings: Vec<Warning>,
 }
 
 /// Changed files of the folders a work replaces.
@@ -2562,6 +2563,8 @@ pub fn rejudge(
                     return planner.current(existing, intent);
                 }
             }
+            // The archive was checked once, at plan time: its warnings come first, as
+            // planning gave them.
             let mut rebuilt = planner.build_install(
                 existing,
                 template.clone(),
@@ -2573,7 +2576,7 @@ pub fn rejudge(
                 },
                 folders.blob.clone(),
                 None,
-                Vec::new(),
+                folders.archive_warnings.clone(),
             )?;
             if let WorkMode::Folders(f) = &mut rebuilt.work.mode {
                 f.deps = folders.deps.clone();
@@ -2587,10 +2590,8 @@ pub fn rejudge(
                     .local_changes
                     .clone()
                     .filter(|c| c.folders.iter().any(replaced));
-                f.unverified = folders.unverified.clone();
+                f.archive_warnings = folders.archive_warnings.clone();
             }
-            // The archive it stages was downloaded unchecked: still said.
-            rebuilt.warnings.extend(folders.unverified.clone());
             Ok(Planned::change(rebuilt))
         }
         _ if !record
@@ -3458,6 +3459,8 @@ impl TargetPlanner<'_> {
 
     /// The second pass of an install: ownership and policy against the working view.
     fn build(&self, b: PendingBuild) -> Result<PlannedAddon> {
+        // The commit inspects and downloads nothing: it warns from the work.
+        let archive_warnings = b.warnings.clone();
         let mut planned = self.build_install(
             b.existing.as_ref(),
             b.template,
@@ -3470,12 +3473,7 @@ impl TargetPlanner<'_> {
         )?;
         if let WorkMode::Folders(f) = &mut planned.work.mode {
             f.deps = b.deps;
-            // The commit downloads nothing: it warns from the work.
-            f.unverified = planned
-                .warnings
-                .iter()
-                .find(|w| matches!(w.code, WarningCode::DownloadUnverified))
-                .cloned();
+            f.archive_warnings = archive_warnings;
             // Here, never in `build_install`: the walk stays out of the commit window
             // that `rejudge` holds the lock for.
             f.local_changes = self.local_changes(&f.swap);
@@ -3785,7 +3783,7 @@ impl TargetPlanner<'_> {
                     handed_over: Vec::new(),
                     deps: DepFacts::default(),
                     local_changes: None,
-                    unverified: None,
+                    archive_warnings: Vec::new(),
                 })),
             },
         })
@@ -3848,7 +3846,7 @@ impl TargetPlanner<'_> {
                     handed_over: Vec::new(),
                     deps: DepFacts::default(),
                     local_changes: None,
-                    unverified: None,
+                    archive_warnings: Vec::new(),
                 })),
             },
         })
@@ -5054,7 +5052,7 @@ mod tests {
                     count: 1,
                     folders: vec![FolderName::new("Foo").unwrap()],
                 }),
-                unverified: None,
+                archive_warnings: Vec::new(),
             })),
         };
         let replace = |indexed: Option<TreeDigest>| SwapOp::Replace {

@@ -16,7 +16,9 @@ use common::procfs::FakeProc;
 use common::trees::{CustomRoot, listing, tree_hash};
 use omaddons::discover::registry::marker_path;
 use serde_json::Value;
-use support::{argv_of, foo_release, items, mainline, state_files, warning_codes};
+use support::{
+    argv_of, foo_release, items, mainline, state_files, warning_codes, warning_events, warnings_of,
+};
 
 #[cfg(test)]
 mod support {
@@ -120,6 +122,26 @@ mod support {
         r.stderr
             .lines()
             .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    /// The warnings of `code` in an envelope.
+    pub fn warnings_of(envelope: &Value, code: &str) -> Vec<Value> {
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == code)
+            .cloned()
+            .collect()
+    }
+
+    /// The `(code, message)` of each stderr `warning` event of `code`.
+    pub fn warning_events(r: &Run, code: &str) -> Vec<(String, String)> {
+        events(r)
+            .into_iter()
+            .filter(|e| e["event"] == "warning" && e["code"] == code)
+            .map(|e| (code.to_owned(), e["message"].as_str().unwrap().to_owned()))
             .collect()
     }
 
@@ -2137,5 +2159,75 @@ fn an_http_ref_never_suggests_a_url_that_is_then_blocked() {
             "-t",
             "retail"
         ])
+    );
+}
+
+/// A TOC older than the client loads only with out-of-date addons enabled (the real
+/// retail client did not load OmniCC 11.2.8's), so a committed install says so as its
+/// dry run does: once per folder it adds, in the envelope and in a human run's stderr.
+#[test]
+fn a_committed_install_warns_out_of_date_as_its_dry_run_does() {
+    let home = Home::new(&["wow"]);
+    foo_release(&home.http, "v1.0.0", &[("mainline", 110_207)], "110207");
+    let dry = home.run(&["install", "gh:o/foo", "-t", "retail", "--dry-run"]);
+    let planned = warnings_of(&dry.expect(0), "out_of_date");
+    assert_eq!(planned.len(), 2, "Foo and FooOptions\n{}", dry.context());
+
+    let r = home.run(&["install", "gh:o/foo", "-t", "retail"]);
+    let envelope = r.expect(0);
+    assert!(envelope["data"]["tx"].is_string(), "{}", r.context());
+    assert_eq!(
+        warnings_of(&envelope, "out_of_date"),
+        planned,
+        "{}",
+        r.context()
+    );
+
+    home.run(&["undo"]).expect(0);
+    let args: Vec<String> = ["install", "gh:o/foo", "-t", "retail"]
+        .iter()
+        .map(|a| (*a).to_owned())
+        .collect();
+    let human = home.exec(&args);
+    assert_eq!(human.code, 0, "{}", human.context());
+    let shown: Vec<(String, String)> = planned
+        .iter()
+        .map(|w| {
+            let message = w["message"].as_str().unwrap().to_owned();
+            ("out_of_date".to_owned(), message)
+        })
+        .collect();
+    assert_eq!(
+        warning_events(&human, "out_of_date"),
+        shown,
+        "{}",
+        human.context()
+    );
+}
+
+/// A 3.3.5a client reads only the first number of a comma Interface list, so a
+/// committed install warns `toc_comma_on_legacy` as its dry run does.
+#[test]
+fn a_committed_legacy_install_warns_toc_comma_on_legacy_as_its_dry_run_does() {
+    let mut home = Home::new(&[]);
+    home.with_custom(CustomRoot::at(home.env.root().join("pserver")));
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let zip = dl.join("Probe.zip");
+    let text = toc("30300, 30400", &["## Version: 1"]);
+    fs::write(&zip, zip_text(&[("Probe/Probe.toc", &text)])).unwrap();
+    let zip = zip.display().to_string();
+
+    let dry = home.run(&["install", &zip, "-t", "wotlk", "--dry-run"]);
+    let planned = warnings_of(&dry.expect(0), "toc_comma_on_legacy");
+    assert_eq!(planned.len(), 1, "{}", dry.context());
+    let r = home.run(&["install", &zip, "-t", "wotlk"]);
+    let envelope = r.expect(0);
+    assert!(envelope["data"]["tx"].is_string(), "{}", r.context());
+    assert_eq!(
+        warnings_of(&envelope, "toc_comma_on_legacy"),
+        planned,
+        "{}",
+        r.context()
     );
 }

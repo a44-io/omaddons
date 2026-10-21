@@ -257,6 +257,38 @@ fn two_installs_of_the_same_addon_at_once() {
     assert_eq!(s.lock_inode(), inode);
 }
 
+/// The run that re-plans to a no-op committed nothing, so it reports none of the
+/// warnings its plan gave the work it dropped; the run that commits reports them.
+#[test]
+fn a_work_dropped_at_revalidation_reports_none_of_its_plan_warnings() {
+    let s = Scene::new();
+    s.install("gh:o/bar", "bar"); // registers the target and creates the lock file
+    fs::write(
+        s.dl.join("old.zip"),
+        zip_text(&[("Old/Old.toc", "## Interface: 110207\n## Version: 1\n")]),
+    )
+    .unwrap();
+    let (a, b) = concurrently(&s, ("gh:o/old", "old"), ("gh:o/old", "old"));
+    let (ea, eb) = (a.expect(0), b.expect(0));
+    let (committed, dropped) = if ea["data"]["tx"].is_null() {
+        (&eb, &ea)
+    } else {
+        (&ea, &eb)
+    };
+    assert!(
+        committed["data"]["tx"].is_string() && dropped["data"]["tx"].is_null(),
+        "one commits, the other re-plans to a no-op\n{ea}\n{eb}"
+    );
+    assert!(
+        warning_codes(committed).contains(&"out_of_date".to_owned()),
+        "{committed}"
+    );
+    assert!(
+        !warning_codes(dropped).contains(&"out_of_date".to_owned()),
+        "{dropped}"
+    );
+}
+
 #[test]
 fn two_installs_of_different_addons_at_once() {
     let s = Scene::new();
