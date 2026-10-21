@@ -377,7 +377,7 @@ pub fn resolve(client: &ClientPaths, target_id: &str, prefix: &str) -> Result<Ba
     let found = matching(&backups, prefix);
     match found.as_slice() {
         [one] => Ok((*one).clone()),
-        [] => Err(not_found(prefix, &backups, target_id)),
+        [] => Err(not_found(prefix, &backups, Some(target_id))),
         many => Err(ambiguous(
             prefix,
             many.iter().map(|b| (b.id, target_id)).collect(),
@@ -386,22 +386,25 @@ pub fn resolve(client: &ClientPaths, target_id: &str, prefix: &str) -> Result<Ba
 }
 
 /// `not_found` for `prefix` on `target_id`, naming the newest three of `backups`.
-pub fn not_found(prefix: &str, backups: &[BackupRef], target_id: &str) -> Error {
+/// `not_found` for `prefix` among `backups` (newest first) of `target_id`, or of every
+/// client listed when `None`, naming the newest three.
+pub fn not_found(prefix: &str, backups: &[BackupRef], target_id: Option<&str>) -> Error {
     let newest: Vec<String> = backups.iter().take(3).map(|b| b.id.to_string()).collect();
+    let whose = target_id.map_or_else(String::new, |t| format!(" of {t}"));
     let message = if newest.is_empty() {
-        format!("no backup of {target_id} has an id starting with {prefix}; it has none")
+        format!("no backup{whose} has an id starting with {prefix}: there are none")
     } else {
         format!(
-            "no backup of {target_id} has an id starting with {prefix}; the newest: {}",
+            "no backup{whose} has an id starting with {prefix}; the newest: {}",
             newest.join(", ")
         )
     };
-    Error::new(
-        ErrorCode::NotFound,
-        message,
-        Suggestion::command(["omaddons", "backup", "list", "-t", target_id]),
-    )
-    .details(serde_json::json!({ "prefix": prefix, "target": target_id, "newest": newest }))
+    let fix = match target_id {
+        Some(t) => Suggestion::command(["omaddons", "backup", "list", "-t", t]),
+        None => Suggestion::command(["omaddons", "backup", "list"]),
+    };
+    Error::new(ErrorCode::NotFound, message, fix)
+        .details(serde_json::json!({ "prefix": prefix, "target": target_id, "newest": newest }))
 }
 
 /// `ref_ambiguous` for `prefix`, with one `backup list <id> -t <target>` per candidate.

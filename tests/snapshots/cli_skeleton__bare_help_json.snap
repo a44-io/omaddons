@@ -1,6 +1,5 @@
 ---
 source: tests/cli_skeleton.rs
-assertion_line: 174
 expression: envelope
 ---
 {
@@ -130,6 +129,12 @@ expression: envelope
         ],
         "group": "change",
         "name": "undo"
+      },
+      {
+        "about": "Each client's WTF/ backups: copies of its settings (bare: list them)",
+        "aliases": [],
+        "group": "change",
+        "name": "backup"
       },
       {
         "about": "List the WoW clients, or add, remove, rename and choose them",

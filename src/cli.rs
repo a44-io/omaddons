@@ -172,6 +172,8 @@ pub enum Command {
     /// Revert the last change (or one by id), SavedVariables included
     #[command(visible_aliases = ["revert", "rollback"])]
     Undo(crate::app::undo::UndoArgs),
+    /// Each client's WTF/ backups: copies of its settings (bare: list them)
+    Backup(crate::app::backup::BackupArgs),
     /// Show what changed, when, by whom and why
     #[command(visible_alias = "log")]
     History(crate::app::history::HistoryArgs),

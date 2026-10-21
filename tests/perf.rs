@@ -656,3 +656,64 @@ fn detect_running_on_the_real_proc_under_2_ms() {
         "detect_running took {elapsed:?}"
     );
 }
+
+#[test]
+#[ignore = "a release-build budget on btrfs: cargo test --release --test perf -- --ignored"]
+fn clone_tree_500_mb() {
+    use common::wtf::Wtf;
+    use omaddons::backup::tree::{CloneOpts, clone_tree};
+    use omaddons::fsx::{ClonePolicy, ScopeTable, WriteSession, Writer};
+    use omaddons::output::ProgressSink;
+    use omaddons::state::paths::Paths;
+
+    const TOTAL: u64 = 500 * 1024 * 1024;
+    let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    let dir = tempfile::tempdir_in(&target).unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    // ubs:ignore — comparing a filesystem magic number, not a secret
+    let btrfs = rustix::fs::statfs(&root).is_ok_and(|s| i128::from(s.f_type) == 0x9123_683E);
+    if !btrfs {
+        common::checkpoint::skip("clone_tree_500_mb", "target/ is not on btrfs");
+        return;
+    }
+    // Checkpoint criterion 8: 500 MB in realistic file counts (5,000) under 1 s; 20,000
+    // files are measured and reported without a budget.
+    for (files, budget) in [(5_000u64, Some(Duration::from_secs(1))), (20_000, None)] {
+        let client = root.join(format!("client-{files}"));
+        fs::create_dir_all(client.join("Interface/AddOns")).unwrap();
+        let wtf = Wtf::at(&client).big(TOTAL, files).build();
+        let paths = Paths::with_roots(&root, root.join("c"), root.join("s"), root.join("k"));
+        let scopes = ScopeTable::new(&paths, std::slice::from_ref(&client), None).unwrap();
+        let mut times = Vec::new();
+        for run in 0..5 {
+            let stage = client.join(format!("Interface/.omaddons/stage/run{run}"));
+            let mut s = WriteSession::untracked(Writer::Backup, &scopes, "perf");
+            let opts = CloneOpts::capture(ClonePolicy::Required);
+            let started = Instant::now();
+            let copy = clone_tree(
+                &mut s,
+                &wtf,
+                &stage.join("WTF"),
+                &opts,
+                None,
+                &ProgressSink::none(),
+            )
+            .unwrap();
+            times.push(started.elapsed());
+            assert_eq!(copy.files, files);
+            assert_eq!(copy.copied_bytes, 0, "clone-only: not a byte copied");
+            fs::remove_dir_all(&stage).unwrap();
+        }
+        times.sort();
+        let median = times[times.len() / 2];
+        measured(format_args!(
+            "clone_tree of 500 MiB in {files} files (btrfs, clone-only, second walk included): median {median:?}, runs {times:?}"
+        ));
+        if let Some(budget) = budget {
+            assert!(
+                median < budget,
+                "{files} files: median {median:?} >= {budget:?}"
+            );
+        }
+    }
+}

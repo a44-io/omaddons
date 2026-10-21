@@ -13,6 +13,7 @@
 
 pub mod addons;
 pub mod archives;
+pub mod backups;
 pub mod checkpoint;
 pub mod drift;
 pub mod engine;
@@ -33,3 +34,4 @@ pub mod targets;
 pub mod trees;
 pub mod tukui;
 pub mod wowi;
+pub mod wtf;

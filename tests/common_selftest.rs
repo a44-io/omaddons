@@ -444,6 +444,85 @@ fn tree_hash_tracks_bytes_names_and_links() {
 }
 
 #[test]
+fn wtf_trees_and_seeded_backups() {
+    use common::backups::{backup_dir, seed_backup, seed_many};
+    use common::wtf::{Wtf, writable_again};
+    use omaddons::backup::{self, BackupKind};
+    use omaddons::state::paths::ClientPaths;
+
+    let env = TestEnv::new();
+    let client = env.home().join("Games/wow/_retail_");
+    let wtf = Wtf::at(&client)
+        .config_wtf("SET locale enUS\n")
+        .saved_variables("WeakAuras", 64)
+        .account("123456#1")
+        .realm("Other")
+        .character("Second")
+        .saved_variables("Details", 10)
+        .symlink("Config.link", "Config.wtf")
+        .file("Account/123456#1/bindings-cache.wtf", b"bind")
+        .mode("Account/123456#1/Other", 0o500)
+        .build();
+    let sv = |rel: &str| fs::read(wtf.join(rel)).unwrap().len();
+    assert_eq!(sv("Account/FAKEACCT/SavedVariables/WeakAuras.lua"), 64);
+    assert_eq!(
+        sv("Account/FAKEACCT/FakeRealm/FakeChar/SavedVariables/WeakAuras.lua"),
+        64
+    );
+    assert_eq!(
+        sv("Account/123456#1/Other/Second/SavedVariables/Details.lua"),
+        10
+    );
+    assert_eq!(
+        fs::read_link(wtf.join("Config.link")).unwrap(),
+        std::path::Path::new("Config.wtf")
+    );
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(wtf.join("Account/123456#1/Other"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o500);
+    let big = Wtf::at(env.root().join("big")).big(10_000, 20).build();
+    let count = files::walk_files(&big);
+    assert_eq!(count, (20, 10_000));
+    writable_again(&wtf);
+
+    let at: jiff::Timestamp = "2026-10-20T18:02:00Z".parse().unwrap();
+    let id = seed_backup(&client, BackupKind::Auto, at, 3);
+    assert!(backup_dir(&client, &id).join("WTF").is_dir());
+    let many = seed_many(&client, 3);
+    let (listed, warnings) = backup::list(&ClientPaths::new(&client));
+    assert!(warnings.is_empty());
+    let ids: Vec<_> = listed.iter().map(|b| b.id).collect();
+    assert_eq!(ids, [vec![id], many].concat(), "newest capture first");
+    assert!(listed.iter().all(|b| b.restorable && b.qualifying));
+    assert_eq!(listed[0].meta.as_ref().unwrap().files, 3);
+    assert_eq!(listed[0].addons().unwrap().addons[0].name, "WeakAuras");
+    assert!(backup::check_structure(&listed[0]).unwrap().complete());
+}
+
+#[cfg(test)]
+mod files {
+    use std::fs;
+
+    /// Files below `dir` and their total size.
+    pub fn walk_files(dir: &std::path::Path) -> (u64, u64) {
+        let mut found = (0, 0);
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                let (n, bytes) = walk_files(&entry.path());
+                found = (found.0 + n, found.1 + bytes);
+            } else {
+                found = (found.0 + 1, found.1 + entry.metadata().unwrap().len());
+            }
+        }
+        found
+    }
+}
+
+#[test]
 fn builders_are_deterministic() {
     let build = |env: &TestEnv| {
         let prefix = Prefix::new(env, "battlenet");

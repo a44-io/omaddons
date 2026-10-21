@@ -147,7 +147,8 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | Changelogs: `info --changelog` and `outdated --changelog`, from GitHub's Atom feeds, WoWInterface and Tukui | ✅ Done (milestone 2) |
 | `copy`: one client's addons installed on another where builds exist, the rest skipped and said why | ✅ Done (milestone 2) |
 | `auth github`: an opt-in GitHub token (5,000 REST requests an hour), stored from standard input or `gh`, checked and cleared | ✅ Done (milestone 2) |
-| The Omarchy bar widget, Lua error capture, `WTF/` backups | 🗓️ Milestone 3 |
+| `backup list`: each client's `WTF/` backups, what each proves, and the space they take | 🔄 Milestone 3 (creating, checking and restoring backups are next) |
+| The Omarchy bar widget, Lua error capture, creating and restoring `WTF/` backups | 🗓️ Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
@@ -942,6 +943,43 @@ Settings changes in the history (`config`, `target`, `auth` and `export` lines) 
 
 A later transaction that only added or dropped a requester in a dependency's `required_by` never conflicts. An addon the undo brings back keeps those later requesters. Undoing a transaction that installed a dependency an addon installed later still requires goes ahead with `still_required`, as `remove` does, and its fix undoes the undo. A dependency the undo leaves required by nothing warns `orphaned_dependency`.
 
+### `backup`
+
+Each client's `WTF/` backups: copies of its settings, the data players actually lose (milestone 3). Today `backup list` shows them; making, checking and restoring them are the next parts of milestone 3. Bare `backup` is `backup list`.
+
+```bash
+omaddons backup list                       # every client with backups, newest capture first
+omaddons backup list -t retail --limit 5
+omaddons backup list 01M6Q2VA -v           # one backup by an id prefix (8+ characters), with its addon versions
+```
+
+A backup is `<client>/Interface/.omaddons/backups/<id>/`, holding:
+
+- `backup.json`: what it is and what it proves;
+- `manifest.json`: every entry's stats. It stays on this machine, because its paths name the account, realm and character;
+- `addons.json`: the addon versions that produced it;
+- the `WTF/` copy itself.
+
+Listing reads the `backup.json` files and checks each manifest exists. It never walks or hashes a tree. Each backup says:
+
+- `kind`: `manual`, `auto` (with `trigger` `pre_change` or `post_session`), `before_restore`, `imported` or `recovered`.
+- `consistency`: `stable` when the tree was observed quiescent while it was copied (not a filesystem snapshot), else `best_effort`.
+- `integrity`: `metadata_only` (no content hash was ever compared), `verified` (its files matched their hashes when last checked: `verified_at`, `baseline`) or `damaged`. The human view never says "verified" for `metadata_only`.
+- `restorable`: its metadata and manifest are readable, it is not damaged, and its client's `WTF/` was inside the client dir.
+- `qualifying`: whether it counts as a checkpoint: a whole, stable capture made on this machine (imported, recovered and best-effort backups never do).
+- `busy`: a restore, export or verify held it when it was listed.
+
+A backup whose `backup.json` cannot be read is still listed, with `null` for what it would say, and is never restorable. An id prefix of fewer than 8 characters is a usage error, one that matches nothing is `not_found` (naming the newest three), and one that matches several is `ref_ambiguous` with one `backup list <id> -t <client>` per candidate.
+
+Per client, `bytes` is the backups' apparent size. On btrfs and xfs a backup initially shares its data with the live `WTF/`, so the human view says "apparent, initially shared copy-on-write" and shows the free space beside it (`free_bytes`). omaddons never claims a backup's exclusive size, which only a walk of every extent could tell. `snapshot_bytes` is the apparent size of undo's `WTF.previous` trees. `auto` is `{mode, capability, last}`: the `auto_backup` setting, and what automatic backups observed (`unknown` and `null` until they run). `--limit N` shows the newest N per client, and `shown` and `total` are always reported. Listing rebuilds `~/.cache/omaddons/backups.json`, the summary `status --cached` will read, when it no longer matches the directories.
+
+```text
+$ omaddons backup list
+retail (12.1.5.70391, mainline) · 2 backups · 82.4 kB apparent, initially shared copy-on-write · 212 GB free
+  01M6Q2VA00000000…  today 18:02       auto (after play)  412 files  41.2 kB  stable
+  01M5Z1KB00000000…  2026-10-18 21:15  manual             412 files  41.2 kB  stable · verified  "before the raid"
+```
+
 ### `history`
 
 What changed, when, by whom and why, newest first (`log` is an alias).
@@ -1632,7 +1670,7 @@ Every rules edit applies on the next command. The discovery cache records the ru
 | `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | Move omaddons' config, state and cache (used only when absolute). `XDG_CONFIG_HOME` also moves the Lutris and Heroic config lookups |
 | `XDG_DATA_HOME` | Moves the Lutris, Steam and Bottles data lookups; omaddons keeps no files there |
 
-Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT` and `OMADDONS_NOW` (an RFC 3339 time that freezes the clock) for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE` and `OMADDONS_LIVE` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate)).
+Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT`, `OMADDONS_NOW` (an RFC 3339 time that freezes the clock), `OMADDONS_FS_CLONE` (`yes` or `no`: whether the filesystem under a client clones files) and `OMADDONS_FS_FREE_MB` (the free space backups see) for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE` and `OMADDONS_LIVE` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate)).
 
 ---
 
@@ -1659,6 +1697,8 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDON
 | `<client>/Interface/.omaddons/target.json` | The client's identity, so a moved install keeps its id | Loses identity |
 | `<client>/Interface/.omaddons/snapshots/<tx>/` | `AddOns/` (replaced and removed folders) and `WTF/` (SavedVariables copies with a manifest): most of the undo data | Loses undo |
 | `<client>/Interface/.omaddons/stage/`, `trash/` | Staging (same filesystem as AddOns) and staged deletions | No |
+| `<client>/Interface/.omaddons/backups/<id>/` | One `WTF/` backup: `backup.json`, `manifest.json`, `addons.json` and the `WTF/` copy (see [`backup`](#backup)) | Loses that backup |
+| `~/.cache/omaddons/backups.json` | The backup inventory: what each client's backups add up to, checked against the directories before it is believed | Yes; the next `backup list` rebuilds it |
 
 The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the config `XDG_CONFIG_HOME`. State files carry a `schema_version`. A file written by a newer omaddons is read, never overwritten (`state_too_new`).
 
@@ -1735,6 +1775,8 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `src/engine/` | The transaction engine |
 | `src/fsx/` | The only code allowed to write to the filesystem |
 | `src/state/` | Config, paths, registry, records, history, status, the doorbell |
+| `src/backup/` | `WTF/` backups: the on-disk model, the one tree copy, the inventory projection, filesystem hints |
+| `src/privacy.rs` | The redactor that keeps account, realm and character names out of every output |
 | `src/clock.rs` | The clock time rules read (`OMADDONS_NOW` freezes it in debug builds) |
 | `src/politeness.rs`, `src/limits.rs` | Every network-politeness constant and every safety limit, each in one place |
 | `catalog/catalog.toml` | The built-in catalog, embedded with `include_str!` |

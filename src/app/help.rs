@@ -403,7 +403,8 @@ mod tests {
     #[test]
     fn bare_help_stays_one_screen_with_every_planned_command() {
         use Group::{Change, Look, Setup};
-        // Every M2 command, in the planned layout; test-only, never live help.
+        // Every command through M3's backup, in the planned layout; test-only, never
+        // live help.
         let planned = [
             ("status", Look),
             ("list", Look),
@@ -422,12 +423,13 @@ mod tests {
             ("sync", Change),
             ("copy", Change),
             ("undo", Change),
+            ("backup", Change),
             ("targets", Setup),
             ("config", Setup),
             ("auth", Setup),
             ("help", Setup),
         ];
-        assert_eq!(planned.len(), 21);
+        assert_eq!(planned.len(), 22);
         let text = bare_text("omaddons [OPTIONS] <COMMAND>", &planned);
         assert!(
             text.lines().count() < 30,
@@ -437,8 +439,9 @@ mod tests {
         let groups = render_groups(&planned);
         assert!(groups.lines().all(|l| l.len() < MAX_WIDTH), "{groups}");
         assert!(
-            groups
-                .contains("Change    install  update  remove  pin  unpin  adopt  sync  copy  undo"),
+            groups.contains(
+                "Change    install  update  remove  pin  unpin  adopt  sync  copy  undo  backup"
+            ),
             "{groups}"
         );
     }

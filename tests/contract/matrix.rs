@@ -713,3 +713,25 @@ fn net_log() {
     let c = s.json(&["net-log", "--since", "nonsense"], 2);
     assert_eq!(c.envelope["error"]["code"], "usage");
 }
+
+#[test]
+fn backup_list() {
+    use omaddons::backup::BackupKind;
+    let s = Scene::new();
+    let at = "2026-10-18T21:15:00Z".parse().unwrap();
+    common::backups::seed_backup(&s.home.client("_retail_"), BackupKind::Manual, at, 2);
+    // Free space as a debug build is told it, so the envelope is the same anywhere.
+    let free = [("OMADDONS_FS_FREE_MB", "1024")];
+    let c = s.json_env(&["backup", "list"], &free, 0);
+    insta::assert_json_snapshot!("backup_list_ok", s.stable(&c.envelope));
+    let bare = s.json_env(&["backup"], &free, 0);
+    assert_eq!(
+        s.stable(&bare.envelope),
+        s.stable(&c.envelope),
+        "bare backup is backup list"
+    );
+    let c = s.json_env(&["backup", "list", "01ZZZZZZ"], &free, 3);
+    insta::assert_json_snapshot!("backup_list_unknown_id", s.stable(&c.envelope));
+    let c = s.json(&["backup", "list", "01ZZZZZ"], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage", "seven characters");
+}

@@ -9,6 +9,12 @@ use assert_cmd::Command;
 /// Variables cleared from every child, so the developer's settings never leak in.
 const CLEARED: &[&str] = &["CI", "NO_COLOR", "TERM", "XDG_DATA_DIRS", "XDG_CONFIG_DIRS"];
 
+/// Settings every child gets: local times in UTC (M3 common rule 13), and a filesystem
+/// that clones no file (a debug-build hint), so automatic backups, which clone or do
+/// nothing, write nothing in a scene that does not ask for them with
+/// `OMADDONS_FS_CLONE=yes`.
+const SETTINGS: &[(&str, &str)] = &[("TZ", "UTC"), ("OMADDONS_FS_CLONE", "no")];
+
 /// A tempdir holding `home/`, `config/`, `state/`, `cache/` and `home/.local/share`.
 pub struct TestEnv {
     /// `None` for an environment at a fixed directory, which is kept.
@@ -53,6 +59,7 @@ impl TestEnv {
         self.vars()
             .iter()
             .map(|(key, value)| format!("{key}={}", value.display()))
+            .chain(SETTINGS.iter().map(|(key, value)| format!("{key}={value}")))
             .collect()
     }
 
@@ -87,6 +94,7 @@ impl TestEnv {
         for (key, value) in self.vars() {
             cmd.env(key, value);
         }
+        cmd.envs(SETTINGS.iter().copied());
         for key in self.removed() {
             cmd.env_remove(key);
         }
@@ -96,6 +104,7 @@ impl TestEnv {
     /// Applies this environment to any child process.
     pub fn apply_to(&self, cmd: &mut std::process::Command) {
         cmd.envs(self.vars());
+        cmd.envs(SETTINGS.iter().copied());
         for key in self.removed() {
             cmd.env_remove(key);
         }
@@ -121,7 +130,11 @@ impl TestEnv {
         keys.extend(
             std::env::vars_os()
                 .filter_map(|(k, _)| k.into_string().ok())
-                .filter(|k| k.starts_with("OMADDONS_") && k != "OMADDONS_PROC_ROOT"),
+                .filter(|k| {
+                    k.starts_with("OMADDONS_")
+                        && k != "OMADDONS_PROC_ROOT"
+                        && !SETTINGS.iter().any(|(set, _)| set == k)
+                }),
         );
         keys
     }

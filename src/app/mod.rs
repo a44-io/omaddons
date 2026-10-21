@@ -3,6 +3,7 @@
 
 pub mod adopt;
 pub mod auth;
+pub mod backup;
 pub mod config;
 pub mod copy;
 pub mod drift;
@@ -126,6 +127,8 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("copy", Group::Change, true),
     entry("remove", Group::Change, true),
     entry("undo", Group::Change, true),
+    entry("backup", Group::Change, true),
+    entry("backup list", Group::Change, false),
     entry("targets", Group::Setup, false),
     entry("targets add", Group::Setup, true),
     entry("targets rm", Group::Setup, true),
@@ -180,6 +183,10 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         Some(Command::Copy(_)) => "copy",
         Some(Command::Remove(_)) => "remove",
         Some(Command::Undo(_)) => "undo",
+        Some(Command::Backup(args)) => args
+            .action
+            .as_ref()
+            .map_or("backup list", backup::BackupAction::command),
         Some(Command::History(_)) => "history",
         Some(Command::Info(_)) => "info",
         Some(Command::Export(_)) => "export",
@@ -403,6 +410,13 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
                 }
             }
             out.emit(result)
+        }
+        Some(Command::Backup(args)) => {
+            use backup::BackupAction;
+            match &args.action {
+                None => out.emit(backup::list(ctx, &backup::BackupListArgs::default())),
+                Some(BackupAction::List(list)) => out.emit(backup::list(ctx, list)),
+            }
         }
         Some(Command::Info(args)) => {
             let result = info::run(ctx, args);

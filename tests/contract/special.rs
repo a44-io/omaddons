@@ -331,6 +331,7 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             "config" => &["config"],
             "config get" => &["config", "get", "default_channel"],
             "config path" => &["config", "path"],
+            "backup list" => &["backup", "list"],
             "help" => &["help"],
             _ => return None,
         })

@@ -1,0 +1,32 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup list",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_found",
+    "details": {
+      "newest": [
+        "<ulid>"
+      ],
+      "prefix": "01ZZZZZZ",
+      "target": null
+    },
+    "fix": "omaddons backup list",
+    "fix_argv": [
+      "omaddons",
+      "backup",
+      "list"
+    ],
+    "message": "no backup has an id starting with 01ZZZZZZ; the newest: <ulid>",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

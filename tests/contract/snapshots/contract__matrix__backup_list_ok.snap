@@ -1,0 +1,57 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup list",
+  "commands": [],
+  "data": {
+    "targets": [
+      {
+        "auto": {
+          "capability": "unknown",
+          "last": null,
+          "mode": "off"
+        },
+        "backups": [
+          {
+            "actor": "human",
+            "baseline": null,
+            "busy": false,
+            "bytes": 200,
+            "captured_at": "<time>",
+            "client_running": false,
+            "consistency": "stable",
+            "created_at": "<time>",
+            "files": 2,
+            "id": "<ulid>",
+            "integrity": "metadata_only",
+            "kind": "manual",
+            "qualifying": true,
+            "reason": null,
+            "reflinked": "all",
+            "restorable": true,
+            "trigger": null,
+            "unsettled": 0,
+            "verified_at": null
+          }
+        ],
+        "bytes": 200,
+        "free_bytes": 1073741824,
+        "shown": 1,
+        "snapshot_bytes": 0,
+        "target": {
+          "id": "retail",
+          "key": null
+        },
+        "total": 1
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
