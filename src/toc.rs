@@ -44,7 +44,8 @@ pub struct Toc {
     pub interface_raw: Option<String>,
     /// Every number in the comma list (clients since 10.2.7).
     pub interfaces: Vec<u32>,
-    /// The leading digits, which a client without comma lists reads (unverified).
+    /// The leading digits, which a client without comma lists reads (3.3.5a loads
+    /// `30300, 30400` as current, observed 2026-10-20).
     pub interface_leading: Option<u32>,
     pub title: Option<String>,
     /// Kept verbatim, `@project-version@` tokens included.

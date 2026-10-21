@@ -76,6 +76,7 @@ name = "OmniCC"
 ref = "gh:tullamods/OmniCC"
 families = ["mainline", "vanilla", "tbc", "titan", "mists"]
 folders = ["OmniCC", "OmniCC_Config"]
+notes = "11.2.8: OmniCC.toc carries Interface 110207, 50503, 38000, 20505, 11508, so 12.x clients load it only as out of date"
 
 [[addon]]
 name = "Dominos"

@@ -529,7 +529,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 | Plater | `plater-nameplates` | `gh:Tercioo/Plater-Nameplates` | mainline, vanilla, tbc, titan, mists, forever |
 | Bartender4 | `bartender`, `bt4` | `gh:Nevcairiel/Bartender4` | mainline, vanilla, tbc, mists, forever |
 | Questie | | `gh:Questie/Questie` | vanilla, tbc, wrath, mists, forever |
-| OmniCC | | `gh:tullamods/OmniCC` | mainline, vanilla, tbc, titan, mists |
+| OmniCC | | `gh:tullamods/OmniCC` | mainline, vanilla, tbc, titan, mists (11.2.8's mainline interface is 11.2: out of date on 12.x) |
 | Dominos | | `gh:tullamods/Dominos` | mainline, vanilla, tbc, mists, forever |
 | Masque | | `gh:SFX-WoW/Masque` | mainline, vanilla, tbc, wrath, titan, cata, mists |
 | RaiderIO | `raider.io`, `rio` | `gh:RaiderIO/raiderio-addon` | mainline |

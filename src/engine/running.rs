@@ -6,7 +6,9 @@
 //!
 //! A Linux rename never disturbs files the client has open, and modern clients pick up
 //! new folders and TOC changes on `/reload`; deleting or renaming a loaded TOC needs a
-//! restart, and legacy clients (UNVERIFIED) need one for anything. SavedVariables are
+//! restart. A legacy client needs one to see a new folder; 3.3.5a still re-reads a
+//! loaded addon's TOC on `/reload` (both observed 2026-10-20; other legacy builds are
+//! unobserved), but `safe` refuses every legacy change. SavedVariables are
 //! never written while the client runs, under any policy or flag (D33): the client
 //! overwrites them on logout.
 //!
