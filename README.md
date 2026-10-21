@@ -416,7 +416,7 @@ The product code does not decide the family; the version does. `wow_classic_era_
 | 5.4.8 (MoP) | `mists-legacy` | `mists` | same |
 | 1.16–1.49 (builds of the 1.12 client that stamp their own version, such as Turtle WoW 1.17 and 1.18) | `vanilla-legacy` | `vanilla` | same, interface 11200 |
 
-Legacy clients are found by their executable (`wow.exe`, then `wow-64.exe`, then any `wow*.exe`) next to an `Interface/` folder. Turtle WoW and other 1.12.1 servers are plain `vanilla-legacy` clients, whichever version their executable reports; name them with `targets add … --name turtle` or `targets rename`. While a legacy client runs, the default running policy refuses every change (see [Running clients](#running-clients)).
+Legacy clients are found by their executable (`wow.exe`, then `wow-64.exe`, then any `wow*.exe`) next to an `Interface/` folder. Turtle WoW and other 1.12.1 servers are plain `vanilla-legacy` clients, whichever version their executable reports; name them with `targets add … --name turtle` or `targets rename`. While a legacy client runs, the default running policy refuses every change, except on 3.3.5a, where an update that keeps the addon's loaded TOC lands with `/reload` (see [Running clients](#running-clients)).
 
 ### Families and interface ranges
 
@@ -1462,7 +1462,7 @@ Running clients are detected live from `/proc` (your own processes only). The ex
 
 | `running_policy` | While the client runs |
 |---|---|
-| `safe` (default) | Adds and replacements that keep the loaded TOC go through, with `reload_required: "reload"` (`/reload` in game). Removing a folder the client loads, or an update that deletes or renames the TOC it loads, is refused with `game_running` until it exits. On legacy and unrecognized custom clients, every change is refused |
+| `safe` (default) | Adds and replacements that keep the loaded TOC go through, with `reload_required: "reload"` (`/reload` in game). Removing a folder the client loads, or an update that deletes or renames the TOC it loads, is refused with `game_running` until it exits. On legacy and unrecognized custom clients, every change is refused, except on 3.3.5a, which re-reads a loaded addon's TOC on `/reload`: there a replacement that keeps the loaded TOC goes through with `reload_required: "reload"`, and a new or removed folder waits for a restart |
 | `refuse` | Every change is refused |
 | `allow` | Nothing is refused; the result says whether `/reload` or a restart is needed |
 
@@ -1605,7 +1605,7 @@ A `family` override re-picks the client's load-rules row and its interface, as d
 
 The detection tables can be patched without a new release (unknown keys there warn `config_unknown_key` too, array elements named by index, such as `rules.products[0].nmae`):
 
-- `[client_rules.<row>]` (or `[rules.client_rules.<row>]`) patches one load-rules row; an unknown row name adds a new row, which then needs every required field. Rows are `mainline`, `mainline-12.0.7`, `mainline-10.2.7`, `mainline-9.1`, `forever`, `vanilla`, `tbc`, `wrath`, `titan`, `cata`, `mists`, the five `*-legacy` rows, `fallback-battlenet` and `fallback-custom`. The fields are `family`, `install_kind`, `version_min`, `version_max`, `game_types`, `multi_toc`, `comma_interface`, `game_suffixes`, `family_suffixes`, `legacy_suffixes`, `directive_conditionals` (whether the client reads inline directives such as `## Dependencies: X [AllowLoadGameType vanilla]`, or reads every line as written; true for every current client), `interface_includes_patch` and `legacy`. A new row needs `family`, `version_min`, `multi_toc`, `comma_interface`, `interface_includes_patch` and `legacy`.
+- `[client_rules.<row>]` (or `[rules.client_rules.<row>]`) patches one load-rules row; an unknown row name adds a new row, which then needs every required field. Rows are `mainline`, `mainline-12.0.7`, `mainline-10.2.7`, `mainline-9.1`, `forever`, `vanilla`, `tbc`, `wrath`, `titan`, `cata`, `mists`, the five `*-legacy` rows, `fallback-battlenet` and `fallback-custom`. The fields are `family`, `install_kind`, `version_min`, `version_max`, `game_types`, `multi_toc`, `comma_interface`, `game_suffixes`, `family_suffixes`, `legacy_suffixes`, `directive_conditionals` (whether the client reads inline directives such as `## Dependencies: X [AllowLoadGameType vanilla]`, or reads every line as written; true for every current client), `interface_includes_patch`, `legacy` and `reload_rereads_toc` (whether a running client re-reads a loaded addon's TOC on `/reload`, so the `safe` running policy lets a replacement that keeps it land; true for every modern row and `wrath-legacy`). A new row needs `family`, `version_min`, `multi_toc`, `comma_interface`, `interface_includes_patch` and `legacy`.
 - `[rules]` can add or replace `products`, prepend `version_families` rules, and replace `family_ranges`. A `version_families` rule may set `interface`, the client's addon interface when its version does not give it; it must lie in the family's range.
 
 ```toml
@@ -1779,7 +1779,7 @@ The addon has no build this client loads. With `--json`, `error.details.tried` l
 The client is running, and one of these applies:
 
 - the change would remove a folder it loads, or an update would drop or rename the TOC it loads;
-- it is a legacy client, where the `safe` policy refuses every change;
+- it is a legacy client, where the `safe` policy refuses every change (on 3.3.5a, every change but a replacement that keeps the loaded TOC);
 - `running_policy` is `refuse`;
 - you ran `undo --saved-variables restore`.
 
@@ -1865,7 +1865,7 @@ Journals are recovered by the next command that changes something: install, upda
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
 - Private GitHub repositories and HTTP proxies are not supported.
 - Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) keep separate records: a folder one records is `shared` on the other, which cannot record it too, so manage those addons from one client. Records made on both before this check stay doubled: `status` warns `target_addons_shared`, a change through either warns the same, and M4's doctor will report them.
-- The legacy running behavior was observed only on 3.3.5a: a new addon needs a restart, and a loaded addon's TOC is re-read on `/reload`. Running detection was observed under umu and GE-Proton for retail, Classic Era, Anniversary and 3.3.5a (Mists Classic's process has the same shape). The Battle.net app itself runs as `CrBrowserMain`, so with no client open the process route relies on Battle.net's agent (`Agent.exe`) inheriting the prefix's `WINEPREFIX`, as Wine processes started in the prefix do; that the agent carries it has not yet been observed with the app alone open. The Lutris, Heroic and Steam readers follow their upstream source (Lutris v0.5.22, Heroic v2.22.4, and for closed-source Steam the readers of Lutris, protontricks and ValvePython `vdf`), cited in each reader; the Bottles layout was verified against Bottles 67.4, and `product.db` against a real Agent database and two upstream readers.
+- The legacy running behavior was observed only on 3.3.5a: a new addon needs a restart, and a loaded addon's TOC is re-read on `/reload`. So only 3.3.5a takes replacements while it runs; the other legacy clients refuse every change until they are observed. Running detection was observed under umu and GE-Proton for retail, Classic Era, Anniversary and 3.3.5a (Mists Classic's process has the same shape). The Battle.net app itself runs as `CrBrowserMain`, so with no client open the process route relies on Battle.net's agent (`Agent.exe`) inheriting the prefix's `WINEPREFIX`, as Wine processes started in the prefix do; that the agent carries it has not yet been observed with the app alone open. The Lutris, Heroic and Steam readers follow their upstream source (Lutris v0.5.22, Heroic v2.22.4, and for closed-source Steam the readers of Lutris, protontricks and ValvePython `vdf`), cited in each reader; the Bottles layout was verified against Bottles 67.4, and `product.db` against a real Agent database and two upstream readers.
 
 ### Known issues
 
@@ -1961,7 +1961,7 @@ No. Folders it did not install are reported as unmanaged and left alone. Replaci
 
 ### Is it safe to use while WoW is running?
 
-Yes, by default. Updates that keep the loaded TOC land and tell you to `/reload`. Removing a loaded addon is refused until the game exits, and you run it again then. SavedVariables are never written while the game runs. Legacy private-server clients get no changes at all while running. See [Running clients](#running-clients).
+Yes, by default. Updates that keep the loaded TOC land and tell you to `/reload`. Removing a loaded addon is refused until the game exits, and you run it again then. SavedVariables are never written while the game runs. Legacy private-server clients get no changes while running, except 3.3.5a updates that keep the addon's loaded TOC, which need a `/reload`. See [Running clients](#running-clients).
 
 ### How do I update my addons?
 

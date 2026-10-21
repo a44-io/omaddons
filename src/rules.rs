@@ -449,6 +449,12 @@ pub struct ClientRules {
     /// (legacy 3.3.5 → 30300).
     pub interface_includes_patch: bool,
     pub legacy: bool,
+    /// Whether a running client re-reads a loaded addon's TOC and files on `/reload`, so
+    /// the `safe` running policy lets a replacement that keeps its loaded TOC land with
+    /// `/reload`. Every modern client does; of the legacy builds only 3.3.5a was seen to
+    /// (2026-10-20), and a legacy client still needs a restart to see a new folder.
+    #[serde(default)]
+    pub reload_rereads_toc: bool,
 }
 
 /// The conservative `fallback-custom` row. A deserialized `Target` carries it until
@@ -907,6 +913,7 @@ pub struct ClientRulesOverride {
     pub directive_conditionals: Option<bool>,
     pub interface_includes_patch: Option<bool>,
     pub legacy: Option<bool>,
+    pub reload_rereads_toc: Option<bool>,
 }
 
 impl ClientRulesOverride {
@@ -939,6 +946,7 @@ impl ClientRulesOverride {
             &self.interface_includes_patch,
         );
         set(&mut row.legacy, &self.legacy);
+        set(&mut row.reload_rereads_toc, &self.reload_rereads_toc);
     }
 
     fn new_row(&self, name: &str) -> Result<ClientRules, RulesError> {
@@ -971,6 +979,7 @@ impl ClientRulesOverride {
                 "interface_includes_patch",
             )?,
             legacy: required(&self.legacy, name, "legacy")?,
+            reload_rereads_toc: self.reload_rereads_toc.unwrap_or(false),
         })
     }
 }
@@ -1182,6 +1191,7 @@ fn modern_row(
         directive_conditionals: true,
         interface_includes_patch: true,
         legacy: false,
+        reload_rereads_toc: true,
     }
 }
 
@@ -1203,6 +1213,7 @@ fn legacy_row(name: &str, family: Family, version_min: ClientVersion) -> ClientR
         directive_conditionals: false,
         interface_includes_patch: false,
         legacy: true,
+        reload_rereads_toc: false,
     }
 }
 
@@ -1340,11 +1351,16 @@ fn builtin_client_rules() -> Vec<ClientRules> {
             ClientVersion::new(1, 12, 0),
         ),
         legacy_row("tbc-legacy", Family::TbcLegacy, ClientVersion::new(2, 4, 0)),
-        legacy_row(
-            "wrath-legacy",
-            Family::WrathLegacy,
-            ClientVersion::new(3, 3, 0),
-        ),
+        // The real 3.3.5a client (12340) ran a loaded addon's new Lua file after one
+        // `/reload`, and saw a new folder only after a restart (2026-10-20).
+        ClientRules {
+            reload_rereads_toc: true,
+            ..legacy_row(
+                "wrath-legacy",
+                Family::WrathLegacy,
+                ClientVersion::new(3, 3, 0),
+            )
+        },
         legacy_row(
             "cata-legacy",
             Family::CataLegacy,

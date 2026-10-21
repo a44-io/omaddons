@@ -8,13 +8,14 @@
 //! new folders and TOC changes on `/reload`; deleting or renaming a loaded TOC needs a
 //! restart. A legacy client needs one to see a new folder; 3.3.5a still re-reads a
 //! loaded addon's TOC on `/reload` (both observed 2026-10-20; other legacy builds are
-//! unobserved), but `safe` refuses every legacy change. SavedVariables are
+//! unobserved), which its rules row says (`reload_rereads_toc`). SavedVariables are
 //! never written while the client runs, under any policy or flag (D33): the client
 //! overwrites them on logout.
 //!
 //! - `safe` (default): adds and TOC-preserving replacements are allowed; removing a
-//!   loaded folder, dropping its loaded TOC, and anything on a legacy client are
-//!   refused with `game_running` (exit 4).
+//!   loaded folder and dropping its loaded TOC are refused with `game_running` (exit 4).
+//!   On a legacy client only a TOC-preserving replacement is allowed, and only where the
+//!   row re-reads TOCs (3.3.5a); every other change waits for a restart.
 //! - `refuse`: every folder change is refused. `allow`: every folder change is allowed.
 //! - `--while-running` overrides every folder rule, never the SavedVariables rule.
 
@@ -158,24 +159,39 @@ pub fn evaluate(
     let (refused, reason): (Vec<&PolicyOp>, &str) = match (policy, while_running) {
         (_, true) | (RunningPolicy::Allow, _) => (Vec::new(), ""),
         (RunningPolicy::Refuse, false) => (ops.iter().collect(), "policy_refuse"),
-        (RunningPolicy::Safe, false) if rules.legacy => (ops.iter().collect(), "legacy_client"),
-        (RunningPolicy::Safe, false) => (
-            ops.iter().filter(|op| op.drops_loaded_toc()).collect(),
-            "loaded_toc",
-        ),
+        (RunningPolicy::Safe, false) => {
+            let refused: Vec<&PolicyOp> = ops.iter().filter(|op| !safe_lands(op, rules)).collect();
+            // A client that re-reads TOCs refuses only what /reload cannot pick up.
+            if rules.reload_rereads_toc && refused.iter().all(|op| op.drops_loaded_toc()) {
+                (refused, "loaded_toc")
+            } else {
+                (refused, "legacy_client")
+            }
+        }
     };
     if !refused.is_empty() {
+        let folders = refused
+            .iter()
+            .filter_map(|op| folder(op))
+            .collect::<Vec<_>>()
+            .join(", ");
         let why = match reason {
             "policy_refuse" => "running_policy is refuse".to_owned(),
-            "legacy_client" => "this client needs a restart to pick up any addon change".to_owned(),
-            _ => format!(
-                "{} would remove or rename a TOC the client has loaded",
-                refused
+            "legacy_client" if rules.reload_rereads_toc => {
+                let what = if refused
                     .iter()
-                    .filter_map(|op| folder(op))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+                    .all(|op| matches!(op, PolicyOp::AddFolder { .. }))
+                {
+                    "a new addon folder"
+                } else {
+                    "an addon folder added or removed"
+                };
+                format!(
+                    "this client needs a restart to see {what} ({folders}); a replacement that keeps its loaded TOC needs only /reload"
+                )
+            }
+            "legacy_client" => "this client needs a restart to pick up any addon change".to_owned(),
+            _ => format!("{folders} would remove or rename a TOC the client has loaded"),
         };
         // Runnable as is: without the failing run's presentation flags.
         let mut retry = crate::cli::fix_argv(ctx.argv);
@@ -196,8 +212,10 @@ pub fn evaluate(
     let reload_required = ops
         .iter()
         .map(|op| match op {
-            _ if rules.legacy => ReloadRequired::Restart,
             op if op.drops_loaded_toc() => ReloadRequired::Restart,
+            PolicyOp::ReplaceFolder { .. } if rules.reload_rereads_toc => ReloadRequired::Reload,
+            PolicyOp::ReplaceFolder { .. } => ReloadRequired::Restart,
+            _ if rules.legacy => ReloadRequired::Restart,
             PolicyOp::RemoveFolder { .. } => ReloadRequired::None,
             _ => ReloadRequired::Reload,
         })
@@ -226,6 +244,19 @@ pub fn evaluate(
     })
 }
 
+/// Whether `safe` lets `op` land while the client runs: never a dropped loaded TOC; a
+/// replacement when the client re-reads TOCs on `/reload`; an add or a remove unless
+/// the client is legacy, which sees folders come and go only after a restart.
+fn safe_lands(op: &PolicyOp, rules: &ClientRules) -> bool {
+    match op {
+        op if op.drops_loaded_toc() => false,
+        PolicyOp::ReplaceFolder { .. } => rules.reload_rereads_toc,
+        PolicyOp::AddFolder { .. } | PolicyOp::RemoveFolder { .. } => !rules.legacy,
+        // Refused before any folder rule.
+        PolicyOp::RestoreSavedVariables { .. } => false,
+    }
+}
+
 fn folder(op: &PolicyOp) -> Option<&str> {
     match op {
         PolicyOp::AddFolder { folder }
@@ -239,9 +270,20 @@ fn folder(op: &PolicyOp) -> Option<&str> {
 mod tests {
     use super::*;
 
-    fn rules(legacy: bool) -> ClientRules {
+    /// The client a judgement is for.
+    #[derive(Debug, Clone, Copy)]
+    enum Client {
+        Modern,
+        /// Legacy, needing a restart for every change (1.12.1, 2.4.3, 4.3.4, 5.4.8).
+        Legacy,
+        /// 3.3.5a: legacy, but a loaded TOC is re-read on `/reload`.
+        Wrath,
+    }
+
+    fn rules(client: Client) -> ClientRules {
         ClientRules {
-            legacy,
+            legacy: !matches!(client, Client::Modern),
+            reload_rereads_toc: !matches!(client, Client::Legacy),
             ..ClientRules::default()
         }
     }
@@ -277,7 +319,7 @@ mod tests {
     fn run(
         policy: RunningPolicy,
         running: bool,
-        legacy: bool,
+        client: Client,
         ops: &[PolicyOp],
         while_running: bool,
     ) -> Result<PolicyOutcome> {
@@ -287,14 +329,14 @@ mod tests {
             argv: &argv,
             running_unknown: None,
         };
-        evaluate(&ctx, policy, running, &rules(legacy), ops, while_running)
+        evaluate(&ctx, policy, running, &rules(client), ops, while_running)
     }
 
-    /// (policy, running, legacy, op, --while-running, `Ok(reload)` or `Err(reason)`)
+    /// (policy, running, client, op, --while-running, `Ok(reload)` or `Err(reason)`)
     type Row = (
         RunningPolicy,
         bool,
-        bool,
+        Client,
         PolicyOp,
         bool,
         std::result::Result<ReloadRequired, String>,
@@ -313,41 +355,55 @@ mod tests {
 
     #[test]
     fn the_policy_table() {
+        use Client::{Legacy, Modern, Wrath};
         use ReloadRequired::{None as N, Reload as R, Restart as X};
         use RunningPolicy::{Allow, Refuse, Safe};
         let refused = |r: &str| Err(r.to_owned());
         #[rustfmt::skip]
         let rows: Vec<Row> = vec![
             // Not running: everything goes, nothing to do in game.
-            (Safe, false, false, remove(true), false, Ok(N)),
-            (Refuse, false, true, add(), false, Ok(N)),
-            (Allow, false, false, replace(false), false, Ok(N)),
+            (Safe, false, Modern, remove(true), false, Ok(N)),
+            (Refuse, false, Legacy, add(), false, Ok(N)),
+            (Allow, false, Modern, replace(false), false, Ok(N)),
             // Safe, modern client.
-            (Safe, true, false, add(), false, Ok(R)),
-            (Safe, true, false, replace(true), false, Ok(R)),
-            (Safe, true, false, replace(false), false, refused("loaded_toc")),
-            (Safe, true, false, replace(false), true, Ok(X)),
-            (Safe, true, false, remove(true), false, refused("loaded_toc")),
-            (Safe, true, false, remove(true), true, Ok(X)),
-            (Safe, true, false, remove(false), false, Ok(N)),
-            // Safe, legacy client.
-            (Safe, true, true, add(), false, refused("legacy_client")),
-            (Safe, true, true, replace(true), false, refused("legacy_client")),
-            (Safe, true, true, add(), true, Ok(X)),
+            (Safe, true, Modern, add(), false, Ok(R)),
+            (Safe, true, Modern, replace(true), false, Ok(R)),
+            (Safe, true, Modern, replace(false), false, refused("loaded_toc")),
+            (Safe, true, Modern, replace(false), true, Ok(X)),
+            (Safe, true, Modern, remove(true), false, refused("loaded_toc")),
+            (Safe, true, Modern, remove(true), true, Ok(X)),
+            (Safe, true, Modern, remove(false), false, Ok(N)),
+            // Safe, legacy client: every change waits for a restart.
+            (Safe, true, Legacy, add(), false, refused("legacy_client")),
+            (Safe, true, Legacy, replace(true), false, refused("legacy_client")),
+            (Safe, true, Legacy, remove(true), false, refused("legacy_client")),
+            (Safe, true, Legacy, add(), true, Ok(X)),
+            (Safe, true, Legacy, replace(true), true, Ok(X)),
+            // Safe, 3.3.5a: a replacement keeping its loaded TOC lands on /reload.
+            (Safe, true, Wrath, replace(true), false, Ok(R)),
+            (Safe, true, Wrath, add(), false, refused("legacy_client")),
+            (Safe, true, Wrath, remove(false), false, refused("legacy_client")),
+            (Safe, true, Wrath, remove(true), false, refused("loaded_toc")),
+            (Safe, true, Wrath, replace(false), false, refused("loaded_toc")),
+            (Safe, true, Wrath, add(), true, Ok(X)),
             // Refuse.
-            (Refuse, true, false, add(), false, refused("policy_refuse")),
-            (Refuse, true, false, replace(true), true, Ok(R)),
+            (Refuse, true, Modern, add(), false, refused("policy_refuse")),
+            (Refuse, true, Modern, replace(true), true, Ok(R)),
+            (Refuse, true, Wrath, replace(true), false, refused("policy_refuse")),
             // Allow.
-            (Allow, true, false, add(), false, Ok(R)),
-            (Allow, true, false, remove(true), false, Ok(X)),
-            (Allow, true, true, add(), false, Ok(X)),
+            (Allow, true, Modern, add(), false, Ok(R)),
+            (Allow, true, Modern, remove(true), false, Ok(X)),
+            (Allow, true, Legacy, add(), false, Ok(X)),
+            (Allow, true, Legacy, replace(true), false, Ok(X)),
+            (Allow, true, Wrath, replace(true), false, Ok(R)),
+            (Allow, true, Wrath, remove(false), false, Ok(X)),
         ];
-        for (policy, running, legacy, op, while_running, want) in rows {
+        for (policy, running, client, op, while_running, want) in rows {
             let label = format!(
-                "{policy:?} running={running} legacy={legacy} {op:?} while_running={while_running}"
+                "{policy:?} running={running} {client:?} {op:?} while_running={while_running}"
             );
             assert_eq!(
-                verdict(run(policy, running, legacy, &[op], while_running)),
+                verdict(run(policy, running, client, &[op], while_running)),
                 want,
                 "{label}"
             );
@@ -366,7 +422,7 @@ mod tests {
                 let err = run(
                     policy,
                     true,
-                    false,
+                    Client::Modern,
                     &[restore.clone(), add()],
                     while_running,
                 )
@@ -378,7 +434,14 @@ mod tests {
                 );
             }
         }
-        assert!(run(RunningPolicy::Safe, false, false, &[restore], false).is_ok());
+        let stopped = run(
+            RunningPolicy::Safe,
+            false,
+            Client::Modern,
+            &[restore],
+            false,
+        );
+        assert!(stopped.is_ok());
     }
 
     #[test]
@@ -396,7 +459,7 @@ mod tests {
             &ctx,
             RunningPolicy::Safe,
             true,
-            &rules(false),
+            &rules(Client::Modern),
             &[add(), remove(true)],
             false,
         )
@@ -412,7 +475,7 @@ mod tests {
         let err = run(
             RunningPolicy::Safe,
             true,
-            false,
+            Client::Modern,
             &[add(), remove(true)],
             false,
         )
@@ -436,12 +499,38 @@ mod tests {
         );
     }
 
+    /// On 3.3.5a the refusal names what a restart shows and says a replacement would land;
+    /// the other legacy clients keep their message.
+    #[test]
+    fn a_legacy_refusal_says_what_needs_the_restart() {
+        let ops = [replace(true), add()];
+        let err = run(RunningPolicy::Safe, true, Client::Wrath, &ops, false).unwrap_err();
+        assert!(
+            err.message.ends_with(
+                "this client needs a restart to see a new addon folder (New); a replacement that keeps its loaded TOC needs only /reload"
+            ),
+            "{}",
+            err.message
+        );
+        assert_eq!(
+            err.details["ops"],
+            json!([{ "op": "add", "folder": "New" }])
+        );
+        let err = run(RunningPolicy::Safe, true, Client::Legacy, &ops, false).unwrap_err();
+        assert!(
+            err.message
+                .ends_with("this client needs a restart to pick up any addon change"),
+            "{}",
+            err.message
+        );
+    }
+
     #[test]
     fn the_strongest_requirement_wins_and_is_warned() {
         let outcome = run(
             RunningPolicy::Allow,
             true,
-            false,
+            Client::Modern,
             &[add(), remove(false), replace(false)],
             false,
         )
@@ -455,7 +544,7 @@ mod tests {
             ),
             (WarningCode::ReloadRequired, Some("restart the game client"))
         );
-        let outcome = run(RunningPolicy::Safe, true, false, &[add()], false).unwrap();
+        let outcome = run(RunningPolicy::Safe, true, Client::Modern, &[add()], false).unwrap();
         assert_eq!(
             outcome.warnings[0]
                 .fix
@@ -464,7 +553,7 @@ mod tests {
             Some(("/reload in game", None))
         );
         assert!(
-            run(RunningPolicy::Safe, true, false, &[], false)
+            run(RunningPolicy::Safe, true, Client::Modern, &[], false)
                 .unwrap()
                 .warnings
                 .is_empty()

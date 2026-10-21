@@ -507,18 +507,27 @@ fn a_failed_fetch_fails_its_items_and_strict_exits_6() {
 #[test]
 fn running_clients_follow_the_running_policy() {
     let mut home = Home::new(&["wow"]);
-    let legacy = home.with_custom(
-        common::trees::CustomRoot::at(home.env.root().join("wow-335")).version(3, 3, 5, 12_340),
-    );
+    let custom = |home: &mut Home, dir: &str, version: (u16, u16, u16, u16)| {
+        let (major, minor, patch, build) = version;
+        home.with_custom(
+            common::trees::CustomRoot::at(home.env.root().join(dir))
+                .version(major, minor, patch, build),
+        )
+    };
+    let legacy = custom(&mut home, "wow-335", (3, 3, 5, 12_340));
+    let vanilla_client = custom(&mut home, "wow-112", (1, 12, 1, 5875));
     let targets = home.run(&["targets"]).expect(0);
-    let wotlk = targets["data"]["targets"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["family"] != "mainline")
-        .and_then(|t| t["id"].as_str())
-        .unwrap()
-        .to_owned();
+    let id_of = |family: &str| -> String {
+        targets["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["family"] == family)
+            .and_then(|t| t["id"].as_str())
+            .unwrap()
+            .to_owned()
+    };
+    let (wotlk, vanilla) = (id_of("wrath-legacy"), id_of("vanilla-legacy"));
     let (foo1, foo2) = (
         Rel::new("Foo", "v1", "120105", MAINLINE),
         Rel::new("Foo", "v2", "120105", MAINLINE),
@@ -539,10 +548,21 @@ fn running_clients_follow_the_running_policy() {
         ("v2", &leg2.assets()),
         &[&wotlk],
     );
+    let (qux1, qux2) = (
+        Rel::new("Qux", "v1", "11200", &[]),
+        Rel::new("Qux", "v2", "11200", &[]),
+    );
+    home.installed_behind(
+        QUX,
+        ("v1", &qux1.assets()),
+        ("v2", &qux2.assets()),
+        &[&vanilla],
+    );
 
-    // Both clients run: retail in its Wine prefix, the legacy client under wine.
+    // Every client runs: retail in its Wine prefix, the legacy clients under wine.
     let prefix = home.prefix.display().to_string();
-    let exe = legacy.join("Wow.exe").display().to_string();
+    let exe = |client: &std::path::Path| client.join("Wow.exe").display().to_string();
+    let (wine335, wine112) = (exe(&legacy), exe(&vanilla_client));
     let proc = common::procfs::FakeProc::new(home.env.root().join("proc"))
         .process(
             4242,
@@ -551,17 +571,17 @@ fn running_clients_follow_the_running_policy() {
             &["C:\\Program Files (x86)\\World of Warcraft\\_retail_\\Wow.exe"],
             &[("WINEPREFIX", &prefix)],
         )
-        .process(9, true, "Wow.exe", &["/usr/bin/wine", &exe], &[]);
+        .process(9, true, "Wow.exe", &["/usr/bin/wine", &wine335], &[])
+        .process(10, true, "Wow.exe", &["/usr/bin/wine", &wine112], &[]);
     home.proc = Some(proc.root().to_path_buf());
 
+    // Retail and 3.3.5a re-read a loaded addon's TOC on /reload, so their replacements
+    // land; 1.12.1 needs a restart for any change.
     let r = home.run(&["update"]);
     let envelope = r.expect(0);
     assert_eq!(envelope["partial"], true, "{}", r.context());
     for t in envelope["data"]["targets"].as_array().unwrap() {
-        if t["target"]["id"] == "retail" {
-            assert!(t["tx"].is_string(), "{t}");
-            assert_eq!(t["reload_required"], "reload");
-        } else {
+        if t["target"]["id"] == vanilla.as_str() {
             assert_eq!(t["tx"], Value::Null);
             let error = &t["items"][0]["error"];
             assert_eq!(
@@ -569,6 +589,9 @@ fn running_clients_follow_the_running_policy() {
                 (&json!("game_running"), &json!("legacy_client")),
                 "{t}"
             );
+        } else {
+            assert!(t["tx"].is_string(), "{t}");
+            assert_eq!(t["reload_required"], "reload", "{t}");
         }
     }
 }

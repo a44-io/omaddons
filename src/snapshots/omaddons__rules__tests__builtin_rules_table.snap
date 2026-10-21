@@ -466,7 +466,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": true,
       "interface_includes_patch": true,
-      "legacy": false
+      "legacy": false,
+      "reload_rereads_toc": true
     },
     {
       "name": "mainline-12.0.7",
@@ -486,7 +487,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": true,
       "interface_includes_patch": true,
-      "legacy": false
+      "legacy": false,
+      "reload_rereads_toc": true
     },
     {
       "name": "mainline-10.2.7",
@@ -506,7 +508,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": false,
       "interface_includes_patch": true,
-      "legacy": false
+      "legacy": false,
+      "reload_rereads_toc": true
     },
     {
       "name": "mainline-9.1",
@@ -526,7 +529,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": false,
       "interface_includes_patch": true,
-      "legacy": false
+      "legacy": false,
+      "reload_rereads_toc": true
     },
     {
       "name": "forever",
@@ -550,7 +554,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": true,
       "interface_includes_patch": true,
-      "legacy": false
+      "legacy": false,
+      "reload_rereads_toc": true
     },
     {
       "name": "vanilla",
@@ -572,7 +577,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": true,
       "interface_includes_patch": true,
-      "legacy": false
+      "legacy": false,
+      "reload_rereads_toc": true
     },
     {
       "name": "tbc",
@@ -594,7 +600,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": true,
       "interface_includes_patch": true,
-      "legacy": false
+      "legacy": false,
+      "reload_rereads_toc": true
     },
     {
       "name": "wrath",
@@ -616,7 +623,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": false,
       "interface_includes_patch": true,
-      "legacy": false
+      "legacy": false,
+      "reload_rereads_toc": true
     },
     {
       "name": "titan",
@@ -639,7 +647,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": true,
       "interface_includes_patch": true,
-      "legacy": false
+      "legacy": false,
+      "reload_rereads_toc": true
     },
     {
       "name": "cata",
@@ -661,7 +670,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": false,
       "interface_includes_patch": true,
-      "legacy": false
+      "legacy": false,
+      "reload_rereads_toc": true
     },
     {
       "name": "mists",
@@ -683,7 +693,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": true,
       "interface_includes_patch": true,
-      "legacy": false
+      "legacy": false,
+      "reload_rereads_toc": true
     },
     {
       "name": "vanilla-legacy",
@@ -699,7 +710,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": false,
       "interface_includes_patch": false,
-      "legacy": true
+      "legacy": true,
+      "reload_rereads_toc": false
     },
     {
       "name": "tbc-legacy",
@@ -715,7 +727,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": false,
       "interface_includes_patch": false,
-      "legacy": true
+      "legacy": true,
+      "reload_rereads_toc": false
     },
     {
       "name": "wrath-legacy",
@@ -731,7 +744,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": false,
       "interface_includes_patch": false,
-      "legacy": true
+      "legacy": true,
+      "reload_rereads_toc": true
     },
     {
       "name": "cata-legacy",
@@ -747,7 +761,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": false,
       "interface_includes_patch": false,
-      "legacy": true
+      "legacy": true,
+      "reload_rereads_toc": false
     },
     {
       "name": "mists-legacy",
@@ -763,7 +778,8 @@ expression: "RulesTable::builtin()"
       "legacy_suffixes": [],
       "directive_conditionals": false,
       "interface_includes_patch": false,
-      "legacy": true
+      "legacy": true,
+      "reload_rereads_toc": false
     }
   ],
   "fallback_battlenet": {
@@ -783,7 +799,8 @@ expression: "RulesTable::builtin()"
     "legacy_suffixes": [],
     "directive_conditionals": true,
     "interface_includes_patch": true,
-    "legacy": false
+    "legacy": false,
+    "reload_rereads_toc": true
   },
   "fallback_custom": {
     "name": "fallback-custom",
@@ -799,6 +816,7 @@ expression: "RulesTable::builtin()"
     "legacy_suffixes": [],
     "directive_conditionals": false,
     "interface_includes_patch": false,
-    "legacy": true
+    "legacy": true,
+    "reload_rereads_toc": false
   }
 }

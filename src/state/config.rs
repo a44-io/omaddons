@@ -334,6 +334,7 @@ const RULES_FIELDS: &[&str] = &[
     "directive_conditionals",
     "interface_includes_patch",
     "legacy",
+    "reload_rereads_toc",
 ];
 
 /// The spec a dotted key matches.

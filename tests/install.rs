@@ -2205,6 +2205,72 @@ fn a_committed_install_warns_out_of_date_as_its_dry_run_does() {
     );
 }
 
+/// The real 3.3.5a client re-read a loaded addon's TOC on `/reload` but saw a new folder
+/// only after a restart (2026-10-20): while it runs, `safe` lets a replacement that keeps
+/// its loaded TOC land with `/reload`, and refuses a new addon.
+#[test]
+fn a_running_3_3_5a_client_takes_a_replacement_on_reload_but_not_a_new_addon() {
+    let mut home = Home::new(&[]);
+    let client = home.with_custom(CustomRoot::at(home.env.root().join("pserver")));
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let archive = |name: &str, folder: &str, version: &str| {
+        let path = dl.join(name);
+        let text = toc("30300", &[&format!("## Version: {version}")]);
+        let toc_path = format!("{folder}/{folder}.toc");
+        let lua = format!("{folder}/core.lua");
+        fs::write(&path, zip_text(&[(&toc_path, &text), (&lua, version)])).unwrap();
+        path.display().to_string()
+    };
+    let (probe1, probe2) = (
+        archive("Probe-1.zip", "Probe", "1"),
+        archive("Probe-2.zip", "Probe", "2"),
+    );
+    let other = archive("Other-1.zip", "Other", "1");
+    home.run(&["install", &probe1, "-t", "wotlk"]).expect(0);
+
+    let exe = client.join("Wow.exe").display().to_string();
+    let proc = FakeProc::new(home.env.root().join("proc")).process(
+        9,
+        true,
+        "Wow.exe",
+        &["/usr/bin/wine", &exe],
+        &[],
+    );
+    home.proc = Some(proc.root().to_path_buf());
+    let r = home.run(&["install", &probe2, "-t", "wotlk"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        (
+            &items(&envelope)[0]["status"],
+            &envelope["data"]["reload_required"]
+        ),
+        (&Value::from("updated"), &Value::from("reload")),
+        "{}",
+        r.context()
+    );
+    let core = client.join("Interface/AddOns/Probe/core.lua");
+    assert_eq!(fs::read_to_string(core).unwrap(), "2");
+
+    let r = home.run(&["install", &other, "-t", "wotlk"]);
+    let error = &r.expect(4)["error"];
+    assert_eq!(
+        (&error["code"], &error["details"]["reason"]),
+        (&Value::from("game_running"), &Value::from("legacy_client")),
+        "{}",
+        r.context()
+    );
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("needs a restart to see a new addon folder (Other)"),
+        "{}",
+        r.context()
+    );
+    assert!(!client.join("Interface/AddOns/Other").exists());
+}
+
 /// A 3.3.5a client reads only the first number of a comma Interface list, so a
 /// committed install warns `toc_comma_on_legacy` as its dry run does.
 #[test]
