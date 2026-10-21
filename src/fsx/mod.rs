@@ -15,17 +15,21 @@ pub(crate) mod sys;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use failpoint::{with_spec, with_spec_in};
-pub use lock::{GlobalLock, GlobalLockGuard, HolderInfo, InflightLock, LockState, probe_global};
+pub use lock::{
+    DirLock, GlobalLock, GlobalLockGuard, HolderInfo, InflightLock, LockState, probe_global,
+};
 pub(crate) use mutate::count_hashed;
 #[cfg(test)]
 pub(crate) use mutate::files_hashed;
 pub use mutate::{
-    ActionRecord, Expect, FsxError, MutateOpts, TreeDigest, ensure_dir_all, mutate, mutate_with,
-    sha256_from_hex, sync_filesystem,
+    ActionRecord, Expect, FsxError, MutateOpts, StampDigest, TreeDigest, ensure_dir_all, mutate,
+    mutate_with, sha256_from_hex, sync_filesystem,
 };
 pub use op::Op;
 pub use prune::{LockUse, PruneReason, PruneReport, prune};
 pub use scope::{Access, OwnedFolders, Refusal, Scope, ScopeMatch, ScopeTable, Side, Writer};
 pub use session::{SnapshotRoots, WriteSession};
 pub use stamp::{FileStamp, TreeStamp};
-pub use sys::{CloneKind, Content, Durability, RenameMode, SyncCounts, WriteResult, sync_counts};
+pub use sys::{
+    CloneKind, ClonePolicy, Content, Durability, RenameMode, SyncCounts, WriteResult, sync_counts,
+};

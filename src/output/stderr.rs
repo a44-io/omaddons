@@ -43,6 +43,9 @@ pub enum Phase {
     Stage,
     /// A target's transaction committed.
     Commit,
+    /// Files of a `WTF/` tree copied (backups and restores); its message is a fixed
+    /// label, never a path, because paths below `WTF/Account/` name the player.
+    Copy,
 }
 
 impl Phase {
@@ -53,6 +56,7 @@ impl Phase {
             Self::Verify => "verify",
             Self::Stage => "stage",
             Self::Commit => "commit",
+            Self::Copy => "copy",
         }
     }
 }
@@ -465,11 +469,22 @@ mod tests {
             Phase::Verify,
             Phase::Stage,
             Phase::Commit,
+            Phase::Copy,
         ]
         .iter()
         .map(|p| p.wire())
         .collect();
-        assert_eq!(wires, ["fetch", "download", "verify", "stage", "commit"]);
+        assert_eq!(
+            wires,
+            ["fetch", "download", "verify", "stage", "commit", "copy"]
+        );
+        for phase in [Phase::Commit, Phase::Copy] {
+            assert_eq!(
+                serde_json::to_value(phase).unwrap(),
+                serde_json::Value::from(phase.wire()),
+                "serde agrees with wire()"
+            );
+        }
     }
 
     #[test]

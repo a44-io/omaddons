@@ -118,6 +118,16 @@ pub enum CloneKind {
     ByteCopy,
 }
 
+/// Whether a file clone may fall back to a byte copy (M3-D30).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClonePolicy {
+    /// A reflink or nothing: where the filesystem cannot clone, the clone fails with
+    /// `io::ErrorKind::Unsupported` before a byte is copied (clone-only backups).
+    Required,
+    /// A reflink where possible, else a byte copy.
+    Preferred,
+}
+
 /// Whether a write is made durable before it returns.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Durability {
@@ -201,10 +211,17 @@ pub(crate) fn rename_with(from: &Path, to: &Path, mode: RenameMode) -> Result<()
 }
 
 /// Copies the regular file `from` to the new path `to` (which must not exist), keeping
-/// its mode: a reflink where the filesystem supports one, else a byte copy through a
-/// temp file. Refuses anything but a regular file at `from`, symlinks included. The
-/// fsyncs are skipped under [`Durability::Deferred`].
-pub(crate) fn clone_file(from: &Path, to: &Path, durability: Durability) -> io::Result<CloneKind> {
+/// its mode: a reflink where the filesystem supports one, else, under
+/// [`ClonePolicy::Preferred`], a byte copy through a temp file. Under
+/// [`ClonePolicy::Required`] a filesystem that cannot clone fails the call with
+/// `Unsupported` and leaves no file at `to`. Refuses anything but a regular file at
+/// `from`, symlinks included. The fsyncs are skipped under [`Durability::Deferred`].
+pub(crate) fn clone_file(
+    from: &Path,
+    to: &Path,
+    durability: Durability,
+    policy: ClonePolicy,
+) -> io::Result<CloneKind> {
     failpoint::hit("fsx.clone_file.before")?;
     let meta = fs::symlink_metadata(from)?;
     if !meta.file_type().is_file() {
@@ -215,18 +232,32 @@ pub(crate) fn clone_file(from: &Path, to: &Path, durability: Durability) -> io::
     }
     let durable = durability == Durability::Immediate;
     let parent = parent_dir(to)?;
-    if !failpoint::enabled("fsx.reflink.unsupported") {
-        match reflink_copy::reflink(from, to) {
-            Ok(()) => {
-                if durable {
-                    fsync(&File::open(to)?)?;
-                    fsync_dir(parent)?;
-                }
-                return Ok(CloneKind::Reflink);
+    // A failed reflink removes the file it created.
+    let reflinked = if failpoint::enabled("fsx.reflink.unsupported") {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    } else {
+        reflink_copy::reflink(from, to)
+    };
+    match reflinked {
+        Ok(()) => {
+            if durable {
+                fsync(&File::open(to)?)?;
+                fsync_dir(parent)?;
             }
-            Err(err) if reflink_unsupported(&err) => {}
-            Err(err) => return Err(err),
+            return Ok(CloneKind::Reflink);
         }
+        Err(err) if reflink_unsupported(&err) => {
+            if policy == ClonePolicy::Required {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "{} cannot be cloned: the filesystem has no reflinks",
+                        from.display()
+                    ),
+                ));
+            }
+        }
+        Err(err) => return Err(err),
     }
     let mut source = File::from(rustix::fs::open(
         from,
@@ -696,7 +727,8 @@ mod tests {
             fs::write(&from, b"saved variables").unwrap();
             fs::set_permissions(&from, Permissions::from_mode(0o640)).unwrap();
             let to = dir.path().join("dst");
-            let clone = clone_file(&from, &to, Durability::Immediate).unwrap();
+            let clone =
+                clone_file(&from, &to, Durability::Immediate, ClonePolicy::Preferred).unwrap();
             match kind {
                 FsKind::Btrfs => assert_eq!(clone, CloneKind::Reflink),
                 FsKind::Tmpfs => assert_eq!(clone, CloneKind::ByteCopy),
@@ -707,13 +739,42 @@ mod tests {
 
             let fallback = dir.path().join("fallback");
             let clone = failpoint::with_spec("fsx.reflink.unsupported", || {
-                clone_file(&from, &fallback, Durability::Deferred).unwrap()
+                clone_file(
+                    &from,
+                    &fallback,
+                    Durability::Deferred,
+                    ClonePolicy::Preferred,
+                )
+                .unwrap()
             });
             assert_eq!(clone, CloneKind::ByteCopy, "{kind:?}");
             assert_eq!(fs::read(&fallback).unwrap(), b"saved variables");
             assert_eq!(mode_of(&fallback), 0o640);
 
-            let err = clone_file(&from, &to, Durability::Immediate).unwrap_err();
+            // Clone-only: a reflink where the filesystem has them, else nothing at all.
+            let only = dir.path().join("only");
+            let required = clone_file(&from, &only, Durability::Deferred, ClonePolicy::Required);
+            match kind {
+                FsKind::Btrfs => assert_eq!(required.ok(), Some(CloneKind::Reflink)),
+                FsKind::Tmpfs => {
+                    let kind = required.err().map(|err| err.kind());
+                    assert_eq!(kind, Some(io::ErrorKind::Unsupported));
+                    assert!(fs::symlink_metadata(&only).is_err(), "no partial file");
+                }
+                FsKind::Other => eprintln!("note: {required:?} on an unrecognized filesystem"),
+            }
+            let never = dir.path().join("never");
+            let err = failpoint::with_spec("fsx.reflink.unsupported", || {
+                clone_file(&from, &never, Durability::Deferred, ClonePolicy::Required).unwrap_err()
+            });
+            assert_eq!(err.kind(), io::ErrorKind::Unsupported, "{kind:?}");
+            assert!(
+                fs::symlink_metadata(&never).is_err(),
+                "{kind:?}: no partial file"
+            );
+
+            let err =
+                clone_file(&from, &to, Durability::Immediate, ClonePolicy::Preferred).unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::AlreadyExists, "{kind:?}");
             assert!(temp_leftovers(dir.path()).is_empty());
         }
@@ -727,7 +788,13 @@ mod tests {
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         for from in [link.as_path(), dir.path()] {
-            let err = clone_file(from, &dir.path().join("out"), Durability::Immediate).unwrap_err();
+            let err = clone_file(
+                from,
+                &dir.path().join("out"),
+                Durability::Immediate,
+                ClonePolicy::Preferred,
+            )
+            .unwrap_err();
             assert_eq!(
                 err.kind(),
                 io::ErrorKind::InvalidInput,

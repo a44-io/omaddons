@@ -22,7 +22,7 @@ use super::failpoint;
 use super::op::Op;
 use super::scope::{Access, Refusal};
 use super::session::{SessionKind, TxState, WriteSession};
-use super::sys::{self, CloneKind, Durability, RenameError, RenameMode};
+use super::sys::{self, CloneKind, ClonePolicy, Durability, RenameError, RenameMode};
 use crate::error::{Error, ErrorCode, Suggestion};
 use crate::model::TxId;
 
@@ -178,6 +178,75 @@ impl TreeDigest {
 impl fmt::Display for TreeDigest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "tree:sha256:{}", hex(&self.0))
+    }
+}
+
+/// A whole tree's stat digest (M3-D25): SHA-256 over the sorted lines
+/// `<relative path>\0<kind>\0<size>\0<mode, octal>\0<mtime ns>\n` of every entry below
+/// the root, empty directories and symlinks included. No content is read, so a large
+/// `WTF/` is digested by a stat walk, never hashed under the lock; a file rewritten in
+/// place with the same size and mtime is not noticed, which is the stamp rule everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StampDigest([u8; 32]);
+
+impl StampDigest {
+    /// From entries `(relative path with '/', kind, size, mode, mtime ns)`, in any order.
+    /// `kind` is `file`, `dir`, `symlink` or `other`.
+    pub fn from_entries<P: Into<String>>(
+        entries: impl IntoIterator<Item = (P, &'static str, u64, u32, i64)>,
+    ) -> Self {
+        let mut lines: Vec<(String, &str, u64, u32, i64)> = entries
+            .into_iter()
+            .map(|(path, kind, size, mode, mtime)| (path.into(), kind, size, mode, mtime))
+            .collect();
+        lines.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        let mut hasher = Sha256::new();
+        for (path, kind, size, mode, mtime) in lines {
+            hasher.update(path.as_bytes());
+            hasher.update(format!("\0{kind}\0{size}\0{mode:o}\0{mtime}\n").as_bytes());
+        }
+        Self(hasher.finalize().into())
+    }
+
+    /// Walks `dir` with `lstat`, never following a symlink, and digests every entry.
+    pub fn compute(dir: &Path) -> io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let mut entries = Vec::new();
+        let mut pending = vec![PathBuf::new()];
+        while let Some(rel) = pending.pop() {
+            for entry in fs::read_dir(dir.join(&rel))? {
+                let entry = entry?;
+                let rel_child = rel.join(entry.file_name());
+                let meta = fs::symlink_metadata(dir.join(&rel_child))?;
+                let kind = meta.file_type();
+                let kind = if kind.is_dir() {
+                    pending.push(rel_child.clone());
+                    "dir"
+                } else if kind.is_file() {
+                    "file"
+                } else if kind.is_symlink() {
+                    "symlink"
+                } else {
+                    "other"
+                };
+                let mtime = meta.mtime() * 1_000_000_000 + meta.mtime_nsec();
+                entries.push((
+                    rel_child.to_string_lossy().into_owned(),
+                    kind,
+                    meta.len(),
+                    meta.mode() & 0o7777,
+                    mtime,
+                ));
+            }
+        }
+        Ok(Self::from_entries(entries))
+    }
+}
+
+/// `stamp:sha256:<hex>`, never mistaken for a content digest.
+impl fmt::Display for StampDigest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "stamp:sha256:{}", hex(&self.0))
     }
 }
 
@@ -519,7 +588,7 @@ fn preconditions(
                 _ => {}
             }
         }
-        Op::CloneFile { from } => {
+        Op::CloneFile { from, .. } => {
             if !fs::symlink_metadata(from).is_ok_and(|m| m.is_file()) {
                 return Err(FsxError::Precondition(format!(
                     "{} is not a regular file",
@@ -646,7 +715,8 @@ fn backup(
     let expected = hash_file(source).map_err(io_err(source))?;
     sys::create_dir_all(backup_dir).map_err(io_err(backup_dir))?;
     let copy = backup_dir.join(seq.to_string());
-    sys::clone_file(source, &copy, Durability::Immediate).map_err(io_err(&copy))?;
+    sys::clone_file(source, &copy, Durability::Immediate, ClonePolicy::Preferred)
+        .map_err(io_err(&copy))?;
     let actual = hash_file(&copy).map_err(io_err(&copy))?;
     // ubs:ignore — verifying a backup's content hash, not a secret
     if actual != expected {
@@ -695,7 +765,7 @@ fn execute(
             }
             Ok(Executed::default())
         }
-        Op::CloneFile { from } => sys::clone_file(from, target, durability)
+        Op::CloneFile { from, policy } => sys::clone_file(from, target, durability, policy)
             .map(|kind| Executed {
                 sha256: None,
                 clone: Some(kind),
@@ -975,7 +1045,15 @@ mod tests {
             .join("WeakAuras.lua");
         ensure_dir_all(&mut s, copy.parent().unwrap()).unwrap();
         let sv = f.client.join("WTF/Account/A/SavedVariables/WeakAuras.lua");
-        let cloned = mutate(&mut s, &copy, Op::CloneFile { from: &sv }).unwrap();
+        let cloned = mutate(
+            &mut s,
+            &copy,
+            Op::CloneFile {
+                from: &sv,
+                policy: ClonePolicy::Preferred,
+            },
+        )
+        .unwrap();
         assert_eq!(
             cloned.after_hash,
             Some(format!("sha256:{}", hex(&sha(b"WA = {}"))))
@@ -1133,6 +1211,61 @@ mod tests {
         assert_ne!(
             TreeDigest::compute(dir.path()).unwrap(),
             TreeDigest::from_entries(other)
+        );
+    }
+
+    #[test]
+    fn stamp_digests_cover_stats_not_content() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("Account/A/SavedVariables")).unwrap();
+        fs::create_dir(root.join("empty")).unwrap();
+        let sv = root.join("Account/A/SavedVariables/Foo.lua");
+        fs::write(&sv, b"Foo = 1").unwrap();
+        std::os::unix::fs::symlink("Account", root.join("link")).unwrap();
+        let first = StampDigest::compute(root).unwrap();
+        assert!(first.to_string().starts_with("stamp:sha256:"), "{first}");
+        assert_eq!(first.to_string().len(), "stamp:sha256:".len() + 64);
+        assert_eq!(StampDigest::compute(root).unwrap(), first, "stable");
+
+        // From entries, in any order: the same digest.
+        let entry = |rel: &str, kind| {
+            let m = fs::symlink_metadata(root.join(rel)).unwrap();
+            let mtime = m.mtime() * 1_000_000_000 + m.mtime_nsec();
+            (rel.to_owned(), kind, m.len(), m.mode() & 0o7777, mtime)
+        };
+        let mut entries = vec![
+            entry("Account", "dir"),
+            entry("Account/A", "dir"),
+            entry("Account/A/SavedVariables", "dir"),
+            entry("Account/A/SavedVariables/Foo.lua", "file"),
+            entry("empty", "dir"),
+            entry("link", "symlink"),
+        ];
+        assert_eq!(StampDigest::from_entries(entries.clone()), first);
+        entries.reverse();
+        assert_eq!(StampDigest::from_entries(entries), first, "sorted first");
+
+        // Content rewritten with the same size and mtime: no change (a stamp).
+        let mtime = fs::metadata(&sv).unwrap().modified().unwrap();
+        fs::write(&sv, b"Foo = 2").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&sv)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        assert_eq!(StampDigest::compute(root).unwrap(), first);
+        // A mode, an empty directory or a new mtime: a change.
+        fs::set_permissions(&sv, fs::Permissions::from_mode(0o600)).unwrap();
+        let moded = StampDigest::compute(root).unwrap();
+        assert_ne!(moded, first);
+        fs::create_dir(root.join("empty/more")).unwrap();
+        assert_ne!(StampDigest::compute(root).unwrap(), moded);
+        assert_ne!(
+            TreeDigest::compute(root).unwrap().to_string(),
+            first.to_string()
         );
     }
 

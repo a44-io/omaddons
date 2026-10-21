@@ -33,7 +33,7 @@ use super::stage::Staged;
 use crate::discover::find_children;
 use crate::error::{Error, PlanStaleSource, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
-    CloneKind, FileStamp, FsxError, MutateOpts, Op, RenameMode, TreeDigest, TreeStamp,
+    CloneKind, ClonePolicy, FileStamp, FsxError, MutateOpts, Op, RenameMode, TreeDigest, TreeStamp,
     WriteSession, ensure_dir_all, failpoint, mutate, mutate_with,
 };
 use crate::limits::RACY_SLACK_NS;
@@ -328,7 +328,11 @@ fn clone_sv(
     if let Some(parent) = dest.parent() {
         ensure_dir_all(s, parent).map_err(|e| private(e.into()))?;
     }
-    let record = mutate(s, &dest, Op::CloneFile { from: source }).map_err(|e| private(e.into()))?;
+    let op = Op::CloneFile {
+        from: source,
+        policy: ClonePolicy::Preferred,
+    };
+    let record = mutate(s, &dest, op).map_err(|e| private(e.into()))?;
     let sha256 = match record.after_sha256() {
         Some(sha256) => sha256.to_owned(),
         None => sha256_file(&dest).map_err(private)?,
@@ -600,7 +604,11 @@ pub fn snapshot_state(
             continue;
         };
         if std::fs::symlink_metadata(&source).is_ok_and(|m| m.is_file()) {
-            mutate(s, &dir.join(name), Op::CloneFile { from: &source })?;
+            let op = Op::CloneFile {
+                from: &source,
+                policy: ClonePolicy::Preferred,
+            };
+            mutate(s, &dir.join(name), op)?;
         }
     }
     Ok(())

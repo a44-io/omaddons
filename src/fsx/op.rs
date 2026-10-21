@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use super::sys::{Content, RenameMode};
+use super::sys::{ClonePolicy, Content, RenameMode};
 
 /// One filesystem mutation, applied to a path by `mutate()`. Adding a variant needs a
 /// comment on the vision bead.
@@ -20,8 +20,8 @@ pub enum Op<'a> {
     /// Rename the path to `to`.
     Rename { to: &'a Path, mode: RenameMode },
     /// Copy the regular file `from` to the path (which must not exist): a reflink where
-    /// possible, else a byte copy.
-    CloneFile { from: &'a Path },
+    /// possible, else a byte copy unless `policy` requires the reflink.
+    CloneFile { from: &'a Path, policy: ClonePolicy },
     /// Set the mode of the path.
     Chmod { mode: u32 },
     /// Point the symlink at the path to `target`, atomically.

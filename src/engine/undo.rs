@@ -49,8 +49,8 @@ use super::tx::{
 use crate::discover::target::DiscoveredTarget;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
-    FileStamp, FsxError, GlobalLock, InflightLock, MutateOpts, Op, OwnedFolders, RenameMode,
-    ScopeTable, SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint, mutate,
+    ClonePolicy, FileStamp, FsxError, GlobalLock, InflightLock, MutateOpts, Op, OwnedFolders,
+    RenameMode, ScopeTable, SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint, mutate,
     mutate_with, sha256_from_hex,
 };
 use crate::model::{Actor, AddonRecord, FolderName, ReloadRequired, RunId, Target, TxId, TxKind};
@@ -1524,7 +1524,11 @@ fn clone_restore(
     if let Some(parent) = staged.parent() {
         ensure_dir_all(s, parent)?;
     }
-    let cloned = mutate(s, &staged, Op::CloneFile { from: &source })?;
+    let op = Op::CloneFile {
+        from: &source,
+        policy: ClonePolicy::Preferred,
+    };
+    let cloned = mutate(s, &staged, op)?;
     let copy_hash = cloned.after_sha256().map(str::to_owned);
     Ok((staged, copy_hash))
 }

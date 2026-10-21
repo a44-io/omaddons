@@ -274,6 +274,54 @@ impl InflightLock {
     }
 }
 
+/// A `flock` on a directory itself (M3-D48), through an `O_RDONLY | O_DIRECTORY` file
+/// descriptor: no lock file is created, so a cache wipe cannot break exclusion, and the
+/// kernel releases it when the holder exits, so a crashed reader never pins a backup.
+/// Readers of a backup hold its directory shared; prune and the automatic-backup
+/// scheduler take theirs exclusively, without waiting. Lock order: directory locks are
+/// taken before the global lock and never waited on while holding it.
+#[derive(Debug)]
+pub struct DirLock {
+    file: File,
+}
+
+impl DirLock {
+    /// Holds `dir` shared, waiting while an exclusive holder has it. A symlink is
+    /// refused.
+    pub fn shared(dir: &Path) -> io::Result<Self> {
+        let file = open_dir(dir)?;
+        file.lock_shared()?;
+        Ok(Self { file })
+    }
+
+    /// Holds `dir` exclusively when nobody else holds it; `None` when somebody does.
+    pub fn try_exclusive(dir: &Path) -> io::Result<Option<Self>> {
+        let file = open_dir(dir)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { file })),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(err)) => Err(err),
+        }
+    }
+
+    /// Whether `path` is still the directory this lock holds (same device and inode): a
+    /// reader learns that its backup was moved or deleted under it.
+    pub fn same_dir(&self, path: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(held), Ok(now)) = (self.file.metadata(), fs::symlink_metadata(path)) else {
+            return false;
+        };
+        now.is_dir() && held.dev() == now.dev() && held.ino() == now.ino()
+    }
+}
+
+/// `dir` opened for locking: a directory, never through a symlink.
+fn open_dir(dir: &Path) -> io::Result<File> {
+    use rustix::fs::{Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    Ok(File::from(rustix::fs::open(dir, flags, Mode::empty())?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +434,103 @@ mod tests {
                 "src/fsx/lock.rs uses {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn a_shared_dir_lock_blocks_an_exclusive_one_until_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("backup");
+        fs::create_dir(&backup).unwrap();
+        let reader = DirLock::shared(&backup).unwrap();
+        let second = DirLock::shared(&backup).unwrap();
+        assert!(DirLock::try_exclusive(&backup).unwrap().is_none());
+        drop(reader);
+        assert!(
+            DirLock::try_exclusive(&backup).unwrap().is_none(),
+            "the second reader still holds it"
+        );
+        drop(second);
+        let held = DirLock::try_exclusive(&backup).unwrap().unwrap();
+        assert!(DirLock::try_exclusive(&backup).unwrap().is_none());
+        drop(held);
+        assert!(DirLock::try_exclusive(&backup).unwrap().is_some());
+        let names: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(names.len(), 1, "no lock file");
+        assert_eq!(fs::read_dir(&backup).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn same_dir_sees_a_moved_or_deleted_dir_and_symlinks_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("backup");
+        fs::create_dir(&backup).unwrap();
+        let lock = DirLock::shared(&backup).unwrap();
+        assert!(lock.same_dir(&backup));
+        let moved = dir.path().join("moved");
+        fs::rename(&backup, &moved).unwrap();
+        assert!(!lock.same_dir(&backup), "gone from its path");
+        assert!(lock.same_dir(&moved));
+        fs::create_dir(&backup).unwrap();
+        assert!(!lock.same_dir(&backup), "another dir at the path");
+        fs::remove_dir(&moved).unwrap();
+        assert!(!lock.same_dir(&moved), "deleted");
+
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&backup, &link).unwrap();
+        assert!(DirLock::shared(&link).is_err());
+        assert!(DirLock::try_exclusive(&dir.path().join("missing")).is_err());
+        let file = dir.path().join("file");
+        fs::write(&file, "").unwrap();
+        assert!(DirLock::try_exclusive(&file).is_err(), "not a directory");
+    }
+
+    #[test]
+    fn a_holder_that_dies_frees_the_dir_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("backup");
+        fs::create_dir(&backup).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "fsx::lock::tests::child_holds_a_dir_lock",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("OMADDONS_FSX_TEST_PATH", dir.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let ready = dir.path().join("ready");
+        let started = Instant::now();
+        while !ready.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the child never locked"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            DirLock::try_exclusive(&backup).unwrap().is_none(),
+            "held by the child"
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(
+            DirLock::try_exclusive(&backup).unwrap().is_some(),
+            "freed by its death"
+        );
+    }
+
+    #[test]
+    #[ignore = "child process for a_holder_that_dies_frees_the_dir_lock"]
+    fn child_holds_a_dir_lock() {
+        let Some(dir) = std::env::var_os("OMADDONS_FSX_TEST_PATH").map(PathBuf::from) else {
+            return;
+        };
+        let _lock = DirLock::shared(&dir.join("backup")).unwrap();
+        fs::write(dir.join("ready"), "").unwrap();
+        std::thread::sleep(Duration::from_secs(60));
     }
 }

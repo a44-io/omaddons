@@ -131,7 +131,10 @@ fn refused_writes_change_nothing() {
                 Op::SymlinkAtomic {
                     target: Path::new("/etc/passwd"),
                 },
-                Op::CloneFile { from: &staged },
+                Op::CloneFile {
+                    from: &staged,
+                    policy: omaddons::fsx::ClonePolicy::Preferred,
+                },
             ];
             for op in ops {
                 let wire = op.wire();

@@ -25,8 +25,8 @@ use sha2::{Digest, Sha256};
 use super::inspect::{ArchiveFault, FileSource, Inspected, archive_error};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::fsx::{
-    self, Content, Durability, InflightLock, MutateOpts, Op, ScopeTable, WriteSession, Writer,
-    ensure_dir_all, failpoint, mutate, mutate_with,
+    self, ClonePolicy, Content, Durability, InflightLock, MutateOpts, Op, ScopeTable, WriteSession,
+    Writer, ensure_dir_all, failpoint, mutate, mutate_with,
 };
 use crate::limits::RACY_SLACK_NS;
 use crate::model::{FolderName, Target, TxId};
@@ -269,7 +269,11 @@ fn copy_tree(
             copy_tree(s, &source, &dest, &path, entries)?;
             keep_dir_mode(s, &source, &dest)?;
         } else if kind.is_file() {
-            mutate_with(s, &dest, Op::CloneFile { from: &source }, deferred())?;
+            let op = Op::CloneFile {
+                from: &source,
+                policy: ClonePolicy::Preferred,
+            };
+            mutate_with(s, &dest, op, deferred())?;
             let meta = std::fs::symlink_metadata(&dest).map_err(io(&dest))?;
             entries.push(FileEntry {
                 path,
