@@ -22,6 +22,7 @@ pub mod model;
 pub mod net;
 pub mod output;
 pub mod politeness;
+pub mod privacy;
 pub mod resolve;
 pub mod rules;
 pub mod sources;

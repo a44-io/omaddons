@@ -108,6 +108,9 @@ pub const SEARCH_MAX_RESULTS: usize = 50;
 pub const SEARCH_SUMMARY_MAX_CHARS: usize = 200;
 /// Characters kept from one name, author or version a source sends.
 pub const SOURCE_TEXT_MAX_CHARS: usize = 200;
+/// Account, realm and character names the privacy redactor learns per client (or
+/// archive); any other maps to `account ?`, `realm ?` or `character ?`.
+pub const REDACTOR_MAX_NAMES: usize = 4_096;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -421,6 +424,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Characters kept from a source's name, author or version",
     ),
+    limit(
+        "REDACTOR_MAX_NAMES",
+        LimitValue::Count(REDACTOR_MAX_NAMES as u64),
+        "count",
+        None,
+        "Account, realm and character names the privacy redactor learns per client; others map to … ?",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -603,6 +613,7 @@ mod tests {
         "SEARCH_MAX_RESULTS",
         "SEARCH_SUMMARY_MAX_CHARS",
         "SOURCE_TEXT_MAX_CHARS",
+        "REDACTOR_MAX_NAMES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

@@ -508,6 +508,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Characters kept from a source's name, author or version"
+    },
+    {
+      "name": "REDACTOR_MAX_NAMES",
+      "value": {
+        "count": 4096
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Account, realm and character names the privacy redactor learns per client; others map to … ?"
     }
   ]
 ]

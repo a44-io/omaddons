@@ -25,6 +25,7 @@ pub mod memo;
 pub mod netlog;
 pub mod pause;
 pub mod pe;
+pub mod privacy;
 pub mod procfs;
 pub mod product_db;
 pub mod state;

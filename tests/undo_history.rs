@@ -18,9 +18,7 @@ use support::{Session, argv_of};
 mod support {
     use super::*;
 
-    pub const ACCOUNT: &str = "WTF/Account/FAKEACCT/SavedVariables";
-    pub const CHARACTER: &str = "WTF/Account/FAKEACCT/FakeRealm/FakeChar/SavedVariables";
-    pub const PRIVATE: &[&str] = &["FAKEACCT", "FakeRealm", "FakeChar"];
+    pub use super::common::privacy::{ACCOUNT, CHARACTER};
 
     /// A retail client with an unrelated addon (so AddOns exists), SavedVariables for
     /// Foo, and every run's output kept for the privacy check.
@@ -118,9 +116,7 @@ mod support {
         /// No output so far names the account, realm or character.
         pub fn assert_private(&self) {
             for output in &self.outputs {
-                for name in PRIVATE {
-                    assert!(!output.contains(name), "{name} in output:\n{output}");
-                }
+                super::common::privacy::assert_private(output);
             }
         }
     }
