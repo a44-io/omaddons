@@ -431,7 +431,14 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
     } else {
         Freshness::Window(SOURCE_RECHECK_MIN_INTERVAL)
     };
-    let cache = ReleaseCache::new(&world.paths, http.as_ref(), &registry, freshness);
+    let cache = ReleaseCache::new(
+        &world.paths,
+        http.as_ref(),
+        &registry,
+        freshness,
+        ctx.command,
+        ctx.actor,
+    );
     let wanted = Wanted::stable(r.clone());
     let fetched = cache
         .get(std::slice::from_ref(&wanted))

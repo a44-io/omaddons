@@ -187,6 +187,8 @@ mod support {
                 self.http.as_ref(),
                 registry,
                 Freshness::Revalidate,
+                "install",
+                omaddons::model::Actor::Human,
             );
             let ctx = EngineCtx {
                 registry,

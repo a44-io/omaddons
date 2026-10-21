@@ -38,7 +38,8 @@ use targets::TargetsAction;
 /// Records a settings change of `kind` (about `target`, for a `targets` change) in
 /// history, in the session `s` of the command that made it, under the global lock it
 /// holds (vision §5.9 Attribution): who, why and the argv. A line that cannot be written
-/// is `history_not_recorded`, never the command's failure.
+/// is `history_not_recorded`, never the command's failure. Then it rings the doorbell:
+/// every settings change counts as one that can change what `status` reports (M3-D4).
 pub(crate) fn record_setting(
     ctx: &Context,
     s: &mut crate::fsx::WriteSession<'_>,
@@ -56,6 +57,7 @@ pub(crate) fn record_setting(
     if let Some(warning) = crate::state::history::record_setting(s, paths, &entry) {
         ctx.notes.warn(warning);
     }
+    crate::state::doorbell::ring(paths, ctx.command, ctx.actor);
 }
 
 /// What a command is for: bare help lists the commands one line per group, so it stays

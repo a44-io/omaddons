@@ -203,6 +203,7 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     );
     let committed = result.as_ref().is_ok_and(|done| done.outcome.tx.is_some());
     cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), committed);
+    super::tx::ring_after_window(ctx, &result);
     let mut done = result?;
     if let (Some(key), Some(_)) = (done.outcome.key, done.outcome.tx) {
         let retained = super::tx::retain(ctx, &scopes, key, &target.client_dir);

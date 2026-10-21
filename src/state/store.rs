@@ -145,6 +145,10 @@ pub const KINDS: &[(&str, SchemaVersion)] = &[
         <super::export_memo::ExportMemo as Versioned>::KIND,
         <super::export_memo::ExportMemo as Versioned>::CURRENT,
     ),
+    (
+        <super::doorbell::Doorbell as Versioned>::KIND,
+        <super::doorbell::Doorbell as Versioned>::CURRENT,
+    ),
     ("history", super::history::CURRENT),
 ];
 
@@ -206,7 +210,13 @@ pub fn load<T: Versioned>(path: &Path) -> Result<Option<Loaded<T>>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(Error::io(path, &err, status_fix())),
     };
-    let (version, raw) = parse(path, &bytes)?;
+    load_bytes(path, &bytes).map(Some)
+}
+
+/// [`load`] of `bytes` already read from `path`: for a caller that keeps the bytes too
+/// (the release memo compares them with what it would write).
+pub fn load_bytes<T: Versioned>(path: &Path, bytes: &[u8]) -> Result<Loaded<T>> {
+    let (version, raw) = parse(path, bytes)?;
     let (status, raw) = match version.cmp(&T::CURRENT) {
         Ordering::Equal => (VersionStatus::Current, raw),
         Ordering::Less => (VersionStatus::Older, T::migrate(version, raw)?),
@@ -216,11 +226,11 @@ pub fn load<T: Versioned>(path: &Path) -> Result<Option<Loaded<T>>> {
         VersionStatus::Newer => too_new::<T>(path, version),
         _ => corrupt(path, &format!("it does not decode as {}: {err}", T::KIND)),
     })?;
-    Ok(Some(Loaded {
+    Ok(Loaded {
         value,
         version,
         status,
-    }))
+    })
 }
 
 /// Writes `value` at the current version through `mutate`. The file on disk is loaded

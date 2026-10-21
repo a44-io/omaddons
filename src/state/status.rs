@@ -1,8 +1,10 @@
-//! `status.json`: a derived summary plus per-target generations, the widget's doorbell
-//! (M3 watches it). A writer never replaces a file whose generation for any shared
-//! target is newer than its own, so a slow writer cannot roll the doorbell back.
-//! `status --cached` derives counts from the records, so a lost race only delays a
-//! doorbell; the small check-then-rename window is accepted for the same reason.
+//! `status.json`: a derived summary plus per-target generations, rewritten after each
+//! commit and undo. The widget's signal is the doorbell instead (`doorbell.rs`, M3-D4),
+//! because this file misses update checks and settings changes. A writer never replaces
+//! a file whose generation for any shared target is newer than its own, so a slow writer
+//! cannot roll the summary back. `status --cached` derives counts from the records, so a
+//! lost race only leaves the summary behind; the small check-then-rename window is
+//! accepted for the same reason.
 
 use std::collections::BTreeMap;
 
@@ -95,7 +97,7 @@ pub enum WriteOutcome {
 
 /// Writes `new` unless the file on disk has a higher generation for a target both
 /// know. Keys present in only one of them never block, so a new or removed target
-/// cannot freeze the doorbell. A corrupt file is simply replaced: it is derived data.
+/// cannot freeze the summary. A corrupt file is simply replaced: it is derived data.
 pub fn write_monotonic(
     s: &mut WriteSession<'_>,
     paths: &Paths,
@@ -199,7 +201,7 @@ mod tests {
         assert_eq!(
             write(&[(A, 1)]),
             WriteOutcome::Written,
-            "a corrupt doorbell is replaced"
+            "a corrupt summary is replaced"
         );
         std::fs::write(
             paths.status_file(),

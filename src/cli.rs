@@ -205,6 +205,8 @@ pub enum Command {
 #[derive(Debug, Clone)]
 pub struct Context {
     pub output: OutputConfig,
+    /// The command, as the envelope's `command` names it (`targets add`).
+    pub command: &'static str,
     pub actor: Actor,
     pub reason: Option<String>,
     /// Verbatim (lossy UTF-8), with `argv[0]` normalized to `omaddons`, for history and
@@ -227,10 +229,11 @@ pub struct Context {
 }
 
 impl Context {
-    /// Validates the attribution flags against an injected environment.
+    /// Validates the attribution flags against an injected environment, for `command`.
     pub fn new(
         global: &GlobalArgs,
         output: OutputConfig,
+        command: &'static str,
         argv: &[String],
         env: &dyn Fn(&str) -> Option<String>,
         stdin_is_tty: bool,
@@ -264,6 +267,7 @@ impl Context {
         }
         Ok(Self {
             output,
+            command,
             actor,
             reason: global.reason.clone(),
             argv: argv.to_vec(),
@@ -342,7 +346,15 @@ fn run_with(
         error.fix = crate::error::internal_fix_for(command, &argv);
         return render_error(&output, command, started, offline, error);
     }
-    let mut ctx = match Context::new(&cli.global, output, &argv, env, stdin_is_tty, started) {
+    let mut ctx = match Context::new(
+        &cli.global,
+        output,
+        command,
+        &argv,
+        env,
+        stdin_is_tty,
+        started,
+    ) {
         Ok(ctx) => ctx,
         Err(error) => return render_error(&output, command, started, offline, error),
     };
@@ -1698,6 +1710,7 @@ mod tests {
             Context::new(
                 &global(args),
                 OutputConfig::machine(),
+                "status",
                 &argv(args),
                 env,
                 false,

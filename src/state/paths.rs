@@ -189,7 +189,7 @@ impl Paths {
         self.state.join("history.jsonl")
     }
 
-    /// Derived summary plus per-target generations; the widget's doorbell.
+    /// Derived summary plus per-target generations, rewritten after each commit.
     pub fn status_file(&self) -> PathBuf {
         self.state.join("status.json")
     }
@@ -301,6 +301,11 @@ impl Paths {
     /// What `export --write` wrote: each file's hash, to protect hand edits.
     pub fn export_memo(&self) -> PathBuf {
         self.cache.join("export.json")
+    }
+
+    /// The bar widget's doorbell: rung by every write that can change `status --cached`.
+    pub fn doorbell_file(&self) -> PathBuf {
+        self.cache.join("doorbell.json")
     }
 
     /// One transaction's temp dir (git clones, partial downloads).

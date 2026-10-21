@@ -27,7 +27,8 @@ use crate::fsx::{
     self, FsxError, GlobalLock, GlobalLockGuard, InflightLock, LockState, LockUse, Op, PruneReason,
     RenameMode, ScopeTable, WriteSession, Writer, ensure_dir_all, failpoint, mutate, probe_global,
 };
-use crate::model::{TargetKey, TxId, TxKind};
+use crate::model::{Actor, TargetKey, TxId, TxKind};
+use crate::state::doorbell;
 use crate::state::files_index::{FilesIndex, FolderIndex};
 use crate::state::history::{self, HistoryEntry, HistoryFilter};
 use crate::state::paths::{ClientPaths, Paths};
@@ -570,11 +571,14 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
 /// change nothing. Every journal whose writer is gone is finished or rolled back; one
 /// that cannot be only warns (`journal_pending`). A command that runs no discovery
 /// passes [`no_saved_variables`], so an undo's SavedVariables restore waits
-/// (`saved_variables_deferred`).
+/// (`saved_variables_deferred`). Rolling any journal back or forward rings the doorbell
+/// once, for `command` run by `actor` (a commit window rings for its own recovery).
 pub fn recover_under(
     lock: &GlobalLockGuard,
     paths: &Paths,
     sv_writable: &dyn Fn(&Path) -> bool,
+    command: &str,
+    actor: Actor,
 ) -> Vec<Warning> {
     let left = |error: Error| {
         vec![
@@ -599,7 +603,14 @@ pub fn recover_under(
         own: &[],
         sv_writable,
     };
-    recover_all(&env).unwrap_or_else(left)
+    let warnings = recover_all(&env).unwrap_or_else(left);
+    if warnings
+        .iter()
+        .any(|w| w.code == WarningCode::JournalRecovered)
+    {
+        doorbell::ring(paths, command, actor);
+    }
+    warnings
 }
 
 /// For a command that cannot tell whether a client runs: never write SavedVariables.
@@ -614,6 +625,7 @@ pub fn no_saved_variables(_: &Path) -> bool {
 pub fn recover_waiting(
     paths: &Paths,
     command: &str,
+    actor: Actor,
     sv_writable: &dyn Fn(&Path) -> bool,
 ) -> Vec<Warning> {
     if !recoverable(paths).unwrap_or(false) {
@@ -622,7 +634,7 @@ pub fn recover_waiting(
     let Ok(guard) = GlobalLock::acquire(paths, command) else {
         return Vec::new();
     };
-    recover_under(&guard, paths, sv_writable)
+    recover_under(&guard, paths, sv_writable, command, actor)
 }
 
 /// Whether a journal whose writer is gone waits for recovery.

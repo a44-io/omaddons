@@ -15,12 +15,13 @@ use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::doorbell;
 use super::paths::Paths;
 use super::store::{self, SchemaVersion, VersionStatus, Versioned};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::fsx::{Content, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate};
 use crate::limits::MEMO_KNOWN_RELEASES;
-use crate::model::{Channel, Ref, Release, ReleaseSet};
+use crate::model::{Actor, Channel, Ref, Release, ReleaseSet};
 use crate::resolve::select::newest;
 
 /// The memo.
@@ -463,25 +464,41 @@ pub fn load(paths: &Paths) -> (ReleaseMemo, Option<String>) {
     }
 }
 
-/// Merges `update` into the memo on disk and writes it, capped at `max` entries.
-/// Best effort: `Some(note)` for `-v` when the write was skipped (a newer file) or
-/// failed. A corrupt file is replaced.
-pub fn write(paths: &Paths, update: ReleaseMemo, max: usize) -> Option<String> {
+/// Merges `update` into the memo on disk and writes it, capped at `max` entries, then
+/// rings the doorbell for `command` run by `actor`: a changed memo can change what
+/// `status` reports (its update counts and `checked_at`). A merge that leaves the file
+/// as it was writes and rings nothing. Best effort: `Some(note)` for `-v` when the
+/// write was skipped (a newer file) or failed. A corrupt file is replaced.
+pub fn write(
+    paths: &Paths,
+    update: ReleaseMemo,
+    max: usize,
+    command: &str,
+    actor: Actor,
+) -> Option<String> {
     let path = paths.release_memo();
-    let mut memo = match store::load::<ReleaseMemo>(&path) {
-        Ok(Some(loaded)) if loaded.status == VersionStatus::Newer => {
+    // Read once: merged into, and compared with what the merge would write.
+    let on_disk = std::fs::read(&path).ok();
+    let loaded = on_disk
+        .as_deref()
+        .map(|bytes| store::load_bytes::<ReleaseMemo>(&path, bytes));
+    let mut memo = match loaded {
+        Some(Ok(loaded)) if loaded.status == VersionStatus::Newer => {
             return Some(format!(
                 "release memo: {} was written by a newer omaddons; not updated",
                 path.display()
             ));
         }
-        Ok(Some(loaded)) => loaded.value,
-        Ok(None) | Err(_) => ReleaseMemo::default(),
+        Some(Ok(loaded)) => loaded.value,
+        Some(Err(_)) | None => ReleaseMemo::default(),
     };
     memo.merge(update);
     memo.cap(max);
-    let written = (|| -> Result<()> {
+    let written = (|| -> Result<bool> {
         let json = store::encode(&memo)?;
+        if on_disk.as_deref() == Some(json.as_slice()) {
+            return Ok(false);
+        }
         let scopes = ScopeTable::new(paths, &[], None)?;
         let mut s = WriteSession::untracked(Writer::Derived, &scopes, "release-memo");
         ensure_dir_all(&mut s, paths.cache_dir())?;
@@ -490,11 +507,16 @@ pub fn write(paths: &Paths, update: ReleaseMemo, max: usize) -> Option<String> {
             mode: Some(0o644),
         };
         mutate(&mut s, &path, op)?;
-        Ok(())
+        Ok(true)
     })();
-    written
-        .err()
-        .map(|error| format!("release memo not written: {}", error.message))
+    match written {
+        Ok(true) => {
+            doorbell::ring(paths, command, actor);
+            None
+        }
+        Ok(false) => None,
+        Err(error) => Some(format!("release memo not written: {}", error.message)),
+    }
 }
 
 #[cfg(test)]
@@ -840,12 +862,12 @@ mod tests {
         first
             .entries
             .insert("a".into(), entry("2026-10-15T12:00:00Z"));
-        assert_eq!(write(&paths, first, 10), None);
+        assert_eq!(write(&paths, first, 10, "outdated", Actor::Human), None);
         let mut second = ReleaseMemo::default();
         second
             .entries
             .insert("b".into(), entry("2026-10-15T12:00:00Z"));
-        assert_eq!(write(&paths, second, 10), None);
+        assert_eq!(write(&paths, second, 10, "outdated", Actor::Human), None);
         let (memo, note) = load(&paths);
         assert_eq!(note, None);
         assert_eq!(
@@ -862,19 +884,60 @@ mod tests {
         third
             .entries
             .insert("c".into(), entry("2026-10-15T12:00:00Z"));
-        assert_eq!(write(&paths, third, 10), None, "a corrupt file is replaced");
+        assert_eq!(
+            write(&paths, third, 10, "outdated", Actor::Human),
+            None,
+            "a corrupt file is replaced"
+        );
         assert_eq!(load(&paths).0.entries.keys().collect::<Vec<_>>(), ["c"]);
 
         let newer = r#"{"schema_version": "9.0", "entries": {}}"#;
         std::fs::write(paths.release_memo(), newer).unwrap();
         let (memo, note) = load(&paths);
         assert!(memo.entries.is_empty() && note.is_some());
-        let note = write(&paths, ReleaseMemo::default(), 10);
+        let note = write(&paths, ReleaseMemo::default(), 10, "outdated", Actor::Human);
         assert!(note.is_some_and(|n| n.contains("newer")));
         assert_eq!(
             std::fs::read_to_string(paths.release_memo()).unwrap(),
             newer,
             "a newer memo is never overwritten"
+        );
+    }
+
+    #[test]
+    fn a_write_that_changes_the_memo_rings_and_one_that_does_not_writes_nothing() {
+        use crate::state::doorbell::Doorbell;
+
+        let (_dir, paths) = paths();
+        let rung = || {
+            store::load::<Doorbell>(&paths.doorbell_file())
+                .unwrap()
+                .map(|loaded| (loaded.value.command, loaded.value.actor))
+        };
+        let update = || {
+            let mut memo = ReleaseMemo::default();
+            memo.entries
+                .insert("a".into(), entry("2026-10-15T12:00:00Z"));
+            memo
+        };
+        assert_eq!(write(&paths, update(), 10, "outdated", Actor::Widget), None);
+        assert_eq!(rung(), Some(("outdated".to_owned(), Actor::Widget)));
+        let bytes = std::fs::read(paths.release_memo()).unwrap();
+
+        std::fs::remove_file(paths.doorbell_file()).unwrap();
+        assert_eq!(write(&paths, update(), 10, "info", Actor::Human), None);
+        assert_eq!(rung(), None, "the same merge again changes nothing");
+        assert_eq!(std::fs::read(paths.release_memo()).unwrap(), bytes);
+
+        let mut later = ReleaseMemo::default();
+        later
+            .entries
+            .insert("a".into(), entry("2026-10-15T12:30:00Z"));
+        assert_eq!(write(&paths, later, 10, "install", Actor::Agent), None);
+        assert_eq!(
+            rung(),
+            Some(("install".to_owned(), Actor::Agent)),
+            "a newer fetch of the same ref changes the memo"
         );
     }
 }

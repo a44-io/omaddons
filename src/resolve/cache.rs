@@ -17,7 +17,7 @@ use serde::Serialize;
 
 use crate::error::{Result, Suggestion, Warning, WarningCode};
 use crate::limits::RELEASE_MEMO_MAX_ENTRIES;
-use crate::model::{Channel, Ref, ReleaseSet};
+use crate::model::{Actor, Channel, Ref, ReleaseSet};
 use crate::net::{Http, run_bounded};
 use crate::output::{Phase, ProgressSink};
 use crate::politeness::{MAX_CONCURRENT_REQUESTS, SOURCE_RECHECK_MIN_INTERVAL};
@@ -100,10 +100,19 @@ fn decide(entry: Option<&MemoEntry>, policy: Freshness, now: Timestamp) -> Decis
     }
 }
 
+/// Where a cache reads and writes the memo, and whom a changed memo rings the doorbell
+/// for.
+struct MemoFile<'a> {
+    paths: Paths,
+    /// The command, as its envelope names it.
+    command: &'a str,
+    actor: Actor,
+}
+
 /// The release metadata of one command run.
 pub struct ReleaseCache<'a> {
     /// `None` for a transient cache, which reads and writes no memo.
-    paths: Option<Paths>,
+    file: Option<MemoFile<'a>>,
     memo: ReleaseMemo,
     /// The memo's candidate facts, for skipping downloads.
     facts: FactIndex,
@@ -128,16 +137,23 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl<'a> ReleaseCache<'a> {
-    /// A cache over the memo under `paths`, fetching through `http` and `registry`.
+    /// A cache over the memo under `paths`, fetching through `http` and `registry`, for
+    /// `command` run by `actor`: a memo it changes rings the doorbell for them.
     pub fn new(
         paths: &Paths,
         http: &'a dyn Http,
         registry: &'a SourceRegistry,
         policy: Freshness,
+        command: &'a str,
+        actor: Actor,
     ) -> Self {
         let (memo, note) = memo::load(paths);
         Self {
-            paths: Some(paths.clone()),
+            file: Some(MemoFile {
+                paths: paths.clone(),
+                command,
+                actor,
+            }),
             facts: FactIndex::new(&memo.candidates),
             memo,
             http,
@@ -156,7 +172,7 @@ impl<'a> ReleaseCache<'a> {
     /// A cache that only de-duplicates within the run: no memo is read or written.
     pub fn transient(http: &'a dyn Http, registry: &'a SourceRegistry) -> Self {
         Self {
-            paths: None,
+            file: None,
             memo: ReleaseMemo::default(),
             facts: FactIndex::default(),
             http,
@@ -197,7 +213,7 @@ impl<'a> ReleaseCache<'a> {
     /// without a pinned version. Local and `url:` refs are read now (their release is
     /// the file or the URL itself), and a pinned version must see that exact release.
     fn memoized(&self, wanted: &Wanted) -> bool {
-        self.paths.is_some()
+        self.file.is_some()
             && wanted.version.is_none()
             && !matches!(SourceId::of(&wanted.r#ref), SourceId::Local | SourceId::Url)
     }
@@ -412,9 +428,10 @@ impl<'a> ReleaseCache<'a> {
             .cloned()
     }
 
-    /// Writes what this run learned (and `facts`) to the memo, once per command. The
-    /// warnings join the outcome: `stale_check` when an answer came from the memo
-    /// whatever its age. The notes are for `-v`: a memo ignored or not written.
+    /// Writes what this run learned (and `facts`) to the memo, once per command, ringing
+    /// the doorbell when that changed the memo. The warnings join the outcome:
+    /// `stale_check` when an answer came from the memo whatever its age. The notes are
+    /// for `-v`: a memo ignored or not written.
     pub fn remember(self, facts: &[CandidateFact]) -> Remembered {
         let mut remembered = Remembered {
             warnings: Vec::new(),
@@ -437,7 +454,7 @@ impl<'a> ReleaseCache<'a> {
                 )),
             );
         }
-        let Some(paths) = self.paths else {
+        let Some(file) = self.file else {
             return remembered;
         };
         let mut learned = self
@@ -452,9 +469,13 @@ impl<'a> ReleaseCache<'a> {
             .and_then(crate::sources::tukui::TukuiSource::decoded)
             .map(|decoded| decoded.memo());
         if learned != ReleaseMemo::default() {
-            remembered
-                .notes
-                .extend(memo::write(&paths, learned, self.cap));
+            remembered.notes.extend(memo::write(
+                &file.paths,
+                learned,
+                self.cap,
+                file.command,
+                file.actor,
+            ));
         }
         remembered
     }
@@ -585,7 +606,14 @@ mod tests {
         }
 
         fn cache(&self, policy: Freshness) -> ReleaseCache<'_> {
-            ReleaseCache::new(&self.paths, &NoNetwork, &self.registry, policy)
+            ReleaseCache::new(
+                &self.paths,
+                &NoNetwork,
+                &self.registry,
+                policy,
+                "outdated",
+                Actor::Human,
+            )
         }
 
         fn calls(&self) -> usize {
@@ -903,7 +931,14 @@ mod tests {
 
         // Nothing remembered: one request, shared with fetch, then remembered.
         let registry = SourceRegistry::builtin(&all);
-        let cache = ReleaseCache::new(&paths, &api, &registry, Freshness::Revalidate);
+        let cache = ReleaseCache::new(
+            &paths,
+            &api,
+            &registry,
+            Freshness::Revalidate,
+            "install",
+            Actor::Human,
+        );
         assert_eq!(cache.tukui_list().unwrap().entries[0].slug, "elvui");
         let elvui = Wanted::stable("tukui:elvui".parse().unwrap());
         assert!(cache.get(std::slice::from_ref(&elvui))[&elvui].set.is_ok());
@@ -915,14 +950,29 @@ mod tests {
 
         // A new command inside the window: the memo answers.
         let registry = SourceRegistry::builtin(&all);
-        let cache = ReleaseCache::new(&paths, &api, &registry, Freshness::Revalidate);
+        let cache = ReleaseCache::new(
+            &paths,
+            &api,
+            &registry,
+            Freshness::Revalidate,
+            "install",
+            Actor::Human,
+        );
         assert!(cache.tukui_list().is_ok());
         assert_eq!(sent(), 1);
 
         // Past the window: fetched once, however often asked.
         let later = Timestamp::now() + jiff::SignedDuration::from_hours(1);
         let registry = SourceRegistry::builtin(&all);
-        let cache = ReleaseCache::new(&paths, &api, &registry, Freshness::Revalidate).at(later);
+        let cache = ReleaseCache::new(
+            &paths,
+            &api,
+            &registry,
+            Freshness::Revalidate,
+            "install",
+            Actor::Human,
+        )
+        .at(later);
         assert!(cache.tukui_list().is_ok() && cache.tukui_list().is_ok());
         assert_eq!(sent(), 2);
 
@@ -933,8 +983,15 @@ mod tests {
         };
         let much_later = later + jiff::SignedDuration::from_hours(240);
         let registry = SourceRegistry::builtin(&all);
-        let cache =
-            ReleaseCache::new(&paths, &offline, &registry, Freshness::OfflineOnly).at(much_later);
+        let cache = ReleaseCache::new(
+            &paths,
+            &offline,
+            &registry,
+            Freshness::OfflineOnly,
+            "install",
+            Actor::Human,
+        )
+        .at(much_later);
         assert!(cache.tukui_list().is_ok());
         let codes: Vec<WarningCode> = cache
             .remember(&[])
@@ -946,7 +1003,14 @@ mod tests {
         // Offline with nothing remembered: offline.
         let empty = tempfile::tempdir().unwrap();
         let nowhere = Paths::with_roots(empty.path(), empty.path(), empty.path(), empty.path());
-        let cache = ReleaseCache::new(&nowhere, &offline, &registry, Freshness::OfflineOnly);
+        let cache = ReleaseCache::new(
+            &nowhere,
+            &offline,
+            &registry,
+            Freshness::OfflineOnly,
+            "install",
+            Actor::Human,
+        );
         assert_eq!(cache.tukui_list().unwrap_err().code, ErrorCode::Offline);
 
         // Tukui turned off: source_disabled.
@@ -959,7 +1023,14 @@ mod tests {
         )]
         .into();
         let off = SourceRegistry::builtin(&SourceConfigView::from_config(&sources));
-        let cache = ReleaseCache::new(&paths, &api, &off, Freshness::Revalidate);
+        let cache = ReleaseCache::new(
+            &paths,
+            &api,
+            &off,
+            Freshness::Revalidate,
+            "install",
+            Actor::Human,
+        );
         assert_eq!(
             cache.tukui_list().unwrap_err().code,
             ErrorCode::SourceDisabled

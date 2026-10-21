@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod clock;
 pub mod discover;
 pub mod drift;
 pub mod engine;

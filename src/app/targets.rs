@@ -349,8 +349,13 @@ fn locked<T>(
     let guard = GlobalLock::acquire(paths, command)?;
     {
         use crate::engine::journal::{no_saved_variables, recover_under};
-        ctx.notes
-            .warn_all(&recover_under(&guard, paths, &no_saved_variables));
+        ctx.notes.warn_all(&recover_under(
+            &guard,
+            paths,
+            &no_saved_variables,
+            ctx.command,
+            ctx.actor,
+        ));
     }
     let scopes = ScopeTable::new(paths, dirs, None)?;
     let mut s = WriteSession::untracked(Writer::Mutating, &scopes, "registry");

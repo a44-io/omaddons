@@ -8,10 +8,11 @@
 //! inventory and running state (a changed generation that now conflicts is
 //! `plan_stale`); journal; finish the SavedVariables snapshot (a stat per unchanged
 //! file) and snapshot state; swap; write the record (`generation + 1`), the files index
-//! and history; mark committed; unlock. Then `status.json`, and cleanup of the journal,
-//! stage dir, temp downloads and in-flight lock. An error after `prepared` is recovered
-//! in process by the journal: before `swapped` it rolls back, after it rolls forward.
-//! One target's failure is a per-item failure; committed targets stay committed.
+//! and history; mark committed; unlock. Then `status.json`, cleanup of the journal,
+//! stage dir, temp downloads and in-flight lock, and the doorbell. An error after
+//! `prepared` is recovered in process by the journal: before `swapped` it rolls back,
+//! after it rolls forward. One target's failure is a per-item failure; committed targets
+//! stay committed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -56,6 +57,7 @@ use crate::resolve::catalog::Catalog;
 use crate::rules::RulesTable;
 use crate::sources::SourceRegistry;
 use crate::state::config::RunningPolicy;
+use crate::state::doorbell;
 use crate::state::files_index::{FilesIndex, FolderIndex};
 use crate::state::history::{self, FolderOp, HistoryEdit, HistoryEntry, HistoryOp, TxResult};
 use crate::state::paths::{ClientPaths, Paths};
@@ -431,7 +433,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
 /// as a commit's recovery would: only in a discovered client that is not running.
 pub fn recover_waiting(ctx: &EngineCtx<'_>) -> Vec<Warning> {
     let sv_writable = |dir: &Path| sv_writable(ctx, dir);
-    journal::recover_waiting(ctx.paths, ctx.command, &sv_writable)
+    journal::recover_waiting(ctx.paths, ctx.command, ctx.actor, &sv_writable)
 }
 
 /// A target's outcome when nothing is committed.
@@ -577,6 +579,7 @@ fn commit_target(
         .as_ref()
         .is_ok_and(|(outcome, _)| outcome.tx.is_some());
     cleanup(ctx.paths, scopes, inflight, &tx, Some(&client), committed);
+    ring_after_window(ctx, &result);
     let fail = |e: std::io::Error| {
         Error::io(
             ctx.paths.state_dir(),
@@ -592,6 +595,19 @@ fn commit_target(
             .extend(retain(ctx, scopes, key, &target.client_dir));
     }
     Ok((outcome, recovered))
+}
+
+/// Rings the doorbell once a commit window has run and its lock is released (M3-D4).
+/// Every way out of the window may have changed what `status` reports: the target
+/// registered, other journals recovered, the commit itself, or its own journal left
+/// pending when recovering it failed. Only a lock that timed out (`locked`) leaves all as
+/// it was. An error before the lock rings too: a false ring costs the widget one
+/// `status --cached`.
+pub(super) fn ring_after_window<T>(ctx: &EngineCtx<'_>, result: &Result<T>) {
+    // ubs:ignore — comparing error codes, not secrets
+    if !matches!(result, Err(error) if error.code == ErrorCode::Locked) {
+        doorbell::ring(ctx.paths, ctx.command, ctx.actor);
+    }
 }
 
 /// Retention after a commit (vision §5.5), best effort: its warnings join the outcome
@@ -1247,7 +1263,7 @@ fn touched_folder(op: &SwapOp) -> FolderName {
 }
 
 /// Rewrites `status.json` (monotonic). Best effort: it is derived data, and a lost
-/// race only delays the widget's doorbell.
+/// race only leaves the summary behind.
 pub(super) fn write_status(
     paths: &Paths,
     scopes: &ScopeTable,

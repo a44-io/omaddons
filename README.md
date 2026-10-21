@@ -1417,7 +1417,7 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
                                                               journal: swapped
                                                               write record, files index, history line
                                                               journal: committed → release the lock
-                                                              then: status.json, cleanup, retention
+                                                              then: status.json, cleanup, doorbell, retention
 ```
 
 - **Interrupted runs.** The next command that changes something recovers under the global lock first, every client's journals whichever client the command changes. That is install, update, sync, pin, unpin, adopt, copy, remove and undo (also when they turn out to change nothing), `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write`. Dry runs and read commands never recover. A journal is written back only into its own client, once that client's identity marker names the journal's target. A journal that reached `swapped` rolls forward, and anything earlier rolls back. A rollback also removes the transaction's snapshots, except one that still holds an addon folder, which it keeps and names in the `journal_recovered` warning. Each step records the inode (and, where the filesystem keeps one, the birth time) of both paths, so rollback reverses a rename only if it actually happened, also after a reboot that renumbered the device (btrfs subvolumes, FUSE and device-mapper volumes get new device numbers on every mount). An interrupted undo whose SavedVariables restore had not run yet restores them during recovery only when the client is not running. Otherwise, or when the restore fails, recovery leaves them as they are and warns `saved_variables_deferred` with the command to run after quitting. Read commands never recover anything: they report `journal_pending`, and `status` lists it under attention. A command's journal warnings describe the state when it finishes: a journal it recovered appears only as `journal_recovered`, never also as `journal_pending`.
@@ -1632,7 +1632,7 @@ Every rules edit applies on the next command. The discovery cache records the ru
 | `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | Move omaddons' config, state and cache (used only when absolute). `XDG_CONFIG_HOME` also moves the Lutris and Heroic config lookups |
 | `XDG_DATA_HOME` | Moves the Lutris, Steam and Bottles data lookups; omaddons keeps no files there |
 
-Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD` and `OMADDONS_PROC_ROOT` for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE` and `OMADDONS_LIVE` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate)).
+Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT` and `OMADDONS_NOW` (an RFC 3339 time that freezes the clock) for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE` and `OMADDONS_LIVE` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate)).
 
 ---
 
@@ -1649,11 +1649,12 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDON
 | `~/.local/state/omaddons/history.jsonl` | One line per committed transaction, and per settings change (`config`, `target`, `auth`, `export`, never undone; `target` is `null` when it names no client). A line a crash cut short is closed off by the next write, and recovery appends that transaction's line again; other unreadable lines are skipped and counted in a `history_lines_skipped` warning on `history` and `undo` | Loses history |
 | `~/.local/state/omaddons/snapshots/<tx>/`, `journal/`, `inflight/`, `trash/` | Undo data for state files, journals, in-flight locks, staged deletions | No |
 | `~/.local/state/omaddons/lock` | The global lock (never delete while running) | No |
-| `~/.local/state/omaddons/status.json` | A derived summary for the future widget | Yes |
+| `~/.local/state/omaddons/status.json` | A derived summary, rewritten after each commit and undo | Yes |
 | `~/.local/state/omaddons/net.log`, `net.log.1` | The request log | Yes |
 | `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `inflight/`, `trash/`, `git-home/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, the in-flight locks of planning and dry runs, staged deletions, git's empty home directory | Yes when no command is running; reinstalls then download again |
 | `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), failures retrying cannot change, and what downloading candidates taught (each archive's hash, and whether it loads on a client) | Yes; the next commands fetch and download again |
 | `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim, its text decoded and made safe (format 1.1; a 1.0 index is decoded once on load), refreshed after its hour | Yes; the next search or dependency lookup fetches it again |
+| `~/.cache/omaddons/doorbell.json` | A signal for the bar widget: rewritten (`{at, command, actor}`) by every change that can alter what `status --cached` reports, never by a read | Yes; the next change writes it again |
 | `~/.cache/omaddons/export.json` | The hash of the `addons.toml` `export --write` last wrote, so a hand-edited file is not overwritten | Yes; the next `--write` then needs `--overwrite` |
 | `<client>/Interface/.omaddons/target.json` | The client's identity, so a moved install keeps its id | Loses identity |
 | `<client>/Interface/.omaddons/snapshots/<tx>/` | `AddOns/` (replaced and removed folders) and `WTF/` (SavedVariables copies with a manifest): most of the undo data | Loses undo |
@@ -1733,10 +1734,13 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `src/net/` | HTTP client, allowlist, guard, retries, concurrency limits, validators, net.log, record/replay |
 | `src/engine/` | The transaction engine |
 | `src/fsx/` | The only code allowed to write to the filesystem |
-| `src/state/` | Config, paths, registry, records, history, status |
+| `src/state/` | Config, paths, registry, records, history, status, the doorbell |
+| `src/clock.rs` | The clock time rules read (`OMADDONS_NOW` freezes it in debug builds) |
 | `src/politeness.rs`, `src/limits.rs` | Every network-politeness constant and every safety limit, each in one place |
 | `catalog/catalog.toml` | The built-in catalog, embedded with `include_str!` |
 | `tests/`, `fuzz/` | Integration, contract, crash, concurrency and live tests; cargo-fuzz targets |
+
+**One doorbell.** Every write that can change what `status --cached` reports rings `~/.cache/omaddons/doorbell.json` once, after the write: each commit window (undo's too, after its lock is released), a recovery that rolled a journal back or forward, a release memo write that changed the memo, and every settings command. Reads never ring it, so `status` stays write-free and the bar widget can watch the cache directory instead of polling. The file is a signal, never a source of state: the widget reads `status --cached` again when it rings.
 
 **Invariants the build enforces:**
 

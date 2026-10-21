@@ -290,7 +290,14 @@ fn a_moved_tag_costs_one_manifest_through_its_assets_redirect() {
     let http = replay(&env, &scenario("github-stable"));
     let registry = SourceRegistry::builtin(&SourceConfigView::all_enabled());
     let window = Freshness::Window(std::time::Duration::from_secs(15 * 60));
-    let cache = ReleaseCache::new(&paths, http.as_ref(), &registry, window);
+    let cache = ReleaseCache::new(
+        &paths,
+        http.as_ref(),
+        &registry,
+        window,
+        "outdated",
+        omaddons::model::Actor::Human,
+    );
     let w = want("gh:WeakAuras/WeakAuras2");
     let answer = cache.get(std::slice::from_ref(&w)).remove(&w).unwrap();
     assert_eq!(answer.origin, Origin::Fetched);

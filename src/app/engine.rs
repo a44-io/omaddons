@@ -125,8 +125,15 @@ impl Engine {
     /// The command's release metadata over this engine's network and sources, one per
     /// command so that its engine runs fetch each ref once.
     pub fn cache(&self, freshness: Freshness) -> ReleaseCache<'_> {
-        ReleaseCache::new(&self.paths, self.http.as_ref(), &self.registry, freshness)
-            .with_progress(self.progress.clone())
+        ReleaseCache::new(
+            &self.paths,
+            self.http.as_ref(),
+            &self.registry,
+            freshness,
+            self.command,
+            self.actor,
+        )
+        .with_progress(self.progress.clone())
     }
 
     /// The sources that are on.
