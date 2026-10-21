@@ -1,7 +1,8 @@
 //! Which targets' clients are running right now (vision §5.2 step 8): computed live on
 //! every call, never cached, never written.
 //!
-//! Wine names a process after its Windows exe (`/proc/<pid>/comm`, 15-byte limit). Only
+//! Wine names a process after its Windows exe (`/proc/<pid>/comm`, 15-byte limit;
+//! observed under umu and GE-Proton for retail, Classic and 3.3.5a, 2026-10-20). Only
 //! the user's own processes whose `comm` matches a known exe name (case-insensitive,
 //! truncation-aware, with or without `.exe`) have their `cmdline` and `environ` read:
 //! the exe path in `cmdline` (a Windows path is mapped through the prefix's
@@ -174,12 +175,13 @@ pub fn process_prefixes(table: &RulesTable, home: &Path) -> Vec<ExtraPrefix> {
         .chain(["Wow.exe", "Wow-64.exe", "Battle.net.exe"].map(str::to_owned))
         .collect();
     // A prefix the scan looks at anyway (a direct child of `~/Games`, `~/.wine`) keeps
-    // its scan route, running or not.
+    // its scan route, running or not. The prefixes are canonical, so `home` is too.
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     let games = home.join("Games");
     let scanned = |p: &Path| p.parent() == Some(games.as_path()) || p == home.join(".wine");
     running_prefixes(&root, uid, &names)
         .into_iter()
-        .filter(|path| path.starts_with(home) && !scanned(path))
+        .filter(|path| path.starts_with(&home) && !scanned(path))
         .map(|path| ExtraPrefix {
             qualifier: super::dir_slug(&path),
             path,
@@ -189,7 +191,9 @@ pub fn process_prefixes(table: &RulesTable, home: &Path) -> Vec<ExtraPrefix> {
 }
 
 /// The `WINEPREFIX` of every own process whose `comm` matches one of `names` (exe
-/// names), for discovery hints.
+/// names), canonical, for discovery hints. umu sets it to `<prefix>/pfx/`, a symlink
+/// to the prefix itself (observed 2026-10-20), so the raw value would name the prefix
+/// a second time.
 pub fn running_prefixes(proc_root: &Path, own_uid: u32, names: &[String]) -> Vec<PathBuf> {
     let known = known_names(names.iter().map(String::as_str));
     let read = |p: &Path| std::fs::read(p).ok();
@@ -197,6 +201,7 @@ pub fn running_prefixes(proc_root: &Path, own_uid: u32, names: &[String]) -> Vec
     let listing = list(proc_root).unwrap_or_default();
     let mut prefixes: Vec<PathBuf> = processes(&listing, own_uid, &known, &read)
         .filter_map(|p| p.prefix)
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
         .collect();
     prefixes.sort();
     prefixes.dedup();

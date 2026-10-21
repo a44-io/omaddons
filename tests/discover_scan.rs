@@ -474,6 +474,12 @@ fn a_running_client_in_a_nested_prefix_is_found_by_its_process_then_by_its_regis
     // A running client in a prefix the scan reaches keeps its scan route.
     let battlenet = home.env.home().join("Games/battlenet");
     running(&mut home, "proc-scanned", &battlenet);
+    assert_eq!(listed(&home), [era.clone(), retail.clone()]);
+
+    // umu sets `WINEPREFIX` to `<prefix>/pfx/`, a symlink to the prefix itself
+    // (observed 2026-10-20): still the scanned prefix, not a second one named `pfx`.
+    std::os::unix::fs::symlink(".", battlenet.join("pfx")).unwrap();
+    running(&mut home, "proc-umu", &battlenet.join("pfx/"));
     assert_eq!(listed(&home), [era, retail.clone()]);
 
     // A prefix outside HOME is never a process route: a throwaway home stays apart.
