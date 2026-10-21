@@ -460,8 +460,20 @@ fn a_running_client_in_a_nested_prefix_is_found_by_its_process_then_by_its_regis
         );
         home.proc = Some(proc.root().to_path_buf());
     };
-    running(&mut home, "proc-nested", nested.path());
+    // The Battle.net app open with no client: its main process runs as `CrBrowserMain`
+    // and its agent as `Agent.exe` (observed 2026-10-20); the agent names the prefix.
+    let wineprefix = nested.path().display().to_string();
+    let env = [("WINEPREFIX", wineprefix.as_str())];
+    let app = "C:\\Program Files (x86)\\Battle.net\\Battle.net.exe";
+    let agent = "C:/ProgramData/Battle.net/Agent/Agent.9824/Agent.exe";
+    let proc = FakeProc::new(home.env.root().join("proc-launcher"))
+        .process(15, true, "CrBrowserMain", &[app, "--from-launcher"], &env)
+        .process(16, true, "Agent.exe", &[agent, "--session=1"], &env);
+    home.proc = Some(proc.root().to_path_buf());
     let era = ("era".to_owned(), "process".to_owned());
+    assert_eq!(listed(&home), [era.clone(), retail.clone()], "the app open");
+
+    running(&mut home, "proc-nested", nested.path());
     assert_eq!(listed(&home), [era, retail.clone()]);
 
     // Registered (its first change, or here `targets default`), it stays found after

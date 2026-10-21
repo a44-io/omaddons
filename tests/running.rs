@@ -13,7 +13,7 @@ use omaddons::discover::DiscoverySource;
 use omaddons::discover::battlenet::{BattlenetHints, discover_root};
 use omaddons::discover::custom::discover_custom_root;
 use omaddons::discover::running::{
-    RunningEvidence, RunningInfo, detect_running_in, running_prefixes,
+    PROCESS_ROUTE_EXES, RunningEvidence, RunningInfo, detect_running_in, running_prefixes,
 };
 use omaddons::model::Target;
 use omaddons::rules::RulesTable;
@@ -415,8 +415,22 @@ fn observed_proton_shapes_map_to_the_played_client() {
     let names: Vec<String> = targets
         .iter()
         .filter_map(|t| t.exe_name.clone())
-        .chain(["Wow.exe", "Wow-64.exe", "Battle.net.exe"].map(str::to_owned))
+        .chain(PROCESS_ROUTE_EXES.map(str::to_owned))
         .collect();
+    // The app open with no client: no client runs, and its agent names the prefix.
+    let env_bnet = [("WINEPREFIX", bnet_pfx.as_str())];
+    let launcher_only = FakeProc::new(env.root().join("proc-launcher"))
+        .process(13, true, "umu.exe", &umu_exe, &env_bnet)
+        .process(14, true, "wineserver", &[&wineserver], &env_bnet)
+        .process(15, true, "CrBrowserMain", &browser, &env_bnet)
+        .process(16, true, "Agent.exe", &agent, &env_bnet);
+    let (root, owner) = (launcher_only.root(), uid(&launcher_only));
+    assert!(detect_running_in(root, owner, &targets, None).is_empty());
+    assert_eq!(
+        running_prefixes(root, owner, &names),
+        [std::fs::canonicalize(battlenet.path()).unwrap()],
+        "the agent names the prefix"
+    );
     for (id, comm, argv, client_dir) in sessions {
         let env_bnet = [("WINEPREFIX", bnet_pfx.as_str())];
         let proc = FakeProc::new(env.root().join(format!("proc-{id}")))

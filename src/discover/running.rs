@@ -154,6 +154,16 @@ pub fn scan_running(
     }
 }
 
+/// Besides every product's exe, the process names whose `WINEPREFIX` the process route
+/// reads: a custom client's usual exes, the Battle.net app, and Battle.net's agent. The
+/// app runs as `CrBrowserMain` under Wine (Chromium names its main thread), so its own
+/// name is rarely seen; its agent keeps `Agent.exe` (observed 2026-10-20), and that
+/// generic name counts only from Battle.net's agent folder ([`from_agent_folder`]).
+pub const PROCESS_ROUTE_EXES: [&str; 4] = ["Wow.exe", "Wow-64.exe", "Battle.net.exe", AGENT_EXE];
+
+/// Battle.net's agent: `C:/ProgramData/Battle.net/Agent/Agent.<build>/Agent.exe`.
+const AGENT_EXE: &str = "Agent.exe";
+
 /// The Wine prefixes under `home` of the user's running WoW and Battle.net processes,
 /// from the real `/proc` (`OMADDONS_PROC_ROOT` in debug builds), as discovery's
 /// `process` route: a client in a prefix that no launcher names and that is not a
@@ -167,12 +177,11 @@ pub fn process_prefixes(table: &RulesTable, home: &Path) -> Vec<ExtraPrefix> {
         std::env::var_os("OMADDONS_PROC_ROOT"),
         cfg!(debug_assertions),
     );
-    // Every product's exe, a custom client's usual ones, and the Battle.net app.
     let names: Vec<String> = table
         .products()
         .iter()
         .map(|p| p.exe.clone())
-        .chain(["Wow.exe", "Wow-64.exe", "Battle.net.exe"].map(str::to_owned))
+        .chain(PROCESS_ROUTE_EXES.map(str::to_owned))
         .collect();
     // A prefix the scan looks at anyway (a direct child of `~/Games`, `~/.wine`) keeps
     // its scan route, running or not. The prefixes are canonical, so `home` is too.
@@ -309,7 +318,8 @@ fn list(proc_root: &Path) -> std::io::Result<Vec<(u32, PathBuf)>> {
 }
 
 /// The user's own processes whose `comm` is a known name; `cmdline` and `environ` are
-/// read for those only. A process whose files cannot be read (another user's, or one
+/// read for those only, and `environ` for `Agent.exe` only once its argv[0] lies in
+/// Battle.net's folder. A process whose files cannot be read (another user's, or one
 /// that exited) is skipped.
 fn processes<'a>(
     listing: &'a [(u32, PathBuf)],
@@ -328,6 +338,10 @@ fn processes<'a>(
             .to_ascii_lowercase();
         let exe = known.get(&comm)?.clone();
         let cmdline = nul_separated(&read(&dir.join("cmdline")).unwrap_or_default());
+        // A generic name counts only from Battle.net's folder, before environ is read.
+        if exe.eq_ignore_ascii_case(AGENT_EXE) && !from_agent_folder(&cmdline) {
+            return None;
+        }
         let prefix = nul_separated(&read(&dir.join("environ")).unwrap_or_default())
             .into_iter()
             .find_map(|var| var.strip_prefix("WINEPREFIX=").map(PathBuf::from))
@@ -338,6 +352,17 @@ fn processes<'a>(
             cmdline,
             prefix,
         })
+    })
+}
+
+/// Whether argv[0] lies in Battle.net's agent folder, `…/ProgramData/Battle.net/Agent/`
+/// in either slash and any case (Wine runs the agent with forward slashes).
+fn from_agent_folder(cmdline: &[String]) -> bool {
+    cmdline.first().is_some_and(|argv0| {
+        argv0
+            .replace('\\', "/")
+            .to_ascii_lowercase()
+            .contains("/programdata/battle.net/agent/")
     })
 }
 
@@ -492,6 +517,53 @@ mod tests {
                 "{seen:?}"
             );
             assert!(seen.contains(&format!("{pid}/comm")));
+        }
+    }
+
+    /// `Agent.exe` is a generic name: one outside Battle.net's agent folder is read no
+    /// further than its `cmdline`, and the app's Chromium-named process not at all.
+    #[test]
+    fn an_agent_counts_only_from_battlenets_folder_and_before_environ() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = "C:\\Program Files (x86)\\Battle.net\\Battle.net.exe";
+        let agent = "C:/ProgramData/Battle.net/Agent/Agent.9824/Agent.exe";
+        for (pid, comm, argv0) in [
+            (20, "CrBrowserMain", app),
+            (21, "Agent.exe", agent),
+            (22, "Agent.exe", "C:\\Tools\\Agent.exe"),
+            (23, "agent", "/usr/bin/agent"),
+        ] {
+            let p = dir.path().join(pid.to_string());
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join("comm"), format!("{comm}\n")).unwrap();
+            std::fs::write(p.join("cmdline"), format!("{argv0}\0--x\0")).unwrap();
+            std::fs::write(p.join("environ"), b"WINEPREFIX=/x\0").unwrap();
+        }
+        let uid = std::fs::metadata(dir.path()).unwrap().uid();
+        let seen = RefCell::new(BTreeSet::new());
+        let read = |p: &Path| {
+            let rel = p.strip_prefix(dir.path()).unwrap().display().to_string();
+            seen.borrow_mut().insert(rel);
+            std::fs::read(p).ok()
+        };
+        let known = known_names(PROCESS_ROUTE_EXES.into_iter());
+        let listing = list(dir.path()).unwrap();
+        let found: Vec<(u32, Option<PathBuf>)> = processes(&listing, uid, &known, &read)
+            .map(|p| (p.pid, p.prefix))
+            .collect();
+        assert_eq!(found, [(21, Some(PathBuf::from("/x")))]);
+        let seen = seen.into_inner();
+        assert!(seen.contains("21/environ"), "{seen:?}");
+        assert!(
+            !seen.contains("20/cmdline") && !seen.contains("20/environ"),
+            "{seen:?}"
+        );
+        for pid in ["22", "23"] {
+            assert!(
+                seen.contains(&format!("{pid}/cmdline"))
+                    && !seen.contains(&format!("{pid}/environ")),
+                "{seen:?}"
+            );
         }
     }
 
