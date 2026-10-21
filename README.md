@@ -38,7 +38,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are done, and omaddons runs daily on the development machine. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their dependencies (from the catalog, Tukui or WoWInterface), WoWInterface and Tukui (ElvUI) addons install and update, `search` and `auth github` work, and `adopt` brings addons installed by hand or by other managers under management. Milestone 3, the Omarchy widget, is next. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are done, the fixes from the post-M2 audit are in (the bugs its closing check found are listed under [Known issues](#known-issues)), and omaddons runs daily on the development machine. There, every client it manages (retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and a 3.3.5a server) has been seen in game loading the addons it installed. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their dependencies (from the catalog, Tukui or WoWInterface), WoWInterface and Tukui (ElvUI) addons install and update, `search` and `auth github` work, and `adopt` brings addons installed by hand or by other managers under management. Milestone 3 (the Omarchy widget, Lua errors and `WTF/` backups) is under way: `backup list` works, and creating and restoring backups come next. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -122,7 +122,7 @@ omaddons install plater -t forever --json --actor agent --reason "user asked for
 
 ## What works today
 
-Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are complete. Everything in this README describes code that exists and is tested, unless it is marked as planned.
+Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are complete, and milestone 3 has started. Everything in this README describes code that exists and is tested, unless it is marked as planned. Bugs the code has today, where it differs from what this README says, are listed under [Known issues](#known-issues).
 
 | Area | State |
 |---|---|
@@ -147,8 +147,9 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | Changelogs: `info --changelog` and `outdated --changelog`, from GitHub's Atom feeds, WoWInterface and Tukui | ✅ Done (milestone 2) |
 | `copy`: one client's addons installed on another where builds exist, the rest skipped and said why | ✅ Done (milestone 2) |
 | `auth github`: an opt-in GitHub token (5,000 REST requests an hour), stored from standard input or `gh`, checked and cleared | ✅ Done (milestone 2) |
-| `backup list`: each client's `WTF/` backups, what each proves, and the space they take | 🔄 Milestone 3 (creating, checking and restoring backups are next) |
-| The Omarchy bar widget, Lua error capture, creating and restoring `WTF/` backups | 🗓️ Milestone 3 |
+| In-game load checks: retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and 3.3.5a each wrote the SavedVariables of the addons omaddons installed, so the client loaded them | ✅ Observed on the development machine (2026-10-20 and 21) |
+| `backup list`: each client's `WTF/` backups, what each proves, and the space they take. Nothing creates a backup until `backup create` lands, so today it finds none | 🔄 Milestone 3 (creating, checking and restoring backups are next) |
+| The Omarchy bar widget, Lua error capture (`errors`, with BugGrabber from a new keyless `wowace:` source), creating, checking and restoring `WTF/` backups | 🗓️ Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
@@ -245,7 +246,7 @@ cargo uninstall omaddons
 rm -rf ~/.config/omaddons ~/.local/state/omaddons ~/.cache/omaddons
 ```
 
-Deleting the state directory loses the history and every undo snapshot. Each client managed by omaddons also has an `Interface/.omaddons/` folder that holds its identity marker, staging area and folder snapshots. The addons themselves stay where they are.
+Deleting the state directory loses the history and every undo snapshot. Each client managed by omaddons also has an `Interface/.omaddons/` folder that holds its identity marker, staging area, folder snapshots and `WTF/` backups; deleting it loses them. The addons themselves stay where they are.
 
 ---
 
@@ -359,7 +360,7 @@ A target is **registered** on its first change (or with `targets add`, `rename` 
 
 ### Where discovery looks
 
-Discovery runs whenever a command needs the clients: every command except `config`, `net-log`, `help` and `targets rm`. Each walk goes at most 4 levels deep, and all the walks in one run share a budget of 50,000 directories.
+Discovery runs whenever a command needs the clients: every command except `auth`, `config`, `net-log`, `help` and `targets rm`. Each walk goes at most 4 levels deep, and all the walks in one run share a budget of 50,000 directories.
 
 It first collects the Wine prefixes (directories containing `drive_c/`):
 
@@ -383,9 +384,11 @@ Then it looks for clients in this order. The first route that finds a client dec
 7. **The roots of registered targets** (`found_by: registered`) that no route above reached, while they are still WoW roots.
 8. **Roots found earlier while a client or the Battle.net app ran** (`found_by: remembered`), kept in `~/.cache/omaddons/discovery.json` while they are still WoW roots under your home. A client found once that way is still found after the process exits, registered or not. Deleting the cache file forgets them.
 
-A directory with `.build.info` is a **Battle.net root**: each `_<flavor>_` folder in it becomes a target, identified by its `.flavor.info`, product.db or the folder table. Battle.net installs other Blizzard games the same way, so a folder whose product is not WoW's (Warcraft III: Reforged's `_retail_` is product `w3`) is skipped without a warning. A product counts as WoW when the rules table lists it or its code starts with `wow`, and a folder whose product cannot be read stays a target. A directory with `Interface/` and a `wow*.exe` is a **custom client**: its version comes from the executable's PE version resource, and its label comes from `realmlist.wtf`.
+A directory with `.build.info` is a **Battle.net root**: each `_<flavor>_` folder in it becomes a target, identified by its `.flavor.info`, product.db or the folder table. Battle.net installs other Blizzard games the same way, so a folder whose product is not WoW's (Warcraft III: Reforged's `_retail_` is product `w3`) is skipped without a warning. A product counts as WoW when the rules table lists it or its code starts with `wow`, and a folder whose product cannot be read stays a target (a registered one whose product turns out not to be WoW's shows as `target_missing`). An unknown flavor folder `_xyz_` gets the id `xyz`, and counts as a test client when its folder or product name contains `ptr` or `beta`.
 
-Parsed results are cached in `~/.cache/omaddons/discovery.json` and reused while the stamped files (`.build.info`, `.flavor.info`, exes, `Config.wtf`, `realmlist.wtf`, `product.db`) are unchanged, and while the rules and the omaddons version are the ones the cache was built with. `targets --rescan` re-parses every root and reuses no cached parse (remembered roots are still looked at), and `status --cached` skips the scan entirely.
+A directory with `Interface/` and a `wow*.exe` is a **custom client**: its version comes from the executable's PE version resource. Its label comes from `Data/<locale>/realmlist.wtf`, then the root's `realmlist.wtf`, then the `realmList` setting in `WTF/Config.wtf`, then the directory name. A custom client of family `unknown` takes a slug of its directory name as its id (`My Server_3.3.5` becomes `my-server-3-3-5`).
+
+Parsed results are cached in `~/.cache/omaddons/discovery.json`. A root's parse is reused while its entries (a hash of its directory listing), the route that reached it and its stamped files (`.build.info`, `.flavor.info`, exes, `Config.wtf`, `realmlist.wtf`, `product.db`) are unchanged, and while the rules and the omaddons version are the ones the cache was built with. `targets --rescan` re-parses every root and reuses no cached parse (remembered roots are still looked at), and `status --cached` skips the scan entirely.
 
 ### Battle.net products
 
@@ -417,7 +420,7 @@ The product code does not decide the family; the version does. `wow_classic_era_
 | 5.4.8 (MoP) | `mists-legacy` | `mists` | same |
 | 1.16–1.49 (builds of the 1.12 client that stamp their own version, such as Turtle WoW 1.17 and 1.18) | `vanilla-legacy` | `vanilla` | same, interface 11200 |
 
-Legacy clients are found by their executable (`wow.exe`, then `wow-64.exe`, then any `wow*.exe`) next to an `Interface/` folder. Turtle WoW and other 1.12.1 servers are plain `vanilla-legacy` clients, whichever version their executable reports; name them with `targets add … --name turtle` or `targets rename`. While a legacy client runs, the default running policy refuses every change, except on 3.3.5a, where an update that keeps the addon's loaded TOC lands with `/reload` (see [Running clients](#running-clients)).
+Legacy clients are found by their executable (`wow.exe`, then `wow-64.exe`, then any `wow*.exe`) next to an `Interface/` folder. Turtle WoW and other 1.12.1 servers are plain `vanilla-legacy` clients, whether their executable reports 1.12 or a 1.16–1.49 version of its own; name them with `targets add … --name turtle` or `targets rename`. Other custom versions follow the modern rows: 1.13–1.15 is `vanilla`, 1.50 and up `forever`, 3.4 `wrath`. A custom client whose executable has no readable version, or whose version no family covers (2.6, say), gets family `unknown` and the `fallback-custom` rules: the plain TOC only, read as a legacy client would. A version below its family's rows (a 7.x server is `mainline`, a 1.11 client `vanilla`) keeps that family but gets `fallback-custom` too. While a legacy client runs, the default running policy refuses every change, except on 3.3.5a, where an update that keeps the addon's loaded TOC lands with `/reload` (see [Running clients](#running-clients)).
 
 ### Families and interface ranges
 
@@ -452,20 +455,39 @@ A client's interface number is `major×10000 + minor×100 (+ patch on modern cli
 6. a **family**: `mainline`, `vanilla`, `wrath-legacy`;
 7. a **path**: the install root, the client directory or its AddOns folder.
 
-Every target that the first matching kind matches is selected. `status`, `list` and `info` cover them all: `-t vanilla` reads every vanilla client, `-t mainline` every retail client. A command that changes one client (`install`, `remove`, and `history` and `undo`, which name one) refuses a selector that matches two with `target_ambiguous` (exit 3): the first candidate is the `fix`, and each other one is an `alternatives` entry.
+Every target that the first matching kind matches is selected (a client reached twice is listed once). `status`, `list`, `info`, `outdated`, `update`, `export`, `sync`, `adopt`, `pin`, `unpin`, `search` and `backup` cover them all: `-t vanilla` reads every vanilla client, `-t mainline` every retail, PTR, XPTR and beta client. A command that must land on one client (`install`, `remove`, each side of `copy`, `adopt --ref`, and `history` and `undo`, which name one) refuses a selector that matches two with `target_ambiguous` (exit 3): the first candidate is the `fix`, and each other one is an `alternatives` entry. So does config `default_target` when it matches two.
 
 An id beats a family, and the legacy default ids `vanilla`, `tbc`, `cata` and `mists` are also family names. With a 1.12.1 server present, `-t vanilla` selects it, not Classic Era. With a 5.4.8 server, `-t mists` selects it, not Mists Classic. Use `-t era` and `-t classic` (or `-t mop`) for the Battle.net clients, or rename the server's target.
 
-`install` is the only command that picks a target when `-t` is absent. It uses config `default_target`, then the registry default (`targets default`, if that client is present), then the only live client. With several live clients and no default, it dry-runs the refs against every live client (test clients excluded) and installs only if exactly one client loads all of them. `status`, `list` and `history` cover every target unless `-t` narrows them. `undo` takes the newest transaction on any target. `remove` finds the target that manages the named addons, and asks for `-t` when more than one does.
+`install` is the only command that picks a target when `-t` is absent. It uses config `default_target`, then the registry default (`targets default`, if that client is present), then the only live client. With several live clients and no default, it dry-runs the refs against every live client (test clients excluded) and installs only if exactly one client loads every ref that loads anywhere (a client is ruled out only by `no_compatible_release` or `wrong_flavor`). `status`, `list` and `history` cover every target unless `-t` narrows them. Bare `undo` reverts the most recent run, every transaction of that invocation on every target; `undo -t <id>` reverts that target's newest transaction. `remove` finds the target that manages the named addons; the names must all agree on one, else `target_ambiguous` asks for `-t`.
 
 ### How omaddons decides what loads
 
 For each top-level folder in the archive:
 
-1. **Pick the TOC the client would load.** Candidates are `<Folder>.toc` and, on clients that support several TOCs, `<Folder>_<Suffix>.toc` or `<Folder>-<Suffix>.toc` (case-insensitive). Precedence follows the client's row: game suffix (e.g. `_Forever`, `_Vanilla`, `_Mists`, `_Standard`), then family suffix (`_Mainline` or `_Classic`), then the plain TOC. A suffix the row does not list never loads. Legacy clients read the plain TOC only.
-2. **Read its lines as the client does.** On clients built on 12.0.7 or later (retail, Forever, Classic Era 1.15.9, Anniversary 2.5.6, Titan 3.80.2 and Mists 5.5.4), a `##` line may carry inline directives such as `[AllowLoadGameType classic]`, anywhere in the line. Such a line applies only on the clients they admit. A line whose directive cannot be known offline, such as a text locale, counts for nothing, and a dependency named only there is reported, never installed. For one key the last line that applies wins. The exceptions add up instead: dependencies, `LoadWith`, `LoadManagers`, the saved variables and the game-type lists. Older clients read every line as written. The title, the dependencies and the steps below all use this reading.
-3. **Game types.** On modern clients, an `AllowLoadGameType` that excludes this client, or an `ExcludeLoadGameType` that names it, means the folder does not load. A game type must name the client; Titan answers to both `wrath` and `titan`.
+1. **Pick the TOC the client would load.** Candidates are `<Folder>.toc` and, on clients that support several TOCs, `<Folder>_<Suffix>.toc` or `<Folder>-<Suffix>.toc` (case-insensitive). Precedence follows the client's row (table below): its game suffixes in order, then its family suffix, then the plain TOC. A suffix the row does not list never loads. Legacy clients read the plain TOC only. When two TOC names differ only in case, the byte-wise smallest wins.
+2. **Read its lines as the client does.** On retail 12.0.7 and later, on every Forever, Classic Era, Anniversary, Titan and Mists client (their current builds carry 12.0.7's TOC changes), and on a Battle.net client of unknown family, a `##` line may carry inline directives such as `[AllowLoadGameType classic]`, anywhere in the line. The Wrath and Cataclysm Classic rows, retail builds before 12.0.7 and every legacy row read lines as written. Such a line applies only on the clients they admit. A line whose directive cannot be known offline, such as a text locale, counts for nothing, and a dependency named only there is reported, never installed. For one key the last line that applies wins. The exceptions add up instead: dependencies, `LoadWith`, `LoadManagers`, the saved variables and the game-type lists. Older clients read every line as written. The title, the dependencies and the steps below all use this reading.
+3. **Game types.** On modern clients, an `AllowLoadGameType` that excludes this client, or an `ExcludeLoadGameType` that names it, means the folder does not load. A game type must name the client: one of its row's game types (Titan answers to both `wrath` and `titan`, Forever to `forever` and `camelot`) or its family suffix, lowercased, so `classic` admits every Classic client and `mainline` admits retail and Forever. An `AllowLoadGameType` that names no game type omaddons knows is treated as excluding the client.
 4. **Interface.** Comma-separated `## Interface:` lists are read where the client supports them; otherwise only the leading number counts. The folder loads if a value falls inside the client's family range. A newer interface loads. An older one gets an `out_of_date` warning, because the client loads it only with "Load out of date AddOns" enabled.
+
+The rows, as built in (`[client_rules]` can patch them; see [Rules overrides](#rules-overrides-advanced)):
+
+| Row | Clients | Versions | Game suffixes, in order | Family suffix | Game types |
+|---|---|---|---|---|---|
+| `mainline` | retail, PTR, XPTR, beta | 12.1.5 and up | `_Standard` | `_Mainline` | `standard` |
+| `mainline-12.0.7`, `mainline-10.2.7`, `mainline-9.1` | older retail builds | 9.1.0–12.1.4 | | `_Mainline` | `standard` |
+| `forever` | WoW: Forever and its beta | 1.50 and up | `_Forever`, `_Camelot` | `_Mainline` | `forever`, `camelot` |
+| `vanilla` | Classic Era (Hardcore, Season of Discovery) | 1.13 and up | `_Vanilla` | `_Classic` | `vanilla` |
+| `tbc` | Anniversary, the Classic Era PTR | 2.5 and up | `_TBC` | `_Classic` | `tbc` |
+| `wrath` | Wrath Classic | 3.4 and up | `_Wrath` | `_Classic` | `wrath` |
+| `titan` | Titan (China) | 3.80 and up | `_Wrath` | `_Classic` | `titan`, `wrath` |
+| `cata` | Cataclysm Classic | 4.4 and up | `_Cata` | `_Classic` | `cata` |
+| `mists` | Mists Classic | 5.5 and up | `_Mists` | `_Classic` | `mists` |
+| the five `*-legacy` rows | 1.12.1, 2.4.3, 3.3.5a, 4.3.4 and 5.4.8 servers | | plain TOC only | | |
+| `fallback-battlenet` | a Battle.net client no other row covers (usually family `unknown`) | | | `_Mainline`, `_Classic` | |
+| `fallback-custom` | a custom client no other row covers (family `unknown`, or below its family's rows) | | plain TOC only | | |
+
+The real Forever client was observed loading `_Camelot` TOCs (2026-10-21); a TOC with the `_Forever` suffix alone, and the client's order when an addon ships both, are not yet observed.
 
 Then the archive as a whole:
 
@@ -474,7 +496,7 @@ Then the archive as a whole:
 - Otherwise the addon's own folder must load, and every skipped folder must rule itself out: a game-type gate, TOCs only for other clients, or a dependency on such a folder. A folder that merely lists another client's interface marks a build for another client, and the whole archive is refused.
 - When no candidate loads, the error is `no_compatible_release`, with every asset tried and why in `error.details.tried` (JSON output). For a `url:`, `file:` or `--file` archive, it is `wrong_flavor`.
 
-Release metadata also orders the candidates. First come assets whose metadata names this flavor (exact interface, then same major.minor, then any), then a file-name hint for it, then unannotated assets, then assets marked for other flavors. Within a tier, a full build comes before a `-nolib` build. Assets are downloaded and verified in that order until one is accepted. omaddons never falls back to an older release.
+Release metadata also orders the candidates. First come assets whose metadata names this flavor, then a file-name hint for it, then unannotated assets, then file-name hints for other flavors, then metadata for other flavors only (on a legacy or unknown client, every asset with metadata lands here). Within a tier, full builds come before `-nolib` builds; within the metadata tier, each of those runs exact interface, then same major.minor, then any. Assets are downloaded and verified in that order until one is accepted. omaddons never falls back to an older release, and an update of an addon adopted at its TOC's version never installs a release built for an older interface (`blocked`, `older_than_installed`; see [`adopt`](#adopt)).
 
 ---
 
@@ -488,21 +510,22 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 | `gh:Owner/Repo` or `Owner/Repo` | GitHub | the stable path reads `releases/latest` and its `release.json` from github.com, with **no REST API calls**. The REST API (60 requests an hour without a token) is used only for `--channel beta`/`alpha`, for releases without a usable `release.json` (their `.zip` assets become the candidates), and for pinned tags that lack one |
 | `https://github.com/o/r` | `gh:o/r` | as above. `/releases/tag/T` pins tag `T`, `/releases/download/T/F` pins tag `T` and installs exactly the asset `F` (or nothing: `not_found` naming the release's assets, or refused when it does not load), and `/tree/branch` becomes a `git:` ref. A tag may hold `/` and `+`, written as GitHub writes them or percent-encoded. A link that names no repository (`https://github.com/o`) is `ref_invalid` |
 | `git:https://github.com/o/r#branch` | git on GitHub | the commits Atom feed resolves the branch or tag to a commit, and codeload serves a zip of that exact commit (a rev the feed does not serve is fetched as a tag by name). **No git binary.** A 40-hex sha is used as is. No `#rev` means the default branch |
-| `git:https://codeberg.org/o/r#tag` | git elsewhere | the `git` binary (2.32+), in a sandbox, only for hosts listed in `git_hosts`. Branches win over tags with the same name |
-| `url:https://…/addon.zip` | a direct download | only from the always-allowed hosts (GitHub's, WoWInterface's and Tukui's); not `git_hosts` |
+| `git:https://codeberg.org/o/r#tag` | git elsewhere | the `git` binary (2.32+), only for hosts listed in `git_hosts`: argv only, a cleared environment, an empty home and no user or system git config, https only, no redirects and no credentials (see [Network and privacy](#network-and-privacy)). Branches win over tags with the same name (on GitHub, the commits feed decides) |
+| `url:https://…/addon.zip` | a direct download | only from the always-allowed hosts: `github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`, `api.github.com`, `cdn.wowinterface.com`, `api.mmoui.com` and `api.tukui.org`. Any other host, `git_hosts` included, is `host_blocked` |
 | `./addon.zip`, `./AddonFolder`, `file:path` | local | a zip (a typed path must end in `.zip`, and the magic bytes are checked) or a folder, read in place |
-| `wowi:<id>`; WoWInterface links: `…/downloads/info<id>-Name.html`, `…/downloads/fileinfo.php?id=<id>`, and the download link `cdn.wowinterface.com/downloads/getfile.php?id=<id>&…` | WoWInterface | keyless: one `filedetails` request to `api.mmoui.com` per 50 addons, then the file from `cdn.wowinterface.com`, checked against the MD5 the API publishes; when the API publishes none, the file installs with a `download_unverified` warning and is identified by its date (`wowi:<id>@d<date>`, else `@v<version>`). WoWInterface serves only a project's current file, so `--version` matches only its current version. A release is its file: the same bytes uploaded again are no update, and any new file is one. Its compatibility tags lag behind patches, so they never rule a file out; the TOCs decide |
-| `tukui:<slug>` (`tukui:elvui`, any case); Tukui links: `tukui.org/addon/<slug>`, `download.php?ui=<name>` | Tukui | keyless: one list request to `api.tukui.org` per command, and right before each download a fresh download link, which expires within seconds and is never stored or logged (`net.log` shows `/v1/download/<slug>/…`). The download is checked against the MD5 in its `ETag`; a download without a usable one installs with a `download_unverified` warning. The list's supported patches only rank the file; the TOCs decide, so ElvUI also installs where its TOCs load but the list says nothing (Forever) |
-| `cf:<id>`, `wago:<id>`, CurseForge and Wago links | CurseForge, Wago | parsed and refused with `source_disabled` ("arrives in M5"), unless `--file` supplies the archive |
-| an `https://` link to a `git_hosts` host, or ending in `.git` | `git:` | as `git:` above (`#fragment` becomes the rev) |
-| any other `https://` link | `url:` | refused at plan time unless its host is allowlisted |
-| `http://…` (also `url:http://…`, `git:http://…`) | | refused (`ref_invalid`), suggesting the https form when omaddons can fetch it; for a host it does not download from (`details.host`), the fix is to download the file and install the local path, and for a git host not in `git_hosts`, to add it |
+| `wowi:<id>`; WoWInterface links: `…/downloads/info<id>-Name.html`, `…/downloads/download<id>-Name`, `…/downloads/fileinfo.php?id=<id>`, and the download links `cdn.wowinterface.com/downloads/getfile.php?id=<id>&…` and `www.wowinterface.com/downloads/getfile.php?id=<id>` | WoWInterface | keyless: one `filedetails` request to `api.mmoui.com` per 50 addons, then the file from `cdn.wowinterface.com`, checked against the MD5 the API publishes; when the API publishes none, the file installs with a `download_unverified` warning and is identified by its date (`wowi:<id>@d<date>`, else `@v<version>`). WoWInterface serves only a project's current file, so `--version` matches only its current version. A release is its file: the same bytes uploaded again are no update, and any new file is one. Its compatibility tags lag behind patches, so they never rule a file out; the TOCs decide |
+| `tukui:<slug>` (`tukui:elvui`, any case); Tukui links: `tukui.org/addon/<slug>`, `tukui.org/addons/<slug>`, `tukui.org/<slug>`, `download.php?ui=<name>` | Tukui | keyless: one list request to `api.tukui.org` per command, and right before each download a fresh download link, which expires within seconds and is never stored or logged (`net.log` shows `/v1/download/<slug>/…`). The download is checked against the MD5 in its `ETag`; a download without a usable one installs with a `download_unverified` warning. The list's supported patches only rank the file; the TOCs decide, so ElvUI also installs where its TOCs load but the list says nothing (Forever) |
+| `cf:<id>`, `wago:<id>` | CurseForge, Wago | parsed and refused with `source_disabled` ("arrives in M5"), unless `--file` supplies the archive |
+| CurseForge and Wago links (`curseforge.com/…`, `addons.wago.io/…`) | | refused with `source_disabled` while the ref is parsed, even with `--file`: use the `cf:` or `wago:` form with `--file` |
+| an `https://` link to a `git_hosts` host, or any other non-GitHub link ending in `.git` | `git:` | as `git:` above (`#fragment` becomes the rev). A github.com link ending in `.git` stays `gh:` |
+| any other `https://` link | `url:` | refused at plan time with `host_blocked` unless its host is one of the always-allowed hosts above |
+| `http://…` (also `url:http://…`, `git:http://…`) | | refused (`ref_invalid`), suggesting the https form when omaddons can fetch it; for a host it does not download from (`details.host`), the fix is to download the file and install the local path, and for a git host not in `git_hosts`, to add it. When the https form is itself refused, its error stands (an `http://` CurseForge link is `source_disabled`) |
 
-**Channels.** `--channel stable|beta|alpha`. The default is the addon's recorded channel, then `default_channel`, then `stable`. On GitHub, `alpha` behaves like `beta`, and the newest 20 releases are considered.
+**Channels.** `--channel stable|beta|alpha`. The default is the addon's recorded channel, then `default_channel`, then `stable`. On GitHub, `alpha` behaves like `beta`: the newest non-draft release, stable or prerelease, among the 20 most recent (through the REST API). WoWInterface, Tukui, `git:`, `url:` and local sources publish one stream, so there the channel is only recorded. When `releases/latest` finds no stable release (only prereleases, or none published), the error is `no_compatible_release`, with `--channel beta` as the fix and the repository's `git:` ref as the alternative. When it answers 404 (no releases, or no such repository), the error is `not_found`, with the `git:` ref as the fix. A renamed repository is followed.
 
-**Pinning.** `--version V` installs exactly that release and pins it: a tag for `gh:` refs, or a rev for `git:` refs. On the `release.json` path, `1.2.3` also tries `v1.2.3`. It is refused for `url:` and `file:` refs. A pasted release link pins its tag the same way (GitHub's own links work as pasted, `+` and `/` in tags included). Installing a pinned addon again without `--version` changes nothing and warns `addon_pinned`, without fetching its releases, even when a newer release exists. `--version W` moves it to `W`, still pinned. `--version` naming the release already installed pins it without reinstalling anything: a transaction of kind `pin` that records each folder and that `undo` unpins. A pin that another omaddons process commits while an install is planning also holds: the install re-checks it under the lock.
+**Pinning.** `--version V` installs exactly that release and pins it: a tag for `gh:` refs, or a rev for `git:` refs. On the `release.json` path, `1.2.3` also tries `v1.2.3`. It is refused for `url:` and `file:` refs, and as a usage error when it disagrees with the rev of a `git:` ref, or with the tag of a pasted release link (a leading `v` aside). WoWInterface and Tukui serve only a project's current file, so there `--version` matches only the current version. A pasted release link pins its tag the same way (GitHub's own links work as pasted, `+` and `/` in tags included). Installing a pinned addon again without `--version` changes nothing and warns `addon_pinned`, without fetching its releases, even when a newer release exists. `--version W` moves it to `W`, still pinned. `--version` naming the release already installed pins it without reinstalling anything: a transaction of kind `pin` that records each folder and that `undo` unpins. A pin that another omaddons process commits while an install is planning also holds: the install re-checks it under the lock.
 
-**What an update keeps.** Re-installing an installed addon keeps its pin and its recorded channel unless `--channel` names another. An addon installed only because another one needs it (`reason: dependency`, from milestone 2) becomes `explicit` when you install it by name. When the release to install is the one already there, these record changes still happen, as a transaction that moves no folder: `--channel beta` whose newest release is installed records the channel (item `edited`, `fields: ["channel"]`), and a repeat changes nothing.
+**What an update keeps.** Re-installing an installed addon keeps its pin and its recorded channel unless `--channel` names another. An addon installed only because another one needs it (`reason: dependency`, from milestone 2) becomes `explicit` when you install it by name, except with `--reinstall`, which keeps the recorded reason. When the release to install is the one already there, these record changes still happen, as a transaction that moves no folder: `--channel beta` whose newest release is installed records the channel (item `edited`, `fields: ["channel"]`), and a repeat changes nothing.
 
 **A browser download.** `--file ZIP` installs an archive you downloaded as the release of one ref, so it is recorded against that addon.
 
@@ -513,13 +536,13 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 
 `gh:` and `git:` refs of one repository are different refs. To move an addon to another source on purpose, `omaddons adopt <folder> --ref <ref>` re-points it in place.
 
-**Ambiguity.** `owner/repo` that also exists as a local path, or a name that matches two addons, gives `ref_ambiguous` with every candidate as a runnable `omaddons install …` command.
+**Ambiguity.** `owner/repo` that also exists as a local path, or a bare name that names more than one ref, gives `ref_ambiguous` with every candidate as a runnable `omaddons install …` command. A bare name collects its candidates from installed addons on any client (by name or folder), the catalog, and a file or folder of that name in the current directory: a folder `elvui/` beside you and the catalog's ElvUI are ambiguous.
 
 ---
 
 ## The built-in catalog
 
-62 entries are embedded in the binary. Each was checked against its publisher on 2026-10-14 (BugSack, ElvUI and Tukui on 2026-10-16; TellMeWhen through BattlePetBreedID, and the WoWInterface entries, on 2026-10-20): the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip; the Tukui entries against the Tukui API's list and the folders and TOCs of the zip it hands out; the WoWInterface entries against the API's file details (the project's current file and its MD5) and the folders and TOCs of that file, MD5-checked (their families are where those TOCs load, since the site's compatibility tags lag); and the legacy entries against their TOC's `## Interface` line. The last column is the families the publisher declares (in `release.json`, or the TOCs' interfaces). It is shown by `info`, gives `search`'s `yes` or `no`, and orders lookups. A dependency or an adopted folder is matched first to entries declaring the client's family. Other entries of the same generation are matched only after Tukui and WoWInterface (for adoption, only when no entry declares the family). An entry is never matched across generations, legacy on a modern client or the reverse. It never refuses an install: TOC verification decides. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but its TOCs also load on vanilla and mists.
+62 entries are embedded in the binary. Each was checked against its publisher on 2026-10-14 (BugSack, ElvUI and Tukui on 2026-10-16; TellMeWhen through BattlePetBreedID, and the WoWInterface entries, on 2026-10-20): the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip; the Tukui entries against the Tukui API's list and the folders and TOCs of the zip it hands out; the WoWInterface entries against the API's file details (the project's current file and its MD5) and the folders and TOCs of that file, MD5-checked (their families are where those TOCs load, since the site's compatibility tags lag); and the legacy entries against their TOC's `## Interface` line. The last column is the families the publisher declares (in `release.json`, or the TOCs' interfaces). It is shown by `info`, gives `search`'s `yes` or `no`, and orders lookups. A dependency or an adopted folder is matched first to entries declaring the client's family. For a dependency, other entries of the same generation are tried only after Tukui and WoWInterface. For an adopted folder, they claim it at catalog strength, but only when no entry declares the client's family. A built-in entry is never matched across generations, legacy on a modern client or the reverse. It never refuses an install: TOC verification decides. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but its TOCs also load on vanilla and mists.
 
 | Name | Aliases | Ref | Declared families |
 |---|---|---|---|
@@ -586,7 +609,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 | MikScrollingBattleText | `msbt` | `git:https://github.com/fondlez/MikScrollingBattleText-Cata#main` | cata-legacy (4.3.4) |
 | InFlight | | `git:https://github.com/fondlez/InFlight-Taxi-Timer#main` | mists-legacy (5.4.8) |
 
-**Your own entries.** Files in `~/.config/omaddons/catalog.d/*.toml` are applied in file-name order, in the same format. They can add an entry, replace one by name, or drop one with `remove = true`. A broken file is skipped whole with a `catalog_override_invalid` warning.
+**Your own entries.** Files in `~/.config/omaddons/catalog.d/*.toml` are applied in file-name order, in the same format. They can add an entry, replace one by name (the whole entry: fields are not merged), or drop one with `remove = true`. An entry's keys are `name`, `aliases`, `ref`, `families`, `folders` and `notes`. Only `folders` makes an entry findable as a dependency, or lets it claim a folder for `adopt` (`adopt` can still guess it for a folder named like it). An entry with no `families` counts as declaring every family, so it can match on any client. A file is skipped whole, with a `catalog_override_invalid` warning, when it does not parse, its `schema_version` is not 1.x, it has an unknown key, an entry has no name, no valid `ref`, an unknown family or an invalid folder name, it lists a `Blizzard_*` folder, or it repeats a name or alias.
 
 ```toml
 # ~/.config/omaddons/catalog.d/mine.toml
@@ -597,6 +620,7 @@ name = "MyBars"
 aliases = ["mb"]
 ref = "gh:example/MyBars"
 families = ["mainline"]
+folders = ["MyBars", "MyBars_Config"]
 
 [[addon]]
 name = "Dominos"
@@ -609,11 +633,11 @@ remove = true
 
 `omaddons help` lists the commands. `omaddons help <command>` or `omaddons <command> --help` shows every flag. For subcommands, use `omaddons targets add --help` or `omaddons help targets add`.
 
-A mistyped command, flag or value is a usage error. Its fix is the corrected command when that command only reads, and `omaddons help <command>` when the closest command changes something: a typo never hands you a different command that changes addons. A mistyped flag or value of the command you typed is corrected in place (`--channel betaa` → `--channel beta`). Every suggested command parses.
+A mistyped command, flag or value is a usage error. Its fix is the corrected command when that command only reads, and `omaddons help <command>` when the closest command changes something: a typo never hands you a different command that changes addons. A mistyped flag, or a mistyped value of a flag with fixed choices, of the command you typed is corrected in place (`--channel betaa` → `--channel beta`). A bad `--actor` value's fix currently drops the flag, and a bad `undo --last-by` value breaks the rule (see [Known issues](#known-issues)). Every suggested command parses.
 
 ### Global options
 
-Every global option works before or after the command, except `-V`/`--version`, which works only right after `omaddons`.
+Every global option works before or after the command, except `-V`/`--version`, which works only before the command (`omaddons --json -V` works; after a command, `--version` is that command's flag or a usage error).
 
 | Option | Meaning |
 |---|---|
@@ -625,12 +649,12 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters); others accept and ignore it |
 | `--offline` | Fail any network access (`OMADDONS_OFFLINE=1`) |
 | `--while-running` | Allow folder changes while the client runs (never SavedVariables) |
-| `--no-color` | No ANSI color (also `NO_COLOR`) |
+| `--no-color` | No ANSI color (also `NO_COLOR`). Color is also off with `--json`, in CI, with `TERM=dumb` and when stderr is not a terminal |
 | `--quiet` | Only errors on stderr |
 | `-v, --verbose` | More detail: paths, and debug `log` events on stderr (repeatable) |
-| `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install`, `update`, `outdated`, `adopt`, `sync`, `copy` and `search`). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
+| `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install`, `update`, `outdated`, `adopt`, `sync`, `copy` and `search`, and the stage and commit steps of `remove`, `pin` and `unpin`). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
 | `-h, --help` | Help |
-| `-V, --version` | Version (`omaddons -V` only; after a command, `--version` is that command's flag or a usage error) |
+| `-V, --version` | Version (before the command only; after a command, `--version` is that command's flag or a usage error) |
 
 ### `status`
 
@@ -643,6 +667,8 @@ omaddons status --deep        # re-hash every managed file, not only those whose
 omaddons status --check       # exit 6 when anything needs attention
 omaddons status -v --json     # adds client_dir, install_root and exe_name, and changed paths
 ```
+
+`--deep` with `--cached` is a usage error. `--cached` before any discovery cache exists also suggests `omaddons status` (action `status`). The human view shows at most 5 changed paths per addon; `-v` shows every path the check listed (at most 50 per kind and folder).
 
 Each client also shows:
 
@@ -659,7 +685,7 @@ Pending updates never count as attention: `status --check` stays a health check,
 - `omaddons adopt -t <id>`, for each client with `adoptable` folders;
 - `omaddons outdated`, when a client was never checked or its check is stale;
 - `omaddons remove <orphans…> -t <id>` (`remove_orphans`, destructive), for each client with orphans;
-- the attention fixes;
+- the attention fixes, and `omaddons list -t <id> -v` (action `inspect`) for a client with degraded addons;
 - a look at unmanaged folders, on a client with unmanaged folders none of which is `adoptable`.
 
 `outdated` and `update` also recommend `omaddons adopt -t <id>` for a client that manages nothing yet but has `adoptable` folders.
@@ -674,7 +700,7 @@ Install or update addons in one target (`add` is an alias). Each ref is fetched 
 | `--version <V>` | Exactly this release, pinned: a tag for `gh:`, a rev for `git:` |
 | `--file <ZIP>` | Use this downloaded archive as the release of the one given ref |
 | `--reinstall` | Install the recorded release again, replacing its folders: repairs modified or missing files (undoable) |
-| `--force` | Take over a folder another addon owns, or replace an unmanaged folder (both undoable until retention prunes the snapshot; `snapshot_only_copy` says when it holds the only copy) |
+| `--force` | Take over a folder another addon owns, an addon of the same name installed from another ref, or replace an unmanaged folder (all undoable until retention prunes the snapshot; `snapshot_only_copy` says when it holds the only copy) |
 | `--strict` | Exit 6 when only some of the addons install |
 | `--refresh` | Fetch every release from its source, never from remembered metadata |
 | `--no-deps` | Install only the named addons, not the ones their TOCs require (what they require is still checked, and warned about) |
@@ -690,11 +716,11 @@ omaddons install gh:someone/addon --file ~/Downloads/addon-1.2.zip -t retail
 omaddons install Plater -t retail --reinstall   # put back modified or deleted files
 ```
 
-Each item's `status` is `installed`, `updated`, `unchanged` or `failed`, or, when only its record changed, `pinned`, `unpinned` or `edited` (with `fields`). A partial result (some addons failed) is still exit 0, with `partial: true` and each failure in `data.items[].error`. With `--strict` it is exit 6. Never-launched clients have no `Interface/AddOns` yet: the first install creates it inside its transaction and reports `creates_addons_dir: true`.
+Each item's `status` is `installed`, `updated`, `unchanged`, `skipped` (the same addon requested twice: `skip_reason: "duplicate"`, with `duplicate_of`) or `failed`, or, when only its record changed, `pinned`, `unpinned` or `edited` (with `fields`). A partial result (some addons failed) is still exit 0, with `partial: true` and each failure in `data.items[].error`. With `--strict` it is exit 6. When every addon fails, the command fails with the first item's error, and `error.details.items` lists them all. `-v` adds each item's `asset_url`. Never-launched clients have no `Interface/AddOns` yet: the first install creates it inside its transaction and reports `creates_addons_dir: true`.
 
-**Reinstalling.** `--reinstall` installs the recorded release again, even when it is current, and replaces the addon's folders: files modified by hand come back as released, and deleted folders come back. The archive comes from the download cache when it is still there, with no request (offline too). Otherwise that exact release is fetched again, never a newer one. A pinned addon stays pinned, and a dependency stays a dependency. The item is `updated` from and to the same version, in an `update` transaction, so `undo` brings the replaced files back. Only an installed addon can be reinstalled (`not_managed`, fix `omaddons install <addon>`). `omaddons reinstall X` is a usage error whose fix is `omaddons install X --reinstall`.
+**Reinstalling.** `--reinstall` installs the recorded release again, even when it is current, and replaces the addon's folders: files modified by hand come back as released, and deleted folders come back. The archive comes from the download cache when it is still there, with no request (offline too). Otherwise that exact release is fetched again, never a newer one. A pinned addon stays pinned, and a dependency stays a dependency. The item is `updated` from and to the same version, in an `update` transaction, so `undo` brings the replaced files back. Only an installed addon can be reinstalled (`not_managed`, fix `omaddons install <addon> -t <id>`). `omaddons reinstall X` is a usage error whose fix is `omaddons install X --reinstall`.
 
-**Dependencies.** What an addon's TOC requires (`## Dependencies`, `## RequiredDeps`) installs in the same transaction when a keyless source ships it, from `default_channel` (never the requesting addon's channel). The folder is looked up locally, never sent to a service, in this order: the catalog's entries declaring this client's family (including your `catalog.d` entries); the Tukui list, when exactly one project ships it; the WoWInterface index, whose best project wins only when it alone ships just that folder or is named like it, and changed in the last two years (otherwise its candidates are listed); then the catalog's other entries of the client's generation, whose TOCs decide (one that does not load here is reported `not_shipped`, and the run is not partial). Each index is read at most once per command, and only when the catalog misses: the Tukui list from the release memo inside 15 minutes, the WoWInterface index from its stored copy while it is fresh (an hour). `--offline` reads what is stored, whatever its age, with one `stale_check`, and never downloads an index. A source turned off in `config.toml` is skipped, and the `missing_dependency` message names each source it could not consult and why. It is recorded as `reason: dependency` with `required_by`, and `undo` removes it with its requester. `## OptionalDeps` never installs anything. Some required folders install nothing:
+**Dependencies.** What an addon's TOC requires (`## Dependencies`, `## RequiredDeps`) installs in the same transaction when a keyless source ships it, from `default_channel` (never the requesting addon's channel). The folder is looked up locally, never sent to a service, in this order: the catalog's entries declaring this client's family (including your `catalog.d` entries); the Tukui list, when exactly one project ships it; the WoWInterface index, whose best project wins only when it alone ships just that folder or is named like it, and changed in the last two years (otherwise its candidates are listed); then the catalog's other entries of the client's generation, whose TOCs decide (one that does not load here is reported `not_shipped`, and the run is not partial). Each index is read at most once per command, and only when the catalog misses: the Tukui list from the release memo inside 15 minutes, the WoWInterface index from its stored copy while it is fresh (an hour, or the server's longer `max-age`). `--refresh` fetches both again. `--offline` reads what is stored, whatever its age, with one `stale_check`, and never downloads an index. A source turned off in `config.toml` is skipped, and the `missing_dependency` message names each source it could not consult and why. It is recorded as `reason: dependency` with `required_by`, and `undo` removes it with its requester. `## OptionalDeps` never installs anything. Some required folders install nothing:
 
 - `Blizzard_*` folders and folders of the same archive.
 - A folder that is already present. A managed owner gains the requester in `required_by`. For unmanaged ones, `commands` offers `omaddons adopt <folders…> -t <id>` (action `adopt`).
@@ -702,7 +728,11 @@ Each item's `status` is `installed`, `updated`, `unchanged` or `failed`, or, whe
 `missing_dependency` warns, and the run stays a success, when a required folder:
 
 - cannot be resolved (no keyless source ships it, or several do);
+- comes only from a WoWInterface project unchanged for two years (`wowi_abandoned`);
+- is not shipped for this client by the project that resolves (`not_shipped`);
 - has only a build that is out of date for the client;
+- is required only under a condition omaddons cannot decide offline, such as a text locale (`unknown_condition`; the fix searches for it);
+- is listed in an installed addon's record, but that folder is gone (`managed_folder_missing`; the fix is `omaddons install <owner> --reinstall -t <id>`);
 - is past a dependency limit (4 rounds, 32 dependencies per client);
 - was not installed because of `--no-deps`.
 
@@ -722,7 +752,7 @@ Every item carries:
 - `bridge_dependencies` (`[{folder, requires}]`): what its other folders (bridges, plugins such as `Masque_Dominos`) work with and nothing installs;
 - `unresolved` (`[{folder, reason, candidates}]`): its required folders that were not installed, with up to three candidate refs, best first.
 
-With `-v` it also carries `optional_dependencies` (its `## OptionalDeps`, never installed). A bridge requirement warns `bridge_dependency` once, when the addon is first installed, with a fix that installs it (by catalog name, else by the ref the resolver finds); later installs and updates keep the field and say nothing more. After the `undo` hint, `commands` offers at most three `omaddons install <candidate> -t <id>` hints (action `install`): unresolved candidates in item order, then bridge requirements. `update`, `sync` and `pin` items carry the same fields, each dependency right after its requester.
+With `-v` it also carries `optional_dependencies` (its `## OptionalDeps`, never installed). A bridge requirement warns `bridge_dependency` once, when the addon is first installed, with a fix that installs it (by catalog name, else by the ref the resolver finds); later installs and updates keep the field and say nothing more. After the `undo` hint (and any `adopt` hint for required folders already present), `commands` offers at most three `omaddons install <candidate> -t <id>` hints (action `install`): unresolved candidates in item order (never one that is `not_shipped`), then bridge requirements. `update`, `sync` and `pin` items that change an addon carry the same fields, each dependency right after its requester; their skipped, unchanged and failed items leave them out, except a failed dependency.
 
 `required_by` stays true. An update whose new release no longer requires any folder of a dependency drops the addon from that dependency's `required_by`, in the same transaction and under `--no-deps` too. A dependency left required by nothing warns `orphaned_dependency` (see [`remove`](#remove-addon)). Installing a dependency by name makes it `explicit`, and an explicit addon is never an orphan.
 
@@ -735,6 +765,7 @@ $ omaddons update
 classic: updated 1 addon (tx 01M5Q2VA0JX3N8K2…) — /reload in game
   DBM  12.1.14 → 12.1.15
 era: nothing to update (Questie is pinned)
+  Questie  skipped: is pinned
 retail: updated 2 addons (tx 01M5Q2VA1KR4P9D6…)
   DBM     12.1.14 → 12.1.15
   Plater  Plater-v661 → Plater-v662
@@ -752,9 +783,9 @@ omaddons update --no-deps           # not what the new releases' TOCs start requ
 
 When an addon's new release starts requiring another project, `update` installs that project in the same transaction, as `install` does: recorded as a dependency, from `default_channel`, undone with the update. A dependency that resolves but fails to install is a failed item named by the folder required (never `blocked`), and the addon itself still updates.
 
-What to update comes from the same statuses `outdated` shows, fetched once per ref (free inside 15 minutes; `--refresh` asks again). Each client with updates commits its own transaction, all under one run, so `omaddons undo` reverts every client and `omaddons undo <tx>` one of them. A failure on one client does not roll back another.
+What to update comes from the same statuses `outdated` shows, fetched once per ref (free inside 15 minutes; `--refresh` asks again). `--all` together with addon names, and `--channel` without names, are usage errors. A named addon installed nowhere is a failed `not_managed` item. Each client with updates commits its own transaction, all under one run, so `omaddons undo` reverts every client and `omaddons undo <tx>` one of them. A failure on one client does not roll back another.
 
-Some addons are left alone and say why (`skipped`, with `skip_reason`): `pinned` (by `pin` or `install --version`; naming it adds an `addon_pinned` warning whose fix is `omaddons unpin <addon> -t <target>`), `ahead`, `static` (a local file or URL), `unchecked`, and `blocked`. A newer release that turns out not to load on a client is `blocked`, not a failure; the verdict is remembered, so `outdated` shows it too. A fetch that fails fails its addons (`update` never installs from stale metadata) and makes the run `partial`. `unchanged` addons are counted in `summary` and listed with `-v`.
+Some addons are left alone and say why (`skipped`, with `skip_reason`): `pinned` (by `pin` or `install --version`; only naming it adds an `addon_pinned` warning, whose fix is `omaddons unpin <addon> -t <target>`), `ahead`, `static` (a local file, a URL or an archive given with `--file`), `unchecked`, and `blocked`. A newer release that turns out not to load on a client is `blocked`, not a failure; the verdict is remembered, so `outdated` shows it too. A fetch that fails fails its addons (`update` never installs from stale metadata) and makes the run `partial`. `unchanged` addons are counted in `summary` and listed with `-v`.
 
 Files you changed in an addon's folders do not stop its update: they are replaced like the rest, and a `local_changes_replaced` warning names them, with `omaddons undo <tx>` as its fix, because the transaction snapshot keeps them (at least 24 hours). The same goes for `install` and `sync`. `-v` names the snapshot folder.
 
@@ -783,7 +814,7 @@ omaddons pin dbm --version 12.1.14   # install that release where DBM is install
 omaddons unpin dbm
 ```
 
-A pin changes only the record, never a game file, so it works while the game runs. Like every change it is a transaction (kind `pin`), with one per client under one run, so `omaddons undo` reverts it. An addon already pinned (or unpinned) is left as it is, with no transaction. A pin keeps the addon's channel and its reason (a pinned dependency stays a dependency). `--version` takes a tag (`gh:` refs) or a rev (`git:` refs). `url:` and local installs have no other release to choose, so `--version` is refused for them. After `unpin`, the last line says what `update` would install, from the remembered metadata and without a request.
+A pin without `--version` changes only the record, never a game file, so it works while the game runs. Like every change it is a transaction (kind `pin`), with one per client under one run, so `omaddons undo` reverts it. `pin --version` installs that release first, as `install --version` does: it replaces folders, and its transaction is an `update` (or an `install`). An addon installed nowhere is `not_managed` (fix `omaddons install <addon>`). An addon already pinned (or unpinned) is left as it is, with no transaction. A pin keeps the addon's channel and its reason (a pinned dependency stays a dependency). `--version` takes a tag (`gh:` refs) or a rev (`git:` refs). `url:` and local installs have no other release to choose, so `--version` is refused for them. After `unpin`, the last line says what `update` would install, from the remembered metadata and without a request.
 
 ### `sync [FILE]`
 
@@ -821,10 +852,12 @@ addons = ["DBM"]
   - `ref`;
   - `channel`: absent means `stable`, whatever `default_channel` says;
   - `version`;
+  - `sha256`: the archive's digest, which `export` writes; with `--locked` it lets the archive come from the download cache;
   - `pinned` (default `false`);
   - `dependency`: a version lock for a dependency, not a request.
 - Unknown keys are warned about (`desired_unknown_key`), and so are sections naming no known client (`desired_unknown_target`).
-- A file that cannot be read changes nothing: `desired_state_invalid`, exit 2, with the line.
+- A file that does not parse, or holds a bad value, an unknown `[family.<name>]` section (`reason: "unknown_family"`) or a newer `schema_version` (`newer_schema`), changes nothing: `desired_state_invalid`, exit 2, with the line. A missing file is `not_found` (exit 3).
+- `-t` limits which clients are synced.
 
 **What sync does.**
 
@@ -834,7 +867,7 @@ addons = ["DBM"]
 - A pin that differs from the file is set or cleared without touching a folder.
 - It never moves an installed addon to a newer release; that is `omaddons update`'s job.
 
-So a second `sync` changes nothing and sends no request. Each client with changes gets one transaction of kind `sync`, all under one run, and `omaddons undo` reverts the whole sync. An entry that cannot be resolved fails on its own (`partial: true`), and so do two entries that name the same addon. What an addon's TOC requires installs with it, as for `install`.
+So a second `sync` changes nothing and sends no request; its human output says "nothing to do", and reminds you that `sync` does not update (`omaddons update` does). Each client with changes gets one transaction of kind `sync`, all under one run, and `omaddons undo` reverts the whole sync. An entry that cannot be resolved fails on its own (`partial: true`), and so do two entries that name the same addon. What an addon's TOC requires installs with it, as for `install`.
 
 **`--locked`** reproduces versions, not only refs: `omaddons export` on one machine, then `omaddons sync <file> --locked` on another.
 
@@ -867,11 +900,11 @@ It reads only omaddons' records: no request, and without `--write` it writes not
 
 - A family section holds what every live client of that family has alike (same ref, channel, pin and version), when all of them are exported. The rest goes in each client's own `[target."<id>"]` section. Test clients (PTR, beta) only ever get their own section.
 - Every entry is a table sorted by name, so the file diffs cleanly. `version` is written only for a release (not for an addon adopted at its TOC's version), `sha256` only while the archive is in the download cache, and `channel` and `pinned` only when they are not the defaults.
-- A dependency is written as a lock (`dependency = true`, with its version): in the family section when every live client of the family records the same one, else in its client's section.
+- A dependency is written as a lock (`dependency = true`, with its version when that is a release version): in the family section when every live client of the family records the same one and something on each of them requires it, else in its client's section.
 - An addon installed from a local file or folder is left out, with `export_local_source`.
 - A registered client whose directory is gone (an unplugged drive) is exported from its records, in its own section, with `export_missing_target`.
 
-`--write` refuses, with `desired_state_invalid` (exit 2), a file changed since omaddons last wrote it, or one it did not write (`details.reason: "edited"`): `--overwrite` replaces it. An export with no entries is never written (`reason: "empty"`). The previous file is kept as `addons.toml.bak`, and an unchanged export writes nothing. Under `--json`, `data` is `{path, backup, targets, entries, content}`, with `path` and `backup` `null` when nothing was written.
+`--write` refuses, with `desired_state_invalid` (exit 2), a file changed since omaddons last wrote it, or one it did not write (`details.reason: "edited"`): `--overwrite` replaces it (without `--write` it is a usage error). An export with no entries is never written (`reason: "empty"`). The previous file is kept as `addons.toml.bak`, and an unchanged export writes nothing. Under `--json`, `data` is `{path, backup, targets, entries, content}`, with `path` and `backup` `null` when nothing was written.
 
 ### `copy`
 
@@ -895,7 +928,7 @@ omaddons copy --from era --to anniversary --strict  # exit 6 when an addon fails
 omaddons copy --from era --to anniversary --no-deps # only the addons copied, not what their TOCs require there
 ```
 
-Each side is exactly one client: a selector that matches two is `target_ambiguous`, with one fix per candidate, and `-t` is a usage error. Each addon installs from its ref on its recorded channel, the way `install` would: the newest release that loads on `--to`, unpinned, because versions differ between flavors. Dependency records are not copied; what `--to`'s own TOCs require installs with it, as for `install`. Three kinds of addon are skipped, never failed: one already on `--to` (by ref, `already_installed`), one installed from a local file or folder (`local_source`), and one with no build that loads on `--to` (`no_build_for_target`). Any other failure, such as a source that cannot be reached, makes the run `partial`. `omaddons undo <tx>` from `commands` reverts the copy.
+Each side is exactly one client: a selector that matches two is `target_ambiguous`, with one fix per candidate, and `-t` is a usage error, as are `--from` and `--to` naming the same client. A named addon missing on `--from` is a failed `not_managed` item (fix `omaddons list -t <from>`). Each addon installs from its ref on its recorded channel, the way `install` would: the newest release that loads on `--to`, unpinned, because versions differ between flavors. Dependency records are not copied; what `--to`'s own TOCs require installs with it, as for `install`. Three kinds of addon are skipped, never failed: one already on `--to` (by ref, `already_installed`), one installed from a local file or folder (`local_source`), and one with no build that loads on `--to` (`no_build_for_target`). Any other failure, such as a source that cannot be reached, makes the run `partial`. `omaddons undo <tx>` from `commands` reverts the copy.
 
 ### `remove <ADDON>...`
 
@@ -906,7 +939,7 @@ omaddons remove DBM -t retail
 omaddons remove gh:BigWigsMods/BigWigs -t era
 ```
 
-Unmanaged, linked (symlinked) and `Blizzard_*` folders, and names that match no managed addon, are refused with `not_managed`.
+Unmanaged, linked (symlinked) and `Blizzard_*` folders, and names that match no managed addon, are refused with `not_managed`. A folder or ref that several managed addons answer to is `ref_ambiguous`. Without `-t`, the client is the one that manages the named addons.
 
 An addon whose folders were all deleted by hand is forgotten: its record and index entries go, in a transaction that records each folder (`record` ops) and that `undo` reverts. Such a remove changes no folder, so it also goes through while the game runs.
 
@@ -921,9 +954,9 @@ A command that changes several clients commits one transaction per client, and a
 | Flag / argument | Meaning |
 |---|---|
 | `TX` | One transaction: an id or a unique prefix of 8+ characters |
-| `--run RUN` | Every transaction of one run (`history` shows run ids); with `-t`, only its transaction on that client |
+| `--run RUN` | Every transaction of one run (`history` shows run ids; a unique prefix of 8+ characters works); with `-t`, only its transaction on that client |
 | `-t TARGET` | The most recent transaction on that client only |
-| `--last-by human\|agent\|widget` | This actor's most recent run (an undo counts too) |
+| `--last-by human\|agent\|widget` | This actor's most recent run (an undo counts too); with `-t`, that actor's newest transaction on that client |
 | `--saved-variables auto\|restore\|keep` | `auto` (default) restores what changed and defers that restore while the game runs. `restore` refuses while the game runs. `keep` never touches SavedVariables |
 
 ```bash
@@ -935,9 +968,11 @@ omaddons undo --last-by agent
 omaddons undo 01M51F4QY5KB --saved-variables restore   # finish a deferred restore after quitting
 ```
 
+`TX`, `--run` and `--last-by` cannot be combined. A prefix that matches several transactions or runs is `not_found`, with the candidates in `details.candidates`.
+
 When one transaction of a run cannot be undone (`undo_conflict`, say), the others still are. The result is then `partial`, and `transactions[]` in the JSON data holds one result per transaction. The fields before it describe the first transaction undone, as they always did. When every transaction fails, `undo` fails with the first error.
 
-Undoing the newest change never conflicts with a later transaction. Undoing an older one is refused with `undo_conflict` if a later transaction touched the same folders, and the fix names the newer one to undo first. A later transaction that was itself undone no longer counts, so undoing your own transactions newest first, by id, always works. `undo_conflict` also covers a transaction already undone, and a folder it removed that was put back by hand.
+Undoing the newest change never conflicts with a later transaction. Undoing an older one is refused with `undo_conflict` if a later transaction touched the same folders, and the fix names the newer one to undo first. A later transaction that was itself undone no longer counts, so undoing your own transactions newest first, by id, always works. `undo_conflict` also covers a transaction already undone, and a folder it removed that was put back by hand. Undoing again a transaction whose undo deferred its SavedVariables restore is `undo_conflict` too, with `omaddons undo <tx> --saved-variables restore` as the fix.
 
 Settings changes in the history (`config`, `target`, `auth` and `export` lines) are never undone: bare `undo`, `--last-by` and `--run` step over them, and `undo <tx>` of one is `not_found` ("transaction <tx> is a config change, which undo does not revert").
 
@@ -945,7 +980,7 @@ A later transaction that only added or dropped a requester in a dependency's `re
 
 ### `backup`
 
-Each client's `WTF/` backups: copies of its settings, the data players actually lose (milestone 3). Today `backup list` shows them; making, checking and restoring them are the next parts of milestone 3. Bare `backup` is `backup list`.
+Each client's `WTF/` backups: copies of its settings, the data players actually lose (milestone 3). Today `backup list` shows them; making, checking and restoring them are the next parts of milestone 3, so until `backup create` lands there is nothing to list. Bare `backup` is `backup list`.
 
 ```bash
 omaddons backup list                       # every client with backups, newest capture first
@@ -960,18 +995,21 @@ A backup is `<client>/Interface/.omaddons/backups/<id>/`, holding:
 - `addons.json`: the addon versions that produced it;
 - the `WTF/` copy itself.
 
-Listing reads the `backup.json` files and checks each manifest exists. It never walks or hashes a tree. Each backup says:
+Listing reads the `backup.json` files and checks each manifest exists. It never walks or hashes a backup's tree (rebuilding a stale `backups.json`, below, stat-walks undo's `WTF.previous` trees, bounded, to size them). Each backup says:
 
 - `kind`: `manual`, `auto` (with `trigger` `pre_change` or `post_session`), `before_restore`, `imported` or `recovered`.
+- `created_at` (when it was published here), `captured_at` (when its content was captured; an import keeps the original's), `actor`, `reason`, `files` and `bytes` (apparent size); `client_running` (the client ran while it was copied) and `unsettled` (how many files were still changing after a second copy).
+- `reflinked`: `all`, `some` or `none` of its files share their data with the live `WTF/` (copy-on-write clones).
 - `consistency`: `stable` when the tree was observed quiescent while it was copied (not a filesystem snapshot), else `best_effort`.
 - `integrity`: `metadata_only` (no content hash was ever compared), `verified` (its files matched their hashes when last checked: `verified_at`, `baseline`) or `damaged`. The human view never says "verified" for `metadata_only`.
-- `restorable`: its metadata and manifest are readable, it is not damaged, and its client's `WTF/` was inside the client dir.
+- `restorable`: its `backup.json` reads and names its own directory, its `manifest.json` exists, it is not damaged, and its client's `WTF/` was inside the client dir.
 - `qualifying`: whether it counts as a checkpoint: a whole, stable capture made on this machine (imported, recovered and best-effort backups never do).
-- `busy`: a restore, export or verify held it when it was listed.
+- `busy`: a restore, export or verify held its directory lock when it was listed.
+- with `-v`, `addons [{name, folders, version}]`: the addon versions that produced it.
 
-A backup whose `backup.json` cannot be read is still listed, with `null` for what it would say, and is never restorable. An id prefix of fewer than 8 characters is a usage error, one that matches nothing is `not_found` (naming the newest three), and one that matches several is `ref_ambiguous` with one `backup list <id> -t <client>` per candidate.
+A backup whose `backup.json` cannot be read is still listed, with `null` for what it would say, and is never restorable. Ids match ignoring case. An id prefix of fewer than 8 characters is a usage error, one that matches nothing is `not_found` (`details: {prefix, target, newest}`, naming the newest three), and one that matches several is `ref_ambiguous` (`details: {prefix, candidates}`) with one `backup list <id> -t <client>` per candidate.
 
-Per client, `bytes` is the backups' apparent size. On btrfs and xfs a backup initially shares its data with the live `WTF/`, so the human view says "apparent, initially shared copy-on-write" and shows the free space beside it (`free_bytes`). omaddons never claims a backup's exclusive size, which only a walk of every extent could tell. `snapshot_bytes` is the apparent size of undo's `WTF.previous` trees. `auto` is `{mode, capability, last}`: the `auto_backup` setting, and what automatic backups observed (`unknown` and `null` until they run). `--limit N` shows the newest N per client, and `shown` and `total` are always reported. Listing rebuilds `~/.cache/omaddons/backups.json`, the summary `status --cached` will read, when it no longer matches the directories.
+Per client, `bytes` is the backups' apparent size. The human view says "apparent, initially shared copy-on-write" when a listed backup's `reflinked` is `all` or `some` (on btrfs and xfs a fresh backup shares its data with the live `WTF/`), and always shows the free space (`free_bytes`). omaddons never claims a backup's exclusive size, which only a walk of every extent could tell. `snapshot_bytes` is the apparent size of undo's `WTF.previous` trees (0 for an unregistered client). `auto` is `{mode, capability, last}`: the `auto_backup` setting, whether a clone-only copy worked there when last tried (`capability`: `unknown`, `supported` or `unsupported`), and the last one (`last: {at, result}`), with `unknown` and `null` until they run. `-t` lists a selected client even with no backups (`total: 0`). `--limit N` shows the newest N per client, and `shown` and `total` are always reported. Listing rebuilds `~/.cache/omaddons/backups.json`, the summary `status --cached` will read, when it no longer matches the directories.
 
 ```text
 $ omaddons backup list
@@ -984,7 +1022,7 @@ retail (12.1.5.70391, mainline) · 2 backups · 82.4 kB apparent, initially shar
 
 What changed, when, by whom and why, newest first (`log` is an alias).
 
-Settings changes appear too: `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write` each record a line of kind `config`, `target`, `auth` or `export`, with no folder counts (human output shows what was run instead). A dry run, or a change to nothing, records none. Their `target` is the client for a `target` line and `null` otherwise, so `-t` shows only `target` lines. `undo` never reverts them and steps over them; `undo <tx>` of one is `not_found`. A line that cannot be written after the change was made warns `history_not_recorded`.
+Settings changes appear too: `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write` each record a line of kind `config`, `target`, `auth` or `export`, with zero folder counts (human output shows what was run instead). A dry run, or a change to nothing, records none (`auth github set` and `clear` currently record a line every time; see [Known issues](#known-issues)). Their `target` is the client for a `target` line and `null` otherwise, so `-t` shows only `target` lines. `undo` never reverts them and steps over them; `undo <tx>` of one is `not_found`. A line that cannot be written after the change was made warns `history_not_recorded`.
 
 ```bash
 omaddons history
@@ -994,7 +1032,7 @@ omaddons history --run 01M51F4R2ZQX        # one run's transactions (a prefix of
 omaddons history -t retail -v --json       # each folder operation (ops) instead of counts
 ```
 
-`--since` takes `30m`, `12h`, `1d`, `2w` or an RFC 3339 time. The global `--actor` still filters too; given with a different `--by`, it is a usage error. Every line shows its run (`run` in JSON, `null` for transactions from before milestone 2, each of which is a run by itself).
+`--limit` defaults to 20, and `truncated` says more lines matched. `--since` takes `30m`, `12h`, `1d`, `2w` or an RFC 3339 time. An explicit `--actor` filters too (`OMADDONS_ACTOR` never does); given with a different `--by`, it is a usage error. In JSON every line has its `run` (`null` for transactions from before milestone 2, each of which is a run by itself), and an undo has `reverts`; the human table names a run only on rows whose run holds more than one line.
 
 Each line counts the folders added (`+`), replaced (`~`) and removed (`-`). A transaction that changed records without moving a folder, such as forgetting an addon whose folders were gone, also shows `=N` for the folders it recorded (`changes.recorded` in JSON).
 
@@ -1010,7 +1048,9 @@ omaddons list -v                           # also each addon's drift (files chan
 omaddons list --deep                       # drift by content: every managed file re-hashed
 ```
 
-Each addon also carries `latest {version, status}`: the newest release remembered from earlier checks and its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`). `list` never asks a source. Its column shows `→ <version>` when a newer release is known (`update_available`, `pinned`, `blocked`), `check failed` after a failed check, and is blank otherwise. With `-v` or `--deep` each addon carries `drift {state, files}` too (as in [`status`](#status); the paths with `-v`); a plain `list` checks no file. Each addon carries `reason` (`explicit` or `dependency`), `required_by` and `orphan` (a dependency nothing requires any more): the table marks a dependency `dep` (`dependency of LittleWigs` with `-v`) and an orphan `orphan`.
+Each addon also carries `latest {version, status}`: the newest release remembered from earlier checks and its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`). `list` never asks a source. Its column shows `→ <version>` when a newer release is known (`update_available`, `pinned`; `blocked` adds `(blocked)`), `check failed` after a failed check, and is blank otherwise. With `-v` or `--deep` each addon carries `drift {state, files}` too (as in [`status`](#status); the paths with `-v`); a plain `list` checks no file. Each addon carries `reason` (`explicit` or `dependency`), `required_by` and `orphan` (a dependency nothing requires any more): the table marks a dependency `dep` (`dependency of LittleWigs` with `-v`) and an orphan `orphan`.
+
+Each client carries `counts` per folder class and `addons_dir_missing`, and each addon its `missing_folders` (managed folders gone from disk). Under `--unmanaged`, each folder's load verdict is `compatible`, `out_of_date`, `wrong_flavor` or `no_toc`, and folders whose names differ only in case are flagged `case_duplicate`. `-v` adds each addon's folder names, `folder_tocs` and the `client_dir`.
 
 On a client whose AddOns directory another client shares, a folder only the other client records is class `shared` (counted in `counts.shared`, and under `--unmanaged` with `owned_on [{target, addon}]`, shown as `shared (managed on era)`): it is not this client's to adopt, install over or remove.
 
@@ -1046,13 +1086,15 @@ The listing shows only what needs a decision; `-v` lists everything, and the sum
 | Status | Meaning |
 |---|---|
 | `update_available` | A newer release exists. `confidence` says how likely it is to load: `verified` (a download proved it), `declared` (the publisher's metadata names this client), `likely`, `unlikely` |
-| `pinned` | Installed with `--version`, and a newer release exists (`latest`) |
-| `blocked` | The newest release is known not to load on this client (`blocked_reason`) |
+| `pinned` | Pinned (by `pin` or `install --version`), and a newer release exists (`latest`) |
+| `blocked` | The newest release is known not to load on this client (`blocked_reason: verified_not_loading`), or targets an older interface than the adopted build installed (`older_than_installed`) |
 | `ahead` | The installed release is newer than the newest one on its channel |
 | `failed` | The source cannot answer for it (a deleted repository: fix `omaddons remove <name> -t <id>`, and if it moved, the alternative `omaddons adopt <folder> --ref <new ref> -t <id>` re-points it; or a fetch error) |
 | `current`, `static`, `unchecked` | Shown with `-v` only (`unchecked_reason`: `never_checked`, `offline`, `source_disabled`, `no_eligible_release`) |
 
-When a fetch fails, a remembered answer is used and the warning says so; with nothing remembered, the item is `failed`. Either way the run is `partial`. `--verify` downloads only the updates not yet verified, in a dry run that takes no lock, and remembers the verdicts: a candidate that does not load becomes `blocked` from then on. `outdated` writes only the release memo, the download cache and `net.log`.
+When a fetch fails, a remembered answer is used and the warning says so; with nothing remembered, the item is `failed`. Either way the run is `partial`. `--verify` downloads only the updates not yet verified, in a dry run that takes no global lock, and remembers the verdicts: a candidate that does not load becomes `blocked` from then on. `outdated` writes only the release memo, the download cache and `net.log`.
+
+The data also has `checked_at`, `requests {fetched, probed, reused}` and a `summary` counting every status (the human summary line leaves out `current` and `static`). `commands` holds `omaddons update` (or `update -t <id>` when only one client has updates), and `omaddons adopt -t <id>` for a client that manages nothing yet but has adoptable folders.
 
 `--changelog` puts the release notes under each update, and in the JSON as `latest.changelog` of each `update_available` item (no other status gets one):
 
@@ -1108,21 +1150,22 @@ A folder that only requires another (`DBM-Extra` beside `DBM-Core`) joins its gr
 | `cf_only` | Only a CurseForge or Wago id (those sources arrive in M5) |
 | `unknown` | No evidence |
 
-A TOC id that disagrees with stronger evidence is listed in `evidence` and `alternatives` and never chosen. Folders the release ships but this client does not load are listed in `unloaded_folders` and do not prevent `exact`. A folder whose addon is already managed (`already_managed`), or that holds a symlink (`unindexable`) or exceeds the archive limits (`limit_exceeded`), is listed in `failed`.
+A TOC id that disagrees with stronger evidence is listed in `evidence` and `alternatives` (at most 3) and never chosen. Folders the release ships but this client does not load are listed in `unloaded_folders` and do not prevent `exact`. A folder whose addon is already managed (`already_managed`), that holds a symlink, device, FIFO or socket or cannot be read (`unindexable`), or that exceeds the archive limits (`limit_exceeded`), is listed in `failed`. Sources the report could not consult are listed in `sources_skipped`.
 
-Checking downloads each identified group's newest release once, through the download cache (announced first as `verify: {groups, downloads, bytes}`), so a second run downloads nothing. `--offline` checks only what the release memo and the cache already hold. The report writes only the release memo, the download cache and `net.log`. Its `commands` are runnable: `adopt` (`adopt --apply`, scoped to the one client that has something to apply, else to your own `-t`), `adopt_folder` for each guess, and `adopt_with_ref` for each candidate of a contested guess.
+Checking downloads each identified group's newest release once, through the download cache (announced first as `verify: {groups, downloads, bytes}`), so a second run downloads nothing. `--offline` checks only what the release memo and the cache already hold. The report writes only the release memo, the WoWInterface index, the download cache and `net.log` (plus an in-flight lock while it downloads). Its `commands` are runnable: `adopt` (`adopt --apply`, scoped to the one client that has something to apply, else to your own `-t`), `adopt_folder` for each uncontested guess, and `adopt_with_ref` for each candidate of a contested one.
 
-**Adopting.** `--apply` adopts every `exact` and `identified` group of the selected clients. Folder names adopt the groups holding them, from `guess` up (`--apply` with folder names is a usage error). `--ref R` (exactly one folder, on one client: `-t`, else the only client that has it) decides where the folder comes from, overriding identification; on a folder already managed it re-points its addon to `R` instead, so the next `update` installs from there. Unless `--no-verify`, a group being adopted is checked as in the report. Each client gets one `adopt` transaction (one run: a bare `undo` reverts them all), with `reload_required: none`, allowed while the client runs. An `exact` group is recorded with its release (`version_confidence: release`); any other with its TOC's version (`toc`), so `outdated` and `update` treat it as an install of that version, and never replace it with a release built for an older interface (`blocked`, `older_than_installed`). Folders the client does not load stay unmanaged. A name another addon on the client already has is recorded as `<name> (<primary folder>)`, with an `adopt_name_changed` warning. Undo forgets the records and leaves every folder as it is.
+**Adopting.** `--apply` adopts every `exact` and `identified` group of the selected clients (`--dry-run` shows what it would adopt). Folder names adopt the groups holding them, from `guess` up (`--apply` with folder names is a usage error). `--ref R` (exactly one folder, on one client: `-t`, else the only client that has it; several clients holding it is `target_ambiguous`) decides where the folder comes from, overriding identification; on a folder already managed it re-points its addon to `R` instead, so the next `update` installs from there. Unless `--no-verify`, a group being adopted is checked as in the report. Each client gets one `adopt` transaction (one run: a bare `undo` reverts them all), with `reload_required: none`, allowed while the client runs. An `exact` group is recorded with its release (`version_confidence: release`); any other with its TOC's version (`toc`), so `outdated` and `update` treat it as an install of that version, and never replace it with a release built for an older interface (`blocked`, `older_than_installed`). Folders the client does not load stay unmanaged. A name another addon on the client already has is recorded as `<name> (<primary folder>)`, with an `adopt_name_changed` warning. Undo forgets the records and leaves every folder as it is.
 
 Each item is `adopted`, `edited` (re-pointed), `unchanged` or `failed`. A folder fails when it:
 
 | Is | Code | Fix |
 |---|---|---|
 | not in AddOns | `not_found` | `omaddons list -t <id> --unmanaged` |
-| identified by nothing | `not_found` | `omaddons adopt --ref <ref> <folder> -t <id>` (fill in the ref) |
+| identified by nothing | `not_found` | `omaddons adopt --ref <ref> <folder> -t <id>` (fill in the ref), or `omaddons search <folder>` |
 | known only to CurseForge or Wago | `source_disabled` | the same |
 | a guess with rivals, without `--ref` | `ref_ambiguous` | one `adopt <folder> --ref <r>` per candidate |
 | a leftover of a managed addon, or `--ref` names a ref another addon records | `ownership_conflict` (`details.owner`) | remove the leftover yourself, or pass the ref it belongs to |
+| `shared`: another client sharing this AddOns directory records it | `ownership_conflict` (`details.reason: owned_on_shared_target`, `owner_target`) | the same command on that client; the alternative removes it there |
 | a `Blizzard_*` folder | `protected_folder` | `omaddons list -t <id> --protected` |
 | a symlink or not an addon folder | `unmanaged_folder` (`details.class`) | `omaddons list -t <id> --unmanaged` |
 | unreadable, or larger than the archive limits | the indexer's error | `omaddons list -t <id> --unmanaged` |
@@ -1168,15 +1211,15 @@ Results are ranked: an exact catalog name or alias, or an exact WoWInterface or 
 
 Each result says, for every selected client, whether it is likely to load. This is a hint; `install` verifies every TOC.
 
-- `yes` or `no`: the catalog's families.
-- `likely` or `unlikely`: Tukui's patches.
+- `yes` or `no`: the catalog's families (`unknown` for an entry that lists none).
+- `likely` or `unlikely`: Tukui's patches (`unknown` for a project that lists none).
 - `likely` or `unknown`: WoWInterface's declared versions, which lag behind, so never `no`.
 - `abandoned`: a WoWInterface project not updated in two years.
 - `unknown`: GitHub.
 
 Names, authors and versions from WoWInterface are shown with their HTML entities decoded (`&amp;` is `&`). Text from any source loses its control characters (so it cannot send terminal escapes) and the characters that reorder or hide text, and is cut at 200 characters.
 
-`commands` holds `omaddons install <ref> -t <client>` for up to three results, each on its best client: the strongest hint (`yes`, then `likely`, then `unknown`), and among equals the default target, then a live client before a test one, then the client with the most managed addons, then retail, then by id. Never for `no`, `unlikely` or `abandoned`. A source not consulted is listed in `sources_skipped` (`offline`, `rate_limited` with `reset_at`, `disabled`, `no_index`). A spent GitHub search is not a failure. Any other source that could not be read makes the run `partial`, with a warning naming the failure: its fetch failed, or it is rate limited. A stored WoWInterface index that answers because a refresh failed is no failure: its `stale_check` warning says the refresh failed and why. `--offline` searches the catalog, the stored index and the remembered Tukui list, and lists the other sources `offline`.
+`commands` holds `omaddons install <ref> -t <client>` for up to three results, each on its best client: the strongest hint (`yes`, then `likely`, then `unknown`), and among equals the default target, then a live client before a test one, then the client with the most managed addons, then retail, then by id. Never for `no`, `unlikely` or `abandoned`. A source not consulted is listed in `sources_skipped` (`offline`, `rate_limited` with `reset_at`, `disabled`, `no_index`). A spent GitHub search is not a failure; any other GitHub error lists `github` as `no_index`. Any source that could not be read, other than a spent GitHub search, makes the run `partial`, with a warning naming the failure: its fetch failed, or it is rate limited. When every result is `no`, `unlikely` or `abandoned` on the selected clients, the human output says "No install suggested". A stored WoWInterface index that answers because a refresh failed is no failure: its `stale_check` warning says the refresh failed and why. `--offline` searches the catalog, the stored index and the remembered Tukui list, and lists the other sources `offline`.
 
 ### `info <REF>`
 
@@ -1189,11 +1232,11 @@ WeakAuras  gh:WeakAuras/WeakAuras2
   latest: not checked (offline)
 ```
 
-`latest` is `{version, release_id, channel, flavors, targets, compat}`. `compat` says, for each selected client, how likely the release is to load: `verified` (a plan proved it) or `blocked` (a plan proved it does not), `declared` (its release metadata names the client), `unlikely` (the metadata names other clients only, or the catalog lists none of the client's families), else `likely`. `targets` lists the clients that are `verified`, `declared` or `likely`, and the human line reads `likely to load on … · not on …` (`-v` lists each client). A hint only: `install` verifies every TOC.
+`latest` is `{version, release_id, channel, flavors, targets, compat}`. `compat` says, for each selected client, how likely the release is to load: `verified` (a plan proved it) or `blocked` (a plan proved it does not), `declared` (its release metadata names the client), `unlikely` (the metadata names other clients only, the catalog lists none of the client's families, or no asset of the release is for the client), else `likely`. `targets` lists the clients that are `verified`, `declared` or `likely`, and the human line reads `likely to load on … · not on …`, or "not likely to load on any client here" (`-v` lists each client, and adds `asset_urls` and `record_path`). A hint only: `install` verifies every TOC.
 
 The newest release comes through the [release memo](#files-and-state): a check made in the last 15 minutes is reused without a request, and `--refresh` checks again anyway. With `--offline`, `latest` is the remembered answer whatever its age, with a `stale_check` warning, or `null` (as above) when nothing is remembered. A missing repository is remembered too, so asking again within the window costs nothing; a network or server error never is. Each installed record carries its `drift {state, files}` (as in [`status`](#status), with the paths under `-v`), checked locally, so `--offline` shows it too, and its `reason`, `required_by` and `orphan` on that target.
 
-`--changelog` adds the release notes of every release newer than the oldest one installed (the latest release's alone when none is installed), as `changelog` and `changelog_unavailable` after `offline`, shaped and sourced as in [`outdated --changelog`](#outdated):
+`--changelog` adds the release notes of every release newer than the oldest one installed (the latest release's alone when no installed record names a release), as `changelog` and `changelog_unavailable` after `offline`, shaped and sourced as in [`outdated --changelog`](#outdated):
 
 ```text
 $ omaddons info weakauras --changelog
@@ -1233,11 +1276,13 @@ omaddons auth github --from-gh                # store what `gh auth token` print
 omaddons auth github clear                    # forget the stored token
 ```
 
-`set` writes `~/.config/omaddons/credentials/github` with mode 0600, in a 0700 directory, and refuses a terminal at once rather than wait for input. `--from-gh` is the only time omaddons asks `gh` for anything, and only when you pass it. `clear` empties the file: an empty file is no token. `status` makes one request, to `/rate_limit` (which costs none of the budget), and none with `--offline`. With `--offline` it also runs no credential command, so `configured` then says a credential is configured, not that it works; `set` and `clear` never run one. With `--dry-run`, `set` and `clear` check the token and write nothing ("would store", "would clear"), and `data` describes the token as the write would leave it. `data` is `{configured, source, rate_limit, dry_run}`, `source` one of `env`, `config`, `file` or `none` (see **Tokens** under [Network and privacy](#network-and-privacy) for the order). The token is never shown, logged or sent anywhere but `api.github.com`. A rejected token is `auth_rejected`, with `omaddons auth github clear` as the fix.
+`set` writes `~/.config/omaddons/credentials/github` with mode 0600, in a 0700 directory, and refuses a terminal at once rather than wait for input. `--from-gh` is the only time omaddons asks `gh` for anything, and only when you pass it. `clear` empties the file: an empty file is no token. `status` makes one request, to `/rate_limit` (which costs none of the budget), and none with `--offline`. With `--offline` it also runs no credential command, so `configured` then says a credential is configured, not that it works; `set` and `clear` never run one. With `--dry-run`, `set` and `clear` check the token and write nothing ("would store", "would clear"), and `data` describes the token as the write would leave it. `data` is `{configured, source, rate_limit, dry_run}`, `source` one of `env`, `config`, `file` or `none` (see **Tokens** under [Network and privacy](#network-and-privacy) for the order). The token is never shown, logged or sent anywhere but `api.github.com`. A rejected token is `auth_rejected`, whose fix undoes the token's source: `omaddons auth github clear` (alternative: `set` a new one) for the stored file, unsetting `OMADDONS_GITHUB_TOKEN`, or correcting config.toml's `[sources.github] credential`, each with `clear` as an alternative. `--from-gh` goes with `set` (or bare `auth github --from-gh`); with `status` or `clear` it is a usage error.
+
+`omaddons help auth` explains `auth github`; `omaddons auth github --help` and `omaddons help auth github` currently fail (see [Known issues](#known-issues)).
 
 ### `net-log`
 
-Every network request and git subprocess omaddons made, with a summary by host. A request or git run whose line cannot be written fails, so nothing is contacted unlogged. By default it shows the 50 most recent (`--limit N`; `--since` filters first). The host summary counts every request that matched, and `truncated` says more matched than are shown.
+Every network request and git subprocess omaddons made, with a summary by host and by `via` (`http` or `git`). A request or git run whose line cannot be written fails, so nothing is contacted unlogged. By default it shows the 50 most recent, oldest first (`--limit N`; `--since` filters first). It reads `net.log` and its one rotated predecessor. The summaries count every request that matched, `truncated` says more matched than are shown, and `skipped` counts lines it could not read.
 
 ```bash
 omaddons net-log
@@ -1266,7 +1311,8 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
  "data":{"dry_run":false,"target":{"id":"retail","key":"01M51EX04HHWM46XE9F2B9JXED"},"tx":"01M51EX645RCVFN6Z4ZV5GRWVS","kind":"install",
    "items":[{"request":"./Bar-2.1.0.zip","ref":"file:/home/me/src/Bar-2.1.0.zip","name":"Bar","status":"installed",
      "from_version":null,"to_version":"2.1.0","version_confidence":"toc","channel":"stable",
-     "folders":{"added":["Bar"],"replaced":[],"removed":[],"skipped":[],"recorded":[]},"error":null}],
+     "folders":{"added":["Bar"],"replaced":[],"removed":[],"skipped":[],"recorded":[]},"error":null,
+     "reason":"explicit","required_by":[],"bridge_dependencies":[],"unresolved":[]}],
    "reload_required":"none","atomic_swap":true,"creates_addons_dir":false},
  "warnings":[],
  "commands":[{"action":"undo","command":"omaddons undo 01M51EX645RCVFN6Z4ZV5GRWVS","argv":["omaddons","undo","01M51EX645RCVFN6Z4ZV5GRWVS"],"destructive":false}],
@@ -1299,10 +1345,10 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 | `data` | object | the command's result (success, and `check_failed`) |
 | `error` | object | `code`, `message`, `fix` (display string), `fix_argv` (argv array, or `null` when the fix is prose or needs a value only you can supply; such a fix shows the command with each missing value as a `<placeholder>`, as in `omaddons targets add <path>`), `alternatives` (`[{display, argv}]`), `retryable`, `details` (always an object) |
 | `warnings` | array | `{code, message, fix, fix_argv}`. On a partial run, each failed item is mirrored here. On a failure, it holds what the run found before it failed (a `journal_pending`, a `config_unknown_key`), and stderr carries each as a `warning` event before the `error` event |
-| `commands` | array | suggested next steps: `{action, command, argv, destructive}`, e.g. `undo <tx>` after a change and `undo --run <run>` (action `undo_run`) after a change on several clients, `update`, `check_updates`, `adopt`, `reinstall`, `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive) |
+| `commands` | array | suggested next steps: `{action, command, argv, destructive}`. The actions: `undo` (`undo <tx>` after a change), `undo_run` (`undo --run <run>` after a change on several clients), `update`, `check_updates`, `adopt`, `adopt_folder` and `adopt_with_ref` (`adopt`'s guesses), `install` (search results, missing or bridge dependencies), `reinstall`, `inspect` (`list -v` for degraded addons), `status` (after `status --cached` with no cache), `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive) |
 | `meta` | object | `elapsed_ms`, `offline` (`--offline` or `OMADDONS_OFFLINE=1`, usage errors included) |
 
-`check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status; on every other failure `commands` is empty. Long commands also stream NDJSON `progress` events on stderr with `--progress json` (see [stderr events](#stderr-events)); stdout stays one envelope.
+`check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status. On every other failure `commands` is empty, except a panic's, which can offer `undo` (below). Long commands also stream NDJSON `progress` events on stderr with `--progress json` (see [stderr events](#stderr-events)); stdout stays one envelope.
 
 ### Exit codes
 
@@ -1311,12 +1357,12 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 | 0 | `ok` | Success, including partial success (`partial: true`, each failed item in `data`) |
 | 1 | `failed` | Runtime failure: network, source, archive integrity, I/O, state, internal. `error.retryable` says whether to retry |
 | 2 | `usage` | Unknown command or flag, bad argument, bad ref syntax, an unreadable `addons.toml` (`desired_state_invalid`) |
-| 3 | `not_found` | Target, ref, addon, plan or transaction not found, or ambiguous |
+| 3 | `not_found` | Target, ref, addon, backup, run, plan or transaction not found, or ambiguous |
 | 4 | `refused` | Safety refusal: running client, protected folder, ownership or case conflict, unsafe archive, wrong flavor, undo conflict, blocked host |
 | 5 | `locked` | Another omaddons process held the lock past the 5-second timeout; retryable |
 | 6 | `check_failed` | An opt-in assertion failed: `status --check` (drift or attention), `outdated --check` (an update is available), or `--strict` on `install`, `update`, `sync` and `copy` (a partial success). `data` is kept |
 
-A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its `commands` offer `omaddons undo <tx>` for a transaction that committed before it, and its warnings are the ones the run found. A panic after the result was written leaves that result and its exit status, with one stderr line saying so; a panic the program recovers from prints nothing.
+A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its `commands` offer `omaddons undo <tx>` for a transaction that committed before it, and its warnings are the ones the run found. A panic after the result was written leaves that result and its exit status, with one stderr `log` line saying so (dropped by `--quiet`); a panic the program recovers from prints nothing.
 
 <details>
 <summary><strong>Every error code (39)</strong></summary>
@@ -1326,37 +1372,37 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `usage` | 2 | no | bad flag, value, `--since`, `--limit`, `--actor`, `--reason`, config key or id; a missing or relative `HOME` |
 | `ref_invalid` | 2 | no | malformed ref: `gh:owner`, `git:` without https, `http://` |
 | `desired_state_invalid` | 2 | no | `sync`'s `addons.toml` cannot be read: broken TOML, a bad value, an unknown family, an entry listed twice, or a newer schema (`details: {path, line, key, reason}`); also a failed `sync` item when two entries name the same addon, and `export --write` refusing a file edited since it was written (`reason: "edited"`) or an empty export (`reason: "empty"`), and `sync --prune` refusing a file with a section for no known client (`reason: "unknown_target_section"`) |
-| `target_not_found` | 3 | no | no target matches the selector; a known game mode whose client is missing |
+| `target_not_found` | 3 | no | no target matches the selector or id; a known game mode whose client is missing; no client found at all (fix `omaddons targets add <path>`), or only test clients (the first as the fix, each other one an alternative, all with `-t`); a `targets add` path holding no client; undo of a transaction whose target is gone |
 | `target_ambiguous` | 3 | no | several targets fit; one alternative per candidate |
-| `ref_ambiguous` | 3 | no | a name matches several addons or a local path |
-| `not_found` | 3 | no | unknown name, path, tag, transaction or pruned snapshot; nothing to undo |
+| `ref_ambiguous` | 3 | no | a name matches several addons or a local path; a folder `adopt` could take from several refs (one `--ref` alternative each); a backup id prefix matching several backups (`details: {prefix, candidates}`, one `backup list <id> -t <client>` each) |
+| `not_found` | 3 | no | unknown name (fix `omaddons search <name>`, sending no request), path, tag, asset, transaction, run or backup id (`details: {prefix, target, newest}` for a backup); a transaction or run id prefix matching several (`details.candidates`); a settings change given to `undo`; a pruned snapshot (`details.reason: "snapshot_pruned"`); nothing to undo; an addon moved to another release between plan and commit |
 | `not_managed` | 3 | no | `remove` of an unmanaged, linked or `Blizzard_*` folder, or a name no managed addon answers to. When the name is an unmanaged folder (`update`, `pin`, `unpin`, `remove`), the fix adopts it: `omaddons adopt <folder> [--ref <catalog ref>] -t <id>`, other clients holding it as alternatives |
 | `plan_not_found` | 3 | no | reserved for stored plans (M4) |
-| `no_compatible_release` | 3 | no | no candidate loads on the client; `details.tried` lists them |
+| `no_compatible_release` | 3 | no | no candidate loads on the client (`details.tried` lists them), or the ref has no release to choose: none published, none on the channel (only prereleases: fix `--channel beta`), no zip asset or `release.json`, or a channel that needs GitHub's release API |
 | `game_running` | 4 | no | the running policy refuses (fix appends `--while-running`), or `undo --saved-variables restore` while the client runs; `details.reason` says why (`loaded_toc`, `legacy_client`, `policy_refuse` or `saved_variables`), and `details.running: "unknown"` appears when `/proc` could not be read and the client may be running. A failed item's error in `update`, `sync` or `copy` carries both too |
-| `protected_folder` | 4 | no | the archive contains a `Blizzard_*` folder |
-| `ownership_conflict` | 4 | no | another addon owns the folder; fix appends `--force` |
-| `unmanaged_folder` | 4 | no | an unmanaged folder exists; for an addon new to the client the fix adopts it (`omaddons adopt <folder> --ref <ref> -t <id>`) with the `--force` retry as alternative, otherwise the fix appends `--force` |
-| `case_collision` | 4 | no | a folder name differs only in case from an existing one |
+| `protected_folder` | 4 | no | a change would touch a `Blizzard_*` folder: an archive containing one, `adopt` of one, an undo whose history names one, or the filesystem writer's own refusal |
+| `ownership_conflict` | 4 | no | another addon owns the folder; fix appends `--force`. A folder another client sharing this AddOns directory records (`details.reason: "owned_on_shared_target"`) is never overridable: the fix is the same command on that client |
+| `unmanaged_folder` | 4 | no | an unmanaged folder exists; for an addon new to the client the fix adopts it (`omaddons adopt <folder> --ref <ref> -t <id>`) with the `--force` retry as alternative, otherwise the fix appends `--force`. A symlinked folder's fix is prose (remove or rename the symlink yourself) |
+| `case_collision` | 4 | no | a folder name differs only in case from an existing one; AddOns already holds such a pair; `Interface` or `Interface/AddOns` exists in two spellings (`details.paths`) |
 | `wrong_flavor` | 4 | no | a `url:`, `file:` or `--file` archive does not load on the client |
 | `unsafe_archive` | 4 | no | traversal, absolute paths, symlinks, devices, duplicate or case-colliding entries, the compression-ratio limit |
-| `archive_too_large` | 4 | no | over the entry, uncompressed-size or download limit (also a download past it while streaming); `details.limit`, and `details.config_key` when `config.toml` can raise it |
+| `archive_too_large` | 4 | no | over the entry, uncompressed-size or download limit (also a download past it while streaming, a `git:` checkout growing past it, an API response over 64 MiB, or a live folder `adopt` indexes); `details.limit`, and `details.config_key` when `config.toml` can raise it |
 | `undo_conflict` | 4 | no | a later transaction touched the same folders, already undone, or a removed folder put back by hand |
 | `host_blocked` | 4 | no | an HTTP request or redirect to a host not on the allowlist, or a `git:` ref to a host not in `git_hosts` |
 | `scope_denied` | 4 | no | the filesystem writer refused a path outside its scope |
 | `state_too_new` | 4 | no | a state file written by a newer omaddons |
 | `locked` | 5 | yes | lock held past 5 s; `details.holder` |
 | `check_failed` | 6 | no | `--check` or `--strict` |
-| `network` | 1 | yes | connection failure |
+| `network` | 1 | yes (no for too many redirects or an undecodable encoding) | connection failure, also mid-body; more than 5 redirects; a `Content-Encoding` omaddons does not decode; a source response it cannot read; a git run that times out, or fails outside clone and fetch |
 | `rate_limited` | 1 | yes | GitHub REST budget exhausted, or any host's rate-limit answer (403/429 with no requests remaining, `Retry-After` over 60 s, a 429 that outlasts the retries); `details.reset_at` |
-| `download_failed` | 1 | yes | download failure |
+| `download_failed` | 1 | no (a refused commit currently says yes; see Known issues) | the git binary could not clone or fetch a `git:` ref on another host: it needs a login (private repositories are not supported), the server refused to send the commit (fix: name a branch or tag), or another git failure |
 | `http_status` | 1 | 5xx only | unexpected status; `details.status` |
 | `hash_mismatch` | 1 | first attempt | downloaded bytes did not match the expected hash |
-| `plan_stale` | 1 | yes | another run changed the target between plan and commit |
+| `plan_stale` | 1 | yes | another run changed the target between plan and commit, a folder `adopt` hashed changed before the lock, or a `git:` branch moved between resolve and checkout |
 | `offline` | 1 | no | `--offline` blocked a request |
 | `bad_archive` | 1 | no | malformed, encrypted, or not Stored/Deflate |
 | `distribution_disabled` | 1 | no | reserved for CurseForge (M5) |
-| `source_disabled` | 1 | no | a source turned off in `config.toml` (the fix turns it back on); CurseForge or Wago (M5); a `git:` ref on another host when `git` is missing or older than 2.32 |
+| `source_disabled` | 1 | no | a source turned off in `config.toml` (the fix turns it back on); CurseForge or Wago refs and links (M5); a `git:` ref on another host when `git` is missing or older than 2.32, or in a command that does not run git |
 | `auth_required` | 1 | no | a GitHub token is configured or stored but cannot be used: an unset `{ env = … }` variable, an unreadable `{ file = … }`, an empty or malformed token, or `auth github --from-gh` without a working `gh` |
 | `auth_rejected` | 1 | no | GitHub answered 401 to the token (the fix clears or replaces it where it came from), or a `{ command = … }` credential failed |
 | `state_corrupt` | 1 | no | an unreadable state or config file (with line and column); a SavedVariables snapshot copy that no longer matches its manifest, refused before an undo moves anything (`details.reason: "snapshot_mismatch"`) |
@@ -1424,11 +1470,11 @@ When stderr is not a terminal, or `CI` is set, or `TERM=dumb`, stderr carries ND
 {"event":"log","level":"debug","message":"discovery: scanned yes, roots reused 2, parsed 0, cache written no"}
 ```
 
-Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. `progress` events come from long commands (`install`, `update`, `outdated`, `adopt`, `sync`, `copy` and `search`) when progress is on: `{"event":"progress","phase":"download","message":"gh:o/foo@v1 on retail","current":1,"total":2}`. The phases are `fetch`, `download`, `verify`, `stage` and `commit`. Within a phase, `current` counts up to a fixed `total`, and each item appears once. On a terminal in human mode, progress is one line that is rewritten in place.
+Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` log events need `-v`. `progress` events come from long commands (`install`, `update`, `outdated`, `adopt`, `sync`, `copy` and `search`, and the stage and commit steps of `remove`, `pin` and `unpin`) when progress is on: `{"event":"progress","phase":"download","message":"gh:o/foo@v1 on retail","current":1,"total":2}`. The phases are `fetch`, `download`, `verify`, `stage` and `commit`. Within a phase, `current` only grows and never passes `total`; `total` grows when a dependency round or a new fetch adds items. Each item appears once, after an optional announcement at `current: 0` (`adopt` announces its downloads that way). On a terminal in human mode, progress is one line that is rewritten in place.
 
 ### Stability
 
-The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the contract can still change. From that tag on, it is frozen. The contract suite (`tests/contract/`) runs a matrix of success and failure cases across the commands. It checks key order, `ok`/`exit_code` agreement and registered codes. Every `fix_argv`, `alternatives[].argv` and `commands[].argv` must parse as an omaddons command line and round-trip through shell quoting to its display string. A prose fix may not name a runnable omaddons command: a scan of the source and the matrix both fail one that does. A corpus of mistyped commands, and every one-letter typo of every command name, check that a fix never names a different command that changes something. Snapshots pin representative envelopes.
+The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the contract can still change. From that tag on, it is frozen. The contract suite (`tests/contract/`) runs a matrix of success and failure cases across the commands. It checks key order, `ok`/`exit_code` agreement and registered codes. Every `fix_argv`, `alternatives[].argv` and `commands[].argv` must parse as an omaddons command line and round-trip through shell quoting to its display string. A prose fix may not name a runnable omaddons command: a scan of the source and the matrix both fail one that does. A corpus of mistyped commands, and every command name with one letter dropped or two neighbours swapped, check that a fix never names a different command that changes something. The suite also checks that every failure emits exactly one stderr `error` event, that suggestions carry no presentation flags, that read-only commands accept and ignore `--dry-run` and `--reason`, that repeated runs print identical bytes, and that `status`'s recommendations run on a fresh home. Snapshots pin representative envelopes.
 
 ---
 
@@ -1440,14 +1486,18 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
  plan (no lock)              stage (no lock)                  commit window (global flock, milliseconds)
  ──────────────────────      ─────────────────────────────    ─────────────────────────────────────────────
  fetch each ref once         extract to                       recover leftover journals
- download → blob cache       <client>/Interface/.omaddons/    re-check the target's generation:
- inspect the archive           stage/<tx>/<Folder>/             changed and conflicting → plan_stale
- judge every TOC against     verify each file's size            already done by another run → no-op
-   the client's rules          and SHA-256                    journal: prepared
- ownership + running-        one syncfs                       create Interface/AddOns if never launched
-   policy checks             copy touched SavedVariables      SavedVariables: keep each copy whose file's
-                               to .omaddons/snapshots/<tx>/     stat is unchanged, copy the rest
-                               WTF/, hashing each once        snapshot state files
+ download → blob cache       <client>/Interface/.omaddons/    register a new target
+ inspect the archive           stage/<tx>/<Folder>/           re-check the target's generation:
+ judge every TOC against     verify each file's size            changed and conflicting → plan_stale
+   the client's rules          and SHA-256                      already done by another run → no-op
+ ownership + running-        one syncfs per archive           re-check the running state
+   policy checks             wait (≤ 20 ms) for timestamps    journal: prepared
+                               to settle                      create Interface/AddOns if never launched
+                             digest folders the files         SavedVariables: keep each copy whose file's
+                               index does not cover             stat is unchanged, copy the rest
+                             copy touched SavedVariables      snapshot state files
+                               to .omaddons/snapshots/<tx>/
+                               WTF/, hashing each once
                                                               swap each folder (journal step per rename):
                                                                 new      → RENAME_NOREPLACE
                                                                 replaced → RENAME_EXCHANGE
@@ -1458,12 +1508,12 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
                                                               then: status.json, cleanup, doorbell, retention
 ```
 
-- **Interrupted runs.** The next command that changes something recovers under the global lock first, every client's journals whichever client the command changes. That is install, update, sync, pin, unpin, adopt, copy, remove and undo (also when they turn out to change nothing), `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write`. Dry runs and read commands never recover. A journal is written back only into its own client, once that client's identity marker names the journal's target. A journal that reached `swapped` rolls forward, and anything earlier rolls back. A rollback also removes the transaction's snapshots, except one that still holds an addon folder, which it keeps and names in the `journal_recovered` warning. Each step records the inode (and, where the filesystem keeps one, the birth time) of both paths, so rollback reverses a rename only if it actually happened, also after a reboot that renumbered the device (btrfs subvolumes, FUSE and device-mapper volumes get new device numbers on every mount). An interrupted undo whose SavedVariables restore had not run yet restores them during recovery only when the client is not running. Otherwise, or when the restore fails, recovery leaves them as they are and warns `saved_variables_deferred` with the command to run after quitting. Read commands never recover anything: they report `journal_pending`, and `status` lists it under attention. A command's journal warnings describe the state when it finishes: a journal it recovered appears only as `journal_recovered`, never also as `journal_pending`.
-- **No atomic rename.** On filesystems without `renameat2` exchange (NTFS through ntfs-3g, some FUSE mounts), omaddons falls back to two journaled renames per folder and reports `atomic_swap: false` with an `atomic_swap_unavailable` warning. A cross-device rename is an error, never a fallback, and the staging area must be on the same filesystem as AddOns.
-- **Concurrency.** Planning and staging take no lock, so a terminal and an agent (and later the widget) can work at once. The global lock (`~/.local/state/omaddons/lock`, an flock that is never renamed or deleted) is held for the commit window, and briefly for retention, `config set`, `targets` changes, `auth github` and `export --write` (each recovering a journal left by a crash first), and for a change command that changes nothing only while a journal waits for that recovery. SavedVariables are copied and hashed before it is taken, and under it each file is only checked with `stat` (one changed in between is copied again there). An undo also makes and checks the copies it restores before the lock, and puts each back with one `RENAME_EXCHANGE`. Folder digests come from the files index, or are taken before the lock for a folder it has no entry for. The checkpoint budget is under 50 ms per commit and undo, also with 16 MiB of SavedVariables and a 64 MiB folder (`tests/perf.rs`, release build); the M1 and M2 checkpoints measured at most 2 ms. The gate measures the same commits, SavedVariables copied byte by byte, and prints them, failing only past a 2-second sanity ceiling. A second run waits up to 5 seconds, then fails with `locked` (exit 5, retryable, `details.holder`).
-- **A failed recovery.** If a commit fails and recovering it in the same process fails too (the disk turned read-only, say), the journal and the staged folders are kept. Those staged folders can be the only copy of the old version. The command fails with its own error, naming the transaction in `error.details.journal_pending` and the recovery's failure in `error.details.recovery_error` (`{code, message}`). The next command that commits a change finishes it.
-- **Crash testing.** All 27 engine failpoints are armed as a real `abort` in a child process for first installs, installs, updates, removes and undos (restoring, keeping, and with the client running, deferring SavedVariables), and for the M2 transaction shapes, each scene with SavedVariables. Every journaled rename of a multi-folder swap is crashed too, with atomic renames and in the two-rename fallback. The state afterwards must be wholly old or wholly new, SavedVariables included, and at least ten failpoints must actually crash a scene. A failpoint off a scene's path has to let it succeed. After recovery no snapshot dir is left of a transaction that never committed, except the SavedVariables copies a crash before `prepared` leaves, which the orphan sweep must remove once they are an hour old. Recovery is crashed too: after each step a rollback undoes, as a roll-forward starts, and before an undo's SavedVariables restore. The command after it must finish the job. A journal, `history.jsonl` or `actions.jsonl` whose last line a crash cut in half must not stop recovery either. An undo crashed after its swap is also recovered while the client runs, and its SavedVariables must never be written then. A commit whose recovery fails too is finished by the next command, local edits and a replaced unmanaged folder included.
-- **Records-only changes.** `adopt`, `pin` (without `--version`, which installs that release) and `unpin`, and a dependency's `required_by` bookkeeping, are transactions that change records only: no folder is touched, and each is undoable like any other.
+- **Interrupted runs.** The next command that changes something recovers under the global lock first, every client's journals whichever client the command changes. That is install, update, sync, pin, unpin, `adopt` when it adopts (`--apply`, folder names or `--ref`), copy, remove and undo (also when they turn out to change nothing), `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write`. Dry runs and read commands, the `adopt` report included, never recover. A journal is written back only into its own client, once that client's identity marker names the journal's target. A journal that reached `swapped` rolls forward, and anything earlier rolls back. A rollback also removes the transaction's snapshots, except one that still holds an addon folder, which it keeps and names in the `journal_recovered` warning. Each step records the inode (and, where the filesystem keeps one, the birth time) of both paths, so rollback reverses a rename only if it actually happened, also after a reboot that renumbered the device (btrfs subvolumes, FUSE and device-mapper volumes get new device numbers on every mount). An interrupted undo whose SavedVariables restore had not run yet restores them during recovery only when the recovering command found that client and it is not running; `config set`, `targets`, `auth github` and `export --write` never restore them. Otherwise, or when the restore fails, recovery leaves them as they are and warns `saved_variables_deferred` with the command to run after quitting. Read commands never recover anything: they report `journal_pending` (or `tx_in_progress` while another process holds the lock), and `status` lists it under attention. A command's journal warnings describe the state when it finishes: a journal it recovered appears only as `journal_recovered`, never also as `journal_pending`.
+- **No atomic rename.** On filesystems without `renameat2` exchange (NTFS through ntfs-3g, some FUSE mounts), the first flagged rename the filesystem refuses switches the rest of the transaction to plain journaled renames (two per replaced folder, one per new or removed folder), and omaddons reports `atomic_swap: false` with an `atomic_swap_unavailable` warning. A cross-device rename is an error, never a fallback, and the staging area must be on the same filesystem as AddOns.
+- **Concurrency.** Planning and staging take no lock, so a terminal and an agent (and later the widget) can work at once. The global lock (`~/.local/state/omaddons/lock`, an flock that is never renamed or deleted) is held for the commit window, briefly for retention's prunes, and for `config set`, `targets` changes, `auth github` and `export --write`, which each recover a journal left by a crash first. A change command that changes nothing takes it only while a journal waits for that recovery, and leaves the journal for later if the lock is busy. SavedVariables are copied and hashed before it is taken, and under it each file is only checked with `stat` (one changed in between is copied again there). An undo also makes and checks the copies it restores before the lock, and puts each back with one `RENAME_EXCHANGE` (a plain rename when the file is gone or the filesystem cannot exchange). Folder digests come from the files index, or are taken before the lock for a folder it has no entry for. The checkpoint budget is under 50 ms per commit and undo, also with 16 MiB of SavedVariables and a 64 MiB folder (`tests/perf.rs`, release build); the M1 and M2 checkpoints measured at most 2 ms. The gate measures the same commits, SavedVariables copied byte by byte, and prints them, failing only past a 2-second sanity ceiling. A second run waits up to 5 seconds, then fails with `locked` (exit 5, retryable, `details.holder`).
+- **A failed recovery.** If a commit fails and recovering it in the same process fails too (the disk turned read-only, say), the journal and the staged folders are kept. Those staged folders can be the only copy of the old version. The command fails with its own error, naming the transaction in `error.details.journal_pending` and the recovery's failure in `error.details.recovery_error` (`{code, message}`). The next command that changes something (see Interrupted runs) finishes it.
+- **Crash testing.** All 27 engine failpoints are armed as a real `abort` in a child process for first installs, installs, updates, removes and undos (restoring, keeping, and with the client running, deferring SavedVariables), for the M2 transaction shapes, and for the records-only pin and forget, each scene with SavedVariables. Every journaled rename of a multi-folder swap is crashed too, with atomic renames and in the two-rename fallback. The state afterwards must be wholly old or wholly new, SavedVariables included, and at least ten failpoints must actually crash a scene. A failpoint off a scene's path has to let it succeed. After recovery no snapshot dir is left of a transaction that never committed, except the SavedVariables copies a crash before `prepared` leaves, which the orphan sweep must remove once they are an hour old. Recovery is crashed too: after each step a rollback undoes, as a roll-forward starts, and before an undo's SavedVariables restore. The command after it must finish the job. A journal, `history.jsonl` or `actions.jsonl` whose last line a crash cut in half must not stop recovery either. An undo crashed after its swap is also recovered while the client runs, and its SavedVariables must never be written then. A commit whose recovery fails too is finished by the next command, local edits and a replaced unmanaged folder included.
+- **Records-only changes.** `adopt`, `pin` (without `--version`, which installs that release) and `unpin`, removing an addon whose folders are all gone, and a dependency's `required_by` bookkeeping are transactions that change records only: no folder is touched, they commit while the client runs with no reload needed, and each is undoable like any other.
 - **Your local changes.** Files you edited in a managed addon are replaced by an update or a reinstall, with a `local_changes_replaced` warning naming them; the transaction snapshot keeps them, so `omaddons undo` brings them back.
 - **Your `addons.toml`.** `export --write` keeps the previous file as `addons.toml.bak`, refuses to replace a file edited by hand since it last wrote it (without `--overwrite`), and never writes an empty export.
 
@@ -1483,7 +1533,8 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
 | `Blizzard_*` (any case) | Never written, even with `--force`. Two independent layers refuse it: the planner and the filesystem writer's scope table |
 | A symlink (your development checkout) | Never touched, even with `--force` (class `linked`) |
 | A name that differs only in case from an existing folder | `case_collision`, even with `--force`. Wine folds case, so the game would see only one. An addon's own folder may change case on update |
-| Two AddOns folders that differ only in case (`AddOns` and `addons`) | Refused. An existing lowercase `interface/addons` alone is used as the AddOns folder |
+| Two `Interface` or two `AddOns` folders that differ only in case (`AddOns` and `addons`) | `case_collision` (`details.paths`). An existing lowercase `interface/addons` alone is used as the AddOns folder |
+| A folder two addons of the same transaction both claim | `ownership_conflict`, even with `--force`. A folder handed from one addon to another in the same transaction degrades neither |
 | Another managed addon's folder | `ownership_conflict`; `--force` transfers it and marks the old owner degraded |
 | A folder another client's records own, in an AddOns directory the two share (class `shared`) | `ownership_conflict` naming that client (`details.owner_target`), even with `--force`; the fix runs the same command on that client. `adopt` skips such folders and refuses them by name |
 | An unmanaged folder | `unmanaged_folder`, whose fix adopts it under the ref being installed (`omaddons adopt <folder> --ref <ref> -t <id>`); `--force`, the alternative, replaces it, and the snapshot keeps the original for undo until retention prunes it (`snapshot_only_copy` says so). An update of an addon already managed has only the `--force` fix |
@@ -1492,15 +1543,15 @@ Ownership comes only from omaddons' own records. Other managers' metadata is not
 
 ### Hostile archives
 
-Refused as `unsafe_archive` before anything reaches the client: path traversal (`..`), absolute paths, drive letters, control characters, symlinks, devices, FIFOs and sockets, duplicate entries, entries that collide when case is ignored, names that are both a file and a directory, entries that expand past their declared size, and a compression ratio over 200:1 once past 32 MiB. Archives with more than 20,000 entries or more than 1 GiB uncompressed are refused as `archive_too_large`. Encrypted entries and compression other than Stored or Deflate are `bad_archive`. Staged files are written with fixed modes (0644 and 0755).
+Refused as `unsafe_archive` before anything reaches the client: path traversal (`..`), absolute paths, drive letters, control characters, symlinks, devices, FIFOs and sockets, duplicate entries (also caught through the central directory's count), entries that collide when case is ignored, names that are both a file and a directory, entries that expand past their declared size, and a compression ratio over 200:1 once past 32 MiB (checked per entry and for the whole archive). Archives with more than 20,000 entries or more than 1 GiB uncompressed, and downloads over 512 MiB, are refused as `archive_too_large`. Encrypted entries and compression other than Stored or Deflate are `bad_archive`. A local folder install (and a `git:` checkout) follows the same rules, also refusing a name that is not UTF-8, and its `.git` is skipped. Staged files are written with fixed modes (0644 and 0755).
 
 ### Running clients
 
-Running clients are detected live from `/proc` (your own processes only). The executable name is matched case-insensitively, and the Wine path is mapped through the prefix's drive letters. If omaddons cannot read `/proc` (it cannot be listed, or does not list omaddons itself: not mounted, or another PID namespace), it treats every client as running and says so with `running_unknown`; `status` then reports `running: null`. Detection sees only processes in omaddons' own PID namespace, so a sandboxed omaddons with its own `/proc` cannot see a game running outside it.
+Running clients are detected live from `/proc` (your own processes only). The executable name is matched case-insensitively, with or without `.exe` (the kernel's `comm` keeps only 15 bytes), and the Wine path is mapped through the prefix's drive letters. A process matched by its `WINEPREFIX` alone marks every client with that executable name in that prefix as running. If omaddons cannot read `/proc` (it cannot be listed, or does not list omaddons itself: not mounted, or another PID namespace), it treats every client as running and says so with `running_unknown`; `status` then reports `running: null`. Detection sees only processes in omaddons' own PID namespace, so a sandboxed omaddons with its own `/proc` cannot see a game running outside it.
 
 | `running_policy` | While the client runs |
 |---|---|
-| `safe` (default) | Adds and replacements that keep the loaded TOC go through, with `reload_required: "reload"` (`/reload` in game). Removing a folder the client loads, or an update that deletes or renames the TOC it loads, is refused with `game_running` until it exits. On legacy and unrecognized custom clients, every change is refused, except on 3.3.5a, which re-reads a loaded addon's TOC on `/reload`: there a replacement that keeps the loaded TOC goes through with `reload_required: "reload"`, and a new or removed folder waits for a restart |
+| `safe` (default) | Adds and replacements that keep the loaded TOC go through, with `reload_required: "reload"` (`/reload` in game). Removing a folder the client does not load goes through with `reload_required: "none"`. Removing a folder the client loads, or an update that deletes or renames the TOC it loads, is refused with `game_running` until it exits. On legacy and unrecognized custom clients, every change is refused, except on 3.3.5a, which re-reads a loaded addon's TOC on `/reload`: there a replacement that keeps the loaded TOC goes through with `reload_required: "reload"`, and a new or removed folder waits for a restart |
 | `refuse` | Every change is refused |
 | `allow` | Nothing is refused; the result says whether `/reload` or a restart is needed |
 
@@ -1510,16 +1561,18 @@ Running clients are detected live from `/proc` (your own processes only). The ex
 
 Retention runs after every commit, for the target just changed:
 
-- Snapshots younger than 24 hours and the target's most recent transaction are always kept.
-- A snapshot that a deferred SavedVariables restore still needs (`saved_variables_deferred`) is kept until that restore runs, the undo is undone, or a later transaction changes those addons.
-- At most the newest 10 snapshots within 7 days are kept, the protected ones included; everything outside that set is pruned.
-- If the kept set exceeds 2 GiB for the target, its oldest unprotected snapshots are pruned until it fits.
+- Snapshots younger than 24 hours and the target's most recent transaction are always kept (protected).
+- A snapshot that a deferred SavedVariables restore still needs (`saved_variables_deferred`) is protected until that restore runs, the undo is undone, or a later transaction changes those addons.
+- Beyond those, a snapshot is kept while it is within 7 days and fewer than 10 newer snapshots are kept. Protected snapshots count toward the 10 but are never pruned for it, so 12 snapshots from the last day all stay. Everything else is pruned.
+- If the kept set exceeds 2 GiB for the target (the client-side and state-side halves of each snapshot together), its oldest unprotected snapshots are pruned until it fits; when protected snapshots alone exceed it, `snapshot_cap_exceeded` says so.
+- A failed prune is only a `retention_failed` warning: the transaction stands.
 - History lines are never pruned.
 - Undo of a pruned transaction fails `not_found`. For folders with no other copy (an unmanaged folder replaced under `--force`, an addon adopted as it was or installed from a local archive or directory), the commit says so with `snapshot_only_copy`, stating these bounds as configured.
 - The download cache is an LRU capped at 1 GiB. Archives of releases installed on any target are pinned, so the cache can exceed the cap.
-- Orphaned stage directories, in-flight locks and the snapshots of transactions that never committed are swept: a rolled-back or failed transaction's snapshots at once, anything a crash left once it is an hour old. A snapshot that still holds an addon folder is never swept.
+- Orphaned stage directories, in-flight locks and the snapshots of transactions that never committed are swept: a rolled-back or failed transaction's snapshots at once, a dead planner's temporary downloads as soon as its in-flight lock is free, and anything else a crash left once it is an hour old. A snapshot that still holds an addon folder is never swept.
+- `WTF/` backups (`.omaddons/backups/`) are never touched by transaction retention.
 
-All of these numbers live in `src/limits.rs`, and most can be changed in `[limits]`.
+The retention and archive limits live in `src/limits.rs`. All but the 24-hour minimum age, the 1-hour orphan age, the 32 MiB ratio floor and the 5-second lock timeout can be changed in `[limits]`. The time budgets (50 ms, 2 s) live in the tests, and the failpoint list in `src/engine/tx.rs`.
 
 ---
 
@@ -1529,23 +1582,25 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 
 | Host | Used for | State |
 |---|---|---|
-| `github.com` | `releases/latest`, `release.json`, commits feeds | used |
-| `api.github.com` | REST fallback (beta and alpha channels, releases without `release.json`); `search`'s repository search | used |
+| `github.com` | `releases/latest`, `release.json`, release asset URLs (which redirect), `releases.atom` (release notes), commits feeds | used |
+| `api.github.com` | REST fallback (beta and alpha channels, releases without `release.json`); `search`'s repository search; `auth github`'s `/rate_limit` | used |
 | `codeload.github.com` | zips of exact commits for `git:` refs | used |
 | `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | release asset downloads | used |
-| `api.mmoui.com`, `cdn.wowinterface.com` | WoWInterface: project details, downloads | used (also allowed for `url:`) |
-| `api.tukui.org` | Tukui: the project list, download links, downloads | used (also allowed for `url:`); responses are never stored by the HTTP cache (`no-store`); the project list, without its download links, is kept in the release memo (15 minutes, and for `--offline`) |
+| `api.mmoui.com`, `cdn.wowinterface.com` | WoWInterface: the file list, project details, downloads | used |
+| `api.tukui.org` | Tukui: the project list, download links, downloads, changelog pages | used; responses are never stored by the HTTP cache (`no-store`); the project list, without its download links, is kept in the release memo (15 minutes, and for `--offline`) |
 | `api.curseforge.com`, `edge.forgecdn.net`, `mediafilez.forgecdn.net` | CurseForge | off until enabled (M5) |
 | `addons.wago.io` | Wago | off until enabled (M5) |
 | every host in `git_hosts` | `git:` refs through the git binary, never contacted over HTTP, not even by a redirect | only when you list them |
 
-**What a stable GitHub install costs:** zero REST calls. omaddons reads `releases/latest` without following its redirect, then fetches `release.json` and the asset. Both of those redirect to `release-assets.githubusercontent.com`, so `net.log` shows five lines per repository, plus one more download for each candidate that does not load. Requests are limited to 6 at a time overall and 3 per host. Retries cover 429, 5xx and network errors, up to 3 times with full-jitter backoff (0.5 s base, 8 s cap), and honor `Retry-After` up to 60 s. That includes a connection that fails while a response or download is being read: the request is made again from the first byte, and each attempt is its own `net.log` line.
+`url:` refs may download from any of the always-allowed hosts above (every row but CurseForge, Wago and `git_hosts`).
+
+**What a stable GitHub install costs:** zero REST calls. omaddons reads `releases/latest` without following its redirect, then fetches `release.json` and the asset. Both of those redirect to `release-assets.githubusercontent.com`, so `net.log` shows five lines per repository, plus one more download for each candidate that does not load. Requests are limited to 6 at a time overall and 3 per host. Retries cover 429, 5xx and network errors, up to 3 times with full-jitter backoff (0.5 s base, 8 s cap), and honor `Retry-After` up to 60 s. That includes a connection that fails while a response or download is being read: the request is made again from the first byte, and each attempt is its own `net.log` line. Timeouts are 10 s to connect, 30 s for an API call and 300 s for a download; at most 5 redirects are followed (then `network`); an API response is capped at 64 MiB (`archive_too_large`). API requests ask for gzip, and every request says `User-Agent: omaddons/<version>`.
 
 **Tokens.** A GitHub token is opt-in and sent only to `api.github.com`, where it raises the REST budget from 60 to 5,000 requests an hour (search: 10 to 30 a minute). It is, in order: `OMADDONS_GITHUB_TOKEN`; config.toml's `[sources.github] credential` (`{ env = "…" }`, `{ file = "…" }` or `{ command = [...] }`, a command run only when a REST request first needs it, never under `--offline`); or the file `omaddons auth github set` writes. `GITHUB_TOKEN` and `gh`'s credentials are never read, except `gh auth token` once, on `auth github --from-gh`, and `Authorization` is dropped on any redirect to another host. With or without a token, omaddons stops sending REST requests once the response headers say 5 or fewer remain, and reports `rate_limited` with the reset time. The budget is tracked per run, so the first REST request of a run is always sent.
 
 **Search.** Only GitHub receives what you search for, in one `search/repositories` request per run (10 a minute without a token, 30 with one, counted apart from the REST budget). The catalog is built in, and WoWInterface's index and Tukui's list are whole lists, fetched (or reused) and searched on this machine, so neither learns the query.
 
-**The git subprocess** runs with a cleared environment. Only `PATH` is kept. `HOME` and `XDG_CONFIG_HOME` point at an empty directory omaddons owns (`~/.cache/omaddons/git-home/`, mode 0700; a run refuses with `io` if anything is put in it), so no `.netrc`, git attribute file or other per-user setting reaches git or libcurl. Then `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ALLOW_PROTOCOL=https`. It also gets no credential helper, no askpass, no redirects and https as the only protocol, and it may contact only hosts listed in `git_hosts`, never the hosts above. Arguments go as argv (never through a shell), and the run is in its own process group, which is killed on timeout. A checkout is held to the download limit (`limits.download_max_bytes`, `.git` included): git is stopped, with its process group, once the checkout grows past it (`archive_too_large`). What git prints is kept up to 64 MiB per stream. URLs with embedded credentials are refused.
+**The git subprocess** runs with a cleared environment. Only `PATH` is kept. `HOME` and `XDG_CONFIG_HOME` point at an empty directory omaddons owns (`~/.cache/omaddons/git-home/`, mode 0700; a run refuses with `io` if anything is put in it), so no `.netrc`, git attribute file or other per-user setting reaches git or libcurl. Then `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ALLOW_PROTOCOL=https`. It also gets no credential helper, no askpass, no redirects and https as the only protocol, and it may contact only hosts listed in `git_hosts`, never the hosts above. Arguments go as argv (never through a shell), and the run is in its own process group, which is killed on timeout (30 s for `ls-remote`, `init`, `checkout` and `rev-parse`, 300 s for `clone` and `fetch`). A checkout is held to the download limit (`limits.download_max_bytes`, `.git` included): git is stopped, with its process group, once the checkout grows past it (`archive_too_large`). What git prints is kept up to 64 MiB per stream. URLs with embedded credentials are refused.
 
 **`net.log`.** Every request that reaches the network (each redirect hop and each retry) and every git run against a repository is one JSON line in `~/.local/state/omaddons/net.log`, rotated once at 10 MiB. Requests refused before sending (offline, `host_blocked`) and the `git --version` probe are not logged. Query strings and headers are never written. An illustrative line:
 
@@ -1557,7 +1612,9 @@ Production purposes for HTTP are `release-latest`, `release-json`, `releases-ato
 
 **Offline.** `--offline` or `OMADDONS_OFFLINE=1` refuses all network access, git included, and runs no credential command. Local installs, `remove`, `undo` and every read command work offline. Release metadata a command fetched is remembered in the release memo; offline, `info` answers from it with a `stale_check` warning. When `--offline` alone made the run offline, an `offline` error's and a `stale_check` warning's `fix_argv` is the same command without it; under `OMADDONS_OFFLINE=1` the fix stays prose.
 
-**Fetch once.** Within one command each ref is fetched once, however many targets and engine runs need it: `install` without `-t` probes every live client and then installs with the same answer. `install` always asks the source for the newest release; `info` reuses an answer up to 15 minutes old (`SOURCE_RECHECK_MIN_INTERVAL`) unless `--refresh` is given.
+**Fetch once.** Within one command each ref is fetched once, however many targets and engine runs need it: `install` without `-t` probes every live client and then installs with the same answer. `install`, `copy` and `pin --version` always ask the source (a cheap probe may confirm the remembered release). `outdated`, `update`, `sync`, `adopt`, `search` and `info` reuse an answer up to 15 minutes old (`SOURCE_RECHECK_MIN_INTERVAL`); `--refresh`, where a command has it, asks anyway.
+
+**Account, realm and character names.** `WTF/` paths name them, so omaddons keeps them out of what it prints: SavedVariables warnings count files and never name them, and a backup's `manifest.json`, which lists every path, never leaves the machine (`src/privacy.rs` holds the one redactor, used by backups today).
 
 **Also:** TLS uses rustls with the bundled Mozilla root store (webpki-roots), not the system store. HTTP proxies are not supported. There is no telemetry.
 
@@ -1584,7 +1641,7 @@ running_policy = "safe"
 # Extra https git hosts for git: refs, as bare host names. Needs git 2.32+.
 git_hosts = ["codeberg.org"]
 
-auto_backup = "off"          # "off" or "daily"; read today, used from milestone 3 (WTF backups)
+auto_backup = "off"          # "off" or "daily"; backup list shows it, automatic backups arrive later in milestone 3
 # How old an update check may be before status calls it stale (updates.stale):
 # 1–48 hours; 0 keeps the default of 6.
 check_interval_hours = 6
@@ -1611,11 +1668,11 @@ label = "my 3.3.5a server"
 | Key | Default | Meaning |
 |---|---|---|
 | `extra_roots` | `[]` | Extra discovery roots |
-| `default_target` | none | `install`'s target when `-t` is absent; wins over `targets default` |
+| `default_target` | none | `install`'s target when `-t` is absent; wins over `targets default`. It also leads `search`'s install hints among equals |
 | `default_channel` | `stable` | Channel for new installs |
 | `running_policy` | `safe` | `safe`, `refuse` or `allow` |
 | `git_hosts` | `[]` | Hosts allowed for `git:` refs through the git binary |
-| `auto_backup` | `off` | Read; used in milestone 3 |
+| `auto_backup` | `off` | `off` or `daily`. `backup list` shows it (`auto.mode`); nothing takes automatic backups yet (milestone 3) |
 | `check_interval_hours` | `6` | `status` reports `updates.stale` when the oldest check is older than this (1–48; 0 keeps the default) |
 | `limits.archive_max_entries` | `20000` | Entries per archive |
 | `limits.archive_max_uncompressed` | `1GiB` | Expanded size per archive |
@@ -1625,7 +1682,10 @@ label = "my 3.3.5a server"
 | `limits.tx_retention_days` | `7` | The retention window |
 | `limits.snapshot_max_bytes` | `2GiB` | Snapshot total per target beyond 24 hours |
 | `limits.blob_cache_max_bytes` | `1GiB` | Download cache (installed releases are pinned) |
-| `sources.<id>.enabled` | `true` | `false` turns a source off (`github`, `git`, `url`, `local`, `wowi`, `tukui`): its refs fail with `source_disabled` and make no request, and `outdated` reports its addons `unchecked` |
+| `sources.<id>.enabled` | `true` | `false` turns a source off (`github`, `git`, `url`, `local`, `wowi`, `tukui`): its refs fail with `source_disabled` and make no request, and `outdated` reports its addons `unchecked`. An id outside that list is accepted and ignored, without a warning |
+| `sources.github.credential` | none | Where the GitHub token comes from: `{ env = "…" }`, `{ file = "…" }` or `{ command = [...] }` (see **Tokens** under [Network and privacy](#network-and-privacy)) |
+| `targets.<id or key>.label`, `.family` | none | [Per-target overrides](#per-target-overrides) |
+| `client_rules.<row>.<field>`, `rules.*` | built in | [Rules overrides](#rules-overrides-advanced) |
 
 ### Per-target overrides
 
@@ -1643,7 +1703,7 @@ A `family` override re-picks the client's load-rules row and its interface, as d
 
 The detection tables can be patched without a new release (unknown keys there warn `config_unknown_key` too, array elements named by index, such as `rules.products[0].nmae`):
 
-- `[client_rules.<row>]` (or `[rules.client_rules.<row>]`) patches one load-rules row; an unknown row name adds a new row, which then needs every required field. Rows are `mainline`, `mainline-12.0.7`, `mainline-10.2.7`, `mainline-9.1`, `forever`, `vanilla`, `tbc`, `wrath`, `titan`, `cata`, `mists`, the five `*-legacy` rows, `fallback-battlenet` and `fallback-custom`. The fields are `family`, `install_kind`, `version_min`, `version_max`, `game_types`, `multi_toc`, `comma_interface`, `game_suffixes`, `family_suffixes`, `legacy_suffixes`, `directive_conditionals` (whether the client reads inline directives such as `## Dependencies: X [AllowLoadGameType vanilla]`, or reads every line as written; true for every current client), `interface_includes_patch`, `legacy` and `reload_rereads_toc` (whether a running client re-reads a loaded addon's TOC on `/reload`, so the `safe` running policy lets a replacement that keeps it land; true for every modern row and `wrath-legacy`). A new row needs `family`, `version_min`, `multi_toc`, `comma_interface`, `interface_includes_patch` and `legacy`.
+- `[client_rules.<row>]` (or `[rules.client_rules.<row>]`) patches one load-rules row; an unknown row name adds a new row, which then needs every required field. Rows are `mainline`, `mainline-12.0.7`, `mainline-10.2.7`, `mainline-9.1`, `forever`, `vanilla`, `tbc`, `wrath`, `titan`, `cata`, `mists`, the five `*-legacy` rows, `fallback-battlenet` and `fallback-custom`. The fields are `family`, `install_kind`, `version_min`, `version_max`, `game_types`, `multi_toc`, `comma_interface`, `game_suffixes`, `family_suffixes`, `legacy_suffixes`, `directive_conditionals` (whether the client reads inline directives such as `## Dependencies: X [AllowLoadGameType vanilla]`, or reads every line as written; true for every current client), `interface_includes_patch`, `legacy` and `reload_rereads_toc` (whether a running client re-reads a loaded addon's TOC on `/reload`, so the `safe` running policy lets a replacement that keeps it land; true for every modern row and `wrath-legacy`). A new row needs `family`, `version_min`, `multi_toc`, `comma_interface`, `interface_includes_patch` and `legacy`; its `directive_conditionals` and `reload_rereads_toc` default to false, so set both for a modern client.
 - `[rules]` can add or replace `products`, prepend `version_families` rules, and replace `family_ranges`. A `version_families` rule may set `interface`, the client's addon interface when its version does not give it; it must lie in the family's range.
 
 ```toml
@@ -1670,7 +1730,7 @@ Every rules edit applies on the next command. The discovery cache records the ru
 | `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | Move omaddons' config, state and cache (used only when absolute). `XDG_CONFIG_HOME` also moves the Lutris and Heroic config lookups |
 | `XDG_DATA_HOME` | Moves the Lutris, Steam and Bottles data lookups; omaddons keeps no files there |
 
-Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT`, `OMADDONS_NOW` (an RFC 3339 time that freezes the clock), `OMADDONS_FS_CLONE` (`yes` or `no`: whether the filesystem under a client clones files) and `OMADDONS_FS_FREE_MB` (the free space backups see) for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE` and `OMADDONS_LIVE` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate)).
+Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT`, `OMADDONS_NOW` (an RFC 3339 time that freezes the clock), `OMADDONS_FS_CLONE` (`yes` or `no`: whether the filesystem under a client clones files) and `OMADDONS_FS_FREE_MB` (the free space backups see) for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE`, `OMADDONS_LIVE`, `OMADDONS_REAL_CUSTOM_ROOT`, `OMADDONS_WRITE_SEEDS`, `BENCH_HOME` and `LIVE_HOME` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate)).
 
 ---
 
@@ -1723,9 +1783,11 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
         │ discover/            │ │ sources/         │ │ engine/                   │
         │ product.db, BPSV,    │ │ refs, GitHub,    │ │ plan → stage → journal →  │
         │ launchers, scan, PE, │ │ REST, atom, git, │ │ swap → commit; inspect,   │
-        │ realmlist, /proc,    │ │ url, local       │ │ ownership, running        │
-        │ registry, cache      │ │ resolve/: select,│ │ policy, undo, retention,  │
-        │                      │ │ catalog          │ │ blob cache                │
+        │ realmlist, /proc,    │ │ WoWInterface,    │ │ ownership, running        │
+        │ registry, cache      │ │ Tukui, url, local│ │ policy, undo, retention,  │
+        │                      │ │ resolve/: select,│ │ blob cache                │
+        │                      │ │ catalog, deps,   │ │                           │
+        │                      │ │ adopt, search    │ │ backup/: WTF/ backups     │
         └──────────┬───────────┘ └─────────┬────────┘ └────┬──────────────────────┘
                    │      rules.rs + toc/: ClientRules     │
                    │      and load verdicts                │
@@ -1740,15 +1802,18 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
                    └──────────────────┬────────────────────┘
                                       │
                         ┌─────────────▼────────────────┐
-                        │ fsx/: the single filesystem  │  write-scope table,
-                        │ writer                       │  flock, renameat2,
-                        └─────────────┬────────────────┘  reflink, prune, failpoints
+                        │ fsx/: the single filesystem  │  write-scope table, flock and
+                        │ writer                       │  directory locks, renameat2,
+                        └─────────────┬────────────────┘  reflink clones, stamps, prune,
+                                      │                   failpoints
                                       │
           ┌───────────────────────────┼──────────────────────────────┐
           ▼                           ▼                              ▼
  <client>/Interface/         ~/.local/state/omaddons/       ~/.cache/omaddons/
  AddOns/, .omaddons/         registry, records, history,    blobs, http validators,
- (stage, snapshots)          journals, snapshots, net.log   discovery cache
+ (stage, snapshots,          journals, snapshots, net.log   discovery cache, release
+ backups)                                                   memo, WoWInterface index,
+                                                            doorbell, backups.json
                                       │
                         ┌─────────────▼────────────────┐
                         │ output/: one JSON envelope   │ ← every Outcome and Error
@@ -1768,15 +1833,18 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `src/discover/` | Client discovery, launcher readers, running detection, the target registry and cache |
 | `src/rules.rs` | Products, the version-to-family table, family ranges, client-rules rows, game modes |
 | `src/toc.rs`, `src/toc/loaded.rs` | TOC parser and the load verdict |
-| `src/inventory.rs` | Folder classification: protected, linked, managed, unmanaged, invalid |
-| `src/sources/` | Ref grammar and every source |
-| `src/resolve/` | Candidate selection and the catalog |
+| `src/inventory.rs` | Folder classification: protected, managed, shared, linked, unmanaged, invalid |
+| `src/drift.rs` | Drift: managed files changed on disk since their commit, checked against the files index |
+| `src/text.rs` | Release notes and source text made plain and terminal-safe |
+| `src/source_scan.rs` | Test-only: the crate's own source with comments and test items blanked, for the unit tests that scan it |
+| `src/sources/` | Ref grammar and every source: GitHub (release.json, REST, Atom feeds, search, token), git (GitHub without the binary, other hosts with it), WoWInterface, Tukui, url, local, changelogs |
+| `src/resolve/` | Candidate selection, the catalog, dependency resolution, adoption evidence, search, update statuses, and `ReleaseCache`, the one way a command gets release metadata (each ref fetched once per run, the release memo across runs) |
 | `src/net/` | HTTP client, allowlist, guard, retries, concurrency limits, validators, net.log, record/replay |
 | `src/engine/` | The transaction engine |
-| `src/fsx/` | The only code allowed to write to the filesystem |
-| `src/state/` | Config, paths, registry, records, history, status, the doorbell |
+| `src/fsx/` | The only code allowed to write to the filesystem: the write-scope table, the global flock and per-directory locks, `renameat2`, the reflink clone policy, stamp digests, pruning, failpoints |
+| `src/state/` | Config, paths, registry, records and the files index, history, status, the release memo, `addons.toml`, the export memo, the doorbell |
 | `src/backup/` | `WTF/` backups: the on-disk model, the one tree copy, the inventory projection, filesystem hints |
-| `src/privacy.rs` | The redactor that keeps account, realm and character names out of every output |
+| `src/privacy.rs` | The one redactor for account, realm and character names in `WTF/` paths (backups use it today) |
 | `src/clock.rs` | The clock time rules read (`OMADDONS_NOW` freezes it in debug builds) |
 | `src/politeness.rs`, `src/limits.rs` | Every network-politeness constant and every safety limit, each in one place |
 | `catalog/catalog.toml` | The built-in catalog, embedded with `include_str!` |
@@ -1786,7 +1854,7 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 
 **Invariants the build enforces:**
 
-- Only `src/fsx/` writes to the filesystem (`tests/single_writer.rs` scans every production item of the source, test-only items aside). Only two modules start processes, each named with its reason: git checkouts (`src/sources/git_hosts.rs`) and the credential command (`src/state/config.rs`, which reads its output).
+- Only `src/fsx/` writes to the filesystem (`tests/single_writer.rs` scans every production item of the source, test-only items aside). Only two modules start processes, each named with its reason and held to that by the same test: git checkouts (`src/sources/git_hosts.rs`) and the credential command (`src/state/config.rs`, which reads its output).
 - Commands never print: `print!` and `eprint!` are denied by clippy.
 - No `unwrap` or `expect` outside tests, and `unsafe` is forbidden.
 - Nothing calls `std::process::exit`. Every exit goes through one table, and every error code used in `src/` must be registered (`tests/contract/exit_sites.rs`).
@@ -1880,7 +1948,7 @@ A source turned off in `config.toml` (`[sources.wowi] enabled = false`) refuses 
 
 ### `journal_pending` that does not clear
 
-Journals are recovered by the next command that changes something: install, update, sync, pin, unpin, adopt, copy, remove and undo (also when they change nothing), `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write`. Dry runs and read commands never recover. A command whose own recovery failed (its error carries `details.journal_pending`) keeps the journal and its staged folders for exactly that. If recovery finds a step that matches neither its before nor its after state, or the journal's client no longer carries its target's marker, it stops and leaves the journal for manual repair. Every later change on that client then fails until it is fixed; other clients are not affected and keep reporting it as `journal_pending`. `doctor`, which will automate this repair, is planned for milestone 4.
+Journals are recovered by the next command that changes something: install, update, sync, pin, unpin, `adopt` when it adopts, copy, remove and undo (also when they change nothing), `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write`. Dry runs and read commands, the `adopt` report included, never recover. A command whose own recovery failed (its error carries `details.journal_pending`) keeps the journal and its staged folders for exactly that. If recovery finds a step that matches neither its before nor its after state, or the journal's client no longer carries its target's marker, it stops and leaves the journal for manual repair. Every later change on that client then fails until it is fixed; other clients are not affected and keep reporting it as `journal_pending`. `doctor`, which will automate this repair, is planned for milestone 4.
 
 ---
 
@@ -1891,8 +1959,9 @@ Journals are recovered by the next command that changes something: install, upda
 | Capability | State | Planned |
 |---|---|---|
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
-| The Omarchy bar widget | ❌ the help text mentions it, the code does not exist yet | M3 |
-| Lua error capture (BugGrabber), `WTF/` backups | ❌ | M3 |
+| The Omarchy bar widget | ❌ the help text mentions it, and `--actor widget`, `status --cached` and the doorbell are ready for it; the widget itself does not exist yet | M3 |
+| Lua error capture (BugGrabber, from a keyless `wowace:` source) | ❌ | M3 |
+| Creating, checking and restoring `WTF/` backups | ❌ (`backup list` works) | M3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, agent skill | ❌ | M4 |
 | CurseForge, Wago | ❌ | M5, optional, bring your own key |
 | Shell completions | ❌ | M4 |
@@ -1911,11 +1980,24 @@ Journals are recovered by the next command that changes something: install, upda
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
 - Private GitHub repositories and HTTP proxies are not supported.
 - Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) keep separate records: a folder one records is `shared` on the other, which cannot record it too, so manage those addons from one client. Records made on both before this check stay doubled: `status` warns `target_addons_shared`, a change through either warns the same, and M4's doctor will report them.
-- The legacy running behavior was observed only on 3.3.5a: a new addon needs a restart, and a loaded addon's TOC is re-read on `/reload`. So only 3.3.5a takes replacements while it runs; the other legacy clients refuse every change until they are observed. Running detection was observed under umu and GE-Proton for retail, Classic Era, Anniversary and 3.3.5a (Mists Classic's process has the same shape). The Battle.net app itself runs as `CrBrowserMain`, so with no client open the process route relies on Battle.net's agent (`Agent.exe`) inheriting the prefix's `WINEPREFIX`, as Wine processes started in the prefix do; that the agent carries it has not yet been observed with the app alone open. The Lutris, Heroic and Steam readers follow their upstream source (Lutris v0.5.22, Heroic v2.22.4, and for closed-source Steam the readers of Lutris, protontricks and ValvePython `vdf`), cited in each reader; the Bottles layout was verified against Bottles 67.4, and `product.db` against a real Agent database and two upstream readers.
+- An archive whose side folder lists only another client's interface is refused whole, even when its main addon loads and the source offers no other file. WoWInterface's ArkInventory 3.12.17 (on Mists Classic, Classic Era and Forever) and Titan Panel 9.3.5 (on Anniversary) are refused this way. Whether to skip such a folder instead is an open decision (deferred bead `omad-mixed-archive-single-file-skk1`).
+- The legacy running behavior was observed only on 3.3.5a: a new addon needs a restart, and a loaded addon's TOC is re-read on `/reload`. So only 3.3.5a takes replacements while it runs; the other legacy clients refuse every change until they are observed. Running detection was observed under umu and GE-Proton for retail, Classic Era, Anniversary and 3.3.5a (Mists Classic's process has the same shape). The Battle.net app itself runs as `CrBrowserMain`, so with no client open the process route relies on Battle.net's agent (`Agent.exe`, run from `ProgramData/Battle.net/Agent/`). Under umu the agent was observed (2026-10-21, the app alone open) carrying the prefix's `WINEPREFIX` (its `pfx` path, a link to the prefix root), so the route holds.
+- Loading was observed in game, not only judged from TOCs: retail, Mists Classic, Classic Era, Anniversary, WoW: Forever (the 2026-10-21 stress test) and 3.3.5a each wrote the SavedVariables of the addons omaddons installed. An addon out of date for its client (OmniCC 11.2.8 on retail 12.1.5) did not load, as the rules predict. A modern client adds newly installed addons to `AddOns.txt` only when it creates the file, so `AddOns.txt` is no load evidence. Where a modern client stores "Load out of date AddOns" is not located. The Lutris, Heroic and Steam readers follow their upstream source (Lutris v0.5.22, Heroic v2.22.4, and for closed-source Steam the readers of Lutris, protontricks and ValvePython `vdf`), cited in each reader; the Bottles layout was verified against Bottles 67.4, and `product.db` against a real Agent database and two upstream readers.
 
 ### Known issues
 
-None open. The bugs found while this README was written are fixed.
+The README describes the intended behaviour; these are the places where the code at HEAD does not match it yet. Each one has a bead (`br show <id>`), and the README changes only if a fix decides otherwise.
+
+| Bead | Priority | Where the code differs |
+|---|---|---|
+| `omad-rnk8` | P1 | A mistyped `undo --last-by` value (`--last-by humna -t retail`) gets the fix `omaddons undo --last-by agent`, dropping every other argument (`-t`, `--dry-run`) instead of correcting the value in place, so the fix is a different command that changes addons. A bad `--actor` value's fix drops the flag instead of correcting it |
+| `omad-ck0h` | P2 | `git_hosts` accepts the always-allowed HTTP hosts (`codeload.github.com`, `api.mmoui.com`, …), so the git binary can contact them, and a `git:` ref on such a host suggests adding it. The two allowlists are meant to share no host |
+| `omad-oxxv` | P2 | `omaddons help auth github` and `omaddons auth github --help` fail with a cut-off usage error (use `omaddons help auth`). `install`'s REF help leaves out `wowi:` and `tukui:` |
+| `omad-zwl3` | P2 | When nothing resolves a bridge requirement, `install`'s `commands` can hold an `omaddons search <folder>` hint labelled action `install` |
+| `omad-npec` | P3 | `auth github set` and `clear` record a history line even when the stored token does not change |
+| `omad-o3gd` | P3 | With no update but a client that has adoptable folders, `outdated`'s human footer reads "Run `omaddons adopt -t <id>` to install them" |
+| `omad-peud` | P3 | A `git:` commit the server refuses to send fails `download_failed` marked retryable, although only naming a branch or tag can help |
+| `omad-hp8r` | P3 | A failed command's envelope leaves out the `catalog_override_invalid` warning the run found before failing (a successful one carries it) |
 
 ---
 
@@ -1924,9 +2006,10 @@ None open. The bugs found while this README was written are fixed.
 | Milestone | Scope | State |
 |---|---|---|
 | **M1: working slice** | Discovery, ClientRules and the TOC engine, fsx and the transaction engine with undo, keyless GitHub/git/url/local sources, the core CLI contract | ✅ Done (2026-10-15) |
-| Follow-up: Classic and Forever gaps | Multi-flavor archives, never-launched clients, game modes, real-machine tests for every live client, the catalog × flavor probe | 🔄 One check remains, to run during the Forever stress test on 2026-10-19: do the installed addons actually load in the live client? |
+| Follow-up: Classic and Forever gaps | Multi-flavor archives, never-launched clients, game modes, real-machine tests for every live client, the catalog × flavor probe, and the in-game load check on the real Forever client | ✅ Done (2026-10-21) |
 | **M2: updates and adoption** | `outdated`, `update`, `pin`/`unpin`; WoWInterface and Tukui; changelogs; dependencies; drift detection; tiered `adopt`; `addons.toml` with `export`, `sync` and `copy`; `search`; `auth github` | ✅ Done (2026-10-16) |
-| **M3: the widget** | The Omarchy bar widget (QML, embedded in the binary, installed by `omaddons omarchy install`), `errors` (BugGrabber), `backup` of `WTF/` | 🗓️ Planned |
+| Post-M2 audit | An independent audit of M1 and M2 (engine failure paths, contract holes, integrity and privacy statements, discovery and rules fields, test blind spots, this README) and real-world checks on real clients: running detection under Proton, in-game loading on every client, legacy `/reload` behaviour | ✅ Done (2026-10-21) |
+| **M3: the widget** | The Omarchy bar widget (QML, embedded in the binary, managed by `omaddons omarchy install`, `status` and `remove`), `errors` (BugGrabber, installed keyless from a new `wowace:` source), `backup` of `WTF/` (list, create, verify, restore, export and import, automatic backups) | 🔄 In progress: the doorbell, the privacy redactor and `backup list` are in |
 | **M4: the agent surface** | `capabilities`, `robot-docs`, `install-skill`, intent inference, the full `doctor`, stored plans (`--dry-run` then `apply`), `completions`, wire-name golden tests; **the first tag freezes the contract** | 🗓️ Planned |
 | **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: versioning, CHANGELOG, a local PKGBUILD, packaged completions and a man page | 🗓️ Planned |
 
@@ -1953,11 +2036,11 @@ argc gate --all    # also run cargo deny unconditionally
 
 `argc gate` runs `scripts/gate.sh`, which can be run directly. It needs `cargo`, `git`, [`ubs`](https://github.com/Dicklesworthstone/ultimate_bug_scanner) and `cargo-deny`. Commits that touch only `.beads/`, README.md or CLAUDE.md may skip it.
 
-Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`.
+Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`, `argc fuzz <target>`, `argc fuzz-all` and `argc bench` (the last three are checkpoint tasks, below).
 
 ### Tests
 
-At the M2 checkpoint (2026-10-16) there were 1,333 tests: 699 unit tests in `src/`, 633 integration tests in 72 test binaries and one doctest, with 37 proptest properties. `cargo test -- --list` counts today's. 45 were `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine and real-client checks, time budgets and the bench homes (`tests/perf.rs`), fixture recorders, the fuzz-seed writer and child-process helpers.
+At the close of the post-M2 audit (2026-10-21) there are 1,645 tests: 883 unit tests in `src/`, 761 integration tests in 75 test binaries and one doctest. The gate runs 1,592 of them. The other 53 are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine and real-client checks, time budgets and the bench homes (`tests/perf.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. (At the M2 checkpoint, 2026-10-16, there were 1,333.) `cargo test -- --list` counts today's.
 
 | Suite | What it covers |
 |---|---|
@@ -1966,8 +2049,10 @@ At the M2 checkpoint (2026-10-16) there were 1,333 tests: 699 unit tests in `src
 | `tests/engine_concurrency.rs` | Parallel runs, duplicate installs, races between plan and commit (each run stopped at a named step), no lock while planning and staging, and the lock hold of commits and undo, measured (16 MiB of SavedVariables and a 64 MiB folder included) |
 | `tests/perf.rs` | Time budgets (release build, checkpoint only) and the request-economy checks that run in the gate |
 | `tests/discover_*.rs` | The discovery matrix, launchers, scanning, custom clients, the cache |
-| `tests/catalog.rs` | The 19 GitHub and `git:` catalog entries replayed offline from recorded HTTP fixtures, with no REST calls (the two Tukui entries: `tests/sources_tukui.rs`) |
-| `tests/single_writer.rs` | Only `src/fsx/` writes to the filesystem |
+| `tests/catalog.rs` | The 46 GitHub and 5 `git:` catalog entries replayed offline from recorded HTTP fixtures with no REST calls, and the 9 WoWInterface entries in one `filedetails` request with their MD5s (the two Tukui entries: `tests/sources_tukui.rs`) |
+| `tests/single_writer.rs` | Only `src/fsx/` writes to the filesystem, and only the two named modules start processes |
+| `tests/backup_list.rs`, `tests/doorbell.rs` | Milestone 3 so far: `backup list` over fixture backups and the doorbell's ring sites (directory locks: unit tests in `src/fsx/lock.rs`) |
+| `tests/fsx_lock.rs` | The global lock and the in-flight locks |
 
 Recorded HTTP fixtures live in `tests/fixtures/http/<scenario>/`. Debug builds replay them with `OMADDONS_HTTP_FIXTURES=<dir>` and re-record them with `OMADDONS_RECORD=1`. Recording never stores request headers, drops `set-cookie`, and strips secret query parameters from URLs and `location` headers.
 
@@ -2055,8 +2140,11 @@ Core loop
   omaddons outdated --json                       # what has updates, on every client
   omaddons update --all --dry-run --json         # then without --dry-run
   omaddons undo --last-by agent --json           # the escape hatch
+  omaddons search <words> --json                 # find a ref; install verifies it
+  omaddons backup list --json                    # WTF/ backups (none until backup create lands)
 
-Refs     catalog name | gh:Owner/Repo | wowi:<id> | tukui:<slug> | git:https://…#rev | url:https://… | ./zip-or-folder
+Refs     catalog name | gh:Owner/Repo | Owner/Repo | wowi:<id> | tukui:<slug> | git:https://…#rev
+         | url:https://… | a pasted GitHub, WoWInterface or Tukui link | ./zip-or-folder
 Targets  -t retail | era | sod | hardcore | classic | anniversary | forever | wotlk | <key> | <path>
 
 Read the envelope
@@ -2074,8 +2162,10 @@ Rules
   - --dry-run first for anything destructive; --force only after reading the refusal.
   - Never write into Interface/AddOns yourself; every change must go through omaddons to stay undoable.
   - --offline for read-only work; net-log shows the requests that reached the network (the 50 most recent; --limit N).
-  - update installs the newest releases on every client in one run (pinned ones stay: addon_pinned); one undo reverts it.
+  - update installs the newest releases on every client in one run; one undo reverts it. Pinned addons stay
+    (skipped, skip_reason pinned; an addon_pinned warning only when you named them).
   - Only install falls back to a default target; pass -t everywhere else when more than one client matches.
+  - README "Known issues" lists where the code currently differs from this contract.
 
 State   ~/.config/omaddons/config.toml · ~/.local/state/omaddons/ · ~/.cache/omaddons/
 ```
