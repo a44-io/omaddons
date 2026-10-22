@@ -196,6 +196,12 @@ pub const ERRORS_NEW_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Bytes read of an installed widget's `manifest.json` or `Build.js` (a few kilobytes
 /// when omaddons wrote them); a larger file is not one it wrote.
 pub const WIDGET_READBACK_MAX_BYTES: u64 = 64 * 1024;
+/// One run of an Omarchy tool (`omarchy-plugin-validate`, `omarchy-shell`,
+/// `omarchy-bar`) is killed after this long.
+pub const OMARCHY_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bytes read of Omarchy's `shell.json` to see where the bar places the widget; past
+/// it, the widget counts as not placed (placing it again leaves it where it is).
+pub const OMARCHY_SHELL_JSON_MAX_BYTES: u64 = 4 * MIB;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -764,6 +770,20 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "An installed widget's manifest.json or Build.js read back; a larger one is not omaddons'",
     ),
+    limit(
+        "OMARCHY_COMMAND_TIMEOUT",
+        LimitValue::Millis(ms(OMARCHY_COMMAND_TIMEOUT)),
+        "ms",
+        None,
+        "An Omarchy tool (plugin validator, shell IPC, bar placement) is killed after this long",
+    ),
+    limit(
+        "OMARCHY_SHELL_JSON_MAX_BYTES",
+        LimitValue::Bytes(OMARCHY_SHELL_JSON_MAX_BYTES),
+        "bytes",
+        None,
+        "Omarchy's shell.json read for the widget's place in the bar; a larger one counts as not placed",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1012,6 +1032,8 @@ mod tests {
         "ERRORS_MAX_TOTAL_BYTES",
         "ERRORS_NEW_MAX_AGE",
         "WIDGET_READBACK_MAX_BYTES",
+        "OMARCHY_COMMAND_TIMEOUT",
+        "OMARCHY_SHELL_JSON_MAX_BYTES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

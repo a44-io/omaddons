@@ -161,6 +161,12 @@ expression: envelope
         "name": "auth"
       },
       {
+        "about": "Put the omaddons widget on Omarchy's bar",
+        "aliases": [],
+        "group": "setup",
+        "name": "omarchy"
+      },
+      {
         "about": "Show help for omaddons or one command",
         "aliases": [],
         "group": "setup",

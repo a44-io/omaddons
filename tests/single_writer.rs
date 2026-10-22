@@ -127,6 +127,10 @@ mod scanner {
             "src/state/config.rs",
             "credential_command: reads its stdout, writes nothing",
         ),
+        (
+            "src/omarchy/shell.rs",
+            "Omarchy's own tools: validate (read-only), shell IPC, bar placement and plugin disable, which write Omarchy's shell.json",
+        ),
     ];
 
     /// Words that start an item: a top-level `,` ends no item that starts with one (the
@@ -847,6 +851,10 @@ const PRUNE_CALLERS: &[(&str, &str)] = &[
     (
         "src/backup/prune.rs",
         "backup retention, reclamation and backup prune, each victim under its own reservation",
+    ),
+    (
+        "src/omarchy/install.rs",
+        "the widget's own stage or parked old tree, abandoned stages whose lock is free, and their in-flight locks",
     ),
 ];
 

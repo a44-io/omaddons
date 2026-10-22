@@ -86,7 +86,10 @@ pub enum Scope {
     SavedVariables,
     /// `<client dir>/WTF/` as a whole.
     Wtf,
-    /// The Omarchy plugin dir and its hidden stage.
+    /// The Omarchy widget's folder under `<plugins>`, and its hidden siblings: one stage
+    /// per `omarchy install` (`.omaddons.stage-<op>`), a parked old widget
+    /// (`.omaddons.old-<op>`) and the prune trash (`.omaddons.trash`). Each accepts a
+    /// rename as a whole, from `Omarchy`: the atomic swap (M3-D38).
     Omarchy,
     /// The agent skill dir.
     Skill,
@@ -110,7 +113,7 @@ impl Scope {
             Self::NetLog | Self::Cache => true,
             Self::History => matches!(
                 writer,
-                W::Mutating | W::Undo | W::Config | W::Auth | W::Backup | W::Doctor
+                W::Mutating | W::Undo | W::Config | W::Auth | W::Backup | W::Omarchy | W::Doctor
             ),
             Self::AddOns => matches!(writer, W::Mutating | W::Undo | W::Doctor),
             Self::ClientMeta => matches!(
@@ -219,8 +222,8 @@ pub struct ScopeTable {
     history: PathBuf,
     net_log: PathBuf,
     net_log_previous: PathBuf,
-    omarchy_plugin: PathBuf,
-    omarchy_stage: PathBuf,
+    /// `<plugins>`, canonical: the widget's entries are named children of it.
+    omarchy_plugins: PathBuf,
     skill: PathBuf,
     record_fixtures: Option<PathBuf>,
     /// The file `backup export` writes, once [`ScopeTable::with_export_file`] admits it.
@@ -244,8 +247,7 @@ impl ScopeTable {
             net_log_previous: state.join("net.log.1"),
             state,
             cache: canonical(paths.cache_dir())?,
-            omarchy_plugin: canonical(&paths.omarchy_plugin_dir())?,
-            omarchy_stage: canonical(&paths.omarchy_plugin_stage())?,
+            omarchy_plugins: canonical(&paths.omarchy_plugins_dir())?,
             skill: canonical(&skill_dir.map_or_else(|| paths.skill_dir(), Path::to_path_buf))?,
             record_fixtures: None,
             export_file: None,
@@ -356,6 +358,40 @@ impl ScopeTable {
         &self.client_dirs
     }
 
+    /// `<plugins>`, canonical.
+    pub fn omarchy_plugins_dir(&self) -> &Path {
+        &self.omarchy_plugins
+    }
+
+    /// Where `path` sits in the widget's row: one of its named entries under `<plugins>`
+    /// (the widget, a stage, a parked old widget, the trash) is a root, anything inside
+    /// one is below it, and `<plugins>` itself may only be created. Other paths under
+    /// `<plugins>`, other plugins included, are not the widget's.
+    fn omarchy_position(&self, path: &Path) -> Option<Position> {
+        if path == self.omarchy_plugins {
+            return (!self.home.starts_with(path)).then_some(Position::Ancestor);
+        }
+        let rel = path.strip_prefix(&self.omarchy_plugins).ok()?;
+        let mut components = rel.components();
+        let Some(Component::Normal(first)) = components.next() else {
+            return None;
+        };
+        let first = first.to_str()?;
+        let name = self.paths.omarchy_plugin_name();
+        let ours = first == name
+            || first == format!(".{name}.trash")
+            || self.paths.omarchy_stage_op(first).is_some()
+            || self.paths.omarchy_old_op(first).is_some();
+        if !ours {
+            return None;
+        }
+        Some(if components.next().is_none() {
+            Position::Root
+        } else {
+            Position::Below
+        })
+    }
+
     /// Whether `path` is somewhere fsx may keep its own bookkeeping (backups, action
     /// logs): under `<state>/omaddons` or a client dir's `Interface/.omaddons`.
     pub fn is_internal(&self, path: &Path) -> bool {
@@ -407,11 +443,15 @@ impl ScopeTable {
             if !candidate.scope.admits(writer) {
                 continue;
             }
-            // A whole `WTF/` is renamed only by a restore, which the row admits alone.
-            let renames_wtf = access == Access::Rename
-                && candidate.scope == Scope::Wtf
+            // A whole `WTF/` is renamed only by a restore, and the widget's entries only by
+            // its install and remove, which their rows admit alone.
+            let renames_root = access == Access::Rename
+                && matches!(
+                    (candidate.scope, writer),
+                    (Scope::Wtf, _) | (Scope::Omarchy, Writer::Omarchy)
+                )
                 && candidate.position == Position::Root;
-            if candidate.position != Position::Below && access != Access::CreateDir && !renames_wtf
+            if candidate.position != Position::Below && access != Access::CreateDir && !renames_root
             {
                 continue;
             }
@@ -479,9 +519,10 @@ impl ScopeTable {
                 Side::Home,
             ));
         }
+        if let Some(position) = self.omarchy_position(path) {
+            found.push(Candidate::new(Scope::Omarchy, position, Side::Home));
+        }
         let home_rows = [
-            (Scope::Omarchy, Some(&self.omarchy_plugin)),
-            (Scope::Omarchy, Some(&self.omarchy_stage)),
             (Scope::Skill, Some(&self.skill)),
             (Scope::RecordFixtures, self.record_fixtures.as_ref()),
         ];
@@ -782,9 +823,11 @@ mod tests {
                 vec![W::Omarchy, W::Doctor],
             ),
             (
-                "home/.config/omarchy/plugins/.omaddons.stage/x",
+                "home/.config/omarchy/plugins/.omaddons.stage-01JB8Q2VA00000000000000000/x",
                 vec![W::Omarchy, W::Doctor],
             ),
+            ("home/.config/omarchy/plugins/.omaddons.stage/x", vec![]),
+            ("home/.config/omarchy/plugins/beads/Panel.qml", vec![]),
             (
                 "home/.claude/skills/omaddons/SKILL.md",
                 vec![W::Skill, W::Doctor],
@@ -798,6 +841,66 @@ mod tests {
         for (path, writers) in cases {
             assert_eq!(allowed(path, Access::Write, &none), writers, "{path}");
         }
+    }
+
+    /// The widget's entries under `<plugins>` (M3-D38): only `Omarchy` renames one as a
+    /// whole (the swap, a stage into the trash), anything inside one is an ordinary
+    /// write, `<plugins>` itself may only be created, and a name that is not exactly one
+    /// of them (a fixed stage, a stage without a ULID, another plugin) is no one's.
+    #[test]
+    fn only_the_widget_renames_its_entries() {
+        use Writer as W;
+        let none = OwnedFolders::default();
+        let plugins = "home/.config/omarchy/plugins";
+        let stage = format!("{plugins}/.omaddons.stage-01JB8Q2VA00000000000000000");
+        let old = format!("{plugins}/.omaddons.old-01JB8Q2VA00000000000000000");
+        let trash = format!("{plugins}/.omaddons.trash");
+        let widget = format!("{plugins}/omaddons");
+        for root in [&widget, &stage, &old, &trash] {
+            assert_eq!(
+                allowed(root, Access::Rename, &none),
+                vec![W::Omarchy],
+                "{root}"
+            );
+            assert_eq!(allowed(root, Access::Write, &none), vec![], "{root}");
+            assert_eq!(
+                allowed(root, Access::CreateDir, &none),
+                vec![W::Omarchy, W::Doctor],
+                "{root}"
+            );
+            assert_eq!(
+                allowed(&format!("{root}/r-0123/Service.qml"), Access::Write, &none),
+                vec![W::Omarchy, W::Doctor],
+                "{root}"
+            );
+        }
+        assert_eq!(
+            allowed(plugins, Access::CreateDir, &none),
+            vec![W::Omarchy, W::Doctor]
+        );
+        for refused in [Access::Write, Access::Rename] {
+            assert_eq!(allowed(plugins, refused, &none), vec![], "{refused:?}");
+        }
+        for stranger in [
+            format!("{plugins}/.omaddons.stage"),
+            format!("{plugins}/.omaddons.stage-notaulid"),
+            format!("{plugins}/.omaddons.old-01JB8Q2VA00000000000000000x"),
+            format!("{plugins}/beads"),
+            format!("{plugins}/.omaddons.trash2"),
+        ] {
+            for access in [Access::Write, Access::Rename, Access::CreateDir] {
+                assert_eq!(
+                    allowed(&stranger, access, &none),
+                    vec![],
+                    "{stranger} {access:?}"
+                );
+            }
+        }
+        // Its history line goes through the History row.
+        let t = table();
+        let history = p("home/.local/state/omaddons/history.jsonl");
+        let decided = t.check(W::Omarchy, &none, &history, Access::Write);
+        assert_eq!(decided.map(|m| m.scope), Ok(Scope::History));
     }
 
     /// A whole restore exchanges `WTF` itself (M3-D24): only `BackupRestore` may rename

@@ -156,6 +156,8 @@ var CLI_PATHS = {
   "config set":      { "mutates": true,  "destructive": false, "binds": false },
   "config path":     { "mutates": false, "destructive": false, "binds": false },
   "auth":            { "mutates": true,  "destructive": false, "binds": false },
+  "omarchy":         { "mutates": true,  "destructive": false, "binds": false },
+  "omarchy install": { "mutates": true,  "destructive": false, "binds": false },
   "help":            { "mutates": false, "destructive": false, "binds": false }
 }
 // END CLI_PATHS

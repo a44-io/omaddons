@@ -198,24 +198,65 @@ impl Paths {
     }
 
     /// The widget's folder name under `<plugins>`: `omaddons`, or `omaddons-<suffix>`.
-    fn omarchy_plugin_name(&self) -> String {
+    pub fn omarchy_plugin_name(&self) -> String {
         self.widget
             .as_ref()
             .map_or_else(|| APP.to_owned(), |s| format!("{APP}-{s}"))
     }
 
-    /// The installed Omarchy widget (M3): `<config>/omarchy/plugins/omaddons`.
-    pub fn omarchy_plugin_dir(&self) -> PathBuf {
-        self.config_home
-            .join("omarchy/plugins")
-            .join(self.omarchy_plugin_name())
+    /// `<config-omarchy>`: Omarchy's own config dir (`<config>/omarchy`).
+    pub fn omarchy_config_dir(&self) -> PathBuf {
+        self.config_home.join("omarchy")
     }
 
-    /// The widget's hidden staging sibling, invisible to the plugin registry.
-    pub fn omarchy_plugin_stage(&self) -> PathBuf {
-        self.config_home
-            .join("omarchy/plugins")
-            .join(format!(".{}.stage", self.omarchy_plugin_name()))
+    /// `<config-omarchy>/shell.json`, which only Omarchy writes; omaddons reads the
+    /// bar layout from it.
+    pub fn omarchy_shell_json(&self) -> PathBuf {
+        self.omarchy_config_dir().join("shell.json")
+    }
+
+    /// `<plugins>`: `<config-omarchy>/plugins`.
+    pub fn omarchy_plugins_dir(&self) -> PathBuf {
+        self.omarchy_config_dir().join("plugins")
+    }
+
+    /// The installed Omarchy widget (M3): `<config>/omarchy/plugins/omaddons`.
+    pub fn omarchy_plugin_dir(&self) -> PathBuf {
+        self.omarchy_plugins_dir().join(self.omarchy_plugin_name())
+    }
+
+    /// The hidden stage one `omarchy install` owns (M3-D38): `.omaddons.stage-<op>`,
+    /// invisible to the plugin registry, which skips dot-directories.
+    pub fn omarchy_stage(&self, op: &TxId) -> PathBuf {
+        self.omarchy_plugins_dir()
+            .join(format!(".{}.stage-{op}", self.omarchy_plugin_name()))
+    }
+
+    /// Where a swap without `RENAME_EXCHANGE` parks the old widget: `.omaddons.old-<op>`.
+    pub fn omarchy_old(&self, op: &TxId) -> PathBuf {
+        self.omarchy_plugins_dir()
+            .join(format!(".{}.old-{op}", self.omarchy_plugin_name()))
+    }
+
+    /// The widget side's prune trash: `.omaddons.trash`.
+    pub fn omarchy_trash(&self) -> PathBuf {
+        self.omarchy_plugins_dir()
+            .join(format!(".{}.trash", self.omarchy_plugin_name()))
+    }
+
+    /// The operation a `<plugins>` entry named `name` is a stage of.
+    pub fn omarchy_stage_op(&self, name: &str) -> Option<TxId> {
+        self.omarchy_named(name, "stage")
+    }
+
+    /// The operation a `<plugins>` entry named `name` is a parked old widget of.
+    pub fn omarchy_old_op(&self, name: &str) -> Option<TxId> {
+        self.omarchy_named(name, "old")
+    }
+
+    fn omarchy_named(&self, name: &str, what: &str) -> Option<TxId> {
+        let prefix = format!(".{}.{what}-", self.omarchy_plugin_name());
+        name.strip_prefix(&prefix)?.parse().ok()
     }
 
     /// The default agent skill location (M4): `<home>/.claude/skills/omaddons`.
@@ -572,10 +613,21 @@ mod tests {
             ),
             (p.addons_toml(), "/c/omaddons/addons.toml".into()),
             (p.catalog_d(), "/c/omaddons/catalog.d".into()),
+            (p.omarchy_config_dir(), "/c/omarchy".into()),
+            (p.omarchy_shell_json(), "/c/omarchy/shell.json".into()),
+            (p.omarchy_plugins_dir(), "/c/omarchy/plugins".into()),
             (p.omarchy_plugin_dir(), "/c/omarchy/plugins/omaddons".into()),
             (
-                p.omarchy_plugin_stage(),
-                "/c/omarchy/plugins/.omaddons.stage".into(),
+                p.omarchy_stage(&tx),
+                format!("/c/omarchy/plugins/.omaddons.stage-{TX}"),
+            ),
+            (
+                p.omarchy_old(&tx),
+                format!("/c/omarchy/plugins/.omaddons.old-{TX}"),
+            ),
+            (
+                p.omarchy_trash(),
+                "/c/omarchy/plugins/.omaddons.trash".into(),
             ),
             (p.skill_dir(), "/h/.claude/skills/omaddons".into()),
             (p.registry_file(), "/s/omaddons/registry.json".into()),
@@ -779,9 +831,41 @@ mod tests {
                 p.omarchy_plugin_dir(),
                 Path::new("/c/omarchy/plugins/omaddons-checkpoint")
             );
+            let op: TxId = TX.parse().unwrap();
             assert_eq!(
-                p.omarchy_plugin_stage(),
-                Path::new("/c/omarchy/plugins/.omaddons-checkpoint.stage")
+                p.omarchy_stage(&op),
+                PathBuf::from(format!(
+                    "/c/omarchy/plugins/.omaddons-checkpoint.stage-{TX}"
+                ))
+            );
+            assert_eq!(
+                p.omarchy_trash(),
+                Path::new("/c/omarchy/plugins/.omaddons-checkpoint.trash")
+            );
+            assert_eq!(
+                p.omarchy_stage_op(&format!(".omaddons-checkpoint.stage-{TX}")),
+                Some(op)
+            );
+            assert_eq!(p.omarchy_stage_op(&format!(".omaddons.stage-{TX}")), None);
+        }
+        let p = at(None);
+        let op: TxId = TX.parse().unwrap();
+        assert_eq!(
+            p.omarchy_stage_op(&format!(".omaddons.stage-{TX}")),
+            Some(op)
+        );
+        assert_eq!(p.omarchy_old_op(&format!(".omaddons.old-{TX}")), Some(op));
+        for name in [
+            ".omaddons.stage",
+            ".omaddons.stage-",
+            ".omaddons.stage-notaulid",
+            "omaddons.stage-01JB8Q2VA00000000000000000",
+            ".omaddons.old-01JB8Q2VA00000000000000000x",
+        ] {
+            assert_eq!(
+                p.omarchy_stage_op(name).or(p.omarchy_old_op(name)),
+                None,
+                "{name}"
             );
         }
         for id in [

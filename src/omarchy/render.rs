@@ -290,6 +290,16 @@ pub fn installed_context(dir: &Path) -> Option<Context> {
     Context::from_json(only_line(&text, "var CONTEXT = ")?)
 }
 
+/// The binary an installed widget at `dir` runs, or `None` as for [`installed_sha256`].
+pub fn installed_binary(dir: &Path) -> Option<PathBuf> {
+    let text = installed_build_js(dir)?;
+    let value: Value = serde_json::from_str(only_line(&text, "var BINARY = ")?).ok()?;
+    value
+        .as_str()
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+}
+
 /// The text after `prefix` on the one line that starts with it; `None` when no line or
 /// more than one does.
 fn only_line<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
@@ -534,6 +544,7 @@ mod tests {
         let dir = written(&r);
         assert_eq!(installed_sha256(dir.path()), Some(r.content_sha256.clone()));
         assert_eq!(installed_context(dir.path()), Some(ctx("/r")));
+        assert_eq!(installed_binary(dir.path()), Some(binary()));
     }
 
     /// Anything but exactly what omaddons writes reads back as nothing.

@@ -20,6 +20,7 @@ pub mod install;
 pub mod issues;
 pub mod list;
 pub mod net_log;
+pub mod omarchy;
 pub mod outcome;
 pub mod outdated;
 pub mod pin;
@@ -155,6 +156,8 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("config set", Group::Setup, true),
     entry("config path", Group::Setup, false),
     entry("auth", Group::Setup, true),
+    entry("omarchy", Group::Setup, true),
+    entry("omarchy install", Group::Setup, true),
     entry("help", Group::Setup, false),
 ];
 
@@ -223,6 +226,7 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
             .as_ref()
             .map_or("config", config::ConfigAction::command),
         Some(Command::Auth(_)) => "auth github",
+        Some(Command::Omarchy(args)) => args.action.command(),
     }
 }
 
@@ -549,6 +553,7 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             Some(TargetsAction::Default { id }) => out.emit(targets::default(ctx, id)),
         },
         Some(Command::Auth(args)) => out.emit(auth::run(ctx, args)),
+        Some(Command::Omarchy(args)) => out.emit(omarchy::run(ctx, args)),
         Some(Command::Config(args)) => {
             use config::ConfigAction;
             match &args.action {

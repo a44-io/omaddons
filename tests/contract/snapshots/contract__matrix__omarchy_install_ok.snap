@@ -1,0 +1,31 @@
+---
+source: tests/contract/matrix.rs
+expression: stable
+---
+{
+  "command": "omarchy install",
+  "commands": [],
+  "data": {
+    "dry_run": false,
+    "enabled": "skipped",
+    "installed": "fresh",
+    "plugin": {
+      "binary": "<binary>",
+      "context_matches": true,
+      "enabled": false,
+      "id": "a44.omaddons",
+      "installed": true,
+      "outdated": false,
+      "path": "<root>/config/omarchy/plugins/omaddons",
+      "section": null,
+      "version": "<version>"
+    },
+    "section": "right"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

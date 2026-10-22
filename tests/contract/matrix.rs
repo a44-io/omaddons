@@ -1134,3 +1134,33 @@ fn errors_dismiss() {
     let c = s.json_env(&["errors", "dismiss", "-t", "retail"], &env, 0);
     insta::assert_json_snapshot!("errors_dismiss_partial", s.stable(&c.envelope));
 }
+
+#[test]
+fn omarchy_install() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let s = Scene::new();
+    let root = s.home.env.root().to_path_buf();
+    // `PATH` holds a stub `omarchy-shell` alone: no real Omarchy tool is reachable.
+    let bin = root.join("omarchy-bin");
+    fs::create_dir_all(&bin).unwrap();
+    let shell = bin.join("omarchy-shell");
+    fs::write(&shell, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
+    let (bin, omarchy) = (
+        bin.display().to_string(),
+        root.join("omarchy").display().to_string(),
+    );
+    let env = [("PATH", bin.as_str()), ("OMARCHY_PATH", omarchy.as_str())];
+
+    let c = s.json_env(&["omarchy", "install"], &env, 3);
+    insta::assert_json_snapshot!("omarchy_install_missing", s.stable(&c.envelope));
+
+    fs::create_dir_all(s.home.env.config().join("omarchy")).unwrap();
+    let c = s.json_env(&["omarchy", "install", "--no-enable"], &env, 0);
+    let mut stable = s.stable(&c.envelope);
+    // The build's own path and version.
+    stable["data"]["plugin"]["binary"] = "<binary>".into();
+    stable["data"]["plugin"]["version"] = "<version>".into();
+    insta::assert_json_snapshot!("omarchy_install_ok", stable);
+}

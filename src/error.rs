@@ -334,6 +334,9 @@ warning_codes! {
     BeforeRestoreSkipped        = "before_restore_skipped";
     /// An automatic backup failed; the change went ahead without it.
     AutoBackupFailed            = "auto_backup_failed";
+    /// The widget is installed, but Omarchy's shell could not be told to put it on the
+    /// bar (no desktop session, or the shell is not running).
+    OmarchyShellUnreachable     = "omarchy_shell_unreachable";
 }
 
 impl fmt::Display for WarningCode {
@@ -832,7 +835,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 48);
+        assert_eq!(WarningCode::ALL.len(), 49);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

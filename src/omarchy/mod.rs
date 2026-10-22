@@ -4,5 +4,7 @@
 //! `status` reads an installed widget back through [`render`].
 
 pub mod assets;
+pub mod install;
 pub mod render;
+pub mod shell;
 pub mod validate;

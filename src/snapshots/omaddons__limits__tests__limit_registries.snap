@@ -832,6 +832,24 @@ expression: "(politeness, REGISTRY)"
       "unit": "bytes",
       "config_key": null,
       "notes": "An installed widget's manifest.json or Build.js read back; a larger one is not omaddons'"
+    },
+    {
+      "name": "OMARCHY_COMMAND_TIMEOUT",
+      "value": {
+        "millis": 10000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "An Omarchy tool (plugin validator, shell IPC, bar placement) is killed after this long"
+    },
+    {
+      "name": "OMARCHY_SHELL_JSON_MAX_BYTES",
+      "value": {
+        "bytes": 4194304
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Omarchy's shell.json read for the widget's place in the bar; a larger one counts as not placed"
     }
   ]
 ]

@@ -34,6 +34,9 @@ pub enum PruneReason {
     BackupPrune,
     /// Old doctor runs (M4).
     DoctorGc,
+    /// The Omarchy widget's hidden stages and parked old widgets (M3-D38): a published
+    /// install's replaced tree, and the stage of an install whose process is gone.
+    WidgetStage,
 }
 
 impl PruneReason {
@@ -42,6 +45,7 @@ impl PruneReason {
             Self::Retention | Self::PostCommitCleanup | Self::PlanExpiry => Writer::Mutating,
             Self::BackupPrune => Writer::Backup,
             Self::DoctorGc => Writer::Doctor,
+            Self::WidgetStage => Writer::Omarchy,
         }
     }
 }
@@ -277,6 +281,10 @@ enum Kind {
     DoctorRun,
     Blob,
     CacheTmp,
+    /// `<plugins>/.omaddons.stage-<op>`
+    OmarchyStage,
+    /// `<plugins>/.omaddons.old-<op>`
+    OmarchyOld,
 }
 
 impl Kind {
@@ -289,6 +297,7 @@ impl Kind {
             Self::Plan => PruneReason::PlanExpiry,
             Self::ClientBackup => PruneReason::BackupPrune,
             Self::DoctorRun => PruneReason::DoctorGc,
+            Self::OmarchyStage | Self::OmarchyOld => PruneReason::WidgetStage,
         }
     }
 }
@@ -350,6 +359,19 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
             _ => return None,
         };
         return Some((kind, scopes.cache_dir().join("trash")));
+    }
+    if victim.parent() == Some(scopes.omarchy_plugins_dir()) {
+        let paths = scopes.paths();
+        let name = victim.file_name()?.to_str()?;
+        let kind = if paths.omarchy_stage_op(name).is_some() {
+            Kind::OmarchyStage
+        } else if paths.omarchy_old_op(name).is_some() {
+            Kind::OmarchyOld
+        } else {
+            return None;
+        };
+        let trash = paths.omarchy_trash();
+        return Some((kind, scopes.omarchy_plugins_dir().join(trash.file_name()?)));
     }
     None
 }
@@ -532,6 +554,55 @@ mod tests {
             scopes,
             client,
             paths,
+        }
+    }
+
+    /// A widget stage or parked old widget goes through `<plugins>/.omaddons.trash`, for
+    /// `WidgetStage` only; the widget itself, other plugins and malformed names are not
+    /// prunable.
+    #[test]
+    fn widget_stages_and_old_trees_are_pruned_for_widget_stage_only() {
+        let f = fixture();
+        let op: TxId = TxId::new();
+        let stage = make(&f.paths.omarchy_stage(&op), true);
+        let old = make(&f.paths.omarchy_old(&op), true);
+        for victim in [&stage, &old] {
+            let err = prune(
+                &f.scopes,
+                PruneReason::PostCommitCleanup,
+                std::slice::from_ref(victim),
+                LockUse::Acquire,
+            )
+            .unwrap_err();
+            assert_eq!(err.code, ErrorCode::ScopeDenied, "{victim:?}");
+        }
+        let report = prune(
+            &f.scopes,
+            PruneReason::WidgetStage,
+            &[stage.clone(), old.clone()],
+            LockUse::Acquire,
+        )
+        .unwrap();
+        assert_eq!(report.removed, vec![stage.clone(), old.clone()]);
+        assert!(!stage.exists() && !old.exists());
+        let trash = f.paths.omarchy_trash();
+        assert!(trash.is_dir() && fs::read_dir(&trash).unwrap().next().is_none());
+        let plugins = f.paths.omarchy_plugins_dir();
+        for stranger in [
+            make(&f.paths.omarchy_plugin_dir(), true),
+            make(&plugins.join("beads"), true),
+            make(&plugins.join(".omaddons.stage"), true),
+            make(&plugins.join(".omaddons.stage-notaulid"), true),
+        ] {
+            let err = prune(
+                &f.scopes,
+                PruneReason::WidgetStage,
+                std::slice::from_ref(&stranger),
+                LockUse::Acquire,
+            )
+            .unwrap_err();
+            assert_eq!(err.code, ErrorCode::ScopeDenied, "{stranger:?}");
+            assert!(stranger.exists());
         }
     }
 

@@ -1,0 +1,24 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "omarchy install",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_found",
+    "details": {
+      "reason": "omarchy_missing"
+    },
+    "fix": "this needs the Omarchy desktop (omarchy.org); everything else works without it",
+    "fix_argv": null,
+    "message": "Omarchy is not installed here, so there is no bar for the widget",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
