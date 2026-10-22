@@ -22,8 +22,8 @@ use omaddons::backup::{EntryKind, Manifest};
 use omaddons::state::store;
 use serde_json::{Value, json};
 use support::{
-    backup_dir, codes, fixture_wtf, history, leftovers, local_addon, mode, run, tree_contents,
-    tree_state,
+    backup_dir, codes, fixture_wtf, history, leftovers, local_addon, mode, one_count, progress,
+    run, tree_contents, tree_state,
 };
 
 #[cfg(test)]
@@ -196,6 +196,39 @@ mod support {
             .iter()
             .map(|w| w["code"].as_str().unwrap())
             .collect()
+    }
+
+    /// `(message, current, total)` of each stderr progress event of `phase`, in order.
+    pub fn progress(r: &Run, phase: &str) -> Vec<(String, u64, u64)> {
+        r.stderr
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|e| e["event"] == "progress" && e["phase"] == phase)
+            .map(|e| {
+                (
+                    e["message"].as_str().unwrap().to_owned(),
+                    e["current"].as_u64().unwrap(),
+                    e["total"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// Asserts `events` are one count of `total` under `label`: `current` never steps
+    /// back, never passes `total`, and reaches it.
+    pub fn one_count(events: &[(String, u64, u64)], label: &str, total: u64, r: &Run) {
+        assert!(!events.is_empty(), "no events\n{}", r.context());
+        let mut last = 0;
+        for (message, current, of) in events {
+            assert_eq!((message.as_str(), *of), (label, total), "{}", r.context());
+            assert!(
+                *current >= last && *current <= total,
+                "{events:?}\n{}",
+                r.context()
+            );
+            last = *current;
+        }
+        assert_eq!(last, total, "{events:?}\n{}", r.context());
     }
 }
 
@@ -1031,4 +1064,81 @@ fn backup_list_offers_a_backup_until_a_fresh_qualifying_one_exists() {
     )
     .expect(0);
     assert_eq!(listed["commands"], hint);
+}
+
+/// Three live clients of 10, 20 and 30 files, backed up in one run: one `copy` count of
+/// 60 files under the one label, each client's from where the ones before it ended;
+/// with `--verify`, one `verify` count of 60 too. One client reports as it always has.
+#[test]
+fn several_clients_report_one_run_wide_count() {
+    use omaddons::backup::tree::COPY_LABEL;
+
+    let home = Home::new(&["wow", "wow_classic_era", "wow_classic"]);
+    for (folder, files) in [("_retail_", 10), ("_classic_era_", 20), ("_classic_", 30)] {
+        Wtf::at(home.client(folder)).big(files * 64, files).build();
+    }
+    let r = run(&home, &["backup", "create"], &[]);
+    r.expect(0);
+    one_count(&progress(&r, "copy"), COPY_LABEL, 60, &r);
+    let r = run(&home, &["backup", "create", "--verify"], &[]);
+    r.expect(0);
+    one_count(&progress(&r, "copy"), COPY_LABEL, 60, &r);
+    one_count(&progress(&r, "verify"), "verifying", 60, &r);
+
+    // A retried capture (the first client's tree changed after its first try) never
+    // steps back.
+    let pause = Pause::new(home.env.root());
+    let argv = ["backup", "create", "--json", "--progress", "json"];
+    let child = home.spawn(
+        &argv,
+        &[
+            ("OMADDONS_FAILPOINTS", "backup.capture.done.1=pause@1"),
+            ("OMADDONS_FS_FREE_MB", "1024"),
+            pause.env(),
+        ],
+    );
+    pause.reached("backup.capture.done.1");
+    // classic is first, by id.
+    let changed = home
+        .client("_classic_")
+        .join("WTF/Account/FAKEACCT/FakeRealm/Char0/SavedVariables/Addon0.lua");
+    fs::write(&changed, "changed during the copy").unwrap();
+    pause.resume("backup.capture.done.1");
+    let r = wait(child, &argv);
+    assert_private_all(&r.stdout, &r.stderr);
+    let envelope = r.expect(0);
+    one_count(&progress(&r, "copy"), COPY_LABEL, 60, &r);
+    // It did retry: the second copy, the one kept, holds the change.
+    let first = &envelope["data"]["targets"][0];
+    assert_eq!(first["target"]["id"], "classic");
+    let kept = backup_dir(
+        &home.client("_classic_"),
+        first["backup"]["id"].as_str().unwrap(),
+    )
+    .join("WTF/Account/FAKEACCT/FakeRealm/Char0/SavedVariables/Addon0.lua");
+    assert_eq!(fs::read_to_string(kept).unwrap(), "changed during the copy");
+
+    // One client: its own count, as before.
+    let r = run(&home, &["backup", "create", "-t", "retail"], &[]);
+    r.expect(0);
+    one_count(&progress(&r, "copy"), COPY_LABEL, 10, &r);
+}
+
+/// A client whose `WTF/` cannot be walked adds nothing to the run's total, fails on its
+/// own, and the others' count still never steps back or passes it.
+#[test]
+fn an_unreadable_client_leaves_the_others_count_right() {
+    use omaddons::backup::tree::COPY_LABEL;
+
+    let home = Home::new(&["wow", "wow_classic_era", "wow_classic"]);
+    for (folder, files) in [("_retail_", 10), ("_classic_era_", 20), ("_classic_", 30)] {
+        Wtf::at(home.client(folder)).big(files * 64, files).build();
+    }
+    let locked = home.client("_classic_").join("WTF/Account");
+    fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    let r = run(&home, &["backup", "create"], &[]);
+    writable_again(&locked);
+    let envelope = r.expect(0);
+    assert_eq!(envelope["partial"], true, "{}", r.context());
+    one_count(&progress(&r, "copy"), COPY_LABEL, 30, &r);
 }

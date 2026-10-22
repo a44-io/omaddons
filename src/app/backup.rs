@@ -53,7 +53,7 @@ use crate::limits::{
 use crate::model::{
     Actor, BackupId, FolderName, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind,
 };
-use crate::output::{Outcome, Style, table};
+use crate::output::{Outcome, Phase, ProgressSink, Style, table};
 use crate::privacy::WtfPathRedactor;
 use crate::rules::TargetKind;
 use crate::state::config::AutoBackup;
@@ -934,18 +934,40 @@ pub fn create(ctx: &Context, args: &BackupCreateArgs) -> Result<BackupCreateOutc
     warnings.extend(running.warning());
     let mode = world.config.auto_backup.unwrap_or_default();
     let run = (!ctx.dry_run).then(RunId::new);
-    let mut targets = Vec::new();
-    let mut first_error = None;
-    let mut succeeded = false;
-    for d in selected {
-        let one = One {
+    let mut ones: Vec<One<'_>> = selected
+        .iter()
+        .map(|d| One {
             ctx,
             world: &world,
             d,
             verify: args.verify,
             min_free: limits.backup_min_free,
             keep_days: limits.backup_auto_keep_days,
-        };
+            progress: ctx.progress.clone(),
+        })
+        .collect();
+    // Several clients copied in one run count as one: each client's files from where
+    // the clients before it end, of a total taken by stat walks before anything is
+    // copied. One client reports as it always has.
+    if run.is_some() && ones.len() > 1 {
+        let auto = args.auto.then_some((&running, mode, &limits));
+        let files: Vec<u64> = ones.iter().map(|one| one.files_to_copy(auto)).collect();
+        let total: u64 = files.iter().sum();
+        if total > 0 {
+            ctx.progress
+                .announce(Phase::Copy, total, backup::tree::COPY_LABEL);
+            let mut base = 0;
+            for (one, n) in ones.iter_mut().zip(files) {
+                one.progress = ctx.progress.offset(base, total);
+                base += n;
+            }
+        }
+    }
+    let mut targets = Vec::new();
+    let mut first_error = None;
+    let mut succeeded = false;
+    for one in &ones {
+        let d = one.d;
         let done = match run {
             None if args.auto => one.auto_dry_run(&running, mode, &limits),
             None => one.dry_run().map(|(would, found)| {
@@ -1108,6 +1130,8 @@ struct One<'a> {
     min_free: u64,
     /// `limits.backup_auto_keep_days`, for the retention pass after the backup.
     keep_days: usize,
+    /// The run's progress, as this client's share of it when the run copies several.
+    progress: ProgressSink,
 }
 
 /// A backup made, its history line (when written) and what it warned.
@@ -1147,6 +1171,25 @@ impl One<'_> {
     /// `--dry-run`: what a backup would copy, from a read-only stat walk. Writes nothing.
     fn dry_run(&self) -> Result<(WouldCopy, Vec<Warning>)> {
         let client = self.client();
+        let (files, bytes) = self.walked()?;
+        let (free_bytes, low) = self.space();
+        let copy = match backup::fs::clone_hint(&client.meta_dir()) {
+            CloneHint::Capable => CopyHint::CopyOnWrite,
+            CloneHint::Incapable => CopyHint::ByteCopy,
+        };
+        let would = WouldCopy {
+            files,
+            bytes,
+            copy,
+            free_bytes,
+        };
+        Ok((would, low.into_iter().collect()))
+    }
+
+    /// The regular files in the client's `WTF/`, and their bytes, from a read-only stat
+    /// walk (no lock).
+    fn walked(&self) -> Result<(u64, u64)> {
+        let client = self.client();
         let source = capture::locate(&client, &self.d.target.id)?;
         let walked =
             backup::tree::walk(&source.root, BACKUP_TREE_MAX_ENTRIES, BACKUP_TREE_MAX_DEPTH)
@@ -1157,18 +1200,28 @@ impl One<'_> {
             // ubs:ignore — comparing entry kinds, not secrets
             .filter(|e| e.kind == backup::EntryKind::File)
             .collect();
-        let (free_bytes, low) = self.space();
-        let copy = match backup::fs::clone_hint(&client.meta_dir()) {
-            CloneHint::Capable => CopyHint::CopyOnWrite,
-            CloneHint::Incapable => CopyHint::ByteCopy,
-        };
-        let would = WouldCopy {
-            files: files.len() as u64,
-            bytes: files.iter().map(|e| e.size).sum(),
-            copy,
-            free_bytes,
-        };
-        Ok((would, low.into_iter().collect()))
+        Ok((files.len() as u64, files.iter().map(|e| e.size).sum()))
+    }
+
+    /// How many files this client's backup will copy, for the run's progress total: 0
+    /// when its `WTF/` cannot be walked (the copy reports why) or, under `--auto`, when
+    /// no backup is due. A hint taken before copying: a file added since only makes the
+    /// count reach the total sooner, which the sink caps.
+    fn files_to_copy(&self, auto: Option<(&RunningScan, AutoBackup, &EffectiveLimits)>) -> u64 {
+        if let Some((running, mode, limits)) = auto {
+            let Ok(scopes) = ScopeTable::new(
+                &self.world.paths,
+                std::slice::from_ref(&self.d.target.client_dir),
+                None,
+            ) else {
+                return 0;
+            };
+            let req = self.auto_run(&scopes, running, mode, limits);
+            if matches!(auto::due(&req, &self.client()), Decision::Skip(_)) {
+                return 0;
+            }
+        }
+        self.walked().map_or(0, |(files, _)| files)
     }
 
     /// Registers the client if needed, copies its `WTF/` (no lock held), then appends
@@ -1197,7 +1250,7 @@ impl One<'_> {
             client_running,
             command: CREATE_COMMAND,
         };
-        let created = capture::create(&self.world.paths, &scopes, &req, &self.ctx.progress)
+        let created = capture::create(&self.world.paths, &scopes, &req, &self.progress)
             .map_err(capture::CreateError::into_error)?;
         let mut warnings: Vec<Warning> = low.into_iter().collect();
         warnings.extend(created.warnings.iter().cloned());
@@ -1317,7 +1370,7 @@ impl One<'_> {
             actor: self.ctx.actor,
             reason: self.ctx.reason.clone(),
             command: CREATE_COMMAND,
-            progress: &self.ctx.progress,
+            progress: &self.progress,
             record_skips: true,
         }
     }

@@ -84,6 +84,15 @@ struct SinkInner {
 #[derive(Debug, Clone, Default)]
 pub struct ProgressSink {
     inner: Option<Arc<SinkInner>>,
+    /// This handle's share of a run-wide count ([`ProgressSink::offset`]).
+    shift: Option<Shift>,
+}
+
+/// Where one of several trees' counts start in a run-wide count, and that count's total.
+#[derive(Debug, Clone, Copy)]
+struct Shift {
+    base: u64,
+    total: u64,
 }
 
 impl std::fmt::Debug for Reporter<Box<dyn Write + Send>> {
@@ -111,6 +120,18 @@ impl ProgressSink {
                 reporter: reporter.clone(),
                 phases: Mutex::new(BTreeMap::new()),
             })),
+            shift: None,
+        }
+    }
+
+    /// This sink, with each [`count`](Self::count) reported as `base` plus it, of the
+    /// run-wide `total`: one of several trees a run copies, starting where the trees
+    /// before it end, so the phase keeps growing across them. A count that restarts (a
+    /// retried copy) stays dropped until it passes what was reported.
+    pub fn offset(&self, base: u64, total: u64) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            shift: Some(Shift { base, total }),
         }
     }
 
@@ -137,6 +158,10 @@ impl ProgressSink {
     pub fn count(&self, phase: Phase, current: u64, total: u64, message: &str) {
         let Some(inner) = &self.inner else {
             return;
+        };
+        let (current, total) = match self.shift {
+            Some(shift) => (shift.base.saturating_add(current), shift.total),
+            None => (current, total),
         };
         let mut phases = inner.phases.lock().unwrap_or_else(PoisonError::into_inner);
         let count = phases.entry(phase).or_default();
@@ -489,6 +514,44 @@ mod tests {
             "no repeat, no step back, never past the total"
         );
         ProgressSink::none().count(Phase::Copy, 1, 1, "WTF/ files");
+    }
+
+    /// Three trees of 10, 20 and 30 files in one run: one count of 60, each tree from
+    /// where the ones before it ended, a retried tree never stepping back.
+    #[test]
+    fn offset_trees_count_as_one_run() {
+        let config = cfg(StderrMode::Ndjson, ProgressMode::Json, false);
+        let (reporter, captured) = shared(&config);
+        let sink = ProgressSink::new(&reporter, &config);
+        sink.announce(Phase::Copy, 60, "WTF/ files");
+        for current in [5, 10] {
+            sink.offset(0, 60)
+                .count(Phase::Copy, current, 10, "WTF/ files");
+        }
+        let second = sink.offset(10, 60);
+        // A retry from the start: dropped until it passes 15.
+        for current in [5, 2, 4, 5, 6, 20] {
+            second.count(Phase::Copy, current, 20, "WTF/ files");
+        }
+        sink.offset(30, 60).count(Phase::Copy, 30, 30, "WTF/ files");
+        let counts: Vec<(u64, u64)> = captured
+            .text()
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .map(|v| (v["current"].as_u64().unwrap(), v["total"].as_u64().unwrap()))
+            .collect();
+        assert_eq!(
+            counts,
+            [
+                (0, 60),
+                (5, 60),
+                (10, 60),
+                (15, 60),
+                (16, 60),
+                (30, 60),
+                (60, 60)
+            ]
+        );
     }
 
     #[test]
