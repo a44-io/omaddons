@@ -117,20 +117,21 @@ pub fn run(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutco
         exchange: Exchange::Unverified,
         addons: Some(restored(&resolved, &plan)),
     };
-    let outcome = |data, warnings, commands| BackupRestoreOutcome {
+    let outcome = |data, warnings, commands, lock_held_ms| BackupRestoreOutcome {
         data,
         warnings,
         commands,
         trigger: meta.trigger,
         baseline: meta.baseline,
         would_keep: false,
+        lock_held_ms,
     };
     if ctx.dry_run {
         // The mount checks only: no probe, nothing written.
         let topology = restore::preflight(&client, &backup.wtf(), None)?;
         restore_addons::check_mounts(&client, &plan, topology.stage_mount, &backup.wtf())?;
         data.precondition = Some(bound.token());
-        return Ok(outcome(data, warnings, Vec::new()));
+        return Ok(outcome(data, warnings, Vec::new(), None));
     }
     let preview = preview_argv(&ctx.argv);
     check(ctx.if_match.as_deref(), &bound, &preview)?;
@@ -161,7 +162,7 @@ pub fn run(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutco
     data.exchange = Exchange::Verified;
     let tx = done.tx.to_string();
     let undo = CommandHint::new("undo", ["omaddons", "undo", tx.as_str()], false);
-    Ok(outcome(data, warnings, vec![undo]))
+    Ok(outcome(data, warnings, vec![undo], Some(done.lock_held_ms)))
 }
 
 /// What a backup says of its addons: its addon record (`addons.json`; empty when it has

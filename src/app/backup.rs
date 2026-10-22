@@ -1590,6 +1590,8 @@ pub struct BackupRestoreOutcome {
     pub(super) trigger: Option<Trigger>,
     pub(super) baseline: Option<Baseline>,
     pub(super) would_keep: bool,
+    /// How long the commit held the global lock, for the `-v` log line.
+    pub lock_held_ms: Option<u64>,
 }
 
 impl Outcome for BackupRestoreOutcome {
@@ -1823,6 +1825,7 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
             trigger: meta.trigger,
             baseline: meta.baseline,
             would_keep: topology.wtf.is_some() && clones,
+            lock_held_ms: None,
         });
     }
     let preview = preview_argv(&ctx.argv);
@@ -1887,6 +1890,7 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
         trigger: meta.trigger,
         baseline: meta.baseline,
         would_keep: false,
+        lock_held_ms: Some(done.lock_held_ms),
     })
 }
 

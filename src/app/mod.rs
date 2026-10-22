@@ -455,7 +455,11 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
                 Some(BackupAction::List(list)) => out.emit(backup::list(ctx, list)),
                 Some(BackupAction::Create(create)) => out.emit(backup::create(ctx, create)),
                 Some(BackupAction::Restore(restore)) => {
-                    out.emit(backup::restore_backup(ctx, restore))
+                    let result = backup::restore_backup(ctx, restore);
+                    if let Ok(outcome) = &result {
+                        out.lock_released(outcome.lock_held_ms, output::Outcome::data(outcome).tx);
+                    }
+                    out.emit(result)
                 }
                 Some(BackupAction::Prune(prune)) => out.emit(backup::prune_backups(ctx, prune)),
                 Some(BackupAction::Export(export)) => out.emit(backup::export_backup(ctx, export)),

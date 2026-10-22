@@ -14,7 +14,7 @@ use common::engine::{Scene, lock_held_ms, shapes, warning_codes};
 use common::home::{Run, wait};
 use common::pause::Pause;
 use serde_json::Value;
-use support::status;
+use support::{backed_up, backup, play, status};
 
 #[cfg(test)]
 mod support {
@@ -41,6 +41,41 @@ mod support {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect()
+    }
+
+    /// A scene with Foo installed and a `WTF/` of two addons' settings backed up, then
+    /// played on; the backup's id.
+    pub fn backed_up() -> (Scene, String) {
+        let s = Scene::new();
+        s.install("gh:o/foo", "v1");
+        common::wtf::Wtf::at(s.home.client("_retail_"))
+            .config_wtf("SET locale \"enUS\"\n")
+            .saved_variables("Foo", 300)
+            .saved_variables("Bar", 120)
+            .build();
+        let id = backup(&s);
+        play(&s);
+        (s, id)
+    }
+
+    /// A manual backup of retail; its id.
+    pub fn backup(s: &Scene) -> String {
+        let created = s.ok(&["backup", "create", "-t", "retail"]);
+        created["data"]["targets"][0]["backup"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// A play session: Foo's account-wide settings rewritten.
+    pub fn play(s: &Scene) {
+        let sv = s
+            .home
+            .client("_retail_")
+            .join("WTF/Account/FAKEACCT/SavedVariables/Foo.lua");
+        let mut text = fs::read_to_string(&sv).unwrap();
+        text.push_str("FooDB.played = (FooDB.played or 0) + 1\n");
+        fs::write(sv, text).unwrap();
     }
 }
 
@@ -782,4 +817,215 @@ fn saved_variables_written_after_their_copy_are_snapshotted_as_written() {
         support::sha256_hex(logout.as_bytes()),
         "{manifest}"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// Backups and restores (M3-D31, M3-D48): readers of a backup (restore, export, verify)
+// hold it shared, prune and the automatic-capture scheduler take theirs exclusively
+// without waiting, and none of them stops a change while it copies or stages. Their
+// scene helpers are `support::{backed_up, backup, play}`.
+
+/// A restore staging (paused at `engine.restore.staged`, no global lock held) lets an
+/// install commit; the restore then finds the records moved under it and replans
+/// (`plan_stale`, retryable) with nothing changed, and run again it restores.
+#[test]
+fn an_install_commits_while_a_restore_stages() {
+    let (s, id) = backed_up();
+    let played = s.wtf();
+    let argv = ["backup", "restore", id.as_str(), "-t", "retail"];
+    let pause = Pause::new(s.home.env.root());
+    let child = s.home.spawn(
+        &argv,
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.restore.staged=pause"),
+            pause.env(),
+        ],
+    );
+    pause.reached("engine.restore.staged");
+    s.run(&s.install_args("gh:o/bar", "bar"), "").expect(0);
+    pause.resume("engine.restore.staged");
+    let done = wait(child, &argv);
+    let envelope = done.envelope();
+    assert_eq!(
+        (&envelope["error"]["code"], &envelope["error"]["retryable"]),
+        (&Value::from("plan_stale"), &Value::from(true)),
+        "{}",
+        done.context()
+    );
+    assert_eq!(s.wtf(), played, "nothing changed");
+    assert!(s.journals().is_empty());
+    s.ok(&["backup", "restore", &id, "-t", "retail"]);
+    assert_ne!(s.wtf(), played, "restored when run again");
+}
+
+/// A backup paused mid-copy (it holds no global lock) blocks no change.
+#[test]
+fn a_backup_paused_mid_copy_blocks_no_change() {
+    let (s, _) = backed_up();
+    let argv = ["backup", "create", "-t", "retail"];
+    let pause = Pause::new(s.home.env.root());
+    let child = s.home.spawn(
+        &argv,
+        &[
+            ("OMADDONS_FAILPOINTS", "backup.capture.copied.1=pause"),
+            pause.env(),
+        ],
+    );
+    pause.reached("backup.capture.copied.1");
+    s.run(&s.install_args("gh:o/bar", "bar"), "").expect(0);
+    pause.resume("backup.capture.copied.1");
+    let done = wait(child, &argv).expect(0);
+    assert!(
+        done["data"]["targets"][0]["backup"]["id"].is_string(),
+        "{done}"
+    );
+}
+
+/// Two automatic captures of one client at once (the widget's after-play trigger fired
+/// twice): the second finds the scheduling lock held and skips (`in_progress`), the
+/// first makes the one backup.
+#[test]
+fn two_automatic_captures_at_once_make_one_backup() {
+    let (s, _) = backed_up();
+    s.ok(&["config", "set", "auto_backup", "daily-copy"]);
+    let argv = ["backup", "create", "--auto", "-t", "retail"];
+    let pause = Pause::new(s.home.env.root());
+    let first = s.home.spawn(
+        &argv,
+        &[
+            ("OMADDONS_FAILPOINTS", "backup.capture.copied.1=pause"),
+            pause.env(),
+        ],
+    );
+    pause.reached("backup.capture.copied.1");
+    let second = s.ok(&argv);
+    assert_eq!(
+        second["data"]["targets"][0]["skipped"]["reason"], "in_progress",
+        "{second}"
+    );
+    pause.resume("backup.capture.copied.1");
+    let first = wait(first, &argv).expect(0);
+    assert_eq!(
+        first["data"]["targets"][0]["backup"]["kind"], "auto",
+        "{first}"
+    );
+    let listed = s.ok(&["backup", "list", "-t", "retail"]);
+    let autos = listed["data"]["targets"][0]["backups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|b| b["kind"] == "auto")
+        .count();
+    assert_eq!(autos, 1, "{listed}");
+}
+
+/// A prune of two backups another process is reading (one exported, one restored, each
+/// paused while it holds its reservation) reports both busy and deletes neither; both
+/// readers then finish.
+#[test]
+fn a_prune_finds_a_paused_export_and_a_paused_restore_busy() {
+    let (s, exported) = backed_up();
+    let restored = backup(&s);
+    play(&s);
+    backup(&s); // the newest checkpoint, which prune always keeps
+    let usb = s.home.env.root().join("usb");
+    fs::create_dir_all(&usb).unwrap();
+    let file = usb.join("retail.tar.zst").display().to_string();
+    let export = ["backup", "export", exported.as_str(), file.as_str()];
+    let restore = ["backup", "restore", restored.as_str(), "-t", "retail"];
+    let (pe, pr) = (Pause::new(s.home.env.root()), Pause::new(s.home.env.root()));
+    let exporting = s.home.spawn(
+        &export,
+        &[
+            ("OMADDONS_FAILPOINTS", "fsx.write_atomic.after=pause"),
+            pe.env(),
+        ],
+    );
+    let restoring = s.home.spawn(
+        &restore,
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.restore.staged=pause"),
+            pr.env(),
+        ],
+    );
+    pe.reached("fsx.write_atomic.after");
+    pr.reached("engine.restore.staged");
+    let pruned = s.ok(&["backup", "prune", &exported, &restored, "-t", "retail"]);
+    let mut busy: Vec<&str> = pruned["data"]["targets"][0]["busy"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["id"].as_str().unwrap())
+        .collect();
+    busy.sort_unstable();
+    let mut expected = [exported.as_str(), restored.as_str()];
+    expected.sort_unstable();
+    assert_eq!(busy, expected, "{pruned}");
+    assert_eq!(
+        pruned["data"]["targets"][0]["pruned"],
+        serde_json::json!([])
+    );
+    pe.resume("fsx.write_atomic.after");
+    pr.resume("engine.restore.staged");
+    wait(exporting, &export).expect(0);
+    wait(restoring, &restore).expect(0);
+    let listed = s.ok(&["backup", "list", "-t", "retail"]).to_string();
+    assert!(listed.contains(&exported) && listed.contains(&restored));
+}
+
+/// A verify and a prune of the same backup: the verify first (paused while it holds its
+/// reservation), the prune finds it busy; the prune first (paused after moving it out
+/// while still holding it), the verify finds it gone. Never a crash, never half a backup.
+#[test]
+fn a_verify_racing_a_prune_of_its_backup_ends_busy_or_gone() {
+    let (s, id) = backed_up();
+    backup(&s); // the newest checkpoint
+    let verify = ["backup", "verify", id.as_str(), "-t", "retail"];
+    let pause = Pause::new(s.home.env.root());
+    let verifying = s.home.spawn(
+        &verify,
+        &[
+            ("OMADDONS_FAILPOINTS", "fsx.write_atomic.before=pause"),
+            pause.env(),
+        ],
+    );
+    pause.reached("fsx.write_atomic.before");
+    let pruned = s.ok(&["backup", "prune", &id, "-t", "retail"]);
+    assert_eq!(
+        pruned["data"]["targets"][0]["busy"],
+        serde_json::json!([{"id": id}]),
+        "{pruned}"
+    );
+    pause.resume("fsx.write_atomic.before");
+    let verified = wait(verifying, &verify).expect(0);
+    assert_eq!(
+        verified["data"]["targets"][0]["backups"][0]["integrity"],
+        "verified"
+    );
+
+    let prune = ["backup", "prune", id.as_str(), "-t", "retail"];
+    let pause = Pause::new(s.home.env.root());
+    let pruning = s.home.spawn(
+        &prune,
+        &[
+            ("OMADDONS_FAILPOINTS", "fsx.prune.renamed=pause"),
+            pause.env(),
+        ],
+    );
+    pause.reached("fsx.prune.renamed");
+    let gone = s.run(&s.args(&["backup", "verify", &id]), "");
+    assert_eq!(
+        gone.envelope()["error"]["code"],
+        "not_found",
+        "{}",
+        gone.context()
+    );
+    pause.resume("fsx.prune.renamed");
+    wait(pruning, &prune).expect(0);
+    let meta = s.home.client("_retail_").join("Interface/.omaddons");
+    assert!(!meta.join("backups").join(&id).exists(), "wholly deleted");
+    let trash: Vec<_> = fs::read_dir(meta.join("trash"))
+        .map(|l| l.collect())
+        .unwrap_or_default();
+    assert!(trash.is_empty(), "nothing half-deleted left in trash");
 }

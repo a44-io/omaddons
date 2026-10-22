@@ -1,6 +1,7 @@
-//! Time budgets, measured on release builds only:
-//! `cargo test --release --test perf -- --ignored --skip bench_home --skip live_home`
-//! (the milestone checkpoint runs them and quotes the printed numbers). A debug build is
+//! Time budgets, measured on release builds only, one at a time:
+//! `cargo test --release --test perf -- --ignored --skip bench_home --skip live_home --test-threads=1`
+//! (the milestone checkpoint runs them and quotes the printed numbers; the two 500 MiB
+//! tests also never overlap when run in parallel, through `HALF_GIB`). A debug build is
 //! several times slower and proves nothing, so each test is ignored. Every speed budget
 //! lives here. Elsewhere, time appears only as a correctness bound with a wide margin: a
 //! wait that must last at least its timeout, a sanity ceiling of a second or more, or a
@@ -31,7 +32,11 @@ use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use omaddons::state::memo::{self, MemoEntry, ReleaseMemo};
 use support::{
     addon_release, drift_report, history_line, lua_workload, measured, median_of_21, peak_rss,
+    restore_lock_hold,
 };
+
+/// Held by each 500 MiB test, so two never share the disk.
+static HALF_GIB: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod support {
@@ -188,6 +193,22 @@ mod support {
         let base = format!("https://github.com/bench/addon{n:02}");
         gh_release_v(scenario, &base, tag, &assets);
         gh_latest(scenario, &base, tag);
+    }
+
+    /// The global lock hold of a whole restore of backup `id` on `home`, after one file
+    /// of `wtf` changed.
+    pub fn restore_lock_hold(home: &Home, id: &str, wtf: &std::path::Path) -> u64 {
+        std::fs::write(
+            wtf.join("Account/FAKEACCT/FakeRealm/Char0/SavedVariables/Addon0.lua"),
+            "changed",
+        )
+        .unwrap();
+        let argv = ["backup", "restore", id, "-t", "retail", "-v", "--json"].map(str::to_owned);
+        let r = home.exec(&argv);
+        r.expect(0);
+        let held = super::lock_held_ms(&r);
+        assert!(held.is_some(), "no lock log line\n{}", r.context());
+        held.unwrap_or_default()
     }
 }
 
@@ -881,6 +902,9 @@ fn clone_tree_500_mb() {
     use omaddons::output::ProgressSink;
     use omaddons::state::paths::Paths;
 
+    let _alone = HALF_GIB
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     const TOTAL: u64 = 500 * 1024 * 1024;
     let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
     let dir = tempfile::tempdir_in(&target).unwrap();
@@ -931,6 +955,102 @@ fn clone_tree_500_mb() {
             );
         }
     }
+}
+
+/// Checkpoint criterion 8 through the binary (D12), on btrfs under `target/`: `backup
+/// create` of 500 MiB in 5,000 files (cloned, the consistency recheck included) under
+/// 1 s, median of 5; 20,000 files and `--verify` measured and reported; and a whole
+/// restore of that tree holding the global lock under 50 ms (stamp digests, so nothing
+/// is hashed under the lock). One test, so the 500 MiB runs never overlap each other.
+#[test]
+#[ignore = "a release-build budget on btrfs: cargo test --release --test perf -- --ignored"]
+fn backups_of_500_mb_meet_their_budgets() {
+    use common::wtf::Wtf;
+
+    let _alone = HALF_GIB
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    const TOTAL: u64 = 500 * 1024 * 1024;
+    let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    let base = tempfile::tempdir_in(&target).unwrap();
+    // ubs:ignore — comparing a filesystem magic number, not a secret
+    let btrfs = rustix::fs::statfs(base.path()).is_ok_and(|s| i128::from(s.f_type) == 0x9123_683E);
+    if !btrfs {
+        common::checkpoint::skip(
+            "backups_of_500_mb_meet_their_budgets",
+            "target/ is not on btrfs",
+        );
+        return;
+    }
+    let made = |envelope: &serde_json::Value| {
+        envelope["data"]["targets"][0]["backup"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    for (files, budget) in [(5_000u64, Some(Duration::from_secs(1))), (20_000, None)] {
+        let root = base.path().join(format!("home-{files}"));
+        fs::create_dir_all(&root).unwrap();
+        let home = Home::at(&root, &["wow"]);
+        let wtf = Wtf::at(home.client("_retail_")).big(TOTAL, files).build();
+        let backups = home.client("_retail_").join("Interface/.omaddons/backups");
+        let mut times = Vec::new();
+        for _ in 0..5 {
+            let started = Instant::now();
+            let created = home.run(&["backup", "create", "-t", "retail"]).expect(0);
+            times.push(started.elapsed());
+            let b = &created["data"]["targets"][0]["backup"];
+            assert_eq!(
+                (&b["reflinked"], &b["files"]),
+                (&serde_json::json!("all"), &serde_json::json!(files)),
+                "{created}"
+            );
+            fs::remove_dir_all(backups.join(made(&created))).unwrap();
+        }
+        times.sort();
+        let median = times[times.len() / 2];
+        measured(format_args!(
+            "backup create of 500 MiB in {files} files (btrfs, the binary): median {median:?}, p95 {:?}, runs {times:?}",
+            times[times.len() - 1]
+        ));
+        if let Some(budget) = budget {
+            assert!(
+                median < budget,
+                "{files} files: median {median:?} >= {budget:?}"
+            );
+        }
+        if files != 5_000 {
+            continue;
+        }
+        // --verify: reported, no budget (M3-D47).
+        let started = Instant::now();
+        let verified = home
+            .run(&["backup", "create", "-t", "retail", "--verify"])
+            .expect(0);
+        measured(format_args!(
+            "backup create --verify of 500 MiB in {files} files: {:?}",
+            started.elapsed()
+        ));
+        let id = made(&verified);
+        // A whole restore of it on btrfs: reported. Its commit window is bound by the
+        // fsyncs a durable commit makes there (about 3 ms each), as every commit's is.
+        let held = restore_lock_hold(&home, &id, &wtf);
+        measured(format_args!(
+            "whole restore of 500 MiB in {files} files on btrfs: lock_held_ms {held}"
+        ));
+    }
+
+    // The budget, on the basis of every lock budget here (a tmpfs home, where an fsync
+    // costs nothing): what the commit window itself does with a 500 MiB WTF/, which it
+    // never hashes (stamp digests).
+    let home = Home::new(&["wow"]);
+    let wtf = Wtf::at(home.client("_retail_")).big(TOTAL, 5_000).build();
+    let created = home.run(&["backup", "create", "-t", "retail"]).expect(0);
+    let held = restore_lock_hold(&home, &made(&created), &wtf);
+    measured(format_args!(
+        "whole restore of 500 MiB in 5000 files on tmpfs: lock_held_ms {held}"
+    ));
+    assert!(held < 50, "lock held {held} ms");
 }
 
 /// A 4 MB BugGrabber file as a modern client writes it, median of 21 parses: under

@@ -4265,3 +4265,329 @@ fn a_partial_preservation_crashed_or_failed_anywhere_is_finished() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// Across features (D12): scenes that need two tasks' work at once, and the sweep of every
+// failpoint over the preservation shapes (the restore, undo-of-restore and partial
+// restore shapes sweep every failpoint in their own matrices above).
+
+#[cfg(test)]
+mod across_support {
+    use super::*;
+
+    /// The undo of a restore crashed after its exchange, then played on: the tree it put in
+    /// place (the one from before the restore) is changed before recovery. Recovered by a
+    /// child with `engine` armed in its recovery, then by the binary: the restored tree is
+    /// live again, the played-on one a `recovered` backup byte for byte, under the id the
+    /// intent reserved when a crash stopped the first recovery after it; exactly one.
+    pub fn undo_preserve_crash(engine: &str) -> restore_support::Preserving {
+        use restore_support::{RestoreScene, listed};
+
+        let r = RestoreScene::new(true);
+        assert_eq!(r.restore("", &[]).unwrap()["ok"], true);
+        r.play_on_restored();
+        let restored = r.s.wtf();
+        assert!(r.undo("engine.restore.exchanged=abort", &[]).is_none());
+        let config = r.client().join("WTF/Config.wtf");
+        fs::write(
+            &config,
+            "SET locale \"enUS\"\nSET played \"after the undo\"\n",
+        )
+        .unwrap();
+        let played_on = r.s.wtf();
+        assert_ne!(played_on, restored);
+
+        let outcome = r.recover(engine);
+        let context = |what: &str| format!("recovery with {engine:?}: {what}\noutcome {outcome:?}");
+        let stopped = outcome.as_ref().is_none_or(|o| o["ok"] == false);
+        let versions = r.versions();
+        for (what, version) in [("restored", &restored), ("played-on", &played_on)] {
+            assert!(
+                versions.contains(version.as_ref().unwrap()),
+                "{}",
+                context(&format!("the {what} tree is gone"))
+            );
+        }
+        let intent = r.intent();
+        let bar = r.s.run(&r.install_bar(), "");
+        bar.expect(0);
+        common::privacy::assert_private_all(&bar.stdout, &bar.stderr);
+        assert!(r.s.journals().is_empty(), "{}", context("journals left"));
+        assert_eq!(
+            r.s.wtf(),
+            restored,
+            "{}",
+            context("not rolled back to the restored tree")
+        );
+        let kept = r.recovered();
+        assert_eq!(kept.len(), 1, "{}", context(&format!("recovered {kept:?}")));
+        assert_eq!(
+            Some(&kept[0].1),
+            played_on.as_ref(),
+            "{}",
+            context("not the played-on tree")
+        );
+        if let Some(id) = &intent {
+            assert_eq!(
+                &kept[0].0,
+                id,
+                "{}",
+                context("not the id the intent reserved")
+            );
+        }
+        assert!(
+            listed(&r.stage_root()).is_empty(),
+            "{}",
+            context("stage left")
+        );
+        for args in [["pin", "Bar"], ["unpin", "Bar"]] {
+            r.s.run(&r.s.args(&args), "").expect(0);
+            assert_eq!(
+                r.recovered(),
+                kept,
+                "{}",
+                context("a later recovery changed it")
+            );
+        }
+        restore_support::Preserving {
+            stopped,
+            intent: intent.is_some(),
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_played_on_undo_of_a_restore_is_preserved_and_resumes_with_the_same_id() {
+    use across_support::undo_preserve_crash;
+
+    let done = undo_preserve_crash("");
+    assert!(!done.stopped, "{done:?}");
+    for point in [
+        "engine.preserve.intent",
+        "engine.preserve.moved",
+        "engine.preserve.published",
+    ] {
+        let done = undo_preserve_crash(&format!("{point}=abort"));
+        assert!(done.stopped && done.intent, "{point}: {done:?}");
+    }
+}
+
+/// An automatic capture racing a restore paused while it stages: the capture takes the
+/// scheduling lock and copies the live, pre-restore tree (or, with `engine.autobackup`
+/// aborted, makes none), never a half-made backup listed; the restore, whose reader
+/// reservation and journal it never touches, then commits. No deadlock either way.
+#[cfg(debug_assertions)]
+#[test]
+fn an_automatic_capture_racing_a_staging_restore() {
+    use common::pause::Pause;
+    use restore_support::{RestoreScene, listed};
+
+    for crash in [false, true] {
+        let r = RestoreScene::new(true);
+        r.s.home
+            .run(&["config", "set", "auto_backup", "daily-copy"])
+            .expect(0);
+        let pause = Pause::new(r.s.home.env.root());
+        let child = r.spawn_restore("engine.restore.staged=pause", &[pause.env()]);
+        pause.reached("engine.restore.staged");
+        let argv = ["backup", "create", "--auto", "-t", "retail", "--json"].map(str::to_owned);
+        let failpoints = if crash { "engine.autobackup=abort" } else { "" };
+        let capture = r.s.run(&argv, failpoints);
+        // Only whole backups are ever listed.
+        for backup in listed(&r.client().join("Interface/.omaddons/backups")) {
+            assert!(
+                backup.join("backup.json").is_file() && backup.join("manifest.json").is_file(),
+                "crash {crash}: half a backup listed: {}",
+                backup.display()
+            );
+        }
+        let autos: Vec<std::path::PathBuf> =
+            listed(&r.client().join("Interface/.omaddons/backups"))
+                .into_iter()
+                .filter(|b| {
+                    fs::read_to_string(b.join("backup.json"))
+                        .is_ok_and(|t| t.contains("\"kind\": \"auto\""))
+                })
+                .collect();
+        if crash {
+            assert_eq!(capture.code, -1, "{}", capture.context());
+            assert!(autos.is_empty(), "no backup from a capture that died");
+        } else {
+            let made = capture.expect(0);
+            assert_eq!(
+                made["data"]["targets"][0]["backup"]["kind"], "auto",
+                "{made}"
+            );
+            assert_eq!(autos.len(), 1);
+            // File by file (a stored backup gives its folders owner write access).
+            assert_eq!(
+                addon_support::every(&autos[0].join("WTF"), &[]),
+                addon_support::every(&r.client().join("WTF"), &[]),
+                "the live tree, from before the restore"
+            );
+        }
+        pause.resume("engine.restore.staged");
+        let outcome = RestoreScene::finish(child).unwrap();
+        assert_eq!(outcome["ok"], true, "crash {crash}: {outcome}");
+        assert_eq!(r.s.wtf(), r.backed_up, "crash {crash}: restored");
+        assert!(r.s.journals().is_empty());
+    }
+}
+
+/// Recovery across clients (M3-D24, M3-D29): two restores crashed after their exchange;
+/// retail's client then runs, classic's restored tree is played on. The next command
+/// recovers classic, preserving the played-on tree, and leaves retail's journal pending
+/// with nothing under its `WTF/` moved; once retail's client exits, the next command rolls
+/// it back. Through the binary's own `backup restore`.
+#[cfg(debug_assertions)]
+#[test]
+fn recovery_defers_a_running_client_and_preserves_another() {
+    use common::trees::tree_hash;
+
+    let mut home = common::home::Home::new(&["wow", "wow_classic"]);
+    let (retail_wtf, classic_wtf) = (
+        home.client("_retail_").join("WTF"),
+        home.client("_classic_").join("WTF"),
+    );
+    let wtf = |flavor: &str| {
+        if flavor == "_retail_" {
+            retail_wtf.clone()
+        } else {
+            classic_wtf.clone()
+        }
+    };
+    for flavor in ["_retail_", "_classic_"] {
+        common::wtf::Wtf::at(home.client(flavor))
+            .config_wtf("SET locale \"enUS\"\n")
+            .saved_variables("Foo", 200)
+            .build();
+    }
+    let created = home.run(&["backup", "create"]).expect(0);
+    let ids: std::collections::BTreeMap<String, String> = created["data"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            (
+                t["target"]["id"].as_str().unwrap().to_owned(),
+                t["backup"]["id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let mut played = std::collections::BTreeMap::new();
+    // Retail's restore crashes first, then its client starts: classic's restore, whose
+    // commit window recovers first, leaves retail's journal waiting and crashes too.
+    for (target, flavor) in [("retail", "_retail_"), ("classic", "_classic_")] {
+        let sv = wtf(flavor).join("Account/FAKEACCT/SavedVariables/Foo.lua");
+        fs::write(&sv, "FooDB = { played = true }\n").unwrap();
+        played.insert(target, tree_hash(&wtf(flavor)));
+        let argv = ["backup", "restore", &ids[target], "-t", target, "--json"].map(str::to_owned);
+        let crashed = home.exec_with(
+            &argv,
+            &[("OMADDONS_FAILPOINTS", "engine.restore.exchanged=abort")],
+        );
+        assert_eq!(crashed.code, -1, "{target}: {}", crashed.context());
+        if target == "retail" {
+            home.retail_running();
+        }
+    }
+    let retail_restored = tree_hash(&wtf("_retail_"));
+    assert_ne!(retail_restored, played["retail"], "retail's exchange ran");
+    fs::write(
+        wtf("_classic_").join("Config.wtf"),
+        "SET locale \"enUS\"\nSET played \"1\"\n",
+    )
+    .unwrap();
+    let classic_played_on = tree_hash(&wtf("_classic_"));
+
+    let update = ["update", "--offline", "--json"].map(str::to_owned);
+    let r = home.exec(&update);
+    let envelope = r.envelope();
+    common::privacy::assert_private_all(&r.stdout, &r.stderr);
+    let codes = warning_codes(&envelope);
+    assert!(
+        codes.contains(&"journal_recovered".to_owned())
+            && codes.contains(&"restore_rolled_back".to_owned()),
+        "classic recovered and preserved: {codes:?}\n{}",
+        r.context()
+    );
+    assert_eq!(
+        tree_hash(&wtf("_classic_")),
+        played["classic"],
+        "classic rolled back"
+    );
+    let backups = home.client("_classic_").join("Interface/.omaddons/backups");
+    let recovered: Vec<String> = restore_support::listed(&backups)
+        .into_iter()
+        .filter(|b| {
+            fs::read_to_string(b.join("backup.json")).is_ok_and(|t| t.contains("\"recovered\""))
+        })
+        .map(|b| tree_hash(&b.join("WTF")))
+        .collect();
+    assert_eq!(recovered, [classic_played_on], "the played-on tree, kept");
+    assert_eq!(
+        tree_hash(&wtf("_retail_")),
+        retail_restored,
+        "nothing moves under a running client"
+    );
+    let journals = home.state().join("journal");
+    assert_eq!(
+        restore_support::listed(&journals).len(),
+        1,
+        "retail's waits"
+    );
+
+    home.nothing_running();
+    home.exec(&update).expect(0);
+    assert_eq!(
+        tree_hash(&wtf("_retail_")),
+        played["retail"],
+        "rolled back once it exited"
+    );
+    assert!(restore_support::listed(&journals).is_empty());
+}
+
+/// The sweep (D12): every engine failpoint armed once in the recovery of each preservation
+/// shape (a whole restore, its undo and a partial restore, each played on after a
+/// crash). On their path a scene stops and the next recovery finishes; off it, it
+/// succeeds. Either way each shape's oracle holds.
+#[cfg(debug_assertions)]
+#[test]
+fn every_failpoint_in_every_preservation_shape() {
+    let mut stopped = std::collections::BTreeMap::new();
+    for failpoint in FAILPOINTS {
+        let spec = format!("{failpoint}=abort");
+        let shapes = [
+            ("restore", restore_support::preserve_crash(&spec).stopped),
+            ("undo", across_support::undo_preserve_crash(&spec).stopped),
+            ("partial", addon_support::preserve_crash(&spec).stopped),
+        ];
+        for (shape, done) in shapes {
+            if done {
+                stopped
+                    .entry(shape)
+                    .or_insert_with(Vec::new)
+                    .push(*failpoint);
+            }
+        }
+    }
+    let _ = std::io::Write::write_fmt(
+        &mut std::io::stderr(),
+        format_args!("preservation sweep: stopped at {stopped:?}\n"),
+    );
+    for shape in ["restore", "undo", "partial"] {
+        let on = stopped.get(shape).cloned().unwrap_or_default();
+        for point in [
+            "engine.recover.step",
+            "engine.preserve.intent",
+            "engine.preserve.moved",
+            "engine.preserve.published",
+        ] {
+            assert!(
+                on.contains(&point),
+                "{shape}: {point} is on its path: {on:?}"
+            );
+        }
+    }
+}
