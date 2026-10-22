@@ -253,6 +253,44 @@ fn help_walks_a_nested_path() {
     );
 }
 
+/// `auth github` names `auth` with its service (a positional value, not a subcommand):
+/// every spelling README shows for a command's help resolves to `auth`'s.
+#[test]
+fn help_for_a_command_named_with_its_positional_values() {
+    let auth = run(&["help", "auth"]);
+    assert_eq!(auth.code, 0, "{}", auth.context());
+    for asked in [
+        &["help", "auth", "github"][..],
+        &["auth", "github", "--help"],
+        &["auth", "github", "set", "--help"],
+    ] {
+        let r = run(asked);
+        assert_eq!(r.code, 0, "{}", r.context());
+        assert_eq!(r.stdout, auth.stdout, "{asked:?}");
+        let mut json = asked.to_vec();
+        json.push("--json");
+        let envelope = run(&json).envelope();
+        assert_eq!(
+            (&envelope["command"], &envelope["data"]["command"]),
+            (&Value::from("help"), &Value::from("auth")),
+            "{envelope}"
+        );
+    }
+    // A misspelled value is still a usage error, with a whole sentence and a fix that
+    // resolves.
+    let r = run(&["help", "auth", "gihub", "--json"]);
+    assert_eq!(r.code, 2, "{}", r.context());
+    let error = &r.envelope()["error"];
+    assert_eq!(
+        error["message"],
+        "there is no command \"auth gihub\": auth takes SERVICE (github)"
+    );
+    assert_eq!(
+        error["fix_argv"],
+        serde_json::json!(["omaddons", "help", "auth", "github"])
+    );
+}
+
 #[test]
 fn version() {
     let r = run(&["-V"]);

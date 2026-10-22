@@ -61,7 +61,7 @@ pub struct GitLogEntry {
     /// The exit code; `None` when the process was killed by a signal.
     pub exit_code: Option<i32>,
     pub duration_ms: u64,
-    /// `ls-remote`, `clone` or `fetch`.
+    /// `ls-remote`, `init`, `fetch`, `checkout`, `clone` or `rev-parse`.
     pub purpose: &'static str,
     pub error: Option<ErrorCode>,
 }

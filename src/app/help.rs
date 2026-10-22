@@ -250,44 +250,74 @@ pub fn for_command(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, E
     let Some(name) = name else { return Ok(bare()) };
     let mut root = Cli::command();
     root.build();
-    // A nested path such as `targets add` walks one level per word; an unknown word is
-    // suggested among the subcommands of the command it follows.
+    // A nested path such as `targets add` walks one level per word. A word that is a
+    // possible value of the command's next positional (`auth github`, `auth github set`)
+    // stays on that command, and so does every word after it. An unknown word is
+    // suggested among the subcommands and values the command it follows takes.
     let mut sub = &mut root;
     let mut walked: Vec<&str> = Vec::new();
+    let mut values = 0;
     for part in name.split_whitespace() {
-        if sub.find_subcommand(part).is_none() {
-            let names: Vec<String> = sub
-                .get_subcommands()
-                .map(|c| c.get_name().to_owned())
-                .collect();
-            // Past the first word: the parent's help lists its subcommands.
-            let parent = || {
-                let mut argv = vec!["omaddons", "help"];
-                argv.extend(&walked);
-                (Suggestion::command(argv), Vec::new())
+        if values == 0 && sub.find_subcommand(part).is_some() {
+            walked.push(part);
+            let Some(next) = sub.find_subcommand_mut(part) else {
+                return Err(Error::internal(format!(
+                    "{part} vanished from the command tree"
+                )));
             };
-            let (fix, alternatives) =
-                crate::cli::suggest(argv, part, &names).unwrap_or_else(parent);
-            let message = if walked.is_empty() {
-                format!("there is no command {name:?}")
-            } else {
-                format!(
-                    "there is no command {name:?}: {} has {}",
-                    walked.join(" "),
-                    names.join(", ")
-                )
-            };
-            let mut error = Error::new(ErrorCode::Usage, message, fix);
-            error.alternatives = alternatives;
-            return Err(error);
+            sub = next;
+            continue;
         }
-        walked.push(part);
-        let Some(next) = sub.find_subcommand_mut(part) else {
-            return Err(Error::internal(format!(
-                "{part} vanished from the command tree"
-            )));
+        let positional = sub.get_positionals().nth(values);
+        let possible: Vec<String> = positional
+            .map(|arg| {
+                arg.get_possible_values()
+                    .iter()
+                    .filter(|v| !v.is_hide_set())
+                    .map(|v| v.get_name().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if possible.iter().any(|v| v == part) {
+            values += 1;
+            walked.push(part);
+            continue;
+        }
+        let names: Vec<String> = if values == 0 {
+            sub.get_subcommands()
+                .map(|c| c.get_name().to_owned())
+                .collect()
+        } else {
+            Vec::new()
         };
-        sub = next;
+        // Past the first word: the help of the command walked so far.
+        let parent = || {
+            let mut argv = vec!["omaddons", "help"];
+            argv.extend(&walked);
+            (Suggestion::command(argv), Vec::new())
+        };
+        let candidates: Vec<String> = names.iter().chain(&possible).cloned().collect();
+        let (fix, alternatives) =
+            crate::cli::suggest(argv, part, &candidates).unwrap_or_else(parent);
+        let walked = walked.join(" ");
+        let message = match (walked.is_empty(), positional) {
+            (true, _) => format!("there is no command {name:?}"),
+            _ if !names.is_empty() => format!(
+                "there is no command {name:?}: {walked} has {}",
+                names.join(", ")
+            ),
+            (false, Some(arg)) if !possible.is_empty() => format!(
+                "there is no command {name:?}: {walked} takes {} ({})",
+                arg.get_value_names()
+                    .and_then(|v| v.first())
+                    .map_or_else(|| arg.get_id().to_string(), ToString::to_string),
+                possible.join(", ")
+            ),
+            _ => format!("there is no command {name:?}: {walked} takes no subcommands"),
+        };
+        let mut error = Error::new(ErrorCode::Usage, message, fix);
+        error.alternatives = alternatives;
+        return Err(error);
     }
     let text = sub.render_long_help().to_string();
     let usage = sub
@@ -503,5 +533,63 @@ mod tests {
         let err = for_command(Some("hepl"), &argv).unwrap_err();
         assert_eq!(err.code, ErrorCode::Usage);
         assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help", "help"]);
+    }
+
+    /// `auth github` is `auth` with its first positional's value (the envelope name of
+    /// `auth github --help`): a value of the next positional stays on the command, and
+    /// no message ends in an empty list.
+    #[test]
+    fn positional_values_resolve_to_their_command() {
+        for name in ["auth github", "auth github set", "auth github status"] {
+            let help = for_command(Some(name), &[]).unwrap();
+            let data = serde_json::to_value(&help.data).unwrap();
+            assert_eq!(data["command"], "auth", "{name}");
+            assert!(
+                data["usage"]
+                    .as_str()
+                    .unwrap()
+                    .contains("<SERVICE> [ACTION]"),
+                "{data}"
+            );
+        }
+        let argv = |words: &[&str]| -> Vec<String> {
+            ["omaddons", "help"]
+                .iter()
+                .chain(words)
+                .map(|s| (*s).to_owned())
+                .collect()
+        };
+        let err = for_command(Some("auth gihub"), &argv(&["auth", "gihub"])).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Usage);
+        assert_eq!(
+            err.message,
+            "there is no command \"auth gihub\": auth takes SERVICE (github)"
+        );
+        assert_eq!(
+            err.fix.argv().unwrap(),
+            ["omaddons", "help", "auth", "github"]
+        );
+        let err =
+            for_command(Some("auth github sett"), &argv(&["auth", "github", "sett"])).unwrap_err();
+        assert_eq!(
+            err.message,
+            "there is no command \"auth github sett\": auth github takes ACTION (status, set, clear)"
+        );
+        assert_eq!(
+            err.fix.argv().unwrap(),
+            ["omaddons", "help", "auth", "github", "set"]
+        );
+        let err = for_command(Some("auth github set now"), &[]).unwrap_err();
+        assert_eq!(
+            err.message,
+            "there is no command \"auth github set now\": auth github set takes no subcommands"
+        );
+        // A free-form positional is no list of values.
+        let err = for_command(Some("install gh:o/foo"), &[]).unwrap_err();
+        assert_eq!(
+            err.message,
+            "there is no command \"install gh:o/foo\": install takes no subcommands"
+        );
+        assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help", "install"]);
     }
 }

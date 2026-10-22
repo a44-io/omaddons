@@ -51,7 +51,8 @@ use crate::state::records::{TargetRecord, load_record};
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct InstallArgs {
     /// What to install: a catalog name (weakauras), owner/repo, a canonical ref (gh:, git:,
-    /// url:, file:), a pasted GitHub or https link, or a path to a zip or folder
+    /// url:, file:, wowi:, tukui:), a pasted GitHub or https link, or a path to a zip or
+    /// folder
     #[arg(required = true, value_name = "REF")]
     pub refs: Vec<String>,
     /// stable, beta or alpha (default: the addon's recorded channel, then
