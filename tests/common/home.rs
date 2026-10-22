@@ -250,7 +250,8 @@ impl Home {
         }
     }
 
-    fn std_command(&self, args: &[String], extra: &[(&str, &str)]) -> std::process::Command {
+    /// The command a run executes: the binary with this home's environment.
+    pub fn std_command(&self, args: &[String], extra: &[(&str, &str)]) -> std::process::Command {
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_omaddons"));
         self.env.apply_to(&mut cmd);
         cmd.env("OMADDONS_HTTP_FIXTURES", &self.http);

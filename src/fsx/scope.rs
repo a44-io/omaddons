@@ -92,6 +92,9 @@ pub enum Scope {
     Skill,
     /// The HTTP fixture dir in record mode (debug builds only).
     RecordFixtures,
+    /// The one file `backup export` writes, chosen at run time (M3-D34): that path
+    /// exactly. (fsx's hidden temp sibling of it is fsx's own, never a `mutate` target.)
+    ExportFile,
 }
 
 impl Scope {
@@ -119,6 +122,7 @@ impl Scope {
             Self::Omarchy => matches!(writer, W::Omarchy | W::Doctor),
             Self::Skill => matches!(writer, W::Skill | W::Doctor),
             Self::RecordFixtures => writer == W::Derived,
+            Self::ExportFile => writer == W::Backup,
         }
     }
 }
@@ -219,6 +223,8 @@ pub struct ScopeTable {
     omarchy_stage: PathBuf,
     skill: PathBuf,
     record_fixtures: Option<PathBuf>,
+    /// The file `backup export` writes, once [`ScopeTable::with_export_file`] admits it.
+    export_file: Option<PathBuf>,
     client_dirs: Vec<PathBuf>,
 }
 
@@ -242,6 +248,7 @@ impl ScopeTable {
             omarchy_stage: canonical(&paths.omarchy_plugin_stage())?,
             skill: canonical(&skill_dir.map_or_else(|| paths.skill_dir(), Path::to_path_buf))?,
             record_fixtures: None,
+            export_file: None,
             client_dirs: Vec::new(),
         };
         for dir in client_dirs {
@@ -271,6 +278,62 @@ impl ScopeTable {
         }
         self.record_fixtures = Some(canonical(dir)?);
         Ok(())
+    }
+
+    /// Makes `file`, and nothing else, writable by `Backup`: the archive `backup export`
+    /// writes (M3-D34). Its parent must exist (`io`), so a typo never creates
+    /// directories; a destination inside a client dir, a Wine prefix (a directory holding
+    /// `drive_c` and `dosdevices`) or omaddons' own config, state or cache dirs is
+    /// `scope_denied`. Returns the canonical path to write.
+    pub fn with_export_file(&mut self, file: &Path) -> Result<PathBuf> {
+        let refuse = |why: String| {
+            Error::new(
+                ErrorCode::ScopeDenied,
+                format!("{} {why}", file.display()),
+                Suggestion::text("export to a folder of your own, such as a backup drive"),
+            )
+        };
+        let (Some(name), Some(parent)) = (file.file_name(), file.parent()) else {
+            return Err(refuse("names no file".to_owned()));
+        };
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        let parent = std::fs::canonicalize(parent).map_err(|e| {
+            Error::io(
+                parent,
+                &e,
+                Suggestion::text("create the folder first, or choose one that exists"),
+            )
+        })?;
+        if let Some(client) = self.client_dirs.iter().find(|c| parent.starts_with(c)) {
+            return Err(refuse(format!(
+                "is inside the game client {}",
+                client.display()
+            )));
+        }
+        if let Some(prefix) = parent
+            .ancestors()
+            .find(|a| a.join("drive_c").is_dir() && a.join("dosdevices").is_dir())
+        {
+            return Err(refuse(format!(
+                "is inside the Wine prefix {}",
+                prefix.display()
+            )));
+        }
+        let own = [
+            (&self.config, "config"),
+            (&self.state, "state"),
+            (&self.cache, "cache"),
+        ];
+        if let Some((_, what)) = own.iter().find(|(root, _)| parent.starts_with(root)) {
+            return Err(refuse(format!("is inside omaddons' own {what} folder")));
+        }
+        let target = parent.join(name);
+        self.export_file = Some(target.clone());
+        Ok(target)
     }
 
     /// The paths the table was built from.
@@ -406,6 +469,13 @@ impl ScopeTable {
             found.push(Candidate::new(
                 Scope::NetLog,
                 Position::Ancestor,
+                Side::Home,
+            ));
+        }
+        if self.export_file.as_deref() == Some(path) {
+            found.push(Candidate::new(
+                Scope::ExportFile,
+                Position::Below,
                 Side::Home,
             ));
         }
@@ -617,6 +687,69 @@ mod tests {
         ALL.into_iter()
             .filter(|&w| t.check(w, owned_set, &p(path), access).is_ok())
             .collect()
+    }
+
+    #[test]
+    fn an_export_file_is_one_path_for_backup_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let mk = |rel: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        };
+        let home = mk("home");
+        let client = mk("games/wow/_retail_");
+        let usb = mk("usb");
+        mk("prefix/drive_c/users/me");
+        mk("prefix/dosdevices");
+        let paths = Paths::with_roots(
+            &home,
+            home.join(".config"),
+            home.join(".local/state"),
+            home.join(".cache"),
+        );
+        for app in [paths.config_dir(), paths.state_dir(), paths.cache_dir()] {
+            std::fs::create_dir_all(app).unwrap();
+        }
+        let mut t = ScopeTable::new(&paths, std::slice::from_ref(&client), None).unwrap();
+        for (dest, why) in [
+            (client.join("WTF.tar.zst"), "inside the game client"),
+            (
+                root.join("prefix/drive_c/users/me/w.tar.zst"),
+                "inside the Wine prefix",
+            ),
+            (paths.config_dir().join("w.tar.zst"), "own config folder"),
+            (paths.state_dir().join("w.tar.zst"), "own state folder"),
+            (paths.cache_dir().join("w.tar.zst"), "own cache folder"),
+        ] {
+            let err = t.with_export_file(&dest).unwrap_err();
+            assert_eq!(err.code, ErrorCode::ScopeDenied, "{dest:?}");
+            assert!(err.message.contains(why), "{}", err.message);
+        }
+        let err = t
+            .with_export_file(&root.join("nope/w.tar.zst"))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Io, "a missing parent is never created");
+
+        let file = t.with_export_file(&usb.join("w.tar.zst")).unwrap();
+        assert_eq!(file, usb.join("w.tar.zst"));
+        let none = OwnedFolders::default();
+        for writer in ALL {
+            assert_eq!(
+                t.check(writer, &none, &file, Access::Write).is_ok(),
+                writer == Writer::Backup,
+                "{writer}"
+            );
+        }
+        for other in [usb.join("other"), usb.clone(), root.join("w.tar.zst")] {
+            for access in [Access::Write, Access::CreateDir, Access::Rename] {
+                assert!(
+                    t.check(Writer::Backup, &none, &other, access).is_err(),
+                    "{other:?} {access:?}"
+                );
+            }
+        }
     }
 
     #[test]

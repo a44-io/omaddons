@@ -143,11 +143,33 @@ pub enum Durability {
 /// `mode` (default 0644), fsync, rename, then fsync of the directory (the two fsyncs
 /// are skipped under [`Durability::Deferred`]). On any error the destination is
 /// untouched and the temp file is removed.
+#[cfg(test)]
 pub(crate) fn write_atomic(
     path: &Path,
     content: Content<'_>,
     mode: Option<u32>,
     durability: Durability,
+) -> io::Result<WriteResult> {
+    write_atomic_to(path, content, mode, durability, Publish::Replace)
+}
+
+/// How an atomic write publishes its temp file at the path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Publish {
+    /// Replace whatever is there, like `rename(2)`.
+    Replace,
+    /// Never replace: an entry that appeared meanwhile (another process) fails the write
+    /// with `AlreadyExists`, and the temp file is removed.
+    NoClobber,
+}
+
+/// [`write_atomic`], publishing as `publish` says.
+pub(crate) fn write_atomic_to(
+    path: &Path,
+    content: Content<'_>,
+    mode: Option<u32>,
+    durability: Durability,
+    publish: Publish,
 ) -> io::Result<WriteResult> {
     failpoint::hit("fsx.write_atomic.before")?;
     let parent = parent_dir(path)?;
@@ -168,7 +190,12 @@ pub(crate) fn write_atomic(
         fsync(temp.as_file())?;
     }
     failpoint::hit("fsx.write_atomic.after")?;
-    temp.persist(path).map_err(|err| err.error)?;
+    match publish {
+        Publish::Replace => temp.persist(path).map(drop),
+        // A failed persist hands the temp file back; dropping it removes it.
+        Publish::NoClobber => temp.persist_noclobber(path).map(drop),
+    }
+    .map_err(|err| err.error)?;
     if durability == Durability::Immediate {
         fsync_dir(parent)?;
     }
@@ -578,6 +605,76 @@ mod tests {
         });
         assert_eq!(fs::read(&path).unwrap(), b"old");
         assert!(temp_leftovers(dir.path()).is_empty());
+    }
+
+    /// Content whose reading creates `path` first, as another process would mid-write.
+    struct Racing<'a> {
+        path: &'a Path,
+        body: &'a [u8],
+    }
+
+    impl Read for Racing<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if !self.path.exists() {
+                fs::write(self.path, b"theirs")?;
+            }
+            let n = self.body.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.body[..n]);
+            self.body = &self.body[n..];
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_no_clobber_write_never_replaces_what_appeared_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file");
+        let mut racing = Racing {
+            path: &path,
+            body: b"ours",
+        };
+        let err = write_atomic_to(
+            &path,
+            Content::Reader(&mut racing),
+            Some(0o600),
+            Durability::Immediate,
+            Publish::NoClobber,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path).unwrap(), b"theirs", "untouched");
+        assert!(
+            temp_leftovers(dir.path()).is_empty(),
+            "the temp file is gone"
+        );
+
+        // Nothing there: published as usual. Replace keeps replacing.
+        let fresh = dir.path().join("fresh");
+        write_atomic_to(
+            &fresh,
+            Content::Bytes(b"ours"),
+            Some(0o600),
+            Durability::Immediate,
+            Publish::NoClobber,
+        )
+        .unwrap();
+        assert_eq!(
+            (fs::read(&fresh).unwrap(), mode_of(&fresh)),
+            (b"ours".to_vec(), 0o600)
+        );
+        let mut racing = Racing {
+            path: &dir.path().join("other"),
+            body: b"ours",
+        };
+        let other = dir.path().join("other");
+        write_atomic(
+            &other,
+            Content::Reader(&mut racing),
+            None,
+            Durability::Immediate,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&other).unwrap(), b"ours");
     }
 
     // Env-driven failpoints exist only in debug builds.

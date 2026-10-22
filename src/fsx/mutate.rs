@@ -369,7 +369,12 @@ pub fn mutate_with(
     failpoint::hit("fsx.mutate.checked").map_err(io_err(&target))?;
 
     let SessionKind::Tx(state) = &mut s.kind else {
-        let executed = execute(&target, to.as_deref(), op, opts.durability)?;
+        let executed = execute(
+            &target,
+            to.as_deref(),
+            op,
+            (opts.durability, opts.expect.as_ref()),
+        )?;
         return Ok(ActionRecord {
             seq: 0,
             path: target.to_string_lossy().into_owned(),
@@ -426,7 +431,13 @@ pub fn mutate_with(
         sha256: opts.sha256_after,
     };
     let digest_op = DigestOp::of(&op);
-    let executed = execute(&target, to.as_deref(), op, opts.durability).and_then(|written| {
+    let executed = execute(
+        &target,
+        to.as_deref(),
+        op,
+        (opts.durability, opts.expect.as_ref()),
+    )
+    .and_then(|written| {
         failpoint::hit("fsx.mutate.executed").map_err(io_err(&target))?;
         Ok(written)
     });
@@ -771,17 +782,34 @@ fn execute(
     target: &Path,
     to: Option<&Path>,
     op: Op<'_>,
-    durability: Durability,
+    (durability, expect): (Durability, Option<&Expect>),
 ) -> Result<Executed, FsxError> {
     let io = io_err(target);
     let none = |()| Executed::default();
     match op {
-        Op::WriteFile { content, mode } => sys::write_atomic(target, content, mode, durability)
-            .map(|written| Executed {
-                sha256: Some(written.sha256),
-                clone: None,
-            })
-            .map_err(io),
+        // Expected absent: published without ever replacing what appeared meanwhile.
+        Op::WriteFile { content, mode } => {
+            let publish = match expect {
+                Some(Expect::Absent) => sys::Publish::NoClobber,
+                _ => sys::Publish::Replace,
+            };
+            match sys::write_atomic_to(target, content, mode, durability, publish) {
+                Ok(written) => Ok(Executed {
+                    sha256: Some(written.sha256),
+                    clone: None,
+                }),
+                Err(err)
+                    if matches!(publish, sys::Publish::NoClobber)
+                        && matches!(err.kind(), io::ErrorKind::AlreadyExists) =>
+                {
+                    Err(FsxError::Precondition(format!(
+                        "{} appeared while it was written",
+                        target.display()
+                    )))
+                }
+                Err(err) => Err(io(err)),
+            }
+        }
         Op::AppendFile { content } => sys::append_durable(target, content).map(none).map_err(io),
         Op::CreateDir => sys::create_dir_with(target, None, durability)
             .map(none)

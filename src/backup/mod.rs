@@ -11,6 +11,7 @@
 
 pub mod auto;
 pub mod create;
+pub mod export;
 pub mod fs;
 pub mod inventory;
 pub mod prune;

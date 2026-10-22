@@ -177,6 +177,9 @@ error_codes! {
     /// A restore needs `WTF/` to be a plain directory on the client's mount, on a
     /// filesystem with atomic exchange (M3-D24); `details.reason`, `details.backup_dir`.
     FilesystemUnsupported = "filesystem_unsupported", Refused,  false;
+    /// A file omaddons would create already exists (at the start, or created by another
+    /// process meanwhile); it is never replaced (`backup export`, M3-D34).
+    FileExists          = "file_exists",           Refused,     false;
     Locked              = "locked",                Locked,      true;
     CheckFailed         = "check_failed",          CheckFailed, false;
     Network             = "network",               Failed,      true;
@@ -736,7 +739,7 @@ mod tests {
         ("case_collision", 4, false), ("wrong_flavor", 4, false), ("unsafe_archive", 4, false),
         ("archive_too_large", 4, false), ("undo_conflict", 4, false), ("host_blocked", 4, false),
         ("scope_denied", 4, false), ("state_too_new", 4, false),
-        ("filesystem_unsupported", 4, false),
+        ("filesystem_unsupported", 4, false), ("file_exists", 4, false),
         ("locked", 5, true),
         ("check_failed", 6, false),
         ("network", 1, true), ("rate_limited", 1, true), ("download_failed", 1, true),
@@ -785,8 +788,8 @@ mod tests {
 
     #[test]
     fn error_registry_matches_the_table() {
-        assert_eq!(ErrorCode::ALL.len(), 40);
-        assert_eq!(EXPECTED.len(), 40);
+        assert_eq!(ErrorCode::ALL.len(), 41);
+        assert_eq!(EXPECTED.len(), 41);
         for (code, &(wire, exit, retryable)) in ErrorCode::ALL.iter().zip(EXPECTED) {
             assert_eq!(code.wire(), wire);
             assert_eq!(code.exit().code(), exit, "{wire}");

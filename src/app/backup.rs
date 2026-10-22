@@ -29,6 +29,7 @@ use super::precondition::{
 use super::world::World;
 use crate::backup::auto::{self, AutoResult, AutoRun, Decision};
 use crate::backup::create::{self as capture, CreateRequest, Created};
+use crate::backup::export::{self, VerifiedAgainst};
 use crate::backup::fs::CloneHint;
 use crate::backup::inventory::{self, AutoLast, Capability, Inventory, Ring};
 use crate::backup::prune::{self, PruneOpts, PruneReport, Pruned};
@@ -81,6 +82,9 @@ pub enum BackupAction {
     /// Delete old backups, or the ones named (it cannot be undone)
     #[command(after_long_help = PRUNE_HELP)]
     Prune(BackupPruneArgs),
+    /// Write a backup to a file off this disk, as a .tar.zst (never replaces a file)
+    #[command(after_long_help = EXPORT_HELP)]
+    Export(BackupExportArgs),
 }
 
 impl BackupAction {
@@ -91,8 +95,34 @@ impl BackupAction {
             Self::Create(_) => "backup create",
             Self::Restore(_) => RESTORE_COMMAND,
             Self::Prune(_) => PRUNE_COMMAND,
+            Self::Export(_) => EXPORT_COMMAND,
         }
     }
+}
+
+const EXPORT_COMMAND: &str = "backup export";
+
+const EXPORT_HELP: &str = "\
+Examples:
+  omaddons backup export 01M6Q2VA /run/media/me/usb/retail-wtf.tar.zst
+  omaddons backup export 01M6Q2VA wtf.tar.zst --dry-run   what it would write
+
+Writes one backup as a zstd-compressed tar: its description, its WTF/ with the modes
+it recorded, and every file's SHA-256, checked against the backup's own hashes when it
+has them. The same backup always exports to the same bytes. It never replaces a file,
+writes nothing anywhere else, and refuses a destination inside a game client, a Wine
+prefix or omaddons' own folders. The archive holds account and character names, as WTF/
+does: keep it private.";
+
+/// `backup export`'s arguments.
+#[derive(Debug, Clone, clap::Args)]
+pub struct BackupExportArgs {
+    /// The backup: its id, or a prefix of 8 or more characters
+    #[arg(value_name = "ID")]
+    pub id: String,
+    /// The file to write (a new one, in a folder that exists)
+    #[arg(value_name = "FILE")]
+    pub file: std::path::PathBuf,
 }
 
 const RESTORE_HELP: &str = "\
@@ -1558,7 +1588,7 @@ fn proved(integrity: Integrity, baseline: Option<Baseline>, dry_run: bool) -> St
 pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutcome> {
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
-    let (d, backup) = restore_source(ctx, &world, &args.id, &mut warnings)?;
+    let (d, backup) = named_backup(ctx, &world, &args.id, &mut warnings)?;
     let reservation = restore::reserve(&backup)?;
     if backup.meta.as_ref().is_some_and(|m| m.partial) {
         return Err(partial(&backup, &d.target.id));
@@ -1680,10 +1710,10 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
     })
 }
 
-/// The client and the backup `prefix` names: on the one client `-t` selects, else on
-/// whichever has it. A backup on another client than `-t`'s is `not_found`, with a fix
-/// naming its own.
-fn restore_source<'w>(
+/// The client and the backup `prefix` names (`restore`, `export`): on the one client `-t`
+/// selects, else on whichever has it. A backup on another client than `-t`'s is
+/// `not_found`, with a fix naming its own.
+fn named_backup<'w>(
     ctx: &Context,
     world: &'w World,
     prefix: &str,
@@ -2188,6 +2218,130 @@ fn meta_digest(b: &BackupRef) -> Option<String> {
             .map(|byte| format!("{byte:02x}"))
             .collect(),
     )
+}
+
+/// `backup export`'s data.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BackupExportData {
+    pub dry_run: bool,
+    pub target: TargetRef,
+    /// The backup, as `backup list` shows it.
+    pub backup: BackupItem,
+    /// The archive written (or, in a dry run, that would be).
+    pub file: std::path::PathBuf,
+    /// The backup's files, and their apparent bytes.
+    pub files: u64,
+    pub bytes: u64,
+    /// The archive's size and SHA-256, as written; `null` in a dry run.
+    pub compressed_bytes: Option<u64>,
+    pub sha256: Option<String>,
+    /// Where the archive's hashes come from: the backup's own (`capture`, `import`,
+    /// `later`), or `computed_at_export`.
+    pub verified_against: VerifiedAgainst,
+}
+
+/// `backup export`'s outcome.
+#[derive(Debug)]
+pub struct BackupExportOutcome {
+    data: BackupExportData,
+    warnings: Vec<Warning>,
+}
+
+impl Outcome for BackupExportOutcome {
+    type Data = BackupExportData;
+
+    fn command(&self) -> &'static str {
+        EXPORT_COMMAND
+    }
+
+    fn data(&self) -> &BackupExportData {
+        &self.data
+    }
+
+    fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
+    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
+        let d = &self.data;
+        let short = super::history::short_id(&d.backup.id.to_string());
+        let captured = d
+            .backup
+            .captured_at
+            .map(|at| format!(", {}", when(at, crate::clock::now())))
+            .unwrap_or_default();
+        let what = format!(
+            "backup {short} ({}{captured}) to {}: {} {}, {}",
+            d.target.id,
+            d.file.display(),
+            d.files,
+            if d.files == 1 { "file" } else { "files" },
+            size(d.bytes)
+        );
+        match d.compressed_bytes {
+            Some(compressed) if !d.dry_run => {
+                writeln!(w, "exported {what} → {}", size(compressed))
+            }
+            _ => writeln!(w, "would export {what}"),
+        }
+    }
+}
+
+/// Runs `backup export` (M3-D34): reserves the backup, admits exactly `<FILE>` to the
+/// write scopes, and streams the archive there. A dry run checks the same and writes
+/// nothing. Not a transaction: no history line, no doorbell.
+pub fn export_backup(ctx: &Context, args: &BackupExportArgs) -> Result<BackupExportOutcome> {
+    if args.file.as_os_str() == "-" {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            "backup export writes to a file, not standard output (binary data would break --json's one envelope)",
+            Suggestion::command(["omaddons", "help", "backup", "export"]),
+        ));
+    }
+    let world = World::load(ctx)?;
+    let mut warnings = world.warnings.clone();
+    let (d, backup) = named_backup(ctx, &world, &args.id, &mut warnings)?;
+    let reservation = export::reserve(&backup)?;
+    let plan = export::plan(&backup)?;
+    let client_dirs: Vec<std::path::PathBuf> = world
+        .resolved
+        .targets
+        .iter()
+        .map(|t| t.target.client_dir.clone())
+        .collect();
+    let mut scopes = ScopeTable::new(&world.paths, &client_dirs, None)?;
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let file = scopes.with_export_file(&cwd.join(&args.file))?;
+    let names = WtfPathRedactor::for_client(&ClientPaths::new(&d.target.client_dir));
+    let (compressed_bytes, sha256) = if ctx.dry_run {
+        if std::fs::symlink_metadata(&file).is_ok() {
+            return Err(Error::new(
+                ErrorCode::FileExists,
+                format!("{} exists; an export never replaces a file", file.display()),
+                Suggestion::text("choose another file name, or delete that file yourself"),
+            )
+            .details(serde_json::json!({ "file": file.display().to_string() })));
+        }
+        (None, None)
+    } else {
+        let exported = export::export(&scopes, &backup, &plan, &file, (&names, &ctx.progress))?;
+        (Some(exported.compressed_bytes), Some(exported.sha256))
+    };
+    drop(reservation);
+    Ok(BackupExportOutcome {
+        data: BackupExportData {
+            dry_run: ctx.dry_run,
+            target: target_ref(d),
+            backup: item(&backup, false),
+            file,
+            files: plan.files,
+            bytes: plan.bytes,
+            compressed_bytes,
+            sha256,
+            verified_against: plan.verified_against,
+        },
+        warnings,
+    })
 }
 
 fn target_ref(d: &DiscoveredTarget) -> TargetRef {

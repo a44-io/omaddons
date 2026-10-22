@@ -139,6 +139,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("backup create", Group::Change, true),
     entry("backup restore", Group::Change, true),
     entry("backup prune", Group::Change, true),
+    entry("backup export", Group::Change, true),
     entry("targets", Group::Setup, false),
     entry("targets add", Group::Setup, true),
     entry("targets rm", Group::Setup, true),
@@ -452,6 +453,7 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
                     out.emit(backup::restore_backup(ctx, restore))
                 }
                 Some(BackupAction::Prune(prune)) => out.emit(backup::prune_backups(ctx, prune)),
+                Some(BackupAction::Export(export)) => out.emit(backup::export_backup(ctx, export)),
             }
         }
         Some(Command::Info(args)) => {

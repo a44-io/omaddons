@@ -1,0 +1,24 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup export",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "file_exists",
+    "details": {
+      "file": "<root>/usb/retail-wtf.tar.zst"
+    },
+    "fix": "choose another file name, or delete that file yourself",
+    "fix_argv": null,
+    "message": "<root>/usb/retail-wtf.tar.zst exists; an export never replaces a file",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

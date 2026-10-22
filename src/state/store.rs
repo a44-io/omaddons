@@ -158,6 +158,10 @@ pub const KINDS: &[(&str, SchemaVersion)] = &[
         <crate::backup::Manifest as Versioned>::CURRENT,
     ),
     (
+        <crate::backup::export::ExportedMeta as Versioned>::KIND,
+        <crate::backup::export::ExportedMeta as Versioned>::CURRENT,
+    ),
+    (
         <crate::backup::AddonsFile as Versioned>::KIND,
         <crate::backup::AddonsFile as Versioned>::CURRENT,
     ),

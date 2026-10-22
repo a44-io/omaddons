@@ -877,6 +877,31 @@ fn backup_prune() {
 }
 
 #[test]
+fn backup_export() {
+    use omaddons::backup::BackupKind;
+    let s = Scene::new();
+    let client = s.home.client("_retail_");
+    let at = "2026-10-05T08:00:00Z".parse().unwrap();
+    let id = common::backups::seed_backup(&client, BackupKind::Manual, at, 2).to_string();
+    let dir = s.home.env.root().join("usb");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("retail-wtf.tar.zst").display().to_string();
+    let c = s.json(&["backup", "export", &id, &file, "--dry-run"], 0);
+    insta::assert_json_snapshot!("backup_export_dry_run", s.stable(&c.envelope));
+    let c = s.json(&["backup", "export", &id, &file], 0);
+    // The archive holds the backup's id, which each run draws anew.
+    let mut envelope = c.envelope.clone();
+    let data = &mut envelope["data"];
+    assert!(data["sha256"].as_str().is_some_and(|h| h.len() == 64));
+    assert!(data["compressed_bytes"].as_u64().is_some_and(|n| n > 0));
+    data["sha256"] = "<sha256>".into();
+    data["compressed_bytes"] = "<bytes>".into();
+    insta::assert_json_snapshot!("backup_export_ok", s.stable(&envelope));
+    let c = s.json(&["backup", "export", &id, &file], 4);
+    insta::assert_json_snapshot!("backup_export_file_exists", s.stable(&c.envelope));
+}
+
+#[test]
 fn errors() {
     use common::addons::{addon_folder, toc};
     use common::buggrabber::{self, BugDb, BugEntry, NOW, TimeKind, Writer, write_files};

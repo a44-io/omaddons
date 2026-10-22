@@ -148,7 +148,7 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | `copy`: one client's addons installed on another where builds exist, the rest skipped and said why | ✅ Done (milestone 2) |
 | `auth github`: an opt-in GitHub token (5,000 REST requests an hour), stored from standard input or `gh`, checked and cleared | ✅ Done (milestone 2) |
 | In-game load checks: retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and 3.3.5a each wrote the SavedVariables of the addons omaddons installed, so the client loaded them | ✅ Observed on the development machine (2026-10-20 and 21) |
-| `backup create`: a copy of each client's `WTF/`, made without the global lock (copy-on-write on btrfs and xfs), that says whether `WTF/` held still while it was copied and which addon versions produced it; `--verify` hashes it. `backup list`: each client's backups, what each proves, and the space they take. `backup restore`: the whole `WTF/` back in one atomic exchange, refused while the game runs, undoable. `backup prune`: automatic backups thinned by day after every backup, and your own deleted only when you ask, never one being read | 🔄 Milestone 3 (checking, exporting and one addon's restore are next) |
+| `backup create`: a copy of each client's `WTF/`, made without the global lock (copy-on-write on btrfs and xfs), that says whether `WTF/` held still while it was copied and which addon versions produced it; `--verify` hashes it. `backup list`: each client's backups, what each proves, and the space they take. `backup restore`: the whole `WTF/` back in one atomic exchange, refused while the game runs, undoable. `backup prune`: automatic backups thinned by day after every backup, and your own deleted only when you ask, never one being read. `backup export`: one backup as a reproducible `.tar.zst` off this disk, checked against its hashes, never replacing a file | 🔄 Milestone 3 (importing, checking and one addon's restore are next) |
 | `errors`: which addon most likely throws Lua errors, from BugGrabber's data on every client (3.3.5a included), with the attribution's method and confidence, new errors per database, and nothing an addon wrote shown unless asked for; `errors dismiss` marks what was read as seen, bound to that read; `status` shows each client's new errors, and `status --cached` counts them without opening BugGrabber's files | 🔄 Milestone 3 |
 | Automatic `WTF/` checkpoints: before the day's first change and after a play session (`backup create --auto`), skipped when nothing changed, clone-only by default, within the free-space floor | 🔄 Milestone 3 (the widget's after-play trigger is next) |
 | WowAce: `wowace:` refs and links, keyless, every tree fetched at one pinned revision; projects that need nothing from the packager but `package-as` and `@project-version@` (BugGrabber). `omaddons install buggrabber` installs each client's own build (catalog variants), and `errors` offers exactly that command where BugGrabber is missing | ✅ Done (milestone 3) |
@@ -1019,7 +1019,7 @@ A later transaction that only added or dropped a requester in a dependency's `re
 
 ### `backup`
 
-Each client's `WTF/` backups: copies of its settings, the data players actually lose (milestone 3). `backup create` makes them, `backup list` shows them, `backup restore` puts one back and `backup prune` deletes old ones; checking, exporting and restoring one addon's settings are the next parts of milestone 3. Bare `backup` is `backup list`.
+Each client's `WTF/` backups: copies of its settings, the data players actually lose (milestone 3). `backup create` makes them, `backup list` shows them, `backup restore` puts one back, `backup prune` deletes old ones and `backup export` writes one to a file off this disk; importing, checking and restoring one addon's settings are the next parts of milestone 3. Bare `backup` is `backup list`.
 
 ```bash
 omaddons backup create                     # every live client that has a WTF/, one backup each
@@ -1034,6 +1034,7 @@ omaddons backup restore 01M6Q2VA -t retail # the whole WTF/ back as that backup 
 omaddons backup prune --dry-run            # what retention would delete now, and the token that binds it
 omaddons backup prune -t retail --keep 3   # also your own backups beyond the newest 3 of each kind
 omaddons backup prune -t retail -- 01M6Q2VA   # exactly that backup
+omaddons backup export 01M6Q2VA /run/media/me/usb/retail-wtf.tar.zst   # off this disk
 ```
 
 #### `backup create`
@@ -1151,6 +1152,24 @@ Deletes old backups, for each client `-t` selects or every client with backups. 
 $ omaddons backup prune --dry-run
 retail: would prune 3 backups (45.1 MB apparent), kept 5
 Run it bound to this preview: --if-match pc1:…
+```
+
+#### `backup export`
+
+Writes one backup to a file, so a disk failure does not take the backups with the settings: `omaddons backup export <ID> <FILE>`. The backup is named as for `backup restore` (an id prefix of 8+ characters, on the client `-t` names or whichever has it).
+
+- **What the file is.** A `tar` compressed with zstd (level 3; `tar --zstd -tvf` lists it): `backup.json` first (the backup's description with `verified_against`), then `addons.json` when the backup has one, then every `WTF/` entry in path order with the mode and modification time its manifest recorded, uid and gid 0 and no owner names (symlinks stay symlinks), and `manifest.json` last, with the SHA-256 of every file as it was written. It holds no export time, so one backup always exports to the same bytes. The file is mode 0600: like `WTF/` itself, it holds account, realm and character names, so keep it private.
+- **Checked as it streams.** When the backup's manifest has hashes (a `--verify` capture, an import or a `backup verify`), every file is checked against them, and `verified_against` says which (`capture`, `import`, `later`); a file that differs is `hash_mismatch` (a backup damaged on disk; not retryable), its path shown without account names. Without them, `verified_against` is `computed_at_export`. A file gone or resized since the backup was made is `io`.
+- **Never replaces a file.** An existing `<FILE>` is `file_exists`, and so is one another program creates while the export runs: the archive is written to a hidden temporary file beside `<FILE>` and published only if nothing is there yet. An export that fails (a damaged backup, a full disk, an interruption) leaves no `<FILE>` and removes its temporary file; a crash can leave only that hidden `.omaddons-…` file.
+- **Where it may write.** Only `<FILE>`, in a folder that already exists (`io` otherwise): never inside a game client, a Wine prefix or omaddons' own config, state or cache folders (`scope_denied`). `-` (standard output) is `usage`: binary data would break `--json`'s one envelope. Nothing is copied anywhere first: the compressed bytes are written once, straight to `<FILE>`'s folder.
+- **Meanwhile.** The export holds a reader's lock on the backup for its whole stream, so a `backup prune` lists it under `busy` instead of deleting it. It is not a transaction: no history line and nothing to undo; delete the file to be rid of it.
+- **`--dry-run`** checks the same (the backup, the destination, whether it exists) and writes nothing.
+
+`data` is `{dry_run, target, backup, file, files, bytes, compressed_bytes, sha256, verified_against}`: `backup` as `backup list` shows it, `files` and `bytes` the backup's files and their apparent size, `compressed_bytes` and `sha256` the archive's size and SHA-256 as written (`null` in a dry run).
+
+```text
+$ omaddons backup export 01M6Q8PN /run/media/me/usb/retail-wtf.tar.zst
+exported backup 01M6Q8PN (retail, today 18:02) to /run/media/me/usb/retail-wtf.tar.zst: 412 files, 15.2 MB → 1.9 MB
 ```
 
 ### `history`
@@ -1591,6 +1610,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `host_blocked` | 4 | no | an HTTP request or redirect to a host not on the allowlist, or a `git:` ref to a host not in `git_hosts` |
 | `scope_denied` | 4 | no | the filesystem writer refused a path outside its scope |
 | `state_too_new` | 4 | no | a state file written by a newer omaddons: a change is refused before anything is staged when its client's record or files index, or (to register a client) the registry, is newer; a journal a newer omaddons started (`details.reason: "journal_too_new"`, `details.journal_pending`) |
+| `file_exists` | 4 | no | a file omaddons would create exists, at the start or created by another program meanwhile, and is never replaced (`backup export`'s destination); `details.file` |
 | `filesystem_unsupported` | 4 | no | a `WTF/` restore cannot run on this client: `WTF/` is a mount point (`details.reason: "wtf_is_mount_point"`), the client's `Interface/.omaddons/` is on another mount (`stage_cross_mount`), or the filesystem cannot exchange two directories atomically (`no_rename_exchange`); `details.backup_dir` is the backup's folder to copy from by hand, with the game closed. Checked before anything is copied |
 | `locked` | 5 | yes | lock held past 5 s; `details.holder` |
 | `check_failed` | 6 | no | `--check` or `--strict` |
@@ -2029,8 +2049,9 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDON
 | `<client>/Interface/.omaddons/target.json` | The client's identity, so a moved install keeps its id | Loses identity |
 | `<client>/Interface/.omaddons/snapshots/<tx>/` | `AddOns/` (replaced and removed folders) and `WTF/` (SavedVariables copies with a manifest): most of the undo data | Loses undo |
 | `<client>/Interface/.omaddons/stage/`, `trash/` | Staging (same filesystem as AddOns) and staged deletions | No |
-| `<client>/Interface/.omaddons/backups/<id>/` | One `WTF/` backup, owner-only (`0700`): `backup.json` (what it is and proves), `manifest.json` (every entry's stats, and hashes after `--verify`; it names the account, realm and character, so it stays on this machine), `addons.json` (the addon versions that produced it) and the `WTF/` copy (see [`backup`](#backup)) | Loses that backup |
+| `<client>/Interface/.omaddons/backups/<id>/` | One `WTF/` backup, owner-only (`0700`): `backup.json` (what it is and proves), `manifest.json` (every entry's stats, and hashes after `--verify`; it names the account, realm and character, so it leaves this machine only inside an archive you export), `addons.json` (the addon versions that produced it) and the `WTF/` copy (see [`backup`](#backup)) | Loses that backup |
 | `~/.cache/omaddons/backups.json` | The backup inventory: what each client's backups add up to, checked against the directories before it is believed | Yes; the next `backup list` rebuilds it |
+| the `<FILE>` you give `backup export` | One backup as a `.tar.zst` (mode `0600`), written through a hidden `.omaddons-…` temporary file beside it, the only other file an export ever writes | Yours |
 
 The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the config `XDG_CONFIG_HOME`. State files carry a `schema_version`. A file written by a newer omaddons is read, never overwritten (`state_too_new`).
 
@@ -2238,7 +2259,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 |---|---|---|
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
 | The Omarchy bar widget | ❌ the help text mentions it, and `--actor widget`, `status --cached` and the doorbell are ready for it; the widget itself does not exist yet | M3 |
-| Checking `WTF/` backups and restoring one addon's settings | ❌ (`backup create`, `list`, `restore`, `prune` and automatic checkpoints work) | M3 |
+| Importing and checking `WTF/` backups, and restoring one addon's settings | ❌ (`backup create`, `list`, `restore`, `prune`, `export` and automatic checkpoints work) | M3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, agent skill | ❌ | M4 |
 | CurseForge, Wago | ❌ | M5, optional, bring your own key |
 | Shell completions | ❌ | M4 |
@@ -2288,7 +2309,7 @@ The README describes the intended behaviour; these are the places where the code
 | Follow-up: Classic and Forever gaps | Multi-flavor archives, never-launched clients, game modes, real-machine tests for every live client, the catalog × flavor probe, and the in-game load check on the real Forever client | ✅ Done (2026-10-21) |
 | **M2: updates and adoption** | `outdated`, `update`, `pin`/`unpin`; WoWInterface and Tukui; changelogs; dependencies; drift detection; tiered `adopt`; `addons.toml` with `export`, `sync` and `copy`; `search`; `auth github` | ✅ Done (2026-10-16) |
 | Post-M2 audit | An independent audit of M1 and M2 (engine failure paths, contract holes, integrity and privacy statements, discovery and rules fields, test blind spots, this README) and real-world checks on real clients: running detection under Proton, in-game loading on every client, legacy `/reload` behaviour | ✅ Done (2026-10-21) |
-| **M3: the widget** | The Omarchy bar widget (QML, embedded in the binary, managed by `omaddons omarchy install`, `status` and `remove`), `errors` (BugGrabber, installed keyless from a new `wowace:` source), `backup` of `WTF/` (list, create, verify, restore, export and import, automatic backups) | 🔄 In progress: the doorbell, the privacy redactor, `errors` and `errors dismiss`, errors in `status`, `backup list`, `backup create`, `backup restore`, `backup prune`, automatic checkpoints and the `wowace:` source are in |
+| **M3: the widget** | The Omarchy bar widget (QML, embedded in the binary, managed by `omaddons omarchy install`, `status` and `remove`), `errors` (BugGrabber, installed keyless from a new `wowace:` source), `backup` of `WTF/` (list, create, verify, restore, export and import, automatic backups) | 🔄 In progress: the doorbell, the privacy redactor, `errors` and `errors dismiss`, errors in `status`, `backup list`, `backup create`, `backup restore`, `backup prune`, `backup export`, automatic checkpoints and the `wowace:` source are in |
 | **M4: the agent surface** | `capabilities`, `robot-docs`, `install-skill`, intent inference, the full `doctor`, stored plans (`--dry-run` then `apply`), `completions`, wire-name golden tests; **the first tag freezes the contract** | 🗓️ Planned |
 | **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: versioning, CHANGELOG, a local PKGBUILD, packaged completions and a man page | 🗓️ Planned |
 

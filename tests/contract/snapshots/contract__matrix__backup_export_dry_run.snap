@@ -1,0 +1,48 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup export",
+  "commands": [],
+  "data": {
+    "backup": {
+      "actor": "human",
+      "baseline": null,
+      "busy": false,
+      "bytes": 200,
+      "captured_at": "<time>",
+      "client_running": false,
+      "consistency": "stable",
+      "created_at": "<time>",
+      "files": 2,
+      "id": "<ulid>",
+      "integrity": "metadata_only",
+      "kind": "manual",
+      "qualifying": true,
+      "reason": null,
+      "reflinked": "all",
+      "restorable": true,
+      "trigger": null,
+      "unsettled": 0,
+      "verified_at": null
+    },
+    "bytes": 200,
+    "compressed_bytes": null,
+    "dry_run": true,
+    "file": "<root>/usb/retail-wtf.tar.zst",
+    "files": 2,
+    "sha256": null,
+    "target": {
+      "id": "retail",
+      "key": null
+    },
+    "verified_against": "computed_at_export"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
