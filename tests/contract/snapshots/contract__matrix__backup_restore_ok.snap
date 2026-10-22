@@ -1,0 +1,64 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup restore",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "backup": {
+      "captured_at": "<time>",
+      "id": "<ulid>",
+      "integrity": "metadata_only",
+      "kind": "manual"
+    },
+    "before_restore": null,
+    "dry_run": false,
+    "exchange": "verified",
+    "files": {
+      "created_since": 3,
+      "differed": 2,
+      "restored": 2,
+      "unchanged": 0
+    },
+    "kind": "restore",
+    "mode": "whole",
+    "precondition": null,
+    "reload_required": "restart",
+    "target": {
+      "id": "retail",
+      "key": "<ulid>"
+    },
+    "tx": "<ulid>"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "before_restore_skipped",
+      "fix": null,
+      "fix_argv": null,
+      "message": "retail: the current WTF/ was not kept as a backup (the filesystem cannot clone files, or there was no WTF/); the restore's undo snapshot keeps it until retention"
+    },
+    {
+      "code": "backup_copied",
+      "fix": null,
+      "fix_argv": null,
+      "message": "retail: the filesystem could not clone the files put back, so 200 bytes were copied"
+    }
+  ]
+}

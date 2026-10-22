@@ -1,0 +1,25 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup restore",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "filesystem_unsupported",
+    "details": {
+      "backup_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_retail_/Interface/.omaddons/backups/<ulid>/WTF",
+      "reason": "no_rename_exchange"
+    },
+    "fix": "a restore needs WTF/ to be a plain directory on the same mount as Interface/, on a filesystem with atomic exchange (btrfs, ext4, xfs, tmpfs); otherwise copy what you need from the backup folder by hand with the game closed",
+    "fix_argv": null,
+    "message": "a restore cannot run here: the client's filesystem cannot exchange two directories atomically",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

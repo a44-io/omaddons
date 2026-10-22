@@ -807,6 +807,44 @@ fn backup_create() {
 }
 
 #[test]
+fn backup_restore() {
+    use omaddons::backup::BackupKind;
+    let mut s = Scene::new();
+    let client = s.home.client("_retail_");
+    common::wtf::Wtf::at(client.clone())
+        .config_wtf("SET locale \"enUS\"\n")
+        .saved_variables("Foo", 100)
+        .build();
+    let at = "2026-10-05T08:00:00Z".parse().unwrap();
+    let id = common::backups::seed_backup(&client, BackupKind::Manual, at, 2).to_string();
+    let restore = ["backup", "restore", id.as_str(), "-t", "retail"];
+    let c = s.json(&[&restore[..], &["--dry-run"]].concat(), 0);
+    insta::assert_json_snapshot!("backup_restore_dry_run", s.stable(&c.envelope));
+    let token = c.envelope["data"]["precondition"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The game wrote settings since the preview.
+    let sv = client.join("WTF/Account/FAKEACCT/SavedVariables/Foo.lua");
+    std::fs::write(&sv, "Foo = 2").unwrap();
+    let c = s.json(&[&restore[..], &["--if-match", &token]].concat(), 1);
+    insta::assert_json_snapshot!("backup_restore_stale", s.stable(&c.envelope));
+    let c = s.json(&["backup", "restore", "01ZZZZZZ"], 3);
+    insta::assert_json_snapshot!("backup_restore_not_found", s.stable(&c.envelope));
+    let no_exchange = [("OMADDONS_FAILPOINTS", "fsx.renameat2.einval")];
+    let c = s.json_env(&restore, &no_exchange, 4);
+    insta::assert_json_snapshot!(
+        "backup_restore_filesystem_unsupported",
+        s.stable(&c.envelope)
+    );
+    let c = s.json(&restore, 0);
+    insta::assert_json_snapshot!("backup_restore_ok", s.stable(&c.envelope));
+    s.home.retail_running();
+    let c = s.json(&restore, 4);
+    insta::assert_json_snapshot!("backup_restore_game_running", s.stable(&c.envelope));
+}
+
+#[test]
 fn backup_prune() {
     use common::backups::seed_backup;
     use omaddons::backup::BackupKind;

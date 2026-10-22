@@ -425,6 +425,58 @@ fn live_stamp(topology: &Topology) -> Result<Option<StampDigest>> {
         .transpose()
 }
 
+/// The refusals a whole restore makes before anything under the client dir is written
+/// (M3-D24), the `before_restore` backup included: a record, files index or registry a
+/// newer omaddons wrote (`state_too_new`, M3-D45), then a client that runs or may
+/// (`game_running`, M3-D29). The commit window checks both again.
+pub fn refuse_early(ctx: &EngineCtx<'_>, target: &Target, files: u64) -> Result<()> {
+    refuse_newer_state(ctx.paths, target)?;
+    refuse_running(ctx, target, files)
+}
+
+/// A real restore begun (M3-D24): its transaction, in-flight lock, and the topology the
+/// exchange probe proved.
+pub struct Begun {
+    pub tx: TxId,
+    pub inflight: InflightLock,
+    pub topology: Topology,
+}
+
+/// Begins a real restore of `backup` onto `client`: a transaction id, its in-flight lock,
+/// and the preflight with the exchange probed in the transaction's own stage, before
+/// anything is copied. A refusal takes the stage and the lock away again.
+pub fn begin(paths: &Paths, client: &ClientPaths, backup: &BackupRef) -> Result<Begun> {
+    let scopes = ScopeTable::new(paths, &[client.client_dir().to_path_buf()], None)?;
+    let tx = TxId::new();
+    let inflight = InflightLock::create(paths, &tx)?;
+    let probe = client.stage(&tx).join("probe");
+    let probe = Probe {
+        scopes: &scopes,
+        dir: &probe,
+    };
+    match preflight(client, &backup.wtf(), Some(probe)) {
+        Ok(topology) => Ok(Begun {
+            tx,
+            inflight,
+            topology,
+        }),
+        Err(error) => {
+            cleanup(paths, &scopes, inflight, &tx, Some(client), false);
+            Err(error)
+        }
+    }
+}
+
+impl Begun {
+    /// Gives a begun restore up before it stages (its `before_restore` backup failed):
+    /// the stage and the in-flight lock go.
+    pub fn abandon(self, paths: &Paths, client: &ClientPaths) {
+        if let Ok(scopes) = ScopeTable::new(paths, &[client.client_dir().to_path_buf()], None) {
+            cleanup(paths, &scopes, self.inflight, &self.tx, Some(client), false);
+        }
+    }
+}
+
 /// `game_running` while `target`'s client runs or may (M3-D29): a whole `WTF/` is never
 /// written then, whatever the running policy or `--while-running`.
 fn refuse_running(ctx: &EngineCtx<'_>, target: &Target, files: u64) -> Result<()> {

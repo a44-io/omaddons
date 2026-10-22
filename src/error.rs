@@ -326,6 +326,9 @@ warning_codes! {
     /// An interrupted restore was rolled back; what it had displaced, which no other copy
     /// held, is kept as a `recovered` backup.
     RestoreRolledBack           = "restore_rolled_back";
+    /// A restore kept no `before_restore` backup (the filesystem cannot clone, or there
+    /// was no `WTF/`): the transaction's snapshot keeps the old `WTF/` until retention.
+    BeforeRestoreSkipped        = "before_restore_skipped";
 }
 
 impl fmt::Display for WarningCode {
@@ -824,7 +827,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 46);
+        assert_eq!(WarningCode::ALL.len(), 47);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

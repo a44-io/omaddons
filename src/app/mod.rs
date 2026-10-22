@@ -137,6 +137,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("backup", Group::Change, true),
     entry("backup list", Group::Change, false),
     entry("backup create", Group::Change, true),
+    entry("backup restore", Group::Change, true),
     entry("backup prune", Group::Change, true),
     entry("targets", Group::Setup, false),
     entry("targets add", Group::Setup, true),
@@ -447,6 +448,9 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
                 None => out.emit(backup::list(ctx, &backup::BackupListArgs::default())),
                 Some(BackupAction::List(list)) => out.emit(backup::list(ctx, list)),
                 Some(BackupAction::Create(create)) => out.emit(backup::create(ctx, create)),
+                Some(BackupAction::Restore(restore)) => {
+                    out.emit(backup::restore_backup(ctx, restore))
+                }
                 Some(BackupAction::Prune(prune)) => out.emit(backup::prune_backups(ctx, prune)),
             }
         }

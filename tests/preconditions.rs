@@ -11,6 +11,7 @@ mod common;
 use common::engine::Scene;
 use common::pause::Pause;
 use prune_support::{at_noon, backups, prune_preview, three_days};
+use restore_support::{restorable, restore_args};
 use serde_json::{Value, json};
 use support::{argv, preview, token};
 
@@ -418,4 +419,136 @@ fn a_backup_prune_whose_victim_was_rewritten_deletes_nothing() {
     let envelope = at_noon(&scene, &bound(PRUNE, &token)).expect(1);
     assert_stale(&envelope, &["observed"], PRUNE_PREVIEW);
     assert!(backups(&client).contains(&ids[0]));
+}
+
+#[cfg(test)]
+mod restore_support {
+    use super::common::engine::Scene;
+    use super::support::argv;
+
+    /// A live retail `WTF/` and a manual backup to restore; the backup's id and the live
+    /// tree.
+    pub fn restorable(scene: &Scene) -> (String, std::path::PathBuf) {
+        use omaddons::backup::BackupKind;
+        let client = scene.home.client("_retail_");
+        let wtf = super::common::wtf::Wtf::at(client.clone())
+            .saved_variables("Foo", 64)
+            .build();
+        let at = "2026-10-05T08:00:00Z".parse().unwrap();
+        let id = super::common::backups::seed_backup(&client, BackupKind::Manual, at, 2);
+        (id.to_string(), wtf)
+    }
+
+    /// `backup restore <id> -t retail`, and its preview's argv.
+    pub fn restore_args(id: &str) -> ([&str; 5], Vec<String>) {
+        let args = ["backup", "restore", id, "-t", "retail"];
+        let mut preview = argv(&["omaddons"]);
+        preview.extend(argv(&args));
+        preview.push("--dry-run".to_owned());
+        (args, preview)
+    }
+}
+
+#[test]
+fn a_backup_restore_restores_exactly_what_it_previewed() {
+    let scene = Scene::new();
+    let (id, _) = restorable(&scene);
+    let (args, _) = restore_args(&id);
+    let token = preview(&scene, &args);
+    assert_eq!(
+        preview(&scene, &args),
+        token,
+        "an unchanged home, the same token"
+    );
+    let envelope = scene.run(&bound(&args, &token), "").expect(0);
+    assert_eq!(envelope["data"]["kind"], "restore");
+    assert_eq!(envelope["data"]["precondition"], Value::Null);
+}
+
+#[test]
+fn a_backup_restore_after_a_play_session_changes_nothing() {
+    let scene = Scene::new();
+    let (id, wtf) = restorable(&scene);
+    let (args, preview_argv) = restore_args(&id);
+    let token = preview(&scene, &args);
+    // The game wrote settings since the preview, touching no generation.
+    let sv = wtf.join("Account/FAKEACCT/SavedVariables/Foo.lua");
+    std::fs::write(&sv, "Foo = { played = true }").unwrap();
+    let before = common::trees::tree_hash(&wtf);
+    let envelope = scene.run(&bound(&args, &token), "").expect(1);
+    let preview_argv: Vec<&str> = preview_argv.iter().map(String::as_str).collect();
+    assert_stale(&envelope, &["observed"], &preview_argv);
+    assert_eq!(common::trees::tree_hash(&wtf), before);
+}
+
+#[test]
+fn a_backup_restore_whose_backup_was_rewritten_changes_nothing() {
+    let scene = Scene::new();
+    let (id, wtf) = restorable(&scene);
+    let (args, preview_argv) = restore_args(&id);
+    let token = preview(&scene, &args);
+    // Re-verified since the preview: its backup.json says so.
+    let meta = scene
+        .home
+        .client("_retail_")
+        .join("Interface/.omaddons/backups")
+        .join(&id)
+        .join("backup.json");
+    let text = std::fs::read_to_string(&meta).unwrap();
+    std::fs::write(
+        &meta,
+        text.replace("\"actor\"", "\"reason\": \"checked\", \"actor\""),
+    )
+    .unwrap();
+    let before = common::trees::tree_hash(&wtf);
+    let envelope = scene.run(&bound(&args, &token), "").expect(1);
+    let preview_argv: Vec<&str> = preview_argv.iter().map(String::as_str).collect();
+    assert_stale(&envelope, &["observed"], &preview_argv);
+    assert_eq!(common::trees::tree_hash(&wtf), before);
+}
+
+#[test]
+fn a_backup_restore_after_a_commit_on_its_target_changes_nothing() {
+    let scene = Scene::new();
+    let (id, wtf) = restorable(&scene);
+    scene.install("gh:o/foo", "v1");
+    let (args, preview_argv) = restore_args(&id);
+    let token = preview(&scene, &args);
+    scene.install("gh:o/bar", "bar");
+    let before = common::trees::tree_hash(&wtf);
+    let envelope = scene.run(&bound(&args, &token), "").expect(1);
+    let preview_argv: Vec<&str> = preview_argv.iter().map(String::as_str).collect();
+    assert_stale(&envelope, &["targets"], &preview_argv);
+    assert_eq!(common::trees::tree_hash(&wtf), before);
+}
+
+#[test]
+fn a_commit_between_a_bound_restores_stage_and_its_lock_changes_nothing() {
+    let scene = Scene::new();
+    let (id, wtf) = restorable(&scene);
+    scene.install("gh:o/foo", "v1");
+    let (args, preview_argv) = restore_args(&id);
+    let token = preview(&scene, &args);
+    let pause = Pause::new(scene.home.env.root());
+    let run = bound(&args, &token);
+    let run: Vec<&str> = run
+        .iter()
+        .map(String::as_str)
+        .filter(|a| *a != "--json")
+        .collect();
+    let child = scene.home.spawn(
+        &run,
+        &[
+            ("OMADDONS_FAILPOINTS", "engine.restore.staged=pause"),
+            pause.env(),
+        ],
+    );
+    pause.reached("engine.restore.staged");
+    scene.install("gh:o/bar", "bar");
+    let before = common::trees::tree_hash(&wtf);
+    pause.resume("engine.restore.staged");
+    let envelope = common::home::wait(child, &run).expect(1);
+    let preview_argv: Vec<&str> = preview_argv.iter().map(String::as_str).collect();
+    assert_stale(&envelope, &["targets"], &preview_argv);
+    assert_eq!(common::trees::tree_hash(&wtf), before);
 }

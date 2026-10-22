@@ -1,0 +1,31 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup restore",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "game_running",
+    "details": {
+      "ops": [
+        {
+          "files": 2,
+          "op": "restore_saved_variables"
+        }
+      ],
+      "reason": "saved_variables",
+      "target": "retail"
+    },
+    "fix": "quit the game client, then rerun",
+    "fix_argv": null,
+    "message": "retail's game client is running, and SavedVariables are never written while it runs (it overwrites them on logout)",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

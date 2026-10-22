@@ -23,7 +23,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::outcome::{ItemError, TargetRef};
-use super::precondition::{Precondition, PrunePart, check, of_prune, preview_argv};
+use super::precondition::{
+    Precondition, PrunePart, RestoreBinding, RestorePart, check, of_prune, of_restore, preview_argv,
+};
 use super::world::World;
 use crate::backup::create::{self as capture, CreateRequest, Created};
 use crate::backup::fs::CloneHint;
@@ -36,11 +38,15 @@ use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::LockedRegistry;
 use crate::discover::running::{RunningScan, detect_running};
+use crate::engine::Binding;
 use crate::engine::journal::{no_saved_variables, recover_under};
+use crate::engine::restore::{self, Exchange, RestoreFiles, RestoreRequest};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{ClonePolicy, GlobalLock, ScopeTable, WriteSession, Writer, ensure_dir_all};
 use crate::limits::{BACKUP_STALE_AFTER, BACKUP_TREE_MAX_DEPTH, BACKUP_TREE_MAX_ENTRIES};
-use crate::model::{Actor, BackupId, FolderName, RunId, Target, TxId, TxKind};
+use crate::model::{
+    Actor, BackupId, FolderName, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind,
+};
 use crate::output::{Outcome, Style, table};
 use crate::privacy::WtfPathRedactor;
 use crate::rules::TargetKind;
@@ -65,6 +71,10 @@ pub enum BackupAction {
     /// Back up WTF/: every live client's, or the clients -t names
     #[command(after_long_help = CREATE_HELP)]
     Create(BackupCreateArgs),
+    /// Restore the whole WTF/ (keybindings, macros, every addon's settings) from a
+    /// backup (undoable)
+    #[command(after_long_help = RESTORE_HELP)]
+    Restore(BackupRestoreArgs),
     /// Delete old backups, or the ones named (it cannot be undone)
     #[command(after_long_help = PRUNE_HELP)]
     Prune(BackupPruneArgs),
@@ -76,9 +86,31 @@ impl BackupAction {
         match self {
             Self::List(_) => "backup list",
             Self::Create(_) => "backup create",
+            Self::Restore(_) => RESTORE_COMMAND,
             Self::Prune(_) => PRUNE_COMMAND,
         }
     }
+}
+
+const RESTORE_HELP: &str = "\
+Examples:
+  omaddons backup restore 01M6Q2VA --dry-run   what it would put back, and its token
+  omaddons backup restore 01M6Q2VA -t retail
+  omaddons undo                                put back the WTF/ it replaced
+
+Restores the whole WTF/: keybindings, macros, chat and every addon's settings, as the
+backup holds them. It refuses while the game runs (or may be running), and where WTF/
+cannot be replaced in one atomic step; it checks the copy against the backup's hashes
+when it has them. Where the filesystem clones files it first keeps the current WTF/ as
+a backup (before restore), and undo puts the replaced WTF/ back either way.
+--if-match <token> restores exactly what that --dry-run showed.";
+
+/// `backup restore`'s argument.
+#[derive(Debug, Clone, clap::Args)]
+pub struct BackupRestoreArgs {
+    /// The backup: its id, or a prefix of 8 or more characters
+    #[arg(value_name = "ID")]
+    pub id: String,
 }
 
 const CREATE_HELP: &str = "\
@@ -317,14 +349,9 @@ impl Outcome for BackupListOutcome {
     }
 }
 
-/// One backup's human line.
-fn row(b: &BackupItem, now: Timestamp) -> Vec<String> {
-    let id = super::history::short_id(&b.id.to_string());
-    let Some(kind) = b.kind else {
-        return vec![id, "unreadable: backup.json cannot be read".to_owned()];
-    };
-    let when = b.captured_at.map_or_else(String::new, |at| when(at, now));
-    let kind = match (kind, b.trigger) {
+/// A backup's kind as human output says it.
+fn kind_label(kind: BackupKind, trigger: Option<Trigger>) -> &'static str {
+    match (kind, trigger) {
         (BackupKind::Auto, Some(Trigger::PreChange)) => "auto (before change)",
         (BackupKind::Auto, Some(Trigger::PostSession)) => "auto (after play)",
         (BackupKind::Auto, None) => "auto",
@@ -332,7 +359,17 @@ fn row(b: &BackupItem, now: Timestamp) -> Vec<String> {
         (BackupKind::BeforeRestore, _) => "before restore",
         (BackupKind::Imported, _) => "imported",
         (BackupKind::Recovered, _) => "recovered",
+    }
+}
+
+/// One backup's human line.
+fn row(b: &BackupItem, now: Timestamp) -> Vec<String> {
+    let id = super::history::short_id(&b.id.to_string());
+    let Some(kind) = b.kind else {
+        return vec![id, "unreadable: backup.json cannot be read".to_owned()];
     };
+    let when = b.captured_at.map_or_else(String::new, |at| when(at, now));
+    let kind = kind_label(kind, b.trigger);
     let files = b.files.map_or_else(String::new, |n| match n {
         1 => "1 file".to_owned(),
         n => format!("{n} files"),
@@ -1014,7 +1051,7 @@ impl One<'_> {
             std::slice::from_ref(&self.d.target.client_dir),
             None,
         )?;
-        let target = self.registered(&scopes)?;
+        let target = registered(self.ctx, self.world, self.d, &scopes, CREATE_COMMAND)?;
         let client_running = running.unavailable.is_some()
             || running.clients.contains_key(&self.d.target.client_dir);
         let req = CreateRequest {
@@ -1086,59 +1123,10 @@ impl One<'_> {
         )
     }
 
-    /// The client as registered: under the global lock (recovering first, as every
-    /// change does) when it was not yet, so its backup can name its key.
-    fn registered(&self, scopes: &ScopeTable) -> Result<Target> {
-        let paths = &self.world.paths;
-        let mut target = self.d.target.clone();
-        if target.key.is_some() {
-            return Ok(target);
-        }
-        let guard = GlobalLock::acquire(paths, CREATE_COMMAND)?;
-        self.ctx.notes.warn_all(&recover_under(
-            &guard,
-            paths,
-            &no_saved_variables,
-            CREATE_COMMAND,
-            self.ctx.actor,
-        ));
-        let mut s = WriteSession::untracked(Writer::Backup, scopes, "registry");
-        let mut registry = LockedRegistry::load(&guard, paths)?;
-        let key = registry.ensure_registered(&mut s, self.d)?;
-        if let Some(entry) = registry.registry().entry(&key) {
-            target.id.clone_from(&entry.id);
-        }
-        target.key = Some(key);
-        Ok(target)
-    }
-
     /// Appends `created`'s history line (M3-D33) under the global lock, recovering first.
     fn record(&self, scopes: &ScopeTable, created: &Created, run: RunId) -> Result<()> {
         let paths = &self.world.paths;
-        let meta = &created.meta;
-        let entry = HistoryEntry {
-            schema_version: history::CURRENT,
-            tx: created.tx,
-            kind: TxKind::Backup,
-            at: crate::clock::now(),
-            target: meta.target,
-            actor: self.ctx.actor,
-            reason: self.ctx.reason.clone(),
-            argv: self.ctx.argv.clone(),
-            ops: Vec::new(),
-            result: TxResult::Committed,
-            reverts: None,
-            sv_deferred: false,
-            sv_restored: None,
-            created_addons_dir: false,
-            run: Some(run),
-            backup: Some(BackupNote {
-                id: meta.id,
-                kind: meta.kind,
-                files: meta.files,
-                bytes: meta.bytes,
-            }),
-        };
+        let entry = backup_line(self.ctx, created, run);
         let guard = GlobalLock::acquire(paths, CREATE_COMMAND)?;
         self.ctx.notes.warn_all(&recover_under(
             &guard,
@@ -1153,6 +1141,66 @@ impl One<'_> {
         drop(guard);
         Ok(())
     }
+}
+
+/// `created`'s history line (M3-D33), of `run`.
+fn backup_line(ctx: &Context, created: &Created, run: RunId) -> HistoryEntry {
+    let meta = &created.meta;
+    HistoryEntry {
+        schema_version: history::CURRENT,
+        tx: created.tx,
+        kind: TxKind::Backup,
+        at: crate::clock::now(),
+        target: meta.target,
+        actor: ctx.actor,
+        reason: ctx.reason.clone(),
+        argv: ctx.argv.clone(),
+        ops: Vec::new(),
+        result: TxResult::Committed,
+        reverts: None,
+        sv_deferred: false,
+        sv_restored: None,
+        created_addons_dir: false,
+        run: Some(run),
+        backup: Some(BackupNote {
+            id: meta.id,
+            kind: meta.kind,
+            files: meta.files,
+            bytes: meta.bytes,
+        }),
+    }
+}
+
+/// `d`'s client as registered: under the global lock (recovering first, as every change
+/// does) when it was not yet, so a backup of it can name its key.
+fn registered(
+    ctx: &Context,
+    world: &World,
+    d: &DiscoveredTarget,
+    scopes: &ScopeTable,
+    command: &'static str,
+) -> Result<Target> {
+    let paths = &world.paths;
+    let mut target = d.target.clone();
+    if target.key.is_some() {
+        return Ok(target);
+    }
+    let guard = GlobalLock::acquire(paths, command)?;
+    ctx.notes.warn_all(&recover_under(
+        &guard,
+        paths,
+        &no_saved_variables,
+        command,
+        ctx.actor,
+    ));
+    let mut s = WriteSession::untracked(Writer::Backup, scopes, "registry");
+    let mut registry = LockedRegistry::load(&guard, paths)?;
+    let key = registry.ensure_registered(&mut s, d)?;
+    if let Some(entry) = registry.registry().entry(&key) {
+        target.id.clone_from(&entry.id);
+    }
+    target.key = Some(key);
+    Ok(target)
 }
 
 /// `history_not_recorded`: the backup stands, without its history line.
@@ -1183,6 +1231,499 @@ fn published(created: &Created) -> BackupItem {
         busy: false,
     };
     item(&b, false)
+}
+
+// ---------------------------------------------------------------------------------------
+// `backup restore`.
+
+const RESTORE_COMMAND: &str = "backup restore";
+
+/// What `backup restore` puts back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RestoreMode {
+    /// The whole `WTF/`.
+    Whole,
+}
+
+/// `backup restore`'s data.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BackupRestoreData {
+    pub dry_run: bool,
+    pub target: TargetRef,
+    /// The restore's transaction, which `undo` reverts; `null` under `--dry-run`.
+    pub tx: Option<TxId>,
+    /// `restore`.
+    pub kind: TxKind,
+    pub mode: RestoreMode,
+    pub backup: RestoreSource,
+    pub files: RestoreFiles,
+    /// The current `WTF/`, kept as a backup first; `null` under `--dry-run`, or when none
+    /// was made (`before_restore_skipped`).
+    pub before_restore: Option<KeptBackup>,
+    /// `restart`: the client reads `WTF/` when it starts.
+    pub reload_required: ReloadRequired,
+    /// `--dry-run`: the token `--if-match` takes to restore exactly this (M3-D46); `null`
+    /// for a real run.
+    pub precondition: Option<String>,
+    /// `verified` when the exchange was probed where it runs; `unverified` under
+    /// `--dry-run`, which writes nothing.
+    pub exchange: Exchange,
+}
+
+/// The backup a restore puts back.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RestoreSource {
+    pub id: BackupId,
+    #[schemars(with = "String")]
+    pub captured_at: Timestamp,
+    pub kind: BackupKind,
+    /// What its content is proved to be (M3-D47): `verified` only when the copy put back
+    /// matched its recorded hashes (under `--dry-run`, when it has hashes a restore will
+    /// check), else `metadata_only`.
+    pub integrity: Integrity,
+}
+
+/// The `before_restore` backup a restore kept.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct KeptBackup {
+    pub id: BackupId,
+}
+
+/// `backup restore`'s outcome.
+#[derive(Debug)]
+pub struct BackupRestoreOutcome {
+    data: BackupRestoreData,
+    warnings: Vec<Warning>,
+    /// `undo <tx>` after a real run.
+    commands: Vec<CommandHint>,
+    /// For human output: the source's trigger and hashes' baseline, and whether a dry run
+    /// would keep the current `WTF/` as a backup.
+    trigger: Option<Trigger>,
+    baseline: Option<Baseline>,
+    would_keep: bool,
+}
+
+impl Outcome for BackupRestoreOutcome {
+    type Data = BackupRestoreData;
+
+    fn command(&self) -> &'static str {
+        RESTORE_COMMAND
+    }
+
+    fn data(&self) -> &BackupRestoreData {
+        &self.data
+    }
+
+    fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
+    fn commands(&self) -> &[CommandHint] {
+        &self.commands
+    }
+
+    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
+        let d = &self.data;
+        let (id, b, f) = (&d.target.id, &d.backup, &d.files);
+        let short = |id: &str| super::history::short_id(id);
+        let from = format!(
+            "backup {} ({}, {})",
+            short(&b.id.to_string()),
+            when(b.captured_at, crate::clock::now()),
+            kind_label(b.kind, self.trigger)
+        );
+        if d.dry_run {
+            writeln!(
+                w,
+                "{id}: would restore WTF/ from {from}: {}, {} differed, {} created since",
+                files(f.restored),
+                f.differed,
+                f.created_since
+            )?;
+            if self.would_keep {
+                writeln!(
+                    w,
+                    "  would keep the current WTF/ as a backup (before restore)"
+                )?;
+            }
+        } else {
+            writeln!(
+                w,
+                "{id}: restored WTF/ from {from}: {}, {} differed",
+                files(f.restored),
+                f.differed
+            )?;
+            if let Some(kept) = &d.before_restore {
+                writeln!(
+                    w,
+                    "  kept the current WTF/ as backup {} (before restore)",
+                    short(&kept.id.to_string())
+                )?;
+            }
+        }
+        writeln!(w, "  {}", proved(b.integrity, self.baseline, d.dry_run))?;
+        if let Some(tx) = &d.tx {
+            let tx = tx.to_string();
+            writeln!(w, "tx {} · undo: omaddons undo {tx}", short(&tx))?;
+        }
+        if let Some(token) = &d.precondition {
+            writeln!(w, "Run it bound to this preview: --if-match {token}")?;
+        }
+        Ok(())
+    }
+}
+
+/// What a restore says its content is proved to be (M3-D47): never "verified" for a
+/// backup whose content no hash checked.
+fn proved(integrity: Integrity, baseline: Option<Baseline>, dry_run: bool) -> String {
+    let hashes = match baseline {
+        Some(Baseline::Import) => "import-time hashes",
+        Some(Baseline::Later) => "hashes recorded later (unchanged since then)",
+        Some(Baseline::Capture) | None => "capture-time hashes",
+    };
+    match (integrity, dry_run) {
+        (Integrity::Verified, false) => format!("verified against {hashes}"),
+        (Integrity::Verified, true) => format!("its files will be checked against {hashes}"),
+        _ => "metadata checked; content not verified".to_owned(),
+    }
+}
+
+/// Runs `backup restore` in M3-D24's order, so a refusal never costs a copy: resolve and
+/// reserve the backup (M3-D48); refuse a partial one, a newer state and a running client;
+/// plan; under `--dry-run`, stop there with the token; compare `--if-match`; begin (the
+/// exchange probed where it will run); keep the current `WTF/` as a backup (M3-D26); and
+/// restore. Then backup retention runs once, the source pinned.
+pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutcome> {
+    let world = World::load(ctx)?;
+    let mut warnings = world.warnings.clone();
+    let (d, backup) = restore_source(ctx, &world, &args.id, &mut warnings)?;
+    let reservation = restore::reserve(&backup)?;
+    if backup.meta.as_ref().is_some_and(|m| m.partial) {
+        return Err(partial(&backup, &d.target.id));
+    }
+    let engine = super::engine::Engine::new(ctx, &world, RESTORE_COMMAND)?;
+    engine.refuse_restore(&d.target, backup.meta.as_ref().map_or(0, |m| m.files))?;
+    let plan = restore::plan(&world.paths, &d.target, &backup)?;
+    let meta = backup
+        .meta
+        .clone()
+        .ok_or_else(|| Error::internal("a restorable backup has its metadata"))?;
+    let client = ClientPaths::new(&d.target.client_dir);
+    let bound = of_restore(&RestorePart {
+        key: d.target.key,
+        generation: plan.generation,
+        backup: backup.id,
+        files: &plan.files,
+        backup_json: meta_digest(&backup),
+        wtf: plan.observed.map(|stamp| stamp.to_string()),
+    });
+    let mut data = BackupRestoreData {
+        dry_run: ctx.dry_run,
+        target: target_ref(d),
+        tx: None,
+        kind: TxKind::Restore,
+        mode: RestoreMode::Whole,
+        backup: RestoreSource {
+            id: backup.id,
+            captured_at: meta.captured_at,
+            kind: meta.kind,
+            integrity: meta.integrity,
+        },
+        files: plan.files,
+        before_restore: None,
+        reload_required: ReloadRequired::Restart,
+        precondition: None,
+        exchange: Exchange::Unverified,
+    };
+    if ctx.dry_run {
+        // The mount checks only: no probe, nothing written. A token given with it
+        // previews afresh.
+        let topology = restore::preflight(&client, &backup.wtf(), None)?;
+        let clones = matches!(
+            backup::fs::clone_hint(&client.meta_dir()),
+            CloneHint::Capable
+        );
+        data.precondition = Some(bound.token());
+        return Ok(BackupRestoreOutcome {
+            data,
+            warnings,
+            commands: Vec::new(),
+            trigger: meta.trigger,
+            baseline: meta.baseline,
+            would_keep: topology.wtf.is_some() && clones,
+        });
+    }
+    let preview = preview_argv(&ctx.argv);
+    check(ctx.if_match.as_deref(), &bound, &preview)?;
+    let begun = restore::begin(&world.paths, &client, &backup)?;
+    let run = RunId::new();
+    let kept = match keep_current(ctx, &world, d, &begun.topology) {
+        Ok(kept) => kept,
+        Err(error) => {
+            begun.abandon(&world.paths, &client);
+            return Err(error);
+        }
+    };
+    let before_restore = match &kept {
+        Some(created) => {
+            warnings.extend(created.warnings.iter().cloned());
+            Some(backup_line(ctx, created, run))
+        }
+        None => {
+            warnings.push(before_restore_skipped(&d.target.id));
+            None
+        }
+    };
+    let binding = ctx.if_match.as_ref().map(|_| RestoreBinding { preview });
+    let restore::Begun {
+        tx,
+        inflight,
+        topology,
+    } = begun;
+    let req = RestoreRequest {
+        target: d,
+        backup: &backup,
+        reservation,
+        topology,
+        tx,
+        inflight,
+        plan: &plan,
+        before_restore,
+        reason: ctx.reason.clone(),
+        run,
+    };
+    let done = engine.restore(req, binding.as_ref().map(|b| b as &dyn Binding))?;
+    warnings.extend(done.warnings.iter().cloned());
+    warnings.extend(retain_source(ctx, &world, d, done.key, backup.id));
+    data.tx = Some(done.tx);
+    data.target.key = Some(done.key);
+    data.backup.integrity = done.integrity;
+    data.files = done.files;
+    data.before_restore = kept.map(|created| KeptBackup {
+        id: created.meta.id,
+    });
+    data.exchange = done.exchange;
+    let tx = done.tx.to_string();
+    Ok(BackupRestoreOutcome {
+        data,
+        warnings,
+        commands: vec![CommandHint::new(
+            "undo",
+            ["omaddons", "undo", tx.as_str()],
+            false,
+        )],
+        trigger: meta.trigger,
+        baseline: meta.baseline,
+        would_keep: false,
+    })
+}
+
+/// The client and the backup `prefix` names: on the one client `-t` selects, else on
+/// whichever has it. A backup on another client than `-t`'s is `not_found`, with a fix
+/// naming its own.
+fn restore_source<'w>(
+    ctx: &Context,
+    world: &'w World,
+    prefix: &str,
+    warnings: &mut Vec<Warning>,
+) -> Result<(&'w DiscoveredTarget, BackupRef)> {
+    let mut all: Vec<(&DiscoveredTarget, Vec<BackupRef>)> = Vec::new();
+    for d in &world.resolved.targets {
+        let (backups, found) = backup::list(&ClientPaths::new(&d.target.client_dir));
+        warnings.extend(found);
+        all.push((d, backups));
+    }
+    all.sort_by(|a, b| a.0.target.id.cmp(&b.0.target.id));
+    let found = |listed: &[(&'w DiscoveredTarget, Vec<BackupRef>)], selector| {
+        only(listed, prefix, selector).and_then(|(client, id)| {
+            listed
+                .iter()
+                // ubs:ignore — comparing target ids, not secrets
+                .filter(|(d, _)| d.target.id == client)
+                .find_map(|(d, backups)| {
+                    let b = backups.iter().find(|b| b.id == id)?;
+                    Some((*d, b.clone()))
+                })
+                .ok_or_else(|| Error::internal("a matched backup is listed"))
+        })
+    };
+    let Some(selector) = ctx.target.as_deref() else {
+        return found(&all, None);
+    };
+    let selected = world.select_many(ctx)?;
+    let d = match selected.as_slice() {
+        [one] => *one,
+        many => return Err(several(ctx, many)),
+    };
+    let on_it: Vec<(&DiscoveredTarget, Vec<BackupRef>)> = all
+        .iter()
+        // ubs:ignore — comparing target ids, not secrets
+        .filter(|(t, _)| t.target.id == d.target.id)
+        .cloned()
+        .collect();
+    match found(&on_it, Some(selector)) {
+        Err(error) if matches!(error.code, ErrorCode::NotFound) => match found(&all, None) {
+            Ok((owner, b)) => Err(elsewhere(&b, &d.target.id, &owner.target.id)),
+            Err(_) => Err(error),
+        },
+        other => other,
+    }
+}
+
+/// `target_ambiguous`: a restore changes one client, and `-t` selects `many`.
+fn several(ctx: &Context, many: &[&DiscoveredTarget]) -> Error {
+    let ids: Vec<&str> = many.iter().map(|d| d.target.id.as_str()).collect();
+    let with =
+        |id: &str| Suggestion::command(crate::discover::registry::with_target(&ctx.argv, id));
+    let mut error = Error::new(
+        ErrorCode::TargetAmbiguous,
+        format!(
+            "-t selects {} clients ({}); a restore changes one",
+            ids.len(),
+            ids.join(", ")
+        ),
+        with(ids.first().copied().unwrap_or_default()),
+    )
+    .details(serde_json::json!({ "candidates": ids }));
+    for id in ids.iter().skip(1) {
+        error = error.alternative(with(id));
+    }
+    error
+}
+
+/// `not_found`: the backup is `owner`'s, not `selected`'s.
+fn elsewhere(b: &BackupRef, selected: &str, owner: &str) -> Error {
+    let id = b.id.to_string();
+    Error::new(
+        ErrorCode::NotFound,
+        format!("backup {id} is {owner}'s, not {selected}'s"),
+        Suggestion::command(["omaddons", "backup", "restore", id.as_str(), "-t", owner]),
+    )
+    .details(serde_json::json!({ "id": id, "target": selected, "owner": owner }))
+}
+
+/// `usage`: a partial backup (the files a crashed partial restore displaced) holds only
+/// some addons' settings, so it never replaces the whole `WTF/`.
+fn partial(b: &BackupRef, target: &str) -> Error {
+    Error::new(
+        ErrorCode::Usage,
+        format!(
+            "backup {} holds only some addons' settings, so it cannot replace the whole WTF/",
+            b.id
+        ),
+        Suggestion::command(["omaddons", "backup", "list", "-t", target]),
+    )
+    .details(serde_json::json!({ "id": b.id.to_string(), "partial": true }))
+}
+
+/// Keeps the current `WTF/` as a `before_restore` backup (M3-D26): a clone only, so none
+/// is made where the filesystem cannot clone or there is no `WTF/`. It registers the
+/// client first when needed, and runs no retention: the restore's source stays.
+fn keep_current(
+    ctx: &Context,
+    world: &World,
+    d: &DiscoveredTarget,
+    topology: &restore::Topology,
+) -> Result<Option<Created>> {
+    let client = ClientPaths::new(&d.target.client_dir);
+    let clones = matches!(
+        backup::fs::clone_hint(&client.meta_dir()),
+        CloneHint::Capable
+    );
+    if topology.wtf.is_none() || !clones {
+        return Ok(None);
+    }
+    let scopes = ScopeTable::new(
+        &world.paths,
+        std::slice::from_ref(&d.target.client_dir),
+        None,
+    )?;
+    let target = registered(ctx, world, d, &scopes, RESTORE_COMMAND)?;
+    let req = CreateRequest {
+        target: &target,
+        kind: BackupKind::BeforeRestore,
+        trigger: None,
+        actor: ctx.actor,
+        reason: ctx.reason.clone(),
+        policy: ClonePolicy::Required,
+        verify: false,
+        // The restore refused a client that runs or may.
+        client_running: false,
+        command: RESTORE_COMMAND,
+    };
+    match capture::create(&world.paths, &scopes, &req, &ctx.progress) {
+        Ok(created) => Ok(Some(created)),
+        Err(capture::CreateError::NotReflinkable) => Ok(None),
+        Err(capture::CreateError::Failed(error)) => Err(error),
+    }
+}
+
+/// `before_restore_skipped`: no copy of the current `WTF/` but the transaction's own.
+fn before_restore_skipped(target: &str) -> Warning {
+    Warning::new(
+        WarningCode::BeforeRestoreSkipped,
+        format!(
+            "{target}: the current WTF/ was not kept as a backup (the filesystem cannot clone files, or there was no WTF/); the restore's undo snapshot keeps it until retention"
+        ),
+    )
+}
+
+/// Backup retention once after a restore (M3-D26), its source `source` pinned for the
+/// pass. A failure is only `retention_failed`: the restore stands.
+fn retain_source(
+    ctx: &Context,
+    world: &World,
+    d: &DiscoveredTarget,
+    key: TargetKey,
+    source: BackupId,
+) -> Option<Warning> {
+    let keep_days = world
+        .config
+        .effective_limits()
+        .unwrap_or_default()
+        .backup_auto_keep_days;
+    let opts = PruneOpts {
+        pins: BTreeSet::from([source]),
+        ..PruneOpts::default()
+    };
+    let ring = Ring {
+        command: RESTORE_COMMAND,
+        actor: ctx.actor,
+    };
+    let pass = ScopeTable::new(
+        &world.paths,
+        std::slice::from_ref(&d.target.client_dir),
+        None,
+    )
+    .and_then(|scopes| {
+        prune::retain(
+            &world.paths,
+            &scopes,
+            &ClientPaths::new(&d.target.client_dir),
+            Some(&key),
+            keep_days,
+            &opts,
+            ring,
+        )
+    });
+    let error = pass.err()?;
+    Some(
+        Warning::new(
+            WarningCode::RetentionFailed,
+            format!(
+                "{}: pruning old backups after the restore failed: {}",
+                d.target.id, error.message
+            ),
+        )
+        .with_fix(Suggestion::command([
+            "omaddons",
+            "backup",
+            "prune",
+            "-t",
+            d.target.id.as_str(),
+        ])),
+    )
 }
 
 // ---------------------------------------------------------------------------------------

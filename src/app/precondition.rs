@@ -448,6 +448,69 @@ pub fn of_dismiss(parts: &[DismissPart<'_>]) -> Precondition {
 }
 
 // ---------------------------------------------------------------------------------------
+// `backup restore`.
+
+/// What a `backup restore` would do, for its precondition.
+pub struct RestorePart<'a> {
+    pub key: Option<TargetKey>,
+    /// The target's record generation it was planned against.
+    pub generation: u64,
+    pub backup: BackupId,
+    pub files: &'a crate::engine::restore::RestoreFiles,
+    /// The SHA-256 of the source's `backup.json`, `None` when it does not read.
+    pub backup_json: Option<String>,
+    /// The live `WTF/`'s stamp digest, `None` without one.
+    pub wtf: Option<String>,
+}
+
+/// `backup restore`'s precondition (M3-D46): the target's key with the generation planned
+/// against; the backup, the mode (`whole`; `folders` is a partial restore's) and the
+/// counts; and, observed, the source's `backup.json` and the live `WTF/`'s stamp digest,
+/// because the game changes `WTF/` without touching any generation.
+pub fn of_restore(part: &RestorePart<'_>) -> Precondition {
+    let files = part.files;
+    Precondition::new(
+        "backup restore",
+        part.key
+            .map(|key| (key, Some(part.generation)))
+            .into_iter()
+            .collect(),
+        json!({
+            "backup": part.backup.to_string(),
+            "mode": "whole",
+            "folders": null,
+            "files": {
+                "restored": files.restored,
+                "differed": files.differed,
+                "created_since": files.created_since,
+                "unchanged": files.unchanged,
+            },
+        }),
+        json!({ "backup_json": part.backup_json, "wtf": part.wtf }),
+    )
+}
+
+/// A `backup restore` run bound to its preview: compared before anything is copied; the
+/// engine asks it only for the refusal when the target's records moved under the lock.
+pub struct RestoreBinding {
+    pub preview: Vec<String>,
+}
+
+impl Binding for RestoreBinding {
+    fn plan(&self, _plan: &Plan) -> Result<()> {
+        Ok(())
+    }
+
+    fn undo(&self, _planned: &EngineUndo) -> Result<()> {
+        Ok(())
+    }
+
+    fn moved(&self, _target: &str) -> Error {
+        stale("backup restore", &[Part::Targets], &self.preview)
+    }
+}
+
+// ---------------------------------------------------------------------------------------
 // `backup prune`.
 
 /// One client's part of a `backup prune`: its key, its id, and each backup it would

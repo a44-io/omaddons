@@ -1,0 +1,40 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup restore",
+  "commands": [],
+  "data": {
+    "backup": {
+      "captured_at": "<time>",
+      "id": "<ulid>",
+      "integrity": "metadata_only",
+      "kind": "manual"
+    },
+    "before_restore": null,
+    "dry_run": true,
+    "exchange": "unverified",
+    "files": {
+      "created_since": 3,
+      "differed": 2,
+      "restored": 2,
+      "unchanged": 0
+    },
+    "kind": "restore",
+    "mode": "whole",
+    "precondition": "<precondition>",
+    "reload_required": "restart",
+    "target": {
+      "id": "retail",
+      "key": null
+    },
+    "tx": null
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

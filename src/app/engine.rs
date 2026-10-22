@@ -211,6 +211,22 @@ impl Engine {
         crate::engine::undo(req, &self.bound_ctx(None, binding))
     }
 
+    /// A whole restore's refusals before anything under the client dir is written: a
+    /// newer state, and a client that runs or may.
+    pub fn refuse_restore(&self, target: &Target, files: u64) -> Result<()> {
+        crate::engine::restore::refuse_early(&self.ctx(None), target, files)
+    }
+
+    /// Restores what the command planned and began, bound to a preview (`--if-match`)
+    /// when `binding` is given.
+    pub fn restore(
+        &self,
+        req: crate::engine::restore::RestoreRequest<'_>,
+        binding: Option<&dyn Binding>,
+    ) -> Result<crate::engine::restore::RestoreOutcome> {
+        crate::engine::restore::restore(&self.bound_ctx(None, binding), req)
+    }
+
     /// For a change command that ends with nothing to send to the engine: a journal a
     /// crash left is recovered as a commit would have, into the run's warnings. A dry
     /// run never recovers.
