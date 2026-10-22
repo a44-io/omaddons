@@ -417,23 +417,23 @@ impl GitRunner {
                 API_READ_TIMEOUT,
             )?;
             self.run_watched(
-                &[os("-C"), dest_arg, os("fetch"), os("--quiet"), os("--depth"), os("1"), os("--"), os(url), os(sha)],
+                &[
+                    os("-C"),
+                    dest_arg,
+                    os("fetch"),
+                    os("--quiet"),
+                    os("--depth"),
+                    os("1"),
+                    os("--"),
+                    os(url),
+                    os(sha),
+                ],
                 &repo,
                 "fetch",
                 DOWNLOAD_TIMEOUT,
                 watched,
             )
-            .map_err(|e| {
-                if e.code == ErrorCode::DownloadFailed {
-                    Error::new(
-                        ErrorCode::DownloadFailed,
-                        format!("{url} refused to send commit {sha}; some servers only serve branches and tags"),
-                        Suggestion::text("name a branch or tag after # instead of a commit"),
-                    )
-                } else {
-                    e
-                }
-            })?;
+            .map_err(|e| refused_commit(e, url, sha))?;
             self.run_watched(
                 &[
                     os("-C"),
@@ -686,6 +686,24 @@ fn release_set(w: &Wanted, url: &str, repo: &RepoUrl, r: &Resolved) -> ReleaseSe
 }
 
 /// A failed git run as a typed error.
+/// What a failure that needs a login says, so [`refused_commit`] keeps it.
+const LOGIN_NEEDED: &str = "the repository needs a login";
+
+/// A fetch of commit `sha` from `url` that failed `download_failed`: the server refused
+/// to send it (some serve only branch and tag tips). Naming one is the fix, so it is
+/// never retryable. Any other error, and one that needs a login, stays as it is.
+fn refused_commit(e: Error, url: &str, sha: &str) -> Error {
+    if e.code != ErrorCode::DownloadFailed || e.message.contains(LOGIN_NEEDED) {
+        return e;
+    }
+    Error::new(
+        ErrorCode::DownloadFailed,
+        format!("{url} refused to send commit {sha}; some servers only serve branches and tags"),
+        Suggestion::text("name a branch or tag after # instead of a commit"),
+    )
+    .retryable(false)
+}
+
 fn failure(purpose: &str, repo: &RepoUrl, stderr: &str) -> Error {
     let last = stderr
         .lines()
@@ -704,9 +722,7 @@ fn failure(purpose: &str, repo: &RepoUrl, stderr: &str) -> Error {
     {
         return Error::new(
             ErrorCode::DownloadFailed,
-            format!(
-                "{message} (the repository needs a login; private repositories are not supported)"
-            ),
+            format!("{message} ({LOGIN_NEEDED}; private repositories are not supported)"),
             Suggestion::text(
                 "use a public repository, or download the addon and: omaddons install <path>",
             ),
@@ -971,6 +987,55 @@ mod tests {
         assert_eq!(resolve(&both, Some("x")).map(|r| r.tag), Some(false));
         assert_eq!(parse_ls_remote(""), RemoteRefs::default());
         assert_eq!(resolve(&RemoteRefs::default(), None), None);
+    }
+
+    /// A commit the server refuses to send is `download_failed` and never retryable (the
+    /// fix names a branch or tag); a failure that needs a login, and any other code, pass
+    /// through as they are.
+    #[test]
+    fn a_refused_commit_is_never_retryable() {
+        let repo = RepoUrl {
+            url: "https://codeberg.org/o/r".into(),
+            host: "codeberg.org".into(),
+            path: "/o/r".into(),
+        };
+        let refused = failure(
+            "fetch",
+            &repo,
+            "fatal: remote error: upload-pack: not our ref 0123",
+        );
+        let e = refused_commit(refused, &repo.url, A);
+        assert_eq!((e.code, e.retryable), (ErrorCode::DownloadFailed, false));
+        assert!(
+            e.message.contains("refused to send commit"),
+            "{}",
+            e.message
+        );
+        assert_eq!(
+            e.fix.display(),
+            "name a branch or tag after # instead of a commit"
+        );
+        let login = || {
+            failure(
+                "fetch",
+                &repo,
+                "fatal: could not read Username for 'https://codeberg.org': terminal prompts disabled",
+            )
+        };
+        let kept = refused_commit(login(), &repo.url, A);
+        assert_eq!(
+            (kept.message.as_str(), kept.retryable),
+            (login().message.as_str(), false)
+        );
+        let network = Error::new(
+            ErrorCode::Network,
+            "timed out",
+            Suggestion::text("retry later"),
+        );
+        assert_eq!(
+            refused_commit(network, &repo.url, A).code,
+            ErrorCode::Network
+        );
     }
 
     #[test]

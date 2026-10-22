@@ -2376,7 +2376,6 @@ The README describes the intended behaviour; these are the places where the code
 
 | Bead | Priority | Where the code differs |
 |---|---|---|
-| `omad-peud` | P3 | A `git:` commit the server refuses to send fails `download_failed` marked retryable, although only naming a branch or tag can help |
 | `omad-hp8r` | P3 | A failed command's envelope leaves out the `catalog_override_invalid` warning the run found before failing (a successful one carries it) |
 
 ---
