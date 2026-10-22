@@ -228,7 +228,8 @@ pub fn dismiss(ctx: &Context) -> Result<DismissOutcome> {
             .collect();
         of_dismiss(&parts)
     };
-    check(ctx.if_match.as_deref(), &bound(&seen), &preview)?;
+    // A dry run previews afresh, whatever token it is given: the current one is its
+    // answer (README "Previews and --if-match").
     if ctx.dry_run {
         let token = bound(&seen).token();
         return Ok(DismissOutcome {
@@ -240,6 +241,7 @@ pub fn dismiss(ctx: &Context) -> Result<DismissOutcome> {
             warnings,
         });
     }
+    check(ctx.if_match.as_deref(), &bound(&seen), &preview)?;
     let guard = GlobalLock::acquire(&world.paths, "errors dismiss")?;
     ctx.notes.warn_all(&recover_under(
         &guard,

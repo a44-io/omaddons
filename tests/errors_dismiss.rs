@@ -233,6 +233,35 @@ fn the_token_binds_a_dismissal_to_what_was_read() {
         json!(["omaddons", "errors", "dismiss", "-t", "retail", "--dry-run"])
     );
     assert!(!ack_file(&home).exists(), "nothing acknowledged");
+    // A dry run given the stale token previews afresh: the current token, nothing
+    // written, no doorbell.
+    let bell = home.env.cache().join("omaddons/doorbell.json");
+    let rang = fs::read(&bell).ok();
+    let preview = support::run(
+        &home,
+        &[
+            "errors",
+            "dismiss",
+            "-t",
+            "retail",
+            "--dry-run",
+            "--if-match",
+            &token,
+        ],
+    );
+    let previewed = preview.expect(0);
+    assert!(!ack_file(&home).exists(), "nothing acknowledged");
+    assert_eq!(fs::read(&bell).ok(), rang, "no ring");
+    assert_eq!(
+        previewed["data"]["precondition"].as_str(),
+        Some(support::token(&home, "retail").as_str()),
+        "{}",
+        preview.context()
+    );
+    assert_ne!(
+        previewed["data"]["precondition"].as_str(),
+        Some(token.as_str())
+    );
     // Bound to a fresh read, it acknowledges exactly that.
     let token = support::token(&home, "retail");
     let bound = support::run(
