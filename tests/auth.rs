@@ -145,6 +145,78 @@ fn set_status_and_clear() {
     assert_eq!(mode(&file), 0o600);
 }
 
+/// A change to nothing records none: clearing no token, or storing the one stored,
+/// writes nothing and adds no history line, though it still recovers first.
+#[cfg(debug_assertions)]
+#[test]
+fn a_change_to_nothing_records_nothing() {
+    let home = Home::new(&["wow"]);
+    let set = |token: &str| {
+        let r = home.exec_input(
+            &argv(&["auth", "github", "set"]),
+            &[],
+            format!("{token}\n").as_bytes(),
+        );
+        assert_eq!(r.code, 0, "{}", r.context());
+    };
+    let clear = || home.run(&["auth", "github", "clear"]).expect(0);
+    clear();
+    assert!(
+        !credentials(&home).exists(),
+        "nothing to clear: nothing made"
+    );
+    clear();
+    set(TOKEN);
+    let file = credentials(&home).join("github");
+    let stored = fs::metadata(&file).unwrap().modified().unwrap();
+    set(TOKEN);
+    assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), stored);
+    set("ghp_OTHERc4n4ry0123456789");
+    clear();
+    let history = home.run(&["history"]).expect(0);
+    let auth: Vec<String> = history["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        // ubs:ignore — a history kind, not a secret
+        .filter(|e| e["kind"] == "auth")
+        .map(|e| e["argv"][3].as_str().unwrap_or_default().to_owned())
+        .collect();
+    // Newest first.
+    assert_eq!(auth, ["clear", "set", "set"], "{history}");
+
+    // A no-op clear still takes the lock and recovers an interrupted install first.
+    let src = home.env.root().join("src");
+    let foo = common::addons::addon_folder(
+        &src,
+        "Foo",
+        &[("Foo.toc", &common::addons::toc("120105", &[]))],
+        &[],
+    );
+    let crashed = home.exec_with(
+        &argv(&["install", &foo.display().to_string(), "-t", "retail"]),
+        &[("OMADDONS_FAILPOINTS", "engine.journal.prepared=abort")],
+    );
+    assert_eq!(crashed.code, -1, "{}", crashed.context());
+    let again = home.run(&["auth", "github", "clear"]).expect(0);
+    let codes: Vec<&Value> = again["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| &w["code"])
+        .collect();
+    assert!(codes.contains(&&json!("journal_recovered")), "{again}");
+    let history = home.run(&["history"]).expect(0);
+    let lines = history["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        // ubs:ignore — a history kind, not a secret
+        .filter(|e| e["kind"] == "auth")
+        .count();
+    assert_eq!(lines, 3, "{history}");
+}
+
 #[test]
 fn env_then_config_then_file_and_never_github_token() {
     let home = Home::new(&["wow"]);

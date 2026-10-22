@@ -315,8 +315,25 @@ fn write(ctx: &Context, paths: &Paths, content: &[u8]) -> Result<()> {
     }
     let scopes = ScopeTable::new(paths, &[], None)?;
     let mut s = WriteSession::untracked(Writer::Auth, &scopes, "credentials");
-    ensure_dir_all(&mut s, paths.config_dir())?;
     let dir = paths.credentials_dir();
+    let file = paths.credential_file("github");
+    // A change to nothing records none, and writes nothing: a missing file and an empty
+    // one are both no token. One that cannot be read is rewritten.
+    let stored = match std::fs::read(&file) {
+        Ok(bytes) => Some(bytes),
+        // ubs:ignore — an io::ErrorKind, not a secret
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
+        Err(_) => None,
+    };
+    // ubs:ignore — whether the stored token changes, never shown
+    if stored.as_deref() == Some(content) {
+        // Still tightens a directory others could read: a repair, not a change.
+        if dir.is_dir() {
+            mutate(&mut s, &dir, Op::Chmod { mode: 0o700 })?;
+        }
+        return Ok(());
+    }
+    ensure_dir_all(&mut s, paths.config_dir())?;
     if !dir.is_dir() {
         mutate(&mut s, &dir, Op::CreateDir)?;
     }
@@ -324,7 +341,7 @@ fn write(ctx: &Context, paths: &Paths, content: &[u8]) -> Result<()> {
     mutate(&mut s, &dir, Op::Chmod { mode: 0o700 })?;
     mutate(
         &mut s,
-        &paths.credential_file("github"),
+        &file,
         Op::WriteFile {
             content: Content::Bytes(content),
             mode: Some(0o600),
