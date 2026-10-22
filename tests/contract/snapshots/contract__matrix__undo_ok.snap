@@ -25,6 +25,7 @@ expression: s.stable(&c.envelope)
         "Foo"
       ]
     },
+    "precondition": null,
     "reload_required": "none",
     "reverted": {
       "actor": "agent",

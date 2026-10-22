@@ -120,6 +120,21 @@ pub struct UndoOutcome {
     #[serde(flatten)]
     pub outcome: TxOutcome,
     pub sv: SvCounts,
+    /// What its plan covers, for a preview's token (M3-D46).
+    #[serde(skip)]
+    pub plan: UndoFacts,
+}
+
+/// What an undo's plan covers, so that a run can be bound to its preview (M3-D46).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UndoFacts {
+    /// The target's record generation it was planned against.
+    pub generation: u64,
+    /// Its folder operations, as its history line records them.
+    pub ops: Vec<HistoryOp>,
+    /// Each SavedVariables file it restores (relative to `WTF/`) with the stamp that file
+    /// has now ([`FileStamp::fingerprint`]; `None` when absent).
+    pub saved_variables: Vec<(String, Option<String>)>,
 }
 
 /// The SavedVariables an undo writes back after its swap (journal payload).
@@ -182,6 +197,10 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     let planned = plan(ctx, req, &entries, at, target, &running, &mut hashes, None)?;
     if req.dry_run {
         return Ok(planned.outcome(target, None, true, true, Vec::new(), None));
+    }
+    // A bound run stages nothing unless it planned what the preview showed.
+    if let Some(binding) = ctx.binding {
+        binding.undo(&planned.outcome(target, None, true, true, Vec::new(), None))?;
     }
 
     let scopes = ScopeTable::new(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
@@ -283,6 +302,10 @@ fn commit(
         Some(*tx),
     )?;
     with_predigests(&mut planned.folders.swap, &client.addons(), &predigests);
+    // Planned anew under the lock: still the previewed undo, or nothing (M3-D46).
+    if let Some(binding) = ctx.binding {
+        binding.undo(&planned.outcome(target, None, true, true, Vec::new(), None))?;
+    }
     failpoint::hit("engine.revalidated").map_err(fail)?;
 
     let key = planned.key;
@@ -418,6 +441,8 @@ fn commit(
 struct Planned {
     reverts: TxId,
     key: crate::model::TargetKey,
+    /// The record generation it was planned against.
+    generation: u64,
     folders: FolderPlan,
     record: TargetRecord,
     index: IndexChanges,
@@ -447,7 +472,25 @@ impl Planned {
                 warnings.push(w);
             }
         }
+        let wtf = ClientPaths::new(&target.client_dir).wtf();
+        let saved_variables = self
+            .sv
+            .restore
+            .iter()
+            .map(|entry| {
+                let now = FileStamp::read(&wtf.join(&entry.path))
+                    .ok()
+                    .flatten()
+                    .map(|stamp| stamp.fingerprint());
+                (entry.path.clone(), now)
+            })
+            .collect();
         UndoOutcome {
+            plan: UndoFacts {
+                generation: self.generation,
+                ops: self.folders.history.clone(),
+                saved_variables,
+            },
             undoes: self.reverts,
             outcome: TxOutcome {
                 target: target.id.clone(),
@@ -629,6 +672,7 @@ fn plan(
     Ok(Planned {
         reverts: reverted.tx,
         key,
+        generation: current.generation,
         folders,
         record,
         index,

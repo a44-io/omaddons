@@ -162,6 +162,23 @@ pub struct EngineCtx<'a> {
     /// The run's notes, which keep each committed transaction's undo should the run then
     /// panic; `None` keeps nothing.
     pub notes: Option<&'a crate::output::RunNotes>,
+    /// `--if-match`: the preview this run is bound to (M3-D46); `None` binds nothing.
+    pub binding: Option<&'a dyn Binding>,
+}
+
+/// A run bound to the preview it was confirmed from (`--if-match`, M3-D46): what it plans
+/// must be what the preview showed, or it changes nothing. The command implements it; the
+/// engine asks it before staging and again under the lock.
+pub trait Binding {
+    /// Refuses (`plan_stale`) a transaction run's `plan` that is not the previewed one;
+    /// asked after planning, before anything is staged.
+    fn plan(&self, plan: &Plan) -> Result<()>;
+    /// Refuses an undo whose plan (`planned`, as its dry run reports it) is not the
+    /// previewed one; asked before staging and again, planned anew, under the lock.
+    fn undo(&self, planned: &super::undo::UndoOutcome) -> Result<()>;
+    /// The refusal for the target `target`, whose records a commit changed between
+    /// planning and the lock.
+    fn moved(&self, target: &str) -> Error;
 }
 
 /// Notes `omaddons undo <tx>` for a transaction whose history line is written: it
@@ -357,7 +374,13 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         downloads: ctx.downloads.unwrap_or(&run_downloads),
         indexes: ctx.indexes,
     };
-    let planned = plan::plan(&plan_req, &plan_ctx);
+    let planned = plan::plan(&plan_req, &plan_ctx).and_then(|plan| {
+        // A bound run stages nothing unless it planned what the preview showed.
+        match ctx.binding {
+            Some(binding) if !req.dry_run => binding.plan(&plan).map(|()| plan),
+            _ => Ok(plan),
+        }
+    });
     let plan = match planned {
         Ok(plan) => plan,
         Err(error) => {
@@ -748,6 +771,10 @@ fn locked(
     let current = load_record(paths, &key)?;
     // ubs:ignore — comparing record generations, not secrets
     let changed = current.value.generation != tp.generation;
+    // A run bound to a preview commits only onto the records the preview saw.
+    if changed && let Some(binding) = ctx.binding {
+        return Err(binding.moved(&target.id));
+    }
     let running = running_now(ctx, std::slice::from_ref(&target));
     // Re-judging is offline: it never fetches, resolves or downloads, so it needs no
     // memo, no catalog and no downloads.

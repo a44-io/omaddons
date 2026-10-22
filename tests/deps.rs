@@ -1672,6 +1672,7 @@ mod engine_api {
             downloads: None,
             indexes: None,
             notes: None,
+            binding: None,
         };
         omaddons::engine::run(&req, &ctx).unwrap()
     }

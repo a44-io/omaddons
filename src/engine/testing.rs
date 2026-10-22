@@ -400,6 +400,7 @@ impl TxScene {
             downloads: None,
             indexes: None,
             notes: None,
+            binding: None,
         };
         f(&ctx)
     }

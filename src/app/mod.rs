@@ -18,6 +18,7 @@ pub mod net_log;
 pub mod outcome;
 pub mod outdated;
 pub mod pin;
+pub mod precondition;
 pub mod remove;
 pub mod resolve_args;
 pub mod search;

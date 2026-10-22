@@ -136,6 +136,7 @@ mod support {
                 downloads: None,
                 indexes: None,
                 notes: None,
+                binding: None,
             }
         }
 

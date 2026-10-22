@@ -261,6 +261,12 @@ expression: envelope
         "takes_value": false
       },
       {
+        "about": "Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed",
+        "name": "if-match",
+        "short": null,
+        "takes_value": true
+      },
+      {
         "about": "No ANSI color",
         "name": "no-color",
         "short": null,

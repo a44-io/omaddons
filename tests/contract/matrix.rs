@@ -737,6 +737,24 @@ fn backup_list() {
 }
 
 #[test]
+fn preview_binding() {
+    let s = Scene::new();
+    s.install_foo();
+    let c = s.json(&["remove", "Foo", "-t", "retail", "--dry-run"], 0);
+    let token = c.envelope["data"]["precondition"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The target changes between the preview and the run.
+    let foo2 = s.zip("foo2");
+    s.json(&["install", "gh:o/foo", "--file", &foo2, "-t", "retail"], 0);
+    let c = s.json(&["remove", "Foo", "-t", "retail", "--if-match", &token], 1);
+    insta::assert_json_snapshot!("if_match_stale", s.stable(&c.envelope));
+    let c = s.json(&["update", "--if-match", &token], 2);
+    insta::assert_json_snapshot!("if_match_unbound_command", s.stable(&c.envelope));
+}
+
+#[test]
 fn backup_create() {
     let s = Scene::new();
     common::wtf::Wtf::at(s.home.client("_retail_"))

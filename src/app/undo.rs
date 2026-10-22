@@ -22,6 +22,7 @@ use serde::Serialize;
 use super::engine::Engine;
 use super::history::{MIN_PREFIX, TargetRef, kind_name, local_time, resolve_run, short_tx};
 use super::outcome::ItemError;
+use super::precondition;
 use super::world::World;
 use crate::cli::Context;
 use crate::engine::{SvPolicy, UndoOutcome as EngineUndo, UndoRequest, UndoSelector};
@@ -72,6 +73,9 @@ pub struct UndoData {
     pub reverted_run: Option<RunId>,
     /// Every transaction reverted (or tried), in the order they were undone.
     pub transactions: Vec<UndoTx>,
+    /// `--dry-run`: the token `--if-match` takes to bind the real run to this preview
+    /// (M3-D46); `null` for a real run.
+    pub precondition: Option<String>,
 }
 
 /// The transaction reverted.
@@ -315,21 +319,60 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
 
     let engine = Engine::new(ctx, &world, "undo")?;
     let run = RunId::new();
+    let request = |entry: &HistoryEntry, dry_run: bool| UndoRequest {
+        selector: UndoSelector::Tx(entry.tx),
+        sv_policy,
+        dry_run,
+        while_running: ctx.while_running,
+        reason: ctx.reason.clone(),
+        targets: world.resolved.targets.clone(),
+        run,
+    };
+    // `--if-match`: every undo is planned first, as its preview was, and nothing is
+    // staged unless that is what the preview showed (M3-D46).
+    let binding = match ctx.if_match.as_deref() {
+        Some(token) if !ctx.dry_run => {
+            let previewed: Vec<(&HistoryEntry, Result<EngineUndo>)> = selection
+                .entries
+                .iter()
+                .map(|entry| (*entry, engine.undo(&request(entry, true))))
+                .collect();
+            let preview = precondition::preview_argv(&ctx.argv);
+            precondition::check(Some(token), &undo_precondition(&previewed), &preview)?;
+            let tokens = previewed
+                .iter()
+                .filter_map(|(entry, result)| {
+                    let undo = result.as_ref().ok()?;
+                    let one = precondition::of_undo(&[(entry.tx, entry.target, Ok(undo))]);
+                    Some((entry.tx, one.token()))
+                })
+                .collect();
+            Some(precondition::UndoBinding { tokens, preview })
+        }
+        _ => None,
+    };
     let mut done = Vec::new();
     // Each in its own lock window; a failure does not stop the rest.
     for entry in &selection.entries {
-        let result = engine.undo(&UndoRequest {
-            selector: UndoSelector::Tx(entry.tx),
-            sv_policy,
-            dry_run: ctx.dry_run,
-            while_running: ctx.while_running,
-            reason: ctx.reason.clone(),
-            targets: world.resolved.targets.clone(),
-            run,
-        });
+        let result = engine.undo_bound(
+            &request(entry, ctx.dry_run),
+            binding.as_ref().map(|b| b as &dyn crate::engine::Binding),
+        );
         done.push((*entry, result));
     }
-    outcome(ctx, &world, &selection, run, sv_policy, done)
+    let token = ctx.dry_run.then(|| undo_precondition(&done).token());
+    outcome(ctx, &world, &selection, run, sv_policy, done, token)
+}
+
+/// The precondition of the undos `planned`, each of a selected transaction.
+fn undo_precondition(
+    planned: &[(&HistoryEntry, Result<EngineUndo>)],
+) -> precondition::Precondition {
+    let planned: Vec<precondition::UndoPlanned<'_>> = planned
+        .iter()
+        .map(|(entry, result)| (entry.tx, entry.target, result.as_ref()))
+        .collect();
+    precondition::of_undo(&planned)
 }
 
 /// What `undo`'s arguments ask for.
@@ -481,6 +524,7 @@ fn by_prefix<'e>(entries: &'e [HistoryEntry], prefix: &str) -> Result<&'e Histor
 
 /// The outcome of every transaction tried: the first undone fills M1's fields; any
 /// failure beside one undone makes the run partial; all failed is the first error.
+/// `precondition` is a dry run's token.
 fn outcome(
     ctx: &Context,
     world: &World,
@@ -488,6 +532,7 @@ fn outcome(
     run: RunId,
     policy: SvPolicy,
     done: Vec<(&HistoryEntry, Result<EngineUndo>)>,
+    precondition: Option<String>,
 ) -> Result<UndoOutcome> {
     let verbose = ctx.output.style.verbose > 0;
     let mut attempts = Vec::new();
@@ -585,6 +630,7 @@ fn outcome(
             run: (!ctx.dry_run).then_some(run),
             reverted_run: selection.reverted_run,
             transactions,
+            precondition,
         },
         warnings: unique,
         commands,

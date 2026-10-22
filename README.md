@@ -649,6 +649,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters); others accept and ignore it |
 | `--offline` | Fail any network access (`OMADDONS_OFFLINE=1`) |
 | `--while-running` | Allow folder changes while the client runs (never SavedVariables) |
+| `--if-match <TOKEN>` | Change nothing unless the plan is still the one the `--dry-run` that returned this token showed (`data.precondition`); see [Previews and `--if-match`](#previews-and---if-match). Only `remove` and `undo` take it today (later `backup restore`, `backup prune` and `errors dismiss`); on any other command it is a usage error |
 | `--no-color` | No ANSI color (also `NO_COLOR`). Color is also off with `--json`, in CI, with `TERM=dumb` and when stderr is not a terminal |
 | `--quiet` | Only errors on stderr |
 | `-v, --verbose` | More detail: paths, and debug `log` events on stderr (repeatable) |
@@ -939,7 +940,7 @@ omaddons remove DBM -t retail
 omaddons remove gh:BigWigsMods/BigWigs -t era
 ```
 
-Unmanaged, linked (symlinked) and `Blizzard_*` folders, and names that match no managed addon, are refused with `not_managed`. A folder or ref that several managed addons answer to is `ref_ambiguous`. Without `-t`, the client is the one that manages the named addons.
+Unmanaged, linked (symlinked) and `Blizzard_*` folders, and names that match no managed addon, are refused with `not_managed`. A folder or ref that several managed addons answer to is `ref_ambiguous`. Without `-t`, the client is the one that manages the named addons. `--dry-run` returns `data.precondition`, and `--if-match <it>` removes exactly what that preview showed, or nothing (see [Previews and `--if-match`](#previews-and---if-match)).
 
 An addon whose folders were all deleted by hand is forgotten: its record and index entries go, in a transaction that records each folder (`record` ops) and that `undo` reverts. Such a remove changes no folder, so it also goes through while the game runs.
 
@@ -969,6 +970,8 @@ omaddons undo 01M51F4QY5KB --saved-variables restore   # finish a deferred resto
 ```
 
 `TX`, `--run` and `--last-by` cannot be combined. A prefix that matches several transactions or runs is `not_found`, with the candidates in `details.candidates`.
+
+`--dry-run` returns `data.precondition`, and `--if-match <it>` reverts exactly what that preview showed, or nothing: after a newer change, bare `undo` would pick another run, and the bound run refuses with `plan_stale` instead (see [Previews and `--if-match`](#previews-and---if-match)).
 
 When one transaction of a run cannot be undone (`undo_conflict`, say), the others still are. The result is then `partial`, and `transactions[]` in the JSON data holds one result per transaction. The fields before it describe the first transaction undone, as they always did. When every transaction fails, `undo` fails with the first error.
 
@@ -1426,7 +1429,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `download_failed` | 1 | no (a refused commit currently says yes; see Known issues) | the git binary could not clone or fetch a `git:` ref on another host: it needs a login (private repositories are not supported), the server refused to send the commit (fix: name a branch or tag), or another git failure |
 | `http_status` | 1 | 5xx only | unexpected status; `details.status` |
 | `hash_mismatch` | 1 | first attempt | downloaded bytes did not match the expected hash |
-| `plan_stale` | 1 | yes | another run changed the target between plan and commit, a folder `adopt` hashed changed before the lock, or a `git:` branch moved between resolve and checkout |
+| `plan_stale` | 1 | yes (no under `--if-match`) | another run changed the target between plan and commit, a folder `adopt` hashed changed before the lock, or a `git:` branch moved between resolve and checkout; under `--if-match`, the run is no longer what its preview showed (`details.changed`, fix the `--dry-run` form; see [Previews and `--if-match`](#previews-and---if-match)) |
 | `offline` | 1 | no | `--offline` blocked a request |
 | `bad_archive` | 1 | no | malformed, encrypted, or not Stored/Deflate |
 | `distribution_disabled` | 1 | no | reserved for CurseForge (M5) |
@@ -1490,6 +1493,22 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `backup_space_low` | `backup create`: less than `limits.backup_min_free_mb` is free beside the client's backups; the backup is made anyway. The fix is advice: free space, or lower the setting |
 
 </details>
+
+### Previews and `--if-match`
+
+A confirm dialog, or an agent that previews before it acts, must not run something other than what it showed. A `--dry-run` of a destructive command returns `data.precondition`, a token describing exactly what the run would do, and the real run with `--if-match <token>` does that or nothing. `remove` and `undo` bind today; `backup restore`, `backup prune` and `errors dismiss` will.
+
+```bash
+omaddons remove Foo -t retail --dry-run --json     # data.precondition: "pc1:…"
+omaddons remove Foo -t retail --if-match pc1:…     # exactly that removal, or plan_stale
+```
+
+- The real run plans again and computes the token from its own plan before it stages anything, and compares it again under the lock (a commit that slips in between counts too).
+- A difference is `plan_stale`, not retryable (the same token can only fail again), and nothing is changed. `details.changed` names the parts that differ: `command`, `targets` (a target's records changed, with their generation), `selection` (what it would change) and `observed` (what it saw, such as the SavedVariables an undo would restore, or whether a transaction can be undone). `fix_argv` is the same command with `--dry-run` in place of `--if-match <token>`: preview again.
+- `remove`'s token covers the folders it moves out and the records it changes. `undo`'s covers the transactions it reverts, their folder operations, the SavedVariables files each restores and those files' state now.
+- The token is `pc1:` and 64 hex digits. Nothing is stored: it holds as long as what it describes is unchanged, and it is no credential.
+- `--if-match` is opt-in: commands without it behave as before. On a command that does not bind it is a usage error, and so is a malformed token. A `--dry-run` that is given one previews afresh and returns the current token.
+- Real runs carry `precondition: null`.
 
 ### stderr events
 
@@ -2195,6 +2214,8 @@ Exit codes  0 ok (check partial) · 1 failed (see retryable) · 2 usage · 3 not
 
 Rules
   - --dry-run first for anything destructive; --force only after reading the refusal.
+  - Bind the real remove or undo to that preview: --if-match <data.precondition>. A plan_stale
+    answer (not retryable) means the world changed since: preview again.
   - Never write into Interface/AddOns yourself; every change must go through omaddons to stay undoable.
   - --offline for read-only work; net-log shows the requests that reached the network (the 50 most recent; --limit N).
   - update installs the newest releases on every client in one run; one undo reverts it. Pinned addons stay

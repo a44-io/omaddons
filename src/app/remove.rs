@@ -18,6 +18,7 @@ use super::engine::Engine;
 use super::history::TargetRef;
 use super::install::all_failed;
 use super::outcome::ItemError;
+use super::precondition;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -49,6 +50,9 @@ pub struct RemoveData {
     pub reload_required: ReloadRequired,
     /// `null` when no swap happened.
     pub atomic_swap: Option<bool>,
+    /// `--dry-run`: the token `--if-match` takes to bind the real run to this preview
+    /// (M3-D46); `null` for a real run.
+    pub precondition: Option<String>,
 }
 
 /// One requested addon.
@@ -239,8 +243,22 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         run: RunId::new(),
         no_deps: false,
     };
-    // A remove fetches nothing.
-    let done = Engine::new(ctx, &world, "remove")?.run(&req, None)?;
+    // A remove fetches nothing. `--if-match` binds the run to its preview's plan.
+    let binding = ctx
+        .if_match
+        .clone()
+        .map(|token| precondition::RemoveBinding {
+            token,
+            preview: precondition::preview_argv(&ctx.argv),
+        });
+    let done = Engine::new(ctx, &world, "remove")?.run_bound(
+        &req,
+        None,
+        binding.as_ref().map(|b| b as &dyn crate::engine::Binding),
+    )?;
+    let token = ctx
+        .dry_run
+        .then(|| precondition::of_remove(&done.plan).token());
     let built: Vec<(RemoveItem, Option<Error>)> =
         requests.iter().map(|r| item(r, target_id, &done)).collect();
     let errors: Vec<(String, Error)> = built
@@ -286,6 +304,7 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
             items: built.into_iter().map(|(i, _)| i).collect(),
             reload_required: outcome.map_or(ReloadRequired::None, |o| o.reload_required),
             atomic_swap: tx.and(outcome.map(|o| o.atomic_swap)),
+            precondition: token,
         },
         warnings: unique,
         commands: tx

@@ -32,6 +32,7 @@ expression: s.stable(&c.envelope)
         "version": "1"
       }
     ],
+    "precondition": null,
     "reload_required": "none",
     "target": {
       "id": "retail",

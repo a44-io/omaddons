@@ -15,7 +15,7 @@ pub mod swap;
 pub mod tx;
 pub mod undo;
 
-pub use tx::{EngineCtx, FAILPOINTS, TxOutcome, TxOutcomes, TxRequest, TxTarget, run};
-pub use undo::{SvCounts, SvPolicy, UndoOutcome, UndoRequest, UndoSelector, undo};
+pub use tx::{Binding, EngineCtx, FAILPOINTS, TxOutcome, TxOutcomes, TxRequest, TxTarget, run};
+pub use undo::{SvCounts, SvPolicy, UndoFacts, UndoOutcome, UndoRequest, UndoSelector, undo};
 #[cfg(test)]
 pub(crate) mod testing;

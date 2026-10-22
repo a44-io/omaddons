@@ -63,6 +63,24 @@ impl FileStamp {
         self.size
     }
 
+    /// Every field as one string: equal for equal stamps, so a preview can record what it
+    /// observed and a later run compare it (M3-D46).
+    pub fn fingerprint(&self) -> String {
+        let kind = if self.file_type.is_file() {
+            "f"
+        } else if self.file_type.is_dir() {
+            "d"
+        } else if self.file_type.is_symlink() {
+            "l"
+        } else {
+            "o"
+        };
+        format!(
+            "{}:{}:{kind}:{:o}:{}:{}:{}",
+            self.dev, self.ino, self.mode, self.size, self.mtime_ns, self.ctime_ns
+        )
+    }
+
     /// Whether a change made after this stamp was read at `read_at_ns` (wall clock) is
     /// sure to move its `ctime`: the `ctime` is older than the read by the racy slack,
     /// the coarse one for whole-second timestamps.

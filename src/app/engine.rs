@@ -9,7 +9,7 @@ use crate::engine::indexes::DepIndexes;
 use crate::engine::inspect::ArchiveLimits;
 use crate::engine::plan::DownloadMemo;
 use crate::engine::retention::RetentionLimits;
-use crate::engine::{EngineCtx, TxOutcomes, TxRequest, UndoOutcome, UndoRequest};
+use crate::engine::{Binding, EngineCtx, TxOutcomes, TxRequest, UndoOutcome, UndoRequest};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::{Actor, Channel, Target};
 use crate::net::{Http, NetConfig, NetLog, stack};
@@ -99,6 +99,15 @@ impl Engine {
     }
 
     fn ctx<'a>(&'a self, cache: Option<&'a ReleaseCache<'a>>) -> EngineCtx<'a> {
+        self.bound_ctx(cache, None)
+    }
+
+    /// The engine's context, its runs bound to a preview by `binding` (`--if-match`).
+    fn bound_ctx<'a>(
+        &'a self,
+        cache: Option<&'a ReleaseCache<'a>>,
+        binding: Option<&'a dyn Binding>,
+    ) -> EngineCtx<'a> {
         EngineCtx {
             paths: &self.paths,
             http: self.http.as_ref(),
@@ -119,6 +128,7 @@ impl Engine {
             downloads: Some(&self.downloads),
             indexes: Some(&self.indexes),
             notes: Some(&self.notes),
+            binding,
         }
     }
 
@@ -177,9 +187,28 @@ impl Engine {
         crate::engine::run(req, &self.ctx(cache))
     }
 
+    /// [`Engine::run`], bound to a preview (`--if-match`) when `binding` is given.
+    pub fn run_bound(
+        &self,
+        req: &TxRequest,
+        cache: Option<&ReleaseCache<'_>>,
+        binding: Option<&dyn Binding>,
+    ) -> Result<TxOutcomes> {
+        crate::engine::run(req, &self.bound_ctx(cache, binding))
+    }
+
     /// Reverts the transaction `req` selects.
     pub fn undo(&self, req: &UndoRequest) -> Result<UndoOutcome> {
         crate::engine::undo(req, &self.ctx(None))
+    }
+
+    /// [`Engine::undo`], bound to a preview (`--if-match`) when `binding` is given.
+    pub fn undo_bound(
+        &self,
+        req: &UndoRequest,
+        binding: Option<&dyn Binding>,
+    ) -> Result<UndoOutcome> {
+        crate::engine::undo(req, &self.bound_ctx(None, binding))
     }
 
     /// For a change command that ends with nothing to send to the engine: a journal a

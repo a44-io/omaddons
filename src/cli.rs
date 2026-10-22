@@ -86,6 +86,10 @@ pub struct GlobalArgs {
     /// Allow folder changes while the client runs (never SavedVariables)
     #[arg(long, global = true)]
     pub while_running: bool,
+    /// Change nothing unless the plan is still the one the --dry-run that returned this
+    /// token (data.precondition) showed
+    #[arg(long, global = true, value_name = "TOKEN")]
+    pub if_match: Option<String>,
     /// No ANSI color
     #[arg(long, global = true)]
     pub no_color: bool,
@@ -219,6 +223,9 @@ pub struct Context {
     pub offline_by_env: bool,
     pub dry_run: bool,
     pub while_running: bool,
+    /// `--if-match`: the preview token a destructive run is bound to (M3-D46), already
+    /// checked to be well formed and given to a command that binds.
+    pub if_match: Option<String>,
     /// The raw `-t` value; the registry resolves it.
     pub target: Option<String>,
     pub started: Instant,
@@ -267,6 +274,9 @@ impl Context {
                 Suggestion::command(fix_argv(&with_flag_value(argv, "--reason", &cut))),
             ));
         }
+        if let Some(token) = &global.if_match {
+            check_if_match(token, command, argv)?;
+        }
         Ok(Self {
             output,
             command,
@@ -277,6 +287,7 @@ impl Context {
             offline_by_env: env("OMADDONS_OFFLINE").as_deref() == Some("1"),
             dry_run: global.dry_run,
             while_running: global.while_running,
+            if_match: global.if_match.clone(),
             target: global.target.clone(),
             started,
             progress: crate::output::ProgressSink::none(),
@@ -284,6 +295,42 @@ impl Context {
             stdin_is_tty,
         })
     }
+}
+
+/// `usage` unless `--if-match <token>` goes with a command whose runs bind to a preview
+/// (M3-D46) and `token` is a well-formed precondition token. Off a binding command the
+/// fix drops the flag for a command that only reads, and is the command's help for one
+/// that changes something; a malformed token's fix is the preview that returns one.
+fn check_if_match(token: &str, command: &str, argv: &[String]) -> Result<(), Error> {
+    use crate::app::precondition::{BINDING_COMMANDS, is_token, preview_argv};
+    if !BINDING_COMMANDS.contains(&command) {
+        let (last, rest) = BINDING_COMMANDS.split_last().unwrap_or((&"", &[]));
+        let fix = if crate::app::mutates(command) {
+            let mut help = vec!["omaddons".to_owned(), "help".to_owned()];
+            help.extend(command.split(' ').map(str::to_owned));
+            Suggestion::command(help)
+        } else {
+            Suggestion::command(fix_argv(&without_flag(argv, "--if-match")))
+        };
+        return Err(Error::new(
+            ErrorCode::Usage,
+            format!(
+                "--if-match binds a run to its preview, and only {} and {last} take it, not {command}",
+                rest.join(", ")
+            ),
+            fix,
+        ));
+    }
+    if !is_token(token) {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            format!(
+                "--if-match takes the precondition token a --dry-run returns (data.precondition: pc1: and 64 hex digits), not {token:?}"
+            ),
+            Suggestion::command(preview_argv(argv)),
+        ));
+    }
+    Ok(())
 }
 
 /// The program: parse `args`, run, render, and exit with a code from the general exit
