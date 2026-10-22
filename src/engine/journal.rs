@@ -1173,10 +1173,7 @@ fn roll_back_preserving(
     let mut intents = parsed.preserve.clone();
     if intents.is_empty() {
         let live = ClientPaths::new(&prepared.client_dir).wtf();
-        let displaced = roll_back_wtf(s, &live, &parsed.steps).map_err(|error| {
-            let why = super::preserve::redacted(prepared, &error.message);
-            stopped(tx, prepared, Stop::UnexpectedState, &why)
-        })?;
+        let displaced = roll_back_wtf(s, tx, prepared, &live, &parsed.steps)?;
         let items = candidates(prepared, displaced).map_err(incomplete)?;
         if !items.is_empty() {
             let id = crate::model::BackupId::new();
@@ -1264,23 +1261,30 @@ fn classify(step: &StepRecord, live: &Path) -> Unexpected {
     }
 }
 
-/// [`roll_back`] for a journal that moves `WTF/` (`live`), by rule 2: a step in neither
-/// state that [`classify`] can place is left as it is and the walk goes on, its displaced
-/// side becoming an item to preserve; one it cannot place stops the walk.
+/// [`roll_back`] for `prepared`'s journal, which moves `WTF/` (`live`), by rule 2: a step
+/// in neither state that [`classify`] can place is left as it is and the walk goes on, its
+/// displaced side becoming an item to preserve; one it cannot place stops recovery
+/// (`unexpected_state`) with everything kept.
 fn roll_back_wtf(
     s: &mut WriteSession<'_>,
+    tx: &TxId,
+    prepared: &Prepared,
     live: &Path,
     steps: &[StepRecord],
 ) -> Result<Vec<PreserveItem>> {
     let mut displaced = Vec::new();
     for (at, step) in steps.iter().enumerate().rev() {
         match ran_after(step, &steps[..at]) {
+            // A rename that fails is the walk's own error: the journal stays, as ever.
             Ok(true) => undo(s, step)?,
             Ok(false) => {}
             Err(neither) => match classify(step, live) {
                 Unexpected::Replaced => {}
                 Unexpected::Displaced(item) => displaced.push(item),
-                Unexpected::Unrecognized => return Err(neither),
+                Unexpected::Unrecognized => {
+                    let why = super::preserve::redacted(prepared, &neither.message);
+                    return Err(stopped(tx, prepared, Stop::UnexpectedState, &why));
+                }
             },
         }
         failpoint::hit("engine.recover.step")
