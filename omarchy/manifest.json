@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "a44.omaddons",
+  "name": "omaddons",
+  "version": "0.0.0-unstamped",
+  "author": "a44",
+  "description": "World of Warcraft addons on every client: updates, Lua errors and WTF backups, from the omaddons CLI.",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": { "service": "Service.qml", "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "omaddons",
+    "description": "One gamepad for every WoW client: a badge for pending addon updates, urgent when something is broken or an addon threw Lua errors, and a keyboard panel to update, undo, back up and restore. Every action is an omaddons command line, recorded and undoable.",
+    "category": "Games",
+    "aliases": ["omaddons", "wow", "warcraft", "addons"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": { "binary": "", "panelWidth": 540, "autoCheck": "On", "notifyUpdates": "Off", "notifyErrors": "On", "refreshIntervalSec": 300 },
+    "schema": [
+      { "key": "binary", "type": "path", "label": "omaddons binary", "defaultValue": "", "description": "Empty runs the binary that installed the widget (omaddons omarchy install stamps its path). Set a path to run another build." },
+      { "key": "panelWidth", "type": "integer", "label": "Panel width", "min": 400, "max": 800, "step": 20, "defaultValue": 540 },
+      { "key": "autoCheck", "type": "enum", "label": "Check for updates when due", "options": ["On", "Off"], "defaultValue": "On", "description": "Run omaddons outdated in the background when a client's last check is older than check_interval_hours in omaddons' config.toml." },
+      { "key": "notifyUpdates", "type": "enum", "label": "Notify about new updates", "options": ["On", "Off"], "defaultValue": "Off" },
+      { "key": "notifyErrors", "type": "enum", "label": "Notify about Lua errors after a session", "options": ["On", "Off"], "defaultValue": "On" },
+      { "key": "refreshIntervalSec", "type": "integer", "label": "Fallback refresh (seconds)", "min": 30, "max": 3600, "step": 30, "defaultValue": 300, "description": "Safety-net refresh behind the doorbell; 15 s while the panel is open." }
+    ]
+  }
+}

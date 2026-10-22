@@ -8,11 +8,17 @@ set -euo pipefail
 # @meta version 0.1.0
 # @meta require-tools cargo,git
 
-# @cmd Run the full local gate: fmt, clippy, tests, ubs on changed files, cargo deny on dependency changes
-# @flag --all  Run cargo deny even when Cargo.toml, Cargo.lock and deny.toml are unchanged
-# @meta require-tools ubs,cargo-deny
+# @cmd Run the full local gate: fmt, clippy, tests, the widget pipeline, ubs on changed files, cargo deny on dependency changes
+# @flag --all  Run cargo deny even when Cargo.toml, Cargo.lock and deny.toml are unchanged, and the widget's QML step when omarchy/ is
+# @meta require-tools ubs,cargo-deny,bun
 gate() {
     scripts/gate.sh ${argc_all:+--all}
+}
+
+# @cmd Run the widget pipeline as the gate does, QML step included: envelopes from the binary, bun test, the argv check, qmltestrunner
+# @meta require-tools bun
+widget-test() {
+    scripts/widget-test.sh --qml
 }
 
 # @cmd Benchmark the checkpoint's timing targets with hyperfine on a synthetic home (never part of the gate)

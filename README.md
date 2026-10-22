@@ -2402,15 +2402,18 @@ br ready                     # work that is ready now
 
 ### The local gate
 
-There is no CI (decision D16). Every commit that changes code (`*.rs`, `Cargo.*`, `rust-toolchain.toml`, `deny.toml`, lint config, the catalog, test fixtures and snapshots) passes the gate first:
+There is no CI (decision D16). Every commit that changes code (`*.rs`, `Cargo.*`, `rust-toolchain.toml`, `deny.toml`, lint config, the catalog, the bar widget under `omarchy/`, test fixtures and snapshots) passes the gate first:
 
 ```bash
-argc gate          # cargo fmt --check, clippy --all-targets -D warnings, cargo test,
-                   # ubs on changed files, cargo deny when Cargo.toml/Cargo.lock/deny.toml changed
-argc gate --all    # also run cargo deny unconditionally
+argc gate          # cargo fmt --check, clippy --all-targets -D warnings, cargo test, the widget
+                   # pipeline, ubs on changed files, cargo deny when Cargo.toml/Cargo.lock/deny.toml changed
+argc gate --all    # also run cargo deny, and the widget's QML step, unconditionally
+argc widget-test   # the widget pipeline alone, QML step included
 ```
 
-`argc gate` runs `scripts/gate.sh`, which can be run directly. It needs `cargo`, `git`, [`ubs`](https://github.com/Dicklesworthstone/ultimate_bug_scanner) and `cargo-deny`. Commits that touch only `.beads/`, README.md or CLAUDE.md may skip it.
+`argc gate` runs `scripts/gate.sh`, which can be run directly. It needs `cargo`, `git`, [`ubs`](https://github.com/Dicklesworthstone/ultimate_bug_scanner), `cargo-deny` and [`bun`](https://bun.sh), and Qt 6's `qmltestrunner` (from `qt6-declarative`) when the QML step runs. Commits that touch only `.beads/`, README.md or CLAUDE.md may skip it.
+
+The widget pipeline (`scripts/widget-test.sh`) runs four ordered steps over a fresh temporary directory: the real binary writes the envelopes the widget reads, `bun` tests `omarchy/Model.js` over them, the binary's own argument parser checks every command line bun built, and, when anything under `omarchy/` changed, `qmltestrunner` runs the QML tests over a copy of the plugin. The first three run on every gate, because a renamed flag or a changed envelope key breaks the widget as surely as a QML edit. Nothing generated is committed.
 
 Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`, `argc fuzz <target>`, `argc fuzz-all` and `argc bench` (the last three are checkpoint tasks, below).
 

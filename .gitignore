@@ -6,3 +6,7 @@
 *.profraw
 *.profdata
 lcov.info
+# The widget pipeline writes its fixtures to $OMADDONS_WIDGET_OUT; the one committed
+# fixture is the hand-written Build.js.
+/omarchy/tests/fixtures/*
+!/omarchy/tests/fixtures/Build.js

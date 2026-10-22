@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The local gate (vision D16): every commit that changes code runs this first and is
 # committed only when it passes. Usage: scripts/gate.sh [--all]
-#   --all   also run `cargo deny check` when no dependency file changed
+#   --all   also run `cargo deny check` when no dependency file changed, and the widget's
+#           QML step when nothing under omarchy/ changed
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -30,6 +31,15 @@ cargo clippy --locked --all-targets -- -D warnings
 
 step "cargo test --locked"
 cargo test --locked
+
+# Steps 1-3 run on every gate: a clap flag or an envelope key can break the widget as
+# surely as a QML edit. Step 4 (QML) runs when omarchy/ changed, deletions included.
+widget=()
+if ((all)) || [[ -n $({ git diff --name-only HEAD -- omarchy 2>/dev/null; git ls-files --others --exclude-standard -- omarchy; }) ]]; then
+    widget=(--qml)
+fi
+step "widget pipeline"
+scripts/widget-test.sh "${widget[@]}"
 
 if ((${#changed[@]})); then
     step "ubs on ${#changed[@]} changed file(s)"
