@@ -626,8 +626,8 @@ Item {
     }
     // A change asked in the panel that finished after every panel closed: its result
     // line as a toast; a click opens the panel.
-    if (r.kind === "mutation" && r.priority !== "background" && !panelOpen) {
-      notify(Model.resultToastArgv(lastResult.line, Build.PLUGIN_ID))
+    if (r.kind === "mutation" && r.priority !== "background" && !panelOpen && canAct) {
+      Quickshell.execDetached(Model.resultToastArgv(lastResult.line, Build.PLUGIN_ID))
     }
     changed()
     // `d` across clients: the next dismissal, after this one succeeded.
@@ -702,11 +702,13 @@ Item {
     var updatesNow = summary ? summary.updates.available : 0
     var errorsNow = summary && summary.errors ? summary.errors["new"] : 0
     var before = first ? { "updates": 0, "errorsNew": 0 } : observed
-    if (Model.rose(before.errorsNew, errorsNow, first) && switchOn("notifyErrors")) {
-      notify(Model.errorToastArgv(Model.errorFacts(targets), Build.PLUGIN_ID))
+    // Toasts are argv (M3-D14), and the error one sees only names, counts and clients
+    // (M3-D21).
+    if (Model.rose(before.errorsNew, errorsNow, first) && switchOn("notifyErrors") && canAct) {
+      Quickshell.execDetached(Model.errorToastArgv(Model.errorFacts(targets), Build.PLUGIN_ID))
     }
-    if (Model.rose(before.updates, updatesNow, first) && switchOn("notifyUpdates")) {
-      notify(Model.updateToastArgv(updatesNow, summary.updates.targets, Build.PLUGIN_ID))
+    if (Model.rose(before.updates, updatesNow, first) && switchOn("notifyUpdates") && canAct) {
+      Quickshell.execDetached(Model.updateToastArgv(updatesNow, summary.updates.targets, Build.PLUGIN_ID))
     }
     observed = { "generation": contextGeneration, "targets": targets, "updates": updatesNow, "errorsNew": errorsNow }
     autoCheck()
@@ -731,13 +733,6 @@ Item {
 
   function switchOn(key) {
     return Model.setting(root.settings, key) === "On"
-  }
-
-  // A toast as an argv (M3-D14, M3-D21), never while the binary is missing or
-  // incompatible.
-  function notify(argv) {
-    if (phase !== "ok") return
-    Quickshell.execDetached(argv)
   }
 
   // ------------------------------------------------------------- reinstall and show

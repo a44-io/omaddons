@@ -251,7 +251,7 @@ Item {
 
   function openAddOns() {
     if (!openArgv) return false
-    Quickshell.execDetached(openArgv)
+    Quickshell.execDetached(Model.addonsDirArgv(selectedTarget))
     return true
   }
 

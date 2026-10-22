@@ -160,37 +160,62 @@ fn the_manifest_is_the_planned_one() {
 }
 
 /// The widget's id is a literal in manifest.json only; every other use goes through
-/// `Build.PLUGIN_ID`, so E1's debug id seam yields a separate widget (F7 check 8). An
-/// id that merely starts with it (`a44.omaddons-fixture`) is another id.
+/// `Build.PLUGIN_ID`, so E1's debug id seam yields a separate widget (F7 check 8). It
+/// scans every QML and JS file under `omarchy/`, tests included, and must find a planted
+/// `serviceFor("<id>")`.
 #[test]
 fn the_plugin_id_is_a_literal_in_the_manifest_only() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy");
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("manifest.json")).unwrap()).unwrap();
+    let id = manifest["id"].as_str().unwrap();
+    let mut files = Vec::new();
     let mut stack = vec![root.clone()];
-    let mut seen = 0;
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 stack.push(path);
-                continue;
-            }
-            let is_code = path.extension().is_some_and(|e| e == "qml" || e == "js");
-            if !is_code {
-                continue;
-            }
-            seen += 1;
-            let text = fs::read_to_string(&path).unwrap();
-            for (at, _) in text.match_indices("a44.omaddons") {
-                let next = text[at + "a44.omaddons".len()..].chars().next();
-                assert!(
-                    next.is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_'),
-                    "{}: the literal widget id",
-                    path.strip_prefix(&root).unwrap().display()
-                );
+            } else if path.extension().is_some_and(|e| e == "qml" || e == "js") {
+                let name = path.strip_prefix(&root).unwrap().display().to_string();
+                files.push((name, fs::read_to_string(&path).unwrap()));
             }
         }
     }
-    assert!(seen > 0, "no QML or JS under omarchy/");
+    assert!(!files.is_empty(), "no QML or JS under omarchy/");
+    assert_eq!(id_literals(&files, id), Vec::<String>::new());
+
+    let bar = files
+        .iter_mut()
+        .find(|(name, _)| name == "BarWidget.qml")
+        .unwrap();
+    assert!(bar.1.contains("serviceFor(Build.PLUGIN_ID)"));
+    bar.1 = bar.1.replacen(
+        "serviceFor(Build.PLUGIN_ID)",
+        &format!("serviceFor(\"{id}\")"),
+        1,
+    );
+    let found = id_literals(&files, id);
+    assert!(
+        found.len() == 1 && found[0].starts_with("BarWidget.qml:"),
+        "{found:?}"
+    );
+}
+
+/// `name:line` of every file that names `id`. An id that merely starts with it
+/// (`a44.omaddons-fixture`) is another id.
+#[cfg(test)]
+fn id_literals(files: &[(String, String)], id: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (name, text) in files {
+        for (at, _) in text.match_indices(id) {
+            let next = text[at + id.len()..].chars().next();
+            if !next.is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+                out.push(format!("{name}:{}", text[..at].matches('\n').count() + 1));
+            }
+        }
+    }
+    out
 }
 
 /// The embedded asset table is exactly the runtime files under `omarchy/`, its tests and

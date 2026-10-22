@@ -222,7 +222,7 @@ Item {
             foreground: root.foreground
             fontFamily: root.fontFamily
             fontSize: Style.font.caption
-            onClicked: Quickshell.execDetached(["omarchy-launch-browser", entry.notes.url])
+            onClicked: if (Model.isSafeUrl(entry.notes.url)) Quickshell.execDetached(["omarchy-launch-browser", entry.notes.url])
           }
         }
       }

@@ -152,7 +152,7 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | `errors`: which addon most likely throws Lua errors, from BugGrabber's data on every client (3.3.5a included), with the attribution's method and confidence, new errors per database, and nothing an addon wrote shown unless asked for; `errors dismiss` marks what was read as seen, bound to that read; `status` shows each client's new errors, and `status --cached` counts them without opening BugGrabber's files | 🔄 Milestone 3 |
 | Automatic `WTF/` checkpoints: before the day's first change and after a play session (`backup create --auto`, which the widget runs when a client stops and for every stopped client when it starts), skipped when nothing changed, clone-only by default, within the free-space floor | ✅ Milestone 3 |
 | WowAce: `wowace:` refs and links, keyless, every tree fetched at one pinned revision; projects that need nothing from the packager but `package-as` and `@project-version@` (BugGrabber). `omaddons install buggrabber` installs each client's own build (catalog variants), and `errors` offers exactly that command where BugGrabber is missing | ✅ Done (milestone 3) |
-| The Omarchy bar widget: `omarchy install` renders it for this binary, validates it, swaps it in atomically and puts it on the bar; `omarchy status` says whether it is current and on the bar; `omarchy remove` takes it away. The button shows a badge for updates (urgent for problems and new Lua errors) and a summary on hover, and right-click checks for updates; its keyboard panel has its frame (summary, Check now, Undo last, the client filter, the view switcher, progress and results, the confirm dialog) and its five views (Updates, Installed, Issues, Search, Backups, with the restore chooser); on its own it follows a game starting and exiting, takes the after-play checkpoint and reads the session's Lua errors, checks for updates when due, and notifies about new errors (and, when asked, new updates) | 🔄 Milestone 3 (its security and contract checks are next) |
+| The Omarchy bar widget: `omarchy install` renders it for this binary, validates it, swaps it in atomically and puts it on the bar; `omarchy status` says whether it is current and on the bar; `omarchy remove` takes it away. The button shows a badge for updates (urgent for problems and new Lua errors) and a summary on hover, and right-click checks for updates; its keyboard panel has its frame (summary, Check now, Undo last, the client filter, the view switcher, progress and results, the confirm dialog) and its five views (Updates, Installed, Issues, Search, Backups, with the restore chooser); on its own it follows a game starting and exiting, takes the after-play checkpoint and reads the session's Lua errors, checks for updates when due, and notifies about new errors (and, when asked, new updates); its safety rules are scanned on every gate | 🔄 Milestone 3 (the widget's line in `status` is next) |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
@@ -1633,6 +1633,18 @@ On its own, the widget looks after a play session without being asked:
 - **Lua errors are read again** when `status` says a client's are not read yet or changed since the last read. An incomplete read is not retried on every refresh.
 - **Updates are checked in the background** when `status` says a check is due (a client never checked, or last checked longer ago than `check_interval_hours`), at most every 15 minutes, with `autoCheck` on (the default). Check now (`c`) runs regardless.
 - **Notifications:** new Lua errors after a session ("Lua errors in your last session on retail · DBM 3 · WeakAuras 1", on by default as `notifyErrors`) and new updates (off by default, `notifyUpdates`). A notification carries addon names, client ids and counts, never an error's text, and clicking it opens the panel. A change you started in the panel that finishes after you closed it also says so in a notification. None of this fires on the widget's first refresh, or while the binary is missing or from another build.
+
+The widget keeps a few rules, and every gate checks them:
+
+- It runs omaddons only with an argv from its own command table, or one the CLI printed and the widget's classifier accepted, never through a shell or as a string.
+- Besides omaddons it runs four desktop tools: `inotifywait`, `omarchy-notification-send`, `xdg-open`, and `omarchy-launch-browser`, the last only for an `https:` link to GitHub, WoWInterface, Tukui or WowAce.
+- Every omaddons process runs under the `HOME` and XDG directories the widget was installed for.
+- It writes no file.
+- It shows the CLI's strings as plain text.
+- A destructive action runs only after its preview.
+- A notification carries names and counts only.
+
+`omarchy/tests/security.test.js` scans the widget's source for code that goes around any of these, and each scan must also catch a violation planted in a copy of the source.
 
 ```bash
 omaddons omarchy                          # status: installed, current, on the bar? (bare omarchy)

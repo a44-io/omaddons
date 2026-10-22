@@ -249,10 +249,9 @@ Item {
                   text: entry.modelData.text || ""
                 }
 
-                Text {
+                PlainLabel {
                   objectName: "enterHint"
                   visible: !!entry.modelData.action
-                  textFormat: Text.PlainText
                   text: entry.modelData.kind === "capture" ? "Enter installs it" : "Enter runs the fix"
                   color: root.dim
                   font.family: root.fontFamily
