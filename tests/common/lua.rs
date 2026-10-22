@@ -87,7 +87,8 @@ fn value_into(out: &mut Vec<u8>, writer: Writer, value: &Value, depth: usize) {
     match value {
         Value::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
         Value::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
-        Value::Num(x) => out.extend_from_slice(x.to_string().as_bytes()),
+        // `2.0`, not `2`: a float that reads back as a float.
+        Value::Num(x) => out.extend_from_slice(format!("{x:?}").as_bytes()),
         Value::Str(bytes) => string_into(out, bytes),
         Value::Table(table) => {
             out.push(b'{');

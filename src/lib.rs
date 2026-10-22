@@ -19,6 +19,7 @@ pub mod error;
 pub mod fsx;
 pub mod inventory;
 pub mod limits;
+pub mod lua;
 pub mod model;
 pub mod net;
 pub mod output;

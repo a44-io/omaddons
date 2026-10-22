@@ -580,6 +580,33 @@ expression: "(politeness, REGISTRY)"
       "unit": "bytes",
       "config_key": null,
       "notes": "Size cap of the history projection"
+    },
+    {
+      "name": "LUA_MAX_DEPTH",
+      "value": {
+        "count": 64
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Table nesting the SavedVariables parser follows, building or skipping"
+    },
+    {
+      "name": "LUA_MAX_NODES",
+      "value": {
+        "count": 2000000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Values the SavedVariables parser builds per parse"
+    },
+    {
+      "name": "LUA_MAX_ISSUES",
+      "value": {
+        "count": 64
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Issues the SavedVariables parser records per parse; past it only a count"
     }
   ]
 ]

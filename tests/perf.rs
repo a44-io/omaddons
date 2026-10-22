@@ -29,7 +29,9 @@ use omaddons::model::{Channel, FolderName, Ref, RunId};
 use omaddons::sources::wowi::index::{IndexPolicy, StoredIndex, WowiEntry, WowiIndex};
 use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use omaddons::state::memo::{self, MemoEntry, ReleaseMemo};
-use support::{addon_release, drift_report, history_line, measured, median_of_21};
+use support::{
+    addon_release, drift_report, history_line, lua_workload, measured, median_of_21, peak_rss,
+};
 
 #[cfg(test)]
 mod support {
@@ -107,6 +109,57 @@ mod support {
             created_addons_dir: false,
             run: Some(run),
             backup: None,
+        }
+    }
+
+    /// This process's peak resident memory (`VmHWM`), in bytes.
+    pub fn peak_rss() -> u64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let line = status
+            .lines()
+            .find_map(|l| l.strip_prefix("VmHWM:"))
+            .unwrap();
+        let kib: u64 = line.trim().trim_end_matches("kB").trim().parse().unwrap();
+        kib * 1024
+    }
+
+    /// `len` bytes of SavedVariables for a parser resource workload, built in place (no
+    /// second copy), and the globals to build.
+    pub fn lua_workload(name: &str, len: usize) -> (Vec<u8>, &'static [&'static str]) {
+        let mut bytes = Vec::with_capacity(len);
+        let fill = |bytes: &mut Vec<u8>, piece: &[u8], reserve: usize| {
+            while bytes.len() + piece.len() + reserve <= len {
+                bytes.extend_from_slice(piece);
+            }
+        };
+        match name {
+            // Tiny tokens in a table 63 deep: the node cap, then skip mode.
+            "tiny_tokens" => {
+                bytes.extend_from_slice(b"T = ");
+                bytes.extend(std::iter::repeat_n(b'{', 63));
+                fill(&mut bytes, b"1,", 63);
+                bytes.extend(std::iter::repeat_n(b'}', 63));
+                (bytes, &["T"])
+            }
+            "one_huge_key" => {
+                bytes.extend_from_slice(b"T = { [\"");
+                fill(&mut bytes, b"k", 9);
+                bytes.extend_from_slice(b"\"] = 1 }");
+                (bytes, &["T"])
+            }
+            "fragments" => {
+                fill(&mut bytes, b"A = {[\n", 0);
+                (bytes, &["A"])
+            }
+            "deep_skipped" => {
+                let mut line = b"A = ".to_vec();
+                line.extend(std::iter::repeat_n(b'{', 64));
+                line.extend(std::iter::repeat_n(b'}', 64));
+                line.push(b'\n');
+                fill(&mut bytes, &line, 0);
+                (bytes, &[])
+            }
+            other => unreachable!("no workload {other}"),
         }
     }
 
@@ -793,4 +846,145 @@ fn clone_tree_500_mb() {
             );
         }
     }
+}
+
+/// A 4 MB BugGrabber file as a modern client writes it, median of 21 parses: under
+/// 20 ms (M3 checkpoint criterion 6).
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+fn a_4_mb_buggrabber_file_parses_under_20_ms() {
+    use common::buggrabber::{self, Writer};
+    let sample = buggrabber::modern_int(Writer::Modern);
+    let mut db = sample.clone();
+    db.entries.clear();
+    while db.render().len() < 4_000_000 {
+        db.entries
+            .extend(sample.entries.iter().cloned().cycle().take(500));
+    }
+    let bytes = db.render();
+    let parsed = omaddons::lua::parse_saved_variables(&bytes, &["BugGrabberDB"]);
+    assert!(parsed.complete && parsed.issues.is_empty());
+    let (median, times) = median_of_21(|| {
+        std::hint::black_box(omaddons::lua::parse_saved_variables(
+            &bytes,
+            &["BugGrabberDB"],
+        ));
+    });
+    measured(format_args!(
+        "savedvariables: {} bytes, {} entries: median {median:?}, max {:?}",
+        bytes.len(),
+        db.entries.len(),
+        times[times.len() - 1]
+    ));
+    assert!(
+        median < Duration::from_millis(20),
+        "median {median:?} ({times:?})"
+    );
+}
+
+/// The parser's resource workloads (M3-D17): tiny-token tables, one huge key, a flood
+/// of malformed fragments, deep skipped globals, and one file read for each of 64
+/// candidates.
+const LUA_WORKLOADS: &[&str] = &[
+    "tiny_tokens",
+    "one_huge_key",
+    "fragments",
+    "deep_skipped",
+    "sixty_four_candidates",
+];
+
+/// Each workload in a child process, so the harness's own memory does not count: peak
+/// RSS at most 3 × the input plus 16 MiB, and at most 1 s per 64 MiB parsed.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+fn the_savedvariables_parser_stays_within_its_memory_and_time_budgets() {
+    const MIB: u64 = 1 << 20;
+    let exe = std::env::current_exe().unwrap();
+    for workload in LUA_WORKLOADS {
+        let out = std::process::Command::new(&exe) // ubs:ignore — the test binary itself
+            .args([
+                "lua_resource_child",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("OMADDONS_LUA_WORKLOAD", workload)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{workload}: {stderr}");
+        let line = stderr
+            .lines()
+            .find_map(|l| l.strip_prefix("lua-resource "))
+            .unwrap_or_else(|| unreachable!("{workload}: no measurement in {stderr}"));
+        let field = |name: &str| -> u64 {
+            line.split(' ')
+                .find_map(|f| f.strip_prefix(&format!("{name}=")))
+                .and_then(|v| v.parse().ok())
+                .unwrap()
+        };
+        let (input, parsed, peak, ms) =
+            (field("input"), field("parsed"), field("peak"), field("ms"));
+        measured(format_args!(
+            "savedvariables {workload}: input {:.1} MiB ({:.0} MiB parsed), peak RSS {:.1} MiB, {ms} ms",
+            input as f64 / MIB as f64,
+            parsed as f64 / MIB as f64,
+            peak as f64 / MIB as f64,
+        ));
+        assert!(
+            peak <= 3 * input + 16 * MIB,
+            "{workload}: peak {peak} bytes for {input}"
+        );
+        assert!(
+            ms <= 1000 * parsed.div_ceil(64 * MIB),
+            "{workload}: {ms} ms for {parsed} bytes"
+        );
+    }
+}
+
+/// One workload of the test above, named by `OMADDONS_LUA_WORKLOAD`; it does nothing
+/// when run on its own.
+#[test]
+#[ignore = "a child of the_savedvariables_parser_stays_within_its_memory_and_time_budgets"]
+fn lua_resource_child() {
+    use omaddons::lua::{parse_saved_variables, read_bounded};
+    let Ok(workload) = std::env::var("OMADDONS_LUA_WORKLOAD") else {
+        return;
+    };
+    let (input, parsed, ms) = if workload == "sixty_four_candidates" {
+        // One BugGrabber file of about 1 MiB, read and parsed once per candidate: what
+        // one read holds is dropped before the next.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("!BugGrabber.lua");
+        let db = common::buggrabber::flood(common::buggrabber::Writer::Modern, 9_000);
+        fs::write(&path, db.render()).unwrap();
+        let size = fs::metadata(&path).unwrap().len();
+        let start = Instant::now();
+        for _ in 0..64 {
+            let bytes = read_bounded(&path).unwrap();
+            let parsed = parse_saved_variables(&bytes, &["BugGrabberDB"]);
+            assert!(parsed.complete);
+            std::hint::black_box(parsed);
+        }
+        (size, 64 * size, start.elapsed())
+    } else {
+        let len = if workload == "one_huge_key" {
+            32 << 20
+        } else {
+            64 << 20
+        };
+        let (bytes, wanted) = lua_workload(&workload, len);
+        let start = Instant::now();
+        let parsed = parse_saved_variables(&bytes, wanted);
+        let ms = start.elapsed();
+        assert!(parsed.issues.len() <= omaddons::limits::LUA_MAX_ISSUES);
+        std::hint::black_box(parsed);
+        (bytes.len() as u64, bytes.len() as u64, ms)
+    };
+    measured(format_args!(
+        "lua-resource input={input} parsed={parsed} peak={} ms={}",
+        peak_rss(),
+        ms.as_millis()
+    ));
 }

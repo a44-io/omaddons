@@ -130,6 +130,12 @@ pub const BACKUP_STALE_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 pub const HISTORY_TAIL_RUNS: usize = 16;
 /// The most bytes of history lines the history projection keeps.
 pub const HISTORY_TAIL_MAX_BYTES: u64 = MIB;
+/// Table nesting the SavedVariables parser follows, building or skipping.
+pub const LUA_MAX_DEPTH: usize = 64;
+/// Values the SavedVariables parser builds per parse (skipped globals build none).
+pub const LUA_MAX_NODES: u64 = 2_000_000;
+/// Issues the SavedVariables parser records per parse; past it, only a count.
+pub const LUA_MAX_ISSUES: usize = 64;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -500,6 +506,27 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Size cap of the history projection",
     ),
+    limit(
+        "LUA_MAX_DEPTH",
+        LimitValue::Count(LUA_MAX_DEPTH as u64),
+        "count",
+        None,
+        "Table nesting the SavedVariables parser follows, building or skipping",
+    ),
+    limit(
+        "LUA_MAX_NODES",
+        LimitValue::Count(LUA_MAX_NODES),
+        "count",
+        None,
+        "Values the SavedVariables parser builds per parse",
+    ),
+    limit(
+        "LUA_MAX_ISSUES",
+        LimitValue::Count(LUA_MAX_ISSUES as u64),
+        "count",
+        None,
+        "Issues the SavedVariables parser records per parse; past it only a count",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -703,6 +730,9 @@ mod tests {
         "BACKUP_STALE_AFTER",
         "HISTORY_TAIL_RUNS",
         "HISTORY_TAIL_MAX_BYTES",
+        "LUA_MAX_DEPTH",
+        "LUA_MAX_NODES",
+        "LUA_MAX_ISSUES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

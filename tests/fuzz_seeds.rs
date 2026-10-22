@@ -33,6 +33,7 @@ const TARGETS: &[&str] = &[
     "wowi_details",
     "tukui_addons",
     "atom_feed",
+    "savedvariables",
 ];
 
 fn fuzz_dir() -> PathBuf {

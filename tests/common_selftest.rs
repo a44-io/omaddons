@@ -1216,4 +1216,47 @@ mod saved_variables {
             .starts_with("...")
         );
     }
+
+    /// Every scenario file reads back through the parser whole, the same in both
+    /// formats, with `BugGrabberDB` and its entries where the builders put them.
+    #[test]
+    fn every_scenario_parses_back_the_same_in_both_formats() {
+        use omaddons::lua::{Value, parse_saved_variables};
+        let wanted = ["BugGrabberDB", "BDUI_SAVE"];
+        let modern = buggrabber::scenarios(Writer::Modern);
+        let legacy = buggrabber::scenarios(Writer::Legacy);
+        for ((name, modern), (_, legacy)) in modern.iter().zip(&legacy) {
+            for (m, l) in modern.iter().zip(legacy) {
+                let parsed = parse_saved_variables(&m.bytes, &wanted);
+                assert!(
+                    parsed.complete && parsed.issues.is_empty(),
+                    "{name}: {:?}",
+                    parsed.issues
+                );
+                assert!(
+                    parsed == parse_saved_variables(&l.bytes, &wanted),
+                    "{name}: the formats read differently"
+                );
+                let Some(Value::Table(db)) = parsed.globals.get("BugGrabberDB") else {
+                    unreachable!("{name}: no BugGrabberDB");
+                };
+                let Some(Value::Table(errors)) = db.get("errors") else {
+                    unreachable!("{name}: no errors");
+                };
+                assert!(errors.seq().count() > 0, "{name}");
+                if *name == "flood" {
+                    assert_eq!(errors.seq().count(), 500 + 2, "the entries and the tail");
+                }
+                if *name == "r152_chunked" {
+                    let Some(Value::Table(first)) = errors.seq().next() else {
+                        unreachable!("an entry");
+                    };
+                    let Some(Value::Table(chunks)) = first.get("message") else {
+                        unreachable!("a chunked message");
+                    };
+                    assert_eq!(chunks.array.len(), 2);
+                }
+            }
+        }
+    }
 }
