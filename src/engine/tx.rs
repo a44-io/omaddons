@@ -193,6 +193,12 @@ pub trait Binding {
     /// The refusal for the target `target`, whose records a commit changed between
     /// planning and the lock.
     fn moved(&self, target: &str) -> Error;
+    /// The refusal for the target `target`, whose files a partial restore puts back
+    /// changed between planning and the lock (the game wrote them): by default what
+    /// [`Self::moved`] says.
+    fn observed(&self, target: &str) -> Error {
+        self.moved(target)
+    }
 }
 
 /// Notes `omaddons undo <tx>` for a transaction whose history line is written: it
@@ -1144,6 +1150,7 @@ fn locked(
         },
         writes_wtf: false,
         staged_stamp: None,
+        staged_files: None,
         source_backup: None,
         client: None,
     };

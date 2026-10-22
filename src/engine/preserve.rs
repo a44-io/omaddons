@@ -253,12 +253,33 @@ fn surprise(path: &Path) -> Error {
 
 /// `restore_rolled_back`: an interrupted restore was rolled back, and what it had
 /// displaced, which no other copy held, is kept as the backup `intent` published. It
-/// names only the backup and the target, never an account, realm or character.
+/// names only the backup, the target and the addon folders, never an account, realm or
+/// character. A backup of single files is partial, so its fix restores them by folder
+/// (`--addon`), the only way it restores.
 pub(super) fn rolled_back(prepared: &Prepared, intent: &PreserveIntent) -> Warning {
     let target = prepared.client.as_ref().map_or_else(
         || prepared.target_key.to_string(),
         |client| client.target_id.clone(),
     );
+    let mut argv = vec![
+        "omaddons".to_owned(),
+        "backup".to_owned(),
+        "restore".to_owned(),
+        intent.id.to_string(),
+        "-t".to_owned(),
+        target.clone(),
+    ];
+    let mut folders: Vec<String> = intent
+        .items
+        .iter()
+        .filter_map(|item| super::undo::sv_folder(&item.rel))
+        .map(|folder| folder.as_str().to_owned())
+        .collect();
+    folders.sort_by_key(|f| f.to_ascii_lowercase());
+    folders.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    for folder in folders {
+        argv.extend(["--addon".to_owned(), folder]);
+    }
     Warning::new(
         WarningCode::RestoreRolledBack,
         format!(
@@ -266,14 +287,7 @@ pub(super) fn rolled_back(prepared: &Prepared, intent: &PreserveIntent) -> Warni
             intent.id
         ),
     )
-    .with_fix(Suggestion::command([
-        "omaddons".to_owned(),
-        "backup".to_owned(),
-        "restore".to_owned(),
-        intent.id.to_string(),
-        "-t".to_owned(),
-        target,
-    ]))
+    .with_fix(Suggestion::command(argv))
 }
 
 /// `message` with every account, realm and character name `prepared`'s client and stage

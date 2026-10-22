@@ -176,7 +176,7 @@ impl SvRestore {
 }
 
 /// The folder a SavedVariables path (`…/SavedVariables/<Folder>.lua[.bak]`) belongs to.
-fn sv_folder(path: &str) -> Option<FolderName> {
+pub(super) fn sv_folder(path: &str) -> Option<FolderName> {
     let name = path.rsplit('/').next()?;
     let lower = name.to_ascii_lowercase();
     let stem = [".lua.bak", ".lua"]
@@ -211,6 +211,20 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
         })?;
     if restores_wtf(&reverted) {
         return undo_whole(req, ctx, &read, at, discovered);
+    }
+    if req.sv_policy == SvPolicy::Keep && settings_only(&reverted) {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            format!(
+                "transaction {} put addons' settings back; undoing it puts them back as they were, so --saved-variables keep would leave nothing to undo",
+                reverted.tx
+            ),
+            Suggestion::command([
+                "omaddons".to_owned(),
+                "undo".to_owned(),
+                reverted.tx.to_string(),
+            ]),
+        ));
     }
     let target = &discovered.target;
     let running = running_now(ctx, std::slice::from_ref(target));
@@ -461,6 +475,7 @@ fn commit(
         },
         writes_wtf: false,
         staged_stamp: None,
+        staged_files: None,
         source_backup: None,
         client: None,
     };
@@ -644,13 +659,6 @@ fn plan(
     let entries = &history.entries[..];
     let running = running_now.contains(&target.client_dir);
     let reverted = &entries[at];
-    if reverted
-        .ops
-        .iter()
-        .any(|o| matches!(o.op, FolderOp::SavedVariables))
-    {
-        return Err(restore_undo_unsupported(reverted));
-    }
     let deferred_by = entries[at + 1..]
         .iter()
         .rposition(|e| e.kind == TxKind::Undo && e.reverts == Some(reverted.tx) && e.sv_deferred);
@@ -878,8 +886,12 @@ pub(super) fn pending_sv_restores(entries: &[HistoryEntry]) -> BTreeSet<TxId> {
 /// - rule 2: the undo `restores_sv` (its snapshot holds a SavedVariables manifest and
 ///   `--saved-variables keep` was not asked; always, for a follow-up), and a whole
 ///   restore came later: that restore's undo is the fix, `keep` the alternative;
-/// - a later `saved_variables` op conflicts with every earlier transaction, until D7
-///   gives partial restores their own rule: never silently disjoint.
+/// - rule 3: a partial restore of folder F's SavedVariables (a `saved_variables` op)
+///   counts as a write of F's SavedVariables, both ways: a later one conflicts with
+///   undoing an earlier transaction whose undo would restore F's SavedVariables (it
+///   touched F and `restores_sv`), and undoing a partial restore of F conflicts with a
+///   later transaction that wrote F's SavedVariables (a `saved_variables` op on F, or an
+///   undo that may have restored SavedVariables and touched F).
 ///
 /// Ops carrying an in-place `required_by` edit count on neither side: they are undone in
 /// place (M2-D35). A later transaction that a later undo reverted cancels out with that
@@ -899,6 +911,16 @@ fn check_conflicts(
         .map(|o| o.folder.key())
         .collect();
     let whole = restores_wtf(reverted);
+    // Rule 3: the folders whose SavedVariables undoing it writes.
+    let sv_keys: BTreeSet<&str> = reverted
+        .ops
+        .iter()
+        .filter(|o| {
+            o.edit.is_none()
+                && (matches!(o.op, FolderOp::SavedVariables) || (restores_sv && o.op.is_folder()))
+        })
+        .map(|o| o.folder.key())
+        .collect();
     let after = sv_only.unwrap_or(at) + 1;
     let later: Vec<&HistoryEntry> = entries[after..]
         .iter()
@@ -909,15 +931,21 @@ fn check_conflicts(
         o.edit.is_none()
             && match o.op {
                 FolderOp::Wtf => whole,
-                FolderOp::SavedVariables => true,
+                FolderOp::SavedVariables => whole || sv_keys.contains(o.folder.key()),
                 FolderOp::Add | FolderOp::Replace | FolderOp::Remove | FolderOp::Record => {
                     keys.contains(o.folder.key())
                 }
             }
     };
+    let restored_sv_of = |e: &HistoryEntry| {
+        matches!(e.kind, TxKind::Undo)
+            && may_have_restored(e)
+            && e.ops.iter().any(|o| sv_keys.contains(o.folder.key()))
+    };
     let touches = |e: &HistoryEntry| {
         e.ops.iter().any(conflicts)
             || (whole && matches!(e.kind, TxKind::Undo) && may_have_restored(e))
+            || restored_sv_of(e)
     };
     let undid = |e: &HistoryEntry| matches!(e.kind, TxKind::Undo) && e.reverts == Some(reverted.tx);
     let conflicting: Vec<&HistoryEntry> = later
@@ -987,6 +1015,16 @@ fn check_conflicts(
 /// Whether `entry` put a whole `WTF/` in place: a restore, or the undo of one.
 fn restores_wtf(entry: &HistoryEntry) -> bool {
     entry.ops.iter().any(|o| matches!(o.op, FolderOp::Wtf))
+}
+
+/// Whether `entry` put only addons' SavedVariables back: a partial restore, or the undo
+/// of one (M3-D27).
+fn settings_only(entry: &HistoryEntry) -> bool {
+    !entry.ops.is_empty()
+        && entry
+            .ops
+            .iter()
+            .all(|o| matches!(o.op, FolderOp::SavedVariables))
 }
 
 /// Whether the undo `entry` may have written SavedVariables: it says it restored some, or
@@ -1169,9 +1207,8 @@ fn cancelled_after(later: &[HistoryEntry], reverted: TxId) -> BTreeSet<TxId> {
     cancelled
 }
 
-/// Undoing a restore of single addons' SavedVariables (`saved_variables` ops) has rules
-/// of its own (M3-D28 rule 3, D7); until they exist this build refuses it rather than
-/// revert its AddOns side alone.
+/// A whole `WTF/` restore reached the folder undo, which it never should: `undo` sends it
+/// to the restore's own undo first.
 fn restore_undo_unsupported(reverted: &HistoryEntry) -> Error {
     Error::internal(format!(
         "transaction {} put settings back, which this omaddons cannot undo yet",
@@ -1232,23 +1269,30 @@ impl FolderPlan {
     /// No folder changes: the SavedVariables follow-up of a deferred undo. Its history
     /// still names the folders, so later undos see it touched them.
     fn record_only(reverted: &HistoryEntry) -> Self {
-        // In-place edits were undone with the folders; they claim no folder now.
+        // In-place edits were undone with the folders; they claim no folder now. A
+        // partial restore's folders stay `saved_variables` ops.
         let ops = || {
-            reverted
-                .ops
-                .iter()
-                .filter(|o| o.edit.is_none() && o.op.is_folder())
+            reverted.ops.iter().filter(|o| {
+                o.edit.is_none() && (o.op.is_folder() || matches!(o.op, FolderOp::SavedVariables))
+            })
         };
         Self {
             history: ops()
-                .map(|o| HistoryOp {
-                    op: FolderOp::Record,
-                    folder: o.folder.clone(),
-                    addon: o.addon.clone(),
-                    edit: None,
-                    backup: None,
-                    from: None,
-                    files: None,
+                .map(|o| {
+                    let settings = matches!(o.op, FolderOp::SavedVariables);
+                    HistoryOp {
+                        op: if settings {
+                            FolderOp::SavedVariables
+                        } else {
+                            FolderOp::Record
+                        },
+                        folder: o.folder.clone(),
+                        addon: o.addon.clone(),
+                        edit: None,
+                        backup: None,
+                        from: settings.then_some(crate::state::history::WtfSource::Snapshot),
+                        files: None,
+                    }
                 })
                 .collect(),
             touched: ops().map(|o| o.folder.clone()).collect(),
@@ -1300,6 +1344,21 @@ impl FolderPlan {
         for op in reverted.ops.iter().filter(|o| o.edit.is_none()) {
             let folder = &op.folder;
             plan.touched.push(folder.clone());
+            // A partial restore's folder (or its undo's): no folder moves, its
+            // SavedVariables come back as any undo's do, and the undo's own snapshot of
+            // them makes it undoable in turn (M3-D27).
+            if matches!(op.op, FolderOp::SavedVariables) {
+                plan.history.push(HistoryOp {
+                    op: FolderOp::SavedVariables,
+                    folder: folder.clone(),
+                    addon: op.addon.clone(),
+                    edit: None,
+                    backup: None,
+                    from: Some(crate::state::history::WtfSource::Snapshot),
+                    files: None,
+                });
+                continue;
+            }
             let live = live_name(&addons, folder);
             let snapshot = snapshots.join(folder.as_str());
             let needs_snapshot = matches!(op.op, FolderOp::Replace | FolderOp::Remove);
@@ -1357,7 +1416,7 @@ impl FolderPlan {
                     )
                     .details(serde_json::json!({ "tx": reverted.tx, "folder": live.as_str() })));
                 }
-                // Settings put back: `plan` refused the undo before this.
+                // A whole `WTF/` put back: `undo` sent it to the restore's own undo.
                 (FolderOp::Wtf | FolderOp::SavedVariables, _) => {
                     return Err(restore_undo_unsupported(reverted));
                 }
@@ -1493,7 +1552,14 @@ fn restored_state(
         None => None,
     };
 
-    let touched: BTreeSet<&str> = folders.touched.iter().map(FolderName::key).collect();
+    // The AddOns folders it touched: a partial restore's folders had only their
+    // SavedVariables put back, so their files index and owners stay as they are now.
+    let touched: BTreeSet<&str> = reverted
+        .ops
+        .iter()
+        .filter(|o| o.edit.is_none() && o.op.is_folder())
+        .map(|o| o.folder.key())
+        .collect();
     let mut direct: Vec<String> = Vec::new();
     for op in reverted
         .ops
@@ -1774,7 +1840,7 @@ fn plan_saved_variables(
     let folders: Vec<FolderName> = reverted
         .ops
         .iter()
-        .filter(|op| op.op.is_folder())
+        .filter(|op| op.op.is_folder() || matches!(op.op, FolderOp::SavedVariables))
         .map(|op| op.folder.clone())
         .collect();
     plan.out_of_scope = skipped.max(sv_candidates(client, &folders).skipped);
@@ -2313,15 +2379,62 @@ mod tests {
         assert_eq!(first(&[install, restore, undone], 0, None, true), None);
     }
 
-    /// Until D7 gives partial restores their rule, a later `saved_variables` op conflicts
-    /// with undoing anything before it on its target: never silently disjoint.
+    /// M3-D28 rule 3: a partial restore of a folder's SavedVariables conflicts as a write
+    /// of them, both ways, and with nothing else: a later one with undoing an earlier
+    /// transaction of that folder whose undo restores SavedVariables, and undoing one
+    /// with a later write of that folder's SavedVariables.
     #[test]
-    fn a_later_partial_restore_conflicts_with_everything_before_it() {
+    fn a_partial_restore_conflicts_where_saved_variables_are_written() {
         let key = TargetKey::new();
         let install = line(key, TxKind::Install, &[(FolderOp::Add, "Foo")]);
-        let partial = line(key, TxKind::Restore, &[(FolderOp::SavedVariables, "Bar")]);
-        let tx = partial.tx;
-        assert_eq!(first(&[install, partial], 0, None, false), Some(tx));
+        let partial =
+            |folder: &str| line(key, TxKind::Restore, &[(FolderOp::SavedVariables, folder)]);
+        let foo = partial("Foo");
+        // A later partial restore of Foo, over an install of Foo whose undo would restore
+        // Foo's SavedVariables: undo the restore first. Keeping them, nothing conflicts;
+        // and Bar's settings are another folder's.
+        assert_eq!(
+            first(&[install.clone(), foo.clone()], 0, None, true),
+            Some(foo.tx)
+        );
+        assert_eq!(first(&[install.clone(), foo.clone()], 0, None, false), None);
+        assert_eq!(
+            first(&[install.clone(), partial("Bar")], 0, None, true),
+            None
+        );
+        // Undoing the partial restore after a later write of Foo's SavedVariables: another
+        // partial restore of it, or an undo that restored some and touched Foo.
+        let again = partial("Foo");
+        assert_eq!(
+            first(&[foo.clone(), again.clone()], 0, None, true),
+            Some(again.tx)
+        );
+        let restoring = HistoryEntry {
+            reverts: Some(TxId::new()),
+            sv_restored: Some(2),
+            ..line(key, TxKind::Undo, &[(FolderOp::Remove, "Foo")])
+        };
+        assert_eq!(
+            first(&[foo.clone(), restoring.clone()], 0, None, true),
+            Some(restoring.tx)
+        );
+        // Not after an undo that restored none, an update that wrote no SavedVariables,
+        // or a partial restore of another folder.
+        let quiet = HistoryEntry {
+            sv_restored: Some(0),
+            ..restoring
+        };
+        let update = line(key, TxKind::Update, &[(FolderOp::Replace, "Foo")]);
+        for later in [quiet, update, partial("Bar")] {
+            assert_eq!(
+                first(&[foo.clone(), later.clone()], 0, None, true),
+                None,
+                "{later:?}"
+            );
+        }
+        // A whole restore before it: rule 1, whatever its folders.
+        let whole = restore_line(key);
+        assert_eq!(first(&[whole, foo.clone()], 0, None, false), Some(foo.tx));
     }
 
     fn install_as(scene: &TxScene, r: &str, name: &str, entries: &[(&str, &str)]) -> TxId {

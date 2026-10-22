@@ -113,7 +113,7 @@ pub fn preflight(
 }
 
 /// [`preflight`]'s mount checks, with the mount ids `mount` gives.
-fn topology(
+pub(super) fn topology(
     client: &ClientPaths,
     backup_dir: &Path,
     mount: &dyn Fn(&Path) -> io::Result<u64>,
@@ -339,7 +339,11 @@ pub fn plan(paths: &Paths, target: &Target, backup: &BackupRef) -> Result<Restor
 }
 
 /// A backup whose tree is not what its manifest says, or changed while it was staged.
-fn incomplete(backup: &BackupRef, first: Option<&str>, names: &WtfPathRedactor) -> Error {
+pub(super) fn incomplete(
+    backup: &BackupRef,
+    first: Option<&str>,
+    names: &WtfPathRedactor,
+) -> Error {
     Error::new(
         ErrorCode::StateCorrupt,
         format!(
@@ -402,7 +406,7 @@ impl Staged {
 }
 
 /// `backup_copied`, when `staged` wrote `bytes` to put a tree back on `target_id`.
-fn copied(target_id: &str, bytes: u64) -> Option<Warning> {
+pub(super) fn copied(target_id: &str, bytes: u64) -> Option<Warning> {
     (bytes > 0).then(|| {
         Warning::new(
             WarningCode::BackupCopied,
@@ -479,7 +483,7 @@ impl Begun {
 
 /// `game_running` while `target`'s client runs or may (M3-D29): a whole `WTF/` is never
 /// written then, whatever the running policy or `--while-running`.
-fn refuse_running(ctx: &EngineCtx<'_>, target: &Target, files: u64) -> Result<()> {
+pub(super) fn refuse_running(ctx: &EngineCtx<'_>, target: &Target, files: u64) -> Result<()> {
     let running = running_now(ctx, std::slice::from_ref(target));
     if !running.dirs.contains(&target.client_dir) {
         return Ok(());
@@ -836,6 +840,7 @@ impl Window<'_> {
                 .copy
                 .as_ref()
                 .map(|copy| copy.stamp_digest.to_string()),
+            staged_files: None,
             source_backup,
             client: Some(ClientFacts {
                 target_id: target.id.clone(),

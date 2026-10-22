@@ -10,6 +10,7 @@ pub mod ownership;
 pub mod plan;
 mod preserve;
 pub mod restore;
+pub mod restore_addons;
 pub mod retention;
 pub mod running;
 pub mod stage;

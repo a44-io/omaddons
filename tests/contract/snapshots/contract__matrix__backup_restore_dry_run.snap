@@ -6,6 +6,7 @@ expression: s.stable(&c.envelope)
   "command": "backup restore",
   "commands": [],
   "data": {
+    "addons": null,
     "backup": {
       "captured_at": "<time>",
       "id": "<ulid>",

@@ -1,0 +1,70 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup restore",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "addons": [
+      {
+        "addon": "Addon0",
+        "captured_version": null,
+        "files": {
+          "created_since": 0,
+          "replaced": 0,
+          "restored": 1
+        },
+        "folders": [
+          "Addon0"
+        ],
+        "folders_from": "folder",
+        "installed_version": null,
+        "not_in_backup": []
+      }
+    ],
+    "backup": {
+      "captured_at": "<time>",
+      "id": "<ulid>",
+      "integrity": "metadata_only",
+      "kind": "manual"
+    },
+    "before_restore": null,
+    "dry_run": false,
+    "exchange": "verified",
+    "files": null,
+    "kind": "restore",
+    "mode": "addons",
+    "precondition": null,
+    "reload_required": "none",
+    "target": {
+      "id": "retail",
+      "key": "<ulid>"
+    },
+    "tx": "<ulid>"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "backup_copied",
+      "fix": null,
+      "fix_argv": null,
+      "message": "retail: the filesystem could not clone the files put back, so 100 bytes were copied"
+    }
+  ]
+}

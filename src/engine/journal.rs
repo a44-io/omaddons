@@ -156,6 +156,11 @@ pub struct Prepared {
     /// rollback that finds the stage changed since (played on) keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staged_stamp: Option<String>,
+    /// A partial restore's staged files (M3-D27), each with its stamp when it was
+    /// journaled: a rollback keeps one changed since, or every one whose source backup is
+    /// gone. `None` for a whole `WTF/`, whose stage `staged_stamp` judges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_files: Option<Vec<StagedFile>>,
     /// The backup the stage was copied from, and its directory's identity then: a
     /// stage whose source is gone holds the last copy of that content, and is kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,6 +177,36 @@ pub struct ClientFacts {
     pub target_id: String,
     pub family: crate::rules::Family,
     pub version: String,
+}
+
+/// One file a partial restore staged: its place under the stage's `WTF/`, with `/`, and
+/// its [`file_stamp`] when the transaction was journaled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StagedFile {
+    pub rel: String,
+    pub stamp: String,
+}
+
+/// The stamp digest of the one entry at `path`: its kind, size, mode and mtime, which a
+/// rename keeps (its `ctime` and inode are not part of it). `None` when nothing is there.
+pub fn file_stamp(path: &Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    let kind = meta.file_type();
+    let kind = if kind.is_file() {
+        "file"
+    } else if kind.is_dir() {
+        "dir"
+    } else if kind.is_symlink() {
+        "symlink"
+    } else {
+        "other"
+    };
+    let mtime = meta
+        .mtime()
+        .saturating_mul(1_000_000_000)
+        .saturating_add(meta.mtime_nsec());
+    let entry = ("", kind, meta.size(), meta.mode() & 0o7777, mtime);
+    Some(fsx::StampDigest::from_entries([entry]).to_string())
 }
 
 /// The backup a restore's stage was copied from.
@@ -1275,8 +1310,9 @@ fn roll_back_wtf(
     let mut displaced = Vec::new();
     for (at, step) in steps.iter().enumerate().rev() {
         match ran_after(step, &steps[..at]) {
-            // A rename that fails is the walk's own error: the journal stays, as ever.
-            Ok(true) => undo(s, step)?,
+            // A rename that fails is the walk's own error: the journal stays, as ever. A
+            // partial restore's step names a file under `WTF/`, so its error is redacted.
+            Ok(true) => undo(s, step).map_err(|e| redacted(prepared, e))?,
             Ok(false) => {}
             Err(neither) => match classify(step, live) {
                 Unexpected::Replaced => {}
@@ -1287,10 +1323,21 @@ fn roll_back_wtf(
                 }
             },
         }
-        failpoint::hit("engine.recover.step")
-            .map_err(|e| Error::io(&step.from, &e, Suggestion::command(["omaddons", "status"])))?;
+        failpoint::hit("engine.recover.step").map_err(|e| {
+            let error = Error::io(&step.from, &e, Suggestion::command(["omaddons", "status"]));
+            redacted(prepared, error)
+        })?;
     }
     Ok(displaced)
+}
+
+/// `error` with every account, realm and character name `prepared`'s client and stage
+/// hold replaced, in its message and its details.
+fn redacted(prepared: &Prepared, mut error: Error) -> Error {
+    error.message = super::preserve::redacted(prepared, &error.message);
+    let details = super::preserve::redacted(prepared, &error.details.to_string());
+    error.details = serde_json::from_str(&details).unwrap_or_else(|_| serde_json::json!({}));
+    error
 }
 
 /// Rule 3's candidates, after the walk: the `displaced` versions, and the staged tree at
@@ -1298,6 +1345,9 @@ fn roll_back_wtf(
 /// journaled (the game played on it), or its source is gone (it holds that content's last
 /// copy, which a metadata match cannot vouch for).
 fn candidates(prepared: &Prepared, mut items: Vec<PreserveItem>) -> Result<Vec<PreserveItem>> {
+    if let Some(files) = &prepared.staged_files {
+        return Ok(staged_file_candidates(prepared, files, items));
+    }
     let staged = prepared.commit.stage_dir.join("WTF");
     let Some(identity) = FileId::of(&staged) else {
         return Ok(items);
@@ -1323,6 +1373,38 @@ fn candidates(prepared: &Prepared, mut items: Vec<PreserveItem>) -> Result<Vec<P
         });
     }
     Ok(items)
+}
+
+/// [`candidates`] for a partial restore, file by file: each staged copy still at its stage
+/// path whose stamp changed since it was journaled (the game wrote it while it was live,
+/// before rollback brought it back), or every one when its source backup is gone (it holds
+/// that content's last copy).
+fn staged_file_candidates(
+    prepared: &Prepared,
+    files: &[StagedFile],
+    mut items: Vec<PreserveItem>,
+) -> Vec<PreserveItem> {
+    let staged = prepared.commit.stage_dir.join("WTF");
+    let gone = source_gone(prepared);
+    for file in files {
+        let path = staged.join(&file.rel);
+        let Some(identity) = FileId::of(&path) else {
+            continue;
+        };
+        // ubs:ignore — comparing paths, not secrets
+        if items.iter().any(|item| item.path == path) {
+            continue;
+        }
+        // ubs:ignore — comparing stat digests of a file (evidence of change), not secrets
+        if gone || file_stamp(&path).as_deref() != Some(file.stamp.as_str()) {
+            items.push(PreserveItem {
+                path,
+                identity,
+                rel: file.rel.clone(),
+            });
+        }
+    }
+    items
 }
 
 /// Whether the tree a `writes_wtf` stage was copied from is gone: a restore's backup, by
@@ -1589,6 +1671,7 @@ mod tests {
             creates_dirs: vec!["/c/_retail_/Interface/AddOns".into()],
             writes_wtf: false,
             staged_stamp: None,
+            staged_files: None,
             source_backup: None,
             client: None,
             commit: CommitPayload {
@@ -1994,6 +2077,7 @@ mod tests {
             creates_dirs: Vec::new(),
             writes_wtf: false,
             staged_stamp: None,
+            staged_files: None,
             source_backup: None,
             client: None,
             commit: CommitPayload {
@@ -2153,6 +2237,7 @@ mod tests {
                 creates_dirs: Vec::new(),
                 writes_wtf: false,
                 staged_stamp: None,
+                staged_files: None,
                 source_backup: None,
                 client: None,
                 commit: CommitPayload {
@@ -2320,6 +2405,7 @@ mod tests {
                 creates_dirs: Vec::new(),
                 writes_wtf: false,
                 staged_stamp: None,
+                staged_files: None,
                 source_backup: None,
                 client: None,
                 commit: CommitPayload {

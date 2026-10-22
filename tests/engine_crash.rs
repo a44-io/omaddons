@@ -1812,11 +1812,12 @@ mod restore_support {
     use omaddons::engine::inspect::ArchiveLimits;
     use omaddons::engine::journal::{RecoveryEnv, recover_all};
     use omaddons::engine::restore::{Probe, RestoreRequest, plan, preflight, reserve, restore};
+    use omaddons::engine::restore_addons::{self, AddonSv, AddonsRequest};
     use omaddons::engine::retention::RetentionLimits;
     use omaddons::engine::{EngineCtx, SvPolicy, UndoRequest, UndoSelector};
     use omaddons::error::{Error, Result};
     use omaddons::fsx::{GlobalLock, InflightLock, LockUse, PruneReason, ScopeTable, prune};
-    use omaddons::model::{Actor, Channel, RunId, TargetKey, TxId};
+    use omaddons::model::{Actor, Channel, FolderName, RunId, TargetKey, TxId};
     use omaddons::net::{Http, Request, Response};
     use omaddons::output::ProgressSink;
     use omaddons::rules::RulesTable;
@@ -1845,7 +1846,8 @@ mod restore_support {
     /// in-flight lock, the probing preflight (whose leftovers are pruned on a refusal, as
     /// the command's cleanup will), then the engine, with `OMADDONS_RESTORE_FAILPOINTS`
     /// armed around it alone. With `OMADDONS_RESTORE_MODE=undo`, the engine's undo of the
-    /// newest transaction instead (the restore a scene committed). Its outcome as JSON.
+    /// newest transaction instead (the restore a scene committed); with `addon`, the
+    /// partial restore of Foo's SavedVariables (D7). Its outcome as JSON.
     pub fn engine_restore(root: &Path) -> Value {
         let var = |key: &str| PathBuf::from(std::env::var_os(key).unwrap());
         let paths = Paths::with_roots(
@@ -1992,6 +1994,36 @@ mod restore_support {
                 return failed(e);
             }
         };
+        if std::env::var("OMADDONS_RESTORE_MODE").as_deref() == Ok("addon") {
+            let addons = [AddonSv {
+                addon: "Foo".to_owned(),
+                folders: vec![FolderName::new("Foo").unwrap()],
+            }];
+            let planned = match restore_addons::plan(&paths, target, &backup, &addons) {
+                Ok(planned) => planned,
+                Err(e) => return failed(e),
+            };
+            let mut req = Some(AddonsRequest {
+                target: &discovered,
+                backup: &backup,
+                reservation,
+                topology,
+                tx,
+                inflight,
+                plan: &planned,
+                addons: &addons,
+                reason: None,
+                run: RunId::new(),
+            });
+            return armed(&mut || {
+                let req = req
+                    .take()
+                    .ok_or_else(|| Error::internal("restored twice"))?;
+                restore_addons::restore(&ctx, req).map(
+                    |done| json!({"ok": true, "tx": done.tx, "lock_held_ms": done.lock_held_ms}),
+                )
+            });
+        }
         let mut req = Some(RestoreRequest {
             target: &discovered,
             backup: &backup,
@@ -3375,4 +3407,861 @@ fn a_crash_at_the_automatic_backup_leaves_the_change_wholly_old() {
         ["\"config\"", "\"backup\"", "\"install\""],
         "the setting, then the backup just before the change"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// Partial restores (D7, M3-D27): Foo's SavedVariables put back from a backup, one journaled
+// rename per file and the stage into the snapshot, in the restore scenes' child process.
+// The oracle: each of Foo's files wholly old or wholly new at every crash, and all of them
+// on one side once recovered, the side the journal's durable phase says; the rest of
+// `WTF/` byte for byte; history naming the restore exactly when it stands, its pre-restore
+// files kept in its snapshot for undo; nothing staged left once the sweep has run.
+
+#[cfg(test)]
+mod addon_support {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    use serde_json::Value;
+
+    use super::restore_support::{Preserving, RestoreScene, Restored, listed};
+    use super::*;
+
+    /// Foo's account-wide file: rewritten since the backup, so replaced.
+    pub const ACCOUNT: &str = "Account/FAKEACCT/SavedVariables/Foo.lua";
+    /// Foo's file for FakeChar: deleted since, so put back.
+    pub const CHAR: &str = "Account/FAKEACCT/FakeRealm/FakeChar/SavedVariables/Foo.lua";
+    /// Foo's file for FakeCharTwo: created since, so moved aside.
+    pub const CHAR_TWO: &str = "Account/FAKEACCT/FakeRealm/FakeCharTwo/SavedVariables/Foo.lua";
+
+    /// Foo's three files, each with its bytes, `None` when absent.
+    pub type Foo = BTreeMap<&'static str, Option<Vec<u8>>>;
+
+    /// A restore scene (two accounts, three characters, a symlink, a `0500` directory)
+    /// whose Foo files were played on since the backup in all three ways.
+    pub struct AddonScene {
+        pub r: RestoreScene,
+        /// Foo's files as backed up: what the restore puts back.
+        pub backed_up: Foo,
+        /// Foo's files now: what it replaces.
+        pub played: Foo,
+    }
+
+    impl AddonScene {
+        pub fn new() -> Self {
+            let r = RestoreScene::new(true);
+            let backed_up = foo(&r.backup_dir().join("WTF"));
+            let wtf = r.client().join("WTF");
+            fs::remove_file(wtf.join(CHAR)).unwrap();
+            fs::write(wtf.join(CHAR_TWO), "FooDB = { created_since = true }\n").unwrap();
+            let played = foo(&wtf);
+            Self {
+                r,
+                backed_up,
+                played,
+            }
+        }
+
+        pub fn wtf(&self) -> PathBuf {
+            self.r.client().join("WTF")
+        }
+
+        pub fn foo(&self) -> Foo {
+            foo(&self.wtf())
+        }
+
+        pub fn rest(&self) -> BTreeMap<String, Vec<u8>> {
+            rest(&self.wtf())
+        }
+
+        /// The engine's partial restore of Foo in a child process: its outcome, or `None`
+        /// when an `abort` killed it.
+        pub fn restore(&self, engine: &str, env: &[(&str, &str)]) -> Option<Value> {
+            let mut env = env.to_vec();
+            env.push(("OMADDONS_RESTORE_MODE", "addon"));
+            self.r.restore(engine, &env)
+        }
+
+        /// The same in the background, for a scene that acts at a `pause`.
+        pub fn spawn_restore(
+            &self,
+            engine: &str,
+            env: &[(&str, &str)],
+        ) -> (std::process::Child, PathBuf) {
+            let mut env = env.to_vec();
+            env.push(("OMADDONS_RESTORE_MODE", "addon"));
+            self.r.spawn_restore(engine, &env)
+        }
+
+        /// The `recovered` backups, each with its id, whether it is partial, and its
+        /// files' bytes.
+        pub fn recovered(&self) -> Vec<(String, bool, BTreeMap<String, Vec<u8>>)> {
+            listed(&self.r.client().join("Interface/.omaddons/backups"))
+                .into_iter()
+                .filter_map(|dir| {
+                    let meta: Value =
+                        serde_json::from_slice(&fs::read(dir.join("backup.json")).ok()?).ok()?;
+                    (meta["kind"] == "recovered").then(|| {
+                        let id = dir.file_name().unwrap().to_string_lossy().into_owned();
+                        (id, meta["partial"] == true, every(&dir.join("WTF"), &[]))
+                    })
+                })
+                .collect()
+        }
+    }
+
+    pub fn foo(wtf: &Path) -> Foo {
+        [ACCOUNT, CHAR, CHAR_TWO]
+            .into_iter()
+            .map(|rel| (rel, fs::read(wtf.join(rel)).ok()))
+            .collect()
+    }
+
+    /// Every file and symlink under `wtf` but Foo's three, with its bytes (a symlink's,
+    /// its target's text): what a partial restore of Foo leaves byte for byte.
+    pub fn rest(wtf: &Path) -> BTreeMap<String, Vec<u8>> {
+        every(wtf, &[ACCOUNT, CHAR, CHAR_TWO])
+    }
+
+    /// Every file and symlink under `dir` but those at `skip`, with its bytes (a
+    /// symlink's, its target's text).
+    pub fn every(dir: &Path, skip: &[&str]) -> BTreeMap<String, Vec<u8>> {
+        let wtf = dir;
+        let mut out = BTreeMap::new();
+        let mut pending = vec![PathBuf::new()];
+        while let Some(rel) = pending.pop() {
+            let Ok(listing) = fs::read_dir(wtf.join(&rel)) else {
+                continue;
+            };
+            for entry in listing {
+                let entry = entry.unwrap();
+                let child = rel.join(entry.file_name());
+                let key = child.to_string_lossy().into_owned();
+                let kind = entry.file_type().unwrap();
+                if kind.is_dir() {
+                    pending.push(child);
+                } else if kind.is_symlink() {
+                    let target = fs::read_link(wtf.join(&child)).unwrap();
+                    out.insert(key, target.to_string_lossy().into_owned().into_bytes());
+                } else if !skip.contains(&key.as_str()) {
+                    out.insert(key, fs::read(wtf.join(&child)).unwrap());
+                }
+            }
+        }
+        out
+    }
+
+    /// What a partial restore scene runs in its child.
+    #[derive(Debug, Clone, Copy)]
+    pub enum Op {
+        /// The partial restore of Foo over the played-on files.
+        RestoreAddon,
+        /// The undo of that restore, committed first and played on since: Foo's files go
+        /// back as they were before it (the moved-aside one back, the restored one moved
+        /// out).
+        UndoRestoreAddon,
+    }
+
+    /// `op` with `engine` armed (a fresh scene), then the oracle: each of Foo's files
+    /// wholly old or wholly new and the rest of `WTF/` unchanged when it ends; a reader
+    /// reports an unfinished one and changes nothing; the next command that takes the lock
+    /// recovers (with `recover` armed it may die mid-recovery, keeping the journal, and the
+    /// command after it finishes), all of Foo's files then on one side, the side the
+    /// journal's phase says; history names it exactly when it stands; a standing restore's
+    /// snapshot holds Foo's files as they were, for undo; no snapshot of one that never
+    /// committed is left; what was staged goes with the sweep once old; and two more
+    /// commands that take the lock change nothing.
+    pub fn crash(op: Op, engine: &str, recover: &str) -> Restored {
+        let a = AddonScene::new();
+        let s = &a.r.s;
+        let (old, new, kind) = match op {
+            Op::RestoreAddon => (a.played.clone(), a.backed_up.clone(), "restore"),
+            Op::UndoRestoreAddon => {
+                let restored = a.restore("", &[]).unwrap();
+                assert_eq!(restored["ok"], true, "{restored}");
+                let path = a.wtf().join(ACCOUNT);
+                fs::write(path, "FooDB = { since_the_restore = true }\n").unwrap();
+                (a.foo(), a.played.clone(), "undo")
+            }
+        };
+        let rest = a.rest();
+        let (old_generation, old_history) = (s.generation(), s.history());
+        let outcome = match op {
+            Op::RestoreAddon => a.restore(engine, &[]),
+            Op::UndoRestoreAddon => a.r.undo(engine, &[]),
+        };
+        let journal_text = || -> Vec<String> {
+            s.journals()
+                .iter()
+                .map(|p| fs::read_to_string(p).unwrap_or_default())
+                .collect()
+        };
+        let context = |what: &str| {
+            format!(
+                "{op:?} with {engine:?}, then {recover:?}: {what}\noutcome {outcome:?}\nold {old:?}\nnew {new:?}\nnow {:?}\njournals {:?}",
+                a.foo(),
+                journal_text()
+            )
+        };
+        let crashed = outcome.is_none();
+        let ok = outcome.as_ref().is_some_and(|o| o["ok"] == true);
+        if !crashed && engine.contains("=abort") {
+            assert!(ok, "{}", context("not on this path, so it must succeed"));
+        }
+
+        // Each file wholly old or wholly new, the rest untouched.
+        let at_crash = a.foo();
+        for (rel, now) in &at_crash {
+            assert!(
+                now == &old[rel] || now == &new[rel],
+                "{}",
+                context(&format!("{rel} is neither old nor new"))
+            );
+        }
+        assert_eq!(a.rest(), rest, "{}", context("the rest of WTF/ changed"));
+        let pending_before = support::pending(s);
+        let swapped = journal_text()
+            .iter()
+            .any(|t| t.contains("\"type\":\"swapped\""));
+
+        // A reader reports the unfinished change and changes nothing.
+        let journals = s.journals();
+        let before = s.snapshot();
+        let status = s
+            .run(&["status".to_owned(), "--json".to_owned()], "")
+            .expect(0);
+        assert_eq!(
+            warning_codes(&status)
+                .iter()
+                .any(|c| c == "journal_pending"),
+            pending_before > 0,
+            "{}",
+            context("status warnings")
+        );
+        assert_eq!(s.snapshot(), before, "{}", context("status wrote"));
+        assert_eq!(s.journals(), journals, "{}", context("status recovered"));
+
+        // The next command that takes the lock recovers.
+        let install_bar = a.r.install_bar();
+        let mut recovering_crashed = false;
+        let mut recovered_by = None;
+        if !recover.is_empty() {
+            let first = s.run(&install_bar, recover);
+            recovering_crashed = first.code == -1;
+            if recovering_crashed {
+                assert_eq!(
+                    support::pending(s),
+                    pending_before,
+                    "{}",
+                    context("a recovery that died dropped the journal")
+                );
+                for (rel, now) in &a.foo() {
+                    assert!(
+                        now == &old[rel] || now == &new[rel],
+                        "{}",
+                        context(&format!("{rel} split by a recovery that died"))
+                    );
+                }
+            } else {
+                recovered_by = Some(first.expect(0));
+            }
+        }
+        let bar = recovered_by.unwrap_or_else(|| s.run(&install_bar, "").expect(0));
+        assert_eq!(
+            warning_codes(&bar).iter().any(|c| c == "journal_recovered"),
+            pending_before > 0,
+            "{}",
+            context("recovery warning")
+        );
+        assert!(s.journals().is_empty(), "{}", context("journals left"));
+
+        let now = a.foo();
+        let went_new = now == new;
+        assert!(went_new || now == old, "{}", context("Foo's files split"));
+        if pending_before > 0 {
+            assert_eq!(
+                went_new,
+                swapped,
+                "{}",
+                context("recovery went against the journal's phase")
+            );
+        }
+        assert_eq!(a.rest(), rest, "{}", context("the rest of WTF/ changed"));
+        let mut history = old_history.clone();
+        if went_new {
+            history.push(kind.to_owned());
+        }
+        history.push("install".to_owned());
+        assert_eq!(s.history(), history, "{}", context("history"));
+        assert_eq!(
+            s.generation(),
+            old_generation + u64::from(went_new) + 1,
+            "{}",
+            context("generation")
+        );
+        if went_new && matches!(op, Op::RestoreAddon) {
+            // The undo data: the pre-restore manifest, and the files as they were.
+            let tx = s.history_txs()[old_history.len()].clone();
+            let snapshot = a.r.client().join("Interface/.omaddons/snapshots").join(&tx);
+            assert!(
+                snapshot.join("WTF.manifest.json").is_file(),
+                "{}",
+                context("no SavedVariables manifest")
+            );
+            for rel in [ACCOUNT, CHAR_TWO] {
+                assert_eq!(
+                    fs::read(snapshot.join("WTF").join(rel)).ok(),
+                    old[rel],
+                    "{}",
+                    context(&format!("the snapshot's {rel}"))
+                );
+            }
+        }
+        // A crash before the journal may leave the SavedVariables copies an undo made
+        // before the lock, which the sweep takes once old (below).
+        let orphans = s.orphan_snapshots();
+        assert!(
+            orphans.is_empty() || recovering_crashed || pending_before == 0,
+            "{}",
+            context(&format!(
+                "snapshots of a change that never committed {orphans:?}"
+            ))
+        );
+
+        // What a crash left staged or snapshotted goes with the sweep once it is old, and
+        // recovery run again changes nothing.
+        a.r.age_leftovers();
+        s.age_orphan_snapshots();
+        s.run(&s.args(&["pin", "Bar"]), "").expect(0);
+        let left = listed(&a.r.stage_root());
+        assert!(
+            left.is_empty(),
+            "{}",
+            context(&format!("staged leftovers {left:?}"))
+        );
+        let orphans = s.orphan_snapshots();
+        assert!(
+            orphans.is_empty(),
+            "{}",
+            context(&format!("aged leftovers survived the sweep {orphans:?}"))
+        );
+        s.run(&s.args(&["unpin", "Bar"]), "").expect(0);
+        assert_eq!(
+            a.foo(),
+            now,
+            "{}",
+            context("a later command changed Foo's files")
+        );
+        assert!(s.journals().is_empty(), "{}", context("journals after"));
+
+        Restored {
+            crashed,
+            ok,
+            new_at_crash: at_crash == new,
+            pending: pending_before > 0,
+            went_new,
+            recovering_crashed,
+        }
+    }
+
+    /// A partial restore crashed after its renames, then the game wrote Foo's
+    /// account-wide file anew (a new file at its path); recovered by a child with
+    /// `engine` armed (a crash or a failure at one step of the walk or the protocol), then
+    /// by the binary. Whatever happened, both versions of that file (the pre-restore one
+    /// and the game's) still exist somewhere, and every backup listed is whole; a failure
+    /// is `preservation_incomplete` (or the walk's own error) and names no account, realm
+    /// or character. The next recovery completes: the game's file live, the other files
+    /// rolled back, exactly one partial `recovered` backup holding the pre-restore file,
+    /// under the id the intent reserved when there was one, nothing left in the stage or
+    /// the journal; two more commands that take the lock change nothing of that.
+    pub fn preserve_crash(engine: &str) -> Preserving {
+        let a = AddonScene::new();
+        let s = &a.r.s;
+        assert!(a.restore("engine.restore.exchanged=abort", &[]).is_none());
+        let live = a.wtf().join(ACCOUNT);
+        fs::remove_file(&live).unwrap();
+        fs::write(&live, "FooDB = { the_game = true }\n").unwrap();
+        let game = fs::read(&live).unwrap();
+        let pre = a.played[ACCOUNT].clone().unwrap();
+
+        let outcome = a.r.recover(engine);
+        let context = |what: &str| format!("recovery with {engine:?}: {what}\noutcome {outcome:?}");
+        let stopped = outcome.as_ref().is_none_or(|o| o["ok"] == false);
+        if let Some(o) = outcome.as_ref().filter(|o| o["ok"] == false) {
+            common::privacy::assert_private(&o.to_string());
+            assert!(
+                matches!(
+                    o["details"]["reason"].as_str(),
+                    Some("preservation_incomplete")
+                ) || o["code"] == "io",
+                "{}",
+                context("a failure stops as preservation_incomplete, or the walk's own error")
+            );
+        }
+        // Both versions of the file still exist: the game's live, the pre-restore one in
+        // the stage, the assembly or a backup.
+        assert_eq!(
+            fs::read(&live).unwrap(),
+            game,
+            "{}",
+            context("the game's file moved")
+        );
+        let meta = a.r.client().join("Interface/.omaddons");
+        let mut places: Vec<PathBuf> = Vec::new();
+        for stage in listed(&meta.join("stage")) {
+            places.push(stage.join("WTF").join(ACCOUNT));
+            places.extend(
+                listed(&stage.join("recovered"))
+                    .iter()
+                    .map(|a| a.join("WTF").join(ACCOUNT)),
+            );
+        }
+        places.extend(
+            listed(&meta.join("backups"))
+                .iter()
+                .map(|b| b.join("WTF").join(ACCOUNT)),
+        );
+        assert!(
+            places
+                .iter()
+                .any(|p| fs::read(p).ok().as_deref() == Some(pre.as_slice())),
+            "{}",
+            context("the pre-restore file is gone")
+        );
+        for backup in listed(&meta.join("backups")) {
+            assert!(
+                backup.join("backup.json").is_file() && backup.join("manifest.json").is_file(),
+                "{}",
+                context(&format!(
+                    "a half-made backup is listed: {}",
+                    backup.display()
+                ))
+            );
+        }
+        let intent = a.r.intent();
+
+        let bar = s.run(&a.r.install_bar(), "");
+        let envelope = bar.expect(0);
+        common::privacy::assert_private_all(&bar.stdout, &bar.stderr);
+        assert!(s.journals().is_empty(), "{}", context("journals left"));
+        let now = a.foo();
+        assert_eq!(
+            now[ACCOUNT].as_deref(),
+            Some(game.as_slice()),
+            "{}",
+            context("game's")
+        );
+        assert_eq!(
+            (&now[CHAR], &now[CHAR_TWO]),
+            (&a.played[CHAR], &a.played[CHAR_TWO]),
+            "{}",
+            context("the other files rolled back")
+        );
+        let kept = a.recovered();
+        assert_eq!(kept.len(), 1, "{}", context(&format!("recovered {kept:?}")));
+        let (id, partial, files) = &kept[0];
+        assert!(
+            *partial,
+            "{}",
+            context("a backup of single files is partial")
+        );
+        assert_eq!(
+            files.get(ACCOUNT).map(Vec::as_slice),
+            Some(pre.as_slice()),
+            "{}",
+            context("not the pre-restore file")
+        );
+        if let Some(reserved) = &intent {
+            assert_eq!(
+                id,
+                reserved,
+                "{}",
+                context("not the id the intent reserved")
+            );
+        }
+        // When this command recovered it, its warning names the backup and how it restores.
+        if let Some(rolled) = envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["code"] == "restore_rolled_back")
+        {
+            assert_eq!(
+                rolled["fix_argv"],
+                json!([
+                    "omaddons", "backup", "restore", id, "-t", "retail", "--addon", "Foo"
+                ]),
+                "{rolled}"
+            );
+        }
+        assert!(
+            listed(&a.r.stage_root()).is_empty(),
+            "{}",
+            context("stage left")
+        );
+        for args in [["pin", "Bar"], ["unpin", "Bar"]] {
+            s.run(&s.args(&args), "").expect(0);
+            assert_eq!(
+                a.recovered().len(),
+                1,
+                "{}",
+                context("a later recovery changed it")
+            );
+            assert_eq!(a.foo(), now);
+        }
+        Preserving {
+            stopped,
+            intent: intent.is_some(),
+        }
+    }
+}
+
+/// Every failpoint as a crash of a partial restore. Its renames having all run never
+/// selects roll-forward on their own: only `swapped` does.
+#[cfg(debug_assertions)]
+#[test]
+fn crash_matrix_restore_addon() {
+    use addon_support::{Op, crash};
+
+    let mut crashed_at = Vec::new();
+    for failpoint in FAILPOINTS {
+        let done = crash(Op::RestoreAddon, &format!("{failpoint}=abort"), "");
+        if done.crashed {
+            crashed_at.push(*failpoint);
+        }
+        if matches!(
+            *failpoint,
+            "engine.restore.exchanged" | "engine.restore.snapshotted"
+        ) {
+            assert!(
+                done.new_at_crash && !done.went_new,
+                "{failpoint}: renamed but not swapped must roll back: {done:?}"
+            );
+        }
+    }
+    let _ = std::io::Write::write_fmt(
+        &mut std::io::stderr(),
+        format_args!(
+            "partial restore: crashed at {} of {} failpoints: {crashed_at:?}\n",
+            crashed_at.len(),
+            FAILPOINTS.len()
+        ),
+    );
+    for on_path in [
+        "engine.restore.staged",
+        "engine.lock.acquired",
+        "engine.revalidated",
+        "engine.journal.prepared",
+        "engine.snapshot.sv",
+        "engine.restore.exchanged",
+        "engine.restore.snapshotted",
+        "engine.swapped",
+        "engine.record.written",
+        "engine.history.appended",
+        "engine.committed",
+    ] {
+        assert!(
+            crashed_at.contains(&on_path),
+            "{on_path} is on a partial restore's path: {crashed_at:?}"
+        );
+    }
+}
+
+/// Every failpoint as a crash of the undo of a partial restore played on since: Foo's
+/// files go back as they were before it, wholly or not at all.
+#[cfg(debug_assertions)]
+#[test]
+fn crash_matrix_undo_restore_addon() {
+    use addon_support::{Op, crash};
+
+    let mut crashed_at = Vec::new();
+    for failpoint in FAILPOINTS {
+        if crash(Op::UndoRestoreAddon, &format!("{failpoint}=abort"), "").crashed {
+            crashed_at.push(*failpoint);
+        }
+    }
+    let _ = std::io::Write::write_fmt(
+        &mut std::io::stderr(),
+        format_args!(
+            "undo of a partial restore: crashed at {} of {} failpoints: {crashed_at:?}\n",
+            crashed_at.len(),
+            FAILPOINTS.len()
+        ),
+    );
+    for on_path in [
+        "engine.snapshot.prestaged",
+        "engine.lock.acquired",
+        "engine.journal.prepared",
+        "engine.snapshot.sv",
+        "engine.swapped",
+        "engine.history.appended",
+        "engine.committed",
+    ] {
+        assert!(
+            crashed_at.contains(&on_path),
+            "{on_path} is on the undo of a partial restore's path: {crashed_at:?}"
+        );
+    }
+}
+
+/// A crash before each journaled rename of a partial restore (one per file, then the
+/// stage into the snapshot), and in its recovery: after each rename its rollback undoes,
+/// and as a roll-forward starts.
+#[cfg(debug_assertions)]
+#[test]
+fn a_crash_at_every_rename_and_recovery_of_a_partial_restore() {
+    use addon_support::{Op, crash};
+
+    let mut renames = Vec::new();
+    for n in 1..=6 {
+        let spec = format!("engine.swap.before_rename=abort@{n}");
+        if !crash(Op::RestoreAddon, &spec, "").crashed {
+            break;
+        }
+        renames.push(n);
+    }
+    assert_eq!(renames, [1, 2, 3, 4], "three files and the stage");
+    let mut recoveries = Vec::new();
+    for k in 1..=6 {
+        let recover = format!("engine.recover.step=abort@{k}");
+        let done = crash(
+            Op::RestoreAddon,
+            "engine.restore.snapshotted=abort",
+            &recover,
+        );
+        if !done.recovering_crashed {
+            break;
+        }
+        recoveries.push(k);
+    }
+    assert_eq!(
+        recoveries,
+        [1, 2, 3, 4],
+        "each step rolled back, crashed after"
+    );
+    let done = crash(
+        Op::RestoreAddon,
+        "engine.swapped=abort",
+        "engine.recover.forward=abort",
+    );
+    assert!(done.recovering_crashed && done.went_new, "{done:?}");
+}
+
+/// I/O failures where a partial restore writes (its staged copies' folders, files and
+/// modes, the journal's appends, the manifest, the renames, the record), each injected once
+/// at every hit in turn: each file stays wholly old or wholly new and what is left
+/// recovers. Before `swapped` it fails the restore; after it, the record's writes roll
+/// forward in process and the restore stands.
+#[cfg(debug_assertions)]
+#[test]
+fn io_failures_in_a_partial_restore_leave_each_file_whole() {
+    use addon_support::{Op, crash};
+
+    for (failpoint, most) in [
+        ("fsx.create_dir.before", 3),
+        ("fsx.clone_file.before", 2),
+        ("fsx.chmod.before", 2),
+        ("fsx.append_durable.before", 10),
+        ("fsx.rename_with.before", 8),
+        ("fsx.write_atomic.before", 4),
+        ("fsx.write_atomic.after", 4),
+    ] {
+        let mut failed = Vec::new();
+        for n in 1..=most {
+            let done = crash(Op::RestoreAddon, &format!("{failpoint}=error@{n}"), "");
+            if !done.ok {
+                failed.push((n, done.pending, done.went_new));
+            }
+        }
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!("partial restore: {failpoint} failed it at {failed:?}\n"),
+        );
+        let on_path = !failed.is_empty()
+            || crash(Op::RestoreAddon, &format!("{failpoint}=abort@1"), "").crashed;
+        assert!(on_path, "{failpoint} is on a partial restore's path");
+    }
+}
+
+/// A partial restore crashed after its renames, the game started since: the next command
+/// refuses (`game_running`, naming the journal) and moves nothing; once the game exits,
+/// the next one rolls it back.
+#[cfg(debug_assertions)]
+#[test]
+fn a_crashed_partial_restore_waits_while_the_game_runs_then_rolls_back() {
+    let mut a = addon_support::AddonScene::new();
+    let outcome = a.restore("engine.restore.exchanged=abort", &[]);
+    assert!(outcome.is_none(), "{outcome:?}");
+    assert_eq!(a.foo(), a.backed_up, "the renames ran");
+    a.r.s.home.retail_running();
+    let refused = a.r.s.run(&a.r.install_bar(), "");
+    let envelope = refused.envelope();
+    let error = &envelope["error"];
+    assert_eq!(
+        (&error["code"], &error["details"]["reason"]),
+        (&json!("game_running"), &json!("saved_variables")),
+        "{}",
+        refused.context()
+    );
+    assert!(error["details"]["journal_pending"].is_string(), "{error}");
+    assert_eq!(a.foo(), a.backed_up, "nothing moves while it runs");
+    a.r.s.home.nothing_running();
+    let envelope = a.r.s.run(&a.r.install_bar(), "").expect(0);
+    assert!(warning_codes(&envelope).contains(&"journal_recovered".to_owned()));
+    assert_eq!(a.foo(), a.played, "rolled back once the game exited");
+    assert!(a.r.s.journals().is_empty());
+}
+
+/// The game started after the last running check, and the commit window then failed:
+/// in-process recovery checks running afresh, so the partial restore is left pending with
+/// nothing moved after the failure; once the game exits, the next command rolls it back.
+#[cfg(debug_assertions)]
+#[test]
+fn a_game_started_before_in_process_recovery_leaves_the_partial_restore_pending() {
+    use common::pause::Pause;
+
+    let mut a = addon_support::AddonScene::new();
+    let proc = a.r.s.home.env.root().join("proc");
+    fs::create_dir_all(&proc).unwrap();
+    a.r.s.home.proc = Some(proc);
+    let pause = Pause::new(a.r.s.home.env.root());
+    let child = a.spawn_restore(
+        "engine.restore.exchanged=pause,engine.restore.snapshotted=error",
+        &[pause.env()],
+    );
+    pause.reached("engine.restore.exchanged");
+    a.r.s.home.retail_running();
+    pause.resume("engine.restore.exchanged");
+    let outcome = restore_support::RestoreScene::finish(child).unwrap();
+    assert_eq!(outcome["ok"], false, "{outcome}");
+    assert_eq!(
+        outcome["details"]["recovery_error"]["code"], "game_running",
+        "{outcome}"
+    );
+    assert_eq!(
+        a.foo(),
+        a.backed_up,
+        "every rename ran; recovery moved nothing"
+    );
+    assert_eq!(support::pending(&a.r.s), 1);
+    a.r.s.home.nothing_running();
+    let envelope = a.r.s.run(&a.r.install_bar(), "").expect(0);
+    assert!(warning_codes(&envelope).contains(&"journal_recovered".to_owned()));
+    assert_eq!(a.foo(), a.played);
+}
+
+/// Rule 2 for single files (M3-D24 (c), D14): a partial restore crashed after its renames,
+/// then the game wrote the file it exchanged anew. Recovery leaves the game's file live,
+/// rolls the others back, and preserves the displaced pre-restore file as a partial
+/// `recovered` backup, which then restores with `--addon` only.
+#[cfg(debug_assertions)]
+#[test]
+fn a_file_the_game_replaced_is_left_and_the_displaced_one_preserved() {
+    let done = addon_support::preserve_crash("");
+    assert!(!done.stopped && !done.intent, "{done:?}");
+
+    // The recovered backup restores Foo's settings, and only with --addon.
+    let a = addon_support::AddonScene::new();
+    assert!(a.restore("engine.restore.exchanged=abort", &[]).is_none());
+    let live = a.wtf().join(addon_support::ACCOUNT);
+    fs::remove_file(&live).unwrap();
+    fs::write(&live, "FooDB = { the_game = true }\n").unwrap();
+    a.r.s.run(&a.r.install_bar(), "").expect(0);
+    let (id, partial, _) = a.recovered().remove(0);
+    assert!(partial);
+    let whole =
+        a.r.s
+            .run(&a.r.s.args(&["backup", "restore", &id, "-t", "retail"]), "");
+    assert_eq!(
+        whole.envelope()["error"]["code"],
+        "usage",
+        "{}",
+        whole.context()
+    );
+    let args = a.r.s.args(&[
+        "backup",
+        "restore",
+        &id,
+        "-t",
+        "retail",
+        "--addon",
+        "Foo",
+        "--dry-run",
+    ]);
+    let one = a.r.s.run(&args, "").expect(0);
+    assert_eq!(
+        one["data"]["addons"][0]["files"]["replaced"], 1,
+        "the pre-restore file over the game's: {one:#}"
+    );
+}
+
+/// Rule 2's "replaced" for a file put where there was none: the game wrote it anew after
+/// the crash. Nothing of ours is displaced (the copy was the backup's), so nothing is
+/// preserved for it; the game's file stays.
+#[cfg(debug_assertions)]
+#[test]
+fn a_restored_file_the_game_replaced_is_left_and_nothing_is_preserved() {
+    let a = addon_support::AddonScene::new();
+    assert!(a.restore("engine.restore.exchanged=abort", &[]).is_none());
+    let live = a.wtf().join(addon_support::CHAR);
+    fs::remove_file(&live).unwrap();
+    fs::write(&live, "FooDB = { fresh = true }\n").unwrap();
+    let envelope = a.r.s.run(&a.r.install_bar(), "").expect(0);
+    let codes = warning_codes(&envelope);
+    assert!(
+        codes.contains(&"journal_recovered".to_owned())
+            && !codes.contains(&"restore_rolled_back".to_owned()),
+        "{codes:?}"
+    );
+    let now = a.foo();
+    assert_eq!(
+        now[addon_support::CHAR].as_deref(),
+        Some(&b"FooDB = { fresh = true }\n"[..])
+    );
+    assert_eq!(
+        (&now[addon_support::ACCOUNT], &now[addon_support::CHAR_TWO]),
+        (
+            &a.played[addon_support::ACCOUNT],
+            &a.played[addon_support::CHAR_TWO]
+        ),
+        "the others rolled back"
+    );
+    assert!(a.recovered().is_empty());
+    assert!(a.r.s.journals().is_empty());
+}
+
+/// That preservation crashed or failed at each of its own transitions, and at every hit of
+/// each write it makes: the next recovery finishes with the id the intent reserved, every
+/// version kept meanwhile.
+#[cfg(debug_assertions)]
+#[test]
+fn a_partial_preservation_crashed_or_failed_anywhere_is_finished() {
+    for point in [
+        "engine.preserve.intent",
+        "engine.preserve.moved",
+        "engine.preserve.published",
+    ] {
+        for action in ["abort", "error"] {
+            let done = addon_support::preserve_crash(&format!("{point}={action}"));
+            assert!(done.stopped && done.intent, "{point}={action}: {done:?}");
+        }
+    }
+    for name in RECOVERY_WRITES {
+        for action in ["abort", "error"] {
+            let mut stopped = Vec::new();
+            for n in 1..=10 {
+                let done = addon_support::preserve_crash(&format!("{name}={action}@{n}"));
+                if done.stopped {
+                    stopped.push((n, done.intent));
+                } else if action == "abort" {
+                    break;
+                }
+            }
+            let _ = std::io::Write::write_fmt(
+                &mut std::io::stderr(),
+                format_args!("partial preservation: {name}={action} stopped it at {stopped:?}\n"),
+            );
+            assert!(!stopped.is_empty(), "{name} is on a recovery's path");
+        }
+    }
 }

@@ -238,6 +238,16 @@ impl Engine {
         crate::engine::restore::restore(&self.bound_ctx(None, binding), req)
     }
 
+    /// Restores single addons' SavedVariables as the command planned and began, bound to
+    /// a preview (`--if-match`) when `binding` is given.
+    pub fn restore_addons(
+        &self,
+        req: crate::engine::restore_addons::AddonsRequest<'_>,
+        binding: Option<&dyn Binding>,
+    ) -> Result<crate::engine::restore_addons::AddonsOutcome> {
+        crate::engine::restore_addons::restore(&self.bound_ctx(None, binding), req)
+    }
+
     /// For a change command that ends with nothing to send to the engine: a journal a
     /// crash left is recovered as a commit would have, into the run's warnings. A dry
     /// run never recovers.

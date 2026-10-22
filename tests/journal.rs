@@ -154,6 +154,7 @@ mod support {
                 creates_dirs: Vec::new(),
                 writes_wtf: false,
                 staged_stamp: None,
+                staged_files: None,
                 source_backup: None,
                 client: None,
                 commit: CommitPayload {

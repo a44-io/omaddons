@@ -844,6 +844,55 @@ fn backup_restore() {
     insta::assert_json_snapshot!("backup_restore_game_running", s.stable(&c.envelope));
 }
 
+/// `backup restore --addon`: one folder's settings put back, and a capture-time folder
+/// another addon owns now refused (`ref_ambiguous`, each folder alone an alternative).
+#[test]
+fn backup_restore_addon() {
+    use common::addons::{addon_folder, toc};
+    use omaddons::backup::BackupKind;
+    let s = Scene::new();
+    let client = s.home.client("_retail_");
+    common::wtf::Wtf::at(client.clone())
+        .config_wtf("SET locale \"enUS\"\n")
+        .saved_variables("Foo", 100)
+        .build();
+    // Its addon record: WeakAuras owned WeakAuras and WeakAurasOptions; its files:
+    // Addon0.lua and Addon1.lua for one character.
+    let at = "2026-10-05T08:00:00Z".parse().unwrap();
+    let id = common::backups::seed_backup(&client, BackupKind::Manual, at, 2).to_string();
+    let c = s.json(
+        &[
+            "backup", "restore", &id, "-t", "retail", "--addon", "Addon0",
+        ],
+        0,
+    );
+    insta::assert_json_snapshot!("backup_restore_addon_ok", s.stable(&c.envelope));
+    let src = s.home.env.root().join("src");
+    let options = addon_folder(
+        &src,
+        "WeakAurasOptions",
+        &[("WeakAurasOptions.toc", &toc("120105", &[]))],
+        &[],
+    );
+    s.json(
+        &["install", &options.display().to_string(), "-t", "retail"],
+        0,
+    );
+    let c = s.json(
+        &[
+            "backup",
+            "restore",
+            &id,
+            "-t",
+            "retail",
+            "--addon",
+            "WeakAuras",
+        ],
+        3,
+    );
+    insta::assert_json_snapshot!("backup_restore_addon_ref_ambiguous", s.stable(&c.envelope));
+}
+
 #[test]
 fn backup_prune() {
     use common::backups::seed_backup;

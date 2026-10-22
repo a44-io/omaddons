@@ -1,0 +1,69 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup restore",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "backup",
+          "restore",
+          "<ulid>",
+          "-t",
+          "retail",
+          "--addon",
+          "folder:WeakAuras"
+        ],
+        "display": "omaddons backup restore <ulid> -t retail --addon folder:WeakAuras"
+      },
+      {
+        "argv": [
+          "omaddons",
+          "backup",
+          "restore",
+          "<ulid>",
+          "-t",
+          "retail",
+          "--addon",
+          "folder:WeakAurasOptions"
+        ],
+        "display": "omaddons backup restore <ulid> -t retail --addon folder:WeakAurasOptions"
+      }
+    ],
+    "code": "ref_ambiguous",
+    "details": {
+      "addon": "WeakAuras",
+      "candidates": [
+        "WeakAuras",
+        "WeakAurasOptions"
+      ],
+      "owned_now": [
+        {
+          "folder": "WeakAurasOptions",
+          "owner": "WeakAurasOptions"
+        }
+      ],
+      "target": "retail"
+    },
+    "fix": "omaddons backup list -t retail -v",
+    "fix_argv": [
+      "omaddons",
+      "backup",
+      "list",
+      "-t",
+      "retail",
+      "-v"
+    ],
+    "message": "WeakAurasOptions was WeakAuras's when the backup was taken and is WeakAurasOptions's now; name the folders whose settings to restore",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

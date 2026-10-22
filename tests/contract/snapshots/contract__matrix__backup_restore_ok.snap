@@ -17,6 +17,7 @@ expression: s.stable(&c.envelope)
     }
   ],
   "data": {
+    "addons": null,
     "backup": {
       "captured_at": "<time>",
       "id": "<ulid>",

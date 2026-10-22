@@ -428,6 +428,40 @@ pub fn sv_candidates(client: &ClientPaths, folders: &[FolderName]) -> SvCandidat
     out
 }
 
+/// The stamp digest of every file in every `SavedVariables` directory of the client's
+/// `WTF/` that undo and restores may write (account-wide and per character; those
+/// [`sv_skip`] leaves alone excepted): what the preview of a partial restore observes.
+/// It covers more than the candidates, so that a play session since the preview refuses
+/// the bound run whichever addons it names, and naming other addons changes only the
+/// preview's selection (M3-D46).
+pub fn sv_stamp(client: &ClientPaths) -> crate::fsx::StampDigest {
+    use std::os::unix::fs::MetadataExt;
+    let mut entries = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (rel, sv) in sv_dirs(client) {
+        if sv_skip(client, &sv).is_some() || !seen.insert(resolved(&sv)) {
+            continue;
+        }
+        for name in files(&sv) {
+            let Ok(meta) = std::fs::symlink_metadata(sv.join(&name)) else {
+                continue;
+            };
+            let mtime = meta
+                .mtime()
+                .saturating_mul(1_000_000_000)
+                .saturating_add(meta.mtime_nsec());
+            entries.push((
+                format!("{rel}/{name}"),
+                "file",
+                meta.size(),
+                meta.mode() & 0o7777,
+                mtime,
+            ));
+        }
+    }
+    crate::fsx::StampDigest::from_entries(entries)
+}
+
 /// Every `SavedVariables` directory under the client's WTF, account-wide and per
 /// character, with its path relative to the WTF it is under, each folder spelled as on
 /// disk (an absent `SavedVariables` as `SavedVariables`). Every spelling of `WTF`,

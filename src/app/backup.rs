@@ -78,7 +78,7 @@ pub enum BackupAction {
     #[command(after_long_help = CREATE_HELP)]
     Create(BackupCreateArgs),
     /// Restore the whole WTF/ (keybindings, macros, every addon's settings) from a
-    /// backup (undoable)
+    /// backup, or with --addon one addon's settings (undoable)
     #[command(after_long_help = RESTORE_HELP)]
     Restore(BackupRestoreArgs),
     /// Delete old backups, or the ones named (it cannot be undone)
@@ -160,21 +160,28 @@ const RESTORE_HELP: &str = "\
 Examples:
   omaddons backup restore 01M6Q2VA --dry-run   what it would put back, and its token
   omaddons backup restore 01M6Q2VA -t retail
-  omaddons undo                                put back the WTF/ it replaced
+  omaddons backup restore 01M6Q2VA -t retail --addon WeakAuras   one addon's settings
+  omaddons undo                                put back what it replaced
 
-Restores the whole WTF/: keybindings, macros, chat and every addon's settings, as the
-backup holds them. It refuses while the game runs (or may be running), and where WTF/
-cannot be replaced in one atomic step; it checks the copy against the backup's hashes
-when it has them. Where the filesystem clones files it first keeps the current WTF/ as
-a backup (before restore), and undo puts the replaced WTF/ back either way.
+Restores the whole WTF/ (keybindings, macros, chat and every addon's settings) as the
+backup holds them; use --addon for one addon: only the SavedVariables of the folders it
+had when the backup was taken, under every account and character. It refuses while the
+game runs (or may be running), and where files cannot be replaced in one atomic step; it
+checks the copy against the backup's hashes when it has them. Before a whole restore,
+where the filesystem clones files, it keeps the current WTF/ as a backup (before
+restore), and undo puts back what a restore replaced either way.
 --if-match <token> restores exactly what that --dry-run showed.";
 
-/// `backup restore`'s argument.
+/// `backup restore`'s arguments.
 #[derive(Debug, Clone, clap::Args)]
 pub struct BackupRestoreArgs {
     /// The backup: its id, or a prefix of 8 or more characters
     #[arg(value_name = "ID")]
     pub id: String,
+    /// Only this addon's settings (repeatable): its name, ref or a folder; folder:<F> for
+    /// one folder alone
+    #[arg(long = "addon", value_name = "ADDON")]
+    pub addon: Vec<String>,
 }
 
 const CREATE_HELP: &str = "\
@@ -1483,6 +1490,8 @@ const RESTORE_COMMAND: &str = "backup restore";
 pub enum RestoreMode {
     /// The whole `WTF/`.
     Whole,
+    /// Single addons' SavedVariables (`--addon`).
+    Addons,
 }
 
 /// `backup restore`'s data.
@@ -1496,11 +1505,13 @@ pub struct BackupRestoreData {
     pub kind: TxKind,
     pub mode: RestoreMode,
     pub backup: RestoreSource,
-    pub files: RestoreFiles,
-    /// The current `WTF/`, kept as a backup first; `null` under `--dry-run`, or when none
-    /// was made (`before_restore_skipped`).
+    /// A whole restore's files; `null` for `--addon`, whose files `addons` counts.
+    pub files: Option<RestoreFiles>,
+    /// The current `WTF/`, kept as a backup first; `null` under `--dry-run`, when none
+    /// was made (`before_restore_skipped`), and for `--addon`.
     pub before_restore: Option<KeptBackup>,
-    /// `restart`: the client reads `WTF/` when it starts.
+    /// `restart` for a whole restore (the client reads `WTF/` when it starts); `none`
+    /// for `--addon` (the next login reads the files).
     pub reload_required: ReloadRequired,
     /// `--dry-run`: the token `--if-match` takes to restore exactly this (M3-D46); `null`
     /// for a real run.
@@ -1508,6 +1519,37 @@ pub struct BackupRestoreData {
     /// `verified` when the exchange was probed where it runs; `unverified` under
     /// `--dry-run`, which writes nothing.
     pub exchange: Exchange,
+    /// `--addon`: each addon whose settings come back; `null` for a whole restore.
+    pub addons: Option<Vec<AddonRestore>>,
+}
+
+/// One addon a `--addon` restore puts settings back for.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AddonRestore {
+    /// Its name, as the backup's addon record, the target's record, or the folder named.
+    pub addon: String,
+    /// The folders whose SavedVariables come back.
+    pub folders: Vec<FolderName>,
+    /// Where those folders came from: `backup` (what it owned when the backup was taken),
+    /// `installed` (not in the backup's addon record: what it owns now), or `folder` (a
+    /// bare folder of the backup).
+    pub folders_from: FoldersFrom,
+    /// The version that wrote those settings, when the backup recorded it.
+    pub captured_version: Option<String>,
+    /// The version installed now, when it is managed.
+    pub installed_version: Option<String>,
+    /// Folders it owns now that it did not when the backup was taken: left as they are.
+    pub not_in_backup: Vec<FolderName>,
+    pub files: crate::engine::restore_addons::AddonFiles,
+}
+
+/// Where a `--addon` restore's folders came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FoldersFrom {
+    Backup,
+    Installed,
+    Folder,
 }
 
 /// The backup a restore puts back.
@@ -1532,15 +1574,15 @@ pub struct KeptBackup {
 /// `backup restore`'s outcome.
 #[derive(Debug)]
 pub struct BackupRestoreOutcome {
-    data: BackupRestoreData,
-    warnings: Vec<Warning>,
+    pub(super) data: BackupRestoreData,
+    pub(super) warnings: Vec<Warning>,
     /// `undo <tx>` after a real run.
-    commands: Vec<CommandHint>,
+    pub(super) commands: Vec<CommandHint>,
     /// For human output: the source's trigger and hashes' baseline, and whether a dry run
     /// would keep the current `WTF/` as a backup.
-    trigger: Option<Trigger>,
-    baseline: Option<Baseline>,
-    would_keep: bool,
+    pub(super) trigger: Option<Trigger>,
+    pub(super) baseline: Option<Baseline>,
+    pub(super) would_keep: bool,
 }
 
 impl Outcome for BackupRestoreOutcome {
@@ -1564,7 +1606,8 @@ impl Outcome for BackupRestoreOutcome {
 
     fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
         let d = &self.data;
-        let (id, b, f) = (&d.target.id, &d.backup, &d.files);
+        let (id, b) = (&d.target.id, &d.backup);
+        let f = &d.files.unwrap_or_default();
         let short = |id: &str| super::history::short_id(id);
         let from = format!(
             "backup {} ({}, {})",
@@ -1572,7 +1615,9 @@ impl Outcome for BackupRestoreOutcome {
             when(b.captured_at, crate::clock::now()),
             kind_label(b.kind, self.trigger)
         );
-        if d.dry_run {
+        if let Some(addons) = &d.addons {
+            render_addons(w, d, addons, &from)?;
+        } else if d.dry_run {
             writeln!(
                 w,
                 "{id}: would restore WTF/ from {from}: {}, {} differed, {} created since",
@@ -1613,6 +1658,82 @@ impl Outcome for BackupRestoreOutcome {
     }
 }
 
+/// A `--addon` restore's lines: what comes back and from where, each addon's version note
+/// and its files, by what happens to them. Addon names and counts only, never a path.
+fn render_addons(
+    w: &mut dyn Write,
+    d: &BackupRestoreData,
+    addons: &[AddonRestore],
+    from: &str,
+) -> std::io::Result<()> {
+    let id = &d.target.id;
+    let whose: Vec<String> = addons.iter().map(|a| format!("{}'s", a.addon)).collect();
+    let whose = whose.join(" and ");
+    let total: u64 = addons
+        .iter()
+        .map(|a| a.files.replaced + a.files.restored + a.files.created_since)
+        .sum();
+    if d.dry_run {
+        writeln!(w, "{id}: would restore {whose} SavedVariables from {from}")?;
+    } else {
+        writeln!(
+            w,
+            "{id}: restored {whose} SavedVariables from {from}: {}",
+            files(total)
+        )?;
+    }
+    for a in addons {
+        let name = &a.addon;
+        match (&a.captured_version, &a.installed_version) {
+            (Some(then), Some(now)) => {
+                writeln!(
+                    w,
+                    "  settings written by {name} {then}; installed now: {now}"
+                )?;
+            }
+            (Some(then), None) => {
+                writeln!(w, "  settings written by {name} {then}; not installed now")?;
+            }
+            (None, Some(now)) => writeln!(
+                w,
+                "  the version of {name} that wrote them is not recorded; installed now: {now}"
+            )?,
+            (None, None) => {}
+        }
+        if matches!(a.folders_from, FoldersFrom::Installed) {
+            writeln!(
+                w,
+                "  {name} is not in this backup's addon record; using today's folders"
+            )?;
+        }
+        if !a.not_in_backup.is_empty() {
+            let left: Vec<&str> = a.not_in_backup.iter().map(FolderName::as_str).collect();
+            writeln!(
+                w,
+                "  not in this backup; left as it is: {}",
+                left.join(", ")
+            )?;
+        }
+        if d.dry_run {
+            let n = &a.files;
+            let prefix = if addons.len() > 1 {
+                format!("{name}: ")
+            } else {
+                String::new()
+            };
+            writeln!(
+                w,
+                "  {prefix}{}: {} replaced, {} restored (absent now), {} created since (moved aside)",
+                files(n.replaced + n.restored + n.created_since),
+                n.replaced,
+                n.restored,
+                n.created_since
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// What a restore says its content is proved to be (M3-D47): never "verified" for a
 /// backup whose content no hash checked.
 fn proved(integrity: Integrity, baseline: Option<Baseline>, dry_run: bool) -> String {
@@ -1634,6 +1755,9 @@ fn proved(integrity: Integrity, baseline: Option<Baseline>, dry_run: bool) -> St
 /// exchange probed where it will run); keep the current `WTF/` as a backup (M3-D26); and
 /// restore. Then backup retention runs once, the source pinned.
 pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutcome> {
+    if !args.addon.is_empty() {
+        return super::restore_addons::run(ctx, args);
+    }
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
     let (d, backup) = named_backup(ctx, &world, &args.id, &mut warnings)?;
@@ -1669,11 +1793,12 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
             kind: meta.kind,
             integrity: meta.integrity,
         },
-        files: plan.files,
+        files: Some(plan.files),
         before_restore: None,
         reload_required: ReloadRequired::Restart,
         precondition: None,
         exchange: Exchange::Unverified,
+        addons: None,
     };
     if ctx.dry_run {
         // The mount checks only: no probe, nothing written. A token given with it
@@ -1738,7 +1863,7 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
     data.tx = Some(done.tx);
     data.target.key = Some(done.key);
     data.backup.integrity = done.integrity;
-    data.files = done.files;
+    data.files = Some(done.files);
     data.before_restore = kept.map(|created| KeptBackup {
         id: created.meta.id,
     });
@@ -1761,7 +1886,7 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
 /// The client and the backup `prefix` names (`restore`, `export`): on the one client `-t`
 /// selects, else on whichever has it. A backup on another client than `-t`'s is
 /// `not_found`, with a fix naming its own.
-fn named_backup<'w>(
+pub(super) fn named_backup<'w>(
     ctx: &Context,
     world: &'w World,
     prefix: &str,
@@ -1910,7 +2035,7 @@ fn before_restore_skipped(target: &str) -> Warning {
 
 /// Backup retention once after a restore (M3-D26), its source `source` pinned for the
 /// pass. A failure is only `retention_failed`: the restore stands.
-fn retain_source(
+pub(super) fn retain_source(
     ctx: &Context,
     world: &World,
     d: &DiscoveredTarget,
@@ -2258,7 +2383,7 @@ fn prune_precondition(plans: &[PrunePlan<'_>]) -> Precondition {
 }
 
 /// The lowercase hex SHA-256 of `b`'s `backup.json`, `None` when it does not read.
-fn meta_digest(b: &BackupRef) -> Option<String> {
+pub(super) fn meta_digest(b: &BackupRef) -> Option<String> {
     let bytes = crate::discover::read_bytes(&b.dir.join("backup.json"))?;
     Some(
         Sha256::digest(&bytes)
@@ -2587,7 +2712,7 @@ fn other_family(
     }
 }
 
-fn target_ref(d: &DiscoveredTarget) -> TargetRef {
+pub(super) fn target_ref(d: &DiscoveredTarget) -> TargetRef {
     TargetRef {
         id: d.target.id.clone(),
         key: d.target.key,

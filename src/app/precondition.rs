@@ -490,8 +490,58 @@ pub fn of_restore(part: &RestorePart<'_>) -> Precondition {
     )
 }
 
+/// One client's part of a `backup restore --addon`.
+pub struct AddonsPart<'a> {
+    pub key: Option<TargetKey>,
+    /// The target's record generation it was planned against.
+    pub generation: u64,
+    pub backup: BackupId,
+    /// The folders whose SavedVariables come back, as resolved.
+    pub folders: Vec<String>,
+    /// Each file (its live path) with what the restore does to it.
+    pub files: Vec<(&'a str, &'static str)>,
+    /// The SHA-256 of the source's `backup.json`, `None` when it does not read.
+    pub backup_json: Option<String>,
+    /// The stamp digest of every live SavedVariables file
+    /// ([`crate::engine::swap::sv_stamp`]).
+    pub saved_variables: String,
+}
+
+/// `backup restore --addon`'s precondition (M3-D46): the target's key with the
+/// generation; the backup, the mode (`addons`), the resolved folders and each file's
+/// action; and, observed, the source's `backup.json` and every live SavedVariables file's
+/// stamp. Those cover more than the files restored, so that naming other addons changes
+/// only the selection, and any play session since changes what was observed.
+pub fn of_restore_addons(part: &AddonsPart<'_>) -> Precondition {
+    let mut folders = part.folders.clone();
+    folders.sort_by_key(|f| f.to_ascii_lowercase());
+    let files: Vec<Value> = part
+        .files
+        .iter()
+        .map(|(path, action)| json!([path, action]))
+        .collect();
+    Precondition::new(
+        "backup restore",
+        part.key
+            .map(|key| (key, Some(part.generation)))
+            .into_iter()
+            .collect(),
+        json!({
+            "backup": part.backup.to_string(),
+            "mode": "addons",
+            "folders": folders,
+            "files": files,
+        }),
+        json!({
+            "backup_json": part.backup_json,
+            "saved_variables": part.saved_variables,
+        }),
+    )
+}
+
 /// A `backup restore` run bound to its preview: compared before anything is copied; the
-/// engine asks it only for the refusal when the target's records moved under the lock.
+/// engine asks it only for the refusal when the target's records, or a partial restore's
+/// files, moved under the lock.
 pub struct RestoreBinding {
     pub preview: Vec<String>,
 }
@@ -507,6 +557,10 @@ impl Binding for RestoreBinding {
 
     fn moved(&self, _target: &str) -> Error {
         stale("backup restore", &[Part::Targets], &self.preview)
+    }
+
+    fn observed(&self, _target: &str) -> Error {
+        stale("backup restore", &[Part::Observed], &self.preview)
     }
 }
 

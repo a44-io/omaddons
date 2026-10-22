@@ -26,6 +26,7 @@ pub mod precondition;
 pub mod remembered;
 pub mod remove;
 pub mod resolve_args;
+pub mod restore_addons;
 pub mod search;
 pub mod status;
 pub mod sync;

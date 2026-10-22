@@ -371,7 +371,7 @@ fn find(
 
 /// The addons of `record` that `request` names: by record name (any case), by canonical
 /// ref, or by the key of a folder it owns.
-fn matches<'r>(record: &'r TargetRecord, request: &str) -> Vec<&'r AddonRecord> {
+pub(super) fn matches<'r>(record: &'r TargetRecord, request: &str) -> Vec<&'r AddonRecord> {
     let as_ref = request.parse::<Ref>().ok();
     let folder = request.to_ascii_lowercase();
     record
