@@ -329,6 +329,9 @@ fn the_output_cap_bounds_every_template() {
             // `--limit` addons per client, each listing at most ERRORS_SHOWN_PER_ADDON
             // strict errors.
             Some(CLIENTS * (limit_of(template) * ERRORS_SHOWN_PER_ADDON as u64 * ROW + ANSWER))
+        } else if name == "errors_target" {
+            // The same, for one client.
+            Some(limit_of(template) * ERRORS_SHOWN_PER_ADDON as u64 * ROW + ANSWER)
         } else if name == "backups" {
             // `--limit` backups per client.
             Some(CLIENTS * (limit_of(template) * ROW + ANSWER))
@@ -337,7 +340,7 @@ fn the_output_cap_bounds_every_template() {
             Some(limit_of(template) * (ROW + ADDONS * 256) + ANSWER)
         } else if matches!(
             name.as_str(),
-            "backup_target" | "backup_all" | "restore" | "prune_backup"
+            "backup_target" | "backup_all" | "backup_auto" | "restore" | "prune_backup"
         ) {
             // A record per client: ids and counts, never a list of files.
             Some(CLIENTS * ROW + ANSWER)
@@ -1036,6 +1039,19 @@ fn errors_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     let mut file = db.file();
     write_files(&wtf, std::slice::from_ref(&file));
     let now = [("OMADDONS_NOW", "2026-10-15T18:30:00Z")];
+    // The service's errors refresh (F8) reads `stale` and `unchecked`, never `partial`.
+    let errors_state = |name: &str| {
+        let status = home.exec_with(&fill(t, "status", &[]), &now);
+        let status = write_fixture(dir, name, &status, 0);
+        let retail = status["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "retail")
+            .unwrap();
+        retail["errors"]["state"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(errors_state("status-errors-unchecked"), "unchecked");
     let errors = home.exec_with(&fill(t, "errors", &[]), &now);
     let errors = write_fixture(dir, "errors", &errors, 0);
     assert_eq!(
@@ -1064,12 +1080,23 @@ fn errors_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     let cut = file.bytes.len() - 20;
     file.bytes.truncate(cut);
     write_files(&wtf, &[file]);
+    assert_eq!(errors_state("status-errors-stale"), "stale");
     write_fixture(
         dir,
         "errors-partial",
         &home.exec_with(&fill(t, "errors", &[]), &now),
         0,
     );
+    assert_eq!(errors_state("status-errors-partial"), "partial");
+    // Never checked (the update memo gone): the service's automatic check is due.
+    fs::remove_file(home.memo()).unwrap();
+    let due = write_fixture(
+        dir,
+        "status-check-due",
+        &home.exec(&fill(t, "status", &[])),
+        0,
+    );
+    assert_eq!(due["data"]["summary"]["check_due"], true, "{due}");
 }
 
 /// `$OMADDONS_WIDGET_OUT/fixtures/`: `status` in the `updates`, `idle` and `attention`

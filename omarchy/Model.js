@@ -121,7 +121,9 @@ var COMMANDS = {
   "backup_all":     { "argv": ["backup", "create"],                                 "mutates": true },
   "restore":        { "argv": ["backup", "restore", "-t", "{target}", "--", "{backup}"], "mutates": true, "confirm": true },
   "restore_addon":  { "argv": ["backup", "restore", "-t", "{target}", "--addon={addon}", "--", "{backup}"], "mutates": true, "confirm": true },
-  "prune_backup":   { "argv": ["backup", "prune", "-t", "{target}", "--", "{backup}"],   "mutates": true, "confirm": true }
+  "prune_backup":   { "argv": ["backup", "prune", "-t", "{target}", "--", "{backup}"],   "mutates": true, "confirm": true },
+  "errors_target":  { "argv": ["errors", "--limit", "10", "-t", "{target}"],        "mutates": false, "lane": "local" },
+  "backup_auto":    { "argv": ["backup", "create", "--auto", "-t", "{target}"],     "mutates": true, "silent": true }
 }
 // END COMMANDS
 
@@ -1971,6 +1973,102 @@ function managedAddons(lists, target) {
   return t ? t.addons.map(function(a) { return a.name }) : []
 }
 
+// -------------------------------------------------------------- the service's desktop triggers (F8)
+
+// The clients that stopped between two compatible statuses: running before, and
+// running now known to be false (an unknown state is no transition).
+function stoppedTargets(before, after) {
+  var out = []
+  var now = Array.isArray(after) ? after : []
+  for (var i = 0; i < now.length; i++) {
+    var was = targetById(before, now[i].id)
+    if (was && was.running === true && now[i].running === false && now[i].runningUnknown !== true) out.push(now[i].id)
+  }
+  return out
+}
+
+// The clients whose Lua errors need reading again (M3-D20): `stale` or `unchecked`,
+// never `partial` (an incomplete read, not retried on every doorbell).
+function errorsToRefresh(targets) {
+  return (Array.isArray(targets) ? targets : [])
+    .filter(function(t) { return t.errors && (t.errors.state === "stale" || t.errors.state === "unchecked") })
+    .map(function(t) { return t.id })
+}
+
+// The clients known to be stopped (startup catch-up, M3-D13).
+function stoppedNow(targets) {
+  return (Array.isArray(targets) ? targets : [])
+    .filter(function(t) { return t.running === false && t.runningUnknown !== true && t.missing !== true })
+    .map(function(t) { return t.id })
+}
+
+var AUTO_CHECK_INTERVAL_MS = 15 * 60 * 1000
+
+// An automatic update check (M3-D12): on, due by `status`, and the last one started
+// `intervalMs` (AUTO_CHECK_INTERVAL_MS, 15 minutes) ago or more.
+function autoCheckDue(enabled, summary, lastAutoCheckMs, nowMs, intervalMs) {
+  var interval = typeof intervalMs === "number" ? intervalMs : AUTO_CHECK_INTERVAL_MS
+  return enabled === true && !!summary && summary.checkDue === true && nowMs - lastAutoCheckMs >= interval
+}
+
+// A count that rose since the last status; never on the first one.
+function rose(before, after, first) {
+  return first !== true && num(after) > num(before)
+}
+
+// What an error toast may say (M3-D21): the addons and their new counts, and the
+// clients, from `status`'s per-client top list. Nothing else of the errors reaches it.
+function errorFacts(targets) {
+  var names = []
+  var counts = []
+  var where = []
+  var list = Array.isArray(targets) ? targets : []
+  for (var i = 0; i < list.length; i++) {
+    var errors = list[i].errors
+    if (!errors || errors["new"] <= 0) continue
+    where.push(list[i].id)
+    for (var j = 0; j < errors.top.length; j++) {
+      if (errors.top[j]["new"] <= 0) continue
+      names.push(errors.top[j].addon)
+      counts.push(errors.top[j]["new"])
+    }
+  }
+  return { "names": names, "counts": counts, "targets": where }
+}
+
+// U+F0297 nf-md-gamepad_variant: the widget's own glyph.
+var TOAST_GLYPH = String.fromCodePoint(0xF0297)
+
+// A toast as an argv for `omarchy-notification-send`; a click summons (opens, never
+// toggles) the panel of `pluginId`.
+function toastArgv(title, body, urgency, pluginId) {
+  return ["omarchy-notification-send", "--app-name", "omaddons", "-g", TOAST_GLYPH, "-u", urgency, title, body,
+    "--exec", "omarchy-shell", "shell", "summon", String(pluginId), "{}"]
+}
+
+// "Lua errors in your last session · DBM 3 · WeakAuras 1": only `{names, counts,
+// targets}`, so no message, path or other error text can reach a toast (F7 scan 7).
+function errorToastArgv(facts, pluginId) {
+  var names = Array.isArray(facts && facts.names) ? facts.names : []
+  var counts = Array.isArray(facts && facts.counts) ? facts.counts : []
+  var where = Array.isArray(facts && facts.targets) ? facts.targets : []
+  var parts = []
+  for (var i = 0; i < names.length; i++) parts.push(String(names[i]) + " " + num(counts[i]))
+  var title = "Lua errors in your last session" + (where.length ? " on " + joinNames(where.map(String)) : "")
+  return toastArgv(title, parts.join(" · "), "normal", pluginId)
+}
+
+// "3 updates on retail and era".
+function updateToastArgv(count, targets, pluginId) {
+  var where = Array.isArray(targets) ? targets.map(String) : []
+  return toastArgv("Addon updates", plural(num(count), "update") + (where.length ? " on " + joinNames(where) : ""), "low", pluginId)
+}
+
+// A panel action that finished while no panel was open: its result line.
+function resultToastArgv(line, pluginId) {
+  return toastArgv("omaddons", String(line), "low", pluginId)
+}
+
 // The bound action's refusal after its observation changed (`plan_stale`).
 function boundStaleText(template, env) {
   return template === "dismiss_errors" ? "New errors arrived; review them" : staleText(env)
@@ -2081,6 +2179,16 @@ if (typeof module !== "undefined") {
     restoreScopes: restoreScopes,
     managedAddons: managedAddons,
     ambiguityChoices: ambiguityChoices,
-    backupFolderOf: backupFolderOf
+    backupFolderOf: backupFolderOf,
+    stoppedTargets: stoppedTargets,
+    errorsToRefresh: errorsToRefresh,
+    stoppedNow: stoppedNow,
+    AUTO_CHECK_INTERVAL_MS: AUTO_CHECK_INTERVAL_MS,
+    autoCheckDue: autoCheckDue,
+    rose: rose,
+    errorFacts: errorFacts,
+    errorToastArgv: errorToastArgv,
+    updateToastArgv: updateToastArgv,
+    resultToastArgv: resultToastArgv
   }
 }

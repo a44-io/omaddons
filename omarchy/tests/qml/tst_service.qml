@@ -112,10 +112,16 @@ TestCase {
     launch.process.finish(0, text, order)
   }
 
-  // Answers the startup status with `available` updates.
+  // Answers the startup status with `available` updates, then the catch-up checkpoint it
+  // queues for the stopped client (F8) and the refresh that change rings: the service at
+  // rest.
   function ready(available) {
     answer(lastRun("status"), statusEnvelope(available || 0))
     compare(service.phase, "ok")
+    var auto = lastRun("backup")
+    compare(words(auto.command), ["backup", "create", "--auto", "-t", "retail"])
+    answer(auto, envelope("backup create", { "targets": [] }))
+    answer(lastRun("status"), statusEnvelope(available || 0))
   }
 
   function bell() {
@@ -263,6 +269,8 @@ TestCase {
     service.applySettings({ "binary": "/opt/other/omaddons" })
     compare(service.contextGeneration, 1)
     answer(lastRun("status"), statusEnvelope(0))
+    // The new binary's catch-up checkpoint (F8) holds the lane until it is done.
+    answer(lastRun("backup"), envelope("backup create", { "targets": [] }))
     compare(service.confirmYes(), "")
     wait(20)
     compare(runs("remove").length, 1)
@@ -465,6 +473,7 @@ TestCase {
 
   function test_opening_a_panel_reads_full_status_then_list_locally() {
     ready(0)
+    var statuses = runs("status").length
     service.setPanelOpen("bar@DP-1", true)
     var full = lastRun("status")
     compare(words(full.command), ["status", "-v"])
@@ -475,7 +484,7 @@ TestCase {
     compare(words(lastRun("errors").command), ["errors", "--limit", "10"])
     // A second copy opening adds nothing.
     service.setPanelOpen("bar@HDMI-A-1", true)
-    compare(runs("status").length, 2)
+    compare(runs("status").length, statuses + 1)
     verify(service.panelOpen)
     service.setPanelOpen("bar@DP-1", false)
     verify(service.panelOpen)

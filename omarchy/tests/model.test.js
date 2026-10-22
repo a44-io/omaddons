@@ -902,6 +902,73 @@ describe("the Backups view and the restore chooser", () => {
   })
 })
 
+describe("the service's desktop triggers", () => {
+  test("a client that stopped, one known stopped, and errors that need reading again", () => {
+    const running = M.reduceStatus(fixture("status-running"), NOW).targets
+    const stopped = M.reduceStatus(fixture("status-updates"), NOW).targets
+    expect(M.stoppedTargets(running, stopped)).toEqual(["retail"])
+    expect(M.stoppedTargets(stopped, running)).toEqual([])
+    // An unknown state is no transition.
+    const unknown = stopped.map((t) => Object.assign({}, t, { running: false, runningUnknown: true }))
+    expect(M.stoppedTargets(running, unknown)).toEqual([])
+    expect(M.stoppedNow(stopped)).toEqual(["era", "retail"])
+    expect(M.stoppedNow(running)).toEqual(["era"])
+    expect(M.stoppedNow(unknown)).toEqual([])
+  })
+
+  test("errors are read again when stale or unchecked, never when the last read was partial", () => {
+    const refresh = (name) => M.errorsToRefresh(M.reduceStatus(fixture(name), NOW).targets)
+    expect(refresh("status-errors-unchecked")).toEqual(["retail"])
+    expect(refresh("status-errors-stale")).toEqual(["retail"])
+    expect(refresh("status-errors-partial")).toEqual([])
+    expect(refresh("status-errors")).toEqual([])
+  })
+
+  test("an automatic check only when due, at most every 15 minutes", () => {
+    const due = M.reduceStatus(fixture("status-check-due"), NOW).summary
+    expect(due.checkDue).toBe(true)
+    expect(M.autoCheckDue(true, due, 0, M.AUTO_CHECK_INTERVAL_MS)).toBe(true)
+    expect(M.autoCheckDue(true, due, 1, M.AUTO_CHECK_INTERVAL_MS)).toBe(false)
+    expect(M.autoCheckDue(true, due, 100, 300, 200)).toBe(true)
+    expect(M.autoCheckDue(false, due, 0, NOW)).toBe(false)
+    expect(M.autoCheckDue(true, M.reduceStatus(fixture("status-updates"), NOW).summary, 0, NOW)).toBe(false)
+  })
+
+  test("a rise counts from the second status on", () => {
+    const before = M.reduceStatus(fixture("status-errors-unchecked"), NOW).summary.errors["new"]
+    const after = M.reduceStatus(fixture("status-errors"), NOW).summary.errors["new"]
+    expect([before, after]).toEqual([0, 2])
+    expect([M.rose(before, after, false), M.rose(after, after, false), M.rose(before, after, true)]).toEqual([true, false, false])
+  })
+
+  test("the error toast names addons, counts and clients, nothing an error says", () => {
+    const status = M.reduceStatus(fixture("status-errors"), NOW)
+    const facts = M.errorFacts(status.targets)
+    expect(facts).toEqual({ names: ["Foo"], counts: [2], targets: ["retail"] })
+    const argv = M.errorToastArgv(facts, "a44.omaddons-fixture")
+    expect(argv.slice(0, 7)).toEqual(["omarchy-notification-send", "--app-name", "omaddons", "-g", "\u{F0297}", "-u", "normal"])
+    expect(argv.slice(7, 9)).toEqual(["Lua errors in your last session on retail", "Foo 2"])
+    expect(argv.slice(-6)).toEqual(["--exec", "omarchy-shell", "shell", "summon", "a44.omaddons-fixture", "{}"])
+    // Whatever the errors held, none of it reaches the toast.
+    const texts = []
+    for (const t of fixture("errors-raw").data.targets) for (const a of t.addons) for (const e of a.errors) {
+      texts.push(e.message, e.location, e.raw && e.raw.message, ...(e.stack || []))
+    }
+    for (const text of texts.filter((x) => typeof x === "string" && x.length > 3)) {
+      for (const part of argv) expect(part.includes(text)).toBe(false)
+    }
+    expect(argv.join(" ")).not.toContain("FakeChar")
+    // The builder reads names, counts and clients only.
+    const hostile = M.errorToastArgv({ names: ["X"], counts: [1], targets: ["r"], message: "secret", stack: ["s"] }, "id")
+    expect(hostile.join(" ")).not.toContain("secret")
+  })
+
+  test("update and result toasts", () => {
+    expect(M.updateToastArgv(3, ["era", "retail"], "id").slice(7, 9)).toEqual(["Addon updates", "3 updates on era and retail"])
+    expect(M.resultToastArgv("Updated 3 addons", "id").slice(5, 9)).toEqual(["-u", "low", "omaddons", "Updated 3 addons"])
+  })
+})
+
 describe("the other reducers", () => {
   test("list", () => {
     const model = M.reduceList(fixture("list"))

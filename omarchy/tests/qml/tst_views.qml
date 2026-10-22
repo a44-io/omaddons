@@ -607,15 +607,19 @@ TestCase {
         return l.command[1] === "--json" && l.command.indexOf(word) >= 0
       })
     }
-    var status = launches("status")[0]
-    status.process.finish(0, JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
+    var statusJson = JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
       "command": "status", "exit_code": 0, "partial": false, "warnings": [], "commands": [],
       "data": { "targets": [{ "id": "retail", "running": false, "updates": { "available": 1 }, "issues": [] }],
         "summary": { "targets": 1, "running": [], "updates": { "available": 1, "targets": ["retail"] },
           "issues": { "p0": 0, "p1": 0, "p2": 0, "p3": 0 }, "errors": { "new": 0, "targets": [] },
           "check_due": false, "widget_outdated": false, "state": "updates" },
-        "last_change": null, "last_change_state": "ok" } }))
+        "last_change": null, "last_change_state": "ok" } })
+    launches("status")[0].process.finish(0, statusJson)
     tryCompare(service, "phase", "ok")
+    // The catch-up checkpoint the first status queues (F8), done, and the refresh it rings.
+    launches("--auto")[0].process.finish(0, JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
+      "command": "backup create", "exit_code": 0, "partial": false, "warnings": [], "commands": [], "data": { "targets": [] } }))
+    launches("status")[1].process.finish(0, statusJson)
     var frame = make(service)
     keyClick("2")
     var list = launches("list")

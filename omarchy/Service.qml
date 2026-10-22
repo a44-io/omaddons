@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import Quickshell.Hyprland
 import Quickshell.Io
 import "Model.js" as Model
 import "Store.js" as Store
@@ -79,6 +80,12 @@ Item {
   property int contextGeneration: 0
   property bool panelOpen: false
   property double lastRefreshMs: 0
+  // What the desktop triggers saw at the last compatible status (F8):
+  // `{generation, targets, updates, errorsNew}`, null before the first.
+  property var observed: null
+  property double lastAutoCheckMs: 0
+  property int followUpStep: 0
+  readonly property bool anyRunning: targets.some(function(t) { return t.running === true })
   readonly property bool canAct: phase === "ok"
   readonly property string binary: {
     var chosen = Model.setting(root.settings, "binary")
@@ -98,6 +105,11 @@ Item {
   property int bellRetryMs: 5000
   property int bellMissingRetryMs: 30000
   property int panelPollMs: 15000
+  property int runningPollMs: 30000
+  property int windowDebounceMs: 500
+  // After a window closed while a client ran: refreshes this long after the close.
+  property var followUpDelaysMs: [2000, 5000, 15000]
+  property int autoCheckIntervalMs: Model.AUTO_CHECK_INTERVAL_MS
   property int localDeadlineMs: Model.WIDGET_LOCAL_DEADLINE_SEC * 1000
   property int networkDeadlineMs: Model.WIDGET_NETWORK_DEADLINE_SEC * 1000
   property int killGraceMs: Model.WIDGET_KILL_GRACE_SEC * 1000
@@ -123,6 +135,7 @@ Item {
     refresh()
   }
   Component.onDestruction: Store.clear(root)
+  onStatusApplied: afterStatus()
 
   // ------------------------------------------------------------- settings
 
@@ -426,7 +439,9 @@ Item {
         again = true
         continue
       }
-      if (r.kind === "mutation") startAction(r)
+      // A silent change (M3-D11) shows no progress and leaves the panel's changes on: one
+      // asked meanwhile queues behind it ("next: …").
+      if (r.kind === "mutation" && r.priority !== "background") startAction(r)
       laneNamed(name).run(r, built.argv, built.env)
     }
     queuedAction = queuedLabel()
@@ -515,7 +530,10 @@ Item {
     } else if (r.kind === "mutation" || r.purpose === "action") {
       applyAction(r, outcome, env, tail)
     } else if (outcome !== "ok") {
-      lastError = errorOf(env, r.label + ": " + outcome)
+      // A background read's failure stays out of the panel; the next status says how
+      // the read went.
+      if (r.priority === "background") console.warn("omaddons:", r.label + ":", outcome)
+      else lastError = errorOf(env, r.label + ": " + outcome)
     } else if (r.resource === "list") {
       lists = Model.reduceList(env)
       listsAt = Date.now()
@@ -543,7 +561,7 @@ Item {
   function applyStatus(outcome, env, tail) {
     if (outcome === "ok" || outcome === "failed") {
       var model = Model.reduceStatus(env, Date.now())
-      bar = withSpinning(model.bar, mutationLane.busy)
+      bar = withSpinning(model.bar, action !== null)
       targets = model.targets
       summary = model.summary
       lastChange = model.lastChange
@@ -578,6 +596,11 @@ Item {
       }
       return
     }
+    if (r.priority === "background" && outcome === "ok") {
+      // Silent (M3-D11): a background change shows nothing unless it fails.
+      changed()
+      return
+    }
     if (outcome === "ok" || outcome === "failed") {
       var commandsOf = []
       if (env && Array.isArray(env.commands)) {
@@ -600,6 +623,11 @@ Item {
     } else {
       lastResult = { "ok": false, "line": r.label + ": " + outcome, "partial": false, "commands": [] }
       lastError = { "message": outcome === "malformed" && tail.length ? tail.join("\n") : r.label + ": " + outcome, "code": outcome, "fixes": [] }
+    }
+    // A change asked in the panel that finished after every panel closed: its result
+    // line as a toast; a click opens the panel.
+    if (r.kind === "mutation" && r.priority !== "background" && !panelOpen) {
+      notify(Model.resultToastArgv(lastResult.line, Build.PLUGIN_ID))
     }
     changed()
     // `d` across clients: the next dismissal, after this one succeeded.
@@ -625,6 +653,91 @@ Item {
     pendingDismissals = []
     queues = { "mutation": [], "local": queues.local.slice(), "network": queues.network.slice() }
     queuedAction = ""
+  }
+
+  // ------------------------------------------------------------- desktop triggers (F8)
+
+  // Each of these only adds requests to the scheduler above, and every one waits for a
+  // compatible answer (M3-D42).
+
+  // Hyprland's window events ring like the doorbell (M3-D13): a client starting or
+  // exiting shows within a second. A Wine game outlives its window, so a close while a
+  // client ran is followed by refreshes at each of followUpDelaysMs.
+  function windowEvent(name) {
+    if (name !== "openwindow" && name !== "closewindow") return
+    windowDebounce.restart()
+    if (name === "closewindow" && anyRunning) {
+      followUpStep = 0
+      followUpTimer.interval = followUpDelaysMs[0]
+      followUpTimer.restart()
+    }
+  }
+
+  function followUp() {
+    refresh()
+    followUpStep++
+    if (followUpStep < followUpDelaysMs.length) {
+      followUpTimer.interval = followUpDelaysMs[followUpStep] - followUpDelaysMs[followUpStep - 1]
+      followUpTimer.restart()
+    }
+  }
+
+  // After each compatible status: for a client that stopped, its post-session settings
+  // checkpoint and then its Lua errors (M3-D31); at the first status, a checkpoint for
+  // every stopped client (the CLI skips an unchanged one); errors read again where
+  // stale or unchecked (M3-D20); a due update check; and the toasts, never on the first
+  // status (M3-D14). A new binary starts over, as the service's start does.
+  function afterStatus() {
+    if (phase !== "ok") return
+    var first = !observed || observed.generation !== contextGeneration
+    var stopped = first ? [] : Model.stoppedTargets(observed.targets, targets)
+    var checkpoints = first ? Model.stoppedNow(targets) : stopped
+    for (var i = 0; i < checkpoints.length; i++) {
+      run("backup_auto", { "target": checkpoints[i] }, first ? "Settings checkpoint at widget start" : "Settings checkpoint after play")
+    }
+    var reads = stopped.slice()
+    var stale = Model.errorsToRefresh(targets)
+    for (var j = 0; j < stale.length; j++) if (reads.indexOf(stale[j]) === -1) reads.push(stale[j])
+    for (var k = 0; k < reads.length; k++) readErrorsOf(reads[k])
+    var updatesNow = summary ? summary.updates.available : 0
+    var errorsNow = summary && summary.errors ? summary.errors["new"] : 0
+    var before = first ? { "updates": 0, "errorsNew": 0 } : observed
+    if (Model.rose(before.errorsNew, errorsNow, first) && switchOn("notifyErrors")) {
+      notify(Model.errorToastArgv(Model.errorFacts(targets), Build.PLUGIN_ID))
+    }
+    if (Model.rose(before.updates, updatesNow, first) && switchOn("notifyUpdates")) {
+      notify(Model.updateToastArgv(updatesNow, summary.updates.targets, Build.PLUGIN_ID))
+    }
+    observed = { "generation": contextGeneration, "targets": targets, "updates": updatesNow, "errorsNew": errorsNow }
+    autoCheck()
+  }
+
+  // One client's Lua errors, in the background, queued once per client. The read rings
+  // the doorbell when it changes what `status` reports.
+  function readErrorsOf(target) {
+    request({ "resource": "errors_target", "template": "errors_target", "target": target, "slots": { "target": target },
+      "priority": "background", "label": "Read Lua errors" })
+  }
+
+  // An update check when `status` says one is due (M3-D12), at most once per
+  // autoCheckIntervalMs; Check now runs regardless.
+  function autoCheck() {
+    if (phase !== "ok") return
+    var now = Date.now()
+    if (!Model.autoCheckDue(switchOn("autoCheck"), summary, lastAutoCheckMs, now, autoCheckIntervalMs)) return
+    lastAutoCheckMs = now
+    request({ "resource": "check", "template": "check", "lane": "network", "priority": "background", "label": "Automatic update check" })
+  }
+
+  function switchOn(key) {
+    return Model.setting(root.settings, key) === "On"
+  }
+
+  // A toast as an argv (M3-D14, M3-D21), never while the binary is missing or
+  // incompatible.
+  function notify(argv) {
+    if (phase !== "ok") return
+    Quickshell.execDetached(argv)
   }
 
   // ------------------------------------------------------------- reinstall and show
@@ -707,12 +820,42 @@ Item {
   }
 
   // The safety net behind the doorbell, and the only freshness when it cannot run.
+  // While a client runs, at most runningPollMs, so its exit is never missed for long.
   Timer {
     id: pollTimer
     repeat: true
     running: true
-    interval: root.panelOpen ? root.panelPollMs : Model.intSetting(root.settings, "refreshIntervalSec", 300, 30, 3600) * 1000
+    interval: {
+      var base = root.panelOpen ? root.panelPollMs : Model.intSetting(root.settings, "refreshIntervalSec", 300, 30, 3600) * 1000
+      return root.anyRunning ? Math.min(base, root.runningPollMs) : base
+    }
     onTriggered: root.refresh()
+  }
+
+  // Window events, with no class filter: a Proton game window's class names its
+  // launcher, not the game (M3-D13).
+  Connections {
+    target: Hyprland
+    function onRawEvent(event) { root.windowEvent(String(event && event.name ? event.name : "")) }
+  }
+
+  Timer {
+    id: windowDebounce
+    interval: root.windowDebounceMs
+    onTriggered: root.refresh()
+  }
+
+  Timer {
+    id: followUpTimer
+    onTriggered: root.followUp()
+  }
+
+  Timer {
+    id: autoCheckTimer
+    repeat: true
+    running: true
+    interval: root.autoCheckIntervalMs
+    onTriggered: root.autoCheck()
   }
 
   Process {
