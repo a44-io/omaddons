@@ -616,6 +616,69 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Entries decoded per BugGrabber database, the newest kept (BugGrabber caps at 500/1000)"
+    },
+    {
+      "name": "ERRORS_MAX_ACCOUNTS",
+      "value": {
+        "count": 32
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Account dirs examined per target"
+    },
+    {
+      "name": "ERRORS_MAX_FILES",
+      "value": {
+        "count": 64
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Candidate BugGrabber files parsed per target"
+    },
+    {
+      "name": "ERRORS_MESSAGE_MAX_CHARS",
+      "value": {
+        "count": 300
+      },
+      "unit": "chars",
+      "config_key": null,
+      "notes": "First line shown with --raw-details"
+    },
+    {
+      "name": "ERRORS_STACK_LINES",
+      "value": {
+        "count": 6
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Frames shown by default"
+    },
+    {
+      "name": "ERRORS_STACK_LINES_VERBOSE",
+      "value": {
+        "count": 40
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Frames with -v or --raw-details"
+    },
+    {
+      "name": "ERRORS_LOCALS_MAX_CHARS",
+      "value": {
+        "count": 4096
+      },
+      "unit": "chars",
+      "config_key": null,
+      "notes": "Locals with --raw-details"
+    },
+    {
+      "name": "ERRORS_CHUNK_MAX_CHARS",
+      "value": {
+        "count": 40
+      },
+      "unit": "chars",
+      "config_key": null,
+      "notes": "[string \"…\"] contents shown with --raw-details"
     }
   ]
 ]

@@ -4,5 +4,7 @@
 pub mod attribute;
 pub mod buggrabber;
 pub mod frames;
+pub mod locate;
+pub mod sanitize;
 
 pub use buggrabber::{BugDb, BugEntry};

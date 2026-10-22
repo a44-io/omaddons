@@ -382,6 +382,52 @@ fn truncate(text: &str, max_chars: usize) -> String {
     cut
 }
 
+/// `raw` without WoW's UI escapes: colour codes (`|cAARRGGBB` … `|r`), textures
+/// (`|T…|t`), atlases (`|A…|a`) and hyperlink markers (`|H…|h` and the closing `|h`, the
+/// link's shown text kept) removed, and `||` read as `|`. Infallible: an escape that is
+/// malformed or never closed stays as text. Shared by TOC titles and `errors`.
+pub fn strip_ui_escapes(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while let Some(&c) = chars.get(i) {
+        if c == '|' {
+            let next = chars.get(i + 1).copied();
+            // The end of a `|T…|t`, `|A…|a` or `|H…|h` escape, past its closing pair.
+            let closing = |close: char| {
+                (i + 2..chars.len().saturating_sub(1))
+                    .find(|&j| chars.get(j) == Some(&'|') && chars.get(j + 1) == Some(&close))
+                    .map(|j| j + 2)
+            };
+            let skip = match next {
+                Some('c' | 'C')
+                    if chars
+                        .get(i + 2..i + 10)
+                        .is_some_and(|hex| hex.iter().all(char::is_ascii_hexdigit)) =>
+                {
+                    Some(i + 10)
+                }
+                Some('r' | 'R' | 'h') => Some(i + 2),
+                Some('T') => closing('t'),
+                Some('A') => closing('a'),
+                Some('H') => closing('h'),
+                Some('|') => {
+                    out.push('|');
+                    Some(i + 2)
+                }
+                _ => None,
+            };
+            if let Some(end) = skip {
+                i = end;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
 /// Whether `text` holds markup either function removes: a `<` before an ASCII letter,
 /// `/`, `!` or `?`, or a complete known BBCode tag (`[b]`, `[/url]`, `[url=x]`). Their
 /// output never does.

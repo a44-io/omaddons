@@ -67,7 +67,7 @@ pub fn frames<'a>(message: &'a str, stack: Option<&'a str>, legacy: bool) -> Vec
 }
 
 /// A message's first line up to its location's `:<line>:`, when it has one.
-fn location(first: &str) -> Option<&str> {
+pub(crate) fn location(first: &str) -> Option<&str> {
     let bytes = first.as_bytes();
     let mut from = 0;
     while let Some(at) = first[from..].find(':') {

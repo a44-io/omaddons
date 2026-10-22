@@ -124,9 +124,9 @@ impl SvSkipped {
     }
 }
 
-/// Why a `SavedVariables` directory is left alone.
+/// Why a `SavedVariables` directory is left alone (by undo, and by `errors`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SvSkip {
+pub(crate) enum SvSkip {
     Symlinked,
     TwoSpellings,
 }
@@ -476,7 +476,7 @@ fn sv_dirs(client: &ClientPaths) -> Vec<(String, PathBuf)> {
 /// from the client directory is spelled two ways, or it resolves outside the client
 /// directory, the only place SavedVariables are snapshotted and written. A directory
 /// that does not exist yet resolves through its nearest existing parent.
-pub(super) fn sv_skip(client: &ClientPaths, sv: &Path) -> Option<SvSkip> {
+pub(crate) fn sv_skip(client: &ClientPaths, sv: &Path) -> Option<SvSkip> {
     if spelled_twice(client.client_dir(), sv) {
         return Some(SvSkip::TwoSpellings);
     }

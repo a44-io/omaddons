@@ -1158,6 +1158,7 @@ mod tests {
                 .find(|(k, _)| k.eq_ignore_ascii_case("X-Tukui-ProjectFolders"))
                 .map(|(_, v)| v.split(',').map(|s| s.trim().to_owned()).collect())
                 .unwrap_or_default(),
+            saved_variables: Vec::new(),
         }
     }
 

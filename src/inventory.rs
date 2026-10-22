@@ -117,6 +117,11 @@ pub struct TocSummary {
     pub optional_deps: Vec<String>,
     /// `X-Tukui-ProjectFolders`.
     pub tukui_project_folders: Vec<String>,
+    /// The account-wide `## SavedVariables` globals (where `errors` finds an embedded
+    /// `BugGrabberDB`, M3-D44). Not on the wire.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub saved_variables: Vec<String>,
 }
 
 /// A folder a record lists that is not on disk.
@@ -389,6 +394,7 @@ fn read_details(
                     dependencies: strings(&deps.required),
                     optional_deps: strings(&deps.optional),
                     tukui_project_folders: l.toc.tukui_project_folders(),
+                    saved_variables: l.toc.saved_variables.clone(),
                 }
             });
             entry.verdict = Some(judge(

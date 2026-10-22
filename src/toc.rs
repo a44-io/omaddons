@@ -557,44 +557,10 @@ fn add_up(into: &mut Vec<String>, value: &str) {
 /// and trimmed. Infallible: an escape that is malformed or never closed stays as text.
 /// `plain_title("|cff33ff99Details!|r Damage Meter")` is `Details! Damage Meter`.
 pub fn plain_title(raw: &str) -> String {
-    let chars: Vec<char> = raw.chars().collect();
-    let mut out = String::with_capacity(raw.len());
-    let mut i = 0;
-    while let Some(&c) = chars.get(i) {
-        if c == '|' {
-            let next = chars.get(i + 1).copied();
-            // The end of a `|T…|t` or `|A…|a` escape, past its closing pair.
-            let closing = |close: char| {
-                (i + 2..chars.len().saturating_sub(1))
-                    .find(|&j| chars.get(j) == Some(&'|') && chars.get(j + 1) == Some(&close))
-                    .map(|j| j + 2)
-            };
-            let skip = match next {
-                Some('c' | 'C')
-                    if chars
-                        .get(i + 2..i + 10)
-                        .is_some_and(|hex| hex.iter().all(char::is_ascii_hexdigit)) =>
-                {
-                    Some(i + 10)
-                }
-                Some('r' | 'R') => Some(i + 2),
-                Some('T') => closing('t'),
-                Some('A') => closing('a'),
-                Some('|') => {
-                    out.push('|');
-                    Some(i + 2)
-                }
-                _ => None,
-            };
-            if let Some(end) = skip {
-                i = end;
-                continue;
-            }
-        }
-        out.push(c);
-        i += 1;
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    crate::text::strip_ui_escapes(raw)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A comma list, trimmed, without empty entries.

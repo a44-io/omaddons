@@ -139,6 +139,20 @@ pub const LUA_MAX_ISSUES: usize = 64;
 /// BugGrabber entries decoded per database, the newest kept (BugGrabber itself keeps
 /// 500, r152 50).
 pub const BUGGRABBER_MAX_ENTRIES: usize = 5_000;
+/// Account folders `errors` examines per client for BugGrabber's database.
+pub const ERRORS_MAX_ACCOUNTS: usize = 32;
+/// Candidate BugGrabber files `errors` parses per client.
+pub const ERRORS_MAX_FILES: usize = 64;
+/// Characters of an error message's first line shown with `--raw-details`.
+pub const ERRORS_MESSAGE_MAX_CHARS: usize = 300;
+/// Stack frames shown by default.
+pub const ERRORS_STACK_LINES: usize = 6;
+/// Stack frames shown with `-v` or `--raw-details`.
+pub const ERRORS_STACK_LINES_VERBOSE: usize = 40;
+/// Characters of an error's locals shown with `--raw-details`.
+pub const ERRORS_LOCALS_MAX_CHARS: usize = 4_096;
+/// Characters of a `[string "…"]` chunk's contents shown with `--raw-details`.
+pub const ERRORS_CHUNK_MAX_CHARS: usize = 40;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -537,6 +551,55 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Entries decoded per BugGrabber database, the newest kept (BugGrabber caps at 500/1000)",
     ),
+    limit(
+        "ERRORS_MAX_ACCOUNTS",
+        LimitValue::Count(ERRORS_MAX_ACCOUNTS as u64),
+        "count",
+        None,
+        "Account dirs examined per target",
+    ),
+    limit(
+        "ERRORS_MAX_FILES",
+        LimitValue::Count(ERRORS_MAX_FILES as u64),
+        "count",
+        None,
+        "Candidate BugGrabber files parsed per target",
+    ),
+    limit(
+        "ERRORS_MESSAGE_MAX_CHARS",
+        LimitValue::Count(ERRORS_MESSAGE_MAX_CHARS as u64),
+        "chars",
+        None,
+        "First line shown with --raw-details",
+    ),
+    limit(
+        "ERRORS_STACK_LINES",
+        LimitValue::Count(ERRORS_STACK_LINES as u64),
+        "count",
+        None,
+        "Frames shown by default",
+    ),
+    limit(
+        "ERRORS_STACK_LINES_VERBOSE",
+        LimitValue::Count(ERRORS_STACK_LINES_VERBOSE as u64),
+        "count",
+        None,
+        "Frames with -v or --raw-details",
+    ),
+    limit(
+        "ERRORS_LOCALS_MAX_CHARS",
+        LimitValue::Count(ERRORS_LOCALS_MAX_CHARS as u64),
+        "chars",
+        None,
+        "Locals with --raw-details",
+    ),
+    limit(
+        "ERRORS_CHUNK_MAX_CHARS",
+        LimitValue::Count(ERRORS_CHUNK_MAX_CHARS as u64),
+        "chars",
+        None,
+        "[string \"…\"] contents shown with --raw-details",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -744,6 +807,13 @@ mod tests {
         "LUA_MAX_NODES",
         "LUA_MAX_ISSUES",
         "BUGGRABBER_MAX_ENTRIES",
+        "ERRORS_MAX_ACCOUNTS",
+        "ERRORS_MAX_FILES",
+        "ERRORS_MESSAGE_MAX_CHARS",
+        "ERRORS_STACK_LINES",
+        "ERRORS_STACK_LINES_VERBOSE",
+        "ERRORS_LOCALS_MAX_CHARS",
+        "ERRORS_CHUNK_MAX_CHARS",
     ];
 
     const CONFIG_NAMES: &[&str] = &[
