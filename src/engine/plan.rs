@@ -1201,11 +1201,17 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                 revision: Some(revision),
                 ..
             } = w
-                && let Ref::WowAce { slug, .. } = &wanted.r#ref
+                && let Ref::WowAce { slug, rev } = &wanted.r#ref
                 && let Some(version) = &wanted.version
             {
-                *local = wowace::recorded_candidate(slug, version, *revision, wanted.channel)
-                    .map(Box::new);
+                *local = wowace::recorded_candidate(
+                    slug,
+                    rev.as_ref(),
+                    version,
+                    *revision,
+                    wanted.channel,
+                )
+                .map(Box::new);
             }
         }
         prepared.push((tr, record, index, wants));

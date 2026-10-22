@@ -678,8 +678,8 @@ pub enum Ref {
     CurseForge { id: u64 },
     /// `wago:<id>`
     Wago { id: String },
-    /// `wowace:<slug>[#<tag>|#r<rev>]`: a WowAce project's newest stable tag, a pinned
-    /// tag, or a trunk revision.
+    /// `wowace:<slug>[#<tag>|#r<rev>|#r<rev>:<path>]`: a WowAce project's newest stable
+    /// tag, a pinned tag, a trunk revision, or a revision of another of its directories.
     WowAce {
         slug: String,
         rev: Option<WowAceRev>,
@@ -852,7 +852,7 @@ impl FromStr for Ref {
                     .map(|rev| {
                         WowAceRev::parse(rev).ok_or_else(|| {
                             invalid(
-                                "after '#' comes a tag (1 to 64 letters, digits, '.', '_', '+' or '-') or r<revision>",
+                                "after '#' comes a tag (1 to 64 letters, digits, '.', '_', '+' or '-'), r<revision>, or r<revision>:<directory> (not under trunk or tags)",
                             )
                         })
                     })
@@ -935,25 +935,41 @@ pub enum RefParseError {
     },
 }
 
-/// What follows `#` in a `wowace:` ref: a tag, or a trunk revision.
+/// What follows `#` in a `wowace:` ref: a tag, a trunk revision, or a revision of
+/// another directory of the project.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WowAceRev {
     /// A tag directory, e.g. `v12.1.0`.
     Tag(String),
     /// A trunk peg revision, written `r152`.
     Revision(u32),
+    /// A directory outside trunk and tags at a peg revision, written
+    /// `r43:tmp/trunk/!BugGrabber`: the folder the addon is, for a project whose old
+    /// builds lie there (BugGrabber's 1.12 era).
+    Path { rev: u32, path: String },
 }
 
 impl WowAceRev {
-    /// `r<digits>` (a `u32`) is a revision, always; anything else is a tag of 1 to 64
-    /// letters, digits, `.`, `_`, `+` or `-`. WowAce tags are version names (`v12.1.0`),
-    /// so no real tag reads as a revision.
+    /// `r<digits>` (a `u32`) is a revision, always, and `r<digits>:<path>` that revision
+    /// of `path` ([`is_wowace_tree_path`]); anything else is a tag of 1 to 64 letters,
+    /// digits, `.`, `_`, `+` or `-`. WowAce tags are version names (`v12.1.0`), so no
+    /// real tag reads as a revision.
     pub fn parse(s: &str) -> Option<Self> {
-        if let Some(digits) = s.strip_prefix('r')
-            && !digits.is_empty()
-            && digits.bytes().all(|b| b.is_ascii_digit())
-        {
-            return digits.parse().ok().map(Self::Revision);
+        let digits = |d: &str| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit());
+        let revision = |d: &str| digits(d).then(|| d.parse::<u32>().ok()).flatten();
+        if let Some(rest) = s.strip_prefix('r') {
+            // All digits: a revision, or nothing when it does not fit.
+            if digits(rest) {
+                return revision(rest).map(Self::Revision);
+            }
+            if let Some((digits, path)) = rest.split_once(':') {
+                return revision(digits)
+                    .filter(|_| is_wowace_tree_path(path))
+                    .map(|rev| Self::Path {
+                        rev,
+                        path: path.to_owned(),
+                    });
+            }
         }
         let tag = (1..=64).contains(&s.len())
             && s.bytes()
@@ -967,8 +983,26 @@ impl fmt::Display for WowAceRev {
         match self {
             Self::Tag(tag) => f.write_str(tag),
             Self::Revision(rev) => write!(f, "r{rev}"),
+            Self::Path { rev, path } => write!(f, "r{rev}:{path}"),
         }
     }
+}
+
+/// A directory of a WowAce project for `#r<rev>:<path>`: 1 to 8 segments joined by `/`,
+/// each 1 to 64 letters, digits, `.`, `_`, `+`, `-` or `!` and neither `.` nor `..`,
+/// whose first is not `trunk` or `tags` (`#r<rev>` and `#<tag>` name those).
+pub fn is_wowace_tree_path(path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').collect();
+    (1..=8).contains(&segments.len())
+        && !matches!(segments[0], "trunk" | "tags")
+        && segments.iter().all(|s| {
+            (1..=64).contains(&s.len())
+                && *s != "."
+                && *s != ".."
+                && s.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-' | b'!')
+                })
+        })
 }
 
 /// A WowAce project slug: `^[a-z0-9][a-z0-9-]{0,63}$`.

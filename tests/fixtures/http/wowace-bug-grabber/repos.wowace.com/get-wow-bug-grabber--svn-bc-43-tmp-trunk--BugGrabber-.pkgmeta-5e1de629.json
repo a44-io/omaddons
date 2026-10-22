@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://repos.wowace.com/wow/bug-grabber/!svn/bc/43/tmp/trunk/!BugGrabber/.pkgmeta"
+  },
+  "responses": [
+    {
+      "status": 404,
+      "headers": [
+        [
+          "date",
+          "Thu, 22 Oct 2026 18:13:21 GMT"
+        ],
+        [
+          "content-type",
+          "text/html; charset=iso-8859-1"
+        ],
+        [
+          "content-length",
+          "281"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "server",
+          "Apache/2.4.18 (Ubuntu)"
+        ]
+      ],
+      "body_file": "get-wow-bug-grabber--svn-bc-43-tmp-trunk--BugGrabber-.pkgmeta-5e1de629.body"
+    }
+  ]
+}

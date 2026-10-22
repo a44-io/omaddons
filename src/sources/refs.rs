@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::error::{Error, ErrorCode, Result, Suggestion};
-use crate::model::{Ref, RefKind, WowAceRev, is_wowace_slug};
+use crate::model::{Ref, RefKind, WowAceRev, is_wowace_slug, is_wowace_tree_path};
 use crate::sources::github::{percent_unescape, valid_tag};
 
 /// A parsed user ref and the hints its URL carried.
@@ -433,7 +433,8 @@ fn url(input: &str, rest: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
 /// tag (an unpinned trunk path names no revision to pin); a tag directory, or a path
 /// below one, is that tag, also at a peg revision (the tag's own last-changed revision is
 /// what a fetch pins, not where the browser was); a peg revision of trunk is that
-/// revision. The website's project pages are the project.
+/// revision, and of any other directory that directory at that revision (`#r<rev>:<path>`).
+/// The website's project pages are the project.
 fn wowace_link(input: &str, host: &str, segments: &[&str]) -> Result<Ref> {
     let project = |slug: &str, rev: Option<WowAceRev>| {
         let slug = percent_unescape(slug).to_ascii_lowercase();
@@ -468,9 +469,21 @@ fn wowace_link(input: &str, host: &str, segments: &[&str]) -> Result<Ref> {
                 .map_err(|_| invalid(input, "the WowAce revision is not a number"))?;
             project(slug, Some(WowAceRev::Revision(rev)))
         }
+        // Another directory at a peg revision: that directory is the addon.
+        ["wow", slug, "!svn", "bc", rev, path @ ..] if !path.is_empty() => {
+            let rev = rev
+                .parse::<u32>()
+                .map_err(|_| invalid(input, "the WowAce revision is not a number"))?;
+            let path: Vec<String> = path.iter().map(|s| percent_unescape(s)).collect();
+            let path = path.join("/");
+            if !is_wowace_tree_path(&path) {
+                return Err(invalid(input, "the WowAce directory is not valid"));
+            }
+            project(slug, Some(WowAceRev::Path { rev, path }))
+        }
         _ => Err(invalid(
             input,
-            "a WowAce link names a project: https://repos.wowace.com/wow/<name>/, a tag below its tags/, or a revision of its trunk",
+            "a WowAce link names a project: https://repos.wowace.com/wow/<name>/, a tag below its tags/, a revision of its trunk, or a directory at a revision",
         )),
     }
 }
@@ -739,6 +752,15 @@ mod tests {
         ("wowace:x#v1/2", "ref_invalid", None, None, None),
         ("wowace:x#", "ref_invalid", None, None, None),
         ("wowace:x#r99999999999", "ref_invalid", None, None, None),
+        // A directory outside trunk and tags at a revision; trunk and tags have their forms.
+        ("wowace:bug-grabber#r43:tmp/trunk/!BugGrabber", "wowace:bug-grabber#r43:tmp/trunk/!BugGrabber", Some(MatchKind::Canonical), None, None),
+        ("wowace:x#r43:trunk/Sub", "ref_invalid", None, None, None),
+        ("wowace:x#r43:tags/v1", "ref_invalid", None, None, None),
+        ("wowace:x#r43:tmp/../x", "ref_invalid", None, None, None),
+        ("wowace:x#r43:", "ref_invalid", None, None, None),
+        ("wowace:x#r43:/tmp", "ref_invalid", None, None, None),
+        ("wowace:x#rx:tmp", "ref_invalid", None, None, None),
+        ("https://repos.wowace.com/wow/bug-grabber/!svn/bc/43/tmp/trunk/!BugGrabber/", "wowace:bug-grabber#r43:tmp/trunk/!BugGrabber", Some(MatchKind::Url), None, None),
         ("https://repos.wowace.com/wow/bug-grabber/", "wowace:bug-grabber", Some(MatchKind::Url), None, None),
         ("https://repos.wowace.com/wow/bug-grabber", "wowace:bug-grabber", Some(MatchKind::Url), None, None),
         ("https://repos.wowace.com/wow/bug-grabber/trunk/BugGrabber.lua", "wowace:bug-grabber", Some(MatchKind::Url), None, None),
@@ -908,6 +930,7 @@ mod tests {
                 "wowace:bug-grabber",
                 "wowace:bug-grabber#v12.1.0",
                 "wowace:bug-grabber#r152",
+                "wowace:bug-grabber#r43:tmp/trunk/!BugGrabber",
             ] {
                 let r = parse_user_ref(input, ctx).unwrap().r#ref;
                 assert_eq!(r.to_string(), input);
@@ -924,6 +947,19 @@ mod tests {
                     ..
                 }
             ));
+            let path = parse_user_ref("wowace:x#r43:tmp/trunk/!BugGrabber", ctx)
+                .unwrap()
+                .r#ref;
+            assert_eq!(
+                path,
+                Ref::WowAce {
+                    slug: "x".into(),
+                    rev: Some(WowAceRev::Path {
+                        rev: 43,
+                        path: "tmp/trunk/!BugGrabber".into()
+                    }),
+                }
+            );
             let slug = format!("wowace:{}", "a".repeat(64));
             assert!(parse_user_ref(&slug, ctx).is_ok());
             let long = format!("wowace:{}", "a".repeat(65));

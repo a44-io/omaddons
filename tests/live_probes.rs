@@ -485,12 +485,13 @@ fn wowace_bug_grabber_legacy_revisions() {
         return;
     };
     let base = |rev: u32| format!("https://repos.wowace.com/wow/bug-grabber/!svn/bc/{rev}/trunk/");
-    let interface = |rev: u32| -> String {
+    // The 1.12-era tree outside trunk, the catalog's 1.12.1 variant.
+    let vanilla = |rev: u32| {
+        format!("https://repos.wowace.com/wow/bug-grabber/!svn/bc/{rev}/tmp/trunk/!BugGrabber/")
+    };
+    let toc_interface = |at: String| -> String {
         let resp = http
-            .send(Request::get(
-                format!("{}!BugGrabber.toc", base(rev)),
-                "probe",
-            ))
+            .send(Request::get(format!("{at}!BugGrabber.toc"), "probe"))
             .unwrap();
         let toc = String::from_utf8_lossy(&resp.bytes().unwrap()).into_owned();
         toc.lines()
@@ -501,6 +502,14 @@ fn wowace_bug_grabber_legacy_revisions() {
             .map(|i| i.trim().to_owned())
             .unwrap_or_default()
     };
+    let interface = |rev: u32| toc_interface(base(rev));
+    // r43 is the last 1.12-era revision declaring 11200, and within the subset.
+    assert_eq!(toc_interface(vanilla(43)), "11200", "tmp/trunk r43");
+    assert_eq!(toc_interface(vanilla(44)), "20000", "tmp/trunk r44");
+    assert!(
+        wowace::assemble(http.as_ref(), &vanilla(43), 43, DOWNLOAD_MAX_BYTES).is_ok(),
+        "tmp/trunk r43 needs the packager"
+    );
     for (rev, declares) in [
         (130, "20400"),
         (131, "30000"),

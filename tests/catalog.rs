@@ -233,11 +233,16 @@ fn buggrabber_installs_each_clients_own_build() {
     let mut home = Home::new(&["wow"]);
     let wotlk = legacy(&mut home, "wow-335", (3, 3, 5, 12_340));
     let tbc = legacy(&mut home, "wow-243", (2, 4, 3, 8606));
+    let vanilla = legacy(&mut home, "wow-1121", (1, 12, 1, 5875));
     home.serve_recorded("wowace-bug-grabber");
     for (target, r) in [
         ("retail", "wowace:bug-grabber"),
         (wotlk.as_str(), "wowace:bug-grabber#r152"),
         (tbc.as_str(), "wowace:bug-grabber#r130"),
+        (
+            vanilla.as_str(),
+            "wowace:bug-grabber#r43:tmp/trunk/!BugGrabber",
+        ),
     ] {
         let run = home.run(&["install", "buggrabber", "-t", target]);
         assert_eq!(
@@ -289,8 +294,19 @@ fn buggrabber_installs_each_clients_own_build() {
         catalog["variants"],
         json!([
             {"variant": "modern", "families": ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]},
-            {"variant": "r130", "families": ["tbc-legacy"]}
+            {"variant": "r130", "families": ["tbc-legacy"]},
+            {"variant": "r43", "families": ["vanilla-legacy"]}
         ])
+    );
+    // The 1.12.1 build is the 1.12-era TOC, and installs as `!BugGrabber`.
+    let toc = home
+        .env
+        .root()
+        .join("wow-1121/Interface/AddOns/!BugGrabber/!BugGrabber.toc");
+    assert!(
+        std::fs::read_to_string(&toc)
+            .unwrap()
+            .contains("## Interface: 11200")
     );
     let info = home.run(&["info", "buggrabber"]).expect(0);
     assert_eq!(
@@ -319,8 +335,9 @@ fn without_t_buggrabber_goes_where_its_build_is_known() {
     );
     assert_eq!(run.envelope()["data"]["target"]["id"], json!(wotlk));
 
+    // 4.3.4 has no build (every revision needs the packager).
     let mut home = Home::new(&["wow"]);
-    legacy(&mut home, "wow-112", (1, 12, 1, 5875));
+    legacy(&mut home, "wow-434", (4, 3, 4, 15595));
     home.serve_recorded("wowace-bug-grabber");
     let run = home.run(&["install", "buggrabber"]);
     assert_eq!(
@@ -338,11 +355,12 @@ fn without_t_buggrabber_goes_where_its_build_is_known() {
 fn sync_gives_each_client_its_build_and_fails_alone_where_none_is_known() {
     let mut home = Home::new(&["wow"]);
     let wotlk = legacy(&mut home, "wow-335", (3, 3, 5, 12_340));
-    let vanilla = legacy(&mut home, "wow-112", (1, 12, 1, 5875));
+    // 4.3.4 has no build (every revision needs the packager).
+    let cata = legacy(&mut home, "wow-434", (4, 3, 4, 15595));
     home.serve_recorded("wowace-bug-grabber");
     home.write_desired(&format!(
         "schema_version = \"1.0\"\n\n[target.\"retail\"]\naddons = [\"buggrabber\"]\n\n\
-         [target.\"{wotlk}\"]\naddons = [\"!buggrabber\"]\n\n[target.\"{vanilla}\"]\naddons = [\"buggrabber\"]\n"
+         [target.\"{wotlk}\"]\naddons = [\"!buggrabber\"]\n\n[target.\"{cata}\"]\naddons = [\"buggrabber\"]\n"
     ));
     let run = home.run(&["sync"]);
     let envelope = run.envelope();
@@ -360,7 +378,7 @@ fn sync_gives_each_client_its_build_and_fails_alone_where_none_is_known() {
             run.context()
         );
     }
-    let item = &of(&vanilla)["items"][0];
+    let item = &of(&cata)["items"][0];
     assert_eq!(
         (&item["status"], &item["error"]["code"]),
         (&json!("failed"), &json!("not_found")),
@@ -375,7 +393,7 @@ fn sync_gives_each_client_its_build_and_fails_alone_where_none_is_known() {
         "{}",
         run.context()
     );
-    assert!(target_record(&home, &vanilla).addons.is_empty());
+    assert!(target_record(&home, &cata).addons.is_empty());
 }
 
 /// Adoption guesses a 3.3.5a `!BugGrabber` folder as the 3.3.5a build at most, never

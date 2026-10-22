@@ -722,7 +722,12 @@ mod tests {
         };
         assert_eq!(
             identities(&builtin),
-            ["BugGrabber#modern", "BugGrabber#r152", "BugGrabber#r130"],
+            [
+                "BugGrabber#modern",
+                "BugGrabber#r152",
+                "BugGrabber#r130",
+                "BugGrabber#r43"
+            ],
             "the shipped variants survive the embedded apply"
         );
         let load = |text: &str| {
@@ -771,7 +776,10 @@ mod tests {
         let (fewer, warnings) =
             load("[[addon]]\nname = \"BugGrabber\"\nvariant = \"r130\"\nremove = true\n");
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(identities(&fewer), ["BugGrabber#modern", "BugGrabber#r152"]);
+        assert_eq!(
+            identities(&fewer),
+            ["BugGrabber#modern", "BugGrabber#r152", "BugGrabber#r43"]
+        );
 
         let (kept, warnings) = load(
             "[[addon]]\nname = \"BugGrabber\"\nvariant = \"new\"\nref = \"wowace:bug-grabber#r150\"\nfamilies = [\"wrath-legacy\"]\nfolders = [\"!BugGrabber\"]\n",

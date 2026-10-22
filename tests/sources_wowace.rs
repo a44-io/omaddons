@@ -182,8 +182,8 @@ mod support {
 
     /// What the recorded scenario shows, live or replayed: BugGrabber's newest stable tag
     /// and v12.1.0 (revision 401), each tree packaged as `!BugGrabber/` with the TOC's
-    /// version line filled in; trunk at r152, the 3.3.5a build; and trunk at r130, the
-    /// 2.4.3 build. Every body goes
+    /// version line filled in; trunk at r152, the 3.3.5a build; trunk at r130, the 2.4.3
+    /// build; and `tmp/trunk/!BugGrabber` at r43, the 1.12.1 build. Every body goes
     /// through C1's parsers on the way (the tag list, each listing, `.pkgmeta`, the
     /// keyword scan). Returns the newest tag's release.
     pub fn check_recorded(http: &dyn Http) -> Release {
@@ -233,6 +233,35 @@ mod support {
             files.contains_key("!BugGrabber/libs/LibStub/LibStub.lua"),
             "{files:?}"
         );
+
+        // The catalog's 1.12.1 variant: the 1.12-era tree, outside trunk, at the last
+        // revision whose TOC declares 11200 (r44's declares 20000), within the subset.
+        let vanilla = Wanted::stable(
+            "wowace:bug-grabber#r43:tmp/trunk/!BugGrabber"
+                .parse()
+                .unwrap(),
+        );
+        let mut sets = fetch_once([vanilla.clone()], &registry, http);
+        let release = sets.remove(&vanilla).unwrap().unwrap().releases.remove(0);
+        assert_eq!(
+            (
+                release.release_id.as_str(),
+                release.version.as_str(),
+                release.revision
+            ),
+            (
+                "wowace:bug-grabber@r43:tmp/trunk/!BugGrabber",
+                "r43",
+                Some(43)
+            )
+        );
+        let files = assembled(http, &release);
+        assert_eq!(
+            files.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["!BugGrabber/!BugGrabber.toc", "!BugGrabber/BugGrabber.lua"]
+        );
+        let toc = &files["!BugGrabber/!BugGrabber.toc"];
+        assert!(toc.contains("## Interface: 11200"), "{toc}");
 
         let trunk = results.remove(&peg).unwrap().unwrap().releases.remove(0);
         assert_eq!(

@@ -31,7 +31,7 @@ use crate::limits::{
 };
 use crate::model::{
     Asset, AssetLocation, Candidate, Channel, FolderName, RankReason, Ref, Release, ReleaseSet,
-    WowAceRev, is_wowace_slug,
+    WowAceRev, is_wowace_slug, is_wowace_tree_path,
 };
 use crate::net::{Http, Request, Response};
 
@@ -77,6 +77,7 @@ impl Source for WowAceSource {
                 };
                 let releases = match rev {
                     Some(WowAceRev::Revision(rev)) => vec![trunk(slug, rev)],
+                    Some(WowAceRev::Path { rev, path }) => vec![at_path(slug, rev, &path)],
                     Some(WowAceRev::Tag(tag)) => {
                         let tags = tags()?;
                         let found = find_tag(&tags, &tag).ok_or_else(|| missing_tag(slug, &tag))?;
@@ -135,17 +136,24 @@ fn missing_tag(slug: &str, tag: &str) -> Error {
 
 /// The candidate of a release recorded at `revision` (a lock, an exact reinstall):
 /// `version` (a tag, or `r<rev>` for a trunk peg) as of that revision, built with no
-/// request, so the tree is the recorded one whether or not the tag moved since. `None`
-/// when `version` names neither, or a trunk peg at another revision.
+/// request, so the tree is the recorded one whether or not the tag moved since. A ref
+/// `pinned` to a directory (`#r<rev>:<path>`, whose version reads like a trunk peg's) is
+/// that directory. `None` when `version` names neither, or a peg at another revision.
 pub fn recorded_candidate(
     slug: &str,
+    pinned: Option<&WowAceRev>,
     version: &str,
     revision: u32,
     channel: Channel,
 ) -> Option<Candidate> {
-    let release = match WowAceRev::parse(version)? {
+    let wanted = match pinned {
+        Some(path @ WowAceRev::Path { .. }) => path.clone(),
+        _ => WowAceRev::parse(version)?,
+    };
+    let release = match wanted {
         WowAceRev::Revision(rev) if rev == revision => trunk(slug, rev),
-        WowAceRev::Revision(_) => return None,
+        WowAceRev::Path { rev, path } if rev == revision => at_path(slug, rev, &path),
+        WowAceRev::Revision(_) | WowAceRev::Path { .. } => return None,
         WowAceRev::Tag(tag) => tagged(slug, &TagRev { tag, rev: revision }),
     };
     let asset = release.assets.into_iter().next()?;
@@ -179,6 +187,17 @@ fn trunk(slug: &str, rev: u32) -> Release {
     )
 }
 
+/// The release of directory `path` as of `rev` (`#r<rev>:<path>`): versioned `r<rev>`
+/// as a trunk peg is, under its own release id.
+fn at_path(slug: &str, rev: u32, path: &str) -> Release {
+    release(
+        format!("wowace:{slug}@r{rev}:{path}"),
+        format!("r{rev}"),
+        tree_asset(slug, path, rev),
+        rev,
+    )
+}
+
 fn release(release_id: String, version: String, asset: Asset, rev: u32) -> Release {
     Release {
         release_id,
@@ -194,7 +213,7 @@ fn release(release_id: String, version: String, asset: Asset, rev: u32) -> Relea
     }
 }
 
-/// The tree at `path` (`tags/<tag>` or `trunk`) as of `rev`. Its file name keys the
+/// The tree at `path` (`tags/<tag>`, `trunk` or another directory) as of `rev`. Its file name keys the
 /// candidate facts and the command's downloads, so a re-tag never reuses the old tree.
 fn tree_asset(slug: &str, path: &str, rev: u32) -> Asset {
     Asset {
@@ -225,17 +244,20 @@ fn encode_path(path: &str) -> String {
     out
 }
 
-/// What a [`AssetLocation::WowAceTree`] names, checked: its project, and the label
-/// `@project-version@` becomes (the tag, or `r<rev>` for trunk).
+/// What a [`AssetLocation::WowAceTree`] names, checked: its project, the label
+/// `@project-version@` becomes (the tag, or `r<rev>` for trunk and other directories),
+/// and for another directory its own name, the addon's folder when no `package-as`
+/// gives one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Pinned {
     slug: String,
     label: String,
+    folder: Option<String>,
 }
 
-/// `base` read back: `<repos>/<slug>/!svn/bc/<revision>/(tags/<tag>|trunk)/`, its
-/// revision `revision`. A location in any other shape (a hand-edited memo) is refused,
-/// so no live path is ever fetched.
+/// `base` read back: `<repos>/<slug>/!svn/bc/<revision>/(tags/<tag>|trunk|<path>)/`, its
+/// revision `revision`, `<path>` as `#r<rev>:<path>` allows. A location in any other
+/// shape (a hand-edited memo) is refused, so no live path is ever fetched.
 fn pinned(base: &str, revision: u32) -> Result<Pinned> {
     let refuse = || Error::internal(format!("{base} is not a pinned WowAce tree at r{revision}"));
     let rest = base
@@ -249,20 +271,30 @@ fn pinned(base: &str, revision: u32) -> Result<Pinned> {
     if !is_wowace_slug(slug) {
         return Err(refuse());
     }
-    let label = match rest {
-        "trunk/" => format!("r{revision}"),
-        _ => {
+    let (label, folder) = match rest {
+        "trunk/" => (format!("r{revision}"), None),
+        _ if rest.starts_with("tags/") => {
             let tag = rest
                 .strip_prefix("tags/")
                 .and_then(|t| t.strip_suffix('/'))
                 .filter(|t| !t.is_empty() && !t.contains('/'))
                 .ok_or_else(refuse)?;
-            unescape_percent(tag)
+            (unescape_percent(tag), None)
+        }
+        _ => {
+            let path = rest
+                .strip_suffix('/')
+                .map(unescape_percent)
+                .filter(|p| is_wowace_tree_path(p))
+                .ok_or_else(refuse)?;
+            let folder = path.rsplit('/').next().unwrap_or(&path).to_owned();
+            (format!("r{revision}"), Some(folder))
         }
     };
     Ok(Pinned {
         slug: slug.to_owned(),
         label,
+        folder,
     })
 }
 
@@ -483,8 +515,12 @@ fn packaging(
     }
     match package_as {
         Some(folder) => Ok(folder),
-        None => FolderName::new(&pinned.slug)
-            .map_err(|e| Error::internal(format!("wowace:{}: {e}", pinned.slug))),
+        // A directory outside trunk and tags is the addon's folder itself.
+        None => {
+            let name = pinned.folder.as_deref().unwrap_or(&pinned.slug);
+            FolderName::new(name)
+                .map_err(|e| Error::internal(format!("wowace:{}: {e}", pinned.slug)))
+        }
     }
 }
 
@@ -726,8 +762,13 @@ mod tests {
                 "https://repos.wowace.com/wow/bug-grabber/!svn/bc/400/tags/v12.1.0/",
                 401,
             ),
+            // Below trunk, or past a `..`: no directory `#r<rev>:<path>` can name.
             (
-                "https://repos.wowace.com/wow/bug-grabber/!svn/bc/401/branches/x/",
+                "https://repos.wowace.com/wow/bug-grabber/!svn/bc/401/trunk/x/",
+                401,
+            ),
+            (
+                "https://repos.wowace.com/wow/bug-grabber/!svn/bc/401/tmp/../x/",
                 401,
             ),
             (
@@ -752,9 +793,54 @@ mod tests {
             pinned("https://repos.wowace.com/wow/x/!svn/bc/7/tags/v1%201/", 7).unwrap(),
             Pinned {
                 slug: "x".into(),
-                label: "v1 1".into()
+                label: "v1 1".into(),
+                folder: None,
             }
         );
+        assert_eq!(
+            pinned(
+                "https://repos.wowace.com/wow/x/!svn/bc/43/tmp/trunk/!BugGrabber/",
+                43
+            )
+            .unwrap(),
+            Pinned {
+                slug: "x".into(),
+                label: "r43".into(),
+                folder: Some("!BugGrabber".into()),
+            }
+        );
+    }
+
+    /// `#r<rev>:<path>`: the directory is the addon, packed under its own name.
+    #[test]
+    fn a_directory_at_a_revision_installs_as_its_own_folder() {
+        let base = "https://repos.wowace.com/wow/bug-grabber/!svn/bc/43/tmp/trunk/!BugGrabber/";
+        let http = Canned::default()
+            .with(base, 200, &index(&["!BugGrabber.toc", "BugGrabber.lua"]))
+            .with(
+                &format!("{base}!BugGrabber.toc"),
+                200,
+                "## Interface: 11200\n",
+            )
+            .with(&format!("{base}BugGrabber.lua"), 200, "-- grab\n");
+        let files = entries(&assemble(&http, base, 43, 1 << 20).unwrap());
+        assert_eq!(
+            files["!BugGrabber/!BugGrabber.toc"],
+            "## Interface: 11200\n"
+        );
+        assert_eq!(files["!BugGrabber/BugGrabber.lua"], "-- grab\n");
+        let c = recorded_candidate(
+            "bug-grabber",
+            WowAceRev::parse("r43:tmp/trunk/!BugGrabber").as_ref(),
+            "r43",
+            43,
+            Channel::Stable,
+        )
+        .unwrap();
+        assert!(matches!(
+            &c.asset.location,
+            AssetLocation::WowAceTree { base: b, revision: 43 } if b == base
+        ));
     }
 
     #[test]
@@ -1024,7 +1110,7 @@ mod tests {
 
     #[test]
     fn a_recorded_release_is_rebuilt_at_its_revision_without_a_request() {
-        let c = recorded_candidate("bug-grabber", "v12.1.0", 401, Channel::Stable).unwrap();
+        let c = recorded_candidate("bug-grabber", None, "v12.1.0", 401, Channel::Stable).unwrap();
         assert_eq!(
             (c.release_id.as_str(), c.version.as_str(), c.revision),
             ("wowace:bug-grabber@v12.1.0", "v12.1.0", Some(401))
@@ -1036,10 +1122,21 @@ mod tests {
                 revision: 401
             }
         );
-        let peg = recorded_candidate("bug-grabber", "r152", 152, Channel::Stable).unwrap();
+        let peg = recorded_candidate("bug-grabber", None, "r152", 152, Channel::Stable).unwrap();
         assert_eq!(peg.release_id, "wowace:bug-grabber@r152");
-        assert!(recorded_candidate("bug-grabber", "r152", 153, Channel::Stable).is_none());
-        assert!(recorded_candidate("bug-grabber", "", 1, Channel::Stable).is_none());
+        assert!(recorded_candidate("bug-grabber", None, "r152", 153, Channel::Stable).is_none());
+        assert!(recorded_candidate("bug-grabber", None, "", 1, Channel::Stable).is_none());
+        // A ref pinned to a directory is that directory, though its version reads "r43".
+        let dir = WowAceRev::parse("r43:tmp/trunk/!BugGrabber");
+        let at =
+            recorded_candidate("bug-grabber", dir.as_ref(), "r43", 43, Channel::Stable).unwrap();
+        assert_eq!(
+            (at.release_id.as_str(), at.version.as_str()),
+            ("wowace:bug-grabber@r43:tmp/trunk/!BugGrabber", "r43")
+        );
+        assert!(
+            recorded_candidate("bug-grabber", dir.as_ref(), "r43", 44, Channel::Stable).is_none()
+        );
     }
 
     #[test]

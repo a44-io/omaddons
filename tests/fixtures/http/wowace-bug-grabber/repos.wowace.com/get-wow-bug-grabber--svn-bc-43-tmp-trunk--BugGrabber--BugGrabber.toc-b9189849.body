@@ -1,0 +1,9 @@
+## Interface: 11200
+## Title: BugGrabber
+## Title-koKR: |CFF99FF99B|CFFFFFFFFug|CFF99FF99G|CFFFFFFFFrabber
+## Version: 2.1.0
+## Notes: Grabs bugs for the bug sack.
+## Author: Fritti, Rabbit
+## X-Credits: Rowne, Ramble, kergoth, ckknight
+## SavedVariables: BugGrabberDB
+BugGrabber.lua

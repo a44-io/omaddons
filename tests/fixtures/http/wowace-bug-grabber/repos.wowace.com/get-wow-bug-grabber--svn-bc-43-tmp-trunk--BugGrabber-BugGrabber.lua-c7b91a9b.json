@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://repos.wowace.com/wow/bug-grabber/!svn/bc/43/tmp/trunk/!BugGrabber/BugGrabber.lua"
+  },
+  "responses": [
+    {
+      "status": 200,
+      "headers": [
+        [
+          "date",
+          "Thu, 22 Oct 2026 18:13:22 GMT"
+        ],
+        [
+          "content-type",
+          "text/plain"
+        ],
+        [
+          "content-length",
+          "11975"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "accept-ranges",
+          "bytes"
+        ],
+        [
+          "cache-control",
+          "max-age=604800"
+        ],
+        [
+          "etag",
+          "\"43//tmp/trunk/!BugGrabber/BugGrabber.lua\""
+        ],
+        [
+          "last-modified",
+          "Tue, 14 Nov 2006 20:24:00 GMT"
+        ],
+        [
+          "server",
+          "Apache/2.4.18 (Ubuntu)"
+        ],
+        [
+          "vary",
+          "Accept-Encoding"
+        ]
+      ],
+      "body_file": "get-wow-bug-grabber--svn-bc-43-tmp-trunk--BugGrabber-BugGrabber.lua-c7b91a9b.body"
+    }
+  ]
+}

@@ -16,8 +16,11 @@
 #   revision), then each tree fetched at its pinned revision and assembled within the
 #   packaging subset: the newest tag's TOC Interface list gives the modern families;
 #   trunk's TOC at each revision gives the legacy ones (r130 is the last 2.4.3 revision,
-#   r152 the 3.3.5a one). The 4.3.4 and 5.4.8 revisions need the packager (@localization
-#   keywords) and 1.12.1 lies outside trunk, so those families have no variant.
+#   r152 the 3.3.5a one), and the 1.12-era tree outside trunk (tmp/trunk/!BugGrabber) the
+#   1.12.1 one (r43, the last declaring 11200; 2026-10-22). Every 4.3.4 and 5.4.8
+#   revision needs the packager (@localization keywords filled in from CurseForge's
+#   localization service), so those two families have no variant: no keyless build
+#   exists, unless a CurseForge source (M5) offers packaged files for those eras.
 # `families` lists where an entry is known to work (from release.json flavors, or the
 # TOCs' Interface); TOC verification still decides every install. A name with several
 # entries gives each a `variant` and pairwise disjoint `families`: a client gets the one
@@ -439,6 +442,15 @@ ref = "wowace:bug-grabber#r130"
 families = ["tbc-legacy"]
 folders = ["!BugGrabber"]
 notes = "2.4.3: trunk at r130, the last revision whose TOC carries Interface 20400"
+
+[[addon]]
+name = "BugGrabber"
+variant = "r43"
+aliases = ["!buggrabber", "bug-grabber"]
+ref = "wowace:bug-grabber#r43:tmp/trunk/!BugGrabber"
+families = ["vanilla-legacy"]
+folders = ["!BugGrabber"]
+notes = "1.12.1: the 1.12-era tree, outside trunk (tmp/trunk/!BugGrabber), at r43, the last revision whose TOC carries Interface 11200"
 
 # ---- Legacy clients: the repository is the addon ---------------------------------------
 

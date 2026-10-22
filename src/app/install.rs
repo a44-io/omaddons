@@ -445,7 +445,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
                     return Err(Error::new(
                         ErrorCode::Usage,
                         format!(
-                            "--version on a wowace: ref takes a tag (v12.1.0) or a trunk revision (r152), not {v:?}"
+                            "--version on a wowace: ref takes a tag (v12.1.0), a trunk revision (r152) or a directory at a revision (r43:<path>), not {v:?}"
                         ),
                         Suggestion::command(["omaddons", "help", "install"]),
                     ));

@@ -691,13 +691,13 @@ fn incomplete_reads_are_reported_and_fail_the_check() {
 }
 
 /// A client without BugGrabber gets the catalog's build for it as a runnable install
-/// (which works, replayed); a 1.12 client, for which no build is known, gets no command
-/// and says so, never another family's build.
+/// (which works, replayed); a 4.3.4 client, for which no build is known (every revision
+/// needs the packager), gets no command and says so, never another family's build.
 #[test]
 fn a_client_without_bug_grabber_is_listed_with_a_hint() {
     let mut home = common::home::Home::new(&["wow"]);
     home.with_custom(
-        common::trees::CustomRoot::at(home.env.root().join("wow-112")).version(1, 12, 1, 5875),
+        common::trees::CustomRoot::at(home.env.root().join("wow-434")).version(4, 3, 4, 15595),
     );
     let run = home.exec_with(
         &["errors", "--json"].map(str::to_owned),
@@ -767,6 +767,47 @@ fn a_client_without_bug_grabber_is_listed_with_a_hint() {
     assert_eq!(
         (&item["status"], &item["ref"]),
         (&json!("installed"), &json!("wowace:bug-grabber")),
+        "{}",
+        installed.context()
+    );
+}
+
+/// A 1.12.1 client is offered its own build (the 1.12-era tree, `#r43:tmp/trunk/…`),
+/// and the hint as given installs it.
+#[test]
+fn a_1121_client_is_offered_its_own_build() {
+    let mut home = common::home::Home::new(&[]);
+    home.with_custom(
+        common::trees::CustomRoot::at(home.env.root().join("wow-1121")).version(1, 12, 1, 5875),
+    );
+    let run = home.exec_with(
+        &["errors", "--json"].map(str::to_owned),
+        &[("OMADDONS_NOW", support::CLOCK)],
+    );
+    let envelope = run.expect(0);
+    let vanilla = support::target(&envelope, |_| true);
+    assert_eq!(
+        (&vanilla["capture"], vanilla.get("capture_note")),
+        (&json!("none"), None),
+        "{}",
+        run.context()
+    );
+    let id = vanilla["target"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        envelope["commands"][0]["argv"],
+        json!(["omaddons", "install", "buggrabber", "-t", id]),
+        "{}",
+        run.context()
+    );
+    home.serve_recorded("wowace-bug-grabber");
+    let installed = home.run(&["install", "buggrabber", "-t", &id]);
+    let item = &installed.expect(0)["data"]["items"][0];
+    assert_eq!(
+        (&item["status"], &item["ref"]),
+        (
+            &json!("installed"),
+            &json!("wowace:bug-grabber#r43:tmp/trunk/!BugGrabber")
+        ),
         "{}",
         installed.context()
     );
