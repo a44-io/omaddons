@@ -1,0 +1,8 @@
+
+BugGrabberDB = {
+["session"] = 412,
+["lastSanitation"] = 3,
+["stopnag"] = 120001,
+["errors"] = {
+{
+["message"] = "[Interface/AddOns/Foo/cor

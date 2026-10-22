@@ -1,0 +1,26 @@
+
+BugGrabberDB = {
+	["session"] = 18,
+	["errors"] = {
+		{
+			["message"] = {
+				"Foo-1.2\\core.lua:12: attempt to index a nil value\nFoo-1.2\\core.lua:12: in function `Refresh'\nAceEvent-3 (Foo):120: in function `?'\n[C]: in function `pcall'\nLocals:|r\nself = <table> {\n  field00 = \"value 00\"\n  field01 = \"value 01\"\n  field02 = \"value 02\"\n  field03 = \"value 03\"\n  field04 = \"value 04\"\n  field05 = \"value 05\"\n  field06 = \"value 06\"\n  field07 = \"value 07\"\n  field08 = \"value 08\"\n  field09 = \"value 09\"\n  field10 = \"value 10\"\n  field11 = \"value 11\"\n  field12 = \"value 12\"\n  field13 = \"value 13\"\n  field14 = \"value 14\"\n  field15 = \"value 15\"\n  field16 = \"value 16\"\n  field17 = \"value 17\"\n  field18 = \"value 18\"\n  field19 = \"value 19\"\n  field20 = \"value 20\"\n  field21 = \"value 21\"\n  field22 = \"value 22\"\n  field23 = \"value 23\"\n  field24 = \"value 24\"\n  field25 = \"value 25\"\n  field26 = \"value 26\"\n  field27 = \"value 27\"\n  field28 = \"value 28\"\n  field29 = \"value 29\"\n  field30 = \"value 30\"\n  field31 = \"value 31\"\n  field32 = \"value 32\"\n  field33 = \"value 33\"\n  field34 = \"va", -- [1]
+				"lue 34\"\n  field35 = \"value 35\"\n  field36 = \"value 36\"\n  field37 = \"value 37\"\n  field38 = \"value 38\"\n  field39 = \"value 39\"\n}\n  ---", -- [2]
+			},
+			["type"] = "error",
+			["session"] = 17,
+			["time"] = "2026/10/14 18:30:00",
+			["counter"] = 1,
+		}, -- [1]
+		{
+			["message"] = "[ADDON_ACTION_BLOCKED] AddOn 'Foo' tried to call the protected function 'TargetUnit()'.\nFoo-1.2\\target.lua:5: in function `Pick'\nLocals:|r\n\n  ---",
+			["type"] = "event",
+			["session"] = 18,
+			["time"] = "2026/10/15 17:30:00",
+			["counter"] = 1,
+		}, -- [2]
+	},
+	["limit"] = 50,
+	["save"] = true,
+	["throttle"] = true,
+}

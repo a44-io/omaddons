@@ -952,3 +952,268 @@ mod m2 {
         );
     }
 }
+
+/// SavedVariables in both writer formats, and the BugGrabber scenarios built on them.
+#[cfg(test)]
+mod saved_variables {
+    use super::common::buggrabber::{
+        self, BugDb, BugEntry, CHUNK_BYTES, NOW, SvFile, TimeKind, Writer,
+    };
+    use super::common::lua::{self, Table, Value};
+    use super::common::privacy::SENDER;
+
+    /// Every line of `bytes` as `writer` writes it: a leading blank line, CRLF only,
+    /// bracketed keys, a trailing comma after every field, tab indentation by depth and
+    /// `-- [n]` after each positional field (legacy) or neither (modern).
+    fn assert_format(writer: Writer, bytes: &[u8], ctx: &str) {
+        assert!(bytes.starts_with(b"\r\n"), "{ctx}: a leading blank line");
+        let lone = bytes
+            .iter()
+            .enumerate()
+            .filter(|(i, b)| **b == b'\n' && (*i == 0 || bytes[i - 1] != b'\r'))
+            .count();
+        assert_eq!(lone, 0, "{ctx}: CRLF line endings only");
+        let text = String::from_utf8_lossy(bytes);
+        // Per open table: the positional fields counted so far, and whether the table
+        // itself is a positional field of its parent.
+        let mut open: Vec<(usize, bool)> = Vec::new();
+        for line in text.split("\r\n").skip(1).filter(|l| !l.is_empty()) {
+            let body = line.trim_start_matches('\t');
+            let tabs = line.len() - body.len();
+            let closing = body.starts_with('}');
+            let depth = open.len() - usize::from(closing);
+            let expected_tabs = if writer == Writer::Legacy { depth } else { 0 };
+            assert_eq!(tabs, expected_tabs, "{ctx}: indentation of {line:?}");
+            // `n` of `-- [n]` for a positional field of the innermost open table.
+            let next_position = |open: &mut Vec<(usize, bool)>| {
+                let parent = open.last_mut().unwrap();
+                parent.0 += 1;
+                parent.0
+            };
+            let field_end = |positional: bool, n: usize| match (writer, positional) {
+                (Writer::Legacy, true) => format!(", -- [{n}]"),
+                _ => ",".to_owned(),
+            };
+            if closing {
+                let (_, positional) = open.pop().unwrap();
+                if open.is_empty() {
+                    assert_eq!(body, "}", "{ctx}: a global's table");
+                    continue;
+                }
+                let n = if positional {
+                    next_position(&mut open)
+                } else {
+                    0
+                };
+                assert_eq!(body, format!("}}{}", field_end(positional, n)), "{ctx}");
+            } else if body.ends_with('{') {
+                let global = open.is_empty();
+                if global {
+                    let name = body.strip_suffix(" = {").unwrap();
+                    assert!(
+                        name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                        "{ctx}: {line:?}"
+                    );
+                }
+                let keyed = body.starts_with("[\"") || body.starts_with('[');
+                assert!(global || keyed || body == "{", "{ctx}: {line:?}");
+                open.push((0, !global && !keyed));
+            } else if body.starts_with('[') {
+                assert!(
+                    body.contains("] = ") && body.ends_with(','),
+                    "{ctx}: {line:?}"
+                );
+            } else {
+                let n = next_position(&mut open);
+                let end = field_end(true, n);
+                assert!(body.ends_with(&end), "{ctx}: {line:?} ends with {end:?}");
+                let literal = &body[..body.len() - end.len()];
+                let is_literal = (literal.starts_with('"') && literal.ends_with('"'))
+                    || literal.parse::<f64>().is_ok()
+                    || matches!(literal, "true" | "false");
+                assert!(is_literal, "{ctx}: {line:?} is a positional literal");
+            }
+        }
+        assert!(open.is_empty(), "{ctx}: every table closed");
+    }
+
+    #[test]
+    fn the_two_writers_render_their_formats_byte_for_byte() {
+        let table = Table::default()
+            .push(Value::str("a\"b"))
+            .with("k", Value::Str(b"c\\d\ne\x01f".to_vec()))
+            .push(Value::Table(Table::default().with("n", Value::Int(-3))))
+            .with("x", Value::Bool(false));
+        let globals = [("T", Value::Table(table)), ("U", Value::Num(0.5))];
+        assert_eq!(
+            String::from_utf8(lua::render(Writer::Modern, &globals)).unwrap(),
+            "\r\nT = {\r\n\"a\\\"b\",\r\n[\"k\"] = \"c\\\\d\\ne\x01f\",\r\n{\r\n[\"n\"] = -3,\r\n},\r\n[\"x\"] = false,\r\n}\r\nU = 0.5\r\n"
+        );
+        assert_eq!(
+            String::from_utf8(lua::render(Writer::Legacy, &globals)).unwrap(),
+            "\r\nT = {\r\n\t\"a\\\"b\", -- [1]\r\n\t[\"k\"] = \"c\\\\d\\ne\x01f\",\r\n\t{\r\n\t\t[\"n\"] = -3,\r\n\t}, -- [2]\r\n\t[\"x\"] = false,\r\n}\r\nU = 0.5\r\n"
+        );
+        let db = BugDb::new(Writer::Legacy, 2).entry(BugEntry::new(
+            "x:1: boom",
+            2,
+            (TimeKind::LocalString, NOW),
+        ));
+        assert_eq!(
+            String::from_utf8(db.render()).unwrap(),
+            "\r\nBugGrabberDB = {\r\n\t[\"session\"] = 2,\r\n\t[\"lastSanitation\"] = 3,\r\n\t[\"stopnag\"] = 120001,\r\n\t[\"errors\"] = {\r\n\t\t{\r\n\t\t\t[\"message\"] = \"x:1: boom\",\r\n\t\t\t[\"session\"] = 2,\r\n\t\t\t[\"time\"] = \"2026/10/15 18:30:00\",\r\n\t\t\t[\"counter\"] = 1,\r\n\t\t}, -- [1]\r\n\t},\r\n}\r\n"
+        );
+    }
+
+    #[test]
+    fn every_scenario_renders_in_both_formats_and_deterministically() {
+        let names: Vec<&str> = buggrabber::scenarios(Writer::Modern)
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "modern_int",
+                "modern_string_first_seen",
+                "modern_string_last_seen",
+                "r152_chunked",
+                "embedded_bdui",
+                "warnings",
+                "forbidden",
+                "personal",
+                "received",
+                "custom_names",
+                "two_accounts",
+                "mixed_times",
+                "flood",
+            ]
+        );
+        for writer in Writer::ALL {
+            let scenarios = buggrabber::scenarios(writer);
+            assert_eq!(scenarios, buggrabber::scenarios(writer), "deterministic");
+            for (name, files) in &scenarios {
+                assert!(!files.is_empty(), "{name}");
+                for file in files {
+                    let ctx = format!("{name} ({writer:?}) {}", file.rel);
+                    assert_format(writer, &file.bytes, &ctx);
+                    assert!(file.rel.starts_with("Account/"), "{ctx}");
+                }
+            }
+        }
+        let modern = buggrabber::modern_int(Writer::Modern).render();
+        let legacy = buggrabber::modern_int(Writer::Legacy).render();
+        assert!(!modern.contains(&b'\t') && legacy.contains(&b'\t'));
+    }
+
+    /// Every value written under the key `field` in `bytes`, in order, as written.
+    fn strings_of(bytes: &[u8], field: &str) -> Vec<String> {
+        let text = String::from_utf8_lossy(bytes);
+        let key = format!("[\"{field}\"] = ");
+        text.split("\r\n")
+            .filter_map(|l| l.trim_start_matches('\t').strip_prefix(key.as_str()))
+            .map(|v| v.trim_end_matches(',').to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn the_r152_message_is_chunked_with_its_stack_and_locals_inside() {
+        for writer in Writer::ALL {
+            let db = buggrabber::r152_chunked(writer);
+            let error = &db.entries[0];
+            assert!(error.chunked);
+            let message = error.message.as_bytes();
+            let chunks: Vec<&[u8]> = message.chunks(CHUNK_BYTES).collect();
+            assert_eq!(chunks.len(), 2);
+            assert!(chunks.iter().all(|c| c.len() <= CHUNK_BYTES));
+            assert!(error.message.contains("\nLocals:|r\n"));
+            assert!(error.message.ends_with("\n  ---"));
+            assert!(error.message.contains("Foo-1.2\\core.lua:12:"));
+            assert!(error.message.contains("AceEvent-3 (Foo):120:"));
+            assert!(error.stack.is_none() && error.locals.is_none());
+            let bytes = db.render();
+            assert_eq!(strings_of(&bytes, "type"), ["\"error\"", "\"event\""]);
+            assert_eq!(strings_of(&bytes, "limit"), ["50"]);
+            assert!(strings_of(&bytes, "lastSanitation").is_empty());
+            // The message is a table of chunks, not a string.
+            assert_eq!(strings_of(&bytes, "message")[0], "{");
+        }
+    }
+
+    #[test]
+    fn received_reports_carry_their_sender_and_the_current_session() {
+        let db = buggrabber::received(Writer::Modern);
+        let sent: Vec<&BugEntry> = db.entries.iter().filter(|e| e.source.is_some()).collect();
+        assert_eq!(sent.len(), 2);
+        for entry in sent {
+            assert_eq!((entry.source, entry.session), (Some(SENDER), db.session));
+        }
+        assert!(db.entries[0].source.is_none() && db.entries[0].session < db.session);
+        assert_eq!(
+            strings_of(&db.render(), "source"),
+            [format!("\"{SENDER}\""), format!("\"{SENDER}\"")]
+        );
+    }
+
+    #[test]
+    fn scenarios_plant_names_where_real_files_hide_them() {
+        let text = |files: Vec<SvFile>| {
+            files
+                .iter()
+                .map(|f| String::from_utf8_lossy(&f.bytes).into_owned())
+                .collect::<String>()
+        };
+        let personal = text(vec![buggrabber::personal(Writer::Modern).file()]);
+        for planted in [
+            "Player-1234-0ABCDEF1",
+            "|Hplayer:FakeChar-FakeRealm|h[FakeChar]|h",
+            "name = \\\"FakeChar\\\"",
+            "[\"source\"] = \"FakeChar\"",
+        ] {
+            assert!(personal.contains(planted), "{planted}");
+        }
+        let custom = text(vec![buggrabber::custom_names(Writer::Modern).file()]);
+        assert!(custom.contains("FakeChar on FakeRealm pulled"));
+        assert!(custom.contains("[string \\\"print('FakeChar')\\\"]:1:"));
+        let accounts = buggrabber::two_accounts(Writer::Legacy);
+        let rels: Vec<&str> = accounts.iter().map(|f| f.rel.as_str()).collect();
+        assert_eq!(
+            rels,
+            [
+                "Account/FAKEACCT/SavedVariables/!BugGrabber.lua",
+                "Account/SECONDACCT/SavedVariables/!BugGrabber.lua"
+            ]
+        );
+        let sessions: Vec<Vec<String>> = accounts
+            .iter()
+            .map(|f| strings_of(&f.bytes, "session"))
+            .collect();
+        assert_ne!(
+            sessions[0][0], sessions[1][0],
+            "independent session counters"
+        );
+        let bdui = text(buggrabber::embedded_bdui(Writer::Modern));
+        assert!(bdui.contains("\r\nBDUI_SAVE = {") && bdui.contains("}\r\nBugGrabberDB = {"));
+    }
+
+    #[test]
+    fn times_follow_their_era() {
+        // First seen: a repeat keeps its old time, so the last entry is the older one.
+        let first = buggrabber::modern_string_first_seen(Writer::Modern);
+        assert!(first.entries[1].time.1 < first.entries[0].time.1);
+        let last = buggrabber::modern_string_last_seen(Writer::Modern);
+        assert!(last.entries[0].time.1 < last.entries[1].time.1);
+        let times = strings_of(&buggrabber::mixed_times(Writer::Modern).render(), "time");
+        assert_eq!(times.len(), 3);
+        assert!(times[0].starts_with('"') && times[1].starts_with('"'));
+        assert_eq!(times[2], (NOW - 3600).to_string());
+        let flood = buggrabber::flood(Writer::Modern, 25);
+        assert_eq!(flood.entries.len(), 25);
+        assert_eq!(flood.tail.len(), 2, "a malformed tail");
+        assert!(
+            buggrabber::truncated(
+                "[Interface/AddOns/SomeUIPack/Modules/Nameplates/Widgets/Indicator.lua]:77:"
+            )
+            .starts_with("...")
+        );
+    }
+}

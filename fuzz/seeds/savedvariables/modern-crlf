@@ -1,0 +1,37 @@
+
+BugGrabberDB = {
+["session"] = 412,
+["lastSanitation"] = 3,
+["stopnag"] = 120001,
+["errors"] = {
+{
+["message"] = "[Interface/AddOns/Foo/core.lua]:12: attempt to index a nil value (field 'db')",
+["stack"] = "[Interface/AddOns/Foo/core.lua]:12: in function 'Refresh'\n[Interface/AddOns/Foo/core.lua]:40: in function <Interface/AddOns/Foo/core.lua:38>",
+["locals"] = "self = <table> {\n}\n(*temporary) = nil",
+["session"] = 410,
+["time"] = 1791916200,
+["counter"] = 3,
+},
+{
+["message"] = "[Interface/AddOns/Questie/Modules/QuestieEvent.lua]:88: attempt to compare number with nil",
+["stack"] = "[Interface/AddOns/Questie/Modules/QuestieEvent.lua]:88: in function <Interface/AddOns/Questie/Modules/QuestieEvent.lua:80>\n[C]: in function 'xpcall'\n[Interface/AddOns/AtlasLootClassic/Libs/CallbackHandler-1.0/CallbackHandler-1.0.lua]:109: in function 'Fire'\n[Interface/AddOns/AtlasLootClassic/Libs/AceEvent-3.0/AceEvent-3.0.lua]:120: in function <Interface/AddOns/AtlasLootClassic/Libs/AceEvent-3.0/AceEvent-3.0.lua:119>",
+["session"] = 411,
+["time"] = 1792002600,
+["counter"] = 1,
+},
+{
+["message"] = "[string \"--[==[ Error in 'Interrupt Bar' ]==] return function(...)\"]:4: attempt to perform arithmetic on a nil value",
+["stack"] = "[string \"--[==[ Error in 'Interrupt Bar' ]==] return function(...)\"]:4: in function <[string \"--[==[ Error in 'Interrupt Bar' ]==] return function(...)\"]:1>\n[C]: in function 'xpcall'\n[Interface/AddOns/WeakAuras/WeakAuras.lua]:4512: in function 'RunTrigger'",
+["session"] = 412,
+["time"] = 1792085400,
+["counter"] = 57,
+},
+{
+["message"] = ".../Nameplates/Widgets/ThreatIndicator/Indicator.lua]:77: bad argument #1 to 'SetText' (string expected, got table)",
+["stack"] = "[Interface/AddOns/SomeUIPack/Modules/Nameplates/Widgets/ThreatIndicator/Indicator.lua]:77: in function 'Update'",
+["session"] = 412,
+["time"] = 1792088400,
+["counter"] = 1,
+},
+},
+}

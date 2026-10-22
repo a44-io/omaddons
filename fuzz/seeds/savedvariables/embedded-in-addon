@@ -1,0 +1,23 @@
+
+BDUI_SAVE = {
+["profile"] = "Default",
+["scale"] = 0.75,
+["modules"] = {
+"bags",
+"nameplates",
+},
+}
+BugGrabberDB = {
+["session"] = 88,
+["lastSanitation"] = 3,
+["stopnag"] = 120001,
+["errors"] = {
+{
+["message"] = "[Interface/AddOns/bdUI/core/frames.lua]:64: attempt to index a nil value",
+["stack"] = "[Interface/AddOns/bdUI/core/frames.lua]:64: in function 'Skin'",
+["session"] = 88,
+["time"] = 1792085400,
+["counter"] = 1,
+},
+},
+}

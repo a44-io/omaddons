@@ -1,0 +1,10 @@
+
+BugGrabberDB = {
+session = 3,
+errors = {
+{
+message = "x:1: boom",
+time = 1792089000,
+},
+},
+}

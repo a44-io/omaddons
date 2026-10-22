@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use common::archives::{RawEntry, raw_zip, zip_text};
+use common::buggrabber::{self, Writer};
 use common::env::TestEnv;
 use common::product_db::ProductDb;
 use common::trees::BattlenetRoot;
@@ -475,6 +476,46 @@ fn write_fuzz_seeds() {
         "malformed.toml",
         b"schema_version = \"1.0\"\n[family.mainline\naddons = [\"DBM\", 3\n[[family.mainline.addon]]\nname = \"\"\n",
     );
+
+    // savedvariables: BugGrabber in both writer formats, r152's chunks, a DB embedded in
+    // another addon's file, bare keys as a hand edit writes them, a file cut inside a
+    // string, and tables nested past any sane depth.
+    let modern = buggrabber::modern_int(Writer::Modern).render();
+    write("savedvariables", "modern-crlf", &modern);
+    write(
+        "savedvariables",
+        "legacy-tabs",
+        &buggrabber::modern_int(Writer::Legacy).render(),
+    );
+    write(
+        "savedvariables",
+        "chunked-r152",
+        &buggrabber::r152_chunked(Writer::Legacy).render(),
+    );
+    write(
+        "savedvariables",
+        "embedded-in-addon",
+        &buggrabber::embedded_bdui(Writer::Modern)[0].bytes,
+    );
+    write(
+        "savedvariables",
+        "bare-keys",
+        b"\r\nBugGrabberDB = {\r\nsession = 3,\r\nerrors = {\r\n{\r\nmessage = \"x:1: boom\",\r\ntime = 1792089000,\r\n},\r\n},\r\n}\r\n",
+    );
+    let quote = modern
+        .windows(15)
+        .position(|w| w == b"[\"message\"] = \"")
+        .unwrap();
+    write(
+        "savedvariables",
+        "malformed-unterminated",
+        &modern[..quote + 40],
+    );
+    let mut deep = b"\r\nDeepDB = ".to_vec();
+    deep.extend("{\r\n".repeat(4096).bytes());
+    deep.extend("},\r\n".repeat(4095).bytes());
+    deep.extend(b"}\r\n");
+    write("savedvariables", "malformed-deep", &deep);
 }
 
 /// The `addons.toml` example of `src/state/desired.rs`.
