@@ -385,9 +385,10 @@ Item {
 
   function errorOf(env, fallback) {
     if (env && env.error) {
-      return { "message": String(env.error.message || fallback), "code": String(env.error.code || ""), "fixes": Model.fixButtons(env) }
+      return { "message": String(env.error.message || fallback), "code": String(env.error.code || ""),
+        "fixes": Model.fixButtons(env), "fixText": Model.fixText(env) }
     }
-    return { "message": fallback, "code": "", "fixes": [] }
+    return { "message": fallback, "code": "", "fixes": [], "fixText": "" }
   }
 
   // Called by a lane (directly, so the values stay JavaScript) when a request ends.

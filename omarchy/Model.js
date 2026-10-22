@@ -712,6 +712,10 @@ function targetOf(target) {
     "key": str(target.key),
     "label": str(target.label) || str(target.id),
     "running": target.running === true,
+    // `null` when the process table could not be read (`running_unknown`).
+    "runningUnknown": target.running === null,
+    // From `status -v`: where `o` opens Interface/AddOns.
+    "clientDir": str(target.client_dir),
     "missing": target.missing === true,
     "addons": target.addons && typeof target.addons === "object" ? num(target.addons.total) : null,
     "updates": updates ? {
@@ -1156,6 +1160,131 @@ function staleText(env) {
   return "Changed since you looked: " + (changed.length ? joinNames(changed) : "the plan") + ". Nothing ran; check the new preview."
 }
 
+// A failure's fix as text, when it is no button: prose, or an argv the classifier
+// refuses (M3-D2); "" when fixButtons shows it.
+function fixText(env) {
+  var error = env && env.error && typeof env.error === "object" ? env.error : null
+  if (!error) return ""
+  if (Array.isArray(error.fix_argv) && cliAction(error.fix, error.fix_argv, false).runnable) return ""
+  return str(error.fix)
+}
+
+// -------------------------------------------------------------- the panel frame (F4)
+
+// The panel's views, in switcher order: h/l step through them, 1–5 jump.
+var VIEWS = ["updates", "installed", "issues", "backups", "search"]
+var VIEW_TITLES = { "updates": "Updates", "installed": "Installed", "issues": "Issues", "backups": "Backups", "search": "Search" }
+
+// The letter keys of the panel key map (PanelKeyCatcher keeps j/k/h/l and the arrows,
+// Enter, Space, x, Esc and Tab). The frame runs update, check, undo, open, filter and
+// search itself; the rest go to the current view, or to the task that registered them.
+var PANEL_KEYS = {
+  "u": "update", "c": "check", "z": "undo", "o": "open", "t": "filter", "/": "search",
+  "b": "backup", "d": "dismiss", "r": "restore", "s": "raw", "i": "notes", "p": "pin"
+}
+
+// What the letter `text` does: `{name}`, `{name: "view", view}` for 1–5, or null.
+function panelKey(text) {
+  if (typeof text !== "string" || text.length !== 1) return null
+  var digit = "12345".indexOf(text)
+  if (digit >= 0) return { "name": "view", "view": VIEWS[digit] }
+  return PANEL_KEYS.hasOwnProperty(text) ? { "name": PANEL_KEYS[text] } : null
+}
+
+// The view `step` places from `view`, wrapping around.
+function stepView(view, step) {
+  var at = VIEWS.indexOf(view)
+  if (at < 0) at = 0
+  var n = VIEWS.length
+  return VIEWS[(((at + step) % n) + n) % n]
+}
+
+// The hero's meta line: "6 clients · 3 updates · 1 issue".
+function heroMeta(summary) {
+  if (!summary) return ""
+  var parts = [plural(summary.targets, "client"), plural(summary.updates.available, "update")]
+  if (summary.issuesTotal > 0) parts.push(plural(summary.issuesTotal, "issue"))
+  if (summary.errors && summary.errors["new"] > 0) parts.push(plural(summary.errors["new"], "new error"))
+  return parts.join(" · ")
+}
+
+// The hero's detail: "checked 25 min ago · retail running" (the oldest check, as the
+// tooltip says it), or "running: unknown" when the process table could not be read.
+function heroDetail(summary, targets, nowMs) {
+  if (!summary) return ""
+  var parts = []
+  var oldest = null
+  var unknown = false
+  for (var i = 0; i < targets.length; i++) {
+    var checked = targets[i].updates ? targets[i].updates.checkedAt : null
+    if (checked && (!oldest || Date.parse(checked) < Date.parse(oldest))) oldest = checked
+    if (targets[i].runningUnknown) unknown = true
+  }
+  var age = oldest ? ageText(oldest, nowMs) : ""
+  if (age) parts.push(age)
+  if (summary.running.length > 0) parts.push(joinNames(summary.running) + " running")
+  else if (unknown) parts.push("running: unknown")
+  return parts.join(" · ")
+}
+
+function targetById(targets, id) {
+  if (!id || !Array.isArray(targets)) return null
+  for (var i = 0; i < targets.length; i++) if (targets[i].id === id) return targets[i]
+  return null
+}
+
+// `t`: All (""), then each target in order, then All again. A filter whose target is
+// gone starts over at All.
+function nextFilter(targets, current) {
+  var ids = Array.isArray(targets) ? targets.map(function(t) { return t.id }) : []
+  if (ids.length === 0) return ""
+  if (!current) return ids[0]
+  var at = ids.indexOf(current)
+  return at < 0 || at === ids.length - 1 ? "" : ids[at + 1]
+}
+
+// `o`: the selected target's AddOns folder for the desktop's opener (M3-D2: a literal
+// tool, an argv); null without a selected target or an absolute client directory.
+function addonsDirArgv(target) {
+  if (!target || !target.clientDir || target.clientDir.charAt(0) !== "/") return null
+  return ["xdg-open", target.clientDir.replace(/\/+$/, "") + "/Interface/AddOns"]
+}
+
+// `u`: every client's updates, or the selected one's (no confirmation: undoable and
+// expected, M3-D9).
+function updateRequest(filter) {
+  if (filter) return { "template": "update_target", "slots": { "target": filter }, "label": "Update " + filter }
+  return { "template": "update_all", "slots": {}, "label": "Update all" }
+}
+
+// The Undo-last control: its label ("Undo update on retail", "Redo …"), the CLI argv
+// it runs through the confirm flow, or why there is none.
+function undoAction(lastChange) {
+  if (!lastChange) return { "label": "Undo last", "argv": null, "why": "nothing to undo" }
+  if (lastChange.unknown) return { "label": "Undo last", "argv": null, "why": "last change: unknown" }
+  var undo = lastChange.undo
+  if (!undo) return { "label": lastChange.label, "argv": null, "why": "nothing to undo" }
+  if (!undo.runnable) return { "label": lastChange.label, "argv": null, "why": "not a command the widget runs: " + undo.command }
+  return { "label": lastChange.label, "argv": undo.argv, "why": "" }
+}
+
+// A running action's progress as a fraction, or -1 when it has no count yet.
+function progressFraction(action) {
+  if (!action || typeof action.total !== "number" || action.total <= 0) return -1
+  var current = typeof action.current === "number" ? action.current : 0
+  return Math.max(0, Math.min(1, current / action.total))
+}
+
+// The last result's Undo: its `undo` command when the classifier accepted it.
+function resultUndo(result) {
+  if (!result || !Array.isArray(result.commands)) return null
+  for (var i = 0; i < result.commands.length; i++) {
+    var c = result.commands[i]
+    if (c && c.action === "undo" && c.runnable && Array.isArray(c.argv)) return c
+  }
+  return null
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
@@ -1203,6 +1332,21 @@ if (typeof module !== "undefined") {
     isSafeUrl: isSafeUrl,
     fixButtons: fixButtons,
     confirmText: confirmText,
-    staleText: staleText
+    staleText: staleText,
+    fixText: fixText,
+    VIEWS: VIEWS,
+    VIEW_TITLES: VIEW_TITLES,
+    PANEL_KEYS: PANEL_KEYS,
+    panelKey: panelKey,
+    stepView: stepView,
+    heroMeta: heroMeta,
+    heroDetail: heroDetail,
+    targetById: targetById,
+    nextFilter: nextFilter,
+    addonsDirArgv: addonsDirArgv,
+    updateRequest: updateRequest,
+    undoAction: undoAction,
+    progressFraction: progressFraction,
+    resultUndo: resultUndo
   }
 }

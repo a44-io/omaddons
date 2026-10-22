@@ -1,3 +1,10 @@
 module qs.Ui
 Panel 1.0 Panel.qml
 WidgetButton 1.0 WidgetButton.qml
+KeyboardPanel 1.0 KeyboardPanel.qml
+PanelKeyCatcher 1.0 PanelKeyCatcher.qml
+ConfirmDialog 1.0 ConfirmDialog.qml
+Button 1.0 Button.qml
+PanelHero 1.0 PanelHero.qml
+PanelActionButton 1.0 PanelActionButton.qml
+BorderSurface 1.0 BorderSurface.qml

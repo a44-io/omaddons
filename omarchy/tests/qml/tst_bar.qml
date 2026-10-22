@@ -44,6 +44,7 @@ TestCase {
         panels = next
       }
       function check() { checks++ }
+      function readView(view) {}
     }
   }
 
@@ -55,6 +56,9 @@ TestCase {
       property var service: null
       property var asked: []
       property var shell: null
+      property color foreground: "#cacccc"
+      property color urgent: "#e06c75"
+      property string fontFamily: "monospace"
       Component.onCompleted: shell = {
         "serviceFor": function(id) {
           api.asked = api.asked.concat([id])
@@ -196,7 +200,9 @@ TestCase {
     compare(svc.checks, 1)
     verify(!widget.opened)
     button.pressed(Qt.MiddleButton)
-    compare(svc.requestedView, "issues")
     verify(widget.opened)
+    // The panel's frame took the requested view.
+    compare(part(widget, "view").view, "issues")
+    compare(svc.requestedView, "")
   }
 }

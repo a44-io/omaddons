@@ -10,6 +10,7 @@ pub const MANIFEST: &str = "manifest.json";
 pub const ASSETS: &[(&str, &str)] = &[
     ("BarWidget.qml", include_str!("../../omarchy/BarWidget.qml")),
     ("Model.js", include_str!("../../omarchy/Model.js")),
+    ("PanelView.qml", include_str!("../../omarchy/PanelView.qml")),
     (
         "PlainLabel.qml",
         include_str!("../../omarchy/PlainLabel.qml"),

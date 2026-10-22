@@ -9,8 +9,8 @@ import "Build.js" as Build
 // The bar button: one per monitor, owning nothing. It binds to the shared service
 // (M3-D5), pushes its settings into it (services get none), tells it whether this
 // copy's panel is open, and draws the service's `bar` model: the badge, the urgent
-// color, dimmed, the spinner and the tooltip. Every action is a service call. F4 adds
-// the keyboard panel to this file.
+// color, dimmed, the spinner and the tooltip. Its keyboard panel holds the frame
+// (PanelView.qml). Every action is a service call.
 Panel {
   id: root
   moduleName: Build.PLUGIN_ID
@@ -147,6 +147,33 @@ Panel {
       font.pixelSize: Style.font.caption - Style.space(2)
       font.bold: true
       color: Commons.Color.background
+    }
+  }
+
+  // The keyboard panel (the house pattern): `panelWidth` wide, at most 720 tall, the
+  // frame inside.
+  KeyboardPanel {
+    id: panel
+    objectName: "panel"
+    anchorItem: button
+    owner: root
+    bar: root.bar
+    open: root.opened
+    focusTarget: view.focusItem
+    contentWidth: panel.fittedContentWidth(Style.space(Model.intSetting(root.settings, "panelWidth", 540, 400, 800)))
+    contentHeight: panel.fittedContentHeight(view.contentImplicitHeight, Style.space(720))
+
+    PanelView {
+      id: view
+      objectName: "view"
+      anchors.fill: parent
+      svc: root.svc
+      opened: root.opened
+      foreground: root.bar ? root.bar.foreground : Commons.Color.foreground
+      urgent: root.bar ? root.bar.urgent : Commons.Color.urgent
+      fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+      onCloseRequested: root.close()
+      onTabRequested: function(direction) { root.switchPanel(direction) }
     }
   }
 }

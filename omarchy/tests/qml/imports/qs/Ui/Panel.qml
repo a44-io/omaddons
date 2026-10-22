@@ -9,10 +9,16 @@ Item {
   property string ipcTarget: ""
   property bool manageIpc: true
   property bool opened: false
+  // The directions switchPanel was asked for (Tab and Shift-Tab).
+  property var switched: []
 
   function open() { opened = true }
   function close() { opened = false }
   function toggle() { opened ? close() : open() }
+  function switchPanel(direction) {
+    switched = switched.concat([direction])
+    return true
+  }
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined

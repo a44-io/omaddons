@@ -524,6 +524,102 @@ describe("reduceStatus", () => {
   })
 })
 
+describe("the panel frame", () => {
+  test("every letter of the key map, and nothing else", () => {
+    expect(M.panelKey("u")).toEqual({ name: "update" })
+    expect(M.panelKey("/")).toEqual({ name: "search" })
+    expect(M.panelKey("3")).toEqual({ name: "view", view: "issues" })
+    expect(M.panelKey("5")).toEqual({ name: "view", view: "search" })
+    for (const reserved of ["j", "k", "h", "l", "x", "q", "6", "0", "U", "", "uu"]) expect(M.panelKey(reserved)).toBeNull()
+    expect(Object.keys(M.PANEL_KEYS).sort()).toEqual(["/", "b", "c", "d", "i", "o", "p", "r", "s", "t", "u", "z"])
+    expect(M.VIEWS.map((v) => M.VIEW_TITLES[v])).toEqual(["Updates", "Installed", "Issues", "Backups", "Search"])
+  })
+
+  test("views step and wrap", () => {
+    expect(M.stepView("updates", 1)).toBe("installed")
+    expect(M.stepView("updates", -1)).toBe("search")
+    expect(M.stepView("search", 1)).toBe("updates")
+    expect(M.stepView("nonsense", 1)).toBe("installed")
+  })
+
+  test("the hero speaks the summary", () => {
+    const env = fixture("status-updates")
+    const model = M.reduceStatus(env, NOW)
+    expect(M.heroMeta(model.summary)).toBe("2 clients · 4 updates")
+    expect(M.heroMeta(null)).toBe("")
+    const running = fixture("status-running")
+    const at = Date.parse(running.data.targets[0].updates.checked_at) + 25 * 60000
+    const r = M.reduceStatus(running, at)
+    expect(M.heroDetail(r.summary, r.targets, at)).toBe("checked 25 min ago · retail running")
+    const unknown = JSON.parse(JSON.stringify(running))
+    unknown.data.summary.running = []
+    for (const t of unknown.data.targets) t.running = null
+    const u = M.reduceStatus(unknown, at)
+    expect(u.targets[0].runningUnknown).toBe(true)
+    expect(M.heroDetail(u.summary, u.targets, at)).toBe("checked 25 min ago · running: unknown")
+    const issues = M.reduceStatus(fixture("status-attention"), NOW)
+    expect(M.heroMeta(issues.summary)).toContain("1 issue")
+  })
+
+  test("the filter cycles All, each target, All", () => {
+    const targets = M.reduceStatus(fixture("status-updates"), NOW).targets
+    expect(M.nextFilter(targets, "")).toBe("era")
+    expect(M.nextFilter(targets, "era")).toBe("retail")
+    expect(M.nextFilter(targets, "retail")).toBe("")
+    expect(M.nextFilter(targets, "gone")).toBe("")
+    expect(M.nextFilter([], "")).toBe("")
+    expect(M.targetById(targets, "retail").id).toBe("retail")
+    expect(M.targetById(targets, "")).toBeNull()
+  })
+
+  test("o opens the selected client's AddOns, nothing without one", () => {
+    const retail = M.targetById(M.reduceStatus(fixture("status-updates"), NOW).targets, "retail")
+    expect(retail.clientDir.startsWith("/")).toBe(true)
+    expect(M.addonsDirArgv(retail)).toEqual(["xdg-open", retail.clientDir + "/Interface/AddOns"])
+    expect(M.addonsDirArgv({ clientDir: "/c/wow/" })).toEqual(["xdg-open", "/c/wow/Interface/AddOns"])
+    expect(M.addonsDirArgv(null)).toBeNull()
+    expect(M.addonsDirArgv({ clientDir: "" })).toBeNull()
+    expect(M.addonsDirArgv({ clientDir: "-x" })).toBeNull()
+  })
+
+  test("u updates all, or the selected client", () => {
+    expect(M.updateRequest("")).toEqual({ template: "update_all", slots: {}, label: "Update all" })
+    expect(M.updateRequest("retail")).toEqual({ template: "update_target", slots: { target: "retail" }, label: "Update retail" })
+    for (const r of [M.updateRequest(""), M.updateRequest("retail")]) {
+      expect(() => M.buildArgv(r.template, r.slots, opts())).not.toThrow()
+    }
+  })
+
+  test("undo last: its label, its argv, or why not", () => {
+    const after = M.reduceStatus(fixture("status-after-update"), NOW)
+    const undo = M.undoAction(after.lastChange)
+    expect(undo.label).toBe("Undo update on era and retail")
+    expect(undo.argv[1]).toBe("undo")
+    expect(undo.why).toBe("")
+    expect(M.undoAction({ unknown: true })).toEqual({ label: "Undo last", argv: null, why: "last change: unknown" })
+    expect(M.undoAction(null).why).toBe("nothing to undo")
+    const refused = JSON.parse(JSON.stringify(after.lastChange))
+    refused.undo = { command: "rm -rf /", argv: null, runnable: false, destructive: true }
+    expect(M.undoAction(refused).argv).toBeNull()
+    expect(M.undoAction(refused).why).toContain("not a command the widget runs")
+  })
+
+  test("progress, the result's undo and a fix as text", () => {
+    expect(M.progressFraction({ current: 1, total: 4 })).toBe(0.25)
+    expect(M.progressFraction({ current: 9, total: 4 })).toBe(1)
+    expect(M.progressFraction({ current: 0, total: 0 })).toBe(-1)
+    expect(M.progressFraction(null)).toBe(-1)
+    const undo = { action: "undo", command: "omaddons undo", argv: ["omaddons", "undo"], runnable: true }
+    expect(M.resultUndo({ commands: [{ action: "update", runnable: true, argv: ["omaddons", "update"] }, undo] })).toBe(undo)
+    expect(M.resultUndo({ commands: [Object.assign({}, undo, { runnable: false, argv: null })] })).toBeNull()
+    expect(M.resultUndo(null)).toBeNull()
+    expect(M.fixText({ ok: false, error: { fix: "this needs the Omarchy desktop", fix_argv: null } })).toBe("this needs the Omarchy desktop")
+    expect(M.fixText({ ok: false, error: { fix: "omaddons status", fix_argv: ["omaddons", "status"] } })).toBe("")
+    expect(M.fixText({ ok: false, error: { fix: "rm it", fix_argv: ["rm", "it"] } })).toBe("rm it")
+    expect(M.fixText({ ok: true })).toBe("")
+  })
+})
+
 describe("the other reducers", () => {
   test("list", () => {
     const model = M.reduceList(fixture("list"))
