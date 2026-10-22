@@ -1,0 +1,34 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup verify",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_found",
+    "details": {
+      "newest": [
+        "<ulid>"
+      ],
+      "prefix": "01ZZZZZZZZ",
+      "target": "retail"
+    },
+    "fix": "omaddons backup list -t retail",
+    "fix_argv": [
+      "omaddons",
+      "backup",
+      "list",
+      "-t",
+      "retail"
+    ],
+    "message": "no backup of retail has an id starting with 01ZZZZZZZZ; the newest: <ulid>",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

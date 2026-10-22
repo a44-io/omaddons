@@ -90,6 +90,9 @@ pub enum BackupAction {
     /// Bring back a backup that backup export wrote, as a backup of the client -t names
     #[command(after_long_help = IMPORT_HELP)]
     Import(BackupImportArgs),
+    /// Check backups against their recorded hashes, or record a first baseline
+    #[command(after_long_help = super::backup_verify::HELP)]
+    Verify(super::backup_verify::BackupVerifyArgs),
 }
 
 impl BackupAction {
@@ -102,6 +105,7 @@ impl BackupAction {
             Self::Prune(_) => PRUNE_COMMAND,
             Self::Export(_) => EXPORT_COMMAND,
             Self::Import(_) => IMPORT_COMMAND,
+            Self::Verify(_) => super::backup_verify::COMMAND,
         }
     }
 }
@@ -456,9 +460,12 @@ fn row(b: &BackupItem, now: Timestamp) -> Vec<String> {
         Some(Consistency::Stable) => "stable",
         _ => "best effort",
     }];
-    match b.integrity {
-        Some(Integrity::Verified) => state.push("verified"),
-        Some(Integrity::Damaged) => state.push("damaged"),
+    // Never "verified" without what its hashes were recorded at (M3-D47).
+    match (b.integrity, b.baseline) {
+        (Some(Integrity::Verified), Some(Baseline::Capture)) => state.push("verified (capture)"),
+        (Some(Integrity::Verified), Some(Baseline::Import)) => state.push("verified (import)"),
+        (Some(Integrity::Verified), _) => state.push("verified (later)"),
+        (Some(Integrity::Damaged), _) => state.push("damaged"),
         _ => {}
     }
     // ubs:ignore — comparing integrity states, not secrets
@@ -567,7 +574,7 @@ pub fn list(ctx: &Context, args: &BackupListArgs) -> Result<BackupListOutcome> {
 
 /// Each client `-t` selects, else each that has a `backups/` dir, with its backups, by
 /// id. The warnings are `backup.json` files of another version.
-fn listed<'w>(
+pub(super) fn listed<'w>(
     ctx: &Context,
     world: &'w World,
     warnings: &mut Vec<Warning>,
@@ -605,7 +612,7 @@ fn stale(d: &DiscoveredTarget, backups: &[BackupRef], now: Timestamp) -> bool {
 }
 
 /// The client and id of the one backup in `listed` whose id starts with `prefix`.
-fn only(
+pub(super) fn only(
     listed: &[(&DiscoveredTarget, Vec<BackupRef>)],
     prefix: &str,
     selector: Option<&str>,
@@ -901,7 +908,7 @@ fn why(reason: &str) -> &'static str {
 }
 
 /// `412 files`, `1 file`.
-fn files(n: u64) -> String {
+pub(super) fn files(n: u64) -> String {
     crate::output::count(usize::try_from(n).unwrap_or(usize::MAX), "file")
 }
 

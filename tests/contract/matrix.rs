@@ -951,6 +951,19 @@ fn backup_export() {
 }
 
 #[test]
+fn backup_verify() {
+    use omaddons::backup::BackupKind;
+    let s = Scene::new();
+    let client = s.home.client("_retail_");
+    let at = "2026-10-05T08:00:00Z".parse().unwrap();
+    let id = common::backups::seed_backup(&client, BackupKind::Manual, at, 2).to_string();
+    let c = s.json(&["backup", "verify", &id, "-t", "retail"], 0);
+    insta::assert_json_snapshot!("backup_verify_ok", s.stable(&c.envelope));
+    let c = s.json(&["backup", "verify", "01ZZZZZZZZ", "-t", "retail"], 3);
+    insta::assert_json_snapshot!("backup_verify_not_found", s.stable(&c.envelope));
+}
+
+#[test]
 fn backup_import() {
     use common::archives::{TarEntry, tar_entries, tar_zst};
     use omaddons::backup::BackupKind;

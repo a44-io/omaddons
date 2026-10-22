@@ -17,6 +17,7 @@ pub mod import;
 pub mod inventory;
 pub mod prune;
 pub mod tree;
+pub mod verify;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

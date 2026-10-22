@@ -1,0 +1,36 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup verify",
+  "commands": [],
+  "data": {
+    "dry_run": false,
+    "targets": [
+      {
+        "backups": [
+          {
+            "baseline": "later",
+            "checked": 2,
+            "files": 2,
+            "id": "<ulid>",
+            "integrity": "verified",
+            "mismatched": 0,
+            "note": "no hashes existed; recorded a baseline (this cannot prove the capture was intact)"
+          }
+        ],
+        "target": {
+          "id": "retail",
+          "key": null
+        }
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

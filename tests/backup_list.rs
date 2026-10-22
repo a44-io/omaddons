@@ -369,6 +369,7 @@ fn the_human_view() {
     seed_backup(&retail, BackupKind::Auto, now, 412);
     let mut raid = meta(BackupKind::Manual, at("2026-10-18T21:15:00Z"), 412);
     raid.integrity = Integrity::Verified;
+    raid.baseline = Some(omaddons::backup::Baseline::Capture);
     raid.reason = Some("before the raid".to_owned());
     let raid = seed_meta(&retail, &raid);
     let r = home.exec(&["backup".to_owned(), "list".to_owned()]);
@@ -405,7 +406,8 @@ fn the_human_view() {
         lines[2]
     );
     assert!(
-        lines[2].contains("stable · verified") && lines[2].ends_with("\"before the raid\""),
+        lines[2].contains("stable · verified (capture)")
+            && lines[2].ends_with("\"before the raid\""),
         "{}",
         lines[2]
     );

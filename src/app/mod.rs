@@ -4,6 +4,7 @@
 pub mod adopt;
 pub mod auth;
 pub mod backup;
+pub mod backup_verify;
 pub mod backups_status;
 pub mod config;
 pub mod copy;
@@ -143,6 +144,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("backup prune", Group::Change, true),
     entry("backup export", Group::Change, true),
     entry("backup import", Group::Change, true),
+    entry("backup verify", Group::Change, true),
     entry("targets", Group::Setup, false),
     entry("targets add", Group::Setup, true),
     entry("targets rm", Group::Setup, true),
@@ -458,6 +460,7 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
                 Some(BackupAction::Prune(prune)) => out.emit(backup::prune_backups(ctx, prune)),
                 Some(BackupAction::Export(export)) => out.emit(backup::export_backup(ctx, export)),
                 Some(BackupAction::Import(import)) => out.emit(backup::import_backup(ctx, import)),
+                Some(BackupAction::Verify(verify)) => out.emit(backup_verify::run(ctx, verify)),
             }
         }
         Some(Command::Info(args)) => {
