@@ -1044,6 +1044,7 @@ fn change_of(world: &World, entries: &[&HistoryEntry]) -> LastChange {
         changes.replaced += c.replaced;
         changes.removed += c.removed;
         changes.recorded += c.recorded;
+        changes.restored += c.restored;
         let id = world.target_id(e.target);
         if !targets.contains(&id) {
             targets.push(id);

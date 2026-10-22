@@ -712,7 +712,7 @@ fn history_filters_orders_and_truncates() {
         ),
         (
             &Value::from("first"),
-            &serde_json::json!({"added": 1, "replaced": 0, "removed": 0, "recorded": 0}),
+            &serde_json::json!({"added": 1, "replaced": 0, "removed": 0, "recorded": 0, "restored": 0}),
             &Value::from("retail"),
             &Value::from("committed")
         )
@@ -1282,12 +1282,12 @@ mod unreadable_history {
         fs::write(&path, text).unwrap();
     }
 
-    /// A newer omaddons' restore on `target`, of `folders`: its op is one this build
-    /// does not know, so the line does not read.
+    /// A newer omaddons' restore on `target`, of `folders`: its op (`merge`) is one this
+    /// build does not know, so the line does not read.
     fn restore_line(target: &str, folders: &[&str]) -> String {
         let ops: Vec<Value> = folders
             .iter()
-            .map(|f| json!({"op": "wtf", "folder": f, "addon": f}))
+            .map(|f| json!({"op": "merge", "folder": f, "addon": f}))
             .collect();
         json!({
             "schema_version": "1.0",

@@ -662,7 +662,8 @@ fn fail_closed() {
         "schema_version": "1.0", "tx": "01M5ZZZZZZZZZZZZZZZZZZZZZZ", "kind": "restore",
         "at": "2026-10-21T12:00:00Z", "target": key.to_string(), "actor": "human",
         "reason": null, "argv": ["omaddons"], "result": "committed",
-        "ops": [{"op": "wtf", "folder": "Foo", "addon": "Foo"}],
+        // An op this build does not know, so the line does not read.
+        "ops": [{"op": "merge", "folder": "Foo", "addon": "Foo"}],
     });
     text.push_str(&format!("{line}\n"));
     fs::write(&history, text).unwrap();

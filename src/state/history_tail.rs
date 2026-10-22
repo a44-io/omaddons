@@ -414,6 +414,9 @@ mod tests {
                     folder: FolderName::new(&format!("Folder{i:06}")).unwrap(),
                     addon: "Big".into(),
                     edit: None,
+                    backup: None,
+                    from: None,
+                    files: None,
                 })
                 .collect(),
             result: TxResult::Committed,

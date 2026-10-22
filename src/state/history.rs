@@ -153,12 +153,34 @@ pub enum RunKey {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HistoryOp {
     pub op: FolderOp,
+    /// An AddOns folder; `WTF` for a `wtf` op; the addon's folder for `saved_variables`.
     pub folder: FolderName,
+    /// The addon's record name; empty for a `wtf` op.
     pub addon: String,
     /// A `record` op that only changed who requires the addon: undone in place, without
     /// a conflict or a snapshot restore (M2-D35). Absent on every other op.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edit: Option<HistoryEdit>,
+    /// A `wtf` or `saved_variables` op: the backup its files came from, when they came
+    /// from one. Absent on every other op.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<BackupId>,
+    /// A `wtf` or `saved_variables` op: where its files came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<WtfSource>,
+    /// A `wtf` or `saved_variables` op: how many files it put back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<u64>,
+}
+
+/// Where a `wtf` or `saved_variables` op's files came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WtfSource {
+    /// A `WTF/` backup (`backup restore`).
+    Backup,
+    /// A transaction's snapshot (an undo of a restore).
+    Snapshot,
 }
 
 /// An in-place record edit an op stands for.
@@ -183,7 +205,8 @@ impl HistoryEdit {
 }
 
 /// What happened to a folder. `record` is a record-only change (adoption, an
-/// ownership transfer).
+/// ownership transfer). `wtf` and `saved_variables` put settings back (M3-D24): a whole
+/// `WTF/`, or one addon's SavedVariables; they name no AddOns folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum FolderOp {
@@ -191,6 +214,20 @@ pub enum FolderOp {
     Replace,
     Remove,
     Record,
+    Wtf,
+    #[serde(rename = "saved_variables")]
+    SavedVariables,
+}
+
+impl FolderOp {
+    /// Whether the op is about an AddOns folder, as every op was before M3; a `wtf` or
+    /// `saved_variables` op is about settings, and AddOns readers skip it.
+    pub fn is_folder(self) -> bool {
+        match self {
+            Self::Add | Self::Replace | Self::Remove | Self::Record => true,
+            Self::Wtf | Self::SavedVariables => false,
+        }
+    }
 }
 
 /// How a transaction ended.
@@ -634,6 +671,9 @@ mod tests {
                 folder: FolderName::new("WeakAuras").unwrap(),
                 addon: "WeakAuras".into(),
                 edit: None,
+                backup: None,
+                from: None,
+                files: None,
             }],
             result: TxResult::Committed,
             reverts: None,
@@ -709,12 +749,67 @@ mod tests {
     }
 
     #[test]
+    fn restore_ops_round_trip_and_older_ops_are_unchanged() {
+        let backup: BackupId = "01M6K2VA000000000000000000".parse().unwrap();
+        let wtf = HistoryOp {
+            op: FolderOp::Wtf,
+            folder: FolderName::new("WTF").unwrap(),
+            addon: String::new(),
+            edit: None,
+            backup: Some(backup),
+            from: Some(WtfSource::Backup),
+            files: Some(410),
+        };
+        let json = serde_json::to_string(&wtf).unwrap();
+        assert_eq!(
+            json,
+            r#"{"op":"wtf","folder":"WTF","addon":"","backup":"01M6K2VA000000000000000000","from":"backup","files":410}"#
+        );
+        assert_eq!(serde_json::from_str::<HistoryOp>(&json).unwrap(), wtf);
+        let sv = HistoryOp {
+            op: FolderOp::SavedVariables,
+            folder: FolderName::new("Foo").unwrap(),
+            addon: "Foo".into(),
+            from: Some(WtfSource::Snapshot),
+            backup: None,
+            ..wtf.clone()
+        };
+        let json = serde_json::to_string(&sv).unwrap();
+        assert!(json.contains(r#""op":"saved_variables""#), "{json}");
+        assert!(json.contains(r#""from":"snapshot""#), "{json}");
+        assert!(
+            !json.contains("backup"),
+            "an absent key is left out: {json}"
+        );
+        assert_eq!(serde_json::from_str::<HistoryOp>(&json).unwrap(), sv);
+        // An AddOns op is written exactly as before M3.
+        let add = HistoryOp {
+            op: FolderOp::Add,
+            folder: FolderName::new("Foo").unwrap(),
+            addon: "Foo".into(),
+            edit: None,
+            backup: None,
+            from: None,
+            files: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&add).unwrap(),
+            r#"{"op":"add","folder":"Foo","addon":"Foo"}"#
+        );
+        assert!(FolderOp::Add.is_folder() && FolderOp::Record.is_folder());
+        assert!(!FolderOp::Wtf.is_folder() && !FolderOp::SavedVariables.is_folder());
+    }
+
+    #[test]
     fn in_place_edits_ride_on_record_ops() {
         let mut op = HistoryOp {
             op: FolderOp::Record,
             folder: FolderName::new("BigWigs").unwrap(),
             addon: "BigWigs".into(),
             edit: Some(HistoryEdit::RequiredByAdd("LittleWigs".into())),
+            backup: None,
+            from: None,
+            files: None,
         };
         assert_eq!(
             serde_json::to_string(&op).unwrap(),

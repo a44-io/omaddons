@@ -101,6 +101,9 @@ mod support {
                     folder: FolderName::try_from(format!("Addon{i:03}")).unwrap(),
                     addon: format!("Addon{i:03}"),
                     edit: None,
+                    backup: None,
+                    from: None,
+                    files: None,
                 })
                 .collect(),
             result: TxResult::Committed,

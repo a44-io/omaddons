@@ -1088,7 +1088,7 @@ omaddons history -t retail -v --json       # each folder operation (ops) instead
 
 `--limit` defaults to 20, and `truncated` says more lines matched. `--since` takes `30m`, `12h`, `1d`, `2w` or an RFC 3339 time. An explicit `--actor` filters too (`OMADDONS_ACTOR` never does); given with a different `--by`, it is a usage error. In JSON every line has its `run` (`null` for transactions from before milestone 2, each of which is a run by itself), and an undo has `reverts`; the human table names a run only on rows whose run holds more than one line.
 
-Each line counts the folders added (`+`), replaced (`~`) and removed (`-`). A transaction that changed records without moving a folder, such as forgetting an addon whose folders were gone, also shows `=N` for the folders it recorded (`changes.recorded` in JSON).
+Each line counts the folders added (`+`), replaced (`~`) and removed (`-`). A transaction that changed records without moving a folder, such as forgetting an addon whose folders were gone, also shows `=N` for the folders it recorded (`changes.recorded` in JSON). `changes.restored` counts the settings files a restore put back (`· N files restored`); it stays 0 until restores ship later in milestone 3, whose lines carry an op `wtf` (`{"op":"wtf","folder":"WTF","addon":"","backup":…,"from":"backup","files":N}`) or `saved_variables`.
 
 ### `list`
 

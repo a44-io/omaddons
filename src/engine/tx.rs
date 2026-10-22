@@ -1239,6 +1239,9 @@ fn history_ops(works: &[AddonWork]) -> Vec<HistoryOp> {
             folder: folder.clone(),
             addon: w.addon.clone(),
             edit: None,
+            backup: None,
+            from: None,
+            files: None,
         };
         match &w.mode {
             // A work whose every folder was handed over still changed its record (a

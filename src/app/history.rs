@@ -99,6 +99,8 @@ pub struct ChangeCounts {
     pub removed: usize,
     /// Folders whose record changed without a swap (a pin, an adoption).
     pub recorded: usize,
+    /// Settings files a restore put back (`wtf` and `saved_variables` ops).
+    pub restored: usize,
 }
 
 impl ChangeCounts {
@@ -110,18 +112,27 @@ impl ChangeCounts {
                 FolderOp::Replace => counts.replaced += 1,
                 FolderOp::Remove => counts.removed += 1,
                 FolderOp::Record => counts.recorded += 1,
+                FolderOp::Wtf | FolderOp::SavedVariables => {
+                    let files = op.files.unwrap_or(0);
+                    counts.restored += usize::try_from(files).unwrap_or(usize::MAX);
+                }
             }
         }
         counts
     }
 
-    /// `+added ~replaced -removed`, then the recorded folders when there are any.
+    /// `+added ~replaced -removed`, then the recorded folders and the files restored when
+    /// there are any.
     pub fn human(&self) -> String {
-        let swapped = format!("+{} ~{} -{}", self.added, self.replaced, self.removed);
-        match self.recorded {
-            0 => swapped,
-            n => format!("{swapped} ={n}"),
+        let mut text = format!("+{} ~{} -{}", self.added, self.replaced, self.removed);
+        if self.recorded > 0 {
+            text.push_str(&format!(" ={}", self.recorded));
         }
+        if self.restored > 0 {
+            let files = crate::output::count(self.restored, "file");
+            text.push_str(&format!(" · {files} restored"));
+        }
+        text
     }
 }
 
@@ -542,6 +553,9 @@ mod tests {
             folder: crate::model::FolderName::new("Foo").unwrap(),
             addon: "Foo".into(),
             edit: None,
+            backup: None,
+            from: None,
+            files: None,
         };
         assert_eq!(
             ChangeCounts::of(&[
@@ -554,12 +568,24 @@ mod tests {
                 added: 2,
                 replaced: 0,
                 removed: 1,
-                recorded: 1
+                recorded: 1,
+                restored: 0,
             }
         );
         let pin = ChangeCounts::of(&[op(FolderOp::Record), op(FolderOp::Record)]);
         assert_eq!(pin.human(), "+0 ~0 -0 =2", "recorded folders are counted");
         assert_eq!(ChangeCounts::of(&[op(FolderOp::Add)]).human(), "+1 ~0 -0");
+        // A whole restore names `WTF`, no addon, and counts its files.
+        let wtf = HistoryOp {
+            folder: crate::model::FolderName::new("WTF").unwrap(),
+            addon: String::new(),
+            files: Some(410),
+            from: Some(crate::state::history::WtfSource::Backup),
+            ..op(FolderOp::Wtf)
+        };
+        let restore = ChangeCounts::of(&[wtf]);
+        assert_eq!(restore.restored, 410);
+        assert_eq!(restore.human(), "+0 ~0 -0 · 410 files restored");
         let tx: TxId = "01JB8Q2VA00000000000000000".parse().unwrap();
         assert_eq!(short_tx(&tx), "01JB8Q2VA0000000…");
         assert_eq!(kind_name(TxKind::Undo), "undo");

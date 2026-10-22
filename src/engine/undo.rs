@@ -541,6 +541,9 @@ fn plan(
     let entries = &history.entries[..];
     let running = running_now.contains(&target.client_dir);
     let reverted = &entries[at];
+    if reverted.ops.iter().any(|o| !o.op.is_folder()) {
+        return Err(restore_undo_unsupported(reverted));
+    }
     let deferred_by = entries[at + 1..]
         .iter()
         .rposition(|e| e.kind == TxKind::Undo && e.reverts == Some(reverted.tx) && e.sv_deferred);
@@ -635,7 +638,7 @@ fn plan(
     let direct: BTreeSet<String> = reverted
         .ops
         .iter()
-        .filter(|o| o.edit.is_none())
+        .filter(|o| o.edit.is_none() && o.op.is_folder())
         .map(|o| TargetRecord::addon_key(&o.addon))
         .collect();
     let mut was = current.clone();
@@ -771,13 +774,14 @@ fn check_conflicts(entries: &[HistoryEntry], at: usize, sv_only: Option<usize>) 
         .collect();
     let after = sv_only.unwrap_or(at) + 1;
     let cancelled = cancelled_after(&entries[after..], reverted.tx);
+    // Until undo and restores have their own rules (M3-D28, D6), a later restore
+    // conflicts with every earlier transaction on its target: never silently disjoint.
+    let conflicts =
+        |o: &HistoryOp| o.edit.is_none() && (!o.op.is_folder() || keys.contains(o.folder.key()));
     let conflicting: Vec<&HistoryEntry> = entries[after..]
         .iter()
         .filter(|e| {
-            let touches = e
-                .ops
-                .iter()
-                .any(|o| o.edit.is_none() && keys.contains(o.folder.key()));
+            let touches = e.ops.iter().any(conflicts);
             let undid = e.kind == TxKind::Undo && e.reverts == Some(reverted.tx);
             e.target == reverted.target && (undid || (touches && !cancelled.contains(&e.tx)))
         })
@@ -804,7 +808,7 @@ fn check_conflicts(entries: &[HistoryEntry], at: usize, sv_only: Option<usize>) 
             let folders: Vec<&str> = e
                 .ops
                 .iter()
-                .filter(|o| keys.contains(o.folder.key()))
+                .filter(|o| conflicts(o))
                 .map(|o| o.folder.as_str())
                 .collect();
             serde_json::json!({ "tx": e.tx, "kind": e.kind, "folders": folders })
@@ -963,6 +967,16 @@ fn cancelled_after(later: &[HistoryEntry], reverted: TxId) -> BTreeSet<TxId> {
     cancelled
 }
 
+/// Undoing a transaction that put settings back (`wtf` or `saved_variables` ops) has
+/// rules of its own (M3-D28, D6 and D7); until they exist this build refuses it rather
+/// than revert its AddOns side alone.
+fn restore_undo_unsupported(reverted: &HistoryEntry) -> Error {
+    Error::internal(format!(
+        "transaction {} put settings back, which this omaddons cannot undo yet",
+        reverted.tx
+    ))
+}
+
 /// The transaction was undone with its SavedVariables deferred; only `restore` finishes.
 fn deferred(reverted: &HistoryEntry, by: &HistoryEntry) -> Error {
     Error::new(
@@ -1017,7 +1031,12 @@ impl FolderPlan {
     /// still names the folders, so later undos see it touched them.
     fn record_only(reverted: &HistoryEntry) -> Self {
         // In-place edits were undone with the folders; they claim no folder now.
-        let ops = || reverted.ops.iter().filter(|o| o.edit.is_none());
+        let ops = || {
+            reverted
+                .ops
+                .iter()
+                .filter(|o| o.edit.is_none() && o.op.is_folder())
+        };
         Self {
             history: ops()
                 .map(|o| HistoryOp {
@@ -1025,6 +1044,9 @@ impl FolderPlan {
                     folder: o.folder.clone(),
                     addon: o.addon.clone(),
                     edit: None,
+                    backup: None,
+                    from: None,
+                    files: None,
                 })
                 .collect(),
             touched: ops().map(|o| o.folder.clone()).collect(),
@@ -1133,6 +1155,10 @@ impl FolderPlan {
                     )
                     .details(serde_json::json!({ "tx": reverted.tx, "folder": live.as_str() })));
                 }
+                // Settings put back: `plan` refused the undo before this.
+                (FolderOp::Wtf | FolderOp::SavedVariables, _) => {
+                    return Err(restore_undo_unsupported(reverted));
+                }
             };
             if matches!(swap, Some(SwapOp::Add { .. } | SwapOp::Replace { .. })) {
                 plan.sources.push((folder.clone(), snapshot));
@@ -1165,6 +1191,9 @@ impl FolderPlan {
                 folder: folder.clone(),
                 addon: op.addon.clone(),
                 edit: None,
+                backup: None,
+                from: None,
+                files: None,
             });
         }
         Ok(plan)
@@ -1264,7 +1293,11 @@ fn restored_state(
 
     let touched: BTreeSet<&str> = folders.touched.iter().map(FolderName::key).collect();
     let mut direct: Vec<String> = Vec::new();
-    for op in reverted.ops.iter().filter(|o| o.edit.is_none()) {
+    for op in reverted
+        .ops
+        .iter()
+        .filter(|o| o.edit.is_none() && o.op.is_folder())
+    {
         let addon_key = TargetRecord::addon_key(&op.addon);
         if !direct.contains(&addon_key) {
             direct.push(addon_key);
@@ -1398,6 +1431,9 @@ fn reverse_edits(
                 folder: folder.clone(),
                 addon: addon.name.clone(),
                 edit: Some(inverse.clone()),
+                backup: None,
+                from: None,
+                files: None,
             });
         }
         if !changes
@@ -1533,7 +1569,12 @@ fn plan_saved_variables(
         }
     }
     // And the files a newer snapshot left out in the first place.
-    let folders: Vec<FolderName> = reverted.ops.iter().map(|op| op.folder.clone()).collect();
+    let folders: Vec<FolderName> = reverted
+        .ops
+        .iter()
+        .filter(|op| op.op.is_folder())
+        .map(|op| op.folder.clone())
+        .collect();
     plan.out_of_scope = skipped.max(sv_candidates(client, &folders).skipped);
     if changed.is_empty() {
         return Ok(plan);
@@ -1907,6 +1948,75 @@ mod tests {
         let done = scene.run(vec![scene.install("gh:o/foo", &zip)]).unwrap();
         assert!(done.failures.is_empty(), "{:?}", done.failures);
         done.outcomes[0].tx.unwrap()
+    }
+
+    /// A whole restore's history line on `target`.
+    fn restore_line(target: TargetKey) -> HistoryEntry {
+        HistoryEntry {
+            schema_version: history::CURRENT,
+            tx: TxId::new(),
+            kind: TxKind::Restore,
+            at: Timestamp::now(),
+            target,
+            actor: Actor::Human,
+            reason: None,
+            argv: vec!["omaddons".into(), "backup".into(), "restore".into()],
+            ops: vec![HistoryOp {
+                op: FolderOp::Wtf,
+                folder: FolderName::new("WTF").unwrap(),
+                addon: String::new(),
+                edit: None,
+                backup: Some(crate::model::BackupId::new()),
+                from: Some(history::WtfSource::Backup),
+                files: Some(3),
+            }],
+            result: TxResult::Committed,
+            reverts: None,
+            sv_deferred: false,
+            created_addons_dir: false,
+            run: None,
+            backup: None,
+        }
+    }
+
+    /// Until undo and restores have their own rules (D6), a later restore conflicts with
+    /// undoing anything before it on its target, and a restore is not undone at all.
+    #[test]
+    fn a_later_restore_conflicts_and_a_restore_is_not_undone_yet() {
+        let scene = TxScene::new();
+        let tx = install(&scene, "v1.zip", V1);
+        let key = history(&scene)[0].target;
+        let mut entries = history(&scene);
+        entries.push(restore_line(TargetKey::new()));
+        assert!(
+            check_conflicts(&entries, 0, None).is_ok(),
+            "another target's restore"
+        );
+        entries.push(restore_line(key));
+        let err = check_conflicts(&entries, 0, None).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UndoConflict);
+        assert_eq!(
+            err.details["conflicting"][0]["folders"],
+            serde_json::json!(["WTF"])
+        );
+        // A restore on disk is refused before anything is planned.
+        let line = format!("{}\n", serde_json::to_string(&restore_line(key)).unwrap());
+        let path = scene.paths.history_file();
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(&line);
+        std::fs::write(&path, text).unwrap();
+        let err = scene
+            .undo(UndoSelector::Latest, SvPolicy::Auto)
+            .unwrap_err();
+        assert!(err.message.contains("cannot undo yet"), "{err:?}");
+        assert_eq!(
+            scene
+                .undo(UndoSelector::Tx(tx), SvPolicy::Auto)
+                .unwrap_err()
+                .code,
+            ErrorCode::UndoConflict,
+            "the install before it conflicts"
+        );
     }
 
     fn install_as(scene: &TxScene, r: &str, name: &str, entries: &[(&str, &str)]) -> TxId {
