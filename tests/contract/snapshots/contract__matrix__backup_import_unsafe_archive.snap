@@ -1,0 +1,25 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup import",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "unsafe_archive",
+    "details": {
+      "path": null,
+      "reason": "bad_name"
+    },
+    "fix": "use the file a backup export wrote, unmodified",
+    "fix_argv": null,
+    "message": "the archive is not an exact omaddons export: it holds an entry whose name is not a plain path under WTF/",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

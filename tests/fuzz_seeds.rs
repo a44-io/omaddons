@@ -35,6 +35,7 @@ const TARGETS: &[&str] = &[
     "atom_feed",
     "savedvariables",
     "wowace_listing",
+    "backup_tar",
 ];
 
 fn fuzz_dir() -> PathBuf {
@@ -499,6 +500,47 @@ fn write_fuzz_seeds() {
         "wowace_listing",
         "malformed-names",
         b"<title>wow - Revision 9: /x</title><ul><li><a href=\"../\">..</a></li><li><a href=\"a%2Fb\">x</a></li><li><a href=\"Core.lua\">a</a></li><li><a href=\"core.lua\">b</a></li><li><a href=\"%01\">c</a></li></ul>\n--@debug@\n@project-revision@ a@b",
+    );
+
+    // backup_tar: a real export (a verified backup with a read-only directory and a
+    // symlink), the same cut short, one with a name that leaves WTF/, and a frame asking
+    // for a 2 GiB decoder window.
+    let home = common::home::Home::new(&["wow"]);
+    common::wtf::Wtf::at(home.client("_retail_"))
+        .config_wtf("SET locale \"enUS\"\n")
+        .saved_variables("Foo", 64)
+        .file("Account/FAKEACCT/Sealed/Kept.lua", b"Kept = 1")
+        .mode("Account/FAKEACCT/Sealed", 0o500)
+        .build();
+    let created = home
+        .run(&["backup", "create", "-t", "retail", "--verify"])
+        .expect(0);
+    let id = created["data"]["targets"][0]["backup"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let out = home.env.root().join("export.tar.zst");
+    home.run(&["backup", "export", &id, &out.display().to_string()])
+        .expect(0);
+    let export = fs::read(&out).unwrap();
+    write("backup_tar", "export", &export);
+    write(
+        "backup_tar",
+        "malformed-truncated",
+        &export[..export.len() / 2],
+    );
+    let mut entries = common::archives::tar_entries(&export);
+    let last = entries.len() - 1;
+    entries.insert(last, common::archives::TarEntry::file("WTF/../x", b"x"));
+    write(
+        "backup_tar",
+        "malformed-traversal",
+        &common::archives::tar_zst(&entries),
+    );
+    write(
+        "backup_tar",
+        "malformed-window",
+        &common::archives::zstd_huge_window(),
     );
 
     // desired_toml: the documented example, an empty file, a broken one.

@@ -92,6 +92,20 @@ pub const WOWACE_TREE_MAX_DIRS: usize = 200;
 pub const WOWACE_TREE_MAX_DEPTH: usize = 8;
 /// Most requests one WowAce tree costs, retries included.
 pub const WOWACE_TREE_MAX_REQUESTS: u32 = 2_500;
+/// Most entries an imported backup archive may hold (M3-D35).
+pub const BACKUP_IMPORT_MAX_ENTRIES: u64 = 200_000;
+/// Most bytes an imported backup archive may expand to.
+pub const BACKUP_IMPORT_MAX_BYTES: u64 = 8 * 1024 * MIB;
+/// Longest path one entry of an imported archive may have, in bytes.
+pub const BACKUP_IMPORT_MAX_PATH: u64 = 4096;
+/// Largest PAX or GNU long-name record one entry of an imported archive may carry.
+pub const BACKUP_IMPORT_MAX_META_BYTES: u64 = 64 * 1024;
+/// Largest `manifest.json` an imported archive may carry: [`BACKUP_IMPORT_MAX_ENTRIES`]
+/// at 640 bytes each, nearly three times what an entry of a real export takes (one
+/// `backup.json` or `addons.json` stays within [`DISCOVERY_FILE_MAX_BYTES`]).
+pub const BACKUP_IMPORT_MAX_MANIFEST_BYTES: u64 = BACKUP_IMPORT_MAX_ENTRIES * 640;
+/// The zstd decoder window an import allows, as a power of two (16 MiB).
+pub const BACKUP_IMPORT_MAX_WINDOW_LOG: u32 = 24;
 /// Most dependency rounds one install plans per target (a chain longer than this stops
 /// with `missing_dependency`, reason `limit_reached`).
 pub const DEPENDENCY_MAX_DEPTH: usize = 4;
@@ -456,6 +470,48 @@ pub const REGISTRY: &[LimitInfo] = &[
         "count",
         None,
         "Most requests one WowAce tree costs, retries included",
+    ),
+    limit(
+        "BACKUP_IMPORT_MAX_ENTRIES",
+        LimitValue::Count(BACKUP_IMPORT_MAX_ENTRIES),
+        "count",
+        None,
+        "Most entries an imported backup archive holds",
+    ),
+    limit(
+        "BACKUP_IMPORT_MAX_BYTES",
+        LimitValue::Bytes(BACKUP_IMPORT_MAX_BYTES),
+        "bytes",
+        None,
+        "Most bytes an imported backup archive expands to",
+    ),
+    limit(
+        "BACKUP_IMPORT_MAX_PATH",
+        LimitValue::Bytes(BACKUP_IMPORT_MAX_PATH),
+        "bytes",
+        None,
+        "Longest path of one entry of an imported backup archive",
+    ),
+    limit(
+        "BACKUP_IMPORT_MAX_META_BYTES",
+        LimitValue::Bytes(BACKUP_IMPORT_MAX_META_BYTES),
+        "bytes",
+        None,
+        "Largest PAX or long-name record of one entry of an imported backup archive",
+    ),
+    limit(
+        "BACKUP_IMPORT_MAX_MANIFEST_BYTES",
+        LimitValue::Bytes(BACKUP_IMPORT_MAX_MANIFEST_BYTES),
+        "bytes",
+        None,
+        "Largest manifest.json of an imported backup archive",
+    ),
+    limit(
+        "BACKUP_IMPORT_MAX_WINDOW_LOG",
+        LimitValue::Count(BACKUP_IMPORT_MAX_WINDOW_LOG as u64),
+        "count",
+        None,
+        "The zstd decoder window an import allows, as a power of two (24: 16 MiB)",
     ),
     limit(
         "DEPENDENCY_MAX_DEPTH",
@@ -905,6 +961,12 @@ mod tests {
         "WOWACE_TREE_MAX_DIRS",
         "WOWACE_TREE_MAX_DEPTH",
         "WOWACE_TREE_MAX_REQUESTS",
+        "BACKUP_IMPORT_MAX_ENTRIES",
+        "BACKUP_IMPORT_MAX_BYTES",
+        "BACKUP_IMPORT_MAX_PATH",
+        "BACKUP_IMPORT_MAX_META_BYTES",
+        "BACKUP_IMPORT_MAX_MANIFEST_BYTES",
+        "BACKUP_IMPORT_MAX_WINDOW_LOG",
         "DEPENDENCY_MAX_DEPTH",
         "DEPENDENCY_MAX_ADDONS",
         "RACY_SLACK_NS",

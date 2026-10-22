@@ -465,6 +465,60 @@ expression: "(politeness, REGISTRY)"
       "notes": "Most requests one WowAce tree costs, retries included"
     },
     {
+      "name": "BACKUP_IMPORT_MAX_ENTRIES",
+      "value": {
+        "count": 200000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Most entries an imported backup archive holds"
+    },
+    {
+      "name": "BACKUP_IMPORT_MAX_BYTES",
+      "value": {
+        "bytes": 8589934592
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Most bytes an imported backup archive expands to"
+    },
+    {
+      "name": "BACKUP_IMPORT_MAX_PATH",
+      "value": {
+        "bytes": 4096
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Longest path of one entry of an imported backup archive"
+    },
+    {
+      "name": "BACKUP_IMPORT_MAX_META_BYTES",
+      "value": {
+        "bytes": 65536
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Largest PAX or long-name record of one entry of an imported backup archive"
+    },
+    {
+      "name": "BACKUP_IMPORT_MAX_MANIFEST_BYTES",
+      "value": {
+        "bytes": 128000000
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Largest manifest.json of an imported backup archive"
+    },
+    {
+      "name": "BACKUP_IMPORT_MAX_WINDOW_LOG",
+      "value": {
+        "count": 24
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "The zstd decoder window an import allows, as a power of two (24: 16 MiB)"
+    },
+    {
       "name": "DEPENDENCY_MAX_DEPTH",
       "value": {
         "count": 4

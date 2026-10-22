@@ -31,10 +31,12 @@ use crate::backup::auto::{self, AutoResult, AutoRun, Decision};
 use crate::backup::create::{self as capture, CreateRequest, Created};
 use crate::backup::export::{self, VerifiedAgainst};
 use crate::backup::fs::CloneHint;
+use crate::backup::import;
 use crate::backup::inventory::{self, AutoLast, Capability, Inventory, Ring};
 use crate::backup::prune::{self, PruneOpts, PruneReport, Pruned};
 use crate::backup::{
-    self, BackupKind, BackupMeta, BackupRef, Baseline, Consistency, Integrity, Reflinked, Trigger,
+    self, BackupKind, BackupMeta, BackupRef, Baseline, Consistency, ID_PREFIX_MIN, ImportSource,
+    Integrity, Reflinked, Trigger,
 };
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -85,6 +87,9 @@ pub enum BackupAction {
     /// Write a backup to a file off this disk, as a .tar.zst (never replaces a file)
     #[command(after_long_help = EXPORT_HELP)]
     Export(BackupExportArgs),
+    /// Bring back a backup that backup export wrote, as a backup of the client -t names
+    #[command(after_long_help = IMPORT_HELP)]
+    Import(BackupImportArgs),
 }
 
 impl BackupAction {
@@ -96,11 +101,37 @@ impl BackupAction {
             Self::Restore(_) => RESTORE_COMMAND,
             Self::Prune(_) => PRUNE_COMMAND,
             Self::Export(_) => EXPORT_COMMAND,
+            Self::Import(_) => IMPORT_COMMAND,
         }
     }
 }
 
 const EXPORT_COMMAND: &str = "backup export";
+const IMPORT_COMMAND: &str = "backup import";
+
+const IMPORT_HELP: &str = "\
+Examples:
+  omaddons backup import /run/media/me/usb/retail-wtf.tar.zst -t retail
+  omaddons backup import retail-wtf.tar.zst -t retail --dry-run   check it, write nothing
+  omaddons backup restore 01M7A3XC -t retail                      then put it back
+
+Reads an archive backup export wrote and adds it as an imported backup of the client
+-t names, verified against every hash it carries, with its original capture time. It
+accepts only an exact, unmodified export: anything else (a link that leaves WTF/, a file
+the manifest does not list, a damaged file) is refused before it is kept. A backup from
+another kind of client is refused unless --force. An imported backup never counts as
+today's automatic checkpoint, and pruning never deletes it on its own.";
+
+/// `backup import`'s arguments.
+#[derive(Debug, Clone, clap::Args)]
+pub struct BackupImportArgs {
+    /// The archive backup export wrote
+    #[arg(value_name = "FILE")]
+    pub file: std::path::PathBuf,
+    /// Import a backup from a client of another kind than this one
+    #[arg(long)]
+    pub force: bool,
+}
 
 const EXPORT_HELP: &str = "\
 Examples:
@@ -1316,22 +1347,39 @@ impl One<'_> {
 
     /// Appends `created`'s history line (M3-D33) under the global lock, recovering first.
     fn record(&self, scopes: &ScopeTable, created: &Created, run: RunId) -> Result<()> {
-        let paths = &self.world.paths;
-        let entry = backup_line(self.ctx, created, run);
-        let guard = GlobalLock::acquire(paths, CREATE_COMMAND)?;
-        self.ctx.notes.warn_all(&recover_under(
-            &guard,
-            paths,
-            &no_saved_variables,
-            CREATE_COMMAND,
-            self.ctx.actor,
-        ));
-        let mut s = WriteSession::untracked(Writer::Backup, scopes, "history");
-        ensure_dir_all(&mut s, paths.state_dir())?;
-        history::append(&mut s, paths, &entry)?;
-        drop(guard);
-        Ok(())
+        record_line(
+            self.ctx,
+            &self.world.paths,
+            scopes,
+            created,
+            (run, CREATE_COMMAND),
+        )
     }
+}
+
+/// Appends `created`'s history line (M3-D33) under the global lock, recovering first,
+/// for `command`.
+fn record_line(
+    ctx: &Context,
+    paths: &Paths,
+    scopes: &ScopeTable,
+    created: &Created,
+    (run, command): (RunId, &'static str),
+) -> Result<()> {
+    let entry = backup_line(ctx, created, run);
+    let guard = GlobalLock::acquire(paths, command)?;
+    ctx.notes.warn_all(&recover_under(
+        &guard,
+        paths,
+        &no_saved_variables,
+        command,
+        ctx.actor,
+    ));
+    let mut s = WriteSession::untracked(Writer::Backup, scopes, "history");
+    ensure_dir_all(&mut s, paths.state_dir())?;
+    history::append(&mut s, paths, &entry)?;
+    drop(guard);
+    Ok(())
 }
 
 /// `created`'s history line (M3-D33), of `run`.
@@ -1745,7 +1793,7 @@ fn named_backup<'w>(
     let selected = world.select_many(ctx)?;
     let d = match selected.as_slice() {
         [one] => *one,
-        many => return Err(several(ctx, many)),
+        many => return Err(several(ctx, many, "a restore")),
     };
     let on_it: Vec<(&DiscoveredTarget, Vec<BackupRef>)> = all
         .iter()
@@ -1763,14 +1811,14 @@ fn named_backup<'w>(
 }
 
 /// `target_ambiguous`: a restore changes one client, and `-t` selects `many`.
-fn several(ctx: &Context, many: &[&DiscoveredTarget]) -> Error {
+fn several(ctx: &Context, many: &[&DiscoveredTarget], what: &str) -> Error {
     let ids: Vec<&str> = many.iter().map(|d| d.target.id.as_str()).collect();
     let with =
         |id: &str| Suggestion::command(crate::discover::registry::with_target(&ctx.argv, id));
     let mut error = Error::new(
         ErrorCode::TargetAmbiguous,
         format!(
-            "-t selects {} clients ({}); a restore changes one",
+            "-t selects {} clients ({}); {what} changes one",
             ids.len(),
             ids.join(", ")
         ),
@@ -2342,6 +2390,201 @@ pub fn export_backup(ctx: &Context, args: &BackupExportArgs) -> Result<BackupExp
         },
         warnings,
     })
+}
+
+/// `backup import`'s data.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BackupImportData {
+    pub dry_run: bool,
+    pub target: TargetRef,
+    /// The imported backup, as `backup list` shows it; `null` in a dry run.
+    pub backup: Option<BackupItem>,
+    /// The exported backup the archive holds.
+    pub source: ImportSource,
+    /// What the archive holds: its files, and their bytes.
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// `backup import`'s outcome.
+#[derive(Debug)]
+pub struct BackupImportOutcome {
+    data: BackupImportData,
+    warnings: Vec<Warning>,
+}
+
+impl Outcome for BackupImportOutcome {
+    type Data = BackupImportData;
+
+    fn command(&self) -> &'static str {
+        IMPORT_COMMAND
+    }
+
+    fn data(&self) -> &BackupImportData {
+        &self.data
+    }
+
+    fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
+    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
+        let d = &self.data;
+        let source = format!(
+            "backup {} ({}, {})",
+            super::history::short_id(&d.source.id.to_string()),
+            d.source.target_id,
+            when(d.source.captured_at, crate::clock::now())
+        );
+        match &d.backup {
+            Some(b) => {
+                let id = b.id.to_string();
+                writeln!(
+                    w,
+                    "imported {source} as backup {} on {}: {} {}, {}",
+                    super::history::short_id(&id),
+                    d.target.id,
+                    d.files,
+                    if d.files == 1 { "file" } else { "files" },
+                    size(d.bytes)
+                )?;
+                writeln!(
+                    w,
+                    "restore with: omaddons backup restore {} -t {}",
+                    &id[..id.len().min(ID_PREFIX_MIN)],
+                    d.target.id
+                )
+            }
+            None => writeln!(
+                w,
+                "would import {source} on {}: {} {}, {}",
+                d.target.id,
+                d.files,
+                if d.files == 1 { "file" } else { "files" },
+                size(d.bytes)
+            ),
+        }
+    }
+}
+
+/// Runs `backup import` (M3-D35): pass 1 over the archive (everything checked, nothing
+/// written), the family check, then pass 2 into a stage, published as an imported backup
+/// with its history line. A dry run stops after the checks.
+pub fn import_backup(ctx: &Context, args: &BackupImportArgs) -> Result<BackupImportOutcome> {
+    let world = World::load(ctx)?;
+    let mut warnings = world.warnings.clone();
+    if ctx.target.is_none() {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            "backup import needs -t: the client the backup is for",
+            Suggestion::command(["omaddons", "targets"]),
+        ));
+    }
+    let selected = world.select_many(ctx)?;
+    let d = match selected.as_slice() {
+        [one] => *one,
+        many => return Err(several(ctx, many, "an import")),
+    };
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let file = cwd.join(&args.file);
+    let scanned = import::scan(&file)?;
+    let source = &scanned.source.meta;
+    if source.family != d.target.family && !args.force {
+        return Err(other_family(ctx, &world, d, source.family));
+    }
+    let origin = ImportSource {
+        id: source.id,
+        target_id: source.target_id.clone(),
+        family: source.family,
+        created_at: source.created_at,
+        captured_at: source.captured_at,
+        tool_version: source.tool_version.clone(),
+    };
+    let mut data = BackupImportData {
+        dry_run: ctx.dry_run,
+        target: target_ref(d),
+        backup: None,
+        source: origin,
+        files: scanned.files,
+        bytes: scanned.bytes,
+    };
+    if ctx.dry_run {
+        return Ok(BackupImportOutcome { data, warnings });
+    }
+    let scopes = ScopeTable::new(
+        &world.paths,
+        std::slice::from_ref(&d.target.client_dir),
+        None,
+    )?;
+    let target = registered(ctx, &world, d, &scopes, IMPORT_COMMAND)?;
+    let req = import::ImportRequest {
+        target: &target,
+        actor: ctx.actor,
+        reason: ctx.reason.clone(),
+        command: IMPORT_COMMAND,
+    };
+    let created = import::import(&world.paths, &scopes, &file, &scanned, &req, &ctx.progress)?;
+    if let Err(error) = record_line(
+        ctx,
+        &world.paths,
+        &scopes,
+        &created,
+        (RunId::new(), IMPORT_COMMAND),
+    ) {
+        warnings.push(not_recorded(&world.paths, &target.id, &error));
+    }
+    let client = ClientPaths::new(&d.target.client_dir);
+    let (listed, found) = backup::list(&client);
+    warnings.extend(found);
+    data.target = TargetRef {
+        id: target.id.clone(),
+        key: target.key,
+        mode: None,
+    };
+    data.backup = listed
+        .iter()
+        .find(|b| b.id == created.meta.id)
+        .map(|b| item(b, false));
+    Ok(BackupImportOutcome { data, warnings })
+}
+
+/// `wrong_flavor`: the archive is another family's. The fix imports into a client of
+/// that family when one exists; the alternative, `--force`.
+fn other_family(
+    ctx: &Context,
+    world: &World,
+    d: &DiscoveredTarget,
+    family: crate::rules::Family,
+) -> Error {
+    let force = {
+        let mut argv = crate::cli::fix_argv(&ctx.argv);
+        argv.push("--force".to_owned());
+        Suggestion::command(argv)
+    };
+    let same = world
+        .resolved
+        .targets
+        .iter()
+        .find(|t| t.target.family == family)
+        .map(|t| {
+            Suggestion::command(crate::discover::registry::with_target(
+                &ctx.argv,
+                &t.target.id,
+            ))
+        });
+    let message = format!(
+        "this backup is from a {} client; {} is {}",
+        family.as_str(),
+        d.target.id,
+        d.target.family.as_str()
+    );
+    let details = serde_json::json!({ "family": family, "target_family": d.target.family });
+    match same {
+        Some(fix) => Error::new(ErrorCode::WrongFlavor, message, fix)
+            .alternative(force)
+            .details(details),
+        None => Error::new(ErrorCode::WrongFlavor, message, force).details(details),
+    }
 }
 
 fn target_ref(d: &DiscoveredTarget) -> TargetRef {

@@ -385,15 +385,15 @@ fn damaged(backup: &BackupRef, entry: &ManifestEntry, names: &WtfPathRedactor) -
     .details(serde_json::json!({ "backup": backup.id }))
 }
 
-/// Hashes and counts what is read through it.
-struct Hashing<R> {
+/// Hashes and counts what is read through it (also `backup import`'s).
+pub(super) struct Hashing<R> {
     inner: R,
     hasher: Sha256,
     read: u64,
 }
 
 impl<R: Read> Hashing<R> {
-    fn new(inner: R) -> Self {
+    pub(super) fn new(inner: R) -> Self {
         Self {
             inner,
             hasher: Sha256::new(),
@@ -402,7 +402,7 @@ impl<R: Read> Hashing<R> {
     }
 
     /// Bytes read, and their lowercase hex SHA-256.
-    fn finish(self) -> (u64, String) {
+    pub(super) fn finish(self) -> (u64, String) {
         (self.read, hex(&self.hasher.finalize()))
     }
 }

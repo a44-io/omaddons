@@ -459,8 +459,8 @@ fn warnings(
 }
 
 /// Removes the capture's stage and in-flight lock under its own lock (best effort: the
-/// orphan sweep takes what is left), then lets the lock go.
-fn cleanup(
+/// orphan sweep takes what is left), then lets the lock go. (`backup import`'s too.)
+pub(crate) fn cleanup(
     paths: &Paths,
     scopes: &ScopeTable,
     client: &ClientPaths,

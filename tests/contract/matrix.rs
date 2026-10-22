@@ -902,6 +902,39 @@ fn backup_export() {
 }
 
 #[test]
+fn backup_import() {
+    use common::archives::{TarEntry, tar_entries, tar_zst};
+    use omaddons::backup::BackupKind;
+    let s = Scene::new();
+    let client = s.home.client("_retail_");
+    let at = "2026-10-05T08:00:00Z".parse().unwrap();
+    let id = common::backups::seed_backup(&client, BackupKind::Manual, at, 2).to_string();
+    let dir = s.home.env.root().join("usb");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("retail-wtf.tar.zst");
+    let arg = file.display().to_string();
+    s.json(&["backup", "export", &id, &arg], 0);
+    let c = s.json(&["backup", "import", &arg, "-t", "retail"], 0);
+    insta::assert_json_snapshot!("backup_import_ok", s.stable(&c.envelope));
+    let mut entries = tar_entries(&std::fs::read(&file).unwrap());
+    let last = entries.len() - 1;
+    entries.insert(last, TarEntry::file("WTF/../evil.txt", b"x"));
+    let hostile = dir.join("hostile.tar.zst");
+    std::fs::write(&hostile, tar_zst(&entries)).unwrap();
+    let c = s.json(
+        &[
+            "backup",
+            "import",
+            &hostile.display().to_string(),
+            "-t",
+            "retail",
+        ],
+        4,
+    );
+    insta::assert_json_snapshot!("backup_import_unsafe_archive", s.stable(&c.envelope));
+}
+
+#[test]
 fn errors() {
     use common::addons::{addon_folder, toc};
     use common::buggrabber::{self, BugDb, BugEntry, NOW, TimeKind, Writer, write_files};

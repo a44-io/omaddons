@@ -1,0 +1,52 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup import",
+  "commands": [],
+  "data": {
+    "backup": {
+      "actor": "agent",
+      "baseline": "import",
+      "busy": false,
+      "bytes": 200,
+      "captured_at": "<time>",
+      "client_running": false,
+      "consistency": "stable",
+      "created_at": "<time>",
+      "files": 2,
+      "id": "<ulid>",
+      "integrity": "verified",
+      "kind": "imported",
+      "qualifying": false,
+      "reason": null,
+      "reflinked": "none",
+      "restorable": true,
+      "trigger": null,
+      "unsettled": 0,
+      "verified_at": "<time>"
+    },
+    "bytes": 200,
+    "dry_run": false,
+    "files": 2,
+    "source": {
+      "captured_at": "<time>",
+      "created_at": "<time>",
+      "family": "mainline",
+      "id": "<ulid>",
+      "target_id": "retail",
+      "tool_version": "0.1.0"
+    },
+    "target": {
+      "id": "retail",
+      "key": "<ulid>"
+    }
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
