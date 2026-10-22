@@ -396,7 +396,7 @@ impl SourceRegistry {
     /// Every source this build ships that `config` leaves on.
     pub fn builtin(config: &SourceConfigView) -> Self {
         let tukui = std::sync::Arc::new(tukui::TukuiSource::default());
-        let shipped: [Box<dyn Source>; 6] = [
+        let shipped: [Box<dyn Source>; 7] = [
             Box::new(github::GithubSource::with_rest(Box::new(
                 github_rest::GithubRest::with_github_token(config.github_token())
                     .offline(config.offline()),
@@ -406,6 +406,7 @@ impl SourceRegistry {
             Box::new(url::UrlSource::new()),
             Box::new(wowi::WowiSource),
             Box::new(std::sync::Arc::clone(&tukui)),
+            Box::new(wowace::WowAceSource),
         ];
         let mut registry = Self::new();
         for source in shipped {
@@ -822,7 +823,8 @@ mod tests {
                 SourceId::Url,
                 SourceId::Local,
                 SourceId::Wowi,
-                SourceId::Tukui
+                SourceId::Tukui,
+                SourceId::Wowace
             ]
             .into(),
             "curseforge and wago are not in this build"
@@ -833,6 +835,7 @@ mod tests {
             ("wowi", Some(false)),
             ("git", Some(false)),
             ("tukui", Some(false)),
+            ("wowace", Some(false)),
             ("curseforge", Some(false)),
         ]);
         let some = SourceRegistry::builtin(&view);

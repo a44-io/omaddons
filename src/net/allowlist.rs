@@ -14,6 +14,7 @@ pub const ALWAYS: &[&str] = &[
     "api.mmoui.com",
     "cdn.wowinterface.com",
     "api.tukui.org",
+    "repos.wowace.com",
 ];
 
 /// Allowed only while the CurseForge source is enabled (M5).

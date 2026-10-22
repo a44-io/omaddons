@@ -52,6 +52,7 @@ fn with_assets(
             changelog_url: None,
             notes: None,
             name_hint: None,
+            revision: None,
         }],
     };
     let entry = MemoEntry::of(&r, Channel::Stable, &Ok(set), fetched_at).unwrap();

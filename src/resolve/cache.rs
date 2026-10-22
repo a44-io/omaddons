@@ -544,6 +544,7 @@ mod tests {
                             changelog_url: None,
                             notes: None,
                             name_hint: None,
+                            revision: None,
                         }],
                     }),
                 })
@@ -687,6 +688,7 @@ mod tests {
                 changelog_url: None,
                 notes: None,
                 name_hint: None,
+                revision: None,
             }],
         });
         let gone = Err(Error::new(

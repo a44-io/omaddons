@@ -232,7 +232,7 @@ fn unescape(s: &str) -> String {
 }
 
 /// `%XX` escapes decoded (invalid ones kept as written), as bytes, read back lossily.
-fn unescape_percent(s: &str) -> String {
+pub(super) fn unescape_percent(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

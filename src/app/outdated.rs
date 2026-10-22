@@ -233,7 +233,7 @@ impl Outcome for OutdatedOutcome {
             .unwrap_or(0);
         let latest_width = items()
             .filter(|i| i.status == StatusKind::UpdateAvailable)
-            .filter_map(|i| i.latest.as_ref().map(|l| l.release.version.chars().count()))
+            .filter_map(|i| i.latest.as_ref().map(|l| l.release.shown().chars().count()))
             .max()
             .unwrap_or(0);
         // A ref is named on its first line only.
@@ -322,10 +322,8 @@ impl OutdatedOutcome {
 
 /// What an item's line says after its name and installed version.
 fn describe(i: &OutdatedItem, latest_width: usize, r: Option<&str>) -> String {
-    let latest = i
-        .latest
-        .as_ref()
-        .map_or("?", |l| l.release.version.as_str());
+    let shown = i.latest.as_ref().map(|l| l.release.shown());
+    let latest = shown.as_deref().unwrap_or("?");
     match i.status {
         StatusKind::UpdateAvailable => {
             let doubt = match i.confidence {

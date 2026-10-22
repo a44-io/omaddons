@@ -5,8 +5,9 @@
 //! holds what every live client of that family has alike (same ref, channel, pin and
 //! written version), when all of them are exported; the rest goes in each client's own
 //! section, and test clients and unplugged ones (registered, client dir gone) only ever
-//! get their own. `version` is written for records with a release version only, and
-//! `sha256` only while the archive is still in the blob cache. Addons from a local file
+//! get their own. `version` is written for records with a release version only (with
+//! the release's source `revision` when it has one: WowAce), and `sha256` only while the
+//! archive is still in the blob cache. Addons from a local file
 //! or directory are left out (`export_local_source`). Dependencies are written as locks
 //! (`dependency = true`): in the family section when every live client of the family
 //! records the same lock and something there requires it, else in their client's.
@@ -115,8 +116,9 @@ struct Exported {
 #[derive(Debug, Clone)]
 struct Item {
     entry: Entry,
-    /// The ref's identity, channel, pin and written version: equal items are one entry.
-    key: (String, Channel, bool, Option<String>),
+    /// The ref's identity, channel, pin, written version and revision: equal items are
+    /// one entry.
+    key: (String, Channel, bool, Option<String>, Option<u32>),
     dependency: bool,
     required_by: Vec<String>,
 }
@@ -350,13 +352,21 @@ fn has_requester(lock: &Item, items: &[Item]) -> bool {
     })
 }
 
-/// A record as an entry: `version` for a release version only, `sha256` while the
-/// archive is in the blob cache, `dependency` for a lock.
+/// A record as an entry: `version` for a release version only, with its source
+/// `revision` when it has one, `sha256` while the archive is in the blob cache,
+/// `dependency` for a lock.
 fn item(a: &AddonRecord, blob_exists: &dyn Fn(&str) -> bool) -> Item {
     let version = (a.version_confidence == VersionConfidence::Release).then(|| a.version.clone());
+    let revision = a.revision.filter(|_| version.is_some());
     let dependency = a.reason == AddonReason::Dependency;
     Item {
-        key: (a.r#ref.identity(), a.channel, a.pinned, version.clone()),
+        key: (
+            a.r#ref.identity(),
+            a.channel,
+            a.pinned,
+            version.clone(),
+            revision,
+        ),
         entry: Entry {
             name: Some(a.name.clone()),
             r#ref: Some(a.r#ref.to_string()),
@@ -365,6 +375,7 @@ fn item(a: &AddonRecord, blob_exists: &dyn Fn(&str) -> bool) -> Item {
             pinned: a.pinned,
             dependency,
             sha256: a.blob_sha256.clone().filter(|sha| blob_exists(sha)),
+            revision,
             line: 0,
         },
         dependency,
@@ -508,6 +519,7 @@ mod tests {
             installed_at: "2026-10-01T00:00:00Z".parse().unwrap(),
             tx_id: TxId::new(),
             blob_sha256: None,
+            revision: None,
         }
     }
 

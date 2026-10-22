@@ -986,6 +986,7 @@ mod runs {
                                 reinstall: false,
                                 blob_sha256: None,
                                 asset: None,
+                                revision: None,
                             }],
                             default_kind: TxKind::Install,
                             dependency_locks: std::collections::BTreeMap::new(),

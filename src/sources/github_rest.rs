@@ -306,6 +306,7 @@ impl GithubRest {
                 changelog_url: release.html_url.clone(),
                 notes: None,
                 name_hint: None,
+                revision: None,
             }],
         })
     }

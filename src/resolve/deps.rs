@@ -503,6 +503,7 @@ mod tests {
                 installed_at: now(),
                 tx_id: TxId::new(),
                 blob_sha256: None,
+                revision: None,
             },
         );
         record

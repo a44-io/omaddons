@@ -97,6 +97,7 @@ impl UrlSource {
                 changelog_url: None,
                 notes: None,
                 name_hint: None,
+                revision: None,
             }],
         })
     }

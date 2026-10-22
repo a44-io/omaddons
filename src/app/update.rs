@@ -232,6 +232,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
                 reinstall: false,
                 blob_sha256: None,
                 asset: None,
+                revision: None,
             })
         } else if let Some(error) = unanswered.get(&(a.r#ref.clone(), a.channel)) {
             pushed.push((target_ref, failed(s, ItemError::from(error))));

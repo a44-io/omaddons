@@ -257,6 +257,7 @@ pub fn install_change(
         reinstall: false,
         blob_sha256: None,
         asset: None,
+        revision: None,
     }
 }
 
@@ -547,6 +548,7 @@ impl TxScene {
             installed_at: "2000-01-01T00:00:00Z".parse().unwrap(),
             tx_id: TxId::new(),
             blob_sha256: None,
+            revision: None,
         };
         let spec = super::edit::AdoptSpec {
             record,

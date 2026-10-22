@@ -166,6 +166,7 @@ mod support {
                             reinstall: false,
                             blob_sha256: None,
                             asset: None,
+                            revision: None,
                         }],
                         default_kind: TxKind::Install,
                         dependency_locks: std::collections::BTreeMap::new(),
@@ -260,6 +261,7 @@ mod support {
                             changelog_url: None,
                             notes: None,
                             name_hint: None,
+                            revision: None,
                         }],
                     })
                 })

@@ -1606,6 +1606,7 @@ mod engine_api {
             reinstall: false,
             blob_sha256: None,
             asset: None,
+            revision: None,
         }
     }
 

@@ -85,6 +85,7 @@ fn release_set(r: &Ref) -> Result<ReleaseSet> {
             changelog_url: None,
             notes: None,
             name_hint: None,
+            revision: None,
         }],
     })
 }

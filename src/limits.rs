@@ -86,6 +86,12 @@ pub const API_RESPONSE_MAX_BYTES: u64 = 64 * MIB;
 /// Most entries a WowAce directory listing or tag list may name, and most files one
 /// WowAce tree may hold: past it, the listing fails `too_many_entries`.
 pub const WOWACE_TREE_MAX_FILES: usize = 2_000;
+/// Most directory listings one WowAce tree fetches.
+pub const WOWACE_TREE_MAX_DIRS: usize = 200;
+/// Deepest a WowAce tree's directories nest below its root.
+pub const WOWACE_TREE_MAX_DEPTH: usize = 8;
+/// Most requests one WowAce tree costs, retries included.
+pub const WOWACE_TREE_MAX_REQUESTS: u32 = 2_500;
 /// Most dependency rounds one install plans per target (a chain longer than this stops
 /// with `missing_dependency`, reason `limit_reached`).
 pub const DEPENDENCY_MAX_DEPTH: usize = 4;
@@ -429,6 +435,27 @@ pub const REGISTRY: &[LimitInfo] = &[
         "count",
         None,
         "Most entries a WowAce listing or tag list names, and most files a WowAce tree holds",
+    ),
+    limit(
+        "WOWACE_TREE_MAX_DIRS",
+        LimitValue::Count(WOWACE_TREE_MAX_DIRS as u64),
+        "count",
+        None,
+        "Most directory listings one WowAce tree fetches",
+    ),
+    limit(
+        "WOWACE_TREE_MAX_DEPTH",
+        LimitValue::Count(WOWACE_TREE_MAX_DEPTH as u64),
+        "count",
+        None,
+        "Deepest a WowAce tree's directories nest below its root",
+    ),
+    limit(
+        "WOWACE_TREE_MAX_REQUESTS",
+        LimitValue::Count(WOWACE_TREE_MAX_REQUESTS as u64),
+        "count",
+        None,
+        "Most requests one WowAce tree costs, retries included",
     ),
     limit(
         "DEPENDENCY_MAX_DEPTH",
@@ -875,6 +902,9 @@ mod tests {
         "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",
         "CHANGELOG_MAX_ENTRIES", "API_RESPONSE_MAX_BYTES",
         "WOWACE_TREE_MAX_FILES",
+        "WOWACE_TREE_MAX_DIRS",
+        "WOWACE_TREE_MAX_DEPTH",
+        "WOWACE_TREE_MAX_REQUESTS",
         "DEPENDENCY_MAX_DEPTH",
         "DEPENDENCY_MAX_ADDONS",
         "RACY_SLACK_NS",

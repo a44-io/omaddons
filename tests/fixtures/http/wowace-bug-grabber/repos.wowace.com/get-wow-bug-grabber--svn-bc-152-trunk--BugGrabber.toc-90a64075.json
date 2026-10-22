@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://repos.wowace.com/wow/bug-grabber/!svn/bc/152/trunk/!BugGrabber.toc"
+  },
+  "responses": [
+    {
+      "status": 200,
+      "headers": [
+        [
+          "date",
+          "Thu, 22 Oct 2026 11:33:59 GMT"
+        ],
+        [
+          "content-type",
+          "text/plain"
+        ],
+        [
+          "content-length",
+          "475"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "accept-ranges",
+          "bytes"
+        ],
+        [
+          "cache-control",
+          "max-age=604800"
+        ],
+        [
+          "etag",
+          "\"151//trunk/!BugGrabber.toc\""
+        ],
+        [
+          "last-modified",
+          "Sat, 27 Mar 2010 22:32:16 GMT"
+        ],
+        [
+          "server",
+          "Apache/2.4.18 (Ubuntu)"
+        ],
+        [
+          "vary",
+          "Accept-Encoding"
+        ]
+      ],
+      "body_file": "get-wow-bug-grabber--svn-bc-152-trunk--BugGrabber.toc-90a64075.body"
+    }
+  ]
+}

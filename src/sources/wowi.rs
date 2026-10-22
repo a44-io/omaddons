@@ -245,6 +245,7 @@ pub fn release(details: &WowiDetails) -> Release {
         changelog_url: Some(format!("https://www.wowinterface.com/downloads/info{uid}")),
         notes: (!notes.is_empty()).then_some(notes),
         name_hint: Some(details.name.trim().to_owned()).filter(|n| !n.is_empty()),
+        revision: None,
     }
 }
 

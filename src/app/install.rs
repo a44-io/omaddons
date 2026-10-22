@@ -502,6 +502,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             blob_sha256: None,
             // A pasted release-asset link names its one asset.
             asset: p.asset_hint.clone(),
+            revision: None,
         }
     };
     let parsed: Vec<&ParsedRef> = items

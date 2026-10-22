@@ -352,6 +352,7 @@ mod tests {
             notes: notes.map(str::to_owned),
             assets: Vec::new(),
             name_hint: None,
+            revision: None,
         }
     }
 

@@ -235,6 +235,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             reinstall: false,
             blob_sha256: None,
             asset: None,
+            revision: None,
         });
         requested.push(ItemRequest {
             request: s.request.clone(),

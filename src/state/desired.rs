@@ -20,7 +20,7 @@
 //!
 //! A string is a name or a ref, read the way `install` reads its arguments. A table has
 //! `name` (unless `ref` is given), `ref`, `channel` (absent is `stable`, whatever
-//! `default_channel` says), `version`, `pinned`, `dependency` and `sha256`.
+//! `default_channel` says), `version`, `pinned`, `dependency`, `sha256` and `revision`.
 //!
 //! [`parse`] is pure: no I/O, registry or catalog. Unknown keys warn, bad values are
 //! `desired_state_invalid` with the line, and names and refs are resolved per target later
@@ -92,6 +92,9 @@ pub struct Entry {
     pub dependency: bool,
     /// The archive's SHA-256 (64 lowercase hex digits), for offline reproduction.
     pub sha256: Option<String>,
+    /// The release's source revision (WowAce: the tag's revision), installed with its
+    /// `version`, so a locked install fetches exactly that tree.
+    pub revision: Option<u32>,
     /// Its line in the file (1-based); 0 when it was not read from one.
     pub line: usize,
 }
@@ -107,6 +110,7 @@ impl Entry {
             pinned: false,
             dependency: false,
             sha256: None,
+            revision: None,
             line: 0,
         }
     }
@@ -483,6 +487,7 @@ impl Parser<'_> {
                     }
                     entry.sha256 = Some(hash);
                 }
+                "revision" => entry.revision = Some(self.revision(v, &at)?),
                 _ => self.unknown_key(key, &format!("an [[{label}]] table")),
             }
         }
@@ -510,6 +515,24 @@ impl Parser<'_> {
                 format!("{key} is a string"),
             )),
         }
+    }
+
+    /// A revision: a whole number from 1 up.
+    fn revision(&self, value: &Spanned<DeValue<'_>>, key: &str) -> Result<u32> {
+        let parsed = match value.get_ref() {
+            DeValue::Integer(i) => u32::from_str_radix(&i.as_str().replace('_', ""), i.radix())
+                .ok()
+                .filter(|r| *r > 0),
+            _ => None,
+        };
+        parsed.ok_or_else(|| {
+            self.invalid(
+                value.span(),
+                key,
+                Reason::BadValue,
+                format!("{key} is a revision number, 1 or more"),
+            )
+        })
     }
 
     fn boolean(&self, value: &Spanned<DeValue<'_>>, key: &str) -> Result<bool> {
@@ -680,6 +703,9 @@ fn render_section(out: &mut String, header: &str, section: &Section) {
         }
         if let Some(hash) = &e.sha256 {
             line("sha256", quoted(hash));
+        }
+        if let Some(revision) = e.revision {
+            line("revision", revision.to_string());
         }
     }
 }
@@ -938,6 +964,21 @@ addons = ["git:https://github.com/fondlez/GroupBulletinBoard#main"]
                 3,
                 "family.mainline.addon.sha256",
             ),
+            (
+                "[[family.mainline.addon]]\nname = \"X\"\nrevision = 0\n",
+                3,
+                "family.mainline.addon.revision",
+            ),
+            (
+                "[[family.mainline.addon]]\nname = \"X\"\nrevision = \"401\"\n",
+                3,
+                "family.mainline.addon.revision",
+            ),
+            (
+                "[[family.mainline.addon]]\nname = \"X\"\nrevision = 4294967296\n",
+                3,
+                "family.mainline.addon.revision",
+            ),
             ("family = 3\n", 1, "family"),
             ("[target.\"my client\"]\n", 1, "target.my client"),
             // Broken TOML: where the parser says.
@@ -963,6 +1004,11 @@ addons = ["git:https://github.com/fondlez/GroupBulletinBoard#main"]
         assert_eq!(
             ok(&text).0.families[&Family::Mainline].entries[0].sha256,
             Some(hash)
+        );
+        let text = "[[family.mainline.addon]]\nname = \"X\"\nrevision = 0x191\n";
+        assert_eq!(
+            ok(text).0.families[&Family::Mainline].entries[0].revision,
+            Some(401)
         );
     }
 
@@ -1090,13 +1136,14 @@ addons = ["DBM"]
             any::<bool>(),
             any::<bool>(),
             proptest::option::of("[0-9a-f]{64}"),
+            proptest::option::of(1u32..),
         )
             .prop_filter("a name or a ref", |(n, r, ..)| {
                 n.as_ref().is_some_and(|n| !n.trim().is_empty())
                     || r.as_ref().is_some_and(|r| !r.trim().is_empty())
             })
             .prop_map(
-                |(name, r, channel, version, pinned, dependency, sha256)| Entry {
+                |(name, r, channel, version, pinned, dependency, sha256, revision)| Entry {
                     name: name.filter(|n| !n.trim().is_empty()),
                     r#ref: r,
                     channel,
@@ -1104,6 +1151,7 @@ addons = ["DBM"]
                     pinned,
                     dependency,
                     sha256,
+                    revision,
                     line: 0,
                 },
             )

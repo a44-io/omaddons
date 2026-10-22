@@ -88,6 +88,7 @@ mod support {
                     installed_at: "2026-10-14T21:00:00Z".parse().unwrap(),
                     tx_id: "01JB8Q2VA00000000000000000".parse().unwrap(),
                     blob_sha256: None,
+                    revision: None,
                 },
             );
         }

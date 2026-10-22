@@ -590,6 +590,11 @@ pub struct AddonRecord {
     /// absent for local archives and directories.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob_sha256: Option<String>,
+    /// The source revision of the installed release, when the source has one (WowAce:
+    /// the tag's last-changed revision). The same release id at another revision is an
+    /// update (a re-tag), and `sync --locked` fetches this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u32>,
 }
 
 impl AddonRecord {
@@ -1036,6 +1041,10 @@ pub struct Release {
     /// the primary folder when no catalog name applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_hint: Option<String>,
+    /// The source's revision of this release, when it has one (WowAce: the tag's
+    /// last-changed revision, which only a re-tag moves).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u32>,
 }
 
 /// One downloadable or local artifact of a release.
@@ -1075,6 +1084,11 @@ pub enum AssetLocation {
         source: crate::sources::SourceId,
         key: String,
     },
+    /// A WowAce tree, fetched file by file under `base` (a `…/!svn/bc/<revision>/…`
+    /// path, the tree as of that revision and never a live one), then read like
+    /// `LocalDir`.
+    #[serde(rename = "wowace_tree")]
+    WowAceTree { base: String, revision: u32 },
 }
 
 /// One client metadata entry: `release.json`'s, or a source list's (`source`).
@@ -1189,6 +1203,10 @@ pub struct Candidate {
     pub channel: Channel,
     pub asset: Asset,
     pub rank: RankReason,
+    /// The release's source revision ([`Release::revision`]), which the installed
+    /// record keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u32>,
 }
 
 /// Which selection tier proposed a candidate.
@@ -1656,6 +1674,7 @@ mod tests {
             installed_at: "2026-10-14T21:00:00Z".parse().unwrap(),
             tx_id: "01JB8Q2VA00000000000000000".parse().unwrap(),
             blob_sha256: None,
+            revision: None,
         }
     }
 
@@ -1787,6 +1806,7 @@ mod tests {
             channel: Channel::Beta,
             asset,
             rank: RankReason::MetadataInterface,
+            revision: Some(401),
         };
         let back: Candidate =
             serde_json::from_value(serde_json::to_value(&candidate).unwrap()).unwrap();

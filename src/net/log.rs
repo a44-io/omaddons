@@ -31,7 +31,7 @@ pub enum Via {
 pub struct NetLogEntry {
     #[schemars(with = "String")]
     pub time: Timestamp,
-    /// `GET`, `HEAD`, or `GIT` for subprocesses.
+    /// `GET`, `HEAD`, `PROPFIND` (WowAce's tag list), or `GIT` for subprocesses.
     pub method: String,
     pub host: String,
     /// The URL path, never the query.

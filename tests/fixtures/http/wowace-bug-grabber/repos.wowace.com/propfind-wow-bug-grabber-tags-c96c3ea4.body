@@ -1,0 +1,885 @@
+<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:ns0="DAV:">
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>403</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.3/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>357</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.4/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>359</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.5/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>361</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.6/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>363</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.7/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>365</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.8/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>367</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.9/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>369</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r218-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>218</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r216-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>216</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r214-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>214</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r212-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>212</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r210-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>210</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r208-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>208</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r205-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>205</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r203-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>203</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r220-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>220</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r223-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>223</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r198-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>198</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r193-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>193</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/r191-release/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>191</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/3.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>140</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.0.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>313</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.0.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>272</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.0.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>315</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.0.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>274</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.2.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>334</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.0.2/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>317</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.0.2/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>276</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.2.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>297</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.2.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>336</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.0.3/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>278</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.2.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>299</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.2.2/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>339</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.0.4/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>280</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.2.2/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>302</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.2.3/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>341</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.2.3/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>304</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.2.4/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>343</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.2.4/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>306</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.2.5/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>345</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.2.5/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>309</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.2.6/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>347</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.2.6/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>311</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.2.7/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>349</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/3.0-30200/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>142</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.1.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>401</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.1.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>403</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.18/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>393</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.17/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>391</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.16/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>388</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.15/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>386</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.14/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>384</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.13/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>383</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.12/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>381</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.11/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>378</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.10/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>371</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.19/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>395</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.20/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>397</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.21/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>399</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.1.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>320</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.1.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>282</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.1.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>323</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.1.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>285</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.1.2/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>325</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.1.2/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>287</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.1.3/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>327</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.1.3/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>289</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.1.4/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>329</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.1.4/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>291</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v11.1.5/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>331</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.1.5/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>293</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v10.1.6/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>295</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/3.0-beta/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>130</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v8.0.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>225</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v8.2.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>237</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.0.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>242</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.1.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>248</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.2.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>252</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v8.0.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>227</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v8.2.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>240</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.0.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>244</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.2.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>254</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v8.0.2/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>229</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.0.2/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>246</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.2.2/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>256</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v8.0.3/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>231</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.2.3/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>258</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v8.0.4/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>233</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.2.4/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>260</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v8.0.5/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>235</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.2.5/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>262</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.2.6/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>265</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v9.2.7/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>270</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/3.0-beta2/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>132</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.0/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>351</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.1/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>353</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.2/</D:href>
+<D:propstat>
+<D:prop>
+<lp1:version-name>355</lp1:version-name>
+</D:prop>
+<D:status>HTTP/1.1 200 OK</D:status>
+</D:propstat>
+</D:response>
+</D:multistatus>

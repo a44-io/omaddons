@@ -203,6 +203,7 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
                 reinstall: false,
                 blob_sha256: None,
                 asset: None,
+                revision: None,
             }),
         };
         match change {

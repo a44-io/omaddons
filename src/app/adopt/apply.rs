@@ -841,6 +841,7 @@ fn adopted_record(
         installed_at: jiff::Timestamp::now(),
         tx_id: TxId::new(),
         blob_sha256,
+        revision: None,
     }
 }
 

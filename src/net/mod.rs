@@ -46,6 +46,10 @@ pub trait Http: Send + Sync {
 pub enum Method {
     Get,
     Head,
+    /// WebDAV's `PROPFIND` with `Depth: 1`, asking only for each child's `version-name`
+    /// (its last-changed revision): the WowAce source's tag list. Its body is always
+    /// [`PROPFIND_VERSION_NAMES`], so it is as idempotent as a GET.
+    Propfind,
 }
 
 impl Method {
@@ -53,9 +57,13 @@ impl Method {
         match self {
             Self::Get => "GET",
             Self::Head => "HEAD",
+            Self::Propfind => "PROPFIND",
         }
     }
 }
+
+/// The one body a `PROPFIND` is sent with.
+pub const PROPFIND_VERSION_NAMES: &str = r#"<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:version-name/></D:prop></D:propfind>"#;
 
 /// Which whole-call timeout applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +113,18 @@ impl Request {
         }
     }
 
+    /// A `PROPFIND` of the collection at `url`, one level deep, for its children's
+    /// `version-name`: the only way a request with a method other than GET or HEAD is
+    /// made.
+    pub fn propfind_version_names(url: impl Into<String>, purpose: &'static str) -> Self {
+        Self {
+            method: Method::Propfind,
+            ..Self::get(url, purpose)
+        }
+        .header("Depth", "1")
+        .header("Content-Type", "text/xml; charset=utf-8")
+    }
+
     #[must_use]
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((name.into(), value.into()));
@@ -149,6 +169,9 @@ pub struct Response {
     /// Compressed bytes read off the wire, when [`decode::Decoding`] decodes the body
     /// (`net.log`'s `wire_bytes`).
     pub(crate) wire_bytes: Option<Arc<AtomicU64>>,
+    /// How many wire requests this response took, retries included (set by
+    /// [`retry::Retrying`]; 1 below it).
+    pub(crate) attempts: u32,
 }
 
 impl std::fmt::Debug for Response {
@@ -175,7 +198,13 @@ impl Response {
             cache: CacheState::Network,
             body,
             wire_bytes: None,
+            attempts: 1,
         }
+    }
+
+    /// How many wire requests this response took, retries included.
+    pub fn attempts(&self) -> u32 {
+        self.attempts
     }
 
     /// A header value, matched case-insensitively.

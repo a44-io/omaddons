@@ -22,7 +22,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::blobs::{BlobCache, BlobRef, DownloadTarget};
+use super::blobs::{BlobCache, BlobRef, DownloadTarget, Fetched, Storage};
 use super::edit::{
     EditField, RecordEdit, RecordGuard, apply_edit, apply_edits, changed_fields, sorted_names,
 };
@@ -56,7 +56,7 @@ use crate::resolve::deps::{
 use crate::resolve::select::{EmptyReason, select};
 use crate::resolve::updates::is_static;
 use crate::rules::RulesTable;
-use crate::sources::{SourceRegistry, Wanted};
+use crate::sources::{SourceId, SourceRegistry, Wanted, wowace};
 use crate::state::config::RunningPolicy;
 use crate::state::files_index::{FilesIndex, FolderIndex};
 use crate::state::memo::{CandidateFact, VerdictFact, merge_fact};
@@ -125,6 +125,9 @@ pub enum RequestedChange {
         blob_sha256: Option<String>,
         /// A pasted release-asset link's file name: that asset or nothing.
         asset: Option<String>,
+        /// With `version`: the release's source revision the desired state recorded
+        /// (WowAce), so exactly that tree is installed, whatever the tag says now.
+        revision: Option<u32>,
     },
     Remove {
         addon: String,
@@ -1101,6 +1104,10 @@ enum Want {
         local: Option<Box<Candidate>>,
         /// A locked install's recorded archive hash (`RequestedChange::Install.blob_sha256`).
         cached: Option<String>,
+        /// The recorded source revision of the release `wanted.version` names: a lock's
+        /// (`RequestedChange::Install.revision`), or the installed one's on an exact
+        /// reinstall.
+        revision: Option<u32>,
     },
     Remove {
         addon: String,
@@ -1152,6 +1159,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                     &installed.version,
                     installed.channel,
                     sha,
+                    installed.revision,
                 )
                 .map(Box::new);
             }
@@ -1164,6 +1172,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                 file: None,
                 local: local @ None,
                 cached: Some(sha),
+                revision,
                 ..
             } = w
                 && let Some(version) = &wanted.version
@@ -1176,8 +1185,27 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                     version,
                     wanted.channel,
                     sha,
+                    *revision,
                 )
                 .map(Box::new);
+            }
+        }
+        // A WowAce release recorded at its revision (a lock, an exact reinstall) whose
+        // archive is not cached: that tree at that revision, never the tag as it is now,
+        // and no tag list asked for.
+        for w in &mut wants {
+            if let Want::Install {
+                wanted,
+                file: None,
+                local: local @ None,
+                revision: Some(revision),
+                ..
+            } = w
+                && let Ref::WowAce { slug, .. } = &wanted.r#ref
+                && let Some(version) = &wanted.version
+            {
+                *local = wowace::recorded_candidate(slug, version, *revision, wanted.channel)
+                    .map(Box::new);
             }
         }
         prepared.push((tr, record, index, wants));
@@ -1288,6 +1316,8 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                     intent,
                     local,
                     cached,
+                    // Already a recorded tree's candidate in `local`.
+                    revision: _,
                 } => {
                     let identity = wanted.r#ref.identity();
                     if seen.contains(&identity) {
@@ -2558,6 +2588,7 @@ pub fn rejudge(
                 if intent.keeps_release()
                     || (!intent.reinstall
                         && existing.release_id == template.release_id
+                        && existing.revision == template.revision
                         && planner.all_present(existing))
                 {
                     return planner.current(existing, intent);
@@ -2619,13 +2650,17 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
             reinstall,
             blob_sha256,
             asset,
+            revision,
         } => {
             // A reinstall without a version asks for the recorded release exactly; the
             // intent keeps no version, so the pin stays as recorded.
             let installed = record.addons.values().find(|a| a.r#ref == *r#ref);
-            let exact = installed
-                .filter(|_| *reinstall && version.is_none())
-                .and_then(exact_version);
+            let exact_of = installed.filter(|_| *reinstall && version.is_none());
+            let exact = exact_of.and_then(exact_version);
+            let revision = match &exact {
+                Some(_) => exact_of.and_then(|a| a.revision),
+                None => revision.filter(|_| version.is_some()),
+            };
             Want::Install {
                 name: name.clone(),
                 wanted: Wanted {
@@ -2647,6 +2682,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                 }),
                 local: None,
                 cached: blob_sha256.clone(),
+                revision,
             }
         }
         RequestedChange::Remove { addon } => Want::Remove {
@@ -2683,6 +2719,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                     }),
                     local: None,
                     cached: None,
+                    revision: None,
                 },
                 None => Want::Failed {
                     r#ref: None,
@@ -3296,6 +3333,8 @@ impl TargetPlanner<'_> {
         if let (Some(existing), Some(first)) = (existing, candidates.first())
             && !intent.reinstall
             && existing.release_id.as_deref() == Some(first.release_id.as_str())
+            // A re-tagged WowAce tag keeps its release id at another revision.
+            && existing.revision == first.revision
             && self.all_present(existing)
         {
             return self.current(existing, intent).map(Prepared::Done);
@@ -3311,6 +3350,7 @@ impl TargetPlanner<'_> {
                 &first.version,
                 first.channel,
                 sha,
+                first.revision,
             )
         {
             candidates.insert(0, from_cache);
@@ -3345,8 +3385,12 @@ impl TargetPlanner<'_> {
             // A reinstall's cached archive carries no rank, so a release that loads only
             // as its publisher declares it is refused: ask the source for the exact
             // release (its blob is still found through the facts). Offline, the memo
-            // answers or the refusal stands as `offline`.
-            if local.is_some() {
+            // answers or the refusal stands as `offline`. A WowAce release recorded at a
+            // revision is that tree whatever its rank: the source could only answer the
+            // tag as it is now.
+            let recorded_tree = matches!(wanted.r#ref, Ref::WowAce { .. })
+                && local.is_some_and(|l| l.revision.is_some());
+            if local.is_some() && !recorded_tree {
                 let fetched = self.ctx.cache.get(std::slice::from_ref(wanted));
                 let source = CandidateSource {
                     file: None,
@@ -3382,10 +3426,14 @@ impl TargetPlanner<'_> {
                 return Err(error.clone().details(details));
             }
             // A release that does not exist at all (a git rev naming nothing), or one
-            // whose archive cannot be downloaded offline, is not a question of flavor.
-            if let Some(error) =
-                unreadable.filter(|e| matches!(e.code, ErrorCode::NotFound | ErrorCode::Offline))
-            {
+            // whose archive cannot be downloaded offline, is not a question of flavor;
+            // nor is a WowAce tree that cannot be assembled (a collision, a bound).
+            let tree = matches!(wanted.r#ref, Ref::WowAce { .. });
+            if let Some(error) = unreadable.filter(|e| {
+                matches!(e.code, ErrorCode::NotFound | ErrorCode::Offline)
+                    || (tree
+                        && matches!(e.code, ErrorCode::BadArchive | ErrorCode::ArchiveTooLarge))
+            }) {
                 return Err(error);
             }
             return Err(self.no_release(wanted, &tried, "no candidate loads on this client"));
@@ -3426,6 +3474,7 @@ impl TargetPlanner<'_> {
                 .filter(|b| b.starts_with(self.ctx.paths.blobs_dir()))
                 .and_then(|b| b.file_name())
                 .map(|n| n.to_string_lossy().into_owned()),
+            revision: winner.candidate.revision,
         };
         // A deferred asset's token URL is never stored: the plan shows its canonical URL.
         let (url, expected_hash) = match &winner.candidate.asset.location {
@@ -3437,6 +3486,8 @@ impl TargetPlanner<'_> {
                 winner.canonical_url.clone(),
                 winner.candidate.asset.expected_hash.clone(),
             ),
+            // The pinned tree the archive was assembled from.
+            AssetLocation::WowAceTree { base, .. } => (Some(base.clone()), None),
             _ => (None, None),
         };
         let release = PlannedRelease {
@@ -4000,13 +4051,23 @@ impl TargetPlanner<'_> {
         let mut canonical_url = None;
         let mut unverified = None;
         let (inspected, blob) = match &candidate.asset.location {
-            AssetLocation::Url(_) | AssetLocation::Deferred { .. } => {
-                let done = self
-                    .download(&candidate.release_id, &candidate.asset)
-                    .map_err(|e| match &candidate.asset.location {
-                        AssetLocation::Url(url) => missing_git_rev(e, candidate, url),
-                        _ => e,
-                    })?;
+            AssetLocation::Url(_)
+            | AssetLocation::Deferred { .. }
+            | AssetLocation::WowAceTree { .. } => {
+                let done = match self.download(&candidate.release_id, &candidate.asset) {
+                    Ok(done) => done,
+                    // A WowAce project that needs the packager is refused by name, as
+                    // one that does not load here is.
+                    Err(e) if let Some(reason) = wowace::packaging_refusal(&e) => {
+                        return Ok(Err(reason));
+                    }
+                    Err(e) => {
+                        return Err(match &candidate.asset.location {
+                            AssetLocation::Url(url) => missing_git_rev(e, candidate, url),
+                            _ => e,
+                        });
+                    }
+                };
                 let inspected = inspect(&done.blob.path, &ctx.limits, ctx.table)?;
                 let path = done.blob.path.clone();
                 canonical_url = done.canonical_url;
@@ -4297,6 +4358,25 @@ impl TargetPlanner<'_> {
             AssetLocation::Url(url) => ctx
                 .blobs
                 .download(ctx.scopes, &ctx.tx, ctx.http, url, expected, None)?,
+            // Assembled at its pinned revision and packed; no hash comes from the
+            // server, so the TOCs and TLS are the check, as on GitHub's no-REST path.
+            AssetLocation::WowAceTree { base, revision } => {
+                if ctx.registry.get(SourceId::Wowace).is_none() {
+                    return Err(ctx.registry.unavailable(SourceId::Wowace, release_id));
+                }
+                let zip = wowace::assemble(ctx.http, base, *revision, ctx.limits.max_download)?;
+                let blob = ctx.blobs.store_stream(
+                    ctx.scopes,
+                    &ctx.tx,
+                    std::io::Cursor::new(zip),
+                    None,
+                    &Storage::Cache,
+                )?;
+                Fetched {
+                    blob,
+                    unverified: None,
+                }
+            }
             AssetLocation::LocalZip(_)
             | AssetLocation::LocalDir(_)
             | AssetLocation::GitCheckout { .. } => {
@@ -4470,6 +4550,7 @@ fn exact_version(installed: &AddonRecord) -> Option<String> {
 /// release's identity (`release_id`, `version`) rather than a local file's: `None` when
 /// the blob `sha256` is not in the cache, or no longer hashes to it. Its rank is not
 /// recorded, so it is `Unannotated`. Reinstalls use it, and `sync --locked` will.
+/// `revision` is the release's source revision, which the archive was built at.
 pub fn local_blob_candidate(
     blobs: &BlobCache,
     scopes: &ScopeTable,
@@ -4477,6 +4558,7 @@ pub fn local_blob_candidate(
     version: &str,
     channel: Channel,
     sha256: &str,
+    revision: Option<u32>,
 ) -> Option<Candidate> {
     let blob = blobs.get(scopes, sha256).ok().flatten()?;
     let (size, hex) = crate::state::files_index::hash_file_streaming(&blob.path).ok()?;
@@ -4497,6 +4579,7 @@ pub fn local_blob_candidate(
             nolib: false,
         },
         rank: crate::model::RankReason::Unannotated,
+        revision,
     })
 }
 
@@ -4528,6 +4611,7 @@ fn file_candidate(file: &std::path::Path, wanted: &Wanted) -> Candidate {
             nolib: false,
         },
         rank: crate::model::RankReason::Unannotated,
+        revision: None,
     }
 }
 
@@ -4669,8 +4753,17 @@ mod tests {
                 .map(|b| format!("{b:02x}"))
                 .collect()
         };
-        let build =
-            || local_blob_candidate(&blobs, &scopes, "gh:o/foo@v1", "v1", Channel::Beta, &sha);
+        let build = || {
+            local_blob_candidate(
+                &blobs,
+                &scopes,
+                "gh:o/foo@v1",
+                "v1",
+                Channel::Beta,
+                &sha,
+                None,
+            )
+        };
         assert!(build().is_none(), "not cached");
 
         std::fs::create_dir_all(paths.blobs_dir()).unwrap();
@@ -4817,6 +4910,7 @@ mod tests {
             installed_at: "2026-10-01T00:00:00Z".parse().unwrap(),
             tx_id: TxId::new(),
             blob_sha256: Some("aa".into()),
+            revision: None,
         }
     }
 

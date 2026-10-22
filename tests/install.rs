@@ -2298,31 +2298,11 @@ fn a_committed_legacy_install_warns_toc_comma_on_legacy_as_its_dry_run_does() {
     );
 }
 
-/// A `wowace:` ref parses (and its `--version` must agree with its `#`), but its source
-/// is not there yet: an honest `source_disabled`, never a panic.
+/// A `wowace:` ref's `--version` must agree with its `#`, and be a tag or a trunk
+/// revision, before anything is fetched. (Installs: `tests/sources_wowace.rs`.)
 #[test]
-fn a_wowace_ref_parses_and_is_not_available_yet() {
+fn a_wowace_refs_version_must_agree_with_it() {
     let home = Home::new(&["wow"]);
-    for r in [
-        "wowace:bug-grabber",
-        "https://repos.wowace.com/wow/bug-grabber/!svn/bc/152/trunk/",
-    ] {
-        let run = home.run(&["install", r, "-t", "retail"]);
-        let envelope = run.expect(1);
-        assert_eq!(
-            envelope["error"]["code"],
-            "source_disabled",
-            "{}",
-            run.context()
-        );
-        assert!(
-            envelope["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("the WowAce source is not available"),
-            "{envelope}"
-        );
-    }
     let run = home.run(&[
         "install",
         "wowace:bug-grabber#v12.1.0",

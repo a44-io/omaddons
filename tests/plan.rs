@@ -184,6 +184,7 @@ mod support {
                     installed_at: "2026-10-01T00:00:00Z".parse().unwrap(),
                     tx_id: TxId::new(),
                     blob_sha256: None,
+                    revision: None,
                 };
                 edit(&mut addon);
                 record.addons.insert(TargetRecord::addon_key(name), addon);
@@ -232,6 +233,7 @@ mod support {
             reinstall: false,
             blob_sha256: None,
             asset: None,
+            revision: None,
         }
     }
 
@@ -903,6 +905,7 @@ impl omaddons::sources::Source for HashSource {
                         changelog_url: None,
                         notes: None,
                         name_hint: None,
+                        revision: None,
                     }],
                 })
             })

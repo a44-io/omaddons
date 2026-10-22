@@ -5,8 +5,9 @@
 //! retried too, within the same budget; a download streams on, and its caller restarts
 //! it ([`backoff_delay`] is shared). A longer `Retry-After`, or a primary rate limit
 //! (`X-RateLimit-Remaining: 0`), fails at once with `rate_limited` and its reset time.
-//! The net layer only has GET and HEAD, so every retried request is idempotent; each
-//! attempt is its own wire request and its own `net.log` line.
+//! The net layer only has GET, HEAD and a `PROPFIND` with one fixed body, so every
+//! retried request is idempotent; each attempt is its own wire request and its own
+//! `net.log` line.
 
 use std::io::Read;
 use std::sync::Mutex;
@@ -162,7 +163,10 @@ impl Http for Retrying {
                         // A connection that fails mid-body is retried from the start, as
                         // one that fails before the headers.
                         match buffer_api_body(&req, &mut resp) {
-                            Ok(()) => return Ok(resp),
+                            Ok(()) => {
+                                resp.attempts = attempt + 1;
+                                return Ok(resp);
+                            }
                             Err(err) if err.code == ErrorCode::Network && attempt < MAX_RETRIES => {
                                 drop(resp);
                                 self.sleeper.sleep(self.backoff(attempt));
@@ -329,7 +333,12 @@ mod tests {
             Ok((500, vec![])),
             Ok((200, vec![])),
         ]);
-        assert_eq!((result.unwrap().status, attempts), (200, 3));
+        let resp = result.unwrap();
+        assert_eq!(
+            (resp.status, attempts, resp.attempts()),
+            (200, 3, 3),
+            "the response counts its retries"
+        );
         assert_eq!(sleeps.len(), 2);
         assert!(sleeps[0] <= BACKOFF_BASE, "{sleeps:?}");
         assert!(sleeps[1] <= BACKOFF_BASE * 2, "{sleeps:?}");
@@ -360,9 +369,10 @@ mod tests {
             "refusals are final"
         );
         let (result, _, attempts) = run(vec![Ok((404, vec![]))]);
+        let resp = result.unwrap();
         assert_eq!(
-            (result.unwrap().status, attempts),
-            (404, 1),
+            (resp.status, attempts, resp.attempts()),
+            (404, 1, 1),
             "a 4xx is the caller's to judge"
         );
     }

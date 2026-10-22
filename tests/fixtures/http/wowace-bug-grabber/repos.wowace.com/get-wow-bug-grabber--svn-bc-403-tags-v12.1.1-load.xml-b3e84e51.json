@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://repos.wowace.com/wow/bug-grabber/!svn/bc/403/tags/v12.1.1/load.xml"
+  },
+  "responses": [
+    {
+      "status": 200,
+      "headers": [
+        [
+          "date",
+          "Thu, 22 Oct 2026 11:33:59 GMT"
+        ],
+        [
+          "content-type",
+          "text/xml"
+        ],
+        [
+          "content-length",
+          "211"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "accept-ranges",
+          "bytes"
+        ],
+        [
+          "cache-control",
+          "max-age=604800"
+        ],
+        [
+          "etag",
+          "\"373//tags/v12.1.1/load.xml\""
+        ],
+        [
+          "last-modified",
+          "Sat, 14 Mar 2026 05:33:00 GMT"
+        ],
+        [
+          "server",
+          "Apache/2.4.18 (Ubuntu)"
+        ],
+        [
+          "vary",
+          "Accept-Encoding"
+        ]
+      ],
+      "body_file": "get-wow-bug-grabber--svn-bc-403-tags-v12.1.1-load.xml-b3e84e51.body"
+    }
+  ]
+}

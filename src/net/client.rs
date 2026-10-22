@@ -63,19 +63,43 @@ impl Default for UreqTransport {
 impl Http for UreqTransport {
     fn send(&self, req: Request) -> Result<Response> {
         let timeout = self.timeout_for(req.timeout);
-        let mut builder = match req.method {
-            Method::Get => self.agent.get(&req.url),
-            Method::Head => self.agent.head(&req.url),
-        };
-        for (name, value) in &req.headers {
-            builder = builder.header(name, value);
+        let response = match req.method {
+            Method::Get | Method::Head => {
+                let mut builder = match req.method {
+                    Method::Head => self.agent.head(&req.url),
+                    _ => self.agent.get(&req.url),
+                };
+                for (name, value) in &req.headers {
+                    builder = builder.header(name, value);
+                }
+                builder
+                    .config()
+                    .timeout_global(Some(timeout))
+                    .build()
+                    .call()
+            }
+            // A WebDAV method with its one fixed body, which ureq sends only when told
+            // non-standard methods are allowed.
+            Method::Propfind => {
+                let mut builder = ureq::http::Request::builder()
+                    .method(Method::Propfind.as_str())
+                    .uri(&req.url);
+                for (name, value) in &req.headers {
+                    builder = builder.header(name, value);
+                }
+                let request = builder
+                    .body(super::PROPFIND_VERSION_NAMES)
+                    .map_err(|err| Error::internal(format!("a PROPFIND request: {err}")))?;
+                let request = self
+                    .agent
+                    .configure_request(request)
+                    .allow_non_standard_methods(true)
+                    .timeout_global(Some(timeout))
+                    .build();
+                self.agent.run(request)
+            }
         }
-        let response = builder
-            .config()
-            .timeout_global(Some(timeout))
-            .build()
-            .call()
-            .map_err(|err| transport_error(&req.url, &err))?;
+        .map_err(|err| transport_error(&req.url, &err))?;
         let status = response.status().as_u16();
         let headers = response
             .headers()
@@ -243,6 +267,44 @@ mod tests {
             matches!(elsewhere.accept(), Err(err) if matches!(err.kind(), ErrorKind::WouldBlock)),
             "the redirect target saw no request"
         );
+    }
+
+    /// A `PROPFIND` goes out as one, one level deep, with its one fixed body.
+    #[test]
+    fn a_propfind_sends_its_method_depth_and_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = accept(&listener).unwrap();
+            let head = read_head(&mut stream);
+            let length: usize = head
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().ok())?
+                })
+                .unwrap_or(0);
+            let mut body = vec![0u8; length];
+            stream.read_exact(&mut body).unwrap();
+            let _ = stream.write_all(&response("207 Multi-Status", &[], "<D:multistatus/>"));
+            (head, String::from_utf8(body).unwrap())
+        });
+        let url = format!("http://{addr}/wow/x/tags/");
+        let r = UreqTransport::new()
+            .send(Request::propfind_version_names(url, "wowace-tags"))
+            .unwrap();
+        assert_eq!(r.status, 207);
+        let (head, body) = server.join().unwrap();
+        assert!(
+            head.starts_with("PROPFIND /wow/x/tags/ HTTP/1.1\r\n"),
+            "{head}"
+        );
+        assert!(
+            head.to_ascii_lowercase().contains("\r\ndepth: 1\r\n"),
+            "{head}"
+        );
+        assert_eq!(body, super::super::PROPFIND_VERSION_NAMES);
     }
 
     #[test]

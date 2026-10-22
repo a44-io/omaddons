@@ -143,7 +143,9 @@ pub struct DiffItem<'s, 'r> {
 /// | otherwise | nothing | nothing |
 ///
 /// A lock never pins: an unpinned entry installs its version unpinned. A locked install
-/// carries the entry's `sha256`, so its archive may come from the blob cache.
+/// carries the entry's `sha256`, so its archive may come from the blob cache, and its
+/// `revision` (WowAce), so it is that tree; the same version at another revision is
+/// "another `version`".
 pub fn diff<'s, 'r>(
     wants: &[Want<'s>],
     record: Option<&'r TargetRecord>,
@@ -160,6 +162,8 @@ pub fn diff<'s, 'r>(
             });
             let install = |r#ref: Ref, name: Option<String>, version: Option<String>, pin| {
                 let blob_sha256 = e.sha256.clone().filter(|_| locked && version.is_some());
+                // The recorded revision goes with the recorded version.
+                let revision = e.revision.filter(|_| version.is_some());
                 Some(RequestedChange::Install {
                     r#ref,
                     channel: e.channel,
@@ -172,6 +176,7 @@ pub fn diff<'s, 'r>(
                     reinstall: false,
                     blob_sha256,
                     asset: None,
+                    revision,
                 })
             };
             // The version an install takes: pinned ones always, every one when locked.
@@ -194,7 +199,9 @@ pub fn diff<'s, 'r>(
                     } else {
                         PinIntent::Unpin
                     };
-                    let elsewhere = e.version.as_ref().is_some_and(|v| *v != a.version);
+                    // At another version, or (WowAce) the same one at another revision.
+                    let moved = e.revision.is_some_and(|r| a.revision != Some(r));
+                    let elsewhere = e.version.as_ref().is_some_and(|v| *v != a.version || moved);
                     if e.pinned && elsewhere {
                         let (r, name) = again();
                         install(r, name, e.version.clone(), PinIntent::Pin)
@@ -873,6 +880,7 @@ mod tests {
                 installed_at: jiff::Timestamp::now(),
                 tx_id: TxId::new(),
                 blob_sha256: None,
+                revision: None,
             };
             record.addons.insert(TargetRecord::addon_key(name), a);
         }

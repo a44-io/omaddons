@@ -139,6 +139,7 @@ impl TukuiSource {
             changelog_url: addon.changelog_url.clone(),
             notes: None,
             name_hint: Some(slug.clone()),
+            revision: None,
         }
     }
 

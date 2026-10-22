@@ -78,6 +78,7 @@ pub fn select(set: &ReleaseSet, target: &Target, channel: Channel, pin: Option<&
                 channel: release.channel,
                 asset: asset.clone(),
                 rank: tier.reason,
+                revision: release.revision,
             })
             .collect(),
         empty_reason: None,
@@ -269,6 +270,7 @@ mod tests {
             changelog_url: None,
             notes: None,
             name_hint: None,
+            revision: None,
         }
     }
 

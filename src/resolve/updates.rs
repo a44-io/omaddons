@@ -104,6 +104,23 @@ pub struct ReleaseBrief {
     #[schemars(with = "Option<String>")]
     pub published_at: Option<Timestamp>,
     pub channel: Channel,
+    /// The release's source revision, when its source has one (WowAce).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u32>,
+    /// The installed release, at another revision: its tag was moved upstream.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub retagged: bool,
+}
+
+impl ReleaseBrief {
+    /// The version as a line shows it: `v12.1.0 (re-tagged upstream)` for a re-tag.
+    pub fn shown(&self) -> String {
+        if self.retagged {
+            format!("{} (re-tagged upstream)", self.version)
+        } else {
+            self.version.clone()
+        }
+    }
 }
 
 /// The name of a status, as the wire spells it.
@@ -220,10 +237,14 @@ pub fn evaluate(
         .releases
         .iter()
         .find(|r| r.release_id == best.release_id);
-    let latest = brief(best, newest);
-    // 4. Installed already.
+    let mut latest = brief(best, newest);
+    // 4. Installed already, unless its tag moved since: the same release id at another
+    // revision (WowAce) is a re-tag, an update. A commit elsewhere moves neither.
     if record.release_id.as_deref() == Some(best.release_id.as_str()) {
-        return UpdateStatus::Current { latest };
+        if record.revision == best.revision {
+            return UpdateStatus::Current { latest };
+        }
+        latest.retagged = true;
     }
     // 5. A pin holds.
     if record.pinned {
@@ -292,6 +313,8 @@ fn brief(best: &Candidate, release: Option<&Release>) -> ReleaseBrief {
         release_id: best.release_id.clone(),
         published_at: release.and_then(|r| r.published_at),
         channel: best.channel,
+        revision: best.revision,
+        retagged: false,
     }
 }
 
@@ -476,6 +499,7 @@ mod tests {
             installed_at: at("2026-10-01T00:00:00Z"),
             tx_id: TxId::new(),
             blob_sha256: None,
+            revision: None,
         }
     }
 
@@ -527,6 +551,7 @@ mod tests {
             changelog_url: None,
             notes: None,
             name_hint: None,
+            revision: None,
         }
     }
 
@@ -642,6 +667,40 @@ mod tests {
             );
             assert_eq!(confidence(&eval(&behind, Some(&e), &[])), Some(expected));
         }
+    }
+
+    /// The same release id at another revision is a re-tag, an update; at the same
+    /// revision it is current, whatever else the repository did.
+    #[test]
+    fn a_re_tag_is_an_update_and_the_same_revision_is_current() {
+        let mut e = newest();
+        if let Some(set) = e.set.as_mut() {
+            set.releases[0].revision = Some(403);
+        }
+        let mut installed = record(Some("2.0.0"), "2.0.0");
+        installed.revision = Some(403);
+        assert_eq!(name(&eval(&installed, Some(&e), &[])), "current");
+
+        installed.revision = Some(401);
+        let status = eval(&installed, Some(&e), &[]);
+        assert_eq!(name(&status), "update_available", "{status:?}");
+        let latest = status.latest().unwrap();
+        assert_eq!(
+            (latest.revision, latest.retagged, latest.shown().as_str()),
+            (Some(403), true, "2.0.0 (re-tagged upstream)")
+        );
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(
+            (&json["latest"]["revision"], &json["latest"]["retagged"]),
+            (&403.into(), &true.into())
+        );
+
+        let plain = eval(&record(Some("1.0.0"), "1.0.0"), Some(&newest()), &[]);
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(
+            json["latest"].get("retagged").is_none() && json["latest"].get("revision").is_none(),
+            "{json}"
+        );
     }
 
     #[test]
@@ -922,6 +981,8 @@ mod tests {
             release_id: format!("{FOO}@2.0.0"),
             published_at: Some(at("2026-10-01T00:00:00Z")),
             channel: Channel::Stable,
+            revision: None,
+            retagged: false,
         };
         let failed = Error::new(
             ErrorCode::NotFound,

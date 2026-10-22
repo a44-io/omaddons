@@ -15,6 +15,7 @@ use common::env::TestEnv;
 use common::http::paths;
 use common::netlog::{assert_no_github_rest, read_net_log};
 use common::trees::{BattlenetRoot, CustomRoot, Prefix};
+use omaddons::limits::DOWNLOAD_MAX_BYTES;
 use omaddons::model::{AssetLocation, Ref};
 use omaddons::net::{CacheState, Http, NetConfig, NetLog, Request, stack};
 use omaddons::resolve::catalog::Catalog;
@@ -22,6 +23,7 @@ use omaddons::rules::{Family, RulesTable};
 use omaddons::sources::git::GitSource;
 use omaddons::sources::git_hosts::GitRunner;
 use omaddons::sources::github::GithubSource;
+use omaddons::sources::wowace::{self, WowAceSource};
 use omaddons::sources::wowi::WowiSource;
 use omaddons::sources::{Source, Wanted};
 use omaddons::state::paths::Paths;
@@ -381,6 +383,75 @@ fn the_releases_feed_revalidates() {
     assert_eq!(
         (second.status, second.cache),
         (200, CacheState::Revalidated)
+    );
+}
+
+/// WowAce (M3-D15): BugGrabber's newest stable tag assembles at its revision within the
+/// packaging subset (a new `.pkgmeta` key or keyword fails it) and its TOC names a
+/// modern client; trunk at r152 is the 3.3.5a build; and the newest `BugGrabber.lua`
+/// still builds entries as B3's decoders and M3-D19's session watermarks read them
+/// (`message`, `session`, `time = time()`, `counter = 1`): the schema-drift tripwire.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn wowace_bug_grabber_decodes() {
+    let Some((_env, http)) = live("wowace_bug_grabber_decodes") else {
+        return;
+    };
+    let wanted = [
+        Wanted::stable("wowace:bug-grabber".parse().unwrap()),
+        Wanted::stable("wowace:bug-grabber#r152".parse().unwrap()),
+    ];
+    let sets = WowAceSource.fetch(&wanted, http.as_ref());
+    let tree = |i: usize| {
+        let release = sets[i].as_ref().unwrap().releases[0].clone();
+        let AssetLocation::WowAceTree { base, revision } = &release.assets[0].location else {
+            unreachable!("{release:?}");
+        };
+        let zip = wowace::assemble(http.as_ref(), base, *revision, DOWNLOAD_MAX_BYTES).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip)).unwrap();
+        let mut files = BTreeMap::new();
+        for n in 0..archive.len() {
+            let mut file = archive.by_index(n).unwrap();
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+            let name = file.name().unwrap().into_owned();
+            files.insert(name, String::from_utf8_lossy(&bytes).into_owned());
+        }
+        (release, files)
+    };
+
+    let (latest, files) = tree(0);
+    let toc = &files["!BugGrabber/!BugGrabber.toc"];
+    assert!(
+        toc.contains(&format!("## Version: {}\n", latest.version)),
+        "{toc}"
+    );
+    let interfaces: Vec<u32> = toc
+        .lines()
+        .find_map(|l| l.strip_prefix("## Interface:"))
+        .unwrap()
+        .split(',')
+        .filter_map(|i| i.trim().parse().ok())
+        .collect();
+    assert!(interfaces.iter().any(|i| *i >= 120_000), "{interfaces:?}");
+    let lua = &files["!BugGrabber/BugGrabber.lua"];
+    for built in ["message =", "session =", "time = time()", "counter = 1"] {
+        assert!(
+            lua.contains(built),
+            "BugGrabber.lua no longer builds {built:?}"
+        );
+    }
+
+    let (_, files) = tree(1);
+    assert!(
+        files["!BugGrabber/!BugGrabber.toc"].contains("## Interface: 30300"),
+        "{files:?}"
+    );
+    let _ = writeln!(
+        std::io::stderr(),
+        "wowace: newest {} at r{}",
+        latest.release_id,
+        latest.revision.unwrap_or_default()
     );
 }
 

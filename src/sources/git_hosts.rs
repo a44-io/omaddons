@@ -670,6 +670,7 @@ fn release_set(w: &Wanted, url: &str, repo: &RepoUrl, r: &Resolved) -> ReleaseSe
             changelog_url: None,
             notes: None,
             name_hint: None,
+            revision: None,
         }],
     }
 }
@@ -1479,6 +1480,7 @@ mod tests {
             reinstall: false,
             blob_sha256: None,
             asset: None,
+            revision: None,
         };
         let done = scene.run(vec![change]).unwrap();
         assert!(done.failures.is_empty(), "{:?}", done.failures);
@@ -1523,6 +1525,7 @@ mod tests {
             reinstall: false,
             blob_sha256: None,
             asset: None,
+            revision: None,
         };
         let done = scene.run(vec![change]).unwrap();
         assert_eq!(done.failures.len(), 1, "{:?}", done.failures);

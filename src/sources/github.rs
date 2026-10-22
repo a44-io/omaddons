@@ -411,6 +411,7 @@ pub fn release_set(w: &Wanted, base: &str, tag: &str, manifest: &Manifest) -> Re
             changelog_url: Some(format!("{base}/releases/tag/{}", encode_tag(tag))),
             notes: None,
             name_hint: None,
+            revision: None,
         }],
     }
 }
