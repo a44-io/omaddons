@@ -31,7 +31,12 @@ impl Desk {
     fn new() -> Self {
         let desk = Self::bare();
         fs::create_dir_all(desk.config_omarchy()).unwrap();
-        for tool in ["omarchy-shell", "omarchy-plugin-validate", "omarchy-bar"] {
+        for tool in [
+            "omarchy-shell",
+            "omarchy-plugin-validate",
+            "omarchy-bar",
+            "omarchy-plugin-disable",
+        ] {
             desk.tool(tool);
         }
         desk
@@ -76,7 +81,10 @@ impl Desk {
     /// A stub tool. `omarchy-bar` answers as `<root>/bar-mode` says (`ok`, `not-running`,
     /// `unknown:<n>` for n "not a known widget" answers first) and, placing, writes the
     /// section into `shell.json` as Omarchy's shell would; `omarchy-plugin-validate`
-    /// refuses when `<root>/validate-mode` says `bad`.
+    /// refuses when `<root>/validate-mode` says `bad`. `omarchy-shell` answers `shell
+    /// ping` as `<root>/shell-mode` says (`ok`, `silent` for `-q`'s bare exit 0, `hang`),
+    /// and `setPluginEnabled`, like `omarchy-plugin-disable` (which fails when
+    /// `<root>/disable-mode` says `fail`), splices the bar layout out of `shell.json`.
     fn tool(&self, name: &str) {
         let root = self.root().display();
         let log = format!(
@@ -98,6 +106,20 @@ echo "$2 is on the bar""#
             "omarchy-plugin-validate" => format!(
                 r#"mode=ok; [ -f {root}/validate-mode ] && read mode < {root}/validate-mode
 if [ "$mode" = bad ]; then echo "manifest.json: entryPoints.barWidget is missing" >&2; exit 1; fi"#
+            ),
+            "omarchy-shell" => format!(
+                r#"mode=ok; [ -f {root}/shell-mode ] && read mode < {root}/shell-mode
+case "$1 $2" in
+  "shell ping") case "$mode" in silent) exit 0 ;; hang) exec /bin/sleep 5 ;; esac; echo ok ;;
+  "shell setPluginEnabled")
+    printf '{{"bar":{{"layout":{{}}}}}}' > "$XDG_CONFIG_HOME/omarchy/shell.json"; echo ok ;;
+esac"#
+            ),
+            "omarchy-plugin-disable" => format!(
+                r#"mode=ok; [ -f {root}/disable-mode ] && read mode < {root}/disable-mode
+if [ "$mode" = fail ]; then echo "omarchy-plugin-disable: plugin '$1' is not known" >&2; exit 1; fi
+printf '{{"bar":{{"layout":{{}}}}}}' > "$XDG_CONFIG_HOME/omarchy/shell.json"
+echo "Disabled $1""#
             ),
             _ => String::new(),
         };
@@ -200,14 +222,14 @@ if [ "$mode" = bad ]; then echo "manifest.json: entryPoints.barWidget is missing
             .collect()
     }
 
-    /// The `<plugins>` entries other than the widget and the prune trash.
+    /// The `<plugins>` entries other than the widget (an emptied prune trash goes too).
     fn leftovers(&self) -> Vec<String> {
         let Ok(entries) = fs::read_dir(self.plugins()) else {
             return Vec::new();
         };
         let mut names: Vec<String> = entries
             .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .filter(|n| n != "omaddons" && n != ".omaddons.trash")
+            .filter(|n| n != "omaddons")
             .collect();
         names.sort();
         names
@@ -676,9 +698,9 @@ fn two_installers_never_touch_each_others_stage() {
     assert_eq!(desk.inflight_locks(), 0);
 }
 
-/// An install racing a removal (the widget deleted while it waits) publishes as a first
-/// install and leaves nothing hidden. E3's `omarchy remove` takes the place of the
-/// deletion once it exists.
+/// An install racing a removal (`omarchy remove` completing while it waits) publishes as
+/// a first install; the remove leaves the waiting install's stage alone, and once each
+/// has pruned its own nothing hidden is left.
 #[test]
 fn an_install_racing_a_removal_publishes_as_a_first_install() {
     let desk = Desk::new();
@@ -686,12 +708,17 @@ fn an_install_racing_a_removal_publishes_as_a_first_install() {
     let pause = Pause::new(desk.root());
     let child = desk.spawn(&[("OMADDONS_FAILPOINTS", "omarchy.staged=pause"), pause.env()]);
     pause.reached("omarchy.staged");
-    fs::remove_dir_all(desk.plugin()).unwrap();
+    let staged = stages(&desk);
+    let d = desk.run(&["omarchy", "remove"]).expect(0);
+    assert_eq!(d["data"]["removed"], true);
+    assert!(!desk.plugin().exists());
+    assert_eq!(stages(&desk), staged, "a live stage is never reclaimed");
     pause.resume("omarchy.staged");
     let d = wait(child, &["omarchy", "install"]).expect(0);
     assert_eq!(d["data"]["installed"], "fresh", "{d}");
     assert_eq!(tree(&desk.plugin()), new);
     assert_eq!(desk.leftovers(), Vec::<String>::new());
+    assert_eq!(desk.inflight_locks(), 0);
 }
 
 /// A stage whose installer was killed is reclaimed by the next install.
@@ -733,4 +760,364 @@ fn the_human_output_names_the_widget_and_how_to_reinstall() {
         "{text}"
     );
     assert!(text.contains("omaddons omarchy install"), "{text}");
+}
+
+// ---------------------------------------------------------------------------------------
+// `omarchy status`.
+
+/// The recommended actions of a `status` envelope.
+fn actions(d: &Value) -> Vec<String> {
+    d["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            assert_eq!(
+                c["argv"],
+                serde_json::json!(["omaddons", "omarchy", "install"])
+            );
+            c["action"].as_str().unwrap().to_owned()
+        })
+        .collect()
+}
+
+/// Rewrites one `Build.js` line of the installed widget.
+fn restamp(desk: &Desk, prefix: &str, value: &str) {
+    let (rel, bytes) = tree(&desk.plugin())
+        .into_iter()
+        .find(|(rel, _)| rel.ends_with("/Build.js"))
+        .unwrap();
+    let text = String::from_utf8(bytes).unwrap();
+    let text: Vec<String> = text
+        .lines()
+        .map(|line| {
+            if line.starts_with(prefix) {
+                format!("{prefix}{value};")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect();
+    fs::write(desk.plugin().join(rel), text.join("\n") + "\n").unwrap();
+}
+
+#[test]
+fn status_reports_omarchy_and_the_installed_widget() {
+    let desk = Desk::new();
+    let d = desk.run(&["omarchy"]).expect(0);
+    assert_eq!(d["command"], "omarchy status");
+    let data = &d["data"];
+    assert_eq!(
+        data["omarchy"],
+        serde_json::json!({"present": true, "shell_running": true, "validator": true})
+    );
+    assert_eq!(data["plugin"]["installed"], false);
+    assert_eq!(data["plugin"]["version"], Value::Null);
+    assert_eq!(data["validation"], Value::Null);
+    assert_eq!(actions(&d), Vec::<String>::new());
+
+    desk.install();
+    let history = fs::read(desk.history()).unwrap();
+    let bell = fs::read(desk.doorbell()).unwrap();
+    let before = tree(&desk.config_omarchy());
+    let calls = desk.calls().len();
+    let d = desk.run(&["omarchy", "status"]).expect(0);
+    let p = &d["data"]["plugin"];
+    assert_eq!(p["installed"], true);
+    assert_eq!(p["path"], desk.plugin().display().to_string());
+    assert_eq!(p["id"], ID);
+    assert_eq!(p["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(p["binary"], this_binary().display().to_string());
+    assert_eq!(p["outdated"], false);
+    assert_eq!(p["enabled"], true);
+    assert_eq!(p["section"], "right");
+    assert_eq!(p["context_matches"], true);
+    assert_eq!(
+        d["data"]["validation"],
+        serde_json::json!({"ok": true, "errors": []})
+    );
+    assert_eq!(actions(&d), Vec::<String>::new());
+    // A read: nothing written.
+    assert_eq!(fs::read(desk.history()).unwrap(), history);
+    assert_eq!(fs::read(desk.doorbell()).unwrap(), bell);
+    assert_eq!(tree(&desk.config_omarchy()), before);
+    assert_eq!(
+        desk.calls()[calls..],
+        ["omarchy-shell shell ping"],
+        "the ping alone"
+    );
+
+    // Another omaddons state: no recommendation, and still current.
+    let elsewhere = desk.root().join("other-state");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let other = elsewhere.display().to_string();
+    let d = desk
+        .run_with(&["omarchy"], &[("XDG_STATE_HOME", other.as_str())])
+        .expect(0);
+    assert_eq!(d["data"]["plugin"]["context_matches"], false);
+    assert_eq!(d["data"]["plugin"]["outdated"], false);
+    assert_eq!(actions(&d), Vec::<String>::new());
+
+    // Off the bar: enable it.
+    fs::write(desk.config_omarchy().join("shell.json"), "{}").unwrap();
+    let d = desk.run(&["omarchy"]).expect(0);
+    assert_eq!(d["data"]["plugin"]["enabled"], false);
+    assert_eq!(d["data"]["plugin"]["section"], Value::Null);
+    assert_eq!(actions(&d), ["enable_widget"]);
+
+    // Another code hash stamped: outdated, reinstall it (which also places it).
+    restamp(
+        &desk,
+        "var CONTENT_SHA256 = ",
+        &format!("\"{}\"", "0".repeat(64)),
+    );
+    let d = desk.run(&["omarchy"]).expect(0);
+    assert_eq!(d["data"]["plugin"]["outdated"], true);
+    assert_eq!(actions(&d), ["reinstall_widget"]);
+    let d = desk.install();
+    assert_eq!(d["data"]["installed"], "replaced");
+    let d = desk.run(&["omarchy"]).expect(0);
+    assert_eq!(d["data"]["plugin"]["outdated"], false);
+
+    // No `Build.js` at all is outdated too.
+    let (rel, _) = tree(&desk.plugin())
+        .into_iter()
+        .find(|(rel, _)| rel.ends_with("/Build.js"))
+        .unwrap();
+    fs::remove_file(desk.plugin().join(rel)).unwrap();
+    let d = desk.run(&["omarchy"]).expect(0);
+    assert_eq!(d["data"]["plugin"]["outdated"], true);
+    assert_eq!(d["data"]["plugin"]["binary"], Value::Null);
+
+    // An installed widget that does not validate.
+    fs::write(
+        desk.plugin().join("manifest.json"),
+        r#"{"schemaVersion": "1", "id": "a44.omaddons"}"#,
+    )
+    .unwrap();
+    let d = desk.run(&["omarchy"]).expect(0);
+    assert_eq!(d["data"]["validation"]["ok"], false);
+    assert!(
+        !d["data"]["validation"]["errors"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // Without Omarchy, status still answers.
+    let bare = Desk::bare();
+    let d = bare.run(&["omarchy"]).expect(0);
+    assert_eq!(
+        d["data"]["omarchy"],
+        serde_json::json!({"present": false, "shell_running": false, "validator": false})
+    );
+}
+
+/// Only `ok` from `omarchy-shell shell ping` within 2 s is a running shell: a silent
+/// exit 0 (what `-q` gives) or a hang is not.
+#[test]
+fn the_shell_is_running_only_when_ping_answers_ok() {
+    let desk = Desk::new();
+    let running =
+        |desk: &Desk| desk.run(&["omarchy"]).expect(0)["data"]["omarchy"]["shell_running"].clone();
+    assert_eq!(running(&desk), true);
+    assert!(
+        desk.calls()
+            .contains(&"omarchy-shell shell ping".to_owned())
+    );
+    desk.set("shell-mode", "silent");
+    assert_eq!(running(&desk), false);
+    desk.set("shell-mode", "hang");
+    let started = std::time::Instant::now();
+    assert_eq!(running(&desk), false);
+    let took = started.elapsed();
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+}
+
+#[test]
+fn status_and_its_human_output_note_another_state() {
+    let desk = Desk::new();
+    desk.install();
+    let elsewhere = desk.root().join("other-state");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let binary = Path::new(env!("CARGO_BIN_EXE_omaddons"));
+    let out = desk
+        .command(
+            binary,
+            &["omarchy"],
+            &[("XDG_STATE_HOME", elsewhere.to_str().unwrap())],
+        )
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert_private_all(&text, &String::from_utf8(out.stderr).unwrap());
+    assert!(
+        text.contains(&format!("is installed in {}", desk.plugin().display())),
+        "{text}"
+    );
+    assert!(text.contains("it serves another omaddons state"), "{text}");
+    assert!(text.contains("its shell is running"), "{text}");
+}
+
+// ---------------------------------------------------------------------------------------
+// `omarchy remove`.
+
+#[test]
+fn remove_takes_it_off_the_bar_deletes_it_records_and_rings() {
+    let desk = Desk::new();
+    desk.install();
+    let calls = desk.calls().len();
+    let d = desk.run(&["omarchy", "remove"]).expect(0);
+    assert_eq!(
+        d["data"],
+        serde_json::json!({"dry_run": false, "removed": true, "disabled": true, "settings_dropped": false})
+    );
+    assert_eq!(d["warnings"], serde_json::json!([]));
+    assert_eq!(
+        desk.calls()[calls..],
+        [format!("omarchy-plugin-disable {ID}")]
+    );
+    // Nothing of the widget's is left in Omarchy's directory, hidden or not.
+    assert_eq!(
+        fs::read_dir(desk.plugins()).unwrap().count(),
+        0,
+        "{:?}",
+        desk.leftovers()
+    );
+    assert_eq!(desk.inflight_locks(), 0);
+    let lines = desk.widget_lines();
+    assert_eq!(lines.len(), 2);
+    assert_ne!(lines[0]["tx"], lines[1]["tx"]);
+    let bell: Value = serde_json::from_slice(&fs::read(desk.doorbell()).unwrap()).unwrap();
+    assert_eq!(bell["command"], "omarchy remove");
+    let d = desk.run(&["omarchy"]).expect(0);
+    assert_eq!(d["data"]["plugin"]["installed"], false);
+    assert_eq!(d["data"]["plugin"]["enabled"], false);
+
+    // Removing again: nothing to remove.
+    let d = desk.run(&["omarchy", "remove"]).expect(3);
+    assert_eq!(d["error"]["code"], "not_found");
+    assert_eq!(d["error"]["details"]["reason"], "widget_not_installed");
+    assert_eq!(
+        d["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "omarchy", "install"])
+    );
+}
+
+/// Omarchy drops the widget's inline bar settings with its entry: said in data and in
+/// the human output.
+#[test]
+fn remove_says_when_omarchy_drops_the_bar_settings() {
+    let desk = Desk::new();
+    fs::write(
+        desk.config_omarchy().join("shell.json"),
+        format!(r#"{{"bar":{{"layout":{{"right":[{{"id":"{ID}","binary":"/opt/omaddons"}}]}}}}}}"#),
+    )
+    .unwrap();
+    assert_eq!(desk.install()["data"]["enabled"], "already");
+    let d = desk.run(&["omarchy", "remove", "--dry-run"]).expect(0);
+    assert_eq!(d["data"]["settings_dropped"], true);
+    let binary = Path::new(env!("CARGO_BIN_EXE_omaddons"));
+    let out = desk
+        .command(binary, &["omarchy", "remove"], &[])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("removed the omaddons widget"), "{text}");
+    assert!(
+        text.contains("the widget's bar settings were removed by Omarchy with it"),
+        "{text}"
+    );
+}
+
+/// The disable is best effort: the files go anyway, and a warning says what stays.
+/// Without `omarchy-plugin-disable`, the shell's own `setPluginEnabled` does it; a
+/// widget on no section of the bar needs neither.
+#[test]
+fn remove_without_a_disable_still_removes_the_files() {
+    let desk = Desk::new();
+    desk.install();
+    desk.set("disable-mode", "fail");
+    let d = desk.run(&["omarchy", "remove"]).expect(0);
+    assert_eq!(d["data"]["removed"], true);
+    assert_eq!(d["data"]["disabled"], false);
+    assert_eq!(d["data"]["settings_dropped"], false);
+    assert_eq!(d["warnings"][0]["code"], "omarchy_shell_unreachable");
+    assert_eq!(d["warnings"][0]["fix_argv"], Value::Null);
+    assert!(
+        d["warnings"][0]["fix"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("omarchy plugin disable {ID}"))
+    );
+    assert!(!desk.plugin().exists());
+
+    let desk = Desk::new();
+    desk.install();
+    fs::remove_file(desk.root().join("bin/omarchy-plugin-disable")).unwrap();
+    let d = desk.run(&["omarchy", "remove"]).expect(0);
+    assert_eq!(d["data"]["disabled"], true);
+    assert!(
+        desk.calls()
+            .contains(&format!("omarchy-shell shell setPluginEnabled {ID} false"))
+    );
+
+    let desk = Desk::new();
+    desk.run(&["omarchy", "install", "--no-enable"]).expect(0);
+    let calls = desk.calls().len();
+    let d = desk.run(&["omarchy", "remove"]).expect(0);
+    assert_eq!(d["data"]["disabled"], true);
+    assert_eq!(desk.calls().len(), calls, "nothing to take off the bar");
+}
+
+#[test]
+fn remove_dry_run_changes_nothing() {
+    let desk = Desk::new();
+    desk.install();
+    let before = tree(&desk.config_omarchy());
+    let history = fs::read(desk.history()).unwrap();
+    let bell = fs::read(desk.doorbell()).unwrap();
+    let calls = desk.calls().len();
+    let d = desk.run(&["omarchy", "remove", "--dry-run"]).expect(0);
+    assert_eq!(
+        d["data"],
+        serde_json::json!({"dry_run": true, "removed": true, "disabled": true, "settings_dropped": false})
+    );
+    assert_eq!(tree(&desk.config_omarchy()), before);
+    assert_eq!(fs::read(desk.history()).unwrap(), history);
+    assert_eq!(fs::read(desk.doorbell()).unwrap(), bell);
+    assert_eq!(desk.calls().len(), calls, "no disable call");
+}
+
+/// Two removes: the first, paused after its disable, finds the widget gone once the
+/// second has removed it.
+#[test]
+fn of_two_removes_one_removes_and_the_other_finds_nothing() {
+    let desk = Desk::new();
+    desk.install();
+    let pause = Pause::new(desk.root());
+    let binary = Path::new(env!("CARGO_BIN_EXE_omaddons"));
+    let first = desk
+        .command(
+            binary,
+            &["omarchy", "remove", "--json"],
+            &[
+                ("OMADDONS_FAILPOINTS", "omarchy.removing=pause"),
+                pause.env(),
+            ],
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    pause.reached("omarchy.removing");
+    desk.run(&["omarchy", "remove"]).expect(0);
+    pause.resume("omarchy.removing");
+    let d = wait(first, &["omarchy", "remove"]).expect(3);
+    assert_eq!(d["error"]["code"], "not_found");
+    assert_eq!(desk.widget_lines().len(), 2, "one install, one remove");
+    assert_eq!(fs::read_dir(desk.plugins()).unwrap().count(), 0);
+    assert_eq!(desk.inflight_locks(), 0);
 }

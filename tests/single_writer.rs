@@ -856,6 +856,10 @@ const PRUNE_CALLERS: &[(&str, &str)] = &[
         "src/omarchy/install.rs",
         "the widget's own stage or parked old tree, abandoned stages whose lock is free, and their in-flight locks",
     ),
+    (
+        "src/omarchy/remove.rs",
+        "the removed widget, parked under its own operation, and that operation's in-flight lock",
+    ),
 ];
 
 #[test]

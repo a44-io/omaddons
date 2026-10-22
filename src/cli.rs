@@ -646,26 +646,6 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
         && subcommand.as_deref() == Some("update")
         && invalid(ContextKind::InvalidArg)
             .is_some_and(|bad| bad.split('=').next() == Some("--version"));
-    // A command that is only its subcommands (`omarchy`): clap says one is missing, or
-    // renders its whole help, whose first line is its about.
-    if matches!(
-        err.kind(),
-        ErrorKind::MissingSubcommand | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-    ) {
-        let mut root = Cli::command();
-        root.build();
-        let names: Vec<&str> = command_at(&root, &path)
-            .get_subcommands()
-            .map(clap::Command::get_name)
-            .collect();
-        if !names.is_empty() {
-            message = format!(
-                "omaddons {} needs a subcommand: {}",
-                path.join(" "),
-                names.join(", ")
-            );
-        }
-    }
     if version_on_update {
         let mut as_pin = as_install(argv);
         if let Some(slot) = as_pin.get_mut(1) {
@@ -1394,16 +1374,6 @@ mod tests {
         let raw = argv(&["help", "--frobnicate"]);
         let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
         assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help", "help"]);
-    }
-
-    /// A command that is only its subcommands names them, not its about line.
-    #[test]
-    fn a_missing_subcommand_names_the_subcommands() {
-        let raw = argv(&["omarchy", "--json"]);
-        let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
-        assert_eq!(err.code, ErrorCode::Usage);
-        assert_eq!(err.message, "omaddons omarchy needs a subcommand: install");
-        assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help", "omarchy"]);
     }
 
     #[test]

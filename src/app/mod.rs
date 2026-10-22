@@ -157,7 +157,9 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("config path", Group::Setup, false),
     entry("auth", Group::Setup, true),
     entry("omarchy", Group::Setup, true),
+    entry("omarchy status", Group::Setup, false),
     entry("omarchy install", Group::Setup, true),
+    entry("omarchy remove", Group::Setup, true),
     entry("help", Group::Setup, false),
 ];
 
@@ -226,7 +228,10 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
             .as_ref()
             .map_or("config", config::ConfigAction::command),
         Some(Command::Auth(_)) => "auth github",
-        Some(Command::Omarchy(args)) => args.action.command(),
+        Some(Command::Omarchy(args)) => args
+            .action
+            .as_ref()
+            .map_or("omarchy status", omarchy::OmarchyAction::command),
     }
 }
 
@@ -553,7 +558,16 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             Some(TargetsAction::Default { id }) => out.emit(targets::default(ctx, id)),
         },
         Some(Command::Auth(args)) => out.emit(auth::run(ctx, args)),
-        Some(Command::Omarchy(args)) => out.emit(omarchy::run(ctx, args)),
+        Some(Command::Omarchy(args)) => {
+            use omarchy::OmarchyAction;
+            match &args.action {
+                None | Some(OmarchyAction::Status) => out.emit(omarchy::status()),
+                Some(OmarchyAction::Install { no_enable, section }) => {
+                    out.emit(omarchy::install(ctx, !no_enable, *section))
+                }
+                Some(OmarchyAction::Remove) => out.emit(omarchy::remove(ctx)),
+            }
+        }
         Some(Command::Config(args)) => {
             use config::ConfigAction;
             match &args.action {

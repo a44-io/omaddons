@@ -850,6 +850,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "bytes",
       "config_key": null,
       "notes": "Omarchy's shell.json read for the widget's place in the bar; a larger one counts as not placed"
+    },
+    {
+      "name": "OMARCHY_PING_TIMEOUT",
+      "value": {
+        "millis": 2000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "omarchy status's shell ping; a shell that has not answered ok by then is not running"
     }
   ]
 ]

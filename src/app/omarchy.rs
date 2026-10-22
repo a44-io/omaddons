@@ -1,29 +1,35 @@
-//! `omaddons omarchy install [--no-enable] [--section left|center|right]` (M3-D8): the bar
-//! widget on the Omarchy desktop, rendered for this binary and this session's
-//! directories, swapped in atomically and placed on the bar unless it is there already.
-//! The work is `crate::omarchy::install`'s. `omarchy status` and `remove` come with E3.
+//! `omaddons omarchy [status|install|remove]` (M3-D8): the bar widget on the Omarchy
+//! desktop. Bare `omarchy` is `omarchy status`. The work is `crate::omarchy`'s:
+//! `status` reads, `install` renders the widget for this binary and this session's
+//! directories, swaps it in atomically and places it on the bar unless it is there
+//! already, and `remove` takes it off the bar and deletes it.
 
 use std::io::Write;
+use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::cli::Context;
-use crate::error::{Result, Warning};
+use crate::error::{CommandHint, Result, Warning};
 use crate::omarchy::install::{self, Enabled, Installed, Options, PluginInfo, Section};
+use crate::omarchy::remove;
+use crate::omarchy::status::{self, OmarchyInfo, Validation};
 use crate::output::{Outcome, Style};
 
 /// `omarchy`'s arguments.
 #[derive(Debug, Clone, Args)]
 pub struct OmarchyArgs {
     #[command(subcommand)]
-    pub action: OmarchyAction,
+    pub action: Option<OmarchyAction>,
 }
 
 /// What `omarchy` does.
 #[derive(Debug, Clone, Subcommand)]
 pub enum OmarchyAction {
+    /// Whether the widget is installed, current and on the bar (the default)
+    Status,
     /// Put the widget on the desktop: render it for this binary, swap it in, place it on
     /// the bar
     Install {
@@ -34,16 +40,142 @@ pub enum OmarchyAction {
         #[arg(long, value_enum, default_value_t = Section::Right)]
         section: Section,
     },
+    /// Take the widget off the bar and delete it (Omarchy drops its bar settings)
+    Remove,
 }
 
 impl OmarchyAction {
     /// The command path, as the envelope names it.
     pub const fn command(&self) -> &'static str {
         match self {
+            Self::Status => "omarchy status",
             Self::Install { .. } => "omarchy install",
+            Self::Remove => "omarchy remove",
         }
     }
 }
+
+/// "the omaddons widget (a44.omaddons 0.1.0)".
+fn widget(plugin: &PluginInfo) -> String {
+    match &plugin.version {
+        Some(version) => format!("the omaddons widget ({} {version})", plugin.id),
+        None => format!("the omaddons widget ({})", plugin.id),
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Status.
+
+/// `omarchy status`'s data.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct StatusData {
+    pub omarchy: OmarchyInfo,
+    pub plugin: PluginInfo,
+    /// omaddons' port of Omarchy's validator over the installed widget; `null` when
+    /// none is installed.
+    pub validation: Option<Validation>,
+}
+
+/// `omarchy status`'s outcome.
+#[derive(Debug)]
+pub struct StatusOutcome {
+    data: StatusData,
+    commands: Vec<CommandHint>,
+}
+
+impl Outcome for StatusOutcome {
+    type Data = StatusData;
+
+    fn command(&self) -> &'static str {
+        "omarchy status"
+    }
+
+    fn data(&self) -> &StatusData {
+        &self.data
+    }
+
+    fn commands(&self) -> &[CommandHint] {
+        &self.commands
+    }
+
+    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
+        let d = &self.data;
+        let p = &d.plugin;
+        if p.installed {
+            let place = match p.section {
+                Some(section) => format!("on the bar's {} section", section.as_str()),
+                None => "not on the bar (enable it: omaddons omarchy install)".to_owned(),
+            };
+            writeln!(
+                w,
+                "{} is installed in {}, {place}",
+                widget(p),
+                p.path.display()
+            )?;
+            if let Some(binary) = &p.binary {
+                writeln!(w, "it runs {}", binary.display())?;
+            }
+            if p.outdated {
+                writeln!(
+                    w,
+                    "it is outdated: this omaddons renders another widget (reinstall: omaddons omarchy install)"
+                )?;
+            } else {
+                writeln!(w, "it is current")?;
+            }
+            if !p.context_matches {
+                writeln!(
+                    w,
+                    "note: it serves another omaddons state (other HOME or XDG directories); installing from here would point it at this one"
+                )?;
+            }
+            if let Some(validation) = d.validation.as_ref().filter(|v| !v.ok) {
+                writeln!(w, "it is not a valid plugin:")?;
+                for error in &validation.errors {
+                    writeln!(w, "  {error}")?;
+                }
+            }
+        } else {
+            writeln!(
+                w,
+                "{} is not installed (omaddons omarchy install puts it on the bar)",
+                widget(p)
+            )?;
+        }
+        let o = &d.omarchy;
+        writeln!(
+            w,
+            "Omarchy: {}; its shell is {}; omarchy-plugin-validate is {}",
+            if o.present { "present" } else { "not found" },
+            if o.shell_running {
+                "running"
+            } else {
+                "not running"
+            },
+            if o.validator {
+                "on PATH"
+            } else {
+                "not on PATH"
+            }
+        )
+    }
+}
+
+/// `omarchy [status]`.
+pub fn status() -> Result<StatusOutcome> {
+    let report = status::status()?;
+    Ok(StatusOutcome {
+        data: StatusData {
+            omarchy: report.omarchy,
+            plugin: report.plugin,
+            validation: report.validation,
+        },
+        commands: report.commands,
+    })
+}
+
+// ---------------------------------------------------------------------------------------
+// Install.
 
 /// `omarchy install`'s data.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -123,27 +255,98 @@ impl Outcome for InstallOutcome {
     }
 }
 
-/// Runs `omarchy <action>`.
-pub fn run(ctx: &Context, args: &OmarchyArgs) -> Result<InstallOutcome> {
-    match &args.action {
-        OmarchyAction::Install { no_enable, section } => {
-            let report = install::install(
-                ctx,
-                Options {
-                    enable: !no_enable,
-                    section: *section,
-                },
-            )?;
-            Ok(InstallOutcome {
-                data: InstallData {
-                    dry_run: ctx.dry_run,
-                    installed: report.installed,
-                    enabled: report.enabled,
-                    section: *section,
-                    plugin: report.plugin,
-                },
-                warnings: report.warnings,
-            })
-        }
+/// `omarchy install`.
+pub fn install(ctx: &Context, enable: bool, section: Section) -> Result<InstallOutcome> {
+    let report = install::install(ctx, Options { enable, section })?;
+    Ok(InstallOutcome {
+        data: InstallData {
+            dry_run: ctx.dry_run,
+            installed: report.installed,
+            enabled: report.enabled,
+            section,
+            plugin: report.plugin,
+        },
+        warnings: report.warnings,
+    })
+}
+
+// ---------------------------------------------------------------------------------------
+// Remove.
+
+/// `omarchy remove`'s data.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RemoveData {
+    pub dry_run: bool,
+    /// The widget's folder is gone (under `--dry-run`, would be).
+    pub removed: bool,
+    /// The widget is off the bar: it was on no section, or Omarchy took it off.
+    pub disabled: bool,
+    /// Omarchy dropped the widget's bar settings (`binary`, `panelWidth`, …) with its
+    /// layout entry.
+    pub settings_dropped: bool,
+}
+
+/// `omarchy remove`'s outcome.
+#[derive(Debug)]
+pub struct RemoveOutcome {
+    data: RemoveData,
+    path: PathBuf,
+    warnings: Vec<Warning>,
+}
+
+impl Outcome for RemoveOutcome {
+    type Data = RemoveData;
+
+    fn command(&self) -> &'static str {
+        "omarchy remove"
     }
+
+    fn data(&self) -> &RemoveData {
+        &self.data
+    }
+
+    fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
+    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
+        let d = &self.data;
+        let path = self.path.display();
+        if d.dry_run {
+            writeln!(w, "would remove the omaddons widget from {path}")?;
+            if d.settings_dropped {
+                writeln!(
+                    w,
+                    "warning: Omarchy would remove the widget's bar settings with it"
+                )?;
+            }
+            return Ok(());
+        }
+        writeln!(w, "removed the omaddons widget from {path}")?;
+        if !d.disabled {
+            writeln!(w, "it is still in Omarchy's bar layout (see the warning)")?;
+        }
+        if d.settings_dropped {
+            writeln!(
+                w,
+                "warning: the widget's bar settings were removed by Omarchy with it"
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// `omarchy remove`.
+pub fn remove(ctx: &Context) -> Result<RemoveOutcome> {
+    let removal = remove::remove(ctx)?;
+    Ok(RemoveOutcome {
+        data: RemoveData {
+            dry_run: ctx.dry_run,
+            removed: true,
+            disabled: removal.disabled,
+            settings_dropped: removal.settings_dropped,
+        },
+        path: removal.path,
+        warnings: removal.warnings,
+    })
 }

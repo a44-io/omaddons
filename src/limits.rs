@@ -202,6 +202,9 @@ pub const OMARCHY_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bytes read of Omarchy's `shell.json` to see where the bar places the widget; past
 /// it, the widget counts as not placed (placing it again leaves it where it is).
 pub const OMARCHY_SHELL_JSON_MAX_BYTES: u64 = 4 * MIB;
+/// `omarchy status` asks the shell `shell ping`; a shell that has not answered `ok` in
+/// this long counts as not running.
+pub const OMARCHY_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -784,6 +787,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Omarchy's shell.json read for the widget's place in the bar; a larger one counts as not placed",
     ),
+    limit(
+        "OMARCHY_PING_TIMEOUT",
+        LimitValue::Millis(ms(OMARCHY_PING_TIMEOUT)),
+        "ms",
+        None,
+        "omarchy status's shell ping; a shell that has not answered ok by then is not running",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1034,6 +1044,7 @@ mod tests {
         "WIDGET_READBACK_MAX_BYTES",
         "OMARCHY_COMMAND_TIMEOUT",
         "OMARCHY_SHELL_JSON_MAX_BYTES",
+        "OMARCHY_PING_TIMEOUT",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

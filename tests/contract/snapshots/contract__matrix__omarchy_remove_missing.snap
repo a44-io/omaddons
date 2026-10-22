@@ -1,0 +1,28 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "omarchy remove",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_found",
+    "details": {
+      "reason": "widget_not_installed"
+    },
+    "fix": "omaddons omarchy install",
+    "fix_argv": [
+      "omaddons",
+      "omarchy",
+      "install"
+    ],
+    "message": "the omaddons widget is not installed",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

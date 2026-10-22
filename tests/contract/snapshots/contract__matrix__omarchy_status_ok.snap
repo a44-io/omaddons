@@ -1,0 +1,47 @@
+---
+source: tests/contract/matrix.rs
+expression: stable
+---
+{
+  "command": "omarchy status",
+  "commands": [
+    {
+      "action": "enable_widget",
+      "argv": [
+        "omaddons",
+        "omarchy",
+        "install"
+      ],
+      "command": "omaddons omarchy install",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "omarchy": {
+      "present": true,
+      "shell_running": false,
+      "validator": false
+    },
+    "plugin": {
+      "binary": "<binary>",
+      "context_matches": true,
+      "enabled": false,
+      "id": "a44.omaddons",
+      "installed": true,
+      "outdated": false,
+      "path": "<root>/config/omarchy/plugins/omaddons",
+      "section": null,
+      "version": "<version>"
+    },
+    "validation": {
+      "errors": [],
+      "ok": true
+    }
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

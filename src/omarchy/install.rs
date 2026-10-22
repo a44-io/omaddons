@@ -292,7 +292,7 @@ fn publish(
 /// Renames `from` to `to`, which must not exist: `RENAME_NOREPLACE`, or, on a filesystem
 /// without renameat2 flags, a plain rename once `to` is confirmed absent (under the
 /// global lock, and every name here is this widget's own, so nothing can appear there).
-fn rename_onto_absent(s: &mut WriteSession<'_>, from: &Path, to: &Path) -> Result<()> {
+pub(super) fn rename_onto_absent(s: &mut WriteSession<'_>, from: &Path, to: &Path) -> Result<()> {
     let rename = |mode| Op::Rename { to, mode };
     match mutate(s, from, rename(RenameMode::NoReplace)) {
         Ok(_) => Ok(()),
@@ -406,7 +406,7 @@ fn dry_run(paths: &Paths, rendered: &Rendered) -> Result<()> {
 
 /// Prunes what this run leaves (its stage, or the old widget it parked) and its
 /// in-flight lock file, then drops the lock. Best effort: the next install reclaims.
-fn prune_own(
+pub(super) fn prune_own(
     scopes: &ScopeTable,
     leftovers: &[PathBuf],
     inflight: &InflightLock,
@@ -433,7 +433,7 @@ fn prune_own(
 /// Prunes the stages and parked old widgets of installs whose process is gone (their
 /// in-flight lock free or missing), with their lock files. A live one is never touched,
 /// whatever its age.
-fn reclaim(paths: &Paths, scopes: &ScopeTable, own: &TxId) {
+pub(super) fn reclaim(paths: &Paths, scopes: &ScopeTable, own: &TxId) {
     let Ok(entries) = std::fs::read_dir(paths.omarchy_plugins_dir()) else {
         return;
     };
@@ -514,6 +514,12 @@ fn matches_installed(dir: &Path, rendered: &Rendered) -> bool {
 /// The section of Omarchy's bar layout that holds the widget `id`, read from
 /// `shell.json` (bounded); `None` when it is in none, or the file cannot be read.
 pub fn placed_in(paths: &Paths, id: &str) -> Option<Section> {
+    layout_entry(paths, id).map(|(section, _)| section)
+}
+
+/// The widget's entry in Omarchy's bar layout (`{"id": …}` and its inline settings, or
+/// a bare id) and its section, as [`placed_in`] reads them.
+pub fn layout_entry(paths: &Paths, id: &str) -> Option<(Section, Value)> {
     let file = std::fs::File::open(paths.omarchy_shell_json()).ok()?;
     let mut bytes = Vec::new();
     file.take(OMARCHY_SHELL_JSON_MAX_BYTES + 1)
@@ -526,16 +532,15 @@ pub fn placed_in(paths: &Paths, id: &str) -> Option<Section> {
     let layout = config.get("bar")?.get("layout")?;
     [Section::Left, Section::Center, Section::Right]
         .into_iter()
-        .find(|section| {
-            layout
-                .get(section.as_str())
-                .and_then(Value::as_array)
-                .is_some_and(|entries| {
-                    entries.iter().any(|entry| {
-                        entry.as_str() == Some(id)
-                            || entry.get("id").and_then(Value::as_str) == Some(id)
-                    })
+        .find_map(|section| {
+            let entries = layout.get(section.as_str())?.as_array()?;
+            entries
+                .iter()
+                .find(|entry| {
+                    entry.as_str() == Some(id)
+                        || entry.get("id").and_then(Value::as_str) == Some(id)
                 })
+                .map(|entry| (section, entry.clone()))
         })
 }
 
@@ -575,11 +580,16 @@ pub fn describe(paths: &Paths, binary: &Path) -> PluginInfo {
 
 /// Omarchy is here: its config dir, and its shell (`omarchy-shell` on `PATH`, or
 /// `$OMARCHY_PATH/shell`).
-fn require_omarchy(paths: &Paths) -> Result<()> {
+pub fn present(paths: &Paths) -> bool {
     let shell_installed = shell::on_path(shell::SHELL)
         || std::env::var_os("OMARCHY_PATH")
             .is_some_and(|root| Path::new(&root).join("shell").is_dir());
-    if paths.omarchy_config_dir().is_dir() && shell_installed {
+    paths.omarchy_config_dir().is_dir() && shell_installed
+}
+
+/// [`present`], or `not_found` (`omarchy_missing`).
+fn require_omarchy(paths: &Paths) -> Result<()> {
+    if present(paths) {
         return Ok(());
     }
     Err(Error::new(
@@ -593,7 +603,7 @@ fn require_omarchy(paths: &Paths) -> Result<()> {
 }
 
 /// The running binary, canonical: what the widget's commands run.
-fn current_binary() -> Result<PathBuf> {
+pub(super) fn current_binary() -> Result<PathBuf> {
     let exe = std::env::current_exe().map_err(|err| {
         Error::io(
             Path::new("/proc/self/exe"),

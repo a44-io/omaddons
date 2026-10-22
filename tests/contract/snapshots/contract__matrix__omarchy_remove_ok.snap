@@ -1,0 +1,20 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "omarchy remove",
+  "commands": [],
+  "data": {
+    "disabled": true,
+    "dry_run": false,
+    "removed": true,
+    "settings_dropped": false
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

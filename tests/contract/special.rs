@@ -335,9 +335,23 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             "config get" => &["config", "get", "default_channel"],
             "config path" => &["config", "path"],
             "backup list" => &["backup", "list"],
+            "omarchy status" => &["omarchy", "status"],
             "help" => &["help"],
             _ => return None,
         })
+    };
+    // The omarchy commands run with no Omarchy tool reachable: never this machine's
+    // shell.
+    let no_tools = s.home.env.root().join("no-tools").display().to_string();
+    let run = |name: &str, args: &[&str]| {
+        let mut argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        argv.push("--json".to_owned());
+        let env: &[(&str, &str)] = if name.starts_with("omarchy") {
+            &[("PATH", no_tools.as_str())]
+        } else {
+            &[]
+        };
+        s.home.exec_with(&argv, env)
     };
     let read_only: Vec<&str> = omaddons::app::COMMANDS
         .iter()
@@ -349,14 +363,14 @@ fn read_only_commands_ignore_dry_run_and_reason() {
         let args = invocation(name);
         assert!(args.is_some(), "add a read-only invocation of {name} here");
         let args = args.unwrap_or_default();
-        let plain = s.home.run(args);
+        let plain = run(name, args);
         let code = plain.code;
-        let plain = s.home.run(args);
+        let plain = run(name, args);
         assert_eq!(plain.code, code, "{args:?}\n{}", plain.context());
         let before = state_tree(&state);
         let mut flagged_args = args.to_vec();
         flagged_args.extend(["--dry-run", "--reason", "x"]);
-        let flagged = s.home.run(&flagged_args);
+        let flagged = run(name, &flagged_args);
         assert_eq!(
             flagged.code,
             code,

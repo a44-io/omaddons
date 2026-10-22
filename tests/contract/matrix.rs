@@ -1136,7 +1136,7 @@ fn errors_dismiss() {
 }
 
 #[test]
-fn omarchy_install() {
+fn omarchy() {
     use std::os::unix::fs::PermissionsExt;
 
     let s = Scene::new();
@@ -1163,4 +1163,19 @@ fn omarchy_install() {
     stable["data"]["plugin"]["binary"] = "<binary>".into();
     stable["data"]["plugin"]["version"] = "<version>".into();
     insta::assert_json_snapshot!("omarchy_install_ok", stable);
+
+    // Installed, on no section of the bar, the stub shell answering no ping.
+    let c = s.json_env(&["omarchy"], &env, 0);
+    assert_eq!(c.envelope["command"], "omarchy status");
+    let mut stable = s.stable(&c.envelope);
+    stable["data"]["plugin"]["binary"] = "<binary>".into();
+    stable["data"]["plugin"]["version"] = "<version>".into();
+    insta::assert_json_snapshot!("omarchy_status_ok", stable);
+    let c = s.json_env(&["omarchy", "status", "--bogus"], &env, 2);
+    insta::assert_json_snapshot!("omarchy_status_usage", s.stable(&c.envelope));
+
+    let c = s.json_env(&["omarchy", "remove"], &env, 0);
+    insta::assert_json_snapshot!("omarchy_remove_ok", s.stable(&c.envelope));
+    let c = s.json_env(&["omarchy", "remove"], &env, 3);
+    insta::assert_json_snapshot!("omarchy_remove_missing", s.stable(&c.envelope));
 }

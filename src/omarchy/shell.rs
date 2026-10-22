@@ -1,17 +1,19 @@
-//! Omarchy's own tools: the only processes `omarchy install` (and E3's `remove`) start.
-//! `omarchy-plugin-validate` reads the rendered stage; `omarchy-shell` asks the running
-//! shell to rescan its plugins; `omarchy-bar put` places the widget, which writes
-//! Omarchy's `shell.json` (omaddons never writes it). Each runs from `PATH` with argv
-//! only, the user's environment inherited unchanged (the tools need `OMARCHY_PATH`, the
-//! Wayland and Hyprland variables and the D-Bus session), killed after
-//! [`OMARCHY_COMMAND_TIMEOUT`], its output read up to [`API_RESPONSE_MAX_BYTES`].
+//! Omarchy's own tools: the only processes the `omarchy` commands start.
+//! `omarchy-plugin-validate` reads the rendered stage; `omarchy-shell` pings the shell
+//! and asks it to rescan its plugins; `omarchy-bar put` places the widget and
+//! `omarchy-plugin-disable` takes it off, which write Omarchy's `shell.json` (omaddons
+//! never writes it). Each runs from `PATH` with argv only, the user's environment
+//! inherited unchanged (the tools need `OMARCHY_PATH`, the Wayland and Hyprland
+//! variables and the D-Bus session), killed after [`OMARCHY_COMMAND_TIMEOUT`] (the
+//! ping after [`OMARCHY_PING_TIMEOUT`]), its output read up to
+//! [`API_RESPONSE_MAX_BYTES`].
 
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::limits::{API_RESPONSE_MAX_BYTES, OMARCHY_COMMAND_TIMEOUT};
+use crate::limits::{API_RESPONSE_MAX_BYTES, OMARCHY_COMMAND_TIMEOUT, OMARCHY_PING_TIMEOUT};
 
 /// The validator Omarchy ships.
 pub const VALIDATOR: &str = "omarchy-plugin-validate";
@@ -19,6 +21,8 @@ pub const VALIDATOR: &str = "omarchy-plugin-validate";
 pub const SHELL: &str = "omarchy-shell";
 /// The bar's layout tool.
 pub const BAR: &str = "omarchy-bar";
+/// Omarchy's plugin disable.
+pub const DISABLE: &str = "omarchy-plugin-disable";
 /// How often `omarchy-bar put` is asked again while the shell has not seen the new
 /// plugin yet, and how long apart (F0: the shell answers "unknown" for about 0.4 s
 /// after the files land, before its debounced rescan starts).
@@ -63,8 +67,13 @@ pub fn on_path(program: &str) -> bool {
     })
 }
 
-/// Runs `program` with `args`, stdin closed.
+/// Runs `program` with `args`, stdin closed, for [`OMARCHY_COMMAND_TIMEOUT`] at most.
 pub fn run(program: &str, args: &[&str]) -> Result<Ran, NotRun> {
+    run_for(program, args, OMARCHY_COMMAND_TIMEOUT)
+}
+
+/// [`run`], killed after `timeout`.
+fn run_for(program: &str, args: &[&str], timeout: Duration) -> Result<Ran, NotRun> {
     // Omarchy's own tools, by name, from the user's PATH: no shell, argv only.
     let mut command = Command::new(program); // ubs:ignore — fixed Omarchy tool names
     let mut child = command
@@ -104,7 +113,7 @@ pub fn run(program: &str, args: &[&str]) -> Result<Ran, NotRun> {
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < OMARCHY_COMMAND_TIMEOUT => {
+            Ok(None) if started.elapsed() < timeout => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
@@ -156,6 +165,43 @@ pub fn validate(dir: &Path) -> Option<Vec<String>> {
 /// reload catches the swap anyway.
 pub fn rescan() {
     let _ = run(SHELL, &["-q", "shell", "rescanPlugins"]);
+}
+
+/// Whether the shell is running: `omarchy-shell shell ping` answers `ok` within
+/// [`OMARCHY_PING_TIMEOUT`]. Never with `-q`, which exits 0 whether or not anything
+/// answered.
+pub fn ping() -> bool {
+    ping_with(SHELL)
+}
+
+fn ping_with(program: &str) -> bool {
+    run_for(program, &["shell", "ping"], OMARCHY_PING_TIMEOUT)
+        .is_ok_and(|ran| ran.success && ran.stdout.trim() == "ok")
+}
+
+/// Takes the plugin `id` off the bar: `omarchy-plugin-disable <id>`, which answers
+/// `Disabled <id>`, or, without it, the shell's own `setPluginEnabled <id> false`,
+/// which answers `ok`. Omarchy then splices the widget's entry, inline settings
+/// included, out of `shell.json`. The error is why it did not happen, for the warning.
+pub fn disable(id: &str) -> Result<(), String> {
+    let said = |ran: &Ran| {
+        let said = if ran.stderr.trim().is_empty() {
+            ran.stdout.trim()
+        } else {
+            ran.stderr.trim()
+        };
+        said.to_owned()
+    };
+    match run(DISABLE, &[id]) {
+        Ok(ran) if ran.success && ran.stdout.trim() == format!("Disabled {id}") => Ok(()),
+        Ok(ran) => Err(format!("{DISABLE} said: {}", said(&ran))),
+        Err(NotRun::Missing) => match run(SHELL, &["shell", "setPluginEnabled", id, "false"]) {
+            Ok(ran) if ran.success && ran.stdout.trim() == "ok" => Ok(()),
+            Ok(ran) => Err(format!("{SHELL} said: {}", said(&ran))),
+            Err(not_run) => Err(not_run.describe(SHELL)),
+        },
+        Err(not_run) => Err(not_run.describe(DISABLE)),
+    }
 }
 
 /// How placing the widget went.
@@ -279,6 +325,28 @@ echo "$2 is on the bar""#,
             put_with(&missing, "a44.omaddons", "right", fast),
             Placed::Unreachable("omarchy-bar is not on PATH".into())
         );
+    }
+
+    /// Only `ok` on stdout and a clean exit is a running shell: `-q`'s silent exit 0,
+    /// another answer or a failure is not.
+    #[test]
+    fn the_shell_runs_only_when_ping_says_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = |body: &str| {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dir.path().join("omarchy-shell");
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let ok = shell(r#"[ "$1 $2" = "shell ping" ] && echo ok"#);
+        assert!(ping_with(&ok));
+        assert!(!ping_with(&shell("exit 0")));
+        assert!(!ping_with(&shell(
+            "echo 'omarchy-shell is not running' >&2; exit 1"
+        )));
+        assert!(!ping_with(&shell("echo pong")));
+        assert!(!ping_with(&dir.path().join("missing").to_string_lossy()));
     }
 
     #[test]

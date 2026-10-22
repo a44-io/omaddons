@@ -132,6 +132,7 @@ pub fn prune(
             Suggestion::command(["omaddons", "status"]),
         ));
     }
+    let lock_held = matches!(lock, LockUse::Held(_));
     let acquired = match lock {
         LockUse::Acquire => Some(GlobalLock::acquire(scopes.paths(), "prune")?),
         LockUse::Held(_) | LockUse::Own(_) => None,
@@ -197,11 +198,39 @@ pub fn prune(
         trash_dirs.insert(trash);
     }
     if own.is_none() {
-        for dir in trash_dirs {
-            sweep(&dir);
+        for dir in &trash_dirs {
+            sweep(dir);
         }
+        drop_foreign_trash(scopes, &trash_dirs, lock_held);
     }
     Ok(report)
+}
+
+/// The widget's trash sits in Omarchy's plugins directory, which omaddons does not own,
+/// so it goes once empty: under the global lock, which every rename into it holds, so
+/// it never disappears under another prune's rename. A busy lock leaves it for the next
+/// prune.
+fn drop_foreign_trash(scopes: &ScopeTable, dirs: &BTreeSet<PathBuf>, lock_held: bool) {
+    let plugins = scopes.omarchy_plugins_dir();
+    let foreign: Vec<&PathBuf> = dirs
+        .iter()
+        .filter(|dir| dir.parent() == Some(plugins))
+        .collect();
+    if foreign.is_empty() {
+        return;
+    }
+    let _guard = if lock_held {
+        None
+    } else {
+        match GlobalLock::acquire(scopes.paths(), "prune") {
+            Ok(guard) => Some(guard),
+            Err(_) => return,
+        }
+    };
+    for dir in foreign {
+        // Only an empty directory is removed.
+        let _ = fs::remove_dir(dir);
+    }
 }
 
 /// Whether `victim` is named for transaction `tx` (`<tx>`, `<tx>.lock`, `<tx>.jsonl`).
@@ -585,8 +614,8 @@ mod tests {
         .unwrap();
         assert_eq!(report.removed, vec![stage.clone(), old.clone()]);
         assert!(!stage.exists() && !old.exists());
-        let trash = f.paths.omarchy_trash();
-        assert!(trash.is_dir() && fs::read_dir(&trash).unwrap().next().is_none());
+        // Omarchy's directory is not omaddons': the emptied trash goes too.
+        assert!(!f.paths.omarchy_trash().exists());
         let plugins = f.paths.omarchy_plugins_dir();
         for stranger in [
             make(&f.paths.omarchy_plugin_dir(), true),
