@@ -13,6 +13,7 @@ pub mod help;
 pub mod history;
 pub mod info;
 pub mod install;
+pub mod issues;
 pub mod list;
 pub mod net_log;
 pub mod outcome;
@@ -322,6 +323,23 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         };
         return out.emit_as("help", result);
     }
+    let exit = run_command(cli, ctx, &out);
+    // A command that may have appended history (by its full path: `config set`, not
+    // `config`) rebuilds the history projection it could not keep current under its
+    // lock, now that the lock is released (M3-D37).
+    let path = crate::cli::command_path(&ctx.argv);
+    if !path.is_empty()
+        && mutates(&path.join(" "))
+        && !ctx.dry_run
+        && let Ok(paths) = crate::state::paths::Paths::from_env()
+    {
+        crate::state::history_tail::rebuild_if_stale(&paths, name, ctx.actor);
+    }
+    exit
+}
+
+/// Runs the parsed command and renders its outcome through `out`.
+fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
     match &cli.command {
         None => out.emit(Ok(help::bare())),
         Some(Command::Help { command }) => {
@@ -371,8 +389,8 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
             }
             out.emit(result)
         }
-        Some(Command::Pin(args)) => out_pin(&out, pin::pin(ctx, args)),
-        Some(Command::Unpin(args)) => out_pin(&out, pin::unpin(ctx, args)),
+        Some(Command::Pin(args)) => out_pin(out, pin::pin(ctx, args)),
+        Some(Command::Unpin(args)) => out_pin(out, pin::unpin(ctx, args)),
         Some(Command::Sync(args)) => {
             let result = sync::run(ctx, args);
             if let Ok(outcome) = &result {

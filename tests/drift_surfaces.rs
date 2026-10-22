@@ -92,13 +92,14 @@ fn status_reports_modified_files_and_the_reinstall_clears_them() {
         drift(&verbose)[0]["folders"][0]["modified"],
         json!(["core.lua"])
     );
-    // Humans see the line and what to run next.
+    // Humans see the issue, the line and what to run next.
     let human = home.exec(&["status".to_owned()]);
     assert!(
-        human.stdout.contains("attention: 1 addon modified")
-            && human
-                .stdout
-                .contains("Foo on retail: 1 file changed (Foo/core.lua)")
+        human.stdout.contains(
+            "  P2 Foo's files changed on disk (1 file) → omaddons install Foo -t retail --reinstall"
+        ) && human
+            .stdout
+            .contains("Foo on retail: 1 file changed (Foo/core.lua)")
             && human
                 .stdout
                 .contains("Next: omaddons install Foo -t retail --reinstall"),

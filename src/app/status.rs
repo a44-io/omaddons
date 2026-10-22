@@ -18,6 +18,8 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::drift::{DriftItem, needs_reinstall, reinstall_hint};
+use super::history::ChangeCounts;
+use super::issues::{Issue, SeverityCounts, issues_for};
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -29,7 +31,9 @@ use crate::engine::journal;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{LockState, probe_global};
 use crate::inventory::{Counts, Depth, FolderClass, Inventory, inventory_shared};
-use crate::model::{AddonRecord, AddonState, Channel, FolderName, Ref, Target, TargetKey};
+use crate::model::{
+    Actor, AddonRecord, AddonState, Channel, FolderName, Ref, RunId, Target, TargetKey, TxKind,
+};
 use crate::output::{Outcome, Style, table};
 use crate::politeness::DEFAULT_CHECK_INTERVAL;
 use crate::resolve::catalog::Catalog;
@@ -38,6 +42,8 @@ use crate::resolve::updates::{
 };
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
 use crate::sources::{SourceId, SourceRegistry};
+use crate::state::history::{self, HistoryEntry, HistoryFilter};
+use crate::state::history_tail::{self, Answer};
 use crate::state::memo::{self, FactIndex, ReleaseMemo};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::registry::RegistryEntry;
@@ -70,6 +76,98 @@ pub struct StatusData {
     pub targets: Vec<StatusTarget>,
     pub journal: JournalState,
     pub needs_attention: bool,
+    /// Every target at a glance: the bar's badge and urgency (M3-D37).
+    pub summary: Summary,
+    /// What bare `undo` would revert now; `null` when nothing is undoable, or, with
+    /// `last_change_state: "unknown"`, when `--cached` cannot tell (never "nothing").
+    pub last_change: Option<LastChange>,
+    pub last_change_state: LastChangeState,
+}
+
+/// Every target at a glance.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct Summary {
+    pub targets: usize,
+    /// The ids of the clients running now.
+    pub running: Vec<String>,
+    pub updates: SummaryUpdates,
+    pub issues: SeverityCounts,
+    pub errors: SummaryErrors,
+    /// `commands` holds `check_updates`: a check is due.
+    pub check_due: bool,
+    /// The bar widget is from another omaddons build (the widget fills it in).
+    pub widget_outdated: bool,
+    pub state: SummaryState,
+}
+
+/// Pending updates across the targets.
+#[derive(Debug, Clone, Default, Serialize, JsonSchema)]
+pub struct SummaryUpdates {
+    pub available: usize,
+    /// The ids of the targets with updates.
+    pub targets: Vec<String>,
+}
+
+/// New Lua errors across the targets (`errors` fills them in).
+#[derive(Debug, Clone, Default, Serialize, JsonSchema)]
+pub struct SummaryErrors {
+    pub new: usize,
+    pub targets: Vec<String>,
+}
+
+/// The most pressing state, in this order: a P0 or P1 issue, new Lua errors, updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryState {
+    Attention,
+    Errors,
+    Updates,
+    Idle,
+}
+
+/// The run bare `undo` would revert.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct LastChange {
+    /// `null` for a transaction from before M2 (a run by itself).
+    pub run: Option<RunId>,
+    /// Its newest transaction's kind (`undo` for an undo, which the widget calls a redo).
+    pub kind: TxKind,
+    #[schemars(with = "String")]
+    pub at: Timestamp,
+    pub actor: Actor,
+    pub reason: Option<String>,
+    /// The ids of the targets it changed, sorted.
+    pub targets: Vec<String>,
+    pub changes: LastChanges,
+    /// The undo that reverts exactly this run, whatever commits after it.
+    pub undo: UndoCommand,
+}
+
+/// Folders (and, for a restore, files) a run changed, summed over its transactions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct LastChanges {
+    pub added: usize,
+    pub replaced: usize,
+    pub removed: usize,
+    pub recorded: usize,
+    /// Files a restore brought back (none until restores exist).
+    pub restored: usize,
+}
+
+/// A command and its argv.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct UndoCommand {
+    pub command: String,
+    pub argv: Vec<String>,
+}
+
+/// Whether `last_change` is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LastChangeState {
+    Ok,
+    /// `--cached`: the history projection is missing, stale or too short to tell.
+    Unknown,
 }
 
 /// One target.
@@ -110,6 +208,10 @@ pub struct StatusTarget {
     #[serde(skip)]
     pub orphan_names: Vec<String>,
     pub attention: Vec<Attention>,
+    /// The attention as ranked findings (M3-D37): vision D20 failure-mode ids, P0–P3
+    /// severities and a remediation each. `--cached` checks drift by presence only, so a
+    /// modified addon is not among them there.
+    pub issues: Vec<Issue>,
     /// `-v` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_dir: Option<PathBuf>,
@@ -226,6 +328,7 @@ impl Outcome for StatusOutcome {
                 "No WoW client found. Add one with: omaddons targets add <path>"
             );
         }
+        writeln!(w, "{}", summary_line(&self.data.summary))?;
         let rows: Vec<Vec<String>> = self
             .data
             .targets
@@ -258,11 +361,6 @@ impl Outcome for StatusOutcome {
                     let s = if n == 1 { "" } else { "s" };
                     counts.push_str(&format!(" · {n} orphan{s}"));
                 }
-                if !t.attention.is_empty() {
-                    let names: Vec<String> =
-                        t.attention.iter().map(|a| attention_text(*a, t)).collect();
-                    counts.push_str(&format!(" · attention: {}", names.join(", ")));
-                }
                 vec![
                     t.id.clone(),
                     modes_or_family(&t.modes, t.family),
@@ -273,9 +371,35 @@ impl Outcome for StatusOutcome {
                 ]
             })
             .collect();
-        write!(w, "{}", table(&rows))?;
+        // Each target's row, then its issues under it.
+        let text = table(&rows);
+        for (row, t) in text.lines().zip(&self.data.targets) {
+            writeln!(w, "{row}")?;
+            for issue in &t.issues {
+                let mut line = format!("  {} {}", wire(issue.severity), issue.title);
+                if let Some(command) = &issue.remediation.command {
+                    line.push_str(&format!(" → {command}"));
+                }
+                writeln!(w, "{line}")?;
+            }
+        }
         for line in &self.drift_lines {
             writeln!(w, "{line}")?;
+        }
+        match (&self.data.last_change, self.data.last_change_state) {
+            (_, LastChangeState::Unknown) => {
+                writeln!(w, "last change: unknown (run omaddons status for it)")?
+            }
+            (Some(c), LastChangeState::Ok) => writeln!(
+                w,
+                "last change: {} on {} by {} ({}) · undo: {}",
+                wire(c.kind),
+                c.targets.join(", "),
+                c.actor.as_str(),
+                super::history::local_time(c.at),
+                c.undo.command
+            )?,
+            (None, LastChangeState::Ok) => {}
         }
         for c in &self.commands {
             writeln!(w, "Next: {}", c.command())?;
@@ -284,21 +408,48 @@ impl Outcome for StatusOutcome {
     }
 }
 
-/// An attention item in the target row: drift as a count (`1 addon modified`), the
-/// rest by wire name.
-fn attention_text(a: Attention, t: &StatusTarget) -> String {
-    let count = |state: DriftState| t.drift.iter().filter(|d| d.state == state).count();
-    let addons = |n: usize| if n == 1 { "addon" } else { "addons" };
-    match a {
-        Attention::AddonModified => {
-            let n = count(DriftState::Modified);
-            format!("{n} {} modified", addons(n))
+/// The first line: `3 updates on 2 clients · 1 issue (P2) · retail running`.
+fn summary_line(s: &Summary) -> String {
+    let plural = |n: usize, one: &str, many: &str| {
+        if n == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{n} {many}")
         }
-        Attention::AddonFolderMissing => {
-            let n = count(DriftState::Missing);
-            format!("{n} {} missing folders", addons(n))
-        }
-        _ => wire(a),
+    };
+    let mut parts = Vec::new();
+    if s.updates.available > 0 {
+        parts.push(format!(
+            "{} on {}",
+            plural(s.updates.available, "update", "updates"),
+            plural(s.updates.targets.len(), "client", "clients")
+        ));
+    }
+    let total = s.issues.total();
+    if total > 0 {
+        let severities: Vec<&str> = [
+            (s.issues.p0, "P0"),
+            (s.issues.p1, "P1"),
+            (s.issues.p2, "P2"),
+            (s.issues.p3, "P3"),
+        ]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(_, name)| name)
+        .collect();
+        parts.push(format!(
+            "{} ({})",
+            plural(total, "issue", "issues"),
+            severities.join(", ")
+        ));
+    }
+    if !s.running.is_empty() {
+        parts.push(format!("{} running", s.running.join(", ")));
+    }
+    if parts.is_empty() {
+        "Nothing needs doing".to_owned()
+    } else {
+        parts.join(" · ")
     }
 }
 
@@ -522,6 +673,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             orphans: orphan_names.len(),
             orphan_names,
             attention,
+            issues: Vec::new(),
             client_dir: verbose.then(|| t.client_dir.clone()),
             install_root: verbose.then(|| t.install_root.clone()),
             exe_name: if verbose { t.exe_name.clone() } else { None },
@@ -562,18 +714,24 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             orphans: 0,
             orphan_names: Vec::new(),
             attention,
+            issues: Vec::new(),
             client_dir: verbose.then(|| e.client_dir.clone()),
             install_root: verbose.then(|| e.install_root.clone()),
             exe_name: None,
         });
     }
     targets.sort_by(|a, b| a.id.cmp(&b.id));
+    for t in &mut targets {
+        t.issues = issues_for(t, None);
+    }
 
     let (mut commands, first_fix) = recommendations(&targets, check_due);
     if args.cached && !world.paths.discovery_cache().exists() {
         commands.push(CommandHint::new("status", ["omaddons", "status"], false));
     }
     let needs_attention = targets.iter().any(|t| !t.attention.is_empty());
+    let summary = summary(&targets, &commands);
+    let (last_change, last_change_state) = last_change(&world, args.cached);
     Ok(StatusOutcome {
         data: StatusData {
             cached: args.cached,
@@ -583,6 +741,9 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
                 in_progress: held,
             },
             needs_attention,
+            summary,
+            last_change,
+            last_change_state,
         },
         warnings,
         commands,
@@ -760,6 +921,132 @@ pub(crate) fn adoptable(
         .count()
 }
 
+/// Every target at a glance, from the targets and the recommendations.
+fn summary(targets: &[StatusTarget], commands: &[CommandHint]) -> Summary {
+    let mut issues = SeverityCounts::default();
+    for t in targets {
+        issues.add(&t.issues);
+    }
+    let with_updates: Vec<&StatusTarget> =
+        targets.iter().filter(|t| t.updates.available > 0).collect();
+    let updates = SummaryUpdates {
+        available: with_updates.iter().map(|t| t.updates.available).sum(),
+        targets: with_updates.iter().map(|t| t.id.clone()).collect(),
+    };
+    let errors = SummaryErrors::default();
+    let state = summary_state(&issues, errors.new, updates.available);
+    Summary {
+        targets: targets.len(),
+        running: targets
+            .iter()
+            .filter(|t| t.running == Some(true))
+            .map(|t| t.id.clone())
+            .collect(),
+        updates,
+        issues,
+        errors,
+        check_due: commands.iter().any(|c| c.action() == "check_updates"),
+        widget_outdated: false,
+        state,
+    }
+}
+
+/// The most pressing state: a P0 or P1 issue, then new Lua errors, then updates.
+fn summary_state(issues: &SeverityCounts, new_errors: usize, updates: usize) -> SummaryState {
+    if issues.urgent() {
+        SummaryState::Attention
+    } else if new_errors > 0 {
+        SummaryState::Errors
+    } else if updates > 0 {
+        SummaryState::Updates
+    } else {
+        SummaryState::Idle
+    }
+}
+
+/// What bare `undo` would revert now. `--cached` asks the history projection and says
+/// `unknown` when it cannot tell (M3-D37); plain `status` reads the whole history. Neither
+/// writes anything.
+fn last_change(world: &World, cached: bool) -> (Option<LastChange>, LastChangeState) {
+    let empty = match std::fs::metadata(world.paths.history_file()) {
+        Ok(meta) => meta.len() == 0,
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    };
+    if empty {
+        // No history (a fresh home): nothing to undo, known without a projection.
+        return (None, LastChangeState::Ok);
+    }
+    if cached {
+        return match history_tail::fresh(&world.paths).map(|tail| tail.answer()) {
+            Some(Answer::Found(run)) => {
+                let entries: Vec<&HistoryEntry> = run.iter().collect();
+                (Some(change_of(world, &entries)), LastChangeState::Ok)
+            }
+            Some(Answer::Nothing { complete: true }) => (None, LastChangeState::Ok),
+            _ => (None, LastChangeState::Unknown),
+        };
+    }
+    let Ok(read) = history::read(&world.paths, &HistoryFilter::default()) else {
+        return (None, LastChangeState::Unknown);
+    };
+    match history::newest_run(&read.entries, None, None) {
+        Some(found) => (Some(change_of(world, &found.entries)), LastChangeState::Ok),
+        None => (None, LastChangeState::Ok),
+    }
+}
+
+/// The last change a run's transactions (`entries`, newest first) make up.
+fn change_of(world: &World, entries: &[&HistoryEntry]) -> LastChange {
+    let mut changes = LastChanges::default();
+    let mut targets: Vec<String> = Vec::new();
+    for e in entries {
+        let c = ChangeCounts::of(&e.ops);
+        changes.added += c.added;
+        changes.replaced += c.replaced;
+        changes.removed += c.removed;
+        changes.recorded += c.recorded;
+        let id = world.target_id(e.target);
+        if !targets.contains(&id) {
+            targets.push(id);
+        }
+    }
+    targets.sort();
+    let newest = entries.first();
+    let run = newest.and_then(|e| e.run);
+    let argv: Vec<String> = match (run, newest) {
+        (Some(run), _) => ["omaddons", "undo", "--run"]
+            .map(str::to_owned)
+            .into_iter()
+            .chain([run.to_string()])
+            .collect(),
+        (None, Some(e)) => vec!["omaddons".into(), "undo".into(), e.tx.to_string()],
+        (None, None) => vec!["omaddons".into(), "undo".into()],
+    };
+    LastChange {
+        run,
+        kind: newest.map_or(TxKind::Undo, |e| e.kind),
+        at: newest.map_or_else(crate::clock::now, |e| e.at),
+        actor: newest.map_or(Actor::Human, |e| e.actor),
+        reason: newest.and_then(|e| e.reason.clone()),
+        targets,
+        changes,
+        undo: UndoCommand {
+            command: shell_words::join(&argv),
+            argv,
+        },
+    }
+}
+
+/// `targets rm <id>`, the fix for a client whose directory is gone.
+pub(super) fn forget_target_hint(target: &str) -> CommandHint {
+    CommandHint::new("forget_target", ["omaddons", "targets", "rm", target], true)
+}
+
+/// `list -t <id> -v`, the look at a target's degraded addons.
+pub(super) fn inspect_hint(target: &str) -> CommandHint {
+    CommandHint::new("inspect", ["omaddons", "list", "-t", target, "-v"], false)
+}
+
 /// The commands `status` recommends, in M2's order: (1) journal and state fixes (none
 /// have a command), (2) `reinstall` (E3), (3) `update`, one for all targets with
 /// updates or `-t` when only one has them, (4) `adopt` (E5.3), (5) `check_updates`
@@ -846,19 +1133,19 @@ fn attention_fixes(targets: &[StatusTarget]) -> (Vec<CommandHint>, Option<(Strin
                     None,
                 ),
                 Attention::TargetMissing => {
-                    let argv = ["omaddons", "targets", "rm", t.id.as_str()];
+                    let hint = forget_target_hint(&t.id);
                     (
                         format!("{}'s client directory is gone", t.id),
-                        Suggestion::command(argv),
-                        Some(CommandHint::new("forget_target", argv, true)),
+                        Suggestion::command(hint.argv().to_vec()),
+                        Some(hint),
                     )
                 }
                 Attention::AddonDegraded => {
-                    let argv = ["omaddons", "list", "-t", t.id.as_str(), "-v"];
+                    let hint = inspect_hint(&t.id);
                     (
                         format!("{} has {} degraded addon(s)", t.id, t.addons.degraded),
-                        Suggestion::command(argv),
-                        Some(CommandHint::new("inspect", argv, false)),
+                        Suggestion::command(hint.argv().to_vec()),
+                        Some(hint),
                     )
                 }
                 // Their `reinstall` hints come first among the recommendations.
@@ -925,11 +1212,108 @@ pub(super) fn modes_or_family(modes: &[ModeName], family: Family) -> String {
     wire(family)
 }
 
+/// A retail-like target with `available` updates, `attention` and `unmanaged` folders,
+/// for unit tests.
+#[cfg(test)]
+pub(crate) fn test_target(
+    id: &str,
+    available: usize,
+    attention: &[Attention],
+    unmanaged: u32,
+) -> StatusTarget {
+    StatusTarget {
+        id: id.to_owned(),
+        key: None,
+        registered: true,
+        default: false,
+        family: Family::Mainline,
+        kind: TargetKind::Live,
+        install_kind: InstallKind::Battlenet,
+        product: None,
+        modes: Vec::new(),
+        version: ClientVersion::new(12, 1, 5),
+        interface: 120_105,
+        label: None,
+        running: Some(false),
+        missing: attention.contains(&Attention::TargetMissing),
+        folders: Counts {
+            unmanaged,
+            ..Counts::default()
+        },
+        addons: AddonCounts {
+            total: 1,
+            degraded: usize::from(attention.contains(&Attention::AddonDegraded)),
+        },
+        updates: UpdateCounts {
+            available,
+            ..UpdateCounts::default()
+        },
+        drift: Vec::new(),
+        adoptable: 0,
+        orphans: 0,
+        orphan_names: Vec::new(),
+        attention: attention.to_vec(),
+        issues: Vec::new(),
+        client_dir: None,
+        install_root: None,
+        exe_name: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use jiff::SignedDuration;
 
+    use super::test_target as target;
     use super::*;
+
+    #[test]
+    fn the_summary_state_takes_the_most_pressing() {
+        let counts = |p0, p1, p2| SeverityCounts { p0, p1, p2, p3: 0 };
+        assert_eq!(
+            summary_state(&counts(1, 0, 0), 2, 3),
+            SummaryState::Attention
+        );
+        assert_eq!(
+            summary_state(&counts(0, 1, 0), 0, 0),
+            SummaryState::Attention
+        );
+        assert_eq!(
+            summary_state(&counts(0, 0, 4), 2, 3),
+            SummaryState::Errors,
+            "a P2 issue is not urgent"
+        );
+        assert_eq!(summary_state(&counts(0, 0, 0), 0, 3), SummaryState::Updates);
+        assert_eq!(summary_state(&counts(0, 0, 1), 0, 0), SummaryState::Idle);
+    }
+
+    #[test]
+    fn the_summary_counts_every_target() {
+        let mut gone = target("gone", 0, &[Attention::TargetMissing], 0);
+        gone.issues = crate::app::issues::issues_for(&gone, None);
+        let mut retail = target("retail", 2, &[], 0);
+        retail.running = Some(true);
+        let classic = target("classic", 1, &[], 0);
+        let check = CommandHint::new("check_updates", ["omaddons", "outdated"], false);
+        let s = summary(&[classic, gone, retail], &[check]);
+        assert_eq!(s.targets, 3);
+        assert_eq!(s.running, ["retail"]);
+        assert_eq!(
+            (s.updates.available, s.updates.targets.clone()),
+            (3, vec!["classic".to_owned(), "retail".to_owned()])
+        );
+        assert_eq!((s.issues.p2, s.issues.total()), (1, 1));
+        assert!(s.check_due);
+        assert_eq!(s.state, SummaryState::Updates);
+        assert_eq!(
+            summary_line(&s),
+            "3 updates on 2 clients · 1 issue (P2) · retail running"
+        );
+        assert_eq!(
+            summary_line(&summary(&[target("retail", 0, &[], 0)], &[])),
+            "Nothing needs doing"
+        );
+    }
 
     #[test]
     fn staleness_is_age_past_the_interval_or_a_future_check() {
@@ -948,45 +1332,6 @@ mod tests {
             now,
             six_hours
         ));
-    }
-
-    fn target(id: &str, available: usize, attention: &[Attention], unmanaged: u32) -> StatusTarget {
-        StatusTarget {
-            id: id.to_owned(),
-            key: None,
-            registered: true,
-            default: false,
-            family: Family::Mainline,
-            kind: TargetKind::Live,
-            install_kind: InstallKind::Battlenet,
-            product: None,
-            modes: Vec::new(),
-            version: ClientVersion::new(12, 1, 5),
-            interface: 120_105,
-            label: None,
-            running: Some(false),
-            missing: attention.contains(&Attention::TargetMissing),
-            folders: Counts {
-                unmanaged,
-                ..Counts::default()
-            },
-            addons: AddonCounts {
-                total: 1,
-                degraded: usize::from(attention.contains(&Attention::AddonDegraded)),
-            },
-            updates: UpdateCounts {
-                available,
-                ..UpdateCounts::default()
-            },
-            drift: Vec::new(),
-            adoptable: 0,
-            orphans: 0,
-            orphan_names: Vec::new(),
-            attention: attention.to_vec(),
-            client_dir: None,
-            install_root: None,
-            exe_name: None,
-        }
     }
 
     fn actions(commands: &[CommandHint]) -> Vec<String> {

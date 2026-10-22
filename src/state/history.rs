@@ -245,6 +245,7 @@ fn append_line<T: Serialize>(
         ));
     }
     let path = paths.history_file();
+    let before = std::fs::metadata(&path).map_or(0, |m| m.len());
     let mut line = Vec::new();
     if unterminated(&path) {
         line.push(b'\n');
@@ -253,6 +254,9 @@ fn append_line<T: Serialize>(
         .map_err(|err| Error::internal(format!("serializing a history line: {err}")))?;
     line.push(b'\n');
     mutate(s, &path, Op::AppendFile { content: &line })?;
+    // The projection follows the durable line, still under the caller's lock; it never
+    // fails the append.
+    super::history_tail::appended(paths, before, &line);
     Ok(())
 }
 
@@ -446,6 +450,86 @@ fn whole(text: &str) -> std::result::Result<Line, serde_json::Error> {
     serde_json::from_str::<HistoryEntry>(text).map(|entry| Line::Entry(Box::new(entry)))
 }
 
+/// What one history line is, for the history projection.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LineFacts {
+    pub run: RunKey,
+    /// A transaction undo can revert (never a settings change or a backup).
+    pub undoable: bool,
+    pub at: Timestamp,
+}
+
+/// The fields of a line [`LineFacts`] needs; the rest (a transaction's ops) is skipped
+/// without being built, so the projection reads a megabyte of lines in a few
+/// milliseconds.
+#[derive(Deserialize)]
+struct FactFields {
+    kind: TxKind,
+    at: Timestamp,
+    #[serde(default)]
+    run: Option<RunId>,
+    #[serde(default)]
+    tx: Option<TxId>,
+}
+
+/// One complete line's facts, salvaged like [`read_line`] does; `None` for a line that
+/// does not read.
+pub(crate) fn line_facts(line: &str) -> Option<LineFacts> {
+    let fields = serde_json::from_str::<FactFields>(line).ok().or_else(|| {
+        let at = line.rfind(LINE_START).filter(|at| *at > 0)?;
+        serde_json::from_str::<FactFields>(&line[at..]).ok()
+    })?;
+    let run = match (fields.run, fields.tx) {
+        (Some(run), _) => RunKey::Run(run),
+        (None, Some(tx)) if !fields.kind.is_setting() => RunKey::Single(tx),
+        _ => return None,
+    };
+    Some(LineFacts {
+        run,
+        undoable: fields.kind.is_undoable(),
+        at: fields.at,
+    })
+}
+
+/// The transactions one run selection reverts, newest first, and their run (`None` for a
+/// transaction from before M2, or one transaction picked on a target).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunSelection<'e> {
+    pub entries: Vec<&'e HistoryEntry>,
+    pub run: Option<RunId>,
+}
+
+/// What bare `undo` reverts in `entries` (oldest first): the newest undoable transaction
+/// (by `last_by`, on `target`), and, without a target, every other undoable transaction
+/// of its run wherever its lines fell among other runs'. `target` `Some(None)` names a
+/// target never registered, so it selects nothing. Pure, so `undo` (over the whole
+/// history) and `status` (over the history projection) never disagree (M3-D37).
+pub fn newest_run(
+    entries: &[HistoryEntry],
+    last_by: Option<Actor>,
+    target: Option<Option<TargetKey>>,
+) -> Option<RunSelection<'_>> {
+    let on_target = |e: &HistoryEntry| target.is_none_or(|key| Some(e.target) == key);
+    let newest = entries.iter().rev().find(|e| {
+        e.kind.is_undoable() && on_target(e) && last_by.is_none_or(|actor| e.actor == actor)
+    })?;
+    if target.is_some() {
+        return Some(RunSelection {
+            entries: vec![newest],
+            run: None,
+        });
+    }
+    let key = newest.run_key();
+    Some(RunSelection {
+        entries: entries
+            .iter()
+            .rev()
+            .filter(|e| e.kind.is_undoable() && e.run_key() == key)
+            .collect(),
+        run: newest.run,
+    })
+}
+
 /// The most recent matching entry (`undo`, `undo --last-by`).
 pub fn last(paths: &Paths, filter: &HistoryFilter) -> Result<Option<HistoryEntry>> {
     let filter = HistoryFilter {
@@ -511,6 +595,70 @@ mod tests {
             run: None,
             backup: None,
         }
+    }
+
+    /// A transaction of `run` on `target` (`None`: a line from before M2).
+    fn of_run(n: u8, kind: TxKind, run: Option<RunId>, target: &str) -> HistoryEntry {
+        HistoryEntry {
+            run,
+            target: target.parse().unwrap(),
+            ..entry(n, Actor::Human, kind, "2026-10-21T18:00:00Z")
+        }
+    }
+
+    fn selected(found: &RunSelection<'_>) -> Vec<String> {
+        found.entries.iter().map(|e| e.tx.to_string()).collect()
+    }
+
+    #[test]
+    fn the_newest_run_gathers_its_interleaved_lines_and_skips_what_undo_never_reverts() {
+        const OTHER: &str = "01JB8Q2V9W0000000000000001";
+        let (a, b) = (RunId::new(), RunId::new());
+        // Two runs from two terminals, alternating; then a backup line.
+        let entries = vec![
+            of_run(1, TxKind::Install, Some(a), TARGET),
+            of_run(2, TxKind::Update, Some(b), TARGET),
+            of_run(3, TxKind::Install, Some(a), OTHER),
+            of_run(4, TxKind::Update, Some(b), OTHER),
+            of_run(5, TxKind::Backup, Some(RunId::new()), TARGET),
+        ];
+        let found = newest_run(&entries, None, None).unwrap();
+        assert_eq!(found.run, Some(b), "a backup is never the last change");
+        assert_eq!(
+            selected(&found),
+            [entries[3].tx.to_string(), entries[1].tx.to_string()],
+            "every line of the run, newest first"
+        );
+        // -t picks one transaction on that target; --last-by filters by actor.
+        let on_target = newest_run(&entries, None, Some(Some(TARGET.parse().unwrap()))).unwrap();
+        assert_eq!(selected(&on_target), [entries[1].tx.to_string()]);
+        assert_eq!(on_target.run, None);
+        assert!(newest_run(&entries, Some(Actor::Agent), None).is_none());
+        assert!(
+            newest_run(&entries, None, Some(None)).is_none(),
+            "never registered"
+        );
+        // An undo is the newest change, itself undoable (a redo).
+        let mut with_undo = entries.clone();
+        with_undo.push(HistoryEntry {
+            reverts: Some(entries[3].tx),
+            ..of_run(6, TxKind::Undo, Some(RunId::new()), OTHER)
+        });
+        assert_eq!(
+            selected(&newest_run(&with_undo, None, None).unwrap()),
+            [with_undo[5].tx.to_string()]
+        );
+        // A line from before M2 is a run by itself.
+        let old = vec![
+            of_run(1, TxKind::Install, None, TARGET),
+            of_run(2, TxKind::Install, None, TARGET),
+        ];
+        let found = newest_run(&old, None, None).unwrap();
+        assert_eq!(
+            (selected(&found), found.run),
+            (vec![old[1].tx.to_string()], None)
+        );
+        assert!(newest_run(&[], None, None).is_none());
     }
 
     #[test]

@@ -308,6 +308,11 @@ impl Paths {
         self.cache.join("backups.json")
     }
 
+    /// The history projection `status --cached` reads its last change from.
+    pub fn history_tail(&self) -> PathBuf {
+        self.cache.join("history_tail.json")
+    }
+
     /// The bar widget's doorbell: rung by every write that can change `status --cached`.
     pub fn doorbell_file(&self) -> PathBuf {
         self.cache.join("doorbell.json")

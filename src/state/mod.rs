@@ -7,6 +7,7 @@ pub mod doorbell;
 pub mod export_memo;
 pub mod files_index;
 pub mod history;
+pub mod history_tail;
 pub mod memo;
 pub mod paths;
 pub mod records;

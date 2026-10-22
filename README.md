@@ -679,6 +679,24 @@ Each client also shows:
 - **`adoptable`.** How many unmanaged folders a catalog entry names that is not installed on that client.
 - **`orphans`.** How many addons installed as dependencies nothing requires any more (from the record, `--cached` too).
 
+The human view opens with one summary line (`3 updates on 2 clients · 1 issue (P2) · retail running`, or `Nothing needs doing`), prints each client's issues under its row (`  P2 Plater's files changed on disk (3 files) → omaddons install Plater -t retail --reinstall`), and ends with the last change (`last change: update on classic, retail by human (2026-10-21 18:04) · undo: omaddons undo --run <run>`).
+
+The JSON adds three keys to `data`:
+
+- **`summary`.** The machine at a glance, for the widget and agents: `targets`, `running` (the ids of clients running now), `updates` (`available`, summed, and the `targets` that have some), `issues` (counts by severity: `p0` to `p3`), `check_due` (a check for updates is recommended), and `errors` (`new`, `targets`) and `widget_outdated`, which stay `0` and `false` until Lua error capture and the bar widget ship. `state` is the most pressing of `attention` (a P0 or P1 issue), `errors`, `updates` and `idle`.
+- **`issues`, on each client.** Its `attention` items as findings: `id` (a failure-mode id from the vision's D20 table, stable across releases), `severity` (`P0` to `P3`), a `title`, the `addon` when it is about one, and a `remediation` (`command`, `argv`, `destructive`; `argv` is `null` when the fix is advice, not a command). Ranked by severity, then id, then addon. `attention` stays as it was.
+
+  | Issue `id` | Severity | Raised by | Remediation |
+  |---|---|---|---|
+  | `fm-concurrency_primitives-journal-pending` | P0 | `journal_pending`; titled "needs manual repair" when recovery cannot settle it | advice: quit the game and run any changing command, or, for a manual repair, [`journal_pending` that does not clear](#journal_pending-that-does-not-clear) |
+  | `fm-schemas-state-version-newer` | P0 | `state_version_newer` | advice: upgrade omaddons |
+  | `fm-state_files-record-folder-missing` | P1 | `addon_folder_missing`, per addon | `omaddons install <addon> -t <id> --reinstall` |
+  | `fm-external_artifacts-managed-files-modified` | P2 | `addon_modified`, per addon | `omaddons install <addon> -t <id> --reinstall` |
+  | `fm-external_artifacts-ownership-transferred` | P2 | `addon_degraded` | `omaddons list -t <id> -v` |
+  | `fm-userland_state-target-vanished` | P2 | `target_missing` | `omaddons targets rm <id>` (destructive) |
+
+- **`last_change` and `last_change_state`.** What bare `omaddons undo` would revert now: its `run`, `kind`, `at`, `actor`, `reason`, the `targets` it touched, the folders it changed (`changes`: `added`, `replaced`, `removed`, `recorded`, `restored`, summed over the run) and the `undo` command (`command`, `argv`). Backups and settings changes are never the last change, since undo never reverts them. Plain `status` reads the whole history; `--cached` asks the history projection (`history_tail.json`) and writes nothing. `last_change_state` is `ok` (with `last_change` `null` when there is nothing to undo) or `unknown`, which `--cached` reports when the projection is missing, stale or cannot tell, and which never means there is nothing to undo; plain `status` then answers. The next command that changes something rebuilds the projection.
+
 Pending updates never count as attention: `status --check` stays a health check, and `outdated --check` is the update check. The recommendations:
 
 - `omaddons install <addon> -t <id> --reinstall`, for each modified or missing addon (at most 5);
@@ -1806,6 +1824,7 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDON
 | `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), failures retrying cannot change, and what downloading candidates taught (each archive's hash, and whether it loads on a client) | Yes; the next commands fetch and download again |
 | `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim, its text decoded and made safe (format 1.1; a 1.0 index is decoded once on load), refreshed after its hour | Yes; the next search or dependency lookup fetches it again |
 | `~/.cache/omaddons/doorbell.json` | A signal for the bar widget: rewritten (`{at, command, actor}`) by every change that can alter what `status --cached` reports, never by a read | Yes; the next change writes it again |
+| `~/.cache/omaddons/history_tail.json` | The history projection: the end of `history.jsonl` that holds its newest 16 runs with something to undo (at most 1 MiB), so `status --cached` reports the last change without reading a history of any size. Believed only while the history is exactly as long as it says and ends with its last line | Yes; `--cached` says `unknown` until the next change rebuilds it |
 | `~/.cache/omaddons/export.json` | The hash of the `addons.toml` `export --write` last wrote, so a hand-edited file is not overwritten | Yes; the next `--write` then needs `--overwrite` |
 | `<client>/Interface/.omaddons/target.json` | The client's identity, so a moved install keeps its id | Loses identity |
 | `<client>/Interface/.omaddons/snapshots/<tx>/` | `AddOns/` (replaced and removed folders) and `WTF/` (SavedVariables copies with a manifest): most of the undo data | Loses undo |

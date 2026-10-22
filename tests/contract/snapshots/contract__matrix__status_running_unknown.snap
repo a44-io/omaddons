@@ -11,7 +11,30 @@ expression: s.stable(&c.envelope)
       "in_progress": false,
       "pending": 0
     },
+    "last_change": null,
+    "last_change_state": "ok",
     "needs_attention": false,
+    "summary": {
+      "check_due": false,
+      "errors": {
+        "new": 0,
+        "targets": []
+      },
+      "issues": {
+        "p0": 0,
+        "p1": 0,
+        "p2": 0,
+        "p3": 0
+      },
+      "running": [],
+      "state": "idle",
+      "targets": 2,
+      "updates": {
+        "available": 0,
+        "targets": []
+      },
+      "widget_outdated": false
+    },
     "targets": [
       {
         "addons": {
@@ -34,6 +57,7 @@ expression: s.stable(&c.envelope)
         "id": "classic",
         "install_kind": "battlenet",
         "interface": 50504,
+        "issues": [],
         "key": null,
         "kind": "live",
         "label": "classic (battlenet)",
@@ -80,6 +104,7 @@ expression: s.stable(&c.envelope)
         "id": "retail",
         "install_kind": "battlenet",
         "interface": 120105,
+        "issues": [],
         "key": null,
         "kind": "live",
         "label": "retail (battlenet)",

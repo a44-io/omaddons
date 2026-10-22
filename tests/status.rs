@@ -298,6 +298,27 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
             .iter()
             .any(|w| w["code"] == "journal_pending")
     );
+    // The most urgent issue, and the summary that ranks the machine by it.
+    let issue = &retail["issues"][0];
+    assert_eq!(
+        (
+            &issue["id"],
+            &issue["severity"],
+            &issue["remediation"]["argv"]
+        ),
+        (
+            &Value::from("fm-concurrency_primitives-journal-pending"),
+            &Value::from("P0"),
+            &Value::Null
+        ),
+        "{envelope}"
+    );
+    assert!(issue["remediation"]["command"].is_string());
+    let summary = &envelope["data"]["summary"];
+    assert_eq!(
+        (&summary["state"], &summary["issues"]["p0"]),
+        (&Value::from("attention"), &Value::from(1))
+    );
     let envelope = m.status(&["--check"], 6);
     assert_eq!(
         (&envelope["ok"], &envelope["error"]["code"]),
@@ -368,6 +389,29 @@ fn a_deleted_client_is_missing() {
             .iter()
             .any(|c| c["argv"] == serde_json::json!(rm)),
         "{envelope}"
+    );
+    assert_eq!(
+        gone["issues"],
+        serde_json::json!([{
+            "id": "fm-userland_state-target-vanished",
+            "severity": "P2",
+            "title": "The client's directory is gone",
+            "addon": null,
+            "remediation": {
+                "command": rm.join(" "),
+                "argv": rm,
+                "destructive": true
+            }
+        }])
+    );
+    let human = m.home.exec(&["status".to_owned()]);
+    assert!(
+        human.stdout.contains(&format!(
+            "  P2 The client's directory is gone → {}",
+            rm.join(" ")
+        )),
+        "{}",
+        human.context()
     );
     let envelope = m.status(&["--check"], 6);
     assert_eq!(envelope["error"]["fix_argv"], serde_json::json!(rm));
@@ -667,5 +711,282 @@ mod updates {
             (&foo["name"], &foo["latest"]["status"]),
             (&json!("Foo"), &json!("pinned"))
         );
+    }
+}
+
+/// `last_change`: what bare `undo` would revert, from the whole history (plain `status`)
+/// or the history projection (`--cached`, M3-D37).
+mod last_change {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use serde_json::{Value, json};
+
+    use super::common::addons::toc;
+    use super::common::home::Home;
+    use super::common::http::Asset;
+    use super::common::wtf::Wtf;
+
+    /// Retail and Mists Classic with Foo v1 on both while v2 is out.
+    fn behind_on_two() -> Home {
+        let mut home = Home::new(&["wow", "wow_classic"]);
+        let (t1, t2) = (
+            toc("50504, 120105", &["## Version: v1"]),
+            toc("50504, 120105", &["## Version: v2"]),
+        );
+        let a1: [Asset<'_>; 1] = [("Foo.zip", &[], vec![("Foo/Foo.toc", t1.as_str())])];
+        let a2: [Asset<'_>; 1] = [("Foo.zip", &[], vec![("Foo/Foo.toc", t2.as_str())])];
+        home.installed_behind(
+            "https://github.com/o/foo",
+            ("v1", &a1),
+            ("v2", &a2),
+            &["retail", "classic"],
+        );
+        home
+    }
+
+    fn projection(home: &Home) -> PathBuf {
+        home.env.cache().join("omaddons/history_tail.json")
+    }
+
+    fn history(home: &Home) -> PathBuf {
+        home.state().join("history.jsonl")
+    }
+
+    /// `status <args>`'s `(last_change, last_change_state)`.
+    fn last(home: &Home, args: &[&str]) -> (Value, Value) {
+        let mut argv = vec!["status"];
+        argv.extend_from_slice(args);
+        let envelope = home.run(&argv).expect(0);
+        (
+            envelope["data"]["last_change"].clone(),
+            envelope["data"]["last_change_state"].clone(),
+        )
+    }
+
+    #[test]
+    fn an_update_on_two_clients_then_its_undo() {
+        let home = behind_on_two();
+        let update = home.run(&["update"]).expect(0);
+        let run = update["data"]["run"].as_str().unwrap().to_owned();
+
+        let (change, state) = last(&home, &[]);
+        assert_eq!(state, "ok");
+        assert_eq!(
+            (
+                &change["run"],
+                &change["kind"],
+                &change["targets"],
+                &change["changes"]["replaced"]
+            ),
+            (
+                &json!(run),
+                &json!("update"),
+                &json!(["classic", "retail"]),
+                &json!(2)
+            ),
+            "{change}"
+        );
+        assert_eq!(
+            change["undo"]["argv"],
+            json!(["omaddons", "undo", "--run", run])
+        );
+        assert_eq!(
+            last(&home, &["--cached"]),
+            (change.clone(), json!("ok")),
+            "the projection answers what the whole history does"
+        );
+
+        // Another run commits; the command shown still reverts the update, by its run.
+        let shown: Vec<String> = serde_json::from_value(change["undo"]["argv"].clone()).unwrap();
+        let bar = home.env.root().join("Bar");
+        fs::create_dir_all(&bar).unwrap();
+        fs::write(bar.join("Bar.toc"), toc("120105", &[])).unwrap();
+        let path = bar.display().to_string();
+        home.run(&["install", &path, "-t", "retail"]).expect(0);
+        assert_eq!(last(&home, &["--cached"]).0["kind"], "install");
+        let args: Vec<&str> = shown[1..].iter().map(String::as_str).collect();
+        let undo = home.run(&args).expect(0);
+        assert_eq!(undo["data"]["reverted_run"], run.as_str());
+        let statuses: Vec<&Value> = undo["data"]["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| &t["status"])
+            .collect();
+        assert_eq!(statuses, [&json!("undone"); 2]);
+        let undo_run = undo["data"]["run"].as_str().unwrap().to_owned();
+        let (change, state) = last(&home, &["--cached"]);
+        assert_eq!(state, "ok");
+        assert_eq!(
+            (&change["run"], &change["kind"], &change["targets"]),
+            (
+                &json!(undo_run),
+                &json!("undo"),
+                &json!(["classic", "retail"])
+            ),
+            "{change}"
+        );
+        assert_eq!(last(&home, &[]).0, change);
+        let human = home.exec(&["status".to_owned(), "--cached".to_owned()]);
+        assert!(
+            human
+                .stdout
+                .contains("last change: undo on classic, retail by ")
+                && human
+                    .stdout
+                    .contains(&format!("· undo: omaddons undo --run {undo_run}")),
+            "{}",
+            human.context()
+        );
+    }
+
+    #[test]
+    fn a_projection_deleted_corrupt_or_bypassed_is_unknown_until_the_next_change() {
+        let home = behind_on_two();
+        let installed = last(&home, &[]);
+        assert_eq!(last(&home, &["--cached"]), installed);
+        let unknown = (Value::Null, json!("unknown"));
+
+        // Deleted: unknown, and status builds nothing.
+        fs::remove_file(projection(&home)).unwrap();
+        assert_eq!(last(&home, &["--cached"]), unknown);
+        assert!(!projection(&home).exists(), "status writes nothing");
+        assert_eq!(
+            last(&home, &[]),
+            installed,
+            "plain status reads the history"
+        );
+        let human = home.exec(&["status".to_owned(), "--cached".to_owned()]);
+        assert!(
+            human
+                .stdout
+                .contains("last change: unknown (run omaddons status for it)"),
+            "{}",
+            human.context()
+        );
+        // A settings change rebuilds it.
+        home.run(&["config", "set", "check_interval_hours", "12"])
+            .expect(0);
+        assert_eq!(last(&home, &["--cached"]), installed);
+
+        // Corrupt.
+        fs::write(projection(&home), b"{ not json").unwrap();
+        assert_eq!(last(&home, &["--cached"]), unknown);
+        home.run(&["config", "set", "check_interval_hours", "6"])
+            .expect(0);
+        assert_eq!(last(&home, &["--cached"]), installed);
+
+        // A line written around omaddons.
+        let text = fs::read_to_string(history(&home)).unwrap();
+        let first = text.lines().next().unwrap().to_owned();
+        fs::write(history(&home), format!("{text}{first}\n")).unwrap();
+        assert_eq!(last(&home, &["--cached"]), unknown);
+        home.run(&["update"]).expect(0);
+        let updated = last(&home, &[]);
+        assert_eq!(updated.0["kind"], "update");
+        assert_eq!(last(&home, &["--cached"]), updated);
+    }
+
+    #[test]
+    fn backups_and_settings_changes_never_push_the_last_change_out() {
+        let home = behind_on_two();
+        Wtf::at(home.client("_retail_"))
+            .saved_variables("Foo", 64)
+            .build();
+        home.run(&["update"]).expect(0);
+        let updated = last(&home, &[]);
+        assert_eq!(updated.0["kind"], "update");
+        let env = [("OMADDONS_FS_FREE_MB", "1024")];
+        for _ in 0..40 {
+            let argv = ["backup", "create", "-t", "retail", "--json"].map(str::to_owned);
+            let r = home.exec_with(&argv, &env);
+            assert_eq!(r.code, 0, "{}", r.context());
+        }
+        for i in 0..20 {
+            let hours = (i + 1).to_string();
+            home.run(&["config", "set", "check_interval_hours", &hours])
+                .expect(0);
+        }
+        let lines = fs::read_to_string(history(&home)).unwrap().lines().count();
+        assert!(lines >= 62, "{lines} history lines");
+        assert_eq!(last(&home, &["--cached"]), updated);
+    }
+
+    #[test]
+    fn two_runs_whose_lines_alternate_give_what_bare_undo_selects() {
+        let home = behind_on_two();
+        let update = home.run(&["update"]).expect(0);
+        let run = update["data"]["run"].as_str().unwrap().to_owned();
+        // Put the installs' lines (one run each) between the update's two lines, as two
+        // terminals writing at once would: install, update, install, update, per client.
+        let text = fs::read_to_string(history(&home)).unwrap();
+        let line = |kind: &str, n: usize| -> String {
+            text.lines()
+                .filter(|l| serde_json::from_str::<Value>(l).unwrap()["kind"] == kind)
+                .nth(n)
+                .unwrap()
+                .to_owned()
+        };
+        let moved = [
+            line("install", 0),
+            line("update", 0),
+            line("install", 1),
+            line("update", 1),
+        ];
+        let mut rest: Vec<&str> = text
+            .lines()
+            .filter(|l| !moved.iter().any(|m| m == l))
+            .collect();
+        rest.extend(moved.iter().map(String::as_str));
+        fs::write(history(&home), rest.join("\n") + "\n").unwrap();
+        // The next change rebuilds the projection the rewrite made stale.
+        home.run(&["config", "set", "check_interval_hours", "12"])
+            .expect(0);
+
+        let (change, state) = last(&home, &[]);
+        assert_eq!(state, "ok");
+        assert_eq!(
+            (
+                &change["run"],
+                &change["targets"],
+                &change["changes"]["replaced"]
+            ),
+            (&json!(run), &json!(["classic", "retail"]), &json!(2)),
+            "{change}"
+        );
+        assert_eq!(last(&home, &["--cached"]), (change, json!("ok")));
+        let r = home.run(&["undo", "--dry-run"]);
+        let preview = r.expect(0);
+        assert_eq!(
+            preview["data"]["reverted_run"],
+            run.as_str(),
+            "{}",
+            r.context()
+        );
+        let targets: Vec<&Value> = preview["data"]["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| &t["target"]["id"])
+            .collect();
+        assert_eq!(targets.len(), 2, "{preview}");
+    }
+
+    #[test]
+    fn a_fresh_home_has_no_last_change() {
+        let home = Home::new(&["wow"]);
+        let nothing = (Value::Null, json!("ok"));
+        assert_eq!(last(&home, &[]), nothing);
+        assert_eq!(last(&home, &["--cached"]), nothing);
+        let envelope = home.run(&["status"]).expect(0);
+        assert_eq!(envelope["data"]["summary"]["state"], "idle");
+        let human = home.exec(&["status".to_owned()]);
+        assert!(
+            human.stdout.starts_with("Nothing needs doing\n"),
+            "{}",
+            human.context()
+        );
+        assert!(!human.stdout.contains("last change"), "{}", human.stdout);
     }
 }

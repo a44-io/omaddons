@@ -439,11 +439,7 @@ fn select<'e>(entries: &'e [HistoryEntry], s: &Selector<'_>) -> Result<Selection
             reverted_run: Some(run),
         });
     }
-    let newest = entries
-        .iter()
-        .rev()
-        .find(|e| e.kind.is_undoable() && on_target(e) && s.last_by.is_none_or(|a| e.actor == a));
-    let Some(newest) = newest else {
+    let Some(found) = history::newest_run(entries, s.last_by, s.target) else {
         return Err(match s.last_by {
             Some(actor) => none(format!(
                 "there is no transaction by {} to undo",
@@ -452,20 +448,9 @@ fn select<'e>(entries: &'e [HistoryEntry], s: &Selector<'_>) -> Result<Selection
             None => none("nothing to undo".to_owned()),
         });
     };
-    if s.target.is_some() {
-        return Ok(Selection {
-            entries: vec![newest],
-            reverted_run: None,
-        });
-    }
-    let key = newest.run_key();
     Ok(Selection {
-        entries: entries
-            .iter()
-            .rev()
-            .filter(|e| e.kind.is_undoable() && e.run_key() == key)
-            .collect(),
-        reverted_run: newest.run,
+        entries: found.entries,
+        reverted_run: found.run,
     })
 }
 

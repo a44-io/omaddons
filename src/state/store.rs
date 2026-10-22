@@ -165,6 +165,10 @@ pub const KINDS: &[(&str, SchemaVersion)] = &[
         <crate::backup::inventory::InventoryFile as Versioned>::KIND,
         <crate::backup::inventory::InventoryFile as Versioned>::CURRENT,
     ),
+    (
+        <super::history_tail::HistoryTail as Versioned>::KIND,
+        <super::history_tail::HistoryTail as Versioned>::CURRENT,
+    ),
     ("history", super::history::CURRENT),
 ];
 

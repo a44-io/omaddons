@@ -4,6 +4,7 @@
 //! home would act on the original's clients), exits 0 and keeps its promise:
 //! `reinstall` clears the drift, `update` leaves nothing to update, `remove_orphans`
 //! leaves no orphan and the explicit addons alone, `forget_target` forgets the client.
+//! Each issue's remediation command runs the same way and clears its issue.
 
 use std::collections::BTreeSet;
 
@@ -140,6 +141,7 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
         ("unmanaged", unmanaged, "list_unmanaged"),
     ];
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut fixed: BTreeSet<String> = BTreeSet::new();
     for (name, build, expected) in scenarios {
         let s = build();
         let status = s.json(&["status"], 0).envelope;
@@ -203,7 +205,40 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
                 _ => {}
             }
         }
+        // Every issue's remediation command runs too, and clears its issue unless it
+        // is a look (`inspect`).
+        for t in status["data"]["targets"].as_array().unwrap() {
+            let id = t["id"].as_str().unwrap();
+            for issue in t["issues"].as_array().unwrap() {
+                let Some(argv) = issue["remediation"]["argv"].as_array() else {
+                    continue;
+                };
+                fixed.insert(issue["id"].as_str().unwrap().to_owned());
+                let args: Vec<&str> = argv[1..].iter().map(|a| a.as_str().unwrap()).collect();
+                let fresh = build();
+                fresh.json(&args, 0);
+                let after = fresh.json(&["status"], 0).envelope;
+                let left = target(&after, id).is_some_and(|t| {
+                    t["issues"].as_array().unwrap().iter().any(|i| {
+                        // ubs:ignore — comparing issue ids, not secrets
+                        i["id"] == issue["id"] && i["addon"] == issue["addon"]
+                    })
+                });
+                let look = issue["id"] == "fm-external_artifacts-ownership-transferred";
+                assert_eq!(left, look, "{name}: {issue} after {args:?}: {after:#}");
+            }
+        }
     }
+    let expected: BTreeSet<String> = [
+        "fm-external_artifacts-managed-files-modified",
+        "fm-external_artifacts-ownership-transferred",
+        "fm-userland_state-target-vanished",
+    ]
+    .iter()
+    .map(|a| (*a).to_owned())
+    .collect();
+    let missing: Vec<&String> = expected.difference(&fixed).collect();
+    assert!(missing.is_empty(), "no remediation ran for: {missing:?}");
     let expected: BTreeSet<String> = [
         "reinstall",
         "update",

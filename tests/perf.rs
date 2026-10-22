@@ -25,18 +25,20 @@ use common::http::{Asset, paths, replay, scenario};
 use common::netlog::net_log;
 use jiff::Timestamp;
 use omaddons::drift::DriftMode;
-use omaddons::model::{Channel, FolderName, Ref};
+use omaddons::model::{Channel, FolderName, Ref, RunId};
 use omaddons::sources::wowi::index::{IndexPolicy, StoredIndex, WowiEntry, WowiIndex};
 use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use omaddons::state::memo::{self, MemoEntry, ReleaseMemo};
-use support::{addon_release, drift_report, measured, median_of_21};
+use support::{addon_release, drift_report, history_line, measured, median_of_21};
 
 #[cfg(test)]
 mod support {
     use omaddons::discover::DiscoverySource;
     use omaddons::discover::battlenet::{BattlenetHints, discover_root};
     use omaddons::drift::{DriftMode, DriftReport, check};
+    use omaddons::model::{Actor, FolderName, RunId, TargetKey, TxId, TxKind};
     use omaddons::rules::RulesTable;
+    use omaddons::state::history::{self, FolderOp, HistoryEntry, HistoryOp, TxResult};
 
     use super::common::home::Home;
     use super::common::http::{Asset, gh_latest, gh_release_v};
@@ -78,6 +80,34 @@ mod support {
             .target;
         let index = files_index(home, "retail");
         check(&retail, &record(home, "retail"), Some(&index), mode)
+    }
+
+    /// An update by `run` on `key` replacing twelve folders.
+    pub fn history_line(key: TargetKey, run: RunId) -> HistoryEntry {
+        HistoryEntry {
+            schema_version: history::CURRENT,
+            tx: TxId::new(),
+            kind: TxKind::Update,
+            at: jiff::Timestamp::now(),
+            target: key,
+            actor: Actor::Human,
+            reason: None,
+            argv: ["omaddons", "update"].map(str::to_owned).to_vec(),
+            ops: (0..12)
+                .map(|i| HistoryOp {
+                    op: FolderOp::Replace,
+                    folder: FolderName::try_from(format!("Addon{i:03}")).unwrap(),
+                    addon: format!("Addon{i:03}"),
+                    edit: None,
+                })
+                .collect(),
+            result: TxResult::Committed,
+            reverts: None,
+            sv_deferred: false,
+            created_addons_dir: false,
+            run: Some(run),
+            backup: None,
+        }
     }
 
     /// Release `tag` of `gh:bench/addonNN` (`n`) as the latest: `AddonNN` and
@@ -406,6 +436,53 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
     assert!(
         median < Duration::from_millis(5),
         "status --cached median {median:?} (memo {memo_bytes} bytes; runs {times:?})"
+    );
+
+    // A 20 MB history of three runs at a time interleaving, written around omaddons:
+    // the next change rebuilds the projection, and `--cached` reads that alone.
+    let history_file = paths(&home.env).history_file();
+    let mut text = fs::read_to_string(&history_file).unwrap();
+    let mut newest = None;
+    while text.len() < 20 << 20 {
+        let runs = [RunId::new(), RunId::new(), RunId::new()];
+        for _ in 0..4 {
+            for run in runs {
+                text.push_str(&serde_json::to_string(&history_line(key, run)).unwrap());
+                text.push('\n');
+            }
+        }
+        newest = Some(runs[2]);
+    }
+    fs::write(&history_file, &text).unwrap();
+    let start = Instant::now();
+    home.run(&["config", "set", "check_interval_hours", "6"])
+        .expect(0);
+    let rebuilt = start.elapsed();
+    let start = Instant::now();
+    let first = home.run(&["status", "--cached"]).expect(0);
+    let cold = start.elapsed();
+    let change = &first["data"]["last_change"];
+    assert_eq!(
+        (&first["data"]["last_change_state"], &change["run"]),
+        (
+            &serde_json::json!("ok"),
+            &serde_json::json!(newest.unwrap().to_string())
+        ),
+        "{change}"
+    );
+    assert_eq!(change["changes"]["replaced"], 4 * 12);
+    let (median, times) = median_of_21(|| {
+        home.run(&["status", "--cached"]).expect(0);
+    });
+    let p95 = times[times.len() * 95 / 100];
+    measured(format_args!(
+        "status --cached, {} MB history: median {median:?}, p95 {p95:?}, first {cold:?}; \
+         the change that rebuilt the projection {rebuilt:?}",
+        text.len() >> 20
+    ));
+    assert!(
+        median < Duration::from_millis(5),
+        "status --cached median {median:?} with a 20 MB history (runs {times:?})"
     );
 }
 

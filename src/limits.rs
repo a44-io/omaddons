@@ -125,6 +125,11 @@ pub const BACKUP_MIN_FREE: u64 = 2_048 * MIB;
 /// A client whose newest qualifying backup was captured longer ago than this (or that
 /// has none) is offered `backup create`.
 pub const BACKUP_STALE_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Runs with an undoable entry the history projection (`history_tail.json`) keeps whole,
+/// newest first; runs with none (backups, settings) never count.
+pub const HISTORY_TAIL_RUNS: usize = 16;
+/// The most bytes of history lines the history projection keeps.
+pub const HISTORY_TAIL_MAX_BYTES: u64 = MIB;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -481,6 +486,20 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "A client with no qualifying backup captured this recently is offered backup create",
     ),
+    limit(
+        "HISTORY_TAIL_RUNS",
+        LimitValue::Count(HISTORY_TAIL_RUNS as u64),
+        "count",
+        None,
+        "Runs with an undoable entry the history projection keeps whole",
+    ),
+    limit(
+        "HISTORY_TAIL_MAX_BYTES",
+        LimitValue::Bytes(HISTORY_TAIL_MAX_BYTES),
+        "bytes",
+        None,
+        "Size cap of the history projection",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -682,6 +701,8 @@ mod tests {
         "BACKUP_CAPTURE_ATTEMPTS",
         "BACKUP_MIN_FREE",
         "BACKUP_STALE_AFTER",
+        "HISTORY_TAIL_RUNS",
+        "HISTORY_TAIL_MAX_BYTES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

@@ -11,7 +11,55 @@ expression: s.stable(&c.envelope)
       "in_progress": false,
       "pending": 1
     },
+    "last_change": {
+      "actor": "agent",
+      "at": "<time>",
+      "changes": {
+        "added": 1,
+        "recorded": 0,
+        "removed": 0,
+        "replaced": 0,
+        "restored": 0
+      },
+      "kind": "install",
+      "reason": null,
+      "run": "<ulid>",
+      "targets": [
+        "retail"
+      ],
+      "undo": {
+        "argv": [
+          "omaddons",
+          "undo",
+          "--run",
+          "<ulid>"
+        ],
+        "command": "omaddons undo --run <ulid>"
+      }
+    },
+    "last_change_state": "ok",
     "needs_attention": true,
+    "summary": {
+      "check_due": false,
+      "errors": {
+        "new": 0,
+        "targets": []
+      },
+      "issues": {
+        "p0": 1,
+        "p1": 0,
+        "p2": 0,
+        "p3": 0
+      },
+      "running": [],
+      "state": "attention",
+      "targets": 2,
+      "updates": {
+        "available": 0,
+        "targets": []
+      },
+      "widget_outdated": false
+    },
     "targets": [
       {
         "addons": {
@@ -34,6 +82,7 @@ expression: s.stable(&c.envelope)
         "id": "classic",
         "install_kind": "battlenet",
         "interface": 50504,
+        "issues": [],
         "key": null,
         "kind": "live",
         "label": "classic (battlenet)",
@@ -82,6 +131,19 @@ expression: s.stable(&c.envelope)
         "id": "retail",
         "install_kind": "battlenet",
         "interface": 120105,
+        "issues": [
+          {
+            "addon": null,
+            "id": "fm-concurrency_primitives-journal-pending",
+            "remediation": {
+              "argv": null,
+              "command": "quit the game if it is running, then run any change command; it finishes or rolls back the change first",
+              "destructive": false
+            },
+            "severity": "P0",
+            "title": "An interrupted change waits to be finished"
+          }
+        ],
         "key": "<ulid>",
         "kind": "live",
         "label": "retail (battlenet)",

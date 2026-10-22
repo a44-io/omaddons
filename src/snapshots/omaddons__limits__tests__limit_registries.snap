@@ -562,6 +562,24 @@ expression: "(politeness, REGISTRY)"
       "unit": "ms",
       "config_key": null,
       "notes": "A client with no qualifying backup captured this recently is offered backup create"
+    },
+    {
+      "name": "HISTORY_TAIL_RUNS",
+      "value": {
+        "count": 16
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Runs with an undoable entry the history projection keeps whole"
+    },
+    {
+      "name": "HISTORY_TAIL_MAX_BYTES",
+      "value": {
+        "bytes": 1048576
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Size cap of the history projection"
     }
   ]
 ]
