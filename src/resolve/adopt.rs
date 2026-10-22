@@ -69,8 +69,9 @@ pub struct AdoptLookups<'a> {
 pub trait AdoptCatalog {
     /// Every entry that ships `folder`, whatever its families.
     fn by_folder(&self, folder: &FolderName) -> Vec<&Entry>;
-    /// The entry `name` is the name or an alias of, ignoring ASCII case.
-    fn by_name(&self, name: &str) -> Option<&Entry>;
+    /// The entry `name` (a name or an alias, ignoring ASCII case) means on a client of
+    /// `family` ([`Catalog::resolve`]).
+    fn resolve(&self, name: &str, family: Family) -> Option<&Entry>;
 }
 
 impl AdoptCatalog for Catalog {
@@ -78,8 +79,8 @@ impl AdoptCatalog for Catalog {
         Catalog::by_folder(self, folder)
     }
 
-    fn by_name(&self, name: &str) -> Option<&Entry> {
-        Catalog::by_name(self, name)
+    fn resolve(&self, name: &str, family: Family) -> Option<&Entry> {
+        Catalog::resolve(self, name, Some(family))
     }
 }
 
@@ -355,9 +356,10 @@ pub fn evidence(candidate: &CandidateFolder, lookups: &AdoptLookups<'_>) -> Vec<
             }
         }
 
-        // 6. The folder named like a catalog entry (any family: only ever a guess) or a
+        // 6. The folder named like a catalog entry (only ever a guess; a name with
+        // variants only as the client's family's, never another family's build) or a
         // WoWInterface project.
-        if let Some(entry) = lookups.catalog.by_name(f.as_str()) {
+        if let Some(entry) = lookups.catalog.resolve(f.as_str(), lookups.family) {
             push(
                 Evidence::NameMatch,
                 Some(entry.r#ref.clone()),
@@ -1048,6 +1050,7 @@ mod tests {
     ) -> Entry {
         Entry {
             name: name.into(),
+            variant: None,
             aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
             r#ref: r(r#ref),
             families: families.to_vec(),
@@ -1067,8 +1070,12 @@ mod tests {
                 .collect()
         }
 
-        fn by_name(&self, name: &str) -> Option<&Entry> {
-            self.0.iter().find(|e| e.answers_to(name))
+        fn resolve(&self, name: &str, family: Family) -> Option<&Entry> {
+            let all: Vec<&Entry> = self.0.iter().filter(|e| e.answers_to(name)).collect();
+            match all.as_slice() {
+                [only] if only.variant.is_none() => Some(only),
+                _ => all.into_iter().find(|e| e.families.contains(&family)),
+            }
         }
     }
 

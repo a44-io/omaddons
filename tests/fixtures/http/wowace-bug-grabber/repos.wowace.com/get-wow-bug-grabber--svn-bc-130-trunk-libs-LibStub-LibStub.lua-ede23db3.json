@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "request": {
+    "method": "GET",
+    "url": "https://repos.wowace.com/wow/bug-grabber/!svn/bc/130/trunk/libs/LibStub/LibStub.lua"
+  },
+  "responses": [
+    {
+      "status": 200,
+      "headers": [
+        [
+          "date",
+          "Thu, 22 Oct 2026 12:17:31 GMT"
+        ],
+        [
+          "content-type",
+          "text/plain"
+        ],
+        [
+          "content-length",
+          "1367"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "accept-ranges",
+          "bytes"
+        ],
+        [
+          "cache-control",
+          "max-age=604800"
+        ],
+        [
+          "etag",
+          "\"129//trunk/libs/LibStub/LibStub.lua\""
+        ],
+        [
+          "last-modified",
+          "Thu, 09 Oct 2008 16:05:54 GMT"
+        ],
+        [
+          "server",
+          "Apache/2.4.18 (Ubuntu)"
+        ],
+        [
+          "vary",
+          "Accept-Encoding"
+        ]
+      ],
+      "body_file": "get-wow-bug-grabber--svn-bc-130-trunk-libs-LibStub-LibStub.lua-ede23db3.body"
+    }
+  ]
+}

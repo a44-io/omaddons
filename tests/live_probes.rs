@@ -224,10 +224,13 @@ fn catalog_matches_declared_flavors() {
     }
 
     // What each entry declares: release.json for GitHub entries, catalog families for
-    // legacy git entries. `None`: no release.json (the REST fallback; skipped).
+    // legacy git entries. `None`: no release.json (the REST fallback; skipped). A row is
+    // (label, request, legacy, declared, listed): a name with variants is requested by
+    // each variant's ref, so each is proven by its own TOCs against its own families.
+    type Row = (String, String, bool, Option<BTreeSet<Family>>, String);
     let table = RulesTable::builtin();
     let (catalog, _) = Catalog::load(&paths(&env));
-    let mut rows: Vec<(String, bool, Option<BTreeSet<Family>>, String)> = Vec::new();
+    let mut rows: Vec<Row> = Vec::new();
     for entry in catalog.entries() {
         match &entry.r#ref {
             Ref::GitHub { .. } => {
@@ -256,7 +259,8 @@ fn catalog_matches_declared_flavors() {
                             .filter_map(|(f, i)| declared_family(&table, f, *i))
                             .collect()
                     });
-                rows.push((entry.name.clone(), false, declared, listed.join(", ")));
+                let name = entry.name.clone();
+                rows.push((name.clone(), name, false, declared, listed.join(", ")));
             }
             // Live entries whose TOCs are the only declaration (Tukui's patch[] and
             // WoWInterface's compatibility tags lag): judged by their catalog families,
@@ -264,12 +268,26 @@ fn catalog_matches_declared_flavors() {
             Ref::Tukui { .. } | Ref::Wowi { .. } => {
                 let declared: BTreeSet<Family> = entry.families.iter().copied().collect();
                 let listed: Vec<&str> = entry.families.iter().map(|f| f.as_str()).collect();
-                rows.push((entry.name.clone(), false, Some(declared), listed.join(", ")));
+                let name = entry.name.clone();
+                rows.push((name.clone(), name, false, Some(declared), listed.join(", ")));
             }
             Ref::Git { .. } => {
                 let declared: BTreeSet<Family> = entry.families.iter().copied().collect();
                 let listed: Vec<&str> = entry.families.iter().map(|f| f.as_str()).collect();
-                rows.push((entry.name.clone(), true, Some(declared), listed.join(", ")));
+                let name = entry.name.clone();
+                rows.push((name.clone(), name, true, Some(declared), listed.join(", ")));
+            }
+            // WowAce variants: each by its ref, on the generation its families are of.
+            Ref::WowAce { .. } => {
+                let declared: BTreeSet<Family> = entry.families.iter().copied().collect();
+                let listed: Vec<&str> = entry.families.iter().map(|f| f.as_str()).collect();
+                rows.push((
+                    entry.identity(),
+                    entry.r#ref.to_string(),
+                    entry.of_generation(true),
+                    Some(declared),
+                    listed.join(", "),
+                ));
             }
             _ => {}
         }
@@ -280,8 +298,8 @@ fn catalog_matches_declared_flavors() {
     for (families, legacy) in [(&live_families[..], false), (&legacy_families[..], true)] {
         let names: Vec<&str> = rows
             .iter()
-            .filter(|r| r.1 == legacy && r.2.is_some())
-            .map(|r| r.0.as_str())
+            .filter(|r| r.2 == legacy && r.3.is_some())
+            .map(|r| r.1.as_str())
             .collect();
         for family in families {
             let mut args = vec!["install"];
@@ -296,7 +314,7 @@ fn catalog_matches_declared_flavors() {
     // The matrix, then the mismatches.
     let mut matrix = String::new();
     let mut mismatches = Vec::new();
-    for (name, legacy, declared, listed) in &rows {
+    for (name, request, legacy, declared, listed) in &rows {
         let families = if *legacy {
             &legacy_families[..]
         } else {
@@ -308,7 +326,7 @@ fn catalog_matches_declared_flavors() {
                 cells.push(format!("{family}:-"));
                 continue;
             };
-            let result = results.get(&(name.clone(), *family));
+            let result = results.get(&(request.clone(), *family));
             let expected = declared.contains(family);
             let known = KNOWN_PUBLISHER_MISMATCHES
                 .iter()
@@ -453,6 +471,54 @@ fn wowace_bug_grabber_decodes() {
         latest.release_id,
         latest.revision.unwrap_or_default()
     );
+}
+
+/// The catalog's BugGrabber legacy variants (M3-D16), re-checked on trunk: r130 is the
+/// last revision declaring 2.4.3 (r131 declares 3.0) and r152 the 3.3.5a pin (r155
+/// declares 4.0; r153–r154 still say 3.3 but begin the 4.0 port). The last 4.3.4 and
+/// 5.4.8 revisions (r186, r203) need the packager (`@localization` keywords), as every
+/// revision of those eras does, so those families have no variant.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn wowace_bug_grabber_legacy_revisions() {
+    let Some((_env, http)) = live("wowace_bug_grabber_legacy_revisions") else {
+        return;
+    };
+    let base = |rev: u32| format!("https://repos.wowace.com/wow/bug-grabber/!svn/bc/{rev}/trunk/");
+    let interface = |rev: u32| -> String {
+        let resp = http
+            .send(Request::get(
+                format!("{}!BugGrabber.toc", base(rev)),
+                "probe",
+            ))
+            .unwrap();
+        let toc = String::from_utf8_lossy(&resp.bytes().unwrap()).into_owned();
+        toc.lines()
+            .find_map(|l| {
+                l.trim_start_matches('\u{feff}')
+                    .strip_prefix("## Interface:")
+            })
+            .map(|i| i.trim().to_owned())
+            .unwrap_or_default()
+    };
+    for (rev, declares) in [
+        (130, "20400"),
+        (131, "30000"),
+        (152, "30300"),
+        (155, "40000"),
+        (186, "40300"),
+        (187, "50001"),
+        (203, "50400"),
+        (204, "60000"),
+    ] {
+        assert_eq!(interface(rev), declares, "r{rev}");
+    }
+    for rev in [186, 203] {
+        let error =
+            wowace::assemble(http.as_ref(), &base(rev), rev, DOWNLOAD_MAX_BYTES).unwrap_err();
+        let refusal = wowace::packaging_refusal(&error).unwrap_or_default();
+        assert!(refusal.contains("@localization"), "r{rev}: {error:?}");
+    }
 }
 
 #[test]

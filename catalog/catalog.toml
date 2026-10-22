@@ -11,12 +11,21 @@
 # - the WoWInterface entries: the API's filedetails (the project's current file and its
 #   MD5), then that file, downloaded and MD5-checked: its top-level folders and the
 #   families its TOCs load on (the site's compatibility tags lag the TOCs);
-# - the legacy entries: the TOC's "## Interface" line in the repository.
+# - the legacy entries: the TOC's "## Interface" line in the repository;
+# - BugGrabber (2026-10-22): WowAce's PROPFIND of tags/ (the newest stable tag and its
+#   revision), then each tree fetched at its pinned revision and assembled within the
+#   packaging subset: the newest tag's TOC Interface list gives the modern families;
+#   trunk's TOC at each revision gives the legacy ones (r130 is the last 2.4.3 revision,
+#   r152 the 3.3.5a one). The 4.3.4 and 5.4.8 revisions need the packager (@localization
+#   keywords) and 1.12.1 lies outside trunk, so those families have no variant.
 # `families` lists where an entry is known to work (from release.json flavors, or the
-# TOCs' Interface); TOC verification still decides every install.
+# TOCs' Interface); TOC verification still decides every install. A name with several
+# entries gives each a `variant` and pairwise disjoint `families`: a client gets the one
+# declaring its family, or none.
 #
-# Override or extend it in <config>/omaddons/catalog.d/*.toml (same format;
-# `remove = true` drops a built-in entry by name).
+# Override or extend it in <config>/omaddons/catalog.d/*.toml (same format; an entry
+# naming a `variant` replaces only that one, one naming only the name replaces every
+# variant; `remove = true` drops a built-in entry by name, or one variant).
 
 schema_version = "1.0"
 
@@ -116,7 +125,7 @@ name = "BugSack"
 ref = "gh:funkydude/BugSack"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
 folders = ["BugSack"]
-notes = "!BugGrabber is an optional dependency with no official GitHub releases; install it yourself if you want it"
+notes = "its !BugGrabber is in the catalog (BugGrabber); install bugsack does not pull it, because it is an optional dependency (OptionalDeps never install)"
 
 [[addon]]
 name = "TellMeWhen"
@@ -401,6 +410,35 @@ ref = "tukui:tukui"
 families = ["mainline", "vanilla", "mists"]
 folders = ["Tukui"]
 notes = "20.463: Tukui-Mainline.toc carries Interface 110207, Tukui-Classic.toc 11507, Tukui-Mists.toc 50501"
+
+# ---- WowAce: one name, a build per set of families (variants, M3-D16) ------------------
+
+[[addon]]
+name = "BugGrabber"
+variant = "modern"
+aliases = ["!buggrabber", "bug-grabber"]
+ref = "wowace:bug-grabber"
+families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
+folders = ["!BugGrabber"]
+notes = "Lua error capture for omaddons errors and BugSack (WowAce SVN, keyless): the newest tag; v12.1.1's TOC carries Interface 11508, 11509, 16001, 20505, 20506, 30405, 38002, 40402, 50503, 50504, 120100, 120105, 120007"
+
+[[addon]]
+name = "BugGrabber"
+variant = "r152"
+aliases = ["!buggrabber", "bug-grabber"]
+ref = "wowace:bug-grabber#r152"
+families = ["wrath-legacy"]
+folders = ["!BugGrabber"]
+notes = "3.3.5a: trunk at r152 (GPL v2 or later), whose TOC carries Interface 30300"
+
+[[addon]]
+name = "BugGrabber"
+variant = "r130"
+aliases = ["!buggrabber", "bug-grabber"]
+ref = "wowace:bug-grabber#r130"
+families = ["tbc-legacy"]
+folders = ["!BugGrabber"]
+notes = "2.4.3: trunk at r130, the last revision whose TOC carries Interface 20400"
 
 # ---- Legacy clients: the repository is the addon ---------------------------------------
 

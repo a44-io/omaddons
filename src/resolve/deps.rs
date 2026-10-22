@@ -512,6 +512,7 @@ mod tests {
     fn entry(name: &str, r: &str, folders: &[&str], families: &[Family]) -> Entry {
         Entry {
             name: name.into(),
+            variant: None,
             aliases: Vec::new(),
             r#ref: r.parse().unwrap(),
             families: families.to_vec(),

@@ -325,17 +325,34 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
     if wants(SourceFilter::Catalog) {
         let (catalog, loaded) = Catalog::load(&world.paths);
         warnings.extend(loaded);
-        hits.extend(catalog.entries().iter().map(|e| Hit {
-            name: e.name.clone(),
-            r#ref: e.r#ref.clone(),
-            source: HitSource::Catalog,
-            author: None,
-            summary: e.notes.as_deref().map(cap_summary),
-            aliases: e.aliases.clone(),
-            folders: e.folders.iter().map(|f| f.as_str().to_owned()).collect(),
-            popularity: None,
-            updated_at: None,
-            basis: CompatBasis::Catalog(e.families.clone()),
+        // One hit per name, its default variant's; each client is judged by the variant
+        // it would get, so the families are every variant's.
+        let mut names: Vec<&str> = Vec::new();
+        for e in catalog.entries() {
+            if !names.iter().any(|n| n.eq_ignore_ascii_case(&e.name)) {
+                names.push(&e.name);
+            }
+        }
+        hits.extend(names.into_iter().filter_map(|name| {
+            let e = catalog.resolve(name, None)?;
+            let mut families = Vec::new();
+            for f in catalog.variants(name).iter().flat_map(|v| &v.families) {
+                if !families.contains(f) {
+                    families.push(*f);
+                }
+            }
+            Some(Hit {
+                name: e.name.clone(),
+                r#ref: e.r#ref.clone(),
+                source: HitSource::Catalog,
+                author: None,
+                summary: e.notes.as_deref().map(cap_summary),
+                aliases: e.aliases.clone(),
+                folders: e.folders.iter().map(|f| f.as_str().to_owned()).collect(),
+                popularity: None,
+                updated_at: None,
+                basis: CompatBasis::Catalog(families),
+            })
         }));
     }
 

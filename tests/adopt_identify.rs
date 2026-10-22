@@ -126,10 +126,10 @@ mod support {
             found
         }
 
-        fn by_name(&self, name: &str) -> Option<&Entry> {
+        fn resolve(&self, name: &str, family: Family) -> Option<&Entry> {
             self.builtin
                 .as_ref()
-                .and_then(|c| c.by_name(name))
+                .and_then(|c| c.resolve(name, Some(family)))
                 .or_else(|| self.extra.iter().find(|e| e.answers_to(name)))
         }
     }
@@ -143,6 +143,7 @@ mod support {
     ) -> Entry {
         Entry {
             name: name.into(),
+            variant: None,
             aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
             r#ref: r#ref.parse().unwrap(),
             families: families.to_vec(),

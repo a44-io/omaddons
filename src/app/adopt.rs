@@ -474,10 +474,12 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
     warnings.extend(catalog_warnings);
     // `--ref` lands on one target, with the ref read as `install` reads it.
     let (targets, over) = match &mode {
-        Mode::Ref { folder, r#ref } => (
-            vec![apply::ref_target(ctx, &world, folder)?],
-            Some(apply::parse_override(&world, &records, &catalog, r#ref)?),
-        ),
+        Mode::Ref { folder, r#ref } => {
+            let target = apply::ref_target(ctx, &world, folder)?;
+            let family = target.target.family;
+            let over = apply::parse_override(&world, &records, &catalog, (r#ref, family))?;
+            (vec![target], Some(over))
+        }
         _ => (world.select_many(ctx)?, None),
     };
     let engine = Engine::new(ctx, &world, "adopt")?;

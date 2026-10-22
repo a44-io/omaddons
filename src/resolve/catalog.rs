@@ -1,17 +1,24 @@
 //! The built-in addon catalog (vision §5.4): `omaddons install weakauras` works with no
 //! account and no repository in mind. `catalog/catalog.toml` is embedded in the binary;
 //! `<config>/omaddons/catalog.d/*.toml` overrides it in lexical file order (an entry with
-//! an existing name replaces it, `remove = true` drops it, new names are added). A bad
+//! an existing identity replaces it, `remove = true` drops it, new ones are added). A bad
 //! override file is skipped whole with `catalog_override_invalid`: a user's typo must
 //! never break install or status. Loading reads files only.
 //!
-//! Entries are `{name, aliases[], ref, families[], folders[], notes}`. `families` says
-//! where the publisher declares an entry works: `info` shows it, `search` reports
+//! Entries are `{name, variant, aliases[], ref, families[], folders[], notes}`. `families`
+//! says where the publisher declares an entry works: `info` shows it, `search` reports
 //! compatibility from it, and it orders the folder lookups of dependencies and adoption
 //! (entries declaring the client's family first, other entries of its generation only
-//! after Tukui and WoWInterface, never one of the other generation). It never refuses
-//! an install: TOC verification decides. `folders` feeds the folder index used by
-//! adoption and dependencies.
+//! after Tukui and WoWInterface, never one of the other generation). For a name with one
+//! entry it never refuses an install: TOC verification decides.
+//!
+//! **Variants** (M3-D16): one name may have several entries, one build each for a set of
+//! client families (BugGrabber's modern tags, and r152 for 3.3.5a). Each then has a
+//! `variant`, its identity is `name#variant`, and the variants' families are pairwise
+//! disjoint, so [`Catalog::resolve`] picks exactly one for a client's family, or none: a
+//! client no variant covers is never offered another family's build. An override naming
+//! a variant replaces or removes that one; one naming only the name replaces or removes
+//! them all. `folders` feeds the folder index used by adoption and dependencies.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -28,6 +35,10 @@ pub const BUILTIN: &str = include_str!("../../catalog/catalog.toml");
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Entry {
     pub name: String,
+    /// Which build of `name` this is when the catalog has several (`modern`, `r152`);
+    /// they select by the client's family.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
     pub aliases: Vec<String>,
     #[serde(rename = "ref")]
     pub r#ref: Ref,
@@ -41,6 +52,28 @@ impl Entry {
     pub fn answers_to(&self, name: &str) -> bool {
         self.name.eq_ignore_ascii_case(name)
             || self.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+    }
+
+    /// `name`, or `name#variant`: what an override names.
+    pub fn identity(&self) -> String {
+        match &self.variant {
+            Some(variant) => format!("{}#{variant}", self.name),
+            None => self.name.clone(),
+        }
+    }
+
+    /// Whether this entry is `name`'s, ignoring ASCII case.
+    fn named(&self, name: &str) -> bool {
+        self.name.eq_ignore_ascii_case(name)
+    }
+
+    /// Whether this entry is the variant `variant` (`None`: any), ignoring ASCII case.
+    fn is_variant(&self, variant: Option<&str>) -> bool {
+        variant.is_none_or(|v| {
+            self.variant
+                .as_deref()
+                .is_some_and(|w| w.eq_ignore_ascii_case(v))
+        })
     }
 
     /// Whether the publisher declares `family` (an entry declaring none claims all).
@@ -68,6 +101,7 @@ struct Document {
 #[serde(deny_unknown_fields)]
 struct RawEntry {
     name: String,
+    variant: Option<String>,
     #[serde(default)]
     aliases: Vec<String>,
     #[serde(rename = "ref")]
@@ -84,7 +118,11 @@ struct RawEntry {
 /// One change a file makes.
 enum Change {
     Upsert(Entry),
-    Remove(String),
+    /// Every variant of a name, or one of them.
+    Remove {
+        name: String,
+        variant: Option<String>,
+    },
 }
 
 /// The merged catalog.
@@ -157,9 +195,47 @@ impl Catalog {
         &self.entries
     }
 
-    /// The entry named or aliased `name`, ignoring ASCII case.
-    pub fn by_name(&self, name: &str) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.answers_to(name))
+    /// Every entry `name` (a name or an alias, ignoring ASCII case) answers to, in file
+    /// order: one name's variants, since an alias belongs to one name.
+    pub fn variants(&self, name: &str) -> Vec<&Entry> {
+        self.entries.iter().filter(|e| e.answers_to(name)).collect()
+    }
+
+    /// Whether `name` has variants, which select by the client's family.
+    pub fn has_variants(&self, name: &str) -> bool {
+        self.variants(name).iter().any(|e| e.variant.is_some())
+    }
+
+    /// The entry `name` (a name or an alias, ignoring ASCII case) means on a client of
+    /// `family` (M3-D16). A name without variants is its one entry, whatever the family
+    /// (TOC verification decides). A name with variants is the variant declaring
+    /// `family`, else `None`: the catalog has no build for that client. Without a family
+    /// (`info`, `search`): the variant declaring `mainline`, else the one whose first
+    /// family comes first in [`Family::ALL`].
+    pub fn resolve(&self, name: &str, family: Option<Family>) -> Option<&Entry> {
+        let all = self.variants(name);
+        if let [only] = all.as_slice()
+            && only.variant.is_none()
+        {
+            return Some(only);
+        }
+        match family {
+            Some(family) => all.into_iter().find(|e| e.families.contains(&family)),
+            None => {
+                let order = |e: &&Entry| {
+                    e.families
+                        .iter()
+                        .filter_map(|f| Family::ALL.iter().position(|a| a == f))
+                        .min()
+                        .unwrap_or(usize::MAX)
+                };
+                let modern = all
+                    .iter()
+                    .copied()
+                    .find(|e| e.families.contains(&Family::Mainline));
+                modern.or_else(|| all.iter().copied().min_by_key(order))
+            }
+        }
     }
 
     /// The entries that ship `folder`, in file order.
@@ -170,59 +246,138 @@ impl Catalog {
             .collect()
     }
 
-    /// Applies one file's changes, then checks that names and aliases stay unique.
+    /// Applies one file's changes by identity (a variant replaces or removes that one, a
+    /// bare name all of the name's), then validates the result.
     fn apply(&mut self, changes: Vec<Change>) -> Result<(), String> {
         for change in changes {
             match change {
-                Change::Upsert(entry) => match self
-                    .entries
-                    .iter()
-                    .position(|e| e.name.eq_ignore_ascii_case(&entry.name))
-                {
-                    Some(at) => {
-                        if let Some(slot) = self.entries.get_mut(at) {
-                            *slot = entry;
+                Change::Upsert(entry) => {
+                    let variant = entry.variant.clone();
+                    let at = match &variant {
+                        Some(v) => self
+                            .entries
+                            .iter()
+                            .position(|e| e.named(&entry.name) && e.is_variant(Some(v))),
+                        None => self.entries.iter().position(|e| e.named(&entry.name)),
+                    };
+                    match (at, variant) {
+                        (Some(at), Some(_)) => {
+                            if let Some(slot) = self.entries.get_mut(at) {
+                                *slot = entry;
+                            }
                         }
+                        // Every variant of the name, replaced where the first one was.
+                        (Some(at), None) => {
+                            self.entries.retain(|e| !e.named(&entry.name));
+                            self.entries.insert(at, entry);
+                        }
+                        (None, _) => self.entries.push(entry),
                     }
-                    None => self.entries.push(entry),
-                },
-                Change::Remove(name) => {
-                    self.entries.retain(|e| !e.name.eq_ignore_ascii_case(&name))
                 }
+                Change::Remove { name, variant } => self
+                    .entries
+                    .retain(|e| !(e.named(&name) && e.is_variant(variant.as_deref()))),
             }
         }
+        self.validate()
+    }
+
+    /// Names and aliases each belong to one name (a name's variants share theirs); a name
+    /// with several entries gives each a distinct `variant`, and their families are
+    /// pairwise disjoint and never empty (an empty list would claim every family).
+    fn validate(&self) -> Result<(), String> {
         let mut seen: Vec<(String, &str)> = Vec::new();
         for entry in &self.entries {
             for label in std::iter::once(&entry.name).chain(&entry.aliases) {
                 let key = label.to_ascii_lowercase();
-                if let Some((_, owner)) = seen.iter().find(|(k, _)| *k == key) {
-                    return Err(format!("{label:?} names both {owner} and {}", entry.name));
+                match seen.iter().find(|(k, _)| *k == key) {
+                    Some((_, owner)) if !entry.named(owner) => {
+                        return Err(format!("{label:?} names both {owner} and {}", entry.name));
+                    }
+                    Some(_) => {}
+                    None => seen.push((key, &entry.name)),
                 }
-                seen.push((key, &entry.name));
+            }
+        }
+        let mut names: Vec<&str> = Vec::new();
+        for entry in &self.entries {
+            if !names.iter().any(|n| entry.named(n)) {
+                names.push(&entry.name);
+            }
+        }
+        for name in names {
+            let group: Vec<&Entry> = self.entries.iter().filter(|e| e.named(name)).collect();
+            if let Some(e) = group
+                .iter()
+                .find(|e| e.variant.is_some() && e.families.is_empty())
+            {
+                return Err(format!(
+                    "{} declares no family, so it would claim every client",
+                    e.identity()
+                ));
+            }
+            if group.len() < 2 {
+                continue;
+            }
+            if group.iter().any(|e| e.variant.is_none()) {
+                return Err(format!(
+                    "{name} has {} entries, so each needs a variant",
+                    group.len()
+                ));
+            }
+            for (i, a) in group.iter().enumerate() {
+                for b in &group[i + 1..] {
+                    if b.is_variant(a.variant.as_deref()) {
+                        return Err(format!("{} is defined twice", a.identity()));
+                    }
+                    if let Some(f) = a.families.iter().find(|f| b.families.contains(f)) {
+                        return Err(format!(
+                            "{} and {} both declare {}: a name's variants declare disjoint families",
+                            a.identity(),
+                            b.identity(),
+                            f.as_str()
+                        ));
+                    }
+                }
             }
         }
         Ok(())
     }
 }
 
-/// Parses and validates one catalog file.
+/// A variant key: letters, digits, `.`, `_` and `-`.
+fn is_variant_key(v: &str) -> bool {
+    !v.is_empty()
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+/// Parses and validates one catalog file. A name appears in it once, or once per
+/// variant: two entries of one identity would silently become one.
 fn parse(text: &str, overrides: bool) -> Result<Vec<Change>, String> {
     let doc: Document = toml::from_str(text).map_err(|e| e.to_string())?;
     if !doc.schema_version.starts_with("1.") {
         return Err(format!("schema_version {} is not 1.x", doc.schema_version));
     }
-    doc.addon
+    let changes = doc
+        .addon
         .into_iter()
         .map(|raw| {
             let name = raw.name.trim().to_owned();
             if name.is_empty() {
                 return Err("an entry has an empty name".to_owned());
             }
+            let variant = raw.variant.map(|v| v.trim().to_owned());
+            if let Some(v) = variant.as_deref().filter(|v| !is_variant_key(v)) {
+                return Err(format!(
+                    "{name}: variant {v:?} is not letters, digits, '.', '_' or '-'"
+                ));
+            }
             if raw.remove {
                 if !overrides {
                     return Err(format!("{name}: remove = true only belongs in catalog.d"));
                 }
-                return Ok(Change::Remove(name));
+                return Ok(Change::Remove { name, variant });
             }
             let r#ref = raw
                 .r#ref
@@ -250,6 +405,7 @@ fn parse(text: &str, overrides: bool) -> Result<Vec<Change>, String> {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Change::Upsert(Entry {
                 name,
+                variant,
                 aliases: raw
                     .aliases
                     .iter()
@@ -262,7 +418,30 @@ fn parse(text: &str, overrides: bool) -> Result<Vec<Change>, String> {
                 notes: raw.notes,
             }))
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    let upserts: Vec<&Entry> = changes
+        .iter()
+        .filter_map(|c| match c {
+            Change::Upsert(e) => Some(e),
+            Change::Remove { .. } => None,
+        })
+        .collect();
+    for (i, a) in upserts.iter().enumerate() {
+        let twice = upserts[i + 1..].iter().find(|b| {
+            b.named(&a.name)
+                && (a.variant.is_none()
+                    || b.variant.is_none()
+                    || b.is_variant(a.variant.as_deref()))
+        });
+        if let Some(b) = twice {
+            return Err(format!(
+                "{} and {} are one entry twice: give each a distinct variant",
+                a.identity(),
+                b.identity()
+            ));
+        }
+    }
+    Ok(changes)
 }
 
 #[cfg(test)]
@@ -326,11 +505,11 @@ mod tests {
         let (catalog, warnings) = Catalog::load(&paths);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
-            catalog.by_name(&first).unwrap().r#ref.to_string(),
+            catalog.resolve(&first, None).unwrap().r#ref.to_string(),
             "gh:me/fork"
         );
-        assert_eq!(catalog.by_name("MY").unwrap().name, "Mine");
-        assert!(catalog.by_name(&second).is_none());
+        assert_eq!(catalog.resolve("MY", None).unwrap().name, "Mine");
+        assert!(catalog.resolve(&second, None).is_none());
         assert_eq!(catalog.entries().len(), builtin.entries().len());
     }
 
@@ -395,20 +574,235 @@ mod tests {
             catalog, builtin,
             "built-ins intact, and nothing from a half-valid file"
         );
-        assert!(Catalog::load(&paths).0.by_name("Ok").is_none());
+        assert!(Catalog::load(&paths).0.resolve("Ok", None).is_none());
+    }
+
+    /// `text`'s entries alone, loaded as an override file is.
+    fn only(text: &str) -> Result<Catalog, String> {
+        let mut catalog = Catalog::default();
+        catalog.apply(parse(&format!("{HEADER}{text}"), true)?)?;
+        Ok(catalog)
+    }
+
+    /// One `Grab` variant declaring `families`.
+    fn grab(variant: &str, families: &str) -> String {
+        format!(
+            "[[addon]]\nname = \"Grab\"\nvariant = \"{variant}\"\naliases = [\"g\"]\n\
+             ref = \"wowace:bug-grabber#r{}\"\nfamilies = [{families}]\nfolders = [\"!Grab\"]\n",
+            100 + variant.len()
+        )
+    }
+
+    #[test]
+    fn variants_select_by_family_and_never_cross() {
+        let text = [
+            grab("modern", "\"mainline\", \"vanilla\""),
+            grab("tbc", "\"tbc-legacy\""),
+            grab("wrath", "\"wrath-legacy\""),
+            grab("cata", "\"cata-legacy\""),
+            grab("mists", "\"mists-legacy\""),
+        ]
+        .concat();
+        let catalog = only(&text).unwrap();
+        let variant = |family| {
+            catalog
+                .resolve("G", family)
+                .and_then(|e| e.variant.as_deref())
+        };
+        assert_eq!(variant(Some(Family::Mainline)), Some("modern"));
+        assert_eq!(variant(Some(Family::Vanilla)), Some("modern"));
+        assert_eq!(variant(Some(Family::WrathLegacy)), Some("wrath"));
+        assert_eq!(variant(Some(Family::MistsLegacy)), Some("mists"));
+        assert_eq!(
+            variant(Some(Family::VanillaLegacy)),
+            None,
+            "no build, none borrowed"
+        );
+        assert_eq!(variant(Some(Family::Tbc)), None);
+        assert_eq!(variant(None), Some("modern"), "the mainline one by default");
+        assert!(catalog.has_variants("grab"));
+        assert_eq!(catalog.variants("g").len(), 5);
+        assert_eq!(
+            catalog.resolve("g", None).unwrap().identity(),
+            "Grab#modern"
+        );
+
+        let legacy = only(
+            &[
+                grab("wrath", "\"wrath-legacy\""),
+                grab("tbc", "\"tbc-legacy\""),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            legacy.resolve("grab", None).unwrap().identity(),
+            "Grab#tbc",
+            "without mainline: the first family in order"
+        );
+        // A lone variant still selects by family.
+        let lone = only(&grab("wrath", "\"wrath-legacy\"")).unwrap();
+        assert!(lone.resolve("grab", Some(Family::Mainline)).is_none());
+        assert!(
+            !only("[[addon]]\nname = \"X\"\nref = \"gh:a/b\"\n")
+                .unwrap()
+                .has_variants("x")
+        );
+    }
+
+    #[test]
+    fn the_validator_refuses_what_could_not_be_resolved() {
+        let two = |a: &str, b: &str| format!("{a}{b}");
+        let cases: &[(String, &str)] = &[
+            (
+                two(
+                    &grab("a", "\"wrath-legacy\""),
+                    &grab("b", "\"wrath-legacy\", \"tbc-legacy\""),
+                ),
+                "Grab#a and Grab#b both declare wrath-legacy",
+            ),
+            (
+                two(&grab("a", "\"wrath-legacy\""), &grab("A", "\"tbc-legacy\"")),
+                "one entry twice",
+            ),
+            (
+                two(
+                    &grab("a", "\"wrath-legacy\""),
+                    "[[addon]]\nname = \"grab\"\nref = \"gh:a/b\"\nfamilies = [\"tbc\"]\n",
+                ),
+                "one entry twice",
+            ),
+            (grab("a", ""), "Grab#a declares no family"),
+            (
+                two(
+                    &grab("a", "\"wrath-legacy\""),
+                    "[[addon]]\nname = \"Other\"\naliases = [\"g\"]\nref = \"gh:a/b\"\n",
+                ),
+                "\"g\" names both Grab and Other",
+            ),
+            (grab("a b", "\"wrath-legacy\""), "is not letters"),
+        ];
+        for (text, why) in cases {
+            let err = only(text).unwrap_err();
+            assert!(err.contains(why), "{err} (wanted {why:?})");
+        }
+        // Across files: a bare entry beside a variant has no variant of its own.
+        let mut catalog = only(&grab("a", "\"wrath-legacy\"")).unwrap();
+        let bare = parse(
+            &format!("{HEADER}[[addon]]\nname = \"Other\"\nref = \"gh:a/b\"\n"),
+            true,
+        )
+        .unwrap();
+        catalog.apply(bare).unwrap();
+        let mut other = catalog.clone();
+        let renamed = parse(
+            &format!(
+                "{HEADER}[[addon]]\nname = \"Grab2\"\naliases = [\"x\"]\nref = \"gh:a/b\"\n{}",
+                grab("b", "\"tbc-legacy\"")
+            ),
+            true,
+        )
+        .unwrap();
+        other.apply(renamed).unwrap();
+        assert_eq!(
+            other.variants("grab").len(),
+            2,
+            "aliases shared within one name"
+        );
+    }
+
+    #[test]
+    fn overrides_merge_by_identity() {
+        let builtin = Catalog::builtin().unwrap();
+        let identities = |c: &Catalog| -> Vec<String> {
+            c.variants("BugGrabber")
+                .iter()
+                .map(|e| e.identity())
+                .collect()
+        };
+        assert_eq!(
+            identities(&builtin),
+            ["BugGrabber#modern", "BugGrabber#r152", "BugGrabber#r130"],
+            "the shipped variants survive the embedded apply"
+        );
+        let load = |text: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = paths(dir.path());
+            write(&paths, "10.toml", &format!("{HEADER}{text}"));
+            Catalog::load(&paths)
+        };
+
+        let (one, warnings) = load(
+            "[[addon]]\nname = \"BugGrabber\"\nvariant = \"r152\"\naliases = [\"!buggrabber\"]\nref = \"wowace:bug-grabber#r150\"\nfamilies = [\"wrath-legacy\"]\nfolders = [\"!BugGrabber\"]\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(identities(&one), identities(&builtin), "in place");
+        assert_eq!(
+            one.resolve("buggrabber", Some(Family::WrathLegacy))
+                .unwrap()
+                .r#ref
+                .to_string(),
+            "wowace:bug-grabber#r150"
+        );
+        assert_eq!(
+            one.resolve("buggrabber", Some(Family::Mainline)),
+            builtin.resolve("buggrabber", Some(Family::Mainline)),
+            "the modern variant intact"
+        );
+
+        let (bare, warnings) = load(
+            "[[addon]]\nname = \"BugGrabber\"\nref = \"gh:me/grabber\"\nfolders = [\"!BugGrabber\"]\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            identities(&bare),
+            ["BugGrabber"],
+            "a bare name replaces them all"
+        );
+        assert!(
+            !bare.has_variants("bug-grabber"),
+            "and its aliases with them"
+        );
+
+        let (gone, warnings) = load("[[addon]]\nname = \"BugGrabber\"\nremove = true\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(identities(&gone).is_empty());
+
+        let (fewer, warnings) =
+            load("[[addon]]\nname = \"BugGrabber\"\nvariant = \"r130\"\nremove = true\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(identities(&fewer), ["BugGrabber#modern", "BugGrabber#r152"]);
+
+        let (kept, warnings) = load(
+            "[[addon]]\nname = \"BugGrabber\"\nvariant = \"new\"\nref = \"wowace:bug-grabber#r150\"\nfamilies = [\"wrath-legacy\"]\nfolders = [\"!BugGrabber\"]\n",
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, WarningCode::CatalogOverrideInvalid);
+        assert!(
+            warnings[0].message.contains("both declare wrath-legacy"),
+            "{}",
+            warnings[0].message
+        );
+        assert_eq!(kept, builtin, "an overlapping file is skipped whole");
     }
 
     #[test]
     fn lookups() {
         let catalog = Catalog::builtin().unwrap();
         let first = &catalog.entries()[0];
-        assert_eq!(catalog.by_name(&first.name.to_uppercase()), Some(first));
+        // A name without variants is its entry, whatever the family.
+        for family in [None, Some(Family::Mainline), Some(Family::VanillaLegacy)] {
+            assert_eq!(
+                catalog.resolve(&first.name.to_uppercase(), family),
+                Some(first)
+            );
+        }
         for alias in &first.aliases {
-            assert_eq!(catalog.by_name(alias), Some(first), "{alias}");
+            assert_eq!(catalog.resolve(alias, None), Some(first), "{alias}");
         }
         let folder = &first.folders[0];
         assert!(catalog.by_folder(folder).contains(&first));
-        assert!(catalog.by_name("no-such-addon").is_none());
+        assert!(catalog.resolve("no-such-addon", None).is_none());
 
         let mut shared = catalog.clone();
         let mut twin = first.clone();

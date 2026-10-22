@@ -22,7 +22,7 @@ use super::outcome::{
     DepItem, ItemDeps, addon_identity, dependency_items, dependency_suffix, sorted,
 };
 pub use super::outcome::{ItemError, ItemStatus, ModeNote, SkipReason, TargetRef};
-use super::resolve_args::{aimed_at, catalog_name, parse_ref};
+use super::resolve_args::{aimed_at, catalog_name, for_family, parse_ref};
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -533,6 +533,10 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
     let cache = engine.cache(freshness);
     // What both engine runs learned by downloading candidates.
     let mut facts = Vec::new();
+    // A catalog name with variants names each client's own (M3-D16).
+    let resolve_for = |p: &ParsedRef, request: &str, d: &DiscoveredTarget| {
+        for_family(p, &catalog, d.target.family, request)
+    };
     let chosen = choose_target(
         ctx,
         &world,
@@ -540,7 +544,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         &cache,
         &mut facts,
         &items,
-        &change_for,
+        (&change_for, &resolve_for),
     );
     let target = match chosen {
         Ok(target) => target,
@@ -550,6 +554,30 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             return Err(error);
         }
     };
+    let items: Vec<Item> = items
+        .into_iter()
+        .map(|i| Item {
+            parsed: i.parsed.and_then(|p| resolve_for(&p, &i.request, target)),
+            request: i.request,
+        })
+        .collect();
+    let parsed: Vec<&ParsedRef> = items
+        .iter()
+        .filter_map(|i| i.parsed.as_ref().ok())
+        .collect();
+    if parsed.is_empty() {
+        cache.remember(&facts);
+        let errors: Vec<(String, Error)> = items
+            .iter()
+            .filter_map(|i| {
+                i.parsed
+                    .as_ref()
+                    .err()
+                    .map(|e| (i.request.clone(), e.clone()))
+            })
+            .collect();
+        return Err(all_failed(&errors));
+    }
 
     let req = TxRequest {
         targets: vec![TxTarget {
@@ -757,6 +785,12 @@ fn recorded<'r>(
         .find(|a| a.r#ref == *r)
 }
 
+/// The change an install asks of a target for one parsed argument.
+type ChangeFor<'a> = &'a dyn Fn(&ParsedRef, &DiscoveredTarget) -> RequestedChange;
+/// What a parsed argument (with its request) names on a target: a catalog name with
+/// variants, that target's own.
+type ResolveFor<'a> = &'a dyn Fn(&ParsedRef, &str, &DiscoveredTarget) -> Result<ParsedRef>;
+
 /// `-t`, else the configured default, else the single live target every addon
 /// verifies on. Test clients (PTR, beta) are only ever chosen with `-t`.
 fn choose_target<'w>(
@@ -766,7 +800,7 @@ fn choose_target<'w>(
     cache: &ReleaseCache<'_>,
     facts: &mut Vec<CandidateFact>,
     items: &[Item],
-    change_for: &dyn Fn(&ParsedRef, &DiscoveredTarget) -> RequestedChange,
+    (change_for, resolve_for): (ChangeFor<'_>, ResolveFor<'_>),
 ) -> Result<&'w DiscoveredTarget> {
     let targets = &world.resolved.targets;
     if let Some(selector) = &ctx.target {
@@ -787,17 +821,23 @@ fn choose_target<'w>(
     }
 
     // Probe: plan every addon on every live target, without changing anything
-    // (downloads land in the blob cache the real run then reuses).
-    let parsed: Vec<&ParsedRef> = items
+    // (downloads land in the blob cache the real run then reuses). A catalog name with
+    // variants is each target's own, and none where no variant covers its family.
+    let parsed: Vec<(&str, &ParsedRef)> = items
         .iter()
-        .filter_map(|i| i.parsed.as_ref().ok())
+        .filter_map(|i| Some((i.request.as_str(), i.parsed.as_ref().ok()?)))
         .collect();
+    let on = |(request, p): (&str, &ParsedRef), d: &DiscoveredTarget| resolve_for(p, request, d);
     let probe = TxRequest {
         targets: live
             .iter()
             .map(|d| TxTarget {
                 discovered: (*d).clone(),
-                changes: parsed.iter().map(|p| change_for(p, d)).collect(),
+                changes: parsed
+                    .iter()
+                    .filter_map(|p| on(*p, d).ok())
+                    .map(|p| change_for(&p, d))
+                    .collect(),
                 default_kind: TxKind::Install,
                 dependency_locks: BTreeMap::new(),
             })
@@ -815,16 +855,26 @@ fn choose_target<'w>(
     // The same cache as the real run: each ref is fetched once across both.
     let probed = engine.run(&probe, Some(cache))?;
     facts.extend(probed.plan.facts.iter().cloned());
-    let failure = |d: &DiscoveredTarget, r: &Ref| {
+    // Why an addon fails on a target, and whether that is the target's alone: a catalog
+    // name with no build for its family is, like a release that does not load there.
+    let failure = |d: &DiscoveredTarget, p: (&str, &ParsedRef)| -> Option<(Error, bool)> {
+        let resolved = match on(p, d) {
+            Ok(resolved) => resolved,
+            Err(error) => return Some((error, true)),
+        };
         probed
             .failures
             .iter()
-            .find(|f| f.target == d.target.id && f.r#ref.as_ref() == Some(r))
-            .and_then(|f| f.cause.as_ref())
+            .find(|f| f.target == d.target.id && f.r#ref.as_ref() == Some(&resolved.r#ref))
+            .and_then(|f| f.cause.clone())
+            .map(|e| {
+                let specific = client_specific(e.code);
+                (e, specific)
+            })
     };
     // An addon that fails on every client cannot choose one.
-    let fails_everywhere = |p: &ParsedRef| live.iter().all(|d| failure(d, &p.r#ref).is_some());
-    if parsed.iter().all(|p| fails_everywhere(p)) {
+    let fails_everywhere = |p: (&str, &ParsedRef)| live.iter().all(|d| failure(d, p).is_some());
+    if parsed.iter().all(|p| fails_everywhere(*p)) {
         let errors: Vec<(String, Error)> = items
             .iter()
             .map(|i| {
@@ -832,9 +882,9 @@ fn choose_target<'w>(
                     Err(e) => e.clone(),
                     Ok(p) => live
                         .iter()
-                        .filter_map(|d| failure(d, &p.r#ref))
-                        .find(|e| !client_specific(e.code))
-                        .cloned()
+                        .filter_map(|d| failure(d, (&i.request, p)))
+                        .find(|(_, specific)| !specific)
+                        .map(|(e, _)| e)
                         .unwrap_or_else(|| no_compatible(&i.request, &live)),
                 };
                 (i.request.clone(), error)
@@ -842,10 +892,10 @@ fn choose_target<'w>(
             .collect();
         return Err(all_failed(&errors));
     }
-    let deciding: Vec<&ParsedRef> = parsed
+    let deciding: Vec<(&str, &ParsedRef)> = parsed
         .iter()
         .copied()
-        .filter(|p| !fails_everywhere(p))
+        .filter(|p| !fails_everywhere(*p))
         .collect();
     let compatible: Vec<&DiscoveredTarget> = live
         .iter()
@@ -853,13 +903,12 @@ fn choose_target<'w>(
         .filter(|d| {
             deciding
                 .iter()
-                .all(|p| failure(d, &p.r#ref).is_none_or(|e| !client_specific(e.code)))
+                .all(|p| failure(d, *p).is_none_or(|(_, specific)| !specific))
         })
         .collect();
-    let requests = items
+    let requests = deciding
         .iter()
-        .filter(|i| i.parsed.as_ref().is_ok_and(|p| deciding.contains(&p)))
-        .map(|i| i.request.as_str())
+        .map(|(request, _)| *request)
         .collect::<Vec<_>>()
         .join(", ");
     match compatible.as_slice() {

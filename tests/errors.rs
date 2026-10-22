@@ -108,6 +108,16 @@ mod support {
         &envelope["data"]["targets"][0]
     }
 
+    /// The target whose id `pick` accepts.
+    pub fn target(envelope: &Value, pick: impl Fn(&str) -> bool) -> &Value {
+        envelope["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| pick(t["target"]["id"].as_str().unwrap_or_default()))
+            .unwrap()
+    }
+
     /// `(addon, kind, count, new)` for each listed addon of the retail target.
     pub fn addons_of(envelope: &Value) -> Vec<(String, String, u64, u64)> {
         retail(envelope)["addons"]
@@ -680,32 +690,86 @@ fn incomplete_reads_are_reported_and_fail_the_check() {
     );
 }
 
+/// A client without BugGrabber gets the catalog's build for it as a runnable install
+/// (which works, replayed); a 1.12 client, for which no build is known, gets no command
+/// and says so, never another family's build.
 #[test]
 fn a_client_without_bug_grabber_is_listed_with_a_hint() {
-    let home = common::home::Home::new(&["wow"]);
+    let mut home = common::home::Home::new(&["wow"]);
+    home.with_custom(
+        common::trees::CustomRoot::at(home.env.root().join("wow-112")).version(1, 12, 1, 5875),
+    );
     let run = home.exec_with(
         &["errors", "--json"].map(str::to_owned),
         &[("OMADDONS_NOW", support::CLOCK)],
     );
     let envelope = run.expect(0);
-    assert_eq!(support::retail(&envelope)["capture"], "none");
+    let retail = support::target(&envelope, |id| id == "retail");
+    assert_eq!(
+        (&retail["capture"], retail.get("capture_note")),
+        (&json!("none"), None)
+    );
+    let vanilla = support::target(&envelope, |id| id != "retail");
+    assert_eq!(
+        (&vanilla["capture"], &vanilla["capture_note"]),
+        (
+            &json!("none"),
+            &json!("no BugGrabber build for this client is known")
+        )
+    );
     assert_eq!(
         envelope["commands"],
         json!([{
             "action": "install_buggrabber",
-            "command": "omaddons search buggrabber",
-            "argv": ["omaddons", "search", "buggrabber"],
+            "command": "omaddons install buggrabber -t retail",
+            "argv": ["omaddons", "install", "buggrabber", "-t", "retail"],
             "destructive": false
-        }])
+        }]),
+        "one install, for the client a build is known for"
     );
     let human = home.exec(&["errors".to_owned()]);
     assert!(
         human
             .stdout
-            .contains("no Lua errors are captured: BugGrabber is not installed")
+            .contains("no Lua errors are captured: BugGrabber is not installed"),
+        "{}",
+        human.context()
+    );
+    assert!(
+        human
+            .stdout
+            .contains("no Lua errors are captured: no BugGrabber build for this client is known"),
+        "{}",
+        human.context()
+    );
+    assert!(
+        human
+            .stdout
+            .contains("Capture Lua errors: omaddons install buggrabber -t retail"),
+        "{}",
+        human.context()
     );
     let missing = home.run(&["errors", "--addon", "Foo", "-t", "retail"]);
     assert_eq!(missing.expect(3)["error"]["code"], "not_found");
+
+    // The hint as given installs BugGrabber.
+    home.serve_recorded("wowace-bug-grabber");
+    let argv: Vec<String> = envelope["commands"][0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|a| a.as_str().unwrap().to_owned())
+        .collect();
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let installed = home.run(&args);
+    let item = &installed.expect(0)["data"]["items"][0];
+    assert_eq!(
+        (&item["status"], &item["ref"]),
+        (&json!("installed"), &json!("wowace:bug-grabber")),
+        "{}",
+        installed.context()
+    );
 }
 
 #[test]

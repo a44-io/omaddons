@@ -43,6 +43,7 @@ use crate::model::TxKind;
 use crate::model::{Target, TargetKey};
 use crate::output::{Outcome, Style};
 use crate::privacy::WtfPathRedactor;
+use crate::resolve::catalog::Catalog;
 use crate::resolve::updates::{StatusKind, UpdateStatus};
 use crate::state::history::{self, Dismissed, SettingEntry};
 use crate::state::paths::ClientPaths;
@@ -389,6 +390,10 @@ pub struct ErrorsTarget {
     pub target: TargetRef,
     /// `buggrabber` when Lua errors are captured; `none` without BugGrabber.
     pub capture: CaptureState,
+    /// Without BugGrabber, when the catalog knows no build of it for this client (so no
+    /// `install_buggrabber` command is offered): why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_note: Option<String>,
     /// `truncated` when a bound cut the walk for BugGrabber's files.
     pub coverage: CoverageState,
     pub files: Files,
@@ -659,12 +664,16 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
+/// Why a client without BugGrabber is offered no install.
+const NO_BUGGRABBER_BUILD: &str = "no BugGrabber build for this client is known";
+
 fn render_target(w: &mut dyn Write, t: &ErrorsTarget, label: &str) -> std::io::Result<()> {
     if t.capture == CaptureState::None {
-        return writeln!(
-            w,
-            "{label} · no Lua errors are captured: BugGrabber is not installed"
-        );
+        let why = t
+            .capture_note
+            .as_deref()
+            .unwrap_or("BugGrabber is not installed");
+        return writeln!(w, "{label} · no Lua errors are captured: {why}");
     }
     let s = &t.summary;
     let mut head = vec![label.to_owned(), "BugGrabber".to_owned()];
@@ -821,6 +830,8 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
     let seen = observe(ctx, &world, &mut memo, &acks, now, &mut warnings)?;
     let found: Vec<Target> = seen.iter().map(|s| s.target.clone()).collect();
     let running_scan = detect_running(&found);
+    let (catalog, catalog_warnings) = Catalog::load(&world.paths);
+    warnings.extend(catalog_warnings);
     let mut view = View {
         since,
         addon: args.addon.as_deref(),
@@ -829,6 +840,7 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
         raw_details: args.raw_details,
         check: args.check,
         verbose,
+        catalog: &catalog,
         commands: Vec::new(),
         failure: None,
     };
@@ -1000,6 +1012,8 @@ struct View<'a> {
     raw_details: bool,
     check: bool,
     verbose: bool,
+    /// Where BugGrabber comes from on each client (M3-D16).
+    catalog: &'a Catalog,
     commands: Vec<CommandHint>,
     failure: Option<Error>,
 }
@@ -1135,12 +1149,19 @@ impl View<'_> {
                 false,
             ));
         }
+        // Without BugGrabber: the catalog's build for this client, or none known (never
+        // another family's).
+        let mut capture_note = None;
         if observation.capture == Capture::None {
-            self.commands.push(CommandHint::new(
-                "install_buggrabber",
-                ["omaddons", "search", "buggrabber"],
-                false,
-            ));
+            if self.catalog.resolve("buggrabber", Some(t.family)).is_some() {
+                self.commands.push(CommandHint::new(
+                    "install_buggrabber",
+                    ["omaddons", "install", "buggrabber", "-t", t.id.as_str()],
+                    false,
+                ));
+            } else {
+                capture_note = Some(NO_BUGGRABBER_BUILD.to_owned());
+            }
         }
         let dismiss = DismissInfo {
             precondition: of_dismiss(&[DismissPart {
@@ -1188,6 +1209,7 @@ impl View<'_> {
                 Capture::BugGrabber => CaptureState::Buggrabber,
                 Capture::None => CaptureState::None,
             },
+            capture_note,
             coverage: match observation.coverage {
                 Coverage::Complete => CoverageState::Complete,
                 Coverage::Truncated { .. } => CoverageState::Truncated,

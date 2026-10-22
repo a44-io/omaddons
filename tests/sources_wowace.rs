@@ -182,7 +182,8 @@ mod support {
 
     /// What the recorded scenario shows, live or replayed: BugGrabber's newest stable tag
     /// and v12.1.0 (revision 401), each tree packaged as `!BugGrabber/` with the TOC's
-    /// version line filled in; and trunk at r152, the 3.3.5a build. Every body goes
+    /// version line filled in; trunk at r152, the 3.3.5a build; and trunk at r130, the
+    /// 2.4.3 build. Every body goes
     /// through C1's parsers on the way (the tag list, each listing, `.pkgmeta`, the
     /// keyword scan). Returns the newest tag's release.
     pub fn check_recorded(http: &dyn Http) -> Release {
@@ -219,6 +220,19 @@ mod support {
         let toc = &files["!BugGrabber/!BugGrabber.toc"];
         assert!(toc.contains("## Version: v12.1.0\n"), "{toc}");
         assert!(toc.contains("120105"), "{toc}");
+
+        // The catalog's 2.4.3 variant: the last trunk revision declaring it, within the
+        // packaging subset (its libraries are committed, not externals).
+        let tbc = Wanted::stable("wowace:bug-grabber#r130".parse().unwrap());
+        let mut sets = fetch_once([tbc.clone()], &registry, http);
+        let release = sets.remove(&tbc).unwrap().unwrap().releases.remove(0);
+        let files = assembled(http, &release);
+        let toc = &files["!BugGrabber/!BugGrabber.toc"];
+        assert!(toc.contains("## Interface: 20400"), "{toc}");
+        assert!(
+            files.contains_key("!BugGrabber/libs/LibStub/LibStub.lua"),
+            "{files:?}"
+        );
 
         let trunk = results.remove(&peg).unwrap().unwrap().releases.remove(0);
         assert_eq!(

@@ -61,7 +61,9 @@ pub fn adopt_fixes(
             continue;
         };
         let catalog = catalog.get_or_insert_with(|| Catalog::load(&world.paths).0);
-        let r#ref = catalog.by_name(name).map(|e| &e.r#ref);
+        let r#ref = catalog
+            .resolve(name, Some(d.target.family))
+            .map(|e| &e.r#ref);
         fixes.push(adopt_folder(&entry.name, r#ref, &d.target.id));
     }
     fixes

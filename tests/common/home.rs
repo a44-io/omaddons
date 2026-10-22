@@ -141,6 +141,12 @@ impl Home {
         dir
     }
 
+    /// Adds the committed scenario `tests/fixtures/http/<name>/` to this home's fixtures
+    /// (a recording of a live server, as `common::http::scenario` names it).
+    pub fn serve_recorded(&self, name: &str) {
+        copy_dir(&super::http::scenario(name), &self.http);
+    }
+
     /// A fresh scenario holding a copy of the current one's fixtures.
     fn next_scenario(&mut self) -> PathBuf {
         let mut n = 1;

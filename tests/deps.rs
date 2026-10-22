@@ -1285,6 +1285,49 @@ fn a_bridge_dependency_warns_on_the_first_install_only() {
     assert!(record_of(&home, "Masque").is_some(), "{}", r.context());
 }
 
+/// A bridge requirement named like a catalog name with variants: its fix is the catalog
+/// install only where a variant covers the client's family, else what the dependency
+/// resolver finds, as for a name the catalog does not know.
+#[test]
+fn a_bridge_fix_names_the_catalog_only_where_a_variant_covers_the_client() {
+    let home = masque_bridge();
+    // The built-in Masque is one entry: it goes first, so the name can have variants.
+    let write = |modern: &str| {
+        let text = format!(
+            "schema_version = \"1.0\"\n\
+             [[addon]]\nname = \"Masque\"\nremove = true\n\
+             [[addon]]\nname = \"Masque\"\nvariant = \"modern\"\nref = \"gh:o/masque\"\nfamilies = [{modern}]\nfolders = [\"Masque\"]\n\
+             [[addon]]\nname = \"Masque\"\nvariant = \"old\"\nref = \"gh:o/masque-old\"\nfamilies = [\"wrath-legacy\"]\nfolders = [\"Masque\"]\n"
+        );
+        let dir = home.env.config().join("omaddons/catalog.d");
+        std::fs::write(dir.join("50-deps.toml"), text).unwrap();
+    };
+    let fix_of = |home: &Home| {
+        let r = home.run(&["install", "gh:o/foo", "-t", "retail"]);
+        let envelope = r.expect(0);
+        assert_eq!(
+            warning(&envelope, "catalog_override_invalid"),
+            Value::Null,
+            "{}",
+            r.context()
+        );
+        let fix = warning(&envelope, "bridge_dependency")["fix_argv"].clone();
+        home.run(&["undo"]).expect(0);
+        fix
+    };
+    write("\"mainline\"");
+    assert_eq!(
+        fix_of(&home),
+        json!(["omaddons", "install", "Masque", "-t", "retail"])
+    );
+    write("\"vanilla\"");
+    assert_eq!(
+        fix_of(&home),
+        json!(["omaddons", "install", "gh:o/masque", "-t", "retail"]),
+        "no variant for mainline: the resolver's ref, never the name"
+    );
+}
+
 #[test]
 fn optional_dependencies_show_under_verbose_only() {
     let home = Home::new(&["wow"]);

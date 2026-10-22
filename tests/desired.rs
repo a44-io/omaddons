@@ -19,7 +19,7 @@ use omaddons::discover::registry::reconcile;
 use omaddons::error::{ErrorCode, WarningCode};
 use omaddons::model::Ref;
 use omaddons::resolve::catalog::Catalog;
-use omaddons::rules::RulesTable;
+use omaddons::rules::{Family, RulesTable};
 use omaddons::state::desired::{Entry, parse, validate};
 use omaddons::state::registry::load_registry;
 
@@ -63,7 +63,7 @@ fn entries_resolve_like_install_arguments_on_their_own_target() {
     let resolve = |request: &str, target: &str| {
         resolve_entry(
             &Entry::named(request),
-            target,
+            (target, Family::Mainline),
             &records,
             &catalog,
             &[],
@@ -101,7 +101,15 @@ fn entries_resolve_like_install_arguments_on_their_own_target() {
     // A table entry resolves its ref before its name.
     let mut table = Entry::named("foo");
     table.r#ref = Some("gh:o/other".into());
-    let resolved = resolve_entry(&table, "retail", &records, &catalog, &[], &base).unwrap();
+    let resolved = resolve_entry(
+        &table,
+        ("retail", Family::Mainline),
+        &records,
+        &catalog,
+        &[],
+        &base,
+    )
+    .unwrap();
     assert_eq!(resolved, gh("other"));
 }
 
@@ -173,7 +181,10 @@ fn a_file_parses_into_entries_that_resolve() {
     let resolved: Vec<Ref> = state.families[&omaddons::rules::Family::Mainline]
         .entries
         .iter()
-        .map(|e| resolve_entry(e, "retail", &BTreeMap::new(), &catalog, &[], base).unwrap())
+        .map(|e| {
+            let target = ("retail", Family::Mainline);
+            resolve_entry(e, target, &BTreeMap::new(), &catalog, &[], base).unwrap()
+        })
         .collect();
     assert_eq!(
         resolved,

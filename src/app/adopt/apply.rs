@@ -15,7 +15,7 @@ use crate::app::engine::Engine;
 use crate::app::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetsData,
 };
-use crate::app::resolve_args::parse_ref;
+use crate::app::resolve_args::{for_family, parse_ref};
 use crate::app::world::World;
 use crate::cli::{Context, fix_argv};
 use crate::discover::DiscoveredTarget;
@@ -32,6 +32,7 @@ use crate::model::{
 use crate::resolve::adopt::{GroupClaim, Strength, Tier};
 use crate::resolve::cache::ReleaseCache;
 use crate::resolve::catalog::Catalog;
+use crate::rules::Family;
 use crate::state::memo::CandidateFact;
 use crate::state::records::TargetRecord;
 
@@ -113,15 +114,17 @@ pub(super) struct Override {
 }
 
 /// `request` read as `install` reads an argument (catalog names and aliases, URLs,
-/// paths, installed names).
+/// paths, installed names), on a client of `family` (a catalog name with variants names
+/// that family's).
 pub(super) fn parse_override(
     world: &World,
     records: &BTreeMap<String, TargetRecord>,
     catalog: &Catalog,
-    request: &str,
+    (request, family): (&str, Family),
 ) -> Result<Override> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let parsed = parse_ref(&world.config.git_hosts, records, catalog, &cwd, request)?;
+    let parsed = for_family(&parsed, catalog, family, request)?;
     let name = catalog
         .entries()
         .iter()

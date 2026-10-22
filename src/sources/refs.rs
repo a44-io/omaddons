@@ -23,6 +23,10 @@ pub struct ParsedRef {
     /// An asset file name from a release-download URL.
     pub asset_hint: Option<String>,
     pub matched_by: MatchKind,
+    /// A catalog name with variants (M3-D16): `ref` is its default variant's, and each
+    /// client resolves its own (`app::resolve_args::for_family`).
+    #[serde(skip)]
+    pub catalog_variants: Option<String>,
 }
 
 /// How an input was recognized.
@@ -50,6 +54,9 @@ pub struct InstalledMatch {
 pub struct CatalogMatch {
     pub name: String,
     pub r#ref: Ref,
+    /// Every variant's ref when the name has variants (empty otherwise): an addon
+    /// installed from any of them is this name, not another candidate.
+    pub variants: Vec<Ref>,
 }
 
 /// What the parser may consult besides the input: the working directory, configured
@@ -158,6 +165,7 @@ fn parsed(r#ref: Ref, matched_by: MatchKind) -> ParsedRef {
         version_hint: None,
         asset_hint: None,
         matched_by,
+        catalog_variants: None,
     }
 }
 
@@ -512,17 +520,26 @@ fn local_or_name(input: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
     }
 
     // A bare name: installed addons, the catalog, and a local entry of that name.
+    let catalog = (ctx.catalog)(input);
     let mut found: Vec<(Ref, String, MatchKind)> = Vec::new();
     for m in (ctx.installed)(input) {
+        // An addon installed from one of a catalog name's variants is that name, which
+        // each client resolves for itself.
+        if catalog
+            .as_ref()
+            .is_some_and(|c| c.variants.contains(&m.r#ref))
+        {
+            continue;
+        }
         found.push((
             m.r#ref,
             format!("installed as {} on {}", m.name, m.target_id),
             MatchKind::Installed,
         ));
     }
-    if let Some(m) = (ctx.catalog)(input) {
+    if let Some(m) = &catalog {
         found.push((
-            m.r#ref,
+            m.r#ref.clone(),
             format!("the catalog entry {}", m.name),
             MatchKind::Catalog,
         ));
@@ -542,7 +559,13 @@ fn local_or_name(input: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
             Suggestion::command(["omaddons", "search", input]),
         )
         .alternative(Suggestion::command(["omaddons", "help", "install"]))),
-        (1, Some((r, _, kind))) => Ok(parsed(r.clone(), *kind)),
+        (1, Some((r, _, kind))) => {
+            let mut p = parsed(r.clone(), *kind);
+            if matches!(kind, MatchKind::Catalog) {
+                p.catalog_variants = catalog.filter(|c| !c.variants.is_empty()).map(|c| c.name);
+            }
+            Ok(p)
+        }
         _ => {
             let mut candidates: Vec<(Ref, String)> = Vec::new();
             for (r, from, _) in found {
@@ -627,6 +650,12 @@ mod tests {
                     r#ref: gh("Tercioo", "Details-Damage-Meter"),
                     target_id: "retail".into(),
                 }],
+                // The 3.3.5a variant, installed on one client.
+                "buggrabber" => vec![InstalledMatch {
+                    name: "BugGrabber".into(),
+                    r#ref: "wowace:bug-grabber#r152".parse().unwrap(),
+                    target_id: "wotlk".into(),
+                }],
                 _ => Vec::new(),
             }
         };
@@ -635,16 +664,27 @@ mod tests {
                 "weakauras" => Some(CatalogMatch {
                     name: "weakauras".into(),
                     r#ref: gh("weakauras", "weakauras2"),
+                    variants: Vec::new(),
                 }),
                 "details" => Some(CatalogMatch {
                     name: "details".into(),
                     r#ref: Ref::Wowi { id: 23_534 },
+                    variants: Vec::new(),
                 }),
                 "elvui" => Some(CatalogMatch {
                     name: "elvui".into(),
                     r#ref: Ref::Tukui {
                         slug: "elvui".into(),
                     },
+                    variants: Vec::new(),
+                }),
+                "buggrabber" => Some(CatalogMatch {
+                    name: "BugGrabber".into(),
+                    r#ref: "wowace:bug-grabber".parse().unwrap(),
+                    variants: vec![
+                        "wowace:bug-grabber".parse().unwrap(),
+                        "wowace:bug-grabber#r152".parse().unwrap(),
+                    ],
                 }),
                 _ => None,
             }
@@ -1005,6 +1045,30 @@ mod tests {
             assert_eq!(
                 err.alternatives[0].argv().unwrap(),
                 ["omaddons", "install", "wowi:23534"]
+            );
+        });
+    }
+
+    /// A catalog name with variants is that name even where one of its variants is
+    /// installed: never ambiguous with itself, and marked for each client to resolve.
+    #[test]
+    fn an_installed_variant_is_its_catalog_name() {
+        let dir = tempfile::tempdir().unwrap();
+        with_ctx(dir.path(), |ctx| {
+            let p = parse_user_ref("BugGrabber", ctx).unwrap();
+            assert_eq!(
+                (p.r#ref.to_string().as_str(), p.matched_by),
+                ("wowace:bug-grabber", MatchKind::Catalog)
+            );
+            assert_eq!(p.catalog_variants.as_deref(), Some("BugGrabber"));
+            let plain = parse_user_ref("weakauras", ctx).unwrap();
+            assert_eq!(plain.catalog_variants, None, "a name without variants");
+            assert!(
+                serde_json::to_value(&p)
+                    .unwrap()
+                    .get("catalog_variants")
+                    .is_none(),
+                "never on the wire"
             );
         });
     }

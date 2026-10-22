@@ -2070,7 +2070,13 @@ impl TargetPlanner<'_> {
                 id.to_owned(),
             ])
         };
-        let fix = if self.ctx.catalog.by_name(requires).is_some() {
+        // A catalog name with variants only where one covers this client's family.
+        let catalogued = self
+            .ctx
+            .catalog
+            .resolve(requires, Some(self.target.family))
+            .is_some();
+        let fix = if catalogued {
             install(requires.to_owned())
         } else {
             let indexes = self.ctx.indexes.map(|indexes| IndexLookups {

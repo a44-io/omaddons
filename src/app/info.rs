@@ -19,7 +19,7 @@ use serde::Serialize;
 
 use super::drift::DriftSummary;
 use super::history::TargetRef;
-use super::resolve_args::{aimed_at, parse_ref};
+use super::resolve_args::{aimed_at, for_family, parse_ref};
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -82,10 +82,23 @@ pub struct InfoData {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct CatalogInfo {
     pub name: String,
+    /// The variant shown, when the name has several (M3-D16).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
     pub aliases: Vec<String>,
     pub families: Vec<Family>,
     pub folders: Vec<FolderName>,
     pub notes: Option<String>,
+    /// The name's other variants, and the families each is for.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<CatalogVariant>,
+}
+
+/// Another variant of a catalog name.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CatalogVariant {
+    pub variant: String,
+    pub families: Vec<Family>,
 }
 
 /// One installed record.
@@ -222,17 +235,31 @@ impl Outcome for InfoOutcome {
         writeln!(w, "{name}  {}", d.r#ref)?;
         if let Some(c) = &d.catalog {
             let folders: Vec<&str> = c.folders.iter().map(FolderName::as_str).collect();
-            let families: Vec<String> = c
-                .families
-                .iter()
-                .filter_map(|f| serde_json::to_value(f).ok()?.as_str().map(str::to_owned))
-                .collect();
+            let families = |list: &[Family]| -> String {
+                list.iter()
+                    .map(|f| f.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let variant = c
+                .variant
+                .as_ref()
+                .map(|v| format!(" ({v})"))
+                .unwrap_or_default();
             writeln!(
                 w,
-                "  catalog: folders {} · families {}",
+                "  catalog{variant}: folders {} · families {}",
                 folders.join(", "),
-                families.join(", ")
+                families(&c.families)
             )?;
+            for other in &c.variants {
+                writeln!(
+                    w,
+                    "  other build ({}): families {}",
+                    other.variant,
+                    families(&other.families)
+                )?;
+            }
         }
         for i in &d.installed {
             let confidence = serde_json::to_value(i.version_confidence)
@@ -332,8 +359,21 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
             aimed_at(e, &ctx.argv, &args.query)
         }
     })?;
-    let r = parsed.r#ref.clone();
     let targets: Vec<&DiscoveredTarget> = world.select_many(ctx)?;
+    // A catalog name with variants means the selected client's (one `-t`, else the
+    // default target), else its default variant.
+    let family = match targets.as_slice() {
+        [one] => Some(one.target.family),
+        _ => world
+            .default_target(&ctx.argv)
+            .and_then(Result::ok)
+            .map(|d| d.target.family),
+    };
+    let parsed = match family {
+        Some(family) => for_family(&parsed, &catalog, family, &args.query)?,
+        None => parsed,
+    };
+    let r = parsed.r#ref.clone();
 
     let mut installed = Vec::new();
     // Each installed release, for the changelog's oldest.
@@ -392,13 +432,25 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
         .entries()
         .iter()
         .find(|e| e.r#ref == r)
-        .or_else(|| catalog.by_name(&args.query));
+        .or_else(|| catalog.resolve(&args.query, family));
     let catalog_info = entry.map(|e| CatalogInfo {
         name: e.name.clone(),
+        variant: e.variant.clone(),
         aliases: e.aliases.clone(),
         families: e.families.clone(),
         folders: e.folders.clone(),
         notes: e.notes.clone(),
+        variants: catalog
+            .variants(&e.name)
+            .into_iter()
+            .filter(|other| other.identity() != e.identity())
+            .filter_map(|other| {
+                Some(CatalogVariant {
+                    variant: other.variant.clone()?,
+                    families: other.families.clone(),
+                })
+            })
+            .collect(),
     });
     let name = installed
         .first()

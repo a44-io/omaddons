@@ -1098,14 +1098,9 @@ fn folders_that_cannot_be_adopted_fail_and_write_nothing() {
 fn a_taken_name_is_recorded_with_its_folder_and_a_warning() {
     let home = foo_home();
     home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
-    // Another project the catalog also calls Foo.
-    catalog(
-        &home,
-        &[
-            ("Foo", "gh:o/foo", &["Foo", "Foo_Options"]),
-            ("Foo", "gh:o/foo-two", &["FooTwo"]),
-        ],
-    );
+    // Another project the catalog calls Foo. (One file naming Foo twice would be
+    // refused: two entries of one name are variants, each with its own key.)
+    catalog(&home, &[("Foo", "gh:o/foo-two", &["FooTwo"])]);
     unpack(
         &home.addons("_retail_"),
         &[("FooTwo/FooTwo.toc", &toc("120105", &["## Version: 2"]))],

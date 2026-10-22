@@ -437,7 +437,7 @@ fn target_work(
     let base = path.parent().unwrap_or_else(|| Path::new("/"));
     let git_hosts = &world.config.git_hosts;
     let wanted = desired::desired_for(state, t, |e| {
-        resolve_entry(e, &t.id, records, catalog, git_hosts, base)
+        resolve_entry(e, (&t.id, t.family), records, catalog, git_hosts, base)
     });
     let at = |entry: &Entry| format!("{} line {}", path.display(), entry.line);
     let mut work = TargetWork::default();

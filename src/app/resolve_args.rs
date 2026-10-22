@@ -6,9 +6,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::error::{Error, Result, Suggestion};
+use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::Ref;
 use crate::resolve::catalog::Catalog;
+use crate::rules::Family;
 use crate::sources::refs::{CatalogMatch, InstalledMatch, ParsedRef, RefContext, parse_user_ref};
 use crate::state::desired::Entry;
 use crate::state::records::TargetRecord;
@@ -58,18 +59,52 @@ pub fn aimed_at(mut error: Error, argv: &[String], request: &str) -> Error {
 /// are). Errors are `ref_invalid`, `ref_ambiguous` and `not_found`, as for `install`.
 pub fn resolve_entry(
     entry: &Entry,
-    target_id: &str,
+    target: (&str, Family),
     records: &BTreeMap<String, TargetRecord>,
     catalog: &Catalog,
     git_hosts: &[String],
     base_dir: &Path,
 ) -> Result<Ref> {
+    let (target_id, family) = target;
     let own: Vec<(&str, &TargetRecord)> = records
         .iter()
         .filter(|(id, _)| id.eq_ignore_ascii_case(target_id))
         .map(|(k, v)| (k.as_str(), v))
         .collect();
-    parse_among(git_hosts, &own, catalog, base_dir, entry.request()).map(|p| p.r#ref)
+    let request = entry.request();
+    parse_among(git_hosts, &own, catalog, base_dir, request)
+        .and_then(|p| for_family(&p, catalog, family, request))
+        .map(|p| p.r#ref)
+}
+
+/// What `parsed` names on a client of `family`: itself, unless it is a catalog name with
+/// variants (M3-D16), which names the variant declaring `family`. On a client no variant
+/// covers, the catalog has no entry: `not_found`, as for a name it does not know, never
+/// another family's build.
+pub fn for_family(
+    parsed: &ParsedRef,
+    catalog: &Catalog,
+    family: Family,
+    request: &str,
+) -> std::result::Result<ParsedRef, Error> {
+    let Some(name) = &parsed.catalog_variants else {
+        return Ok(parsed.clone());
+    };
+    match catalog.resolve(name, Some(family)) {
+        Some(entry) => Ok(ParsedRef {
+            r#ref: entry.r#ref.clone(),
+            ..parsed.clone()
+        }),
+        None => Err(Error::new(
+            ErrorCode::NotFound,
+            format!(
+                "no {name} build for this client is known ({} clients)",
+                family.as_str()
+            ),
+            Suggestion::command(["omaddons", "search", request]),
+        )
+        .details(serde_json::json!({ "name": name, "family": family }))),
+    }
 }
 
 fn parse_among(
@@ -100,10 +135,22 @@ fn parse_among(
         }
         found
     };
+    // A name with variants answers with its default variant; each client then resolves
+    // its own ([`for_family`]).
     let in_catalog = |name: &str| {
-        catalog.by_name(name).map(|e| CatalogMatch {
+        let variants = if catalog.has_variants(name) {
+            catalog
+                .variants(name)
+                .into_iter()
+                .map(|e| e.r#ref.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        catalog.resolve(name, None).map(|e| CatalogMatch {
             name: e.name.clone(),
             r#ref: e.r#ref.clone(),
+            variants,
         })
     };
     let ref_ctx = RefContext {

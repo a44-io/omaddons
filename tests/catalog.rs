@@ -4,16 +4,21 @@
 
 mod common;
 
+use common::addons::{toc, unpack};
 use common::env::TestEnv;
+use common::home::Home;
 use common::http::{record, replay, scenario};
 use common::netlog::{assert_each_url_once, assert_no_github_rest, read_net_log};
+use common::state::record as target_record;
 use omaddons::model::Ref;
 use omaddons::resolve::catalog::Catalog;
 use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
-use support::wanted;
+use serde_json::{Value, json};
+use support::{legacy, wanted};
 
 #[cfg(test)]
 mod support {
+    use super::common::trees::CustomRoot;
     use super::*;
 
     /// A stable fetch of every catalog entry whose ref `keep` accepts.
@@ -25,6 +30,27 @@ mod support {
             .filter(|e| keep(&e.r#ref))
             .map(|e| Wanted::stable(e.r#ref.clone()))
             .collect()
+    }
+
+    /// Registers a custom client of `version` (major, minor, patch, build) in `home`;
+    /// returns its target id.
+    pub fn legacy(home: &mut Home, dir: &str, version: (u16, u16, u16, u16)) -> String {
+        let (major, minor, patch, build) = version;
+        let root = CustomRoot::at(home.env.root().join(dir)).version(major, minor, patch, build);
+        let client = home.with_custom(root);
+        let targets = home.run(&["targets"]).expect(0);
+        targets["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| {
+                t["client_dir"]
+                    .as_str()
+                    .is_some_and(|d| std::path::Path::new(d) == client)
+            })
+            .and_then(|t| t["id"].as_str())
+            .unwrap()
+            .to_owned()
     }
 }
 
@@ -187,5 +213,197 @@ fn every_git_entry_resolves() {
     assert!(
         log.iter().all(|e| e.host == "github.com"),
         "resolution reads only commits feeds: {log:?}"
+    );
+}
+
+// ---- BugGrabber: one name, each client its own build (M3-D16) --------------------------
+
+/// The ref and status `install` reports for its one item.
+fn installed(run: &common::home::Run) -> (Value, Value) {
+    let envelope = run.expect(0);
+    let item = &envelope["data"]["items"][0];
+    (item["ref"].clone(), item["status"].clone())
+}
+
+/// `install buggrabber` installs each client's build (replayed from the WowAce
+/// recording); `pin`, `unpin` and `update` find it by its name or either alias; `info`
+/// shows the client's variant and the others' families.
+#[test]
+fn buggrabber_installs_each_clients_own_build() {
+    let mut home = Home::new(&["wow"]);
+    let wotlk = legacy(&mut home, "wow-335", (3, 3, 5, 12_340));
+    let tbc = legacy(&mut home, "wow-243", (2, 4, 3, 8606));
+    home.serve_recorded("wowace-bug-grabber");
+    for (target, r) in [
+        ("retail", "wowace:bug-grabber"),
+        (wotlk.as_str(), "wowace:bug-grabber#r152"),
+        (tbc.as_str(), "wowace:bug-grabber#r130"),
+    ] {
+        let run = home.run(&["install", "buggrabber", "-t", target]);
+        assert_eq!(
+            installed(&run),
+            (json!(r), json!("installed")),
+            "{}",
+            run.context()
+        );
+        let addon = target_record(&home, target)
+            .addons
+            .into_values()
+            .next()
+            .unwrap();
+        assert_eq!(
+            (addon.name.as_str(), addon.r#ref.to_string()),
+            ("BugGrabber", r.to_owned())
+        );
+    }
+    for target in ["retail", wotlk.as_str()] {
+        home.run(&["pin", "bug-grabber", "-t", target]).expect(0);
+        assert!(target_record(&home, target).addons["buggrabber"].pinned);
+        home.run(&["unpin", "!BugGrabber", "-t", target]).expect(0);
+        assert!(!target_record(&home, target).addons["buggrabber"].pinned);
+        let run = home.run(&["update", "buggrabber", "-t", target]);
+        let envelope = run.expect(0);
+        assert_eq!(
+            envelope["data"]["summary"]["failed"],
+            0,
+            "{}",
+            run.context()
+        );
+    }
+
+    let info = home.run(&["info", "buggrabber", "-t", &wotlk]).expect(0);
+    let catalog = &info["data"]["catalog"];
+    assert_eq!(
+        (
+            &info["data"]["ref"],
+            &catalog["variant"],
+            &catalog["families"]
+        ),
+        (
+            &json!("wowace:bug-grabber#r152"),
+            &json!("r152"),
+            &json!(["wrath-legacy"])
+        )
+    );
+    assert_eq!(
+        catalog["variants"],
+        json!([
+            {"variant": "modern", "families": ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]},
+            {"variant": "r130", "families": ["tbc-legacy"]}
+        ])
+    );
+    let info = home.run(&["info", "buggrabber"]).expect(0);
+    assert_eq!(
+        (&info["data"]["ref"], &info["data"]["catalog"]["variant"]),
+        (&json!("wowace:bug-grabber"), &json!("modern")),
+        "several clients and no default: the modern build"
+    );
+}
+
+/// Without `-t`: the default target's build; with no default, the probe skips a client
+/// no build is known for instead of offering it another family's.
+#[test]
+fn without_t_buggrabber_goes_where_its_build_is_known() {
+    let mut home = Home::new(&[]);
+    let wotlk = legacy(&mut home, "wow-335", (3, 3, 5, 12_340));
+    legacy(&mut home, "wow-243", (2, 4, 3, 8606));
+    home.serve_recorded("wowace-bug-grabber");
+    home.run(&["config", "set", "default_target", &wotlk])
+        .expect(0);
+    let run = home.run(&["install", "buggrabber"]);
+    assert_eq!(
+        installed(&run),
+        (json!("wowace:bug-grabber#r152"), json!("installed")),
+        "{}",
+        run.context()
+    );
+    assert_eq!(run.envelope()["data"]["target"]["id"], json!(wotlk));
+
+    let mut home = Home::new(&["wow"]);
+    legacy(&mut home, "wow-112", (1, 12, 1, 5875));
+    home.serve_recorded("wowace-bug-grabber");
+    let run = home.run(&["install", "buggrabber"]);
+    assert_eq!(
+        installed(&run),
+        (json!("wowace:bug-grabber"), json!("installed")),
+        "{}",
+        run.context()
+    );
+    assert_eq!(run.envelope()["data"]["target"]["id"], "retail");
+}
+
+/// `sync` resolves the name on every client: each gets its own build, and a client no
+/// build is known for fails that entry alone, as a name the catalog does not know.
+#[test]
+fn sync_gives_each_client_its_build_and_fails_alone_where_none_is_known() {
+    let mut home = Home::new(&["wow"]);
+    let wotlk = legacy(&mut home, "wow-335", (3, 3, 5, 12_340));
+    let vanilla = legacy(&mut home, "wow-112", (1, 12, 1, 5875));
+    home.serve_recorded("wowace-bug-grabber");
+    home.write_desired(&format!(
+        "schema_version = \"1.0\"\n\n[target.\"retail\"]\naddons = [\"buggrabber\"]\n\n\
+         [target.\"{wotlk}\"]\naddons = [\"!buggrabber\"]\n\n[target.\"{vanilla}\"]\naddons = [\"buggrabber\"]\n"
+    ));
+    let run = home.run(&["sync"]);
+    let envelope = run.envelope();
+    let targets = envelope["data"]["targets"].as_array().unwrap();
+    let of = |id: &str| targets.iter().find(|t| t["target"]["id"] == id).unwrap();
+    for (id, r) in [
+        ("retail", "wowace:bug-grabber"),
+        (wotlk.as_str(), "wowace:bug-grabber#r152"),
+    ] {
+        let item = &of(id)["items"][0];
+        assert_eq!(
+            (&item["ref"], &item["status"]),
+            (&json!(r), &json!("installed")),
+            "{}",
+            run.context()
+        );
+    }
+    let item = &of(&vanilla)["items"][0];
+    assert_eq!(
+        (&item["status"], &item["error"]["code"]),
+        (&json!("failed"), &json!("not_found")),
+        "{}",
+        run.context()
+    );
+    assert!(
+        item["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no BugGrabber build for this client is known"),
+        "{}",
+        run.context()
+    );
+    assert!(target_record(&home, &vanilla).addons.is_empty());
+}
+
+/// Adoption guesses a 3.3.5a `!BugGrabber` folder as the 3.3.5a build at most, never
+/// the modern one.
+#[test]
+fn adoption_never_guesses_another_familys_build() {
+    let mut home = Home::new(&[]);
+    let wotlk = legacy(&mut home, "wow-335", (3, 3, 5, 12_340));
+    home.serve_recorded("wowace-bug-grabber");
+    let addons = home.env.root().join("wow-335/Interface/AddOns");
+    unpack(
+        &addons,
+        &[(
+            "!BugGrabber/!BugGrabber.toc",
+            &toc("30300", &["## Title: BugGrabber"]),
+        )],
+    );
+    let run = home.run(&["adopt", "-t", &wotlk, "--no-verify"]);
+    let envelope = run.expect(0);
+    let text = envelope.to_string();
+    assert!(
+        !text.contains("\"wowace:bug-grabber\""),
+        "the modern build is never offered: {}",
+        run.context()
+    );
+    assert!(
+        text.contains("wowace:bug-grabber#r152"),
+        "{}",
+        run.context()
     );
 }

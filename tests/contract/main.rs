@@ -461,11 +461,12 @@ mod support {
             let catalog = self.home.env.config().join("omaddons/catalog.d");
             fs::create_dir_all(&catalog).unwrap();
             let mut text = String::from("schema_version = \"1.0\"\n");
+            // Foo is another project's catalog name (one file naming it twice would be
+            // refused: two entries of one name are variants).
             for (name, repo, folder) in [
                 ("LittleWigs", "littlewigs", "LittleWigs"),
                 ("BigWigs", "bigwigs", "BigWigs"),
                 ("Masque", "masque", "Masque"),
-                ("Foo", "foo", "Foo"),
                 ("Foo", "foo-two", "FooTwo"),
             ] {
                 text.push_str(&format!(

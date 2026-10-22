@@ -292,12 +292,14 @@ fn apply_target_overrides(resolved: &mut Resolved, config: &Config, table: &Rule
 }
 
 /// Whether `name`, as a user typed it, names the installed `addon`: its name in any
-/// case, or a catalog name or alias whose ref is the addon's (`update`, `pin`, `unpin`).
+/// case, or a catalog name or alias one of whose variants has the addon's ref
+/// (`update`, `pin`, `unpin`).
 pub fn names_addon(name: &str, addon: &AddonRecord, catalog: &Catalog) -> bool {
     addon.name.eq_ignore_ascii_case(name)
         || catalog
-            .by_name(name)
-            .is_some_and(|e| e.r#ref.identity() == addon.r#ref.identity())
+            .variants(name)
+            .iter()
+            .any(|e| e.r#ref.identity() == addon.r#ref.identity())
 }
 
 #[cfg(test)]
