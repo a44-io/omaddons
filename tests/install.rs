@@ -2033,13 +2033,29 @@ fn git_and_http_reach_disjoint_hosts() {
             envelope["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("not for the git binary"),
+                .contains("never with the git binary"),
             "{}",
             run.context()
         );
+        // Its fix never adds that host to git_hosts (D13).
+        assert!(envelope["error"]["fix_argv"].is_null(), "{}", run.context());
     }
     assert!(!ran.exists(), "git ran: {:?}", fs::read_to_string(&ran));
     assert!(net_log(&home).is_empty(), "refusals are not logged");
+    // Nor can it be listed: config refuses it, and config.toml is unchanged.
+    let config = home.env.config().join("omaddons/config.toml");
+    let before = fs::read(&config).ok();
+    let set = home.run(&["config", "set", "git_hosts", "[\"api.mmoui.com\"]"]);
+    let err = set.expect(2);
+    assert_eq!(err["error"]["code"], "usage", "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("\"api.mmoui.com\""),
+        "{err}"
+    );
+    assert_eq!(fs::read(&config).ok(), before);
 
     // git_hosts lists codeberg.org; a WoWInterface download redirects there.
     let home = Home::new(&["wow"]);

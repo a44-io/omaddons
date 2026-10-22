@@ -523,7 +523,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 | CurseForge and Wago links (`curseforge.com/…`, `addons.wago.io/…`) | | refused with `source_disabled` while the ref is parsed, even with `--file`: use the `cf:` or `wago:` form with `--file` |
 | an `https://` link to a `git_hosts` host, or any other non-GitHub link ending in `.git` | `git:` | as `git:` above (`#fragment` becomes the rev). A github.com link ending in `.git` stays `gh:` |
 | any other `https://` link | `url:` | refused at plan time with `host_blocked` unless its host is one of the always-allowed hosts above |
-| `http://…` (also `url:http://…`, `git:http://…`) | | refused (`ref_invalid`), suggesting the https form when omaddons can fetch it; for a host it does not download from (`details.host`), the fix is to download the file and install the local path, and for a git host not in `git_hosts`, to add it. When the https form is itself refused, its error stands (an `http://` CurseForge link is `source_disabled`) |
+| `http://…` (also `url:http://…`, `git:http://…`) | | refused (`ref_invalid`), suggesting the https form when omaddons can fetch it; for a host it does not download from (`details.host`), the fix is to download the file and install the local path, and for a git host not in `git_hosts`, to add it (never for an HTTP host, which `git_hosts` cannot list: there the fix says to use a `gh:`, `url:`, `wowi:` or `tukui:` ref). When the https form is itself refused, its error stands (an `http://` CurseForge link is `source_disabled`) |
 
 **Channels.** `--channel stable|beta|alpha`. The default is the addon's recorded channel, then `default_channel`, then `stable`. On GitHub, `alpha` behaves like `beta`: the newest non-draft release, stable or prerelease, among the 20 most recent (through the REST API). WoWInterface, Tukui, WowAce (its stable tags), `git:`, `url:` and local sources publish one stream, so there the channel is only recorded. When `releases/latest` finds no stable release (only prereleases, or none published), the error is `no_compatible_release`, with `--channel beta` as the fix and the repository's `git:` ref as the alternative. When it answers 404 (no releases, or no such repository), the error is `not_found`, with the `git:` ref as the fix. A renamed repository is followed.
 
@@ -1949,7 +1949,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 | `repos.wowace.com` | WowAce's Subversion repository: a project's tag list (`PROPFIND`), and its tree's listings and files at one pinned revision (BugGrabber) | used; never `HEAD` (the server refuses it) |
 | `api.curseforge.com`, `edge.forgecdn.net`, `mediafilez.forgecdn.net` | CurseForge | off until enabled (M5) |
 | `addons.wago.io` | Wago | off until enabled (M5) |
-| every host in `git_hosts` | `git:` refs through the git binary, never contacted over HTTP, not even by a redirect | only when you list them |
+| every host in `git_hosts` | `git:` refs through the git binary, never contacted over HTTP, not even by a redirect; none of the hosts above can be listed | only when you list them |
 
 `url:` refs may download from any of the always-allowed hosts above (every row but CurseForge, Wago and `git_hosts`).
 
@@ -2035,7 +2035,7 @@ label = "my 3.3.5a server"
 | `default_target` | none | `install`'s target when `-t` is absent; wins over `targets default`. It also leads `search`'s install hints among equals |
 | `default_channel` | `stable` | Channel for new installs |
 | `running_policy` | `safe` | `safe`, `refuse` or `allow` |
-| `git_hosts` | `[]` | Hosts allowed for `git:` refs through the git binary |
+| `git_hosts` | `[]` | Hosts allowed for `git:` refs through the git binary. Never an HTTP host from [Network and privacy](#network-and-privacy) (always allowed, CurseForge or Wago, in any case): `config set` refuses one, and a `config.toml` that lists one fails to load, naming it |
 | `auto_backup` | `daily` | Automatic `WTF/` checkpoints (see [Automatic backups](#automatic-backups)). `daily` makes them only by cloning (btrfs, xfs), so they cost no space at first; where the filesystem cannot clone it makes none and writes nothing. `daily-copy` also byte-copies, within `limits.backup_copy_max_mb`. `off` makes none |
 | `check_interval_hours` | `6` | `status` reports `updates.stale` when the oldest check is older than this (1–48; 0 keeps the default) |
 | `limits.archive_max_entries` | `20000` | Entries per archive |
@@ -2376,7 +2376,6 @@ The README describes the intended behaviour; these are the places where the code
 
 | Bead | Priority | Where the code differs |
 |---|---|---|
-| `omad-ck0h` | P2 | `git_hosts` accepts the always-allowed HTTP hosts (`codeload.github.com`, `api.mmoui.com`, …), so the git binary can contact them, and a `git:` ref on such a host suggests adding it. The two allowlists are meant to share no host |
 | `omad-npec` | P3 | `auth github set` and `clear` record a history line even when the stored token does not change |
 | `omad-o3gd` | P3 | With no update but a client that has adoptable folders, `outdated`'s human footer reads "Run `omaddons adopt -t <id>` to install them" |
 | `omad-peud` | P3 | A `git:` commit the server refuses to send fails `download_failed` marked retryable, although only naming a branch or tag can help |

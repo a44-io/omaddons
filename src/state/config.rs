@@ -511,6 +511,22 @@ impl Config {
                 &format!("{bad:?} is not a bare host name (no scheme, port or path)"),
             ));
         }
+        // D13: HTTP and the git binary share no host, optional sources' hosts included
+        // whether enabled or not.
+        if let Some(http) = config
+            .git_hosts
+            .iter()
+            .find(|h| crate::net::allowlist::is_http_host(h))
+        {
+            return Err(invalid(
+                path,
+                text,
+                "git_hosts",
+                &format!(
+                    "{http:?} is a host omaddons reaches over HTTPS only, never with the git binary: remove it from git_hosts"
+                ),
+            ));
+        }
         config
             .effective_limits()
             .map_err(|(key, message)| invalid(path, text, &key, &message))?;
@@ -1368,6 +1384,41 @@ max = 11_599
         let err = set_value("", path, "git_hosts", "[\"https://codeberg.org\"]").unwrap_err();
         assert_eq!(err.code, ErrorCode::Usage);
         assert!(err.message.contains("bare host name"), "{}", err.message);
+    }
+
+    /// D13: the git binary never gets an HTTP host, an optional source's (enabled or not)
+    /// or any case of one; by `config set` a usage error, by hand `state_corrupt` with
+    /// the line and key.
+    #[test]
+    fn git_hosts_never_name_an_http_host() {
+        let path = Path::new("/c/omaddons/config.toml");
+        for http in [
+            "CodeLoad.GitHub.com",
+            "github.com",
+            "api.tukui.org",
+            "api.curseforge.com",
+            "addons.wago.io",
+        ] {
+            let value = format!("[\"codeberg.org\", \"{http}\"]");
+            let err = set_value("", path, "git_hosts", &value).unwrap_err();
+            assert_eq!(err.code, ErrorCode::Usage, "{http}");
+            assert!(
+                err.message.contains(&format!("{http:?}"))
+                    && err.message.contains("remove it from git_hosts"),
+                "{}",
+                err.message
+            );
+            let text = format!("schema_version = \"1.0\"\ngit_hosts = {value}\n");
+            let err = Config::parse(&text, path).unwrap_err();
+            assert_eq!(err.code, ErrorCode::StateCorrupt, "{http}");
+            assert_eq!(
+                (&err.details["line"], &err.details["key"]),
+                (&serde_json::json!(2), &serde_json::json!("git_hosts")),
+                "{http}"
+            );
+        }
+        let set = set_value("", path, "git_hosts", "[\"codeberg.org\"]").unwrap();
+        assert!(Config::parse(&set, path).is_ok());
     }
 
     #[test]

@@ -45,6 +45,10 @@ const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 /// Spawns tried again, 10 ms apart, while the binary is "text file busy".
 const TXTBSY_TRIES: u32 = 50;
 
+/// The fix for a `git:` ref to an HTTP host, which no `git_hosts` may list (D13).
+pub(crate) const HTTP_HOST_FIX: &str =
+    "use a gh:, url:, wowi: or tukui: ref, or a link omaddons reads";
+
 /// What git may speak: https in production; `file://` exists only for in-crate tests
 /// against local repositories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,26 +308,32 @@ impl GitRunner {
             ));
         }
         if self.policy == ProtocolPolicy::Https && !self.hosts.permits(&repo.host) {
-            let http = if is_http_host(&repo.host) {
-                " (it is allowed for HTTP downloads, not for the git binary)"
+            // An HTTP host is never one to add (D13: the two allowlists share none).
+            let (message, fix) = if is_http_host(&repo.host) {
+                (
+                    format!(
+                        "{} is reached over HTTPS only, never with the git binary",
+                        repo.host
+                    ),
+                    Suggestion::text(HTTP_HOST_FIX),
+                )
             } else {
-                ""
+                (
+                    format!(
+                        "{} is not a git host omaddons may contact (the fix adds it to git_hosts, keeping the hosts listed now)",
+                        repo.host
+                    ),
+                    Suggestion::command([
+                        "omaddons".to_owned(),
+                        "config".to_owned(),
+                        "set".to_owned(),
+                        "git_hosts".to_owned(),
+                        self.hosts.toml_with(&repo.host),
+                    ]),
+                )
             };
-            return Err(Error::new(
-                ErrorCode::HostBlocked,
-                format!(
-                    "{} is not a git host omaddons may contact{http} (the fix adds it to git_hosts, keeping the hosts listed now)",
-                    repo.host
-                ),
-                Suggestion::command([
-                    "omaddons".to_owned(),
-                    "config".to_owned(),
-                    "set".to_owned(),
-                    "git_hosts".to_owned(),
-                    self.hosts.toml_with(&repo.host),
-                ]),
-            )
-            .details(serde_json::json!({ "host": repo.host })));
+            return Err(Error::new(ErrorCode::HostBlocked, message, fix)
+                .details(serde_json::json!({ "host": repo.host })));
         }
         self.check_version()?;
         if let Some(home) = &self.home {
@@ -1200,10 +1210,13 @@ mod tests {
             assert_eq!(err.code, ErrorCode::HostBlocked, "{url}");
             assert!(
                 err.message
-                    .contains("allowed for HTTP downloads, not for the git binary"),
+                    .contains("is reached over HTTPS only, never with the git binary"),
                 "{url}: {}",
                 err.message
             );
+            // Its fix never adds an HTTP host to git_hosts (D13).
+            assert_eq!(err.fix.argv(), None, "{url}");
+            assert_eq!(err.fix.display(), HTTP_HOST_FIX, "{url}");
         }
         git.offline = true;
         let repo = git.repo_url("https://codeberg.org/o/r").unwrap();

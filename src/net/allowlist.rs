@@ -64,9 +64,15 @@ pub struct GitHosts {
 }
 
 impl GitHosts {
+    /// The configured hosts, less any HTTP host ([`is_http_host`]): config validation
+    /// refuses those, and a config that bypassed it still never lets git reach one.
     pub fn new(git_hosts: &[String]) -> Self {
         Self {
-            hosts: git_hosts.iter().map(|h| h.to_ascii_lowercase()).collect(),
+            hosts: git_hosts
+                .iter()
+                .filter(|h| !is_http_host(h))
+                .map(|h| h.to_ascii_lowercase())
+                .collect(),
         }
     }
 
@@ -146,5 +152,16 @@ mod tests {
             assert!(!http.permits(host), "{host}");
             assert!(!is_http_host(host), "{host}");
         }
+        // Configured anyway (a config that bypassed validation): never permitted.
+        let listed: Vec<String> = ["GitHub.com", "codeberg.org", "api.curseforge.com"]
+            .map(str::to_owned)
+            .to_vec();
+        let git = GitHosts::new(&listed);
+        assert!(git.permits("codeberg.org"));
+        assert!(!git.permits("github.com") && !git.permits("api.curseforge.com"));
+        assert_eq!(
+            git.toml_with("git.example.org"),
+            "[\"codeberg.org\", \"git.example.org\"]"
+        );
     }
 }

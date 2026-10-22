@@ -127,6 +127,14 @@ fn not_https(input: &str, ctx: &RefContext<'_>) -> Error {
                     || ctx.git_hosts.iter().any(|h| h.eq_ignore_ascii_case(&host));
                 if listed {
                     suggest_https(&not, &https)
+                } else if crate::net::allowlist::is_http_host(&host) {
+                    // Never one to add to git_hosts (D13).
+                    Error::new(
+                        ErrorCode::RefInvalid,
+                        format!("{not}, and {host} is reached over HTTPS only, never with the git binary"),
+                        Suggestion::text(super::git_hosts::HTTP_HOST_FIX),
+                    )
+                    .details(serde_json::json!({ "host": host }))
                 } else {
                     // Adds it to git_hosts, keeping the hosts listed now.
                     let hosts = crate::net::allowlist::GitHosts::new(ctx.git_hosts);
@@ -858,6 +866,12 @@ mod tests {
                     "git:http://git.example.org/a.git",
                     Some("[\"codeberg.org\", \"git.example.org\"]"),
                     Some("git.example.org"),
+                ),
+                // An HTTP host is never added (D13): a prose fix.
+                (
+                    "git:http://codeload.github.com/o/r",
+                    None,
+                    Some("codeload.github.com"),
                 ),
             ] {
                 let e = parse_user_ref(input, ctx).unwrap_err();
