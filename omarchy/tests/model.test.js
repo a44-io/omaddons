@@ -703,6 +703,101 @@ describe("the Updates and Installed views", () => {
   })
 })
 
+describe("the Issues and Search views", () => {
+  const ERRORS = () => M.reduceErrors(fixture("errors"))
+
+  test("strict errors: code text only, a custom message as its length, received as a count", () => {
+    const model = ERRORS()
+    const text = JSON.stringify(model)
+    for (const planted of ["FakeChar", "FakeSender", "FAKEACCT", "account 1"]) expect(text).not.toContain(planted)
+    expect(model.raw).toBe(false)
+    const [era, retail] = model.targets
+    expect([era.id, era.capture, era.install.argv]).toEqual(["era", "none", ["omaddons", "install", "buggrabber", "-t", "era"]])
+    expect([retail.new, retail.received, retail.partial, retail.install]).toEqual([2, 1, false, null])
+    const foo = retail.addons[0]
+    expect([foo.addon, foo.updateAvailable, foo.latest, foo.confidence]).toEqual(["Foo", true, "v2", "high"])
+    expect(foo.errors.map(M.errorLine)).toEqual([
+      "Foo/core.lua:12: attempt to index a nil value (field 'x')",
+      "Foo/boss.lua:3: custom message (25 characters, hidden)"])
+    expect(foo.errors.map((e) => e.raw)).toEqual([null, null])
+  })
+
+  test("raw details only from their own read, and a partial read says so", () => {
+    const raw = M.reduceErrors(fixture("errors-raw"))
+    expect(raw.raw).toBe(true)
+    const retail = M.targetById(raw.targets, "retail")
+    expect(retail.addons[0].errors[1].raw.message).toContain("FakeChar")
+    const partial = M.targetById(M.reduceErrors(fixture("errors-partial")).targets, "retail")
+    expect(partial.partial).toBe(true)
+  })
+
+  test("the Issues sections: problems by severity, each client's errors, the run warnings", () => {
+    const status = M.reduceStatus(fixture("status-attention"), NOW)
+    const sections = M.issueSections(status.targets, ERRORS(), [
+      { code: "journal_pending", message: "unfinished transactions", fix: { command: "omaddons status", argv: ["omaddons", "status"], runnable: true }, fixText: "" }], "")
+    expect(sections.map((s) => s.title)).toEqual(["Problems", "Lua errors (era)", "Lua errors (retail)", "Run warnings"])
+    const rows = M.issueRows(sections)
+    expect(rows.map((r) => [r.index, r.kind])).toEqual([[0, "problem"], [1, "capture"], [2, "addon"], [3, "warning"]])
+    expect(rows[0].action.argv[1]).toBe("install")
+    expect(rows[1].action.argv).toEqual(["omaddons", "install", "buggrabber", "-t", "era"])
+    expect(sections[2].lines).toEqual(["1 error received from another player (not counted)"])
+    const retailOnly = M.issueSections(status.targets, ERRORS(), [], "era")
+    expect(retailOnly.map((s) => s.title)).toEqual(["Lua errors (era)"])
+  })
+
+  test("a remediation the classifier refuses is text", () => {
+    const status = M.reduceStatus(fixture("status-attention"), NOW)
+    const t = JSON.parse(JSON.stringify(status.targets))
+    t[0].issues[0].remediation = { command: "rm -rf ~", argv: null, runnable: false, destructive: true }
+    const rows = M.issueRows(M.issueSections(t, null, [], ""))
+    expect([rows[0].action, rows[0].text]).toEqual([null, "rm -rf ~"])
+  })
+
+  test("d dismisses what was shown, one client at a time", () => {
+    expect(M.dismissPlan(ERRORS(), "").map((p) => p.target)).toEqual(["retail"])
+    expect(M.dismissPlan(ERRORS(), "retail")[0].token).toMatch(/^pc1:/)
+    expect(M.dismissPlan(ERRORS(), "era")).toEqual([])
+    expect(M.dismissPlan(null, "")).toEqual([])
+    expect(M.boundStaleText("dismiss_errors", fixture("dismiss-stale"))).toBe("New errors arrived; review them")
+  })
+
+  test("All searches every client at once; installs go only where the hint allows", () => {
+    expect(M.searchRequest("dbm", "")).toEqual({ template: "search_all", slots: { query: "dbm" } })
+    expect(M.searchRequest("dbm", "retail")).toEqual({ template: "search", slots: { target: "retail", query: "dbm" } })
+    for (const r of [M.searchRequest("--dbm", ""), M.searchRequest("--dbm", "retail")]) {
+      expect(M.buildArgv(r.template, r.slots, opts()).argv.slice(-2)).toEqual(["--", "--dbm"])
+    }
+    const result = M.reduceSearch(fixture("search")).rows[0]
+    expect(result.hints).toEqual({ retail: "likely" })
+    const targets = [{ id: "retail" }, { id: "era" }]
+    expect(M.installTargets(result, targets)).toEqual([
+      { id: "retail", hint: "likely", eligible: true }, { id: "era", hint: "unknown", eligible: false }])
+    expect(M.installTargets(Object.assign({}, result, { hints: { retail: "no" } }), targets)[0].eligible).toBe(false)
+  })
+
+  test("raw lines only for the row that asked; dots and popularity", () => {
+    const raw = { selection: { target: "retail", addon: "Foo" }, data: M.reduceErrors(fixture("errors-raw")) }
+    const row = { target: "retail", addon: "Foo" }
+    const lines = M.rawLines(raw, row)
+    expect(lines[0]).toContain("attempt to index a nil value")
+    expect(lines.join("\n")).toContain("FakeChar")
+    expect(M.rawLines(raw, { target: "retail", addon: "Bar" })).toBeNull()
+    expect(M.rawLines(null, row)).toBeNull()
+    expect([M.confidenceDots("high"), M.confidenceDots("low"), M.confidenceDots("")])
+      .toEqual(["●●●", "●○○", "○○○"])
+    expect([M.popularityText({ downloads: 2100000 }), M.popularityText({ downloads: null, stars: 412 }), M.popularityText({})])
+      .toEqual(["2.1M downloads", "412 stars", ""])
+  })
+
+  test("the new templates build with hostile slots", () => {
+    const raw = M.buildArgv("errors_raw", { target: "retail", addon: "-rf" }, opts())
+    expect(raw.argv.slice(-1)).toEqual(["--addon=-rf"])
+    const dismiss = M.buildArgv("dismiss_errors", { target: "retail" }, opts({ token: TOKEN }))
+    expect(dismiss.argv).toContain("--if-match")
+    expect(() => M.buildArgv("dismiss_errors", { target: "retail" }, opts())).toThrow()
+  })
+})
+
 describe("the other reducers", () => {
   test("list", () => {
     const model = M.reduceList(fixture("list"))

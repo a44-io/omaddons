@@ -183,6 +183,9 @@ pub const ERRORS_MAX_FILES: usize = 64;
 pub const ERRORS_MESSAGE_MAX_CHARS: usize = 300;
 /// Stack frames shown by default.
 pub const ERRORS_STACK_LINES: usize = 6;
+/// Errors one addon lists in `errors`' output: its new ones first, then the most
+/// frequent. Its `entries` counts every one.
+pub const ERRORS_SHOWN_PER_ADDON: usize = 10;
 /// Stack frames shown with `-v` or `--raw-details`.
 pub const ERRORS_STACK_LINES_VERBOSE: usize = 40;
 /// Characters of an error's locals shown with `--raw-details`.
@@ -732,6 +735,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "Frames shown by default",
     ),
     limit(
+        "ERRORS_SHOWN_PER_ADDON",
+        LimitValue::Count(ERRORS_SHOWN_PER_ADDON as u64),
+        "count",
+        None,
+        "Errors one addon lists in errors' output, new first, then the most frequent; entries counts them all",
+    ),
+    limit(
         "ERRORS_STACK_LINES_VERBOSE",
         LimitValue::Count(ERRORS_STACK_LINES_VERBOSE as u64),
         "count",
@@ -1036,6 +1046,7 @@ mod tests {
         "ERRORS_MAX_FILES",
         "ERRORS_MESSAGE_MAX_CHARS",
         "ERRORS_STACK_LINES",
+        "ERRORS_SHOWN_PER_ADDON",
         "ERRORS_STACK_LINES_VERBOSE",
         "ERRORS_LOCALS_MAX_CHARS",
         "ERRORS_CHUNK_MAX_CHARS",

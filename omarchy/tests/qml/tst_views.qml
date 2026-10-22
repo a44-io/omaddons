@@ -76,15 +76,28 @@ TestCase {
       property string requestedView: ""
       property var lists: null
       property var changelog: null
+      property var errors: null
+      property var statusWarnings: []
+      property var rawErrors: null
+      property var search: null
 
       property var runs: []
+      property var cliRuns: []
       property var notes: []
       property var reads: []
+      property var rawReads: []
+      property int rawClears: 0
+      property var searches: []
+      property var dismissals: []
 
       function run(name, slots, label) { runs = runs.concat([[name, slots, label]]); return "" }
-      function runCliArgv(argv, label) { return "" }
+      function runCliArgv(argv, label) { cliRuns = cliRuns.concat([[argv, label]]); return "" }
       function readView(view) { reads = reads.concat([view]) }
       function readChangelog(target, addon) { notes = notes.concat([[target, addon]]) }
+      function readRawErrors(target, addon) { rawReads = rawReads.concat([[target, addon]]) }
+      function clearRawErrors() { rawClears++; rawErrors = null }
+      function searchFor(query, target) { searches = searches.concat([[query, target]]) }
+      function dismissErrors(plan) { dismissals = dismissals.concat([JSON.parse(JSON.stringify(plan))]); return "" }
       function check() {}
       function refresh() {}
       function reinstallWidget() { return "ok" }
@@ -272,6 +285,222 @@ TestCase {
     keyClick("x")
     keyClick("p")
     compare(svc.runs.length, 0)
+  }
+
+  // ------------------------------------------------------------- Issues
+
+  // `errors --json` as the binary prints it: era without BugGrabber; on retail, Foo
+  // (an update waiting) with a Lua runtime error and a custom message, Bar current, one
+  // report received from another player.
+  function errorsEnvelope(partial) {
+    var error = function(kind, message, chars, location, stack) {
+      return { "fingerprint": "e:" + location, "database": "db-1", "origin": "local", "message_kind": kind, "message": message,
+        "message_chars": chars, "location": location, "attribution": { "method": "first_addon_frame", "confidence": "high" },
+        "type": "error", "count": 2, "sessions": 1, "new": true, "stack": stack }
+    }
+    return { "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "errors", "exit_code": 0,
+      "partial": false, "warnings": [],
+      "commands": [{ "action": "install_buggrabber", "command": "omaddons install buggrabber -t era",
+        "argv": ["omaddons", "install", "buggrabber", "-t", "era"], "destructive": false }],
+      "data": { "targets": [
+        { "target": { "id": "era" }, "capture": "none", "coverage": "complete", "files": { "partial": 0 }, "databases": [],
+          "summary": { "new": 0, "received": 0 }, "addons": [], "dismiss": { "precondition": "pc1:" + "1".repeat(64) } },
+        { "target": { "id": "retail" }, "capture": "buggrabber", "coverage": "complete", "files": { "partial": partial ? 1 : 0 },
+          "databases": [{ "id": "db-1", "state": partial ? "partial" : "complete" }],
+          "summary": { "new": 3, "received": 1 }, "dismiss": { "precondition": "pc1:" + "2".repeat(64) },
+          "addons": [
+            { "addon": "Foo", "managed": true, "kind": "addon", "version": "v1", "latest": { "version": "v2", "status": "update_available" },
+              "count": 4, "new": 2, "errors": [error("lua_runtime", "attempt to index a nil value (field 'x')", null, "Foo/core.lua:12", ["Foo/core.lua:12: in function 'Refresh'"]),
+                error("custom", null, 25, "Foo/boss.lua:3", [])] },
+            { "addon": "Bar", "managed": true, "kind": "addon", "version": "v1", "latest": { "version": "v1", "status": "current" },
+              "count": 1, "new": 1, "errors": [error("lua_runtime", "attempt to call a nil value", null, "Bar/x.lua:1", ["Bar/x.lua:1: in main chunk"])] }
+          ] }
+      ] } }
+  }
+
+  function issuesReady(partial) {
+    svc.targets = [
+      { "id": "era", "running": false, "runningUnknown": false, "clientDir": "/games/era", "updates": null, "issues": [
+        { "id": "fm-1", "severity": "P2", "urgent": false, "title": "era: Plater's files changed", "addon": "Plater",
+          "remediation": { "command": "omaddons install Plater -t era --reinstall", "argv": ["omaddons", "install", "Plater", "-t", "era", "--reinstall"], "destructive": false, "runnable": true } },
+        { "id": "fm-2", "severity": "P0", "urgent": true, "title": "a journal waits for repair", "addon": null,
+          "remediation": { "command": "see README: Troubleshooting", "argv": null, "destructive": false, "runnable": false } }
+      ] },
+      { "id": "retail", "running": false, "runningUnknown": false, "clientDir": "/games/retail", "updates": null, "issues": [] }
+    ]
+    svc.errors = Model.reduceErrors(errorsEnvelope(partial))
+    keyClick("3")
+    compare(view.view, "issues")
+  }
+
+  function test_issues_lists_problems_by_severity_then_errors_then_warnings() {
+    svc.statusWarnings = [{ "code": "journal_pending", "message": "unfinished transactions wait", "fix": null, "fixText": "quit the game, then run any change" }]
+    issuesReady(false)
+    var issues = content()
+    compare(json(issues.rows.map(function(r) { return [r.index, r.kind] })),
+      json([[0, "problem"], [1, "problem"], [2, "capture"], [3, "addon"], [4, "addon"], [5, "warning"]]))
+    // P0 first; its prose remediation is text, never a button.
+    compare(findChild(row("issueRow", 0), "commandText").text, "see README: Troubleshooting")
+    verify(!findChild(row("issueRow", 0), "enterHint").visible)
+    keyClick(Qt.Key_Return)
+    compare(svc.cliRuns.length, 0)
+    // The P2's reinstall runs through the classifier's path.
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.cliRuns[0]), json([["omaddons", "install", "Plater", "-t", "era", "--reinstall"], "Fix"]))
+    // era: BugGrabber missing, Enter installs it.
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.cliRuns[1]), json([["omaddons", "install", "buggrabber", "-t", "era"], "Install BugGrabber"]))
+    // The warning's prose fix is text.
+    compare(findChild(row("issueRow", 5), "commandText").text, "quit the game, then run any change")
+  }
+
+  function test_lua_errors_show_strict_text_and_received_only_as_a_count() {
+    issuesReady(false)
+    var foo = row("issueRow", 3)
+    compare(findChild(foo, "headline").text, "Foo")
+    verify(findChild(foo, "counts").text.indexOf("v2 available (may fix it)") > 0)
+    var texts = []
+    var collect = function(item) {
+      for (var i = 0; i < item.children.length; i++) {
+        var c = item.children[i]
+        if (c.text !== undefined && typeof c.text === "string") texts.push(c.text)
+        collect(c)
+      }
+    }
+    collect(content())
+    verify(texts.indexOf("Foo/boss.lua:3: custom message (25 characters, hidden)") >= 0, json(texts))
+    verify(texts.indexOf("1 error received from another player (not counted)") >= 0, json(texts))
+    verify(texts.indexOf("Lua errors (retail)") >= 0)
+  }
+
+  function test_enter_updates_the_likely_source_or_shows_its_stack() {
+    issuesReady(false)
+    for (var i = 0; i < 3; i++) keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[0]), json(["update_addon", { "target": "retail", "addon": "Foo" }, "Update Foo"]))
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(svc.runs.length, 1)
+    compare(findChild(row("issueRow", 4), "stack").count, 1)
+  }
+
+  function test_s_shows_raw_details_under_their_label_for_that_row_only() {
+    issuesReady(false)
+    for (var i = 0; i < 3; i++) keyClick("j")
+    keyClick("s")
+    compare(json(svc.rawReads), json([["retail", "Foo"]]))
+    var foo = row("issueRow", 3)
+    verify(findChild(foo, "raw").visible)
+    compare(findChild(foo, "rawLabel").text, "raw details: may contain other players' names and your own code")
+    var raw = function(addon) {
+      var env = errorsEnvelope(false)
+      env.data.raw_details = true
+      env.data.targets[1].addons[0].errors[1].raw = { "message": "[Foo/boss.lua]:3: FakeChar pulled", "stack": [], "locals": null, "chunks": [] }
+      return { "selection": { "target": "retail", "addon": addon }, "data": Model.reduceErrors(env) }
+    }
+    svc.rawErrors = raw("Bar")
+    compare(findChild(foo, "rawLines").count, 0, "a late read for another row is not shown")
+    svc.rawErrors = raw("Foo")
+    compare(findChild(foo, "rawLines").count, 1)
+    compare(findChild(foo, "rawLines").itemAt(0).text, "[Foo/boss.lua]:3: FakeChar pulled")
+    keyClick("s")
+    compare(svc.rawClears, 1)
+    verify(!findChild(foo, "raw").visible)
+  }
+
+  function test_d_dismisses_what_the_panel_showed_and_a_stale_one_says_so() {
+    issuesReady(false)
+    verify(findChild(content(), "dismiss").visible)
+    keyClick("d")
+    compare(json(svc.dismissals[0]), json([{ "target": "retail", "token": "pc1:" + "2".repeat(64) }]))
+    // era has nothing new to dismiss.
+    keyClick("t")
+    compare(view.filter, "era")
+    verify(!findChild(content(), "dismiss").visible)
+    keyClick("d")
+    compare(json(svc.dismissals[1]), json([]))
+    svc.lastError = { "message": "New errors arrived; review them", "code": "plan_stale", "fixes": [], "fixText": "" }
+    compare(findChild(view, "errorMessage").text, "New errors arrived; review them")
+  }
+
+  function test_an_incomplete_read_says_so() {
+    issuesReady(true)
+    var texts = []
+    var lines = findChild(content(), "sections")
+    verify(lines !== null)
+    var all = function(item) {
+      for (var i = 0; i < item.children.length; i++) {
+        if (typeof item.children[i].text === "string") texts.push(item.children[i].text)
+        all(item.children[i])
+      }
+    }
+    all(content())
+    verify(texts.indexOf("Incomplete read (the game may be writing)") >= 0, json(texts))
+  }
+
+  // ------------------------------------------------------------- Search
+
+  function searchReady(hints) {
+    keyClick("5")
+    compare(view.view, "search")
+    var field = findChild(content(), "searchField")
+    keyClick("/")
+    tryVerify(function() { return field.activeFocus })
+    verify(findChild(view, "keyCatcher").blocked)
+    keyClick("u")
+    compare(svc.runs.length, 0, "typing is not a command")
+    field.text = "damage meter"
+    keyClick(Qt.Key_Return)
+    compare(json(svc.searches[svc.searches.length - 1]), json(["damage meter", view.filter]))
+    tryVerify(function() { return !field.activeFocus })
+    svc.search = { "selection": { "query": "damage meter", "target": view.filter }, "skipped": [], "query": "damage meter",
+      "rows": [{ "name": "Details!", "ref": "wowi:23056", "source": "wowi", "downloads": 515870, "stars": null, "hints": hints, "compat": "" }] }
+  }
+
+  function test_search_installs_into_the_filtered_client_when_its_hint_allows() {
+    keyClick("t")
+    keyClick("t")
+    compare(view.filter, "retail")
+    searchReady({ "retail": "likely", "era": "no" })
+    compare(findChild(row("searchRow", 0), "hints").text, "retail likely")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!"]))
+    // A result for another filter is not this view's.
+    keyClick("t")
+    compare(findChild(content(), "searchRow_0"), null)
+  }
+
+  function test_a_hint_of_no_offers_no_install() {
+    keyClick("t")
+    compare(view.filter, "era")
+    searchReady({ "retail": "likely", "era": "no" })
+    keyClick(Qt.Key_Return)
+    compare(svc.runs.length, 0)
+  }
+
+  function test_under_all_a_chooser_preselects_no_client() {
+    searchReady({ "retail": "likely", "era": "no" })
+    compare(findChild(row("searchRow", 0), "hints").text, "era no · retail likely")
+    keyClick(Qt.Key_Return)
+    var search = content()
+    verify(findChild(search, "chooser").visible)
+    compare(search.chooserCursor, -1)
+    tryVerify(function() { return findChild(search, "chooserKeys").activeFocus })
+    keyClick(Qt.Key_Return)
+    compare(svc.runs.length, 0, "nothing chosen, nothing installed")
+    // era (hint no) is greyed and never under the cursor.
+    var targets = findChild(search, "chooserTargets")
+    compare(targets.itemAt(0).opacity, 0.4)
+    keyClick("j")
+    compare(search.chooserCursor, 1)
+    keyClick("j")
+    compare(search.chooserCursor, 1)
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!"]))
+    verify(!findChild(search, "chooser").visible)
+    tryVerify(function() { return findChild(view, "keyCatcher").activeFocus })
   }
 
   // ------------------------------------------------------------- the real service

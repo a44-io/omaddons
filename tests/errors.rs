@@ -353,6 +353,46 @@ fn strict_output_never_shows_names_and_raw_output_replaces_them() {
     ));
 }
 
+/// One addon lists at most `ERRORS_SHOWN_PER_ADDON` errors, its most frequent first,
+/// while `entries` and `count` keep counting every one (the output stays bounded for
+/// the bar widget).
+#[test]
+fn an_addon_lists_its_most_frequent_errors_up_to_the_bound() {
+    use omaddons::limits::ERRORS_SHOWN_PER_ADDON;
+
+    let retail = Retail::new(&["Foo"]);
+    let many = ERRORS_SHOWN_PER_ADDON + 5;
+    let mut db = BugDb::new(Writer::Modern, 10);
+    for i in 0..many {
+        let line = u32::try_from(i + 1).unwrap();
+        let at = buggrabber::stack_era_c("Foo", "core.lua", line);
+        db = db.entry(
+            BugEntry::new(
+                &format!("{at} attempt to call a nil value"),
+                9,
+                (TimeKind::Unix, NOW - 3600),
+            )
+            .counter(line),
+        );
+    }
+    retail.write(&[file(&db)]);
+    let envelope = retail.errors(&["-t", "retail"]).expect(0);
+    let foo = &support::retail(&envelope)["addons"][0];
+    let errors = foo["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), ERRORS_SHOWN_PER_ADDON);
+    assert_eq!(foo["entries"].as_u64(), Some(many as u64));
+    let counts: Vec<u64> = errors
+        .iter()
+        .map(|e| e["count"].as_u64().unwrap())
+        .collect();
+    assert_eq!(counts[0], many as u64, "the most frequent first");
+    assert_eq!(
+        *counts.last().unwrap(),
+        6,
+        "the five rarest are the ones left out"
+    );
+}
+
 #[test]
 fn filters_shape_the_view_never_the_observation() {
     let r = Retail::new(&[]);

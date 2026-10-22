@@ -56,10 +56,18 @@ Item {
   property var outcomes: ({})
   property string requestedView: ""
   // The view the open panel shows, and when its data was read; a doorbell makes every
-  // view stale.
+  // view's data stale (by resource: list, errors).
   property string currentView: ""
   property double listsAt: 0
-  property bool viewsStale: false
+  property double errorsAt: 0
+  property var staleReads: ({})
+  // `status`'s run warnings, with their fixes (the Issues view's third section).
+  property var statusWarnings: []
+  // The raw details `s` asked for, view-bound: `{selection, data}`.
+  property var rawErrors: null
+  property var rawSelection: null
+  // The dismissals `d` still has to send, one client at a time.
+  property var pendingDismissals: []
   property int viewMaxAgeMs: 10000
   property int contextGeneration: 0
   property bool panelOpen: false
@@ -134,6 +142,7 @@ Item {
     if (opened) {
       request({ "resource": "status", "template": "status_full", "label": "Open panel" })
       readList()
+      readErrors()
     }
   }
 
@@ -167,32 +176,75 @@ Item {
     return request({ "resource": "list", "template": "list", "label": "Installed" })
   }
 
+  function readErrors() {
+    return request({ "resource": "errors", "template": "errors", "label": "Issues" })
+  }
+
+  // `s`: one addon's raw details (`--raw-details`), view-bound to that row.
+  function readRawErrors(target, addon) {
+    var selection = { "target": String(target || ""), "addon": String(addon || "") }
+    rawSelection = selection
+    return request({
+      "resource": "errors_raw", "template": "errors_raw", "kind": "view", "target": selection.target,
+      "selection": selection, "slots": { "target": selection.target, "addon": selection.addon }, "label": "Raw details"
+    })
+  }
+
+  // The raw details expander closed: a late answer is dropped.
+  function clearRawErrors() {
+    rawSelection = null
+    rawErrors = null
+  }
+
   // The panel switched to `view`: read its data when it is older than viewMaxAgeMs or
   // a doorbell rang since. Local reads only: opening and switching never touch the
-  // network. F6 and F9 add their views' reads here.
+  // network. F9 adds the backups read here.
   function readView(view) {
     currentView = String(view || "")
-    if (currentView !== "updates" && currentView !== "installed") return false
-    if (lists && !viewsStale && Date.now() - listsAt <= viewMaxAgeMs) return false
-    viewsStale = false
-    return readList()
+    var resource = currentView === "updates" || currentView === "installed" ? "list"
+      : (currentView === "issues" ? "errors" : "")
+    if (resource === "") return false
+    var have = resource === "list" ? lists : errors
+    var at = resource === "list" ? listsAt : errorsAt
+    if (have && staleReads[resource] !== true && Date.now() - at <= viewMaxAgeMs) return false
+    var next = {}
+    for (var key in staleReads) if (key !== resource) next[key] = staleReads[key]
+    staleReads = next
+    return resource === "list" ? readList() : readErrors()
   }
 
   // Something changed (the doorbell, or the widget's own action): the bar first, then
   // the open panel's view.
   function changed() {
     refresh()
-    viewsStale = true
+    staleReads = { "list": true, "errors": true }
     if (panelOpen && currentView !== "") readView(currentView)
   }
 
+  // A search, view-bound to its query and target filter; All ("") searches every client
+  // in one request.
   function searchFor(query, target) {
     var selection = { "query": String(query || ""), "target": String(target || "") }
     searchSelection = selection
+    var shape = Model.searchRequest(selection.query, selection.target)
     return request({
-      "resource": "search", "template": "search", "lane": "network", "kind": "view", "target": selection.target,
-      "selection": selection, "slots": { "target": selection.target, "query": selection.query }, "label": "Search"
+      "resource": "search", "template": shape.template, "lane": "network", "kind": "view", "target": selection.target,
+      "selection": selection, "slots": shape.slots, "label": "Search"
     })
+  }
+
+  // `d`: one bound dismissal per client in `plan` (`[{target, token}]`, the tokens of the
+  // errors read the panel showed), one after another: the mutation lane keeps a single
+  // queued user change. The first that does not succeed stops the rest.
+  function dismissErrors(plan) {
+    if (!canAct) return incompatibleText || "omaddons is not ready"
+    if (!Array.isArray(plan) || plan.length === 0) return "no new errors to dismiss"
+    pendingDismissals = plan.slice(1)
+    return dismissOne(plan[0])
+  }
+
+  function dismissOne(entry) {
+    return runBound("dismiss_errors", { "target": entry.target }, "Dismiss errors on " + entry.target, entry.token)
   }
 
   function readChangelog(target, addon) {
@@ -373,6 +425,7 @@ Item {
   function selectionFor(r) {
     if (r.resource === "search") return searchSelection
     if (r.resource === "changelog") return changelogSelection
+    if (r.resource === "errors_raw") return rawSelection
     return null
   }
 
@@ -401,6 +454,7 @@ Item {
     noteOutcome(r, outcome)
     requestFinished(r.resource, outcome)
     if (outcome === "missing") {
+      pendingDismissals = []
       phase = "missing"
       bar = Model.reduceStatus(null).bar
       if (r.kind === "mutation") lastError = { "message": "omaddons not found at " + root.binary, "code": "missing", "fixes": [] }
@@ -425,6 +479,11 @@ Item {
     } else if (r.resource === "list") {
       lists = Model.reduceList(env)
       listsAt = Date.now()
+    } else if (r.resource === "errors") {
+      errors = Model.reduceErrors(env)
+      errorsAt = Date.now()
+    } else if (r.resource === "errors_raw") {
+      rawErrors = { "selection": r.selection, "data": Model.reduceErrors(env) }
     } else if (r.resource === "search") {
       var found = Model.reduceSearch(env)
       found.selection = r.selection
@@ -445,6 +504,7 @@ Item {
       lastChange = model.lastChange
       widgetInfo = model.widget
       commands = model.commands
+      statusWarnings = model.warnings
       phase = "ok"
       incompatibleText = ""
       unreachableText = ""
@@ -488,12 +548,23 @@ Item {
       var stale = outcome === "failed" && env.error && env.error.code === "plan_stale"
       // A preview gone stale is previewed again, never rerun with the same token.
       if (stale && r.purpose === "confirmed" && r.spec) previewOf(r.spec, Model.staleText(env))
-      if (stale && r.purpose === "bind") lastError = { "message": Model.staleText(env), "code": "plan_stale", "fixes": [] }
+      if (stale && r.purpose === "bind") {
+        lastError = { "message": Model.boundStaleText(r.template, env), "code": "plan_stale", "fixes": [], "fixText": "" }
+      }
     } else {
       lastResult = { "ok": false, "line": r.label + ": " + outcome, "partial": false, "commands": [] }
       lastError = { "message": outcome === "malformed" && tail.length ? tail.join("\n") : r.label + ": " + outcome, "code": outcome, "fixes": [] }
     }
     changed()
+    // `d` across clients: the next dismissal, after this one succeeded.
+    if (r.template === "dismiss_errors") {
+      var rest = pendingDismissals
+      pendingDismissals = []
+      if (outcome === "ok" && rest.length > 0) {
+        pendingDismissals = rest.slice(1)
+        dismissOne(rest[0])
+      }
+    }
   }
 
   // Another omaddons build answered (M3-D42): keep the last numbers, stale; clear the
@@ -505,6 +576,7 @@ Item {
     bar = Model.staleBar(bar)
     confirm = null
     pendingConfirm = null
+    pendingDismissals = []
     queues = { "mutation": [], "local": queues.local.slice(), "network": queues.network.slice() }
     queuedAction = ""
   }

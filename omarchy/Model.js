@@ -110,7 +110,11 @@ var COMMANDS = {
   "remove":         { "argv": ["remove", "-t", "{target}", "--", "{addon}"],        "mutates": true, "confirm": true },
   "pin":            { "argv": ["pin", "-t", "{target}", "--", "{addon}"],           "mutates": true },
   "unpin":          { "argv": ["unpin", "-t", "{target}", "--", "{addon}"],         "mutates": true },
-  "install":        { "argv": ["install", "-t", "{target}", "--", "{ref}"],         "mutates": true }
+  "install":        { "argv": ["install", "-t", "{target}", "--", "{ref}"],         "mutates": true },
+  "errors":         { "argv": ["errors", "--limit", "10"],                          "mutates": false, "lane": "local" },
+  "errors_raw":     { "argv": ["errors", "--raw-details", "-t", "{target}", "--addon={addon}"], "mutates": false, "lane": "local" },
+  "dismiss_errors": { "argv": ["errors", "dismiss", "-t", "{target}"],              "mutates": true, "bind": true },
+  "search_all":     { "argv": ["search", "--limit", "20", "--", "{query}"],         "mutates": false, "lane": "network" }
 }
 // END COMMANDS
 
@@ -834,7 +838,7 @@ function reduceStatus(env, nowMs) {
     var message = env && env.error && typeof env.error.message === "string" ? env.error.message : "omaddons did not answer"
     return {
       "bar": { "badge": 0, "urgent": false, "dimmed": true, "spinning": false, "tooltip": [message] },
-      "targets": [], "summary": null, "lastChange": null, "widget": null, "commands": []
+      "targets": [], "summary": null, "lastChange": null, "widget": null, "commands": [], "warnings": []
     }
   }
   var data = env.data
@@ -862,8 +866,33 @@ function reduceStatus(env, nowMs) {
     "lastChange": lastChangeOf(data.last_change, data.last_change_state),
     // Absent until the binary reports it.
     "widget": data.widget && typeof data.widget === "object" ? data.widget : null,
-    "commands": commands
+    "commands": commands,
+    "warnings": warningsOf(env)
   }
+}
+
+// A run's warnings with their fixes: a button where the classifier accepts the argv,
+// else the fix as text.
+function warningsOf(env) {
+  var out = []
+  if (!env || !Array.isArray(env.warnings)) return out
+  for (var i = 0; i < env.warnings.length; i++) {
+    var w = env.warnings[i]
+    if (!w || typeof w !== "object") continue
+    var fix = Array.isArray(w.fix_argv) ? cliAction(w.fix, w.fix_argv, false) : null
+    out.push({
+      "code": str(w.code), "message": str(w.message),
+      "fix": fix && fix.runnable ? fix : null,
+      "fixText": fix && fix.runnable ? "" : str(w.fix)
+    })
+  }
+  return out
+}
+
+function hintsOf(compat) {
+  var out = {}
+  for (var key in compat) if (compat.hasOwnProperty(key)) out[key] = str(compat[key])
+  return out
 }
 
 // The badge's text: hidden ("") at 0, the count up to 99, then "99+" (past that the
@@ -944,7 +973,9 @@ function reduceSearch(env) {
         "downloads": typeof popularity.downloads === "number" ? popularity.downloads : null,
         "stars": typeof popularity.stars === "number" ? popularity.stars : null,
         "updatedAt": strOrNull(r.updated_at),
-        "compat": keys.length ? str(compat[keys[0]]) : ""
+        "compat": keys.length ? str(compat[keys[0]]) : "",
+        // Every client's hint, by id (one envelope answers for all of them under All).
+        "hints": hintsOf(compat)
       }
     }),
     "skipped": Array.isArray(env.data.sources_skipped) ? env.data.sources_skipped.slice() : []
@@ -953,35 +984,79 @@ function reduceSearch(env) {
 
 // `errors`: per target, per addon. Accounts are never read (M3-D21); the CLI already
 // redacts what it prints.
+var CONFIDENCE_RANK = { "high": 3, "medium": 2, "low": 1 }
+
+// The `commands[]` entry with `action` for client `id` (its argv names it after -t).
+function targetCommand(env, action, id) {
+  if (!env || !Array.isArray(env.commands)) return null
+  for (var i = 0; i < env.commands.length; i++) {
+    var c = env.commands[i]
+    if (!c || c.action !== action || !Array.isArray(c.argv)) continue
+    var at = c.argv.indexOf("-t")
+    if (at >= 0 && c.argv[at + 1] === id) return cliAction(c.command, c.argv, c.destructive)
+  }
+  return null
+}
+
+// `errors --json` as the Issues view shows it (M3-D21: strict text only; a custom
+// message is its length; raw details only when the read asked for them; received
+// reports only as a count).
 function reduceErrors(env) {
-  if (!envelopeOk(env) || !env.ok || !env.data || !Array.isArray(env.data.targets)) return { "targets": [] }
+  if (!envelopeOk(env) || !env.ok || !env.data || !Array.isArray(env.data.targets)) return { "targets": [], "raw": false }
   return {
+    "raw": env.data.raw_details === true,
     "targets": env.data.targets.map(function(t) {
       var target = t.target && typeof t.target === "object" ? t.target : {}
       var dismiss = t.dismiss && typeof t.dismiss === "object" ? t.dismiss : null
+      var summary = t.summary && typeof t.summary === "object" ? t.summary : {}
+      var files = t.files && typeof t.files === "object" ? t.files : {}
+      var databases = Array.isArray(t.databases) ? t.databases : []
       var addons = Array.isArray(t.addons) ? t.addons : []
+      var clientId = str(target.id)
       return {
-        "id": str(target.id),
+        "id": clientId,
         "capture": str(t.capture),
         "coverage": str(t.coverage),
         "dismissToken": dismiss && typeof dismiss.precondition === "string" ? dismiss.precondition : null,
+        "new": num(summary["new"]),
+        "received": num(summary.received),
+        // The game was writing: what came before the cut is kept, and nothing re-reads it.
+        "partial": num(files.partial) > 0 || databases.some(function(d) { return d && d.state === "partial" }),
+        "install": str(t.capture) === "none" ? targetCommand(env, "install_buggrabber", clientId) : null,
         "addons": addons.map(function(a) {
           var errors = Array.isArray(a.errors) ? a.errors : []
+          var latest = a.latest && typeof a.latest === "object" ? a.latest : {}
+          var confidence = ""
+          var reduced = errors.map(function(e) {
+            var attribution = e.attribution && typeof e.attribution === "object" ? e.attribution : {}
+            var c = str(attribution.confidence)
+            if ((CONFIDENCE_RANK[c] || 0) > (CONFIDENCE_RANK[confidence] || 0)) confidence = c
+            var raw = e.raw && typeof e.raw === "object" ? e.raw : null
+            return {
+              "fingerprint": str(e.fingerprint),
+              "messageKind": str(e.message_kind),
+              "message": strOrNull(e.message),
+              "messageChars": typeof e.message_chars === "number" ? e.message_chars : null,
+              "location": strOrNull(e.location),
+              "confidence": c,
+              "type": str(e.type),
+              "count": num(e.count),
+              "new": e["new"] === true,
+              "stack": stringList(e.stack),
+              "raw": raw ? { "message": strOrNull(raw.message), "stack": stringList(raw.stack), "locals": strOrNull(raw.locals) } : null
+            }
+          })
           return {
             "addon": str(a.addon),
             "managed": a.managed === true,
+            "kind": str(a.kind),
+            "version": strOrNull(a.version),
+            "latest": strOrNull(latest.version),
+            "updateAvailable": latest.status === "update_available",
             "count": num(a.count),
             "new": num(a["new"]),
-            "errors": errors.map(function(e) {
-              return {
-                "fingerprint": str(e.fingerprint),
-                "message": strOrNull(e.message),
-                "location": strOrNull(e.location),
-                "count": num(e.count),
-                "new": e["new"] === true,
-                "stack": stringList(e.stack)
-              }
-            })
+            "confidence": confidence,
+            "errors": reduced
           }
         })
       }
@@ -1456,6 +1531,176 @@ function notesFor(changelog, row) {
   }
 }
 
+// -------------------------------------------------------------- the Issues and Search views (F6)
+
+var SEVERITY_ORDER = ["P0", "P1", "P2", "P3"]
+
+// One error's line: where, and for Lua's and Blizzard's own message templates (their
+// variable parts are identifiers from code) the message; a custom message an addon
+// wrote shows only its length (M3-D21).
+function errorLine(e) {
+  var where = e.location || "unknown location"
+  if (e.messageKind === "custom") {
+    return where + ": custom message (" + (e.messageChars === null ? "?" : e.messageChars) + " characters, hidden)"
+  }
+  return where + (e.message ? ": " + e.message : "")
+}
+
+// The Issues view, in the filter, as sections (a title, lines of text, rows) whose rows
+// the cursor walks in order (`index`): problems from `status` by severity; each client's
+// Lua errors (an Install row where BugGrabber is missing, then its addons; received
+// reports and an incomplete read as lines); the run warnings. A row's `action` is the
+// CLI argv Enter runs (the classifier accepted it), its `text` the command it shows
+// instead.
+function issueSections(statusTargets, errors, warnings, filter) {
+  var sections = []
+  var problems = []
+  var targets = Array.isArray(statusTargets) ? statusTargets : []
+  for (var i = 0; i < targets.length; i++) {
+    var t = targets[i]
+    if (filter && t.id !== filter) continue
+    for (var j = 0; j < t.issues.length; j++) {
+      var issue = t.issues[j]
+      var r = issue.remediation || {}
+      problems.push({
+        "kind": "problem", "key": "p/" + t.id + "/" + j, "target": t.id, "severity": issue.severity,
+        "urgent": issue.urgent, "title": issue.title,
+        "action": r.runnable ? r : null, "text": r.runnable ? "" : str(r.command)
+      })
+    }
+  }
+  problems.sort(function(a, b) { return SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) })
+  if (problems.length) sections.push({ "title": "Problems", "lines": [], "rows": problems })
+
+  var errTargets = errors && Array.isArray(errors.targets) ? errors.targets : []
+  for (var k = 0; k < errTargets.length; k++) {
+    var e = errTargets[k]
+    if (filter && e.id !== filter) continue
+    var rows = []
+    var lines = []
+    if (e.capture === "none") {
+      rows.push({
+        "kind": "capture", "key": "c/" + e.id, "target": e.id,
+        "title": e.install ? "BugGrabber is not installed" : "No BugGrabber build for this client is known",
+        "action": e.install && e.install.runnable ? e.install : null,
+        "text": e.install && !e.install.runnable ? e.install.command : ""
+      })
+    }
+    for (var m = 0; m < e.addons.length; m++) {
+      var a = e.addons[m]
+      rows.push({
+        "kind": "addon", "key": "a/" + e.id + "/" + a.addon, "target": e.id, "addon": a.addon, "count": a.count,
+        "new": a["new"], "confidence": a.confidence, "updateAvailable": a.updateAvailable, "version": a.version,
+        "latest": a.latest, "lines": a.errors.map(errorLine),
+        "stack": a.errors.length ? a.errors[0].stack : []
+      })
+    }
+    if (e.received > 0) {
+      lines.push(e.received === 1 ? "1 error received from another player (not counted)"
+        : e.received + " errors received from other players (not counted)")
+    }
+    if (e.partial) lines.push("Incomplete read (the game may be writing)")
+    if (e.capture !== "none" && e.addons.length === 0 && !e.partial) lines.push("No Lua errors")
+    sections.push({ "title": "Lua errors (" + e.id + ")", "lines": lines, "rows": rows })
+  }
+
+  var runWarnings = (Array.isArray(warnings) ? warnings : []).map(function(w, n) {
+    return { "kind": "warning", "key": "w/" + n, "title": w.message, "action": w.fix, "text": w.fixText }
+  })
+  if (runWarnings.length) sections.push({ "title": "Run warnings", "lines": [], "rows": runWarnings })
+
+  var index = 0
+  for (var s = 0; s < sections.length; s++) {
+    for (var n = 0; n < sections[s].rows.length; n++) sections[s].rows[n].index = index++
+  }
+  return sections
+}
+
+// The rows of issueSections, in cursor order.
+function issueRows(sections) {
+  var out = []
+  for (var i = 0; i < sections.length; i++) out = out.concat(sections[i].rows)
+  return out
+}
+
+// `d`: what to dismiss, bound to the shown observation: the filtered client, or each
+// client with new errors, with the token of the `errors` read the panel shows (one call
+// per client: `--if-match` binds exactly its token's client).
+function dismissPlan(errors, filter) {
+  var clients = errors && Array.isArray(errors.targets) ? errors.targets : []
+  return clients
+    .filter(function(t) { return (!filter || t.id === filter) && t["new"] > 0 && !!t.dismissToken })
+    .map(function(t) { return { "target": t.id, "token": t.dismissToken } })
+}
+
+// Search: the template for the filter. All searches every client in one request
+// (`search_all`, no -t), so each result carries every client's hint.
+function searchRequest(query, filter) {
+  if (filter) return { "template": "search", "slots": { "target": filter, "query": query } }
+  return { "template": "search_all", "slots": { "query": query } }
+}
+
+var INSTALLABLE_HINTS = ["yes", "likely"]
+
+// Where a search result may be installed: every client with its hint; only `yes` and
+// `likely` are eligible (the CLI's own rule for its `commands`).
+function installTargets(result, statusTargets) {
+  var hints = result && result.hints ? result.hints : {}
+  return (Array.isArray(statusTargets) ? statusTargets : []).map(function(t) {
+    var hint = hints.hasOwnProperty(t.id) ? hints[t.id] : "unknown"
+    return { "id": t.id, "hint": hint, "eligible": INSTALLABLE_HINTS.indexOf(hint) >= 0 }
+  })
+}
+
+// `s`: the raw details of `row`'s errors, from the service's view-bound read (`{selection,
+// data}`): null until the answer for this row arrives. Each error's raw message, then
+// its raw stack.
+function rawLines(rawErrors, row) {
+  if (!rawErrors || !rawErrors.selection || !row) return null
+  if (rawErrors.selection.target !== row.target || rawErrors.selection.addon !== row.addon) return null
+  var targets = rawErrors.data && Array.isArray(rawErrors.data.targets) ? rawErrors.data.targets : []
+  var lines = []
+  for (var i = 0; i < targets.length; i++) {
+    if (targets[i].id !== row.target) continue
+    for (var j = 0; j < targets[i].addons.length; j++) {
+      var a = targets[i].addons[j]
+      if (a.addon !== row.addon) continue
+      for (var k = 0; k < a.errors.length; k++) {
+        var raw = a.errors[k].raw
+        if (!raw) continue
+        if (raw.message) lines.push(raw.message)
+        for (var n = 0; n < raw.stack.length; n++) lines.push("  " + raw.stack[n])
+      }
+    }
+  }
+  return lines
+}
+
+// How sure the attribution is, as a dot scale.
+function confidenceDots(confidence) {
+  var full = CONFIDENCE_RANK[confidence] || 0
+  var dots = ""
+  for (var i = 0; i < 3; i++) dots += String.fromCodePoint(i < full ? 0x25CF : 0x25CB)
+  return dots
+}
+
+// A search result's popularity: "2.1M downloads", "412 stars", or "".
+function popularityText(row) {
+  var compact = function(n) {
+    if (n >= 1000000) return (Math.round(n / 100000) / 10) + "M"
+    if (n >= 1000) return (Math.round(n / 100) / 10) + "k"
+    return String(n)
+  }
+  if (row && typeof row.downloads === "number") return compact(row.downloads) + " downloads"
+  if (row && typeof row.stars === "number") return compact(row.stars) + " stars"
+  return ""
+}
+
+// The bound action's refusal after its observation changed (`plan_stale`).
+function boundStaleText(template, env) {
+  return template === "dismiss_errors" ? "New errors arrived; review them" : staleText(env)
+}
+
 // The last result's Undo: its `undo` command when the classifier accepted it.
 function resultUndo(result) {
   if (!result || !Array.isArray(result.commands)) return null
@@ -1538,6 +1783,16 @@ if (typeof module !== "undefined") {
     installedRows: installedRows,
     unmanagedLines: unmanagedLines,
     rowAction: rowAction,
-    notesFor: notesFor
+    notesFor: notesFor,
+    errorLine: errorLine,
+    issueSections: issueSections,
+    issueRows: issueRows,
+    dismissPlan: dismissPlan,
+    searchRequest: searchRequest,
+    installTargets: installTargets,
+    boundStaleText: boundStaleText,
+    rawLines: rawLines,
+    confidenceDots: confidenceDots,
+    popularityText: popularityText
   }
 }

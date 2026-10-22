@@ -349,6 +349,47 @@ TestCase {
     compare(service.queues.mutation.length, 1)
   }
 
+  function test_all_searches_every_client_in_one_request() {
+    ready(0)
+    service.searchFor("damage meter", "")
+    compare(words(lastRun("search").command), ["search", "--limit", "20", "--", "damage meter"])
+  }
+
+  function test_dismissals_go_one_client_at_a_time_and_a_stale_one_stops_the_rest() {
+    ready(0)
+    var plan = [{ "target": "era", "token": "pc1:" + "1".repeat(64) }, { "target": "retail", "token": "pc1:" + "2".repeat(64) }]
+    compare(service.dismissErrors(plan), "")
+    var first = lastRun("errors")
+    compare(words(first.command), ["errors", "dismiss", "-t", "era"])
+    var at = first.command.indexOf("--if-match")
+    compare(first.command[at + 1], plan[0].token)
+    compare(runs("errors").length, 1, "the second waits for the first")
+    answer(first, envelope("errors dismiss", { "targets": [] }))
+    var second = runs("errors").filter(function(l) { return words(l.command)[1] === "dismiss" })[1]
+    verify(second !== undefined)
+    compare(words(second.command), ["errors", "dismiss", "-t", "retail"])
+    compare(second.command[second.command.indexOf("--if-match") + 1], plan[1].token)
+    answer(second, envelope("errors dismiss", { "targets": [] }))
+    compare(service.pendingDismissals.length, 0)
+    // A stale observation stops what is left, and says why.
+    compare(service.dismissErrors(plan), "")
+    var stale = runs("errors").filter(function(l) { return words(l.command)[1] === "dismiss" })[2]
+    answer(stale, failure("errors dismiss", "plan_stale", "the errors changed since they were shown", { "changed": ["era"] }))
+    compare(runs("errors").filter(function(l) { return words(l.command)[1] === "dismiss" }).length, 3)
+    compare(service.lastError.message, "New errors arrived; review them")
+    compare(service.pendingDismissals.length, 0)
+  }
+
+  function test_raw_details_are_dropped_once_their_row_closed() {
+    ready(0)
+    service.readRawErrors("retail", "Foo")
+    var raw = lastRun("errors")
+    compare(words(raw.command), ["errors", "--raw-details", "-t", "retail", "--addon=Foo"])
+    service.clearRawErrors()
+    answer(raw, envelope("errors", { "raw_details": true, "targets": [] }))
+    compare(service.rawErrors, null)
+  }
+
   function test_a_late_search_for_another_target_is_dropped() {
     ready(0)
     service.searchFor("dbm", "retail")
@@ -390,6 +431,9 @@ TestCase {
     compare(words(full.command), ["status", "-v"])
     answer(full, statusEnvelope(0))
     compare(words(lastRun("list").command), ["list", "-v"])
+    // Then the Issues view's errors, still local.
+    answer(lastRun("list"), envelope("list", { "targets": [] }))
+    compare(words(lastRun("errors").command), ["errors", "--limit", "10"])
     // A second copy opening adds nothing.
     service.setPanelOpen("bar@HDMI-A-1", true)
     compare(runs("status").length, 2)
@@ -418,6 +462,7 @@ TestCase {
     service.setPanelOpen("bar@DP-1", true)
     answer(lastRun("status"), statusEnvelope(0))
     answer(lastRun("list"), envelope("list", { "targets": [] }))
+    answer(lastRun("errors"), envelope("errors", { "targets": [] }))
     var lists = runs("list").length
     bell().process.emitStdout("doorbell.json")
     wait(50)

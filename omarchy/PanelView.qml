@@ -48,9 +48,9 @@ Item {
   // A view without one leaves its slot empty; the switcher and the key map are final.
   // A view may offer `frame` (set on load), `rowCount`, `rowItem(i)`, `typing`,
   // `focusSearch()` and `handleKey(name, cursor)`.
-  property var viewComponents: ({ "updates": updatesView, "installed": installedView })
+  property var viewComponents: ({ "updates": updatesView, "installed": installedView, "issues": issuesView, "search": searchView })
   // Frame-wide keys a later task registers (b, d, …): name → function(frame).
-  property var keyHandlers: ({})
+  property var keyHandlers: ({ "dismiss": function(frame) { return frame.dismissErrors() } })
 
   readonly property var current: contentLoader.item
   readonly property int rowCount: current && typeof current.rowCount === "number" ? current.rowCount : 0
@@ -253,6 +253,13 @@ Item {
   function runCli(command, label) {
     if (busy || !command || !command.argv) return false
     return report(svc.runCliArgv(command.argv, label))
+  }
+
+  // `d` (and the Issues view's Dismiss): the filtered client's new errors, or each
+  // client's, bound to the errors read the panel shows.
+  function dismissErrors() {
+    if (busy || !svc) return false
+    return report(svc.dismissErrors(Model.dismissPlan(svc.errors, filter)))
   }
 
   function runCard(action) {
@@ -869,6 +876,16 @@ Item {
   Component {
     id: installedView
     InstalledView {}
+  }
+
+  Component {
+    id: issuesView
+    IssuesView {}
+  }
+
+  Component {
+    id: searchView
+    SearchView {}
   }
 
   // Takes the keyboard while the dialog is open: it sees auto-repeat, which the key

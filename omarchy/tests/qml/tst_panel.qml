@@ -175,7 +175,7 @@ TestCase {
     compare(view.view, "installed")
     verify(child("content").item !== null)
     // A view without a component leaves the slot empty; the switcher lists all five.
-    keyClick("3")
+    keyClick("4")
     compare(child("content").item, null)
   }
 

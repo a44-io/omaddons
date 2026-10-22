@@ -780,6 +780,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Frames shown by default"
     },
     {
+      "name": "ERRORS_SHOWN_PER_ADDON",
+      "value": {
+        "count": 10
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Errors one addon lists in errors' output, new first, then the most frequent; entries counts them all"
+    },
+    {
       "name": "ERRORS_STACK_LINES_VERBOSE",
       "value": {
         "count": 40

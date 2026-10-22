@@ -38,7 +38,7 @@ use crate::errors::observe::{
 use crate::errors::sanitize::{MessageKind, raw_details, strict_frames, strict_message};
 use crate::fsx::{FileStamp, GlobalLock, ScopeTable, WriteSession, Writer, ensure_dir_all};
 use crate::inventory::{Depth, inventory_shared};
-use crate::limits::ERRORS_MAX_TOTAL_BYTES;
+use crate::limits::{ERRORS_MAX_TOTAL_BYTES, ERRORS_SHOWN_PER_ADDON};
 use crate::model::TxKind;
 use crate::model::{Target, TargetKey};
 use crate::output::{Outcome, Style};
@@ -1290,9 +1290,11 @@ impl View<'_> {
             new: g.new,
             entries: g.entries,
             last_seen: shown_time(g.last_seen),
+            // New first, then the most frequent (`group`'s order); `entries` counts all.
             errors: g
                 .errors
                 .iter()
+                .take(ERRORS_SHOWN_PER_ADDON)
                 .map(|e| {
                     let entry = &e.shown.entry;
                     let strict = strict_message(&entry.message);

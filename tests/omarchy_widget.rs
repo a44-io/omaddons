@@ -271,8 +271,12 @@ fn the_network_deadline_outlasts_the_longest_polite_request() {
 #[test]
 fn the_output_cap_bounds_every_template() {
     use omaddons::limits::{
-        CHANGELOG_MAX_CHARS, CHANGELOG_MAX_ENTRIES, SEARCH_MAX_RESULTS, SEARCH_SUMMARY_MAX_CHARS,
+        CHANGELOG_MAX_CHARS, CHANGELOG_MAX_ENTRIES, ERRORS_LOCALS_MAX_CHARS,
+        ERRORS_MESSAGE_MAX_CHARS, ERRORS_SHOWN_PER_ADDON, ERRORS_STACK_LINES_VERBOSE,
+        SEARCH_MAX_RESULTS, SEARCH_SUMMARY_MAX_CHARS,
     };
+    // A raw stack frame's characters (a path and a function name).
+    const FRAME: u64 = 512;
     const CLIENTS: u64 = 12;
     const ADDONS: u64 = 400;
     // Room per row for what the limits do not cap (names, refs, dates), and per answer.
@@ -315,6 +319,22 @@ fn the_output_cap_bounds_every_template() {
             Some(SEARCH_MAX_RESULTS as u64 * (SEARCH_SUMMARY_MAX_CHARS as u64 * 6 + ROW) + ANSWER)
         } else if argv.contains("--changelog") {
             Some(CHANGELOG_MAX_ENTRIES as u64 * (CHANGELOG_MAX_CHARS as u64 * 6 + ROW) + ANSWER)
+        } else if name == "errors" {
+            // `--limit` addons per client, each listing at most ERRORS_SHOWN_PER_ADDON
+            // strict errors.
+            let args = template["argv"].as_array().unwrap();
+            let at = args.iter().position(|a| a == "--limit").unwrap();
+            let limit: u64 = args[at + 1].as_str().unwrap().parse().unwrap();
+            Some(CLIENTS * (limit * ERRORS_SHOWN_PER_ADDON as u64 * ROW + ANSWER))
+        } else if name == "errors_raw" {
+            // One client, one addon, each error with its raw message, locals and the
+            // verbose stack beside the strict one.
+            let raw = (ERRORS_MESSAGE_MAX_CHARS + ERRORS_LOCALS_MAX_CHARS) as u64 * 6
+                + 2 * ERRORS_STACK_LINES_VERBOSE as u64 * FRAME * 6;
+            Some(ERRORS_SHOWN_PER_ADDON as u64 * (raw + ROW) + ANSWER)
+        } else if name == "dismiss_errors" {
+            // Counts per client, never a list of errors.
+            Some(CLIENTS * ROW + ANSWER)
         } else if argv.contains("{addon}") || argv.contains("{ref}") {
             Some(base + slope)
         } else {
@@ -772,6 +792,102 @@ mod support {
 }
 
 /// Envelopes from the real binary for bun's reducer tests, written to
+/// The Issues view's envelopes: on retail, Foo (one release behind) with a Lua runtime
+/// error and a custom message naming a character, a report received from another
+/// player, and BugGrabber present; era without BugGrabber. `errors` strict, the same
+/// file cut short (partial), Foo's raw details, a dismissal with a stale token, and
+/// `status` in the `errors` state.
+#[cfg(test)]
+fn errors_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use common::addons::{addon_folder, toc};
+    use common::buggrabber::{self, BugDb, BugEntry, NOW, TimeKind, write_files};
+
+    let mut home = Home::new(&["wow", "wow_classic_era"]);
+    let (old, new) = (Rel::new("Foo", "v1"), Rel::new("Foo", "v2"));
+    home.installed_behind(
+        support::FOO,
+        ("v1", &old.assets()),
+        ("v2", &new.assets()),
+        &["retail"],
+    );
+    home.exec(&fill(t, "check", &[])).expect(0);
+    let bug_toc = toc("120105", &["## SavedVariables: BugGrabberDB"]);
+    addon_folder(
+        &home.addons("_retail_"),
+        "!BugGrabber",
+        &[("!BugGrabber.toc", &bug_toc)],
+        &[],
+    );
+    let at = |file: &str, line| buggrabber::stack_era_c("Foo", file, line);
+    let db = BugDb::new(buggrabber::Writer::Modern, 10)
+        .entry(BugEntry::new(
+            &format!("{} FakeChar pulled too early", at("boss.lua", 3)),
+            10,
+            (TimeKind::Unix, NOW - 120),
+        ))
+        .entry(
+            BugEntry::new(
+                &format!(
+                    "{} attempt to index a nil value (field 'x')",
+                    at("core.lua", 12)
+                ),
+                10,
+                (TimeKind::Unix, NOW - 60),
+            )
+            .stack(&[
+                format!("{} in function 'Refresh'", at("core.lua", 12)),
+                "[C]: in function 'xpcall'".to_owned(),
+            ])
+            .counter(4),
+        )
+        .entry(
+            BugEntry::new(
+                &format!("{} attempt to call a nil value", at("x.lua", 1)),
+                10,
+                (TimeKind::Unix, NOW - 30),
+            )
+            .source("FakeSender"),
+        );
+    let wtf = home.client("_retail_").join("WTF");
+    let mut file = db.file();
+    write_files(&wtf, std::slice::from_ref(&file));
+    let now = [("OMADDONS_NOW", "2026-10-15T18:30:00Z")];
+    let errors = home.exec_with(&fill(t, "errors", &[]), &now);
+    let errors = write_fixture(dir, "errors", &errors, 0);
+    assert_eq!(
+        errors["data"]["targets"].as_array().unwrap().len(),
+        2,
+        "{errors}"
+    );
+    let raw = fill(t, "errors_raw", &[("target", "retail"), ("addon", "Foo")]);
+    write_fixture(dir, "errors-raw", &home.exec_with(&raw, &now), 0);
+    let status = write_fixture(
+        dir,
+        "status-errors",
+        &home.exec_with(&fill(t, "status", &[]), &now),
+        0,
+    );
+    assert_eq!(status["data"]["summary"]["state"], "errors", "{status}");
+    let mut stale = fill(t, "dismiss_errors", &[("target", "retail")]);
+    let at = stale.iter().position(|a| a == "errors").unwrap();
+    stale.splice(
+        at..at,
+        ["--if-match".to_owned(), format!("pc1:{}", "0".repeat(64))],
+    );
+    let stale = write_fixture(dir, "dismiss-stale", &home.exec_with(&stale, &now), 1);
+    assert_eq!(stale["error"]["code"], "plan_stale", "{stale}");
+    // The game still writing: a file cut short.
+    let cut = file.bytes.len() - 20;
+    file.bytes.truncate(cut);
+    write_files(&wtf, &[file]);
+    write_fixture(
+        dir,
+        "errors-partial",
+        &home.exec_with(&fill(t, "errors", &[]), &now),
+        0,
+    );
+}
+
 /// `$OMADDONS_WIDGET_OUT/fixtures/`: `status` in the `updates`, `idle` and `attention`
 /// states, `list`, `search`, the `check` and `update_all` results (with their progress
 /// lines), a `remove` preview, a `remove` whose token went stale, and a failure.
@@ -920,6 +1036,8 @@ fn write_widget_fixtures() {
     );
     let changelog = fill(&t, "changelog", &[("target", "retail"), ("addon", "Foo")]);
     write_fixture(&dir, "changelog", &home.exec(&changelog), 0);
+
+    errors_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);
