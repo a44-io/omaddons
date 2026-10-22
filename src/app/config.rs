@@ -150,6 +150,7 @@ fn default_value(key: &str) -> serde_json::Value {
         "limits.snapshot_max_bytes" => serde_json::json!(limits.snapshot_max_bytes),
         "limits.blob_cache_max_bytes" => serde_json::json!(limits.blob_cache_max_bytes),
         "limits.backup_min_free_mb" => serde_json::json!(limits.backup_min_free >> 20),
+        "limits.backup_auto_keep_days" => serde_json::json!(limits.backup_auto_keep_days),
         _ => serde_json::Value::Null,
     }
 }

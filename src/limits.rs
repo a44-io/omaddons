@@ -125,6 +125,15 @@ pub const BACKUP_MIN_FREE: u64 = 2_048 * MIB;
 /// A client whose newest qualifying backup was captured longer ago than this (or that
 /// has none) is offered `backup create`.
 pub const BACKUP_STALE_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Local days of automatic backups kept per target: for each of the newest days that
+/// hold any, its first pre-change and last post-session backup, and every before-restore
+/// one. (config, as `limits.backup_auto_keep_days`, 1 to [`BACKUP_AUTO_KEEP_DAYS_MAX`])
+pub const BACKUP_AUTO_KEEP_DAYS: usize = 7;
+/// The most `limits.backup_auto_keep_days` accepts.
+pub const BACKUP_AUTO_KEEP_DAYS_MAX: usize = 100;
+/// No backup younger than this is ever pruned automatically, nor by `--keep` or
+/// `--older-than`.
+pub const BACKUP_MIN_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// Runs with an undoable entry the history projection (`history_tail.json`) keeps whole,
 /// newest first; runs with none (backups, settings) never count.
 pub const HISTORY_TAIL_RUNS: usize = 16;
@@ -514,6 +523,28 @@ pub const REGISTRY: &[LimitInfo] = &[
         "A client with no qualifying backup captured this recently is offered backup create",
     ),
     limit(
+        "BACKUP_AUTO_KEEP_DAYS",
+        LimitValue::Count(BACKUP_AUTO_KEEP_DAYS as u64),
+        "count",
+        Some("backup_auto_keep_days"),
+        "Days of automatic backups kept per target \
+         (config.toml: limits.backup_auto_keep_days, 1 to 100)",
+    ),
+    limit(
+        "BACKUP_AUTO_KEEP_DAYS_MAX",
+        LimitValue::Count(BACKUP_AUTO_KEEP_DAYS_MAX as u64),
+        "count",
+        None,
+        "The most limits.backup_auto_keep_days accepts",
+    ),
+    limit(
+        "BACKUP_MIN_AGE",
+        LimitValue::Millis(ms(BACKUP_MIN_AGE)),
+        "ms",
+        None,
+        "No backup younger than this is pruned automatically, nor by --keep or --older-than",
+    ),
+    limit(
         "HISTORY_TAIL_RUNS",
         LimitValue::Count(HISTORY_TAIL_RUNS as u64),
         "count",
@@ -636,6 +667,7 @@ pub struct EffectiveLimits {
     pub blob_cache_max_bytes: u64,
     /// Bytes; 0 turns the free-space check off.
     pub backup_min_free: u64,
+    pub backup_auto_keep_days: usize,
 }
 
 impl Default for EffectiveLimits {
@@ -650,6 +682,7 @@ impl Default for EffectiveLimits {
             snapshot_max_bytes: SNAPSHOT_MAX_BYTES,
             blob_cache_max_bytes: BLOB_CACHE_MAX_BYTES,
             backup_min_free: BACKUP_MIN_FREE,
+            backup_auto_keep_days: BACKUP_AUTO_KEEP_DAYS,
         }
     }
 }
@@ -688,6 +721,16 @@ impl EffectiveLimits {
             "blob_cache_max_bytes" => self.blob_cache_max_bytes = positive_integer(key, value)?,
             "tx_retention" => self.tx_retention = retention(key, value, self.tx_retention)?,
             "backup_min_free" => self.backup_min_free = non_negative_integer(key, value)?,
+            "backup_auto_keep_days" => {
+                let days = positive_integer(key, value)?;
+                self.backup_auto_keep_days = usize::try_from(days)
+                    .ok()
+                    .filter(|days| *days <= BACKUP_AUTO_KEEP_DAYS_MAX)
+                    .ok_or_else(|| LimitOverrideError::WrongType {
+                        key: key.to_owned(),
+                        expected: "an integer from 1 to 100",
+                    })?;
+            }
             _ => {
                 let known = REGISTRY
                     .iter()
@@ -819,6 +862,9 @@ mod tests {
         "BACKUP_CAPTURE_ATTEMPTS",
         "BACKUP_MIN_FREE",
         "BACKUP_STALE_AFTER",
+        "BACKUP_AUTO_KEEP_DAYS",
+        "BACKUP_AUTO_KEEP_DAYS_MAX",
+        "BACKUP_MIN_AGE",
         "HISTORY_TAIL_RUNS",
         "HISTORY_TAIL_MAX_BYTES",
         "LUA_MAX_DEPTH",
@@ -846,6 +892,7 @@ mod tests {
         "SNAPSHOT_MAX_BYTES",
         "BLOB_CACHE_MAX_BYTES",
         "BACKUP_MIN_FREE",
+        "BACKUP_AUTO_KEEP_DAYS",
     ];
 
     fn names(registry: &[LimitInfo]) -> Vec<&'static str> {

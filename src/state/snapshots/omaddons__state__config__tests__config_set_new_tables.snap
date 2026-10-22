@@ -22,6 +22,7 @@ tx_retention_days = 14
 snapshot_max_bytes = "3GiB"
 blob_cache_max_bytes = "512MiB"
 backup_min_free_mb = 512
+backup_auto_keep_days = 10
 
 [sources.github]
 enabled = true

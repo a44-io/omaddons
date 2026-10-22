@@ -1806,6 +1806,7 @@ tx_retention_days = 7
 snapshot_max_bytes = "2GiB"      # per target, beyond the 24-hour window
 blob_cache_max_bytes = "1GiB"
 backup_min_free_mb = 2048        # MiB free beside backups below which they warn; 0 turns it off
+backup_auto_keep_days = 7        # local days of automatic backups kept per target
 
 # Turn a source off: its refs fail with source_disabled and make no request.
 [sources.wowi]
@@ -1834,6 +1835,7 @@ label = "my 3.3.5a server"
 | `limits.snapshot_max_bytes` | `2GiB` | Snapshot total per target beyond 24 hours |
 | `limits.blob_cache_max_bytes` | `1GiB` | Download cache (installed releases are pinned) |
 | `limits.backup_min_free_mb` | `2048` | MiB free beside a client's backups below which `backup create` warns `backup_space_low` (and makes the backup anyway); 0 to 1,048,576, where 0 turns the check off |
+| `limits.backup_auto_keep_days` | `7` | Local days of automatic backups that backup retention keeps per target: for each of the newest days holding any, its first pre-change and last post-session backup, and every before-restore one (1 to 100) |
 | `sources.<id>.enabled` | `true` | `false` turns a source off (`github`, `git`, `url`, `local`, `wowi`, `tukui`): its refs fail with `source_disabled` and make no request, and `outdated` reports its addons `unchecked`. An id outside that list is accepted and ignored, without a warning |
 | `sources.github.credential` | none | Where the GitHub token comes from: `{ env = "…" }`, `{ file = "…" }` or `{ command = [...] }` (see **Tokens** under [Network and privacy](#network-and-privacy)) |
 | `targets.<id or key>.label`, `.family` | none | [Per-target overrides](#per-target-overrides) |

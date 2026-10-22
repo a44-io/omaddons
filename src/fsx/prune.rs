@@ -739,27 +739,29 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let f = fixture();
         let tx: TxId = TX.parse().unwrap();
-        // A restore's stage: a stored 0500 directory holding a 0000 one.
-        let stage = crate::state::paths::ClientPaths::new(&f.client).stage(&tx);
-        let locked = stage.join("WTF/Account/Locked");
-        fs::create_dir_all(locked.join("Sealed")).unwrap();
-        fs::write(locked.join("Sealed/S.lua"), b"S = 1").unwrap();
-        fs::write(locked.join("L.lua"), b"L = 1").unwrap();
-        for (dir, mode) in [(locked.join("Sealed"), 0o000), (locked.clone(), 0o500)] {
-            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+        let client = crate::state::paths::ClientPaths::new(&f.client);
+        // A restore's stage, a backup and a snapshot's `WTF.previous`: each a stored
+        // 0500 directory holding a 0000 one.
+        let backup = client.backups().join("01M6Q4ZZ000000000000000000");
+        for (victim, reason) in [
+            (client.stage(&tx), PruneReason::PostCommitCleanup),
+            (backup, PruneReason::BackupPrune),
+            (client.snapshots(&tx), PruneReason::Retention),
+        ] {
+            let locked = victim.join("WTF/Account/Locked");
+            fs::create_dir_all(locked.join("Sealed")).unwrap();
+            fs::write(locked.join("Sealed/S.lua"), b"S = 1").unwrap();
+            fs::write(locked.join("L.lua"), b"L = 1").unwrap();
+            for (dir, mode) in [(locked.join("Sealed"), 0o000), (locked.clone(), 0o500)] {
+                fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+            }
+            let victims = std::slice::from_ref(&victim);
+            let report = prune(&f.scopes, reason, victims, LockUse::Acquire).unwrap();
+            assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+            assert_eq!(report.removed, victims);
+            assert_eq!(report.bytes, 10, "measured through the sealed directory");
+            assert!(!victim.exists(), "{reason:?}");
         }
-        let victims = std::slice::from_ref(&stage);
-        let report = prune(
-            &f.scopes,
-            PruneReason::PostCommitCleanup,
-            victims,
-            LockUse::Acquire,
-        )
-        .unwrap();
-        assert!(report.skipped.is_empty(), "{:?}", report.skipped);
-        assert_eq!(report.removed, victims);
-        assert_eq!(report.bytes, 10, "measured through the sealed directory");
-        assert!(!stage.exists());
     }
 
     #[test]

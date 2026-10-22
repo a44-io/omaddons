@@ -564,6 +564,33 @@ expression: "(politeness, REGISTRY)"
       "notes": "A client with no qualifying backup captured this recently is offered backup create"
     },
     {
+      "name": "BACKUP_AUTO_KEEP_DAYS",
+      "value": {
+        "count": 7
+      },
+      "unit": "count",
+      "config_key": "backup_auto_keep_days",
+      "notes": "Days of automatic backups kept per target (config.toml: limits.backup_auto_keep_days, 1 to 100)"
+    },
+    {
+      "name": "BACKUP_AUTO_KEEP_DAYS_MAX",
+      "value": {
+        "count": 100
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "The most limits.backup_auto_keep_days accepts"
+    },
+    {
+      "name": "BACKUP_MIN_AGE",
+      "value": {
+        "millis": 86400000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "No backup younger than this is pruned automatically, nor by --keep or --older-than"
+    },
+    {
       "name": "HISTORY_TAIL_RUNS",
       "value": {
         "count": 16

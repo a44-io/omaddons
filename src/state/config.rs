@@ -22,7 +22,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::paths::Paths;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
-use crate::limits::{CREDENTIAL_COMMAND_TIMEOUT, EffectiveLimits};
+use crate::limits::{BACKUP_AUTO_KEEP_DAYS_MAX, CREDENTIAL_COMMAND_TIMEOUT, EffectiveLimits};
 use crate::model::Channel;
 use crate::rules::{ClientRulesOverride, Family, RulesOverrides, RulesTable};
 
@@ -89,6 +89,8 @@ pub struct LimitsConfig {
     /// MiB free beside a client's backups below which backups warn or skip,
     /// 0–[`BACKUP_MIN_FREE_MB_MAX`]; 0 turns the check off.
     pub backup_min_free_mb: Option<u64>,
+    /// Local days of automatic backups kept per target, 1–[`BACKUP_AUTO_KEEP_DAYS_MAX`].
+    pub backup_auto_keep_days: Option<u64>,
 }
 
 /// The largest `limits.backup_min_free_mb`: 1 TiB.
@@ -311,6 +313,11 @@ pub const KEYS: &[KeySpec] = &[
         "MiB free beside backups below which they warn or skip",
     ),
     spec(
+        "limits.backup_auto_keep_days",
+        KeyKind::Count,
+        "Days of automatic backups kept per target",
+    ),
+    spec(
         "sources.*.enabled",
         KeyKind::Bool,
         "Whether a source is used",
@@ -463,6 +470,18 @@ impl Config {
                 &format!("must be from 0 to {BACKUP_MIN_FREE_MB_MAX}"),
             ));
         }
+        if config
+            .limits
+            .backup_auto_keep_days
+            .is_some_and(|days| days == 0 || days > BACKUP_AUTO_KEEP_DAYS_MAX as u64)
+        {
+            return Err(invalid(
+                path,
+                text,
+                "limits.backup_auto_keep_days",
+                &format!("must be from 1 to {BACKUP_AUTO_KEEP_DAYS_MAX}"),
+            ));
+        }
         if let Some(bad) = config.git_hosts.iter().find(|h| !is_host_name(h)) {
             return Err(invalid(
                 path,
@@ -522,6 +541,9 @@ impl Config {
         }
         if let Some(mb) = l.backup_min_free_mb {
             apply("backup_min_free", int(mb.saturating_mul(1 << 20)))?;
+        }
+        if let Some(days) = l.backup_auto_keep_days {
+            apply("backup_auto_keep_days", int(days))?;
         }
         if let Some(hours) = self.check_interval_hours.filter(|h| *h > 0) {
             apply(
@@ -986,6 +1008,7 @@ tx_retention_days = 14
 snapshot_max_bytes = "3GiB"
 blob_cache_max_bytes = "512MiB"
 backup_min_free_mb = 512
+backup_auto_keep_days = 10
 
 [sources.github]
 enabled = true
@@ -1055,6 +1078,7 @@ multi_toc = true
             512 << 20,
             "MiB in the file, bytes inside"
         );
+        assert_eq!(limits.backup_auto_keep_days, 10);
         assert_eq!(parse("").unwrap().0, Config::default());
         let off = parse("[limits]\nbackup_min_free_mb = 0\n").unwrap().0;
         assert_eq!(
@@ -1105,6 +1129,14 @@ multi_toc = true
         );
         let err = parse("[limits]\nbackup_min_free_mb = -1\n").unwrap_err();
         assert_eq!(err.code, ErrorCode::StateCorrupt);
+        for days in [0, 101] {
+            let err = parse(&format!("[limits]\nbackup_auto_keep_days = {days}\n")).unwrap_err();
+            assert!(
+                err.message.contains("from 1 to 100"),
+                "{days}: {}",
+                err.message
+            );
+        }
     }
 
     #[test]

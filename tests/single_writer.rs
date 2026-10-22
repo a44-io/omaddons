@@ -844,6 +844,10 @@ const PRUNE_CALLERS: &[(&str, &str)] = &[
         "src/backup/create.rs",
         "a capture's own stage and in-flight lock, under its own lock",
     ),
+    (
+        "src/backup/prune.rs",
+        "backup retention, reclamation and backup prune, each victim under its own reservation",
+    ),
 ];
 
 #[test]

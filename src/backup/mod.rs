@@ -12,6 +12,7 @@
 pub mod create;
 pub mod fs;
 pub mod inventory;
+pub mod prune;
 pub mod tree;
 
 use std::collections::{BTreeMap, BTreeSet};
