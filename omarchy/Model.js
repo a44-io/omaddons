@@ -86,6 +86,9 @@ var WIDGET_KILL_GRACE_SEC = 5
 // stdout above this is discarded as `oversized`; tests/omarchy_widget.rs holds every
 // template's worst-case output below it.
 var WIDGET_OUTPUT_MAX_BYTES = 8 * 1024 * 1024
+// How long a finished run's stdout may stay open after `exited`: a killed omaddons can
+// leave a child (git) holding the pipe, and the lane must not wait on it forever.
+var WIDGET_STREAM_GRACE_SEC = 2
 
 // ------------------------------------------------------ the templates (M3-D2)
 
@@ -198,9 +201,11 @@ function pathOf(args) {
 
 // A template's path and slots, after checking its shape: command words first, no flag
 // the widget owns, every positional slot after `--`, every option slot in the
-// one-element `--opt={slot}` form before it.
-function templateShape(name) {
-  var template = COMMANDS.hasOwnProperty(name) ? COMMANDS[name] : null
+// one-element `--opt={slot}` form before it. `table` replaces COMMANDS (the service's
+// tests add fixture templates over existing commands).
+function templateShape(name, table) {
+  var commands = table || COMMANDS
+  var template = commands.hasOwnProperty(name) ? commands[name] : null
   if (!template) throw refuse("unknown_template", name)
   var argv = template.argv
   var path = pathOf(argv)
@@ -312,13 +317,14 @@ function standardFlags(opts, progress, preview, ifMatch) {
 
 // Template `name` with `slots` filled: `{argv, env}`, where `argv` starts with the
 // binary and the standard flags, and `env` is the stamped context. Options: `binary`,
-// `label` (the button's), `context`, and `preview`, `token` or `confirmed` for the
-// preview flow. Throws on anything the template does not allow.
+// `label` (the button's), `context`, `preview`, `token` or `confirmed` for the preview
+// flow, and `templates` in place of COMMANDS. Throws on anything the template does not
+// allow.
 function buildArgv(name, slots, opts) {
-  var shape = templateShape(name)
-  var template = COMMANDS[name]
-  var given = slots || {}
   var o = opts || {}
+  var shape = templateShape(name, o.templates)
+  var template = (o.templates || COMMANDS)[name]
+  var given = slots || {}
   for (var key in given) {
     if (!given.hasOwnProperty(key)) continue
     if (!SLOTS.hasOwnProperty(key)) throw refuse("unknown_slot", name + ": {" + key + "}")
@@ -515,7 +521,15 @@ function enqueue(queues, request) {
   }
   if (at !== -1) {
     var replaced = list[at].id
-    list[at] = request
+    var next = request
+    // A newer cached status never downgrades a queued full one (the panel asked for
+    // the rescan).
+    if (list[at].template === "status_full" && request.template === "status") {
+      next = {}
+      for (var field in request) if (request.hasOwnProperty(field)) next[field] = request[field]
+      next.template = "status_full"
+    }
+    list[at] = next
     return { "queues": out, "accepted": true, "replaced": replaced }
   }
   if (lane === "network" && list.length >= NETWORK_QUEUE_MAX) {
@@ -844,6 +858,18 @@ function reduceStatus(env, nowMs) {
   }
 }
 
+// The bar of a model the service can no longer vouch for (an incompatible binary):
+// the last numbers, dimmed and marked stale.
+function staleBar(bar) {
+  var out = { "badge": 0, "urgent": false, "dimmed": true, "spinning": false, "tooltip": [], "stale": true }
+  if (bar && typeof bar === "object") {
+    out.badge = num(bar.badge)
+    out.urgent = bar.urgent === true
+    out.tooltip = Array.isArray(bar.tooltip) ? bar.tooltip.slice() : []
+  }
+  return out
+}
+
 // `list -v`: one row per managed addon, per target.
 function reduceList(env) {
   if (!envelopeOk(env) || !env.ok || !env.data || !Array.isArray(env.data.targets)) return { "targets": [] }
@@ -1129,6 +1155,7 @@ if (typeof module !== "undefined") {
     WIDGET_NETWORK_DEADLINE_SEC: WIDGET_NETWORK_DEADLINE_SEC,
     WIDGET_KILL_GRACE_SEC: WIDGET_KILL_GRACE_SEC,
     WIDGET_OUTPUT_MAX_BYTES: WIDGET_OUTPUT_MAX_BYTES,
+    WIDGET_STREAM_GRACE_SEC: WIDGET_STREAM_GRACE_SEC,
     COMMANDS: COMMANDS,
     CLI_PATHS: CLI_PATHS,
     WIDGET_FLAGS: WIDGET_FLAGS,
@@ -1152,6 +1179,7 @@ if (typeof module !== "undefined") {
     markApplied: markApplied,
     outcomeOf: outcomeOf,
     reduceStatus: reduceStatus,
+    staleBar: staleBar,
     reduceList: reduceList,
     reduceSearch: reduceSearch,
     reduceErrors: reduceErrors,

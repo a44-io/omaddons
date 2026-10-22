@@ -92,6 +92,7 @@ describe("settings", () => {
   test("the UI-only constants are pinned", () => {
     expect(M.WIDGET_LOCAL_DEADLINE_SEC).toBe(20)
     expect(M.WIDGET_KILL_GRACE_SEC).toBe(5)
+    expect(M.WIDGET_STREAM_GRACE_SEC).toBe(2)
   })
 })
 
@@ -214,6 +215,16 @@ describe("buildArgv", () => {
     } finally {
       for (const name of Object.keys(planted)) delete M.COMMANDS[name]
     }
+  })
+
+  test("a template table can be passed in place of COMMANDS", () => {
+    const table = Object.assign({}, M.COMMANDS, {
+      pin_silent: { argv: ["pin", "-t", "{target}", "--", "{addon}"], mutates: true, silent: true },
+    })
+    const built = M.buildArgv("pin_silent", { target: "retail", addon: "Baz" }, opts({ templates: table }))
+    expect(built.argv.slice(-5)).toEqual(["pin", "-t", "retail", "--", "Baz"])
+    expect(reasonOf(() => M.buildArgv("pin_silent", { target: "retail", addon: "Baz" }, opts()))).toBe("unknown_template")
+    expect(M.COMMANDS.pin_silent).toBeUndefined()
   })
 
   test("every shipped template is well-formed and builds with benign slots", () => {
@@ -389,6 +400,18 @@ describe("scheduler", () => {
     expect(M.nextRequest(q, { mutation: true }).start.mutation).toBeNull()
   })
 
+  test("a newer cached status never downgrades a queued full one", () => {
+    let q = M.emptyQueues()
+    q = M.enqueue(q, req({ resource: "status", template: "status_full" })).queues
+    const cached = req({ resource: "status", template: "status" })
+    q = M.enqueue(q, cached).queues
+    expect(q.local.map((r) => [r.id, r.template])).toEqual([[cached.id, "status_full"]])
+    expect(cached.template).toBe("status")
+    q = M.enqueue(M.emptyQueues(), req({ resource: "status", template: "status" })).queues
+    q = M.enqueue(q, req({ resource: "status", template: "status_full" })).queues
+    expect(q.local[0].template).toBe("status_full")
+  })
+
   test("the network lane holds four, and a newer search replaces a queued one", () => {
     let q = M.emptyQueues()
     q = M.enqueue(q, req({ resource: "search", kind: "view", target: "retail" })).queues
@@ -479,6 +502,15 @@ describe("reduceStatus", () => {
     const model = M.reduceStatus(env)
     expect(model.summary.errors).toBeNull()
     expect([model.targets[0].errors, model.targets[0].backups, model.widget]).toEqual([null, null, null])
+  })
+
+  test("a stale bar keeps its numbers, dimmed", () => {
+    const bar = M.reduceStatus(fixture("status-attention")).bar
+    const stale = M.staleBar(bar)
+    expect([stale.badge, stale.urgent, stale.dimmed, stale.stale, stale.spinning]).toEqual([bar.badge, true, true, true, false])
+    expect(stale.tooltip).toEqual(bar.tooltip)
+    expect(stale.tooltip).not.toBe(bar.tooltip)
+    expect(M.staleBar(null).dimmed).toBe(true)
   })
 
   test("a failed status keeps nothing and says why", () => {
