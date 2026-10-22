@@ -263,6 +263,21 @@ fn outdated_and_update_hint_adopt_only_where_nothing_is_managed_yet() {
             r.context()
         );
     }
+    // With no update, the human footer never presents it as an install.
+    let human = home.exec(&[
+        "outdated".to_owned(),
+        "--format".to_owned(),
+        "human".to_owned(),
+    ]);
+    assert_eq!(human.code, 0, "{}", human.context());
+    assert!(
+        !human.stdout.contains("to install them")
+            && human
+                .stdout
+                .contains("Run `omaddons adopt -t retail` to see the folders installed by hand"),
+        "{}",
+        human.context()
+    );
     // The hint runs: a report.
     run_argv(&home, &hint.1).expect(0);
 

@@ -263,8 +263,18 @@ impl Outcome for OutdatedOutcome {
             }
         }
         writeln!(w, "{}", self.summary_line())?;
-        if let Some(hint) = self.commands.first() {
-            writeln!(w, "Run `{}` to install them.", hint.command())?;
+        // By action: the update hint (when there is one) comes first, then any adopt
+        // hints, which install nothing.
+        for hint in &self.commands {
+            match hint.action() {
+                "update" => writeln!(w, "Run `{}` to install them.", hint.command())?,
+                "adopt" => writeln!(
+                    w,
+                    "Run `{}` to see the folders installed by hand that omaddons can manage.",
+                    hint.command()
+                )?,
+                _ => {}
+            }
         }
         Ok(())
     }

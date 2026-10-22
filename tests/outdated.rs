@@ -680,3 +680,54 @@ fn one_client_with_updates_names_it() {
     assert_eq!(after["data"]["summary"]["update_available"], 0);
     assert_eq!(after["commands"], json!([]));
 }
+
+/// The human footer names each hint by what it does: the update installs, an adopt hint
+/// (a client that manages nothing yet, with a folder the catalog names) only reports.
+#[test]
+fn the_human_footer_says_what_each_hint_does() {
+    let mut home = Home::new(&["wow", "wow_classic_era"]);
+    let (old, new) = (
+        Rel::new("Qux", "v1", "120105", MAINLINE),
+        Rel::new("Qux", "v2", "120105", MAINLINE),
+    );
+    home.installed_behind(
+        QUX,
+        ("v1", &old.assets()),
+        ("v2", &new.assets()),
+        &["retail"],
+    );
+    let catalog_d = home.env.config().join("omaddons/catalog.d");
+    fs::create_dir_all(&catalog_d).unwrap();
+    fs::write(
+        catalog_d.join("50-foo.toml"),
+        "schema_version = \"1.0\"\n\n[[addon]]\nname = \"Foo\"\nref = \"gh:o/foo\"\nfolders = [\"Foo\"]\n",
+    )
+    .unwrap();
+    let foo = home.addons("_classic_era_").join("Foo");
+    fs::create_dir_all(&foo).unwrap();
+    fs::write(foo.join("Foo.toc"), "## Interface: 11508\n").unwrap();
+    let envelope = home.run(&["outdated"]).expect(0);
+    let actions: Vec<&Value> = envelope["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| &h["action"])
+        .collect();
+    assert_eq!(actions, ["update", "adopt"], "{envelope}");
+    let human = home.exec(&[
+        "outdated".to_owned(),
+        "--format".to_owned(),
+        "human".to_owned(),
+    ]);
+    assert_eq!(human.code, 0, "{}", human.context());
+    let footer: Vec<&str> = human.stdout.lines().rev().take(2).collect();
+    assert_eq!(
+        footer,
+        [
+            "Run `omaddons adopt -t era` to see the folders installed by hand that omaddons can manage.",
+            "Run `omaddons update -t retail` to install them.",
+        ],
+        "{}",
+        human.context()
+    );
+}
