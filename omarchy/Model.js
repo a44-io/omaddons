@@ -114,7 +114,14 @@ var COMMANDS = {
   "errors":         { "argv": ["errors", "--limit", "10"],                          "mutates": false, "lane": "local" },
   "errors_raw":     { "argv": ["errors", "--raw-details", "-t", "{target}", "--addon={addon}"], "mutates": false, "lane": "local" },
   "dismiss_errors": { "argv": ["errors", "dismiss", "-t", "{target}"],              "mutates": true, "bind": true },
-  "search_all":     { "argv": ["search", "--limit", "20", "--", "{query}"],         "mutates": false, "lane": "network" }
+  "search_all":     { "argv": ["search", "--limit", "20", "--", "{query}"],         "mutates": false, "lane": "network" },
+  "backups":        { "argv": ["backup", "list", "--limit", "50"],                  "mutates": false, "lane": "local" },
+  "backups_detail": { "argv": ["backup", "list", "-v", "-t", "{target}", "--limit", "50"], "mutates": false, "lane": "local" },
+  "backup_target":  { "argv": ["backup", "create", "-t", "{target}"],               "mutates": true },
+  "backup_all":     { "argv": ["backup", "create"],                                 "mutates": true },
+  "restore":        { "argv": ["backup", "restore", "-t", "{target}", "--", "{backup}"], "mutates": true, "confirm": true },
+  "restore_addon":  { "argv": ["backup", "restore", "-t", "{target}", "--addon={addon}", "--", "{backup}"], "mutates": true, "confirm": true },
+  "prune_backup":   { "argv": ["backup", "prune", "-t", "{target}", "--", "{backup}"],   "mutates": true, "confirm": true }
 }
 // END COMMANDS
 
@@ -418,6 +425,12 @@ function cliArgv(argv, opts) {
   if (!verdict.ok) throw refuse(verdict.reason, "not a command the widget runs")
   var o = opts || {}
   var rest = argv.slice(1)
+  // The confirmed run of a preview: a CLI argv that came from a dry run's own fix (its
+  // alternatives repeat `--dry-run`) runs for real once the user said Yes.
+  if (o.preview !== true && (o.confirmed === true || !!o.token)) {
+    var end = rest.indexOf("--")
+    rest = rest.filter(function(arg, i) { return arg !== "--dry-run" || (end !== -1 && i > end) })
+  }
   var dryRun = hasDryRun(rest)
   var preview = o.preview === true || dryRun
   var ifMatch = ifMatchFor(verdict.path, CLI_PATHS[verdict.path], false, false, o, preview)
@@ -771,16 +784,22 @@ function lastChangeOf(change, state) {
   }
 }
 
-// "checked 25 min ago".
-function ageText(iso, nowMs) {
+// "25 min ago", "3 hours ago", "2 days ago", "just now"; "" without a time.
+function sinceText(iso, nowMs) {
   var at = Date.parse(iso)
   if (isNaN(at) || typeof nowMs !== "number") return ""
   var minutes = Math.max(0, Math.floor((nowMs - at) / 60000))
-  if (minutes < 1) return "checked just now"
-  if (minutes < 60) return "checked " + minutes + " min ago"
+  if (minutes < 1) return "just now"
+  if (minutes < 60) return minutes + " min ago"
   var hours = Math.floor(minutes / 60)
-  if (hours < 48) return "checked " + plural(hours, "hour") + " ago"
-  return "checked " + plural(Math.floor(hours / 24), "day") + " ago"
+  if (hours < 48) return plural(hours, "hour") + " ago"
+  return plural(Math.floor(hours / 24), "day") + " ago"
+}
+
+// "checked 25 min ago".
+function ageText(iso, nowMs) {
+  var since = sinceText(iso, nowMs)
+  return since ? "checked " + since : ""
 }
 
 function tooltipOf(summary, targets, nowMs) {
@@ -1071,11 +1090,18 @@ function reduceBackups(env) {
     "targets": env.data.targets.map(function(t) {
       var target = t.target && typeof t.target === "object" ? t.target : {}
       var backups = Array.isArray(t.backups) ? t.backups : []
+      var auto = t.auto && typeof t.auto === "object" ? t.auto : null
+      var last = auto && auto.last && typeof auto.last === "object" ? auto.last : null
       return {
         "id": str(target.id),
         "total": num(t.total),
+        "shown": num(t.shown),
         "bytes": typeof t.bytes === "number" ? t.bytes : null,
+        "freeBytes": typeof t.free_bytes === "number" ? t.free_bytes : null,
+        "auto": auto ? { "mode": str(auto.mode), "capability": str(auto.capability),
+          "last": last ? { "at": str(last.at), "result": str(last.result) } : null } : null,
         "backups": backups.map(function(b) {
+          var addons = Array.isArray(b.addons) ? b.addons : null
           return {
             "id": str(b.id),
             "capturedAt": str(b.captured_at),
@@ -1084,7 +1110,15 @@ function reduceBackups(env) {
             "files": num(b.files),
             "bytes": num(b.bytes),
             "restorable": b.restorable === true,
-            "qualifying": b.qualifying === true
+            "qualifying": b.qualifying === true,
+            "consistency": str(b.consistency),
+            "integrity": str(b.integrity),
+            "baseline": strOrNull(b.baseline),
+            "busy": b.busy === true,
+            // `backup list -v`: the addon versions that wrote these settings.
+            "addons": addons ? addons.map(function(a) {
+              return { "name": str(a.name), "version": strOrNull(a.version), "folders": stringList(a.folders) }
+            }) : null
           }
         })
       }
@@ -1120,6 +1154,30 @@ function isChange(item) {
 // A finished command as one line: "Updated 4 addons on 2 clients", with the reload a
 // client needs; a failure's message. Multi-target commands (update, pin, unpin) carry
 // `targets[]`; install and remove carry one target's `items`.
+// The result line of a backup command: what it backed up, restored or deleted; "" for
+// any other command.
+function backupResultLine(command, data) {
+  var targets = Array.isArray(data.targets) ? data.targets : [data]
+  if (command === "backup restore") {
+    var where = data.target && data.target.id ? " on " + data.target.id : ""
+    if (data.mode === "addons") {
+      var names = (Array.isArray(data.addons) ? data.addons : []).map(function(a) { return str(a.addon) + "'s" })
+      return "Restored " + joinNames(names) + " settings" + where
+    }
+    return "Restored the whole WTF/" + where
+  }
+  if (command === "backup create") {
+    var made = targets.filter(function(t) { return t && t.backup }).map(function(t) { return t.target && t.target.id ? t.target.id : "" })
+    return made.length ? "Backed up " + joinNames(made) : "No backup was needed"
+  }
+  if (command === "backup prune") {
+    var count = 0
+    for (var i = 0; i < targets.length; i++) count += targets[i] && Array.isArray(targets[i].pruned) ? targets[i].pruned.length : 0
+    return "Deleted " + plural(count, "backup")
+  }
+  return ""
+}
+
 // The items of a change result that failed, each with its error: `[{name, error}]`.
 function failedItems(env) {
   var out = []
@@ -1169,7 +1227,9 @@ function resultLine(env) {
   }
   var verb = RESULT_VERBS[env.command] || "Done:"
   var failed = failedItems(env)
-  var line = changed === 0 && failed.length === 0 && env.command === "update" ? "Everything was up to date"
+  var backup = backupResultLine(env.command, data)
+  var line = backup ? backup
+    : changed === 0 && failed.length === 0 && env.command === "update" ? "Everything was up to date"
     : failed.length === 0 ? verb + " " + plural(changed, "addon") + (touched > 1 ? " on " + plural(touched, "client") : "")
     : (changed > 0 ? verb + " " + changed + " of " + (changed + failed.length) + "; " : "")
       + failed[0].name + " failed: " + str(failed[0].error.message)
@@ -1261,6 +1321,10 @@ function confirmText(name, env) {
     if (typeof data.changed_since === "number" && data.changed_since > 0) {
       lines.push(plural(data.changed_since, "later change") + " touched these folders since")
     }
+  } else if (env.command === "backup restore") {
+    lines = lines.concat(restoreLines(data, env))
+  } else if (env.command === "backup prune") {
+    lines = lines.concat(pruneLines(data))
   } else {
     lines.push(resultLine(env))
   }
@@ -1269,6 +1333,90 @@ function confirmText(name, env) {
   if (data.reload_required === "reload") lines.push("Then /reload in game")
   if (data.reload_required === "restart") lines.push("Then restart the game")
   return lines.join("\n")
+}
+
+// "2026-10-22 22:46" (UTC, as the CLI writes it).
+function dateText(iso) {
+  var s = str(iso)
+  return s.length >= 16 ? s.slice(0, 10) + " " + s.slice(11, 16) : s
+}
+
+// A restore's dry run (D7, D8): what it would put back, the versions that wrote the
+// settings and what is not in the backup; whole adds what else it changes, and the
+// current WTF/ kept as a backup (or why not).
+function restoreLines(data, env) {
+  var out = []
+  var backup = data.backup && typeof data.backup === "object" ? data.backup : {}
+  var from = "the backup of " + dateText(backup.captured_at)
+  if (data.mode === "addons") {
+    var addons = Array.isArray(data.addons) ? data.addons : []
+    for (var i = 0; i < addons.length; i++) {
+      var a = addons[i]
+      var f = a.files && typeof a.files === "object" ? a.files : {}
+      out.push("Restore " + str(a.addon) + "'s settings from " + from + ": " + num(f.replaced) + " replaced, "
+        + num(f.restored) + " restored (absent now), " + num(f.created_since) + " created since (moved aside)")
+      var captured = str(a.captured_version)
+      var installed = str(a.installed_version)
+      if (captured && installed && captured !== installed) {
+        out.push("Settings written by " + str(a.addon) + " " + captured + "; installed now: " + installed)
+      }
+      var absent = stringList(a.not_in_backup)
+      for (var j = 0; j < absent.length; j++) out.push(absent[j] + ": not in this backup; left as it is")
+    }
+    return out
+  }
+  var files = data.files && typeof data.files === "object" ? data.files : {}
+  out.push("Restore the whole WTF/ from " + from + ": " + plural(num(files.restored), "file") + " restored, "
+    + num(files.differed) + " differ now, " + num(files.created_since) + " created since (moved aside)")
+  out.push("Also restores keybindings, macros, chat settings and every other addon's settings")
+  var skipped = warningMessages(env, "before_restore_skipped")
+  if (skipped.length) return out.concat(skipped)
+  out.push("The current WTF/ is kept as a backup (before restore)")
+  return out
+}
+
+// A prune's dry run: the backups it would delete, and those in use it keeps.
+function pruneLines(data) {
+  var out = []
+  var targets = Array.isArray(data.targets) ? data.targets : []
+  for (var i = 0; i < targets.length; i++) {
+    var t = targets[i]
+    var where = t.target && t.target.id ? " from " + t.target.id : ""
+    var pruned = Array.isArray(t.pruned) ? t.pruned : []
+    for (var j = 0; j < pruned.length; j++) {
+      out.push("Delete backup " + str(pruned[j].id) + " (" + kindText({ "kind": str(pruned[j].kind), "trigger": null }) + ", "
+        + bytesText(num(pruned[j].bytes)) + ")" + where)
+    }
+    var busy = Array.isArray(t.busy) ? t.busy : []
+    for (var k = 0; k < busy.length; k++) out.push(str(busy[k].id || busy[k]) + " is in use and is kept")
+  }
+  return out
+}
+
+// A refused restore's alternatives (`ref_ambiguous`: ownership changed since the
+// backup): the `--addon` value each names, for the restore_addon template. The CLI's
+// argv repeat the widget's own flags, so they are never run as they are.
+function ambiguityChoices(env) {
+  var error = env && env.error && typeof env.error === "object" ? env.error : null
+  if (!error || error.code !== "ref_ambiguous" || !Array.isArray(error.alternatives)) return []
+  var out = []
+  for (var i = 0; i < error.alternatives.length; i++) {
+    var argv = error.alternatives[i] && Array.isArray(error.alternatives[i].argv) ? error.alternatives[i].argv : []
+    var value = ""
+    for (var j = 0; j < argv.length && argv[j] !== "--"; j++) {
+      if (argv[j] === "--addon" && j + 1 < argv.length) value = str(argv[j + 1])
+      else if (str(argv[j]).indexOf("--addon=") === 0) value = argv[j].slice(8)
+    }
+    if (value) out.push({ "addon": value, "label": value.indexOf("folder:") === 0 ? "the " + value.slice(7) + " folder" : value })
+  }
+  return out
+}
+
+// A refused restore's backup folder (`filesystem_unsupported`): the plain copy to
+// restore by hand with the game closed.
+function backupFolderOf(env) {
+  var error = env && env.error && typeof env.error === "object" ? env.error : null
+  return error && error.details && typeof error.details.backup_dir === "string" ? error.details.backup_dir : ""
 }
 
 // A `plan_stale` refusal: what changed since the preview (M3-D46).
@@ -1696,6 +1844,133 @@ function popularityText(row) {
   return ""
 }
 
+// -------------------------------------------------------------- the Backups view and the restore chooser (F9)
+
+// "1.2 KiB", "15.2 MiB", "1.0 GiB".
+function bytesText(n) {
+  var value = num(n)
+  if (value < 1024) return value + " B"
+  var units = ["KiB", "MiB", "GiB", "TiB"]
+  var at = -1
+  while (value >= 1024 && at < units.length - 1) {
+    value /= 1024
+    at++
+  }
+  return (Math.round(value * 10) / 10).toFixed(1) + " " + units[at]
+}
+
+var BACKUP_KINDS = { "manual": "manual", "auto": "automatic", "before_restore": "before restore", "imported": "imported", "recovered": "recovered" }
+
+// "automatic (post session)".
+function kindText(b) {
+  var kind = BACKUP_KINDS[b.kind] || b.kind
+  return b.trigger ? kind + " (" + String(b.trigger).replace(/_/g, " ") + ")" : kind
+}
+
+// What a backup proves (M3-D47): "verified" only for `verified`, with its baseline;
+// damaged says so; metadata only says nothing.
+function integrityText(b) {
+  if (b.integrity === "verified") return "verified" + (b.baseline ? " (" + b.baseline + ")" : "")
+  if (b.integrity === "damaged") return "damaged"
+  return ""
+}
+
+var AUTO_RESULTS = {
+  "created": "made one", "unchanged": "nothing changed", "done_today": "done today", "in_progress": "in progress",
+  "running": "skipped while the game ran", "failed": "failed", "no_wtf": "no WTF/ yet", "space_low": "skipped: low disk space",
+  "no_reflink": "this filesystem cannot clone"
+}
+
+// A client's automatic backups (M3-D30): its mode, what the filesystem allows, and the
+// last run.
+function autoLabel(auto, nowMs) {
+  if (!auto) return ""
+  if (auto.mode === "off") return "Automatic backups: off"
+  var last = auto.last
+  if (last && last.result === "space_low") return "Automatic backups: skipped: low disk space"
+  if (auto.capability === "unsupported") return "Automatic backups: daily, but this filesystem cannot clone"
+  var mode = auto.mode === "daily-copy" ? "daily (copies)" : "daily"
+  var lastText = last ? (AUTO_RESULTS[last.result] || last.result) + (last.at ? " " + sinceText(last.at, nowMs) : "") : "not run yet"
+  return "Automatic backups: " + mode + (auto.capability === "supported" ? ", working" : "") + " · last: " + lastText
+}
+
+// The Backups view, in the filter: per client, its automatic backups and space, then
+// its backups (newest first, as listed), walked by one cursor (`index`).
+function backupSections(backups, filter, nowMs) {
+  var targets = backups && Array.isArray(backups.targets) ? backups.targets : []
+  var sections = []
+  var index = 0
+  for (var i = 0; i < targets.length; i++) {
+    var t = targets[i]
+    if (filter && t.id !== filter) continue
+    var space = (t.freeBytes !== null ? bytesText(t.freeBytes) + " free · " : "") + (t.bytes !== null ? bytesText(t.bytes) + " apparent" : "")
+    var lines = [autoLabel(t.auto, nowMs), space].filter(function(l) { return l !== "" })
+    if (t.total > t.shown) lines.push(t.shown + " of " + t.total + " backups shown")
+    var rows = t.backups.map(function(b) {
+      var parts = [sinceText(b.capturedAt, nowMs) || dateText(b.capturedAt), kindText(b), plural(b.files, "file"), bytesText(b.bytes),
+        b.consistency === "stable" ? "stable" : "best effort", integrityText(b)]
+      if (b.busy) parts.push("in use")
+      if (!b.restorable) parts.push("not restorable")
+      return { "key": t.id + "/" + b.id, "index": index++, "target": t.id, "id": b.id, "busy": b.busy, "restorable": b.restorable,
+        "line": parts.filter(function(p) { return p !== "" }).join(" · ") }
+    })
+    sections.push({ "title": t.id, "lines": lines, "rows": rows })
+  }
+  return sections
+}
+
+// `b`: the filtered client, or every client (no confirmation: creation is undoable and
+// expected, M3-D9).
+function backupRequest(filter) {
+  if (filter) return { "template": "backup_target", "slots": { "target": filter }, "label": "Back up " + filter }
+  return { "template": "backup_all", "slots": {}, "label": "Back up all" }
+}
+
+// Why a client's restores are off: the game runs, or nobody can tell (M3-D29: the CLI
+// refuses then too).
+function restoreBlocked(statusTargets, target) {
+  var t = targetById(statusTargets, target)
+  if (!t) return ""
+  if (t.running) return "quit the game first"
+  if (t.runningUnknown) return "quit the game first (running: unknown)"
+  return ""
+}
+
+// The chooser's backups for `target`, newest first: when, kind and, from the `-v`
+// read, the version of `addon` that wrote its settings.
+function chooserBackups(backups, detail, target, addon, nowMs) {
+  var listed = targetById(backups && backups.targets, target)
+  var detailed = targetById(detail && detail.targets, target)
+  var versions = {}
+  if (detailed) {
+    for (var i = 0; i < detailed.backups.length; i++) {
+      var b = detailed.backups[i]
+      for (var j = 0; b.addons && j < b.addons.length; j++) {
+        if (b.addons[j].name === addon) versions[b.id] = b.addons[j].version
+      }
+    }
+  }
+  return (listed ? listed.backups : []).filter(function(b) { return b.restorable }).map(function(b) {
+    var version = versions.hasOwnProperty(b.id) && versions[b.id] ? " · " + addon + " " + versions[b.id] : ""
+    return { "id": b.id, "label": (sinceText(b.capturedAt, nowMs) || dateText(b.capturedAt)) + " · " + kindText(b) + version }
+  })
+}
+
+// The restore scopes, in this order on purpose: one addon's settings first, the whole
+// WTF/ second, labelled with everything else it changes (risk 11).
+function restoreScopes(addon) {
+  return [
+    { "template": "restore_addon", "label": addon ? addon + "'s settings" : "One addon's settings…", "note": "", "needsAddon": !addon },
+    { "template": "restore", "label": "Whole WTF/", "note": "also restores keybindings, macros, chat settings and every other addon's settings", "needsAddon": false }
+  ]
+}
+
+// The managed addons of `target`, for "one addon's settings…".
+function managedAddons(lists, target) {
+  var t = targetById(lists && lists.targets, target)
+  return t ? t.addons.map(function(a) { return a.name }) : []
+}
+
 // The bound action's refusal after its observation changed (`plan_stale`).
 function boundStaleText(template, env) {
   return template === "dismiss_errors" ? "New errors arrived; review them" : staleText(env)
@@ -1793,6 +2068,19 @@ if (typeof module !== "undefined") {
     boundStaleText: boundStaleText,
     rawLines: rawLines,
     confidenceDots: confidenceDots,
-    popularityText: popularityText
+    popularityText: popularityText,
+    sinceText: sinceText,
+    bytesText: bytesText,
+    kindText: kindText,
+    integrityText: integrityText,
+    autoLabel: autoLabel,
+    backupSections: backupSections,
+    backupRequest: backupRequest,
+    restoreBlocked: restoreBlocked,
+    chooserBackups: chooserBackups,
+    restoreScopes: restoreScopes,
+    managedAddons: managedAddons,
+    ambiguityChoices: ambiguityChoices,
+    backupFolderOf: backupFolderOf
   }
 }

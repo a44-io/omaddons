@@ -50,6 +50,11 @@ Item {
       if (row && row.kind === "addon") toggleRaw(row)
       return true
     }
+    // `r`: the erroring addon's settings from a backup (the restore chooser, F9).
+    if (name === "restore") {
+      if (row && row.kind === "addon") frame.openChooser({ "target": row.target, "addon": row.addon })
+      return true
+    }
     return false
   }
 

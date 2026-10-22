@@ -30,8 +30,9 @@ Item {
   signal tabRequested(int direction)
 
   readonly property color dim: Qt.darker(foreground, 1.55)
-  // What the panel needs to show everything: the column, or the dialog over it.
-  readonly property real contentImplicitHeight: confirming ? Math.max(column.implicitHeight, Style.space(220)) : column.implicitHeight
+  // What the panel needs to show everything: the column, or the dialog or chooser over it.
+  readonly property real contentImplicitHeight: confirming || chooser.opened
+    ? Math.max(column.implicitHeight, Style.space(confirming ? 220 : 360)) : column.implicitHeight
 
   // ---- view state, in memory only (M3-D3)
   property string view: "updates"
@@ -48,9 +49,13 @@ Item {
   // A view without one leaves its slot empty; the switcher and the key map are final.
   // A view may offer `frame` (set on load), `rowCount`, `rowItem(i)`, `typing`,
   // `focusSearch()` and `handleKey(name, cursor)`.
-  property var viewComponents: ({ "updates": updatesView, "installed": installedView, "issues": issuesView, "search": searchView })
+  property var viewComponents: ({ "updates": updatesView, "installed": installedView, "issues": issuesView,
+    "backups": backupsView, "search": searchView })
   // Frame-wide keys a later task registers (b, d, …): name → function(frame).
-  property var keyHandlers: ({ "dismiss": function(frame) { return frame.dismissErrors() } })
+  property var keyHandlers: ({
+    "dismiss": function(frame) { return frame.dismissErrors() },
+    "backup": function(frame) { return frame.backUp() }
+  })
 
   readonly property var current: contentLoader.item
   readonly property int rowCount: current && typeof current.rowCount === "number" ? current.rowCount : 0
@@ -77,8 +82,8 @@ Item {
   // the cursor (j/k) and Enter.
   readonly property bool cardMode: phase === "missing" || phase === "unreachable" || phase === "incompatible"
   readonly property var cardActions: phase === "incompatible" ? ["retry", "reinstall"] : (cardMode ? ["retry"] : [])
-  // Where the keyboard goes: the dialog's own keys while it is open.
-  readonly property Item focusItem: confirming ? confirmKeys : keyCatcher
+  // Where the keyboard goes: the dialog's own keys while it is open, then the chooser's.
+  readonly property Item focusItem: confirming ? confirmKeys : (chooser.opened ? chooser.keyItem : keyCatcher)
 
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
@@ -262,6 +267,25 @@ Item {
     return report(svc.dismissErrors(Model.dismissPlan(svc.errors, filter)))
   }
 
+  // `b` (and the Backups view's button): the filtered client, or every client.
+  function backUp() {
+    if (busy || !svc) return false
+    var request = Model.backupRequest(filter)
+    return report(svc.run(request.template, request.slots, request.label))
+  }
+
+  // `r` on an addon row, or Enter on a backup: the restore chooser
+  // (`{target, addon}` or `{target, backup}`).
+  function openChooser(spec) {
+    if (!canAct || busy || !spec || !spec.target) return false
+    chooser.open(spec)
+    return true
+  }
+
+  function chooserClosed() {
+    Qt.callLater(root.focusNow)
+  }
+
   function runCard(action) {
     if (!svc) return false
     if (action === "retry") svc.refresh()
@@ -304,7 +328,7 @@ Item {
     id: keyCatcher
     objectName: "keyCatcher"
     anchors.fill: parent
-    blocked: root.typing || root.confirming
+    blocked: root.typing || root.confirming || chooser.opened
 
     onMoveRequested: function(dx, dy) { root.move(dx, dy) }
     // Enter emits returnRequested then activateRequested (F0): only the latter acts.
@@ -820,6 +844,43 @@ Item {
                 font.pixelSize: Style.font.caption
                 text: root.lastError && root.lastError.fixText ? String(root.lastError.fixText) : ""
               }
+
+              // A restore whose folders changed owner since the backup: one button per
+              // folder, each the same restore's preview for that folder.
+              Flow {
+                width: parent.width
+                spacing: Style.spacing.sm
+
+                Repeater {
+                  model: root.lastError && Array.isArray(root.lastError.choices) ? root.lastError.choices : []
+
+                  Button {
+                    required property var modelData
+                    required property int index
+                    objectName: "choice_" + index
+                    enabled: root.canAct && !root.busy
+                    opacity: enabled ? 1.0 : 0.4
+                    text: "Restore " + modelData.label
+                    bordered: true
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    onClicked: root.report(root.svc.restoreFolder(modelData.addon))
+                  }
+                }
+              }
+
+              // A restore that cannot exchange here: the backup's own plain folder.
+              PlainLabel {
+                objectName: "backupFolder"
+                visible: text !== ""
+                width: parent.width
+                wrapMode: Text.WrapAnywhere
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: root.lastError && root.lastError.folder ? "The backup's own folder: " + root.lastError.folder : ""
+              }
             }
           }
 
@@ -886,6 +947,19 @@ Item {
   Component {
     id: searchView
     SearchView {}
+  }
+
+  Component {
+    id: backupsView
+    BackupsView {}
+  }
+
+  RestoreChooser {
+    id: chooser
+    objectName: "chooser"
+    anchors.fill: parent
+    z: 8
+    frame: root
   }
 
   // Takes the keyboard while the dialog is open: it sees auto-repeat, which the key

@@ -68,6 +68,13 @@ Item {
   property var rawSelection: null
   // The dismissals `d` still has to send, one client at a time.
   property var pendingDismissals: []
+  property double backupsAt: 0
+  // The restore chooser's `backup list -v -t`, view-bound: `{selection, data}`.
+  property var backupsDetail: null
+  property var detailSelection: null
+  // The spec of the last preview the CLI refused (a restore's `ref_ambiguous` choices
+  // rerun it for one folder).
+  property var failedPreview: null
   property int viewMaxAgeMs: 10000
   property int contextGeneration: 0
   property bool panelOpen: false
@@ -143,6 +150,7 @@ Item {
       request({ "resource": "status", "template": "status_full", "label": "Open panel" })
       readList()
       readErrors()
+      readBackups()
     }
   }
 
@@ -196,28 +204,57 @@ Item {
     rawErrors = null
   }
 
+  function readBackups() {
+    return request({ "resource": "backups", "template": "backups", "label": "Backups" })
+  }
+
+  // The restore chooser opened for `target`: each backup's addon versions, view-bound.
+  function readBackupsDetail(target) {
+    var selection = { "target": String(target || "") }
+    detailSelection = selection
+    return request({
+      "resource": "backups_detail", "template": "backups_detail", "kind": "view", "target": selection.target,
+      "selection": selection, "slots": { "target": selection.target }, "label": "Backups"
+    })
+  }
+
+  // The chooser closed: a late answer is dropped.
+  function clearBackupsDetail() {
+    detailSelection = null
+    backupsDetail = null
+  }
+
+  // A `ref_ambiguous` choice: the refused restore again, for one folder (`folder:X`),
+  // through the preview flow.
+  function restoreFolder(addon) {
+    var spec = failedPreview
+    if (!spec || !spec.slots || !spec.slots.backup) return "nothing to restore"
+    return run("restore_addon", { "target": spec.slots.target, "addon": String(addon || ""), "backup": spec.slots.backup },
+      "Restore " + addon)
+  }
+
   // The panel switched to `view`: read its data when it is older than viewMaxAgeMs or
   // a doorbell rang since. Local reads only: opening and switching never touch the
-  // network. F9 adds the backups read here.
+  // network.
   function readView(view) {
     currentView = String(view || "")
     var resource = currentView === "updates" || currentView === "installed" ? "list"
-      : (currentView === "issues" ? "errors" : "")
+      : (currentView === "issues" ? "errors" : (currentView === "backups" ? "backups" : ""))
     if (resource === "") return false
-    var have = resource === "list" ? lists : errors
-    var at = resource === "list" ? listsAt : errorsAt
+    var have = resource === "list" ? lists : (resource === "errors" ? errors : backups)
+    var at = resource === "list" ? listsAt : (resource === "errors" ? errorsAt : backupsAt)
     if (have && staleReads[resource] !== true && Date.now() - at <= viewMaxAgeMs) return false
     var next = {}
     for (var key in staleReads) if (key !== resource) next[key] = staleReads[key]
     staleReads = next
-    return resource === "list" ? readList() : readErrors()
+    return resource === "list" ? readList() : (resource === "errors" ? readErrors() : readBackups())
   }
 
   // Something changed (the doorbell, or the widget's own action): the bar first, then
   // the open panel's view.
   function changed() {
     refresh()
-    staleReads = { "list": true, "errors": true }
+    staleReads = { "list": true, "errors": true, "backups": true }
     if (panelOpen && currentView !== "") readView(currentView)
   }
 
@@ -426,6 +463,7 @@ Item {
     if (r.resource === "search") return searchSelection
     if (r.resource === "changelog") return changelogSelection
     if (r.resource === "errors_raw") return rawSelection
+    if (r.resource === "backups_detail") return detailSelection
     return null
   }
 
@@ -439,9 +477,11 @@ Item {
   function errorOf(env, fallback) {
     if (env && env.error) {
       return { "message": String(env.error.message || fallback), "code": String(env.error.code || ""),
-        "fixes": Model.fixButtons(env), "fixText": Model.fixText(env) }
+        "fixes": Model.fixButtons(env), "fixText": Model.fixText(env),
+        // A restore's ownership choices, and the backup's folder for a copy by hand.
+        "choices": Model.ambiguityChoices(env), "folder": Model.backupFolderOf(env) }
     }
-    return { "message": fallback, "code": "", "fixes": [], "fixText": "" }
+    return { "message": fallback, "code": "", "fixes": [], "fixText": "", "choices": [], "folder": "" }
   }
 
   // Called by a lane (directly, so the values stay JavaScript) when a request ends.
@@ -484,6 +524,11 @@ Item {
       errorsAt = Date.now()
     } else if (r.resource === "errors_raw") {
       rawErrors = { "selection": r.selection, "data": Model.reduceErrors(env) }
+    } else if (r.resource === "backups") {
+      backups = Model.reduceBackups(env)
+      backupsAt = Date.now()
+    } else if (r.resource === "backups_detail") {
+      backupsDetail = { "selection": r.selection, "data": Model.reduceBackups(env) }
     } else if (r.resource === "search") {
       var found = Model.reduceSearch(env)
       found.selection = r.selection
@@ -528,6 +573,7 @@ Item {
       } else {
         confirm = null
         pendingConfirm = null
+        failedPreview = r.spec
         lastError = errorOf(env, r.label + ": " + outcome)
       }
       return

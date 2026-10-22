@@ -277,6 +277,12 @@ fn the_output_cap_bounds_every_template() {
     };
     // A raw stack frame's characters (a path and a function name).
     const FRAME: u64 = 512;
+    // A template's `--limit` value.
+    let limit_of = |template: &Value| -> u64 {
+        let args = template["argv"].as_array().unwrap();
+        let at = args.iter().position(|a| a == "--limit").unwrap();
+        args[at + 1].as_str().unwrap().parse().unwrap()
+    };
     const CLIENTS: u64 = 12;
     const ADDONS: u64 = 400;
     // Room per row for what the limits do not cap (names, refs, dates), and per answer.
@@ -322,10 +328,19 @@ fn the_output_cap_bounds_every_template() {
         } else if name == "errors" {
             // `--limit` addons per client, each listing at most ERRORS_SHOWN_PER_ADDON
             // strict errors.
-            let args = template["argv"].as_array().unwrap();
-            let at = args.iter().position(|a| a == "--limit").unwrap();
-            let limit: u64 = args[at + 1].as_str().unwrap().parse().unwrap();
-            Some(CLIENTS * (limit * ERRORS_SHOWN_PER_ADDON as u64 * ROW + ANSWER))
+            Some(CLIENTS * (limit_of(template) * ERRORS_SHOWN_PER_ADDON as u64 * ROW + ANSWER))
+        } else if name == "backups" {
+            // `--limit` backups per client.
+            Some(CLIENTS * (limit_of(template) * ROW + ANSWER))
+        } else if name == "backups_detail" {
+            // One client's `--limit` backups, each with the addons that wrote it.
+            Some(limit_of(template) * (ROW + ADDONS * 256) + ANSWER)
+        } else if matches!(
+            name.as_str(),
+            "backup_target" | "backup_all" | "restore" | "prune_backup"
+        ) {
+            // A record per client: ids and counts, never a list of files.
+            Some(CLIENTS * ROW + ANSWER)
         } else if name == "errors_raw" {
             // One client, one addon, each error with its raw message, locals and the
             // verbose stack beside the strict one.
@@ -792,6 +807,175 @@ mod support {
 }
 
 /// Envelopes from the real binary for bun's reducer tests, written to
+/// Installs `r` at `version` on retail from a local zip shipping `folders`.
+#[cfg(test)]
+fn install_zip(home: &Home, r: &str, version: &str, folders: &[&str]) {
+    use common::addons::toc;
+    use common::archives::zip_text;
+
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let zip = dl.join(format!("{}-{version}.zip", r.replace([':', '/'], "-")));
+    let line = format!("## Version: {version}");
+    let tocs: Vec<(String, String)> = folders
+        .iter()
+        .map(|f| (format!("{f}/{f}.toc"), toc("120105", &[&line])))
+        .collect();
+    let entries: Vec<(&str, &str)> = tocs.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    fs::write(&zip, zip_text(&entries)).unwrap();
+    let zip = zip.display().to_string();
+    home.run(&["install", r, "--file", &zip, "-t", "retail"])
+        .expect(0);
+}
+
+/// Retail's `WTF/` (WeakAuras's and Foo's settings, `Config.wtf`) backed up through the
+/// widget's `backup_target` with WeakAuras 5.19.2 installed, then WeakAuras updated to
+/// 5.20.0 and a session played (both settings files rewritten). The home, its `WTF/`
+/// and the backup's id.
+#[cfg(test)]
+fn restore_scene(t: &BTreeMap<String, Value>) -> (Home, std::path::PathBuf, String) {
+    use common::wtf::Wtf;
+
+    let home = Home::new(&["wow"]);
+    let wtf = Wtf::at(home.client("_retail_"))
+        .config_wtf("SET locale \"enUS\"\n")
+        .saved_variables("WeakAuras", 400)
+        .saved_variables("Foo", 200)
+        .build();
+    install_zip(
+        &home,
+        "gh:o/WeakAuras",
+        "5.19.2",
+        &["WeakAuras", "WeakAurasOptions"],
+    );
+    let created = home
+        .exec(&fill(t, "backup_target", &[("target", "retail")]))
+        .expect(0);
+    let id = created["data"]["targets"][0]["backup"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    install_zip(
+        &home,
+        "gh:o/WeakAuras",
+        "5.20.0",
+        &["WeakAuras", "WeakAurasOptions"],
+    );
+    let account = wtf.join("Account/FAKEACCT/SavedVariables");
+    fs::write(
+        account.join("WeakAuras.lua"),
+        "WeakAurasDB = { played = 1 }\n",
+    )
+    .unwrap();
+    fs::write(account.join("Foo.lua"), "FooDB = { played = true }\n").unwrap();
+    (home, wtf, id)
+}
+
+/// The chooser's "<addon>'s settings" end to end on a fixture home: the `restore_addon`
+/// template's dry run, then the run bound to its token. WeakAuras's settings come back;
+/// Foo's file and `Config.wtf` stay exactly as they were.
+#[test]
+fn the_choosers_addon_restore_leaves_every_other_setting_alone() {
+    let t = templates();
+    let (home, wtf, id) = restore_scene(&t);
+    let account = wtf.join("Account/FAKEACCT/SavedVariables");
+    let played = b"WeakAurasDB = { played = 1 }\n".to_vec();
+    let foo = fs::read(account.join("Foo.lua")).unwrap();
+    let config = fs::read(wtf.join("Config.wtf")).unwrap();
+    let slots = [
+        ("target", "retail"),
+        ("addon", "WeakAuras"),
+        ("backup", id.as_str()),
+    ];
+    let mut preview = fill(&t, "restore_addon", &slots);
+    let at = preview.iter().position(|a| a == "backup").unwrap();
+    preview.insert(at, "--dry-run".to_owned());
+    let dry = home.exec(&preview).expect(0);
+    let token = dry["data"]["precondition"].as_str().unwrap().to_owned();
+    assert_eq!(fs::read(account.join("WeakAuras.lua")).unwrap(), played);
+    let mut real = fill(&t, "restore_addon", &slots);
+    let at = real.iter().position(|a| a == "backup").unwrap();
+    real.splice(at..at, ["--if-match".to_owned(), token]);
+    let done = home.exec(&real).expect(0);
+    assert_eq!(done["data"]["mode"], "addons", "{done}");
+    let restored = fs::read(account.join("WeakAuras.lua")).unwrap();
+    assert!(restored.starts_with(b"WeakAurasDB = { [\""), "{restored:?}");
+    assert_eq!(fs::read(account.join("Foo.lua")).unwrap(), foo);
+    assert_eq!(fs::read(wtf.join("Config.wtf")).unwrap(), config);
+}
+
+/// The Backups view's and the restore chooser's envelopes: retail's `WTF/` (WeakAuras's
+/// and Foo's settings, `Config.wtf`) backed up with WeakAuras 5.19.2 installed, then
+/// WeakAuras updated to 5.20.0 and a session played. `backup list` (plain and `-v`), an
+/// `--addon` and a whole dry run, a stale token, a running client, and an ambiguous
+/// addon after WeakAurasOptions moved to another addon.
+#[cfg(test)]
+fn backups_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    let (mut home, _wtf, id) = restore_scene(t);
+    write_fixture(dir, "backups", &home.exec(&fill(t, "backups", &[])), 0);
+    let detail = fill(t, "backups_detail", &[("target", "retail")]);
+    write_fixture(dir, "backups-detail", &home.exec(&detail), 0);
+    let preview = |name: &str, slots: &[(&str, &str)]| {
+        let mut argv = fill(t, name, slots);
+        let at = argv.iter().position(|a| a == "backup").unwrap();
+        argv.insert(at, "--dry-run".to_owned());
+        argv
+    };
+    let addon = [
+        ("target", "retail"),
+        ("addon", "WeakAuras"),
+        ("backup", id.as_str()),
+    ];
+    let whole = [("target", "retail"), ("backup", id.as_str())];
+    let done = write_fixture(
+        dir,
+        "restore-addon-preview",
+        &home.exec(&preview("restore_addon", &addon)),
+        0,
+    );
+    assert!(done["data"]["precondition"].is_string(), "{done}");
+    let done = write_fixture(
+        dir,
+        "restore-preview",
+        &home.exec(&preview("restore", &whole)),
+        0,
+    );
+    assert!(done["data"]["precondition"].is_string(), "{done}");
+    // The newest checkpoint is never pruned: a newer backup first.
+    home.exec(&fill(t, "backup_target", &[("target", "retail")]))
+        .expect(0);
+    let pruned = write_fixture(
+        dir,
+        "prune-preview",
+        &home.exec(&preview("prune_backup", &whole)),
+        0,
+    );
+    assert!(pruned["data"]["precondition"].is_string(), "{pruned}");
+    let mut stale = fill(t, "restore", &whole);
+    let at = stale.iter().position(|a| a == "backup").unwrap();
+    stale.splice(
+        at..at,
+        ["--if-match".to_owned(), format!("pc1:{}", "0".repeat(64))],
+    );
+    let stale = write_fixture(dir, "restore-stale", &home.exec(&stale), 1);
+    assert_eq!(stale["error"]["code"], "plan_stale", "{stale}");
+    home.retail_running();
+    let running = home.exec(&preview("restore_addon", &addon));
+    let running = write_fixture(dir, "restore-running", &running, running.code);
+    assert_eq!(running["error"]["code"], "game_running", "{running}");
+    home.nothing_running();
+    // WeakAurasOptions moved to another addon since the backup.
+    install_zip(&home, "gh:o/WeakAuras", "5.21.0", &["WeakAuras"]);
+    install_zip(&home, "gh:o/Opts", "1.0", &["WeakAurasOptions"]);
+    let ambiguous = write_fixture(
+        dir,
+        "restore-ambiguous",
+        &home.exec(&preview("restore_addon", &addon)),
+        3,
+    );
+    assert_eq!(ambiguous["error"]["code"], "ref_ambiguous", "{ambiguous}");
+}
+
 /// The Issues view's envelopes: on retail, Foo (one release behind) with a Lua runtime
 /// error and a custom message naming a character, a report received from another
 /// player, and BugGrabber present; era without BugGrabber. `errors` strict, the same
@@ -1038,6 +1222,7 @@ fn write_widget_fixtures() {
     write_fixture(&dir, "changelog", &home.exec(&changelog), 0);
 
     errors_fixtures(&dir, &t);
+    backups_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);

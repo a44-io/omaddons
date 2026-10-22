@@ -10,7 +10,8 @@ import "../Model.js" as Model
 // (Model.installedRows): version, source, and the markers dep, orphan, pinned, and
 // modified or missing (its files checked on disk). Enter reinstalls drifted files, or
 // updates when a release is waiting; `p` pins or unpins; `x` removes, through the
-// confirm dialog: the CLI's dry run first, then the run bound to it (M3-D9, M3-D46).
+// confirm dialog: the CLI's dry run first, then the run bound to it (M3-D9, M3-D46);
+// `r` restores its settings from a backup (the restore chooser, F9).
 // Unmanaged folders are a line of text: adoption is the CLI's in M3.
 Item {
   id: root
@@ -45,6 +46,11 @@ Item {
     }
     if (name === "pin") {
       if (row) run(Model.rowAction(row, "pin"))
+      return true
+    }
+    // `r`: this addon's settings from a backup (the restore chooser).
+    if (name === "restore") {
+      if (row) frame.openChooser({ "target": row.target, "addon": row.name })
       return true
     }
     return false

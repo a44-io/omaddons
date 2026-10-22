@@ -174,8 +174,12 @@ TestCase {
     child("view_installed").clicked()
     compare(view.view, "installed")
     verify(child("content").item !== null)
-    // A view without a component leaves the slot empty; the switcher lists all five.
-    keyClick("4")
+    // Every view of the switcher has its component; one without would leave the slot empty.
+    for (var n = 1; n <= 5; n++) {
+      keyClick(String(n))
+      verify(child("content").item !== null, "view " + n)
+    }
+    view.viewComponents = ({})
     compare(child("content").item, null)
   }
 
@@ -253,6 +257,7 @@ TestCase {
     compare(json(loaded.keys), json([["pin", 1], ["x", 1], ["enter", 1], ["enter", 1]]),
       "Enter acts once (activateRequested only)")
     // A view without a component, and a key no one registered: nothing.
+    view.keyHandlers = ({})
     keyClick("4")
     keyClick("b")
     compare(svc.runs.length + svc.cliRuns.length, 0)

@@ -380,6 +380,45 @@ TestCase {
     compare(service.pendingDismissals.length, 0)
   }
 
+  function test_the_backups_are_read_with_the_panel_and_their_detail_is_view_bound() {
+    ready(0)
+    service.setPanelOpen("bar@DP-1", true)
+    answer(lastRun("status"), statusEnvelope(0))
+    answer(lastRun("list"), envelope("list", { "targets": [] }))
+    answer(lastRun("errors"), envelope("errors", { "targets": [] }))
+    compare(words(lastRun("backup").command), ["backup", "list", "--limit", "50"])
+    answer(lastRun("backup"), envelope("backup list", { "targets": [{ "target": { "id": "retail" }, "backups": [], "total": 0 }] }))
+    compare(service.backups.targets[0].id, "retail")
+    service.readBackupsDetail("retail")
+    var detail = lastRun("backup")
+    compare(words(detail.command), ["backup", "list", "-v", "-t", "retail", "--limit", "50"])
+    service.clearBackupsDetail()
+    answer(detail, envelope("backup list", { "targets": [] }))
+    compare(service.backupsDetail, null)
+  }
+
+  // A restore refused for ambiguous ownership: each folder choice reruns that restore's
+  // preview, through the template, never the CLI's own argv.
+  function test_an_ambiguous_restore_reruns_for_the_folder_chosen() {
+    ready(0)
+    var id = "01M5JWP7MW633DZJ0TYDMBV8JN"
+    compare(service.run("restore_addon", { "target": "retail", "addon": "WeakAuras", "backup": id }, "Restore WeakAuras's settings"), "")
+    var preview = lastRun("backup")
+    verify(preview.command.indexOf("--dry-run") !== -1)
+    answer(preview, JSON.stringify({ "ok": false, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "backup restore",
+      "exit_code": 3, "warnings": [], "commands": [], "error": { "code": "ref_ambiguous", "message": "WeakAurasOptions is another addon's now",
+        "fix": "omaddons backup list -t retail -v", "fix_argv": ["omaddons", "backup", "list", "-t", "retail", "-v"], "retryable": false, "details": {},
+        "alternatives": [{ "command": "x", "argv": ["omaddons", "--actor", "widget", "--reason", "r", "--dry-run", "backup", "restore", "-t", "retail",
+          "--addon", "folder:WeakAurasOptions", "--", id] }] } }))
+    compare(service.confirm, null)
+    compare(service.lastError.choices[0].addon, "folder:WeakAurasOptions")
+    compare(service.restoreFolder("folder:WeakAurasOptions"), "")
+    var again = lastRun("backup")
+    verify(again !== preview)
+    verify(again.command.indexOf("--dry-run") !== -1)
+    compare(words(again.command), ["backup", "restore", "-t", "retail", "--addon=folder:WeakAurasOptions", "--", id])
+  }
+
   function test_raw_details_are_dropped_once_their_row_closed() {
     ready(0)
     service.readRawErrors("retail", "Foo")
@@ -463,6 +502,7 @@ TestCase {
     answer(lastRun("status"), statusEnvelope(0))
     answer(lastRun("list"), envelope("list", { "targets": [] }))
     answer(lastRun("errors"), envelope("errors", { "targets": [] }))
+    answer(lastRun("backup"), envelope("backup list", { "targets": [] }))
     var lists = runs("list").length
     bell().process.emitStdout("doorbell.json")
     wait(50)

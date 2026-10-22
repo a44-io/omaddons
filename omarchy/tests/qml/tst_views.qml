@@ -80,6 +80,15 @@ TestCase {
       property var statusWarnings: []
       property var rawErrors: null
       property var search: null
+      property var backups: null
+      property var backupsDetail: null
+      property var detailReads: []
+      property int detailClears: 0
+      property var folders: []
+
+      function readBackupsDetail(target) { detailReads = detailReads.concat([target]) }
+      function clearBackupsDetail() { detailClears++; backupsDetail = null }
+      function restoreFolder(addon) { folders = folders.concat([addon]); return "" }
 
       property var runs: []
       property var cliRuns: []
@@ -164,7 +173,9 @@ TestCase {
 
   // The command words of the argv Model.buildArgv makes of a recorded run.
   function words(run) {
-    var built = Model.buildArgv(run[0], run[1], { "binary": "/opt/omaddons", "label": run[2], "context": Build.CONTEXT })
+    // A confirmed template builds as its preview (the dry run the dialog shows).
+    var built = Model.buildArgv(run[0], run[1], { "binary": "/opt/omaddons", "label": run[2], "context": Build.CONTEXT,
+      "preview": Model.COMMANDS[run[0]].confirm === true })
     var argv = built.argv
     var at = argv.indexOf("--reason") + 2
     while (argv[at] === "--progress" || argv[at] === "--dry-run" || argv[at] === "--if-match") at += argv[at] === "--dry-run" ? 1 : 2
@@ -501,6 +512,83 @@ TestCase {
     compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!"]))
     verify(!findChild(search, "chooser").visible)
     tryVerify(function() { return findChild(view, "keyCatcher").activeFocus })
+  }
+
+  // ------------------------------------------------------------- Backups
+
+  // `backup list` as the binary prints it: two backups on retail (the older one in use,
+  // the newer verified), one on era.
+  function backupsEnvelope(verifiedOld) {
+    var backup = function(id, at, extra) {
+      var b = { "id": id, "created_at": at, "captured_at": at, "kind": "manual", "trigger": null, "files": 412, "bytes": 15937536,
+        "reflinked": "none", "client_running": false, "unsettled": 0, "consistency": "stable", "integrity": "metadata_only",
+        "verified_at": null, "baseline": null, "restorable": true, "qualifying": true, "busy": false }
+      for (var key in extra) b[key] = extra[key]
+      return b
+    }
+    return { "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "backup list", "exit_code": 0,
+      "partial": false, "warnings": [], "commands": [],
+      "data": { "targets": [
+        { "target": { "id": "era" }, "auto": { "mode": "off", "capability": "supported", "last": null }, "bytes": 100, "free_bytes": 1073741824,
+          "shown": 1, "total": 1, "backups": [backup("01ERA00000000000000000000A", "2099-12-31T23:00:00Z", {})] },
+        { "target": { "id": "retail" }, "auto": { "mode": "daily", "capability": "supported", "last": { "at": "2099-12-31T21:00:00Z", "result": "created" } },
+          "bytes": 31875072, "free_bytes": 227633266688, "shown": 2, "total": 2, "backups": [
+            backup("01RET00000000000000000000B", "2099-12-31T22:00:00Z", { "integrity": "verified", "baseline": "capture" }),
+            backup("01RET00000000000000000000A", "2099-12-30T00:00:00Z", { "busy": true, "consistency": "best_effort", "kind": "auto", "trigger": "post_session" })
+          ] }
+      ] } }
+  }
+
+  function backupsReady() {
+    svc.backups = Model.reduceBackups(backupsEnvelope())
+    view.nowMs = Date.parse("2100-01-01T00:00:00Z")
+    keyClick("4")
+    compare(view.view, "backups")
+  }
+
+  function test_backups_say_what_each_proves_and_which_is_in_use() {
+    backupsReady()
+    var backups = content()
+    compare(json(backups.rows.map(function(r) { return [r.target, r.id] })), json([
+      ["era", "01ERA00000000000000000000A"], ["retail", "01RET00000000000000000000B"], ["retail", "01RET00000000000000000000A"]]))
+    compare(findChild(row("backupRow", 0), "line").text, "1 hour ago · manual · 412 files · 15.2 MiB · stable")
+    compare(findChild(row("backupRow", 1), "line").text, "2 hours ago · manual · 412 files · 15.2 MiB · stable · verified (capture)")
+    compare(findChild(row("backupRow", 2), "line").text, "2 days ago · automatic (post session) · 412 files · 15.2 MiB · best effort · in use")
+  }
+
+  function test_b_backs_up_the_filtered_client_or_all() {
+    backupsReady()
+    keyClick("b")
+    compare(json(svc.runs[0]), json(["backup_all", {}, "Back up all"]))
+    keyClick("t")
+    keyClick("t")
+    compare(view.filter, "retail")
+    keyClick("b")
+    compare(json(svc.runs[1]), json(["backup_target", { "target": "retail" }, "Back up retail"]))
+    compare(json(words(svc.runs[1])), json(["backup", "create", "-t", "retail"]))
+  }
+
+  function test_x_prunes_the_exact_backup_and_never_one_in_use() {
+    backupsReady()
+    keyClick("j")
+    keyClick("j")
+    keyClick("x")
+    compare(svc.runs.length, 0)
+    compare(findChild(view, "notice").text, "this backup is in use; try again when it is free")
+    keyClick("k")
+    keyClick("x")
+    compare(json(svc.runs[0]), json(["prune_backup", { "target": "retail", "backup": "01RET00000000000000000000B" }, "Delete backup 01RET00000000000000000000B"]))
+    compare(json(words(svc.runs[0])), json(["backup", "prune", "-t", "retail", "--", "01RET00000000000000000000B"]))
+  }
+
+  function test_enter_or_r_on_a_backup_opens_the_chooser_on_it() {
+    backupsReady()
+    keyClick("j")
+    keyClick("r")
+    var chooser = findChild(view, "chooser")
+    verify(chooser.opened)
+    compare([chooser.target, chooser.backup, chooser.step], ["retail", "01RET00000000000000000000B", "scope"])
+    compare(json(svc.detailReads), json(["retail"]))
   }
 
   // ------------------------------------------------------------- the real service

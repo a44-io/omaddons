@@ -191,10 +191,15 @@ describe("buildArgv", () => {
         for (const value of HOSTILE) {
           const slots = Object.assign(benignSlots(name), { [slot]: value })
           const argv = M.buildArgv(name, slots, runOpts(name)).argv
-          const at = argv.lastIndexOf(value)
-          const option = argv.find((a) => a.endsWith("=" + value))
-          expect(at !== -1 || option !== undefined).toBe(true)
-          if (at !== -1) expect(argv.indexOf("--")).toBeLessThan(at)
+          // An option slot is one element (`--addon=<value>`, even for "--json");
+          // a positional comes after `--`.
+          const optionPart = M.COMMANDS[name].argv.find((part) => part.endsWith("={" + slot + "}"))
+          if (optionPart) {
+            expect(argv).toContain(optionPart.replace("{" + slot + "}", () => value))
+          } else {
+            expect(argv.indexOf("--")).toBeGreaterThan(-1)
+            expect(argv.lastIndexOf(value)).toBeGreaterThan(argv.indexOf("--"))
+          }
         }
       }
     }
@@ -285,6 +290,15 @@ describe("classifyCliArgv", () => {
     // An argv that is a preview already gets no second --dry-run.
     const dry = M.cliArgv(["omaddons", "remove", "--dry-run", "--", "Foo"], opts()).argv
     expect(dry.filter((a) => a === "--dry-run").length).toBe(1)
+    // A dry run's own alternative (it repeats --dry-run) previews, and its confirmed run
+    // runs for real, bound; a "--dry-run" after -- is a positional and stays.
+    const alt = ["omaddons", "backup", "restore", "01M", "-t", "retail", "--addon", "folder:WeakAuras", "--dry-run"]
+    expect(M.cliArgv(alt, opts({ preview: true })).argv.filter((a) => a === "--dry-run").length).toBe(1)
+    const real = M.cliArgv(alt, opts({ token: TOKEN })).argv
+    expect(real).not.toContain("--dry-run")
+    expect(real).toContain("--if-match")
+    const literal = M.cliArgv(["omaddons", "remove", "-t", "retail", "--", "--dry-run"], opts({ token: TOKEN })).argv
+    expect(literal.slice(-2)).toEqual(["--", "--dry-run"])
   })
 
   test("the argv in real envelopes", () => {
@@ -795,6 +809,96 @@ describe("the Issues and Search views", () => {
     const dismiss = M.buildArgv("dismiss_errors", { target: "retail" }, opts({ token: TOKEN }))
     expect(dismiss.argv).toContain("--if-match")
     expect(() => M.buildArgv("dismiss_errors", { target: "retail" }, opts())).toThrow()
+  })
+})
+
+describe("the Backups view and the restore chooser", () => {
+  const LISTED = () => M.reduceBackups(fixture("backups"))
+  const DETAIL = () => M.reduceBackups(fixture("backups-detail"))
+
+  test("rows say when, what, how big and what they prove; never verified for metadata only", () => {
+    const listed = LISTED()
+    const retail = listed.targets[0]
+    expect([retail.id, retail.auto.mode, retail.freeBytes > 0, retail.backups[0].integrity]).toEqual(["retail", "daily", true, "metadata_only"])
+    const at = Date.parse(retail.backups[0].capturedAt) + 3 * 3600000
+    const sections = M.backupSections(listed, "", at)
+    expect(sections[0].title).toBe("retail")
+    expect(sections[0].lines[0]).toBe("Automatic backups: daily · last: not run yet")
+    const line = sections[0].rows[0].line
+    expect(line).toMatch(/^3 hours ago · manual · 5 files · 1\.2 KiB · stable$/)
+    expect(line).not.toContain("verified")
+    const verified = JSON.parse(JSON.stringify(fixture("backups")))
+    Object.assign(verified.data.targets[0].backups[0], { integrity: "verified", baseline: "capture", busy: true, consistency: "best_effort" })
+    const v = M.backupSections(M.reduceBackups(verified), "retail", at)[0].rows[0]
+    expect(v.line).toContain("best effort · verified (capture) · in use")
+    expect(v.busy).toBe(true)
+    expect(M.backupSections(listed, "era", at)).toEqual([])
+  })
+
+  test("the automatic backups' four labels", () => {
+    const now = Date.parse("2026-10-22T12:00:00Z")
+    expect(M.autoLabel({ mode: "off", capability: "supported", last: null }, now)).toBe("Automatic backups: off")
+    expect(M.autoLabel({ mode: "daily", capability: "supported", last: { at: "2026-10-22T09:00:00Z", result: "created" } }, now))
+      .toBe("Automatic backups: daily, working · last: made one 3 hours ago")
+    expect(M.autoLabel({ mode: "daily", capability: "unsupported", last: { at: "", result: "no_reflink" } }, now))
+      .toBe("Automatic backups: daily, but this filesystem cannot clone")
+    expect(M.autoLabel({ mode: "daily", capability: "supported", last: { at: "", result: "space_low" } }, now))
+      .toBe("Automatic backups: skipped: low disk space")
+  })
+
+  test("b backs up the filtered client or all; restores wait for the game to close", () => {
+    expect(M.backupRequest("")).toEqual({ template: "backup_all", slots: {}, label: "Back up all" })
+    expect(M.backupRequest("retail").template).toBe("backup_target")
+    const running = M.reduceStatus(fixture("status-running"), NOW).targets
+    expect(M.restoreBlocked(running, "retail")).toBe("quit the game first")
+    expect(M.restoreBlocked([{ id: "era", running: false, runningUnknown: true }], "era")).toBe("quit the game first (running: unknown)")
+    expect(M.restoreBlocked([{ id: "era", running: false, runningUnknown: false }], "era")).toBe("")
+  })
+
+  test("the chooser: backups with the addon's captured version, addon scope first", () => {
+    const id = LISTED().targets[0].backups[0].id
+    const rows = M.chooserBackups(LISTED(), DETAIL(), "retail", "WeakAuras", Date.parse(LISTED().targets[0].backups[0].capturedAt) + 60000)
+    expect(rows).toEqual([{ id: id, label: "1 min ago · manual · WeakAuras 5.19.2" }])
+    expect(M.chooserBackups(LISTED(), null, "retail", "WeakAuras", NOW)[0].label).not.toContain("5.19.2")
+    expect(M.restoreScopes("WeakAuras").map((s) => [s.template, s.label])).toEqual([
+      ["restore_addon", "WeakAuras's settings"], ["restore", "Whole WTF/"]])
+    expect(M.restoreScopes("")[0]).toMatchObject({ label: "One addon's settings…", needsAddon: true })
+    expect(M.restoreScopes("")[1].note).toContain("keybindings, macros, chat settings")
+  })
+
+  test("the dry runs read as what would change, the version note included", () => {
+    const addon = M.confirmText("restore_addon", fixture("restore-addon-preview")).split("\n")
+    expect(addon[0]).toMatch(/^Restore WeakAuras's settings from the backup of \d{4}-\d\d-\d\d \d\d:\d\d: 2 replaced, 0 restored \(absent now\), 0 created since \(moved aside\)$/)
+    expect(addon[1]).toBe("Settings written by WeakAuras 5.19.2; installed now: 5.20.0")
+    const notIn = JSON.parse(JSON.stringify(fixture("restore-addon-preview")))
+    notIn.data.addons[0].not_in_backup = ["WeakAurasOptions"]
+    expect(M.confirmText("restore_addon", notIn)).toContain("WeakAurasOptions: not in this backup; left as it is")
+    const whole = M.confirmText("restore", fixture("restore-preview")).split("\n")
+    expect(whole[0]).toContain("Restore the whole WTF/ from the backup of")
+    expect(whole[0]).toContain("5 files restored, 2 differ now, 0 created since (moved aside)")
+    expect(whole).toContain("Also restores keybindings, macros, chat settings and every other addon's settings")
+    expect(whole).toContain("The current WTF/ is kept as a backup (before restore)")
+    expect(whole).toContain("Then restart the game")
+    const skipped = JSON.parse(JSON.stringify(fixture("restore-preview")))
+    skipped.warnings = [{ code: "before_restore_skipped", message: "this filesystem cannot clone, so the current WTF/ is kept only in the undo snapshot", fix: null }]
+    expect(M.confirmText("restore", skipped)).toContain("kept only in the undo snapshot")
+    expect(M.confirmText("prune_backup", fixture("prune-preview"))).toMatch(/^Delete backup 01M\w+ \(manual, 1\.2 KiB\) from retail$/)
+    expect(M.resultLine(Object.assign({}, fixture("restore-addon-preview")))).toBe("Restored WeakAuras's settings on retail")
+  })
+
+  test("an ambiguous addon offers its folders; refusals keep their prose fix and folder", () => {
+    const choices = M.ambiguityChoices(fixture("restore-ambiguous"))
+    expect(choices).toEqual([
+      { addon: "folder:WeakAuras", label: "the WeakAuras folder" }, { addon: "folder:WeakAurasOptions", label: "the WeakAurasOptions folder" }])
+    // Its argv repeat the widget's own flags: never buttons as they are.
+    expect(M.fixButtons(fixture("restore-ambiguous")).some((f) => f.argv && f.argv.indexOf("--addon") >= 0)).toBe(false)
+    const slots = { target: "retail", addon: choices[0].addon, backup: "01M5JWP7MW633DZJ0TYDMBV8JN" }
+    expect(M.buildArgv("restore_addon", slots, opts({ preview: true })).argv.slice(-3)).toEqual(["--addon=folder:WeakAuras", "--", "01M5JWP7MW633DZJ0TYDMBV8JN"])
+    const running = fixture("restore-running")
+    expect([running.error.code, M.fixText(running)]).toEqual(["game_running", "quit the game client, then rerun"])
+    const unsupported = { ok: false, error: { code: "filesystem_unsupported", message: "no exchange", fix: "copy by hand", fix_argv: null, details: { backup_dir: "/c/Interface/.omaddons/backups/01M/WTF" } } }
+    expect(M.backupFolderOf(unsupported)).toBe("/c/Interface/.omaddons/backups/01M/WTF")
+    expect(M.backupFolderOf(running)).toBe("")
   })
 })
 
