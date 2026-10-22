@@ -649,6 +649,35 @@ fn remove() {
     insta::assert_json_snapshot!("remove_not_managed", s.stable(&c.envelope));
 }
 
+/// Persisted formats fail closed (M3-D45): an undo refused for a newer history line this
+/// build cannot read, and a change refused up front for a record a newer omaddons wrote.
+#[test]
+fn fail_closed() {
+    let s = Scene::new();
+    let first = s.install_foo();
+    let key = common::state::key_of(&s.home, "retail");
+    let history = s.home.state().join("history.jsonl");
+    let mut text = fs::read_to_string(&history).unwrap();
+    let line = serde_json::json!({
+        "schema_version": "1.0", "tx": "01M5ZZZZZZZZZZZZZZZZZZZZZZ", "kind": "restore",
+        "at": "2026-10-21T12:00:00Z", "target": key.to_string(), "actor": "human",
+        "reason": null, "argv": ["omaddons"], "result": "committed",
+        "ops": [{"op": "wtf", "folder": "Foo", "addon": "Foo"}],
+    });
+    text.push_str(&format!("{line}\n"));
+    fs::write(&history, text).unwrap();
+    let c = s.json(&["undo", &first], 4);
+    insta::assert_json_snapshot!("undo_history_unreadable", s.stable(&c.envelope));
+
+    let record = s.home.state().join(format!("targets/{key}.json"));
+    let mut doc: serde_json::Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    doc["schema_version"] = serde_json::json!("1.99");
+    fs::write(&record, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let zip = s.zip("foo2");
+    let c = s.json(&["install", "gh:o/foo", "--file", &zip, "-t", "retail"], 4);
+    insta::assert_json_snapshot!("install_state_too_new", s.stable(&c.envelope));
+}
+
 #[test]
 fn undo() {
     let s = Scene::new();

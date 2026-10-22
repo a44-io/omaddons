@@ -799,7 +799,12 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     }
     targets.sort_by(|a, b| a.id.cmp(&b.id));
     for t in &mut targets {
-        t.issues = issues_for(t, None);
+        // Why a journal pending on it cannot be recovered by itself, when it cannot.
+        let reason = pending
+            .iter()
+            .filter(|p| t.key.is_some() && p.target == t.key)
+            .find_map(|p| p.unrecoverable.map(journal::Unrecoverable::reason));
+        t.issues = issues_for(t, reason);
     }
 
     let (mut commands, first_fix) = recommendations(&targets, check_due);

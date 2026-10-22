@@ -1,0 +1,32 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "state_too_new",
+    "details": {
+      "items": [
+        {
+          "code": "state_too_new",
+          "message": "<root>/state/omaddons/targets/<ulid>.json was written by a newer omaddons (target_record version 1.99; this binary writes 1.0)",
+          "request": "gh:o/foo"
+        }
+      ],
+      "path": "<root>/state/omaddons/targets/<ulid>.json",
+      "schema_version": "1.99"
+    },
+    "fix": "upgrade omaddons",
+    "fix_argv": null,
+    "message": "<root>/state/omaddons/targets/<ulid>.json was written by a newer omaddons (target_record version 1.99; this binary writes 1.0)",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

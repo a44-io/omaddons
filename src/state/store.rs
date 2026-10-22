@@ -261,6 +261,19 @@ pub fn load_bytes<T: Versioned>(path: &Path, bytes: &[u8]) -> Result<Loaded<T>> 
     })
 }
 
+/// `state_too_new` when the file at `path` was written by a newer omaddons (M3-D45): the
+/// check a change makes before it stages anything, so that it is never refused only at
+/// its save, after its folders moved. A file that is absent or older passes; one that
+/// does not read fails as [`load`] does.
+pub fn refuse_newer<T: Versioned>(path: &Path) -> Result<()> {
+    match load::<T>(path)? {
+        Some(loaded) if loaded.status == VersionStatus::Newer => {
+            Err(too_new::<T>(path, loaded.version))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Writes `value` at the current version through `mutate`. The file on disk is loaded
 /// again first, so a newer file (even one written since the caller's load) refuses
 /// with `state_too_new`, and a corrupt one with `state_corrupt` rather than being

@@ -566,6 +566,20 @@ pub(super) fn sv_writable(ctx: &EngineCtx<'_>, client_dir: &Path) -> bool {
         .is_some_and(|t| !running_now(ctx, std::slice::from_ref(t)).contains(&t.client_dir))
 }
 
+/// `state_too_new` when `target`'s record or files index, or, to register it, the
+/// registry, was written by a newer omaddons (M3-D45). Every change calls it before it
+/// stages anything, so a newer state is refused before any file of the client changes,
+/// not only at the save after the swap (which still refuses, as a backstop).
+pub(super) fn refuse_newer_state(paths: &Paths, target: &Target) -> Result<()> {
+    match target.key {
+        Some(key) => {
+            store::refuse_newer::<TargetRecord>(&paths.target_record(&key))?;
+            store::refuse_newer::<FilesIndex>(&paths.files_index(&key))
+        }
+        None => store::refuse_newer::<crate::state::registry::Registry>(&paths.registry_file()),
+    }
+}
+
 /// One target's transaction, from staging to cleanup.
 #[allow(clippy::too_many_arguments)]
 fn commit_target(
@@ -578,9 +592,10 @@ fn commit_target(
     tp: &TargetPlan,
     with_work: u64,
 ) -> Result<(TxOutcome, Vec<Warning>)> {
+    let target = &discovered.target;
+    refuse_newer_state(ctx.paths, target)?;
     let tx = TxId::new();
     let inflight = InflightLock::create(ctx.paths, &tx)?;
-    let target = &discovered.target;
     let client = ClientPaths::new(&target.client_dir);
     let staged = match stage_all(&inflight, scopes, target, &tp.work) {
         Ok(staged) => {
@@ -766,6 +781,8 @@ fn locked(
         }
     };
     failpoint::hit("engine.registered").map_err(fail)?;
+    // Again under the lock: a newer omaddons may have written since the first look.
+    refuse_newer_state(paths, &target)?;
 
     // Re-check every addon offline, with running state as it is now.
     let current = load_record(paths, &key)?;

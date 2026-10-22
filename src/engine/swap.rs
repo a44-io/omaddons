@@ -1006,7 +1006,7 @@ mod tests {
 
     fn steps(scene: &Scene) -> (Vec<StepRecord>, Phase) {
         let text = std::fs::read_to_string(scene.paths.journal(&scene.tx)).unwrap();
-        let parsed = parse(&text).unwrap();
+        let parsed = parse(&text);
         (parsed.steps, parsed.phase)
     }
 

@@ -14,6 +14,12 @@
 //!
 //! Readers never recover: [`pending_warnings`] reports `journal_pending` (lock free) or
 //! `tx_in_progress` (lock held) and writes nothing.
+//!
+//! What this build cannot read, it never acts on (M3-D45). A journal started by a newer
+//! major version, or holding a complete line this build cannot decode, is left as it is
+//! (journal, in-flight lock, stage and snapshots) for manual repair: treated as
+//! "nothing ran", it would be pruned with the only record of the change. Only a torn
+//! last line, a crash mid-append, is ignored.
 
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -35,8 +41,9 @@ use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::TargetRecord;
 use crate::state::store::{self, SchemaVersion};
 
-/// The version of the line format.
-pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
+/// The version of the line format. A newer minor adds only optional fields and lines an
+/// older build may ignore; a newer major is never recovered by this one.
+pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
 
 /// One journal line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -330,37 +337,113 @@ pub struct Parsed {
     pub prepared: Option<Prepared>,
     pub steps: Vec<StepRecord>,
     pub phase: Phase,
-    /// Lines with a `type` this build does not know, skipped.
+    /// Complete lines this build cannot read: JSON it does not decode (an unknown line
+    /// type or step, a second `prepared`, a marker before `prepared`), or not JSON at all
+    /// before the last line. Recovery never acts on a journal that has one (M3-D45).
     pub unknown_lines: usize,
+    /// The last line was cut short by a crash mid-append, and was ignored.
+    pub torn_tail: bool,
+    /// Complete lines, read or not; the torn tail is not one.
+    pub lines: usize,
+    /// The `prepared` line's own version, read even when the line does not decode.
+    pub version: Option<SchemaVersion>,
+    /// The `prepared` line's target, read even when the line does not decode, so that a
+    /// journal this build cannot read fails only its own target's commands.
+    pub target: Option<TargetKey>,
 }
 
-/// Parses a journal. A torn last line (no newline, or not JSON) is a crash mid-append
-/// and is ignored: a step line is fsync'd before its rename, so a torn one never ran.
-/// An unreadable line before the last is corruption, an error.
-pub fn parse(text: &str) -> Result<Parsed> {
+/// Why recovery leaves a journal for manual repair (M3-D45).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unrecoverable {
+    /// Started by a newer major version of the journal (`journal_too_new`).
+    TooNew,
+    /// A complete line does not read, or no `prepared` line does (`journal_unreadable`).
+    Unreadable,
+}
+
+impl Unrecoverable {
+    /// The `journal_pending` reason (`details.reason`).
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::TooNew => "journal_too_new",
+            Self::Unreadable => "journal_unreadable",
+        }
+    }
+
+    /// What to do about it: prose, since no command of this build can help.
+    pub fn fix(self) -> Suggestion {
+        match self {
+            Self::TooNew => Suggestion::text(
+                "a newer omaddons started this change; finish it with that version",
+            ),
+            Self::Unreadable => Suggestion::text(
+                "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+            ),
+        }
+    }
+}
+
+impl Parsed {
+    /// Why recovery must leave this journal as it is, when it must: a newer major version,
+    /// or a complete line it cannot read (a `prepared` line that does not decode is one).
+    /// A journal that is nothing but a torn tail is not: nothing ran.
+    pub fn unrecoverable(&self) -> Option<Unrecoverable> {
+        if self.version.is_some_and(|v| v.major > CURRENT.major) {
+            Some(Unrecoverable::TooNew)
+        } else if self.unknown_lines > 0 || (self.prepared.is_none() && self.lines > 0) {
+            Some(Unrecoverable::Unreadable)
+        } else {
+            None
+        }
+    }
+}
+
+/// Parses a journal, never failing: what it cannot read is counted for
+/// [`Parsed::unrecoverable`]. A last line without its newline is a crash mid-append and is
+/// ignored: a line is fsync'd before what it announces runs, so a torn step never ran.
+/// So is a last line that is not JSON: every writer writes JSON, so it is such a fragment
+/// that recovery's own append (`committed`) closed off.
+pub fn parse(text: &str) -> Parsed {
     let mut parsed = Parsed {
         prepared: None,
         steps: Vec::new(),
         phase: Phase::Unprepared,
         unknown_lines: 0,
+        torn_tail: false,
+        lines: 0,
+        version: None,
+        target: None,
     };
     let complete = text.ends_with('\n');
     let lines: Vec<&str> = text.lines().collect();
     for (i, raw) in lines.iter().enumerate() {
         let last = i + 1 == lines.len();
         if last && !complete {
+            parsed.torn_tail = true;
             break;
         }
         let value: serde_json::Value = match serde_json::from_str(raw) {
             Ok(value) => value,
-            Err(_) if last => break,
-            Err(e) => {
-                return Err(Error::internal(format!(
-                    "journal line {} is not JSON: {e}",
-                    i + 1
-                )));
+            Err(_) if last => {
+                parsed.torn_tail = true;
+                break;
+            }
+            Err(_) => {
+                parsed.lines += 1;
+                parsed.unknown_lines += 1;
+                continue;
             }
         };
+        parsed.lines += 1;
+        if matches!(
+            value.get("type").and_then(serde_json::Value::as_str),
+            Some("prepared")
+        ) && parsed.version.is_none()
+        {
+            let field = |key: &str| value.get(key).and_then(serde_json::Value::as_str);
+            parsed.version = field("schema_version").and_then(|v| v.parse().ok());
+            parsed.target = field("target_key").and_then(|k| k.parse().ok());
+        }
         let Ok(line) = serde_json::from_value::<JournalLine>(value) else {
             parsed.unknown_lines += 1;
             continue;
@@ -379,7 +462,7 @@ pub fn parse(text: &str) -> Result<Parsed> {
             JournalLine::Swapped | JournalLine::Committed => parsed.unknown_lines += 1,
         }
     }
-    Ok(parsed)
+    parsed
 }
 
 /// Every journal in `journal/`, by transaction.
@@ -413,17 +496,18 @@ fn journals(paths: &Paths) -> Result<Vec<(TxId, PathBuf)>> {
 fn read(path: &Path) -> Result<Parsed> {
     let bytes = std::fs::read(path)
         .map_err(|e| Error::io(path, &e, Suggestion::command(["omaddons", "status"])))?;
-    parse(&String::from_utf8_lossy(&bytes))
-        .map_err(|e| Error::internal(format!("{}: {}", path.display(), e.message)))
+    Ok(parse(&String::from_utf8_lossy(&bytes)))
 }
 
 /// Whether `tx`'s journal is one recovery still needs: started (`prepared`) and neither
-/// committed nor recovered. An unreadable one counts too: recovery reports it.
+/// committed nor recovered. One it cannot read (or read at all) counts too: recovery
+/// reports it, and leaves it.
 pub(crate) fn unfinished(paths: &Paths, tx: &TxId) -> bool {
     let path = paths.journal(tx);
     path.exists()
         && read(&path).map_or(true, |parsed| {
             matches!(parsed.phase, Phase::Prepared | Phase::Swapped)
+                || parsed.unrecoverable().is_some()
         })
 }
 
@@ -436,18 +520,29 @@ pub struct Pending {
     pub tx: TxId,
     /// The target its `prepared` line names; `None` when it has none or is unreadable.
     pub target: Option<TargetKey>,
+    /// Why recovery cannot finish it, when it cannot ([`Unrecoverable`]).
+    pub unrecoverable: Option<Unrecoverable>,
 }
 
-/// Every journal that is not `committed`, oldest first. Writes nothing.
+/// Every journal that is not `committed` (or that recovery cannot read), oldest first.
+/// Writes nothing.
 pub fn pending(paths: &Paths) -> Result<Vec<Pending>> {
     let mut found = Vec::new();
     for (tx, path) in journals(paths)? {
-        let target = match read(&path) {
-            Ok(parsed) if matches!(parsed.phase, Phase::Committed) => continue,
-            Ok(parsed) => parsed.prepared.map(|p| p.target_key),
-            Err(_) => None,
+        let (target, unrecoverable) = match read(&path) {
+            Ok(parsed)
+                if matches!(parsed.phase, Phase::Committed) && parsed.unrecoverable().is_none() =>
+            {
+                continue;
+            }
+            Ok(parsed) => (parsed.target, parsed.unrecoverable()),
+            Err(_) => (None, None),
         };
-        found.push(Pending { tx, target });
+        found.push(Pending {
+            tx,
+            target,
+            unrecoverable,
+        });
     }
     Ok(found)
 }
@@ -463,9 +558,11 @@ pub fn pending_warnings(paths: &Paths) -> Result<Vec<Warning>> {
     let held = matches!(probe_global(paths)?, LockState::Held { .. });
     Ok(pending
         .into_iter()
-        .map(|Pending { tx, target }| {
+        .map(|Pending { tx, target, unrecoverable }| {
             let on = target.map(|t| format!(" on target {t}")).unwrap_or_default();
-            if held {
+            if let Some(why) = unrecoverable {
+                unrecoverable_warning(&tx, target, why)
+            } else if held {
                 Warning::new(
                     WarningCode::TxInProgress,
                     format!("transaction {tx}{on} is in progress"),
@@ -482,6 +579,22 @@ pub fn pending_warnings(paths: &Paths) -> Result<Vec<Warning>> {
             }
         })
         .collect())
+}
+
+/// What a reader, and another target's recovery, say of a journal this build cannot
+/// recover: the same warning both ways, so a run reports it once.
+fn unrecoverable_warning(tx: &TxId, target: Option<TargetKey>, why: Unrecoverable) -> Warning {
+    let on = target
+        .map(|t| format!(" on target {t}"))
+        .unwrap_or_default();
+    Warning::new(
+        WarningCode::JournalPending,
+        format!(
+            "transaction {tx}{on} did not finish, and this omaddons cannot recover it ({}); it is left as it is",
+            why.reason()
+        ),
+    )
+    .with_fix(why.fix())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -539,16 +652,18 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
         if InflightLock::is_live(env.paths, &tx)? {
             continue;
         }
-        // Whose it is, for isolation: an unreadable journal's owner is unknown, and
-        // fails the caller as before.
-        let target = read(&path)
-            .ok()
-            .and_then(|p| p.prepared)
-            .map(|p| p.target_key);
+        // Whose it is, for isolation, from its `prepared` line even when that line does
+        // not decode: a journal whose owner cannot be told fails the caller as before.
+        let parsed = read(&path).ok();
+        let target = parsed.as_ref().and_then(|p| p.target);
+        let unrecoverable = parsed.as_ref().and_then(Parsed::unrecoverable);
         match recover_one(env, &tx, path) {
             Ok(recovered) => warnings.extend(recovered),
-            Err(error) => match target.filter(|t| !env.own.contains(t)) {
-                Some(other) => warnings.push(
+            Err(error) => match (target.filter(|t| !env.own.contains(t)), unrecoverable) {
+                (Some(other), Some(why)) => {
+                    warnings.push(unrecoverable_warning(&tx, Some(other), why));
+                }
+                (Some(other), None) => warnings.push(
                     Warning::new(
                         WarningCode::JournalPending,
                         format!(
@@ -558,7 +673,7 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
                     )
                     .with_fix(Suggestion::command(["omaddons", "status"])),
                 ),
-                None => return Err(error),
+                (None, _) => return Err(error),
             },
         }
     }
@@ -606,7 +721,7 @@ pub fn recover_under(
     let warnings = recover_all(&env).unwrap_or_else(left);
     if warnings
         .iter()
-        .any(|w| w.code == WarningCode::JournalRecovered)
+        .any(|w| matches!(w.code, WarningCode::JournalRecovered))
     {
         doorbell::ring(paths, command, actor);
     }
@@ -711,13 +826,18 @@ fn recover_one(env: &RecoveryEnv<'_>, tx: &TxId, path: PathBuf) -> Result<Vec<Wa
 }
 
 /// Rolls forward or back by phase, then prunes what the transaction left: its snapshots
-/// too when it never committed (rolled back, or never prepared).
+/// too when it never committed (rolled back, or never prepared). A journal this build
+/// cannot read ([`Parsed::unrecoverable`]) is left whole, with everything it owns, and
+/// fails with its `journal_pending` details.
 fn recover_parsed(
     env: &RecoveryEnv<'_>,
     tx: &TxId,
     path: &Path,
     parsed: &Parsed,
 ) -> Result<Option<Recovered>> {
+    if let Some(why) = parsed.unrecoverable() {
+        return Err(unrecoverable(tx, parsed, why));
+    }
     let paths = env.paths;
     let scoped = match &parsed.prepared {
         Some(prepared) => journal_scopes(env, prepared),
@@ -749,7 +869,7 @@ fn recover_parsed(
         (None, _) | (_, Phase::Unprepared) => None,
         (Some(_), Phase::Committed) => None,
         (Some(prepared), Phase::Swapped) => {
-            let left = roll_forward(&mut s, env, path, prepared)?;
+            let left = roll_forward(&mut s, env, path, prepared, parsed.torn_tail)?;
             Some(Recovered {
                 action: RecoveryAction::RolledForward,
                 atomic_swap,
@@ -811,6 +931,38 @@ fn recover_parsed(
     Ok(recovered)
 }
 
+/// The failure of a journal recovery leaves as it is: `state_too_new` for a newer major
+/// version, `state_corrupt` for lines this build cannot read, each with
+/// `details.journal_pending` (the transaction), `details.reason` and `details.target`.
+fn unrecoverable(tx: &TxId, parsed: &Parsed, why: Unrecoverable) -> Error {
+    let on = parsed
+        .target
+        .map(|t| format!(" on target {t}"))
+        .unwrap_or_default();
+    let (code, message) = match why {
+        Unrecoverable::TooNew => (
+            ErrorCode::StateTooNew,
+            format!(
+                "transaction {tx}{on} was started by a newer omaddons (journal version {}; this one reads {CURRENT}), so it is left as it is",
+                parsed
+                    .version
+                    .map_or_else(|| "unknown".to_owned(), |v| v.to_string())
+            ),
+        ),
+        Unrecoverable::Unreadable => (
+            ErrorCode::StateCorrupt,
+            format!(
+                "transaction {tx}{on} did not finish, and its journal holds lines this omaddons cannot read, so it is left for manual repair"
+            ),
+        ),
+    };
+    Error::new(code, message, why.fix()).details(serde_json::json!({
+        "journal_pending": tx,
+        "reason": why.reason(),
+        "target": parsed.target,
+    }))
+}
+
 /// Writes the payload's state (each part only if not already written), then `committed`.
 /// Returns the SavedVariables files an undo's restore left, with the warning that says
 /// so.
@@ -819,6 +971,7 @@ fn roll_forward(
     env: &RecoveryEnv<'_>,
     journal: &Path,
     prepared: &Prepared,
+    torn_tail: bool,
 ) -> Result<Option<(usize, Warning)>> {
     failpoint::hit("engine.recover.forward")
         .map_err(|e| Error::io(journal, &e, Suggestion::command(["omaddons", "status"])))?;
@@ -877,7 +1030,13 @@ fn roll_forward(
         line.sv_deferred |= left.is_some();
         history::append(s, paths, &line)?;
     }
-    append_line(s, journal, &JournalLine::Committed)?;
+    // Never after a torn last line: the line would merge with the fragment, and the next
+    // append would leave that merge a complete line no build can read. Without
+    // `committed`, a crash before the prune only rolls forward again, which writes
+    // nothing twice.
+    if !torn_tail {
+        append_line(s, journal, &JournalLine::Committed)?;
+    }
     Ok(left)
 }
 
@@ -1065,7 +1224,7 @@ mod tests {
             },
         }));
         let text = format!("{}\n", serde_json::to_string(&line).unwrap());
-        let parsed = parse(&text).unwrap();
+        let parsed = parse(&text);
         assert_eq!(
             (parsed.phase, parsed.unknown_lines),
             (Phase::Prepared, 0),
@@ -1117,23 +1276,28 @@ mod tests {
 
     #[test]
     fn phases_torn_lines_and_unknown_types() {
-        let empty = parse("").unwrap();
+        let empty = parse("");
         assert_eq!(
-            (empty.phase, empty.prepared.is_none()),
-            (Phase::Unprepared, true)
+            (empty.phase, empty.prepared.is_none(), empty.unrecoverable()),
+            (Phase::Unprepared, true, None)
         );
-        let torn = parse("{\"type\":\"prepa").unwrap();
+        let torn = parse("{\"type\":\"prepa");
         assert_eq!(
-            torn.phase,
-            Phase::Unprepared,
+            (torn.phase, torn.torn_tail, torn.lines, torn.unrecoverable()),
+            (Phase::Unprepared, true, 0, None),
             "a torn prepared line means nothing ran"
         );
 
         let no_prepared = format!("{}{}", step_line(1), "{\"type\":\"swapped\"}\n");
-        let parsed = parse(&no_prepared).unwrap();
+        let parsed = parse(&no_prepared);
         assert_eq!(
             (parsed.phase, parsed.steps.len(), parsed.unknown_lines),
             (Phase::Unprepared, 1, 1)
+        );
+        assert_eq!(
+            parsed.unrecoverable(),
+            Some(Unrecoverable::Unreadable),
+            "lines without a prepared one never mean nothing ran"
         );
 
         let text = format!(
@@ -1142,22 +1306,30 @@ mod tests {
             step_line(2),
             "{\"type\":\"step\",\"n\":3,\"op\""
         );
-        let parsed = parse(&text).unwrap();
+        let parsed = parse(&text);
         assert_eq!(
-            (parsed.steps.len(), parsed.unknown_lines),
-            (2, 1),
-            "torn third step ignored"
+            (
+                parsed.steps.len(),
+                parsed.unknown_lines,
+                parsed.torn_tail,
+                parsed.lines
+            ),
+            (2, 1, true, 3),
+            "torn third step ignored, the unknown line counted"
         );
         let complete_but_invalid = format!("{}not json\n", step_line(1));
+        let parsed = parse(&complete_but_invalid);
         assert_eq!(
-            parse(&complete_but_invalid).unwrap().steps.len(),
-            1,
-            "an invalid last line is torn too"
+            (parsed.steps.len(), parsed.torn_tail, parsed.unknown_lines),
+            (1, true, 0),
+            "an invalid last line is a fragment recovery's append closed off"
         );
         let corrupt = format!("not json\n{}", step_line(1));
-        assert!(
-            parse(&corrupt).is_err(),
-            "corruption before the end is an error"
+        let parsed = parse(&corrupt);
+        assert_eq!(
+            (parsed.unknown_lines, parsed.torn_tail),
+            (1, false),
+            "corruption before the end is a line it cannot read"
         );
     }
 
@@ -1273,7 +1445,7 @@ mod tests {
             serde_json::to_string(&a).unwrap(),
             serde_json::to_string(&c).unwrap(),
         );
-        let parsed = parse(&line).unwrap();
+        let parsed = parse(&line);
         let step = &parsed.steps[0];
         assert_eq!(step.from_id.unwrap().born_ns, None);
         assert!(!ran(step).unwrap());
@@ -1848,7 +2020,7 @@ mod tests {
             let mut journal = scene.journal(&mut s, &lock);
             journal.mark_swapped(&mut s).unwrap();
             let text = std::fs::read_to_string(journal.path()).unwrap();
-            parse(&text).unwrap().prepared.unwrap().commit.history
+            parse(&text).prepared.unwrap().commit.history
         };
         let mut bytes = serde_json::to_vec(&line).unwrap();
         bytes.push(b'\n');
@@ -1931,5 +2103,241 @@ mod tests {
         changes.apply(&mut index);
         assert_eq!(index, once);
         assert_eq!(index.folders.keys().collect::<Vec<_>>(), ["keep", "new"]);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Fail closed (M3-D45): planted journals.
+
+    /// `testing::Scene`'s transaction, prepared, with its stage and both snapshot halves
+    /// in place and its writer gone; `edit` rewrites the journal's text first (and must
+    /// change it).
+    fn planted(edit: impl FnOnce(&str) -> String) -> crate::engine::testing::Scene {
+        use crate::engine::swap::snapshot_state;
+        use crate::engine::testing::snapshot_saved_variables;
+        use crate::model::FolderName;
+        let mut scene = crate::engine::testing::Scene::new();
+        {
+            let lock = scene.lock();
+            let mut s = scene.session();
+            scene.journal(&mut s, &lock);
+            let touched = [FolderName::new("Foo").unwrap()];
+            snapshot_saved_variables(&mut s, &scene.tx, &scene.client, &touched).unwrap();
+            snapshot_state(&mut s, &scene.paths, &scene.tx, &scene.key).unwrap();
+        }
+        let path = scene.paths.journal(&scene.tx);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let edited = edit(&text);
+        assert_ne!(edited, text, "the edit plants something");
+        std::fs::write(&path, edited).unwrap();
+        scene.release_inflight();
+        assert_eq!(left(&scene), [true; 5], "planted whole");
+        scene
+    }
+
+    /// What of the transaction is on disk: its journal, in-flight lock, stage, and both
+    /// snapshot halves.
+    fn left(scene: &crate::engine::testing::Scene) -> [bool; 5] {
+        [
+            scene.paths.journal(&scene.tx).exists(),
+            scene.paths.inflight_lock(&scene.tx).exists(),
+            scene.staged.stage_dir.exists(),
+            scene.client.snapshots(&scene.tx).exists(),
+            scene.paths.state_snapshot(&scene.tx).exists(),
+        ]
+    }
+
+    /// Recovery by a command of the journal's own target (`own`), or of another one's.
+    fn recover_planted(scene: &crate::engine::testing::Scene, own: bool) -> Result<Vec<Warning>> {
+        let lock = scene.lock();
+        let own: &[TargetKey] = if own {
+            std::slice::from_ref(&scene.key)
+        } else {
+            &[]
+        };
+        recover_all(&RecoveryEnv {
+            lock: &lock,
+            paths: &scene.paths,
+            scopes: &scene.scopes,
+            own,
+            sv_writable: &|_| false,
+        })
+    }
+
+    #[test]
+    fn a_journal_this_build_cannot_read_is_left_whole() {
+        type Edit = Box<dyn Fn(&str) -> String>;
+        let unknown_step = step_line(1).replace("\"noreplace\"", "\"teleport\"");
+        let rows: [(&str, Edit, Unrecoverable); 5] = [
+            (
+                "a newer major version",
+                Box::new(|t| {
+                    t.replacen(
+                        "\"schema_version\":\"1.1\"",
+                        "\"schema_version\":\"2.0\"",
+                        1,
+                    )
+                }),
+                Unrecoverable::TooNew,
+            ),
+            (
+                "a prepared line that does not decode",
+                Box::new(|t| t.replacen("\"kind\":\"install\"", "\"kind\":\"teleport\"", 1)),
+                Unrecoverable::Unreadable,
+            ),
+            (
+                "an unknown step op",
+                Box::new(move |t| format!("{t}{unknown_step}")),
+                Unrecoverable::Unreadable,
+            ),
+            (
+                "an unknown line type",
+                Box::new(|t| format!("{t}{{\"type\":\"preserve\",\"x\":1}}\n")),
+                Unrecoverable::Unreadable,
+            ),
+            (
+                "a line that is not JSON before the last",
+                Box::new(|t| format!("{t}not json\n{}", "{\"type\":\"swapped\"}\n")),
+                Unrecoverable::Unreadable,
+            ),
+        ];
+        for (name, edit, why) in rows {
+            let scene = planted(edit);
+            // Its own target's command fails, with what to do about it.
+            let err = recover_planted(&scene, true).unwrap_err();
+            let code = match why {
+                Unrecoverable::TooNew => ErrorCode::StateTooNew,
+                Unrecoverable::Unreadable => ErrorCode::StateCorrupt,
+            };
+            assert_eq!(err.code, code, "{name}: {err:?}");
+            assert_eq!(err.details["reason"], why.reason(), "{name}");
+            assert_eq!(
+                err.details["journal_pending"],
+                scene.tx.to_string(),
+                "{name}"
+            );
+            assert_eq!(err.details["target"], scene.key.to_string(), "{name}");
+            assert_eq!(err.fix.argv(), None, "{name}: prose, no command helps");
+            assert_eq!(left(&scene), [true; 5], "{name}: everything left");
+            // Another target's command goes on, with a warning.
+            let warnings = recover_planted(&scene, false).unwrap();
+            assert_eq!(warnings.len(), 1, "{name}: {warnings:?}");
+            assert_eq!(warnings[0].code, WarningCode::JournalPending, "{name}");
+            assert!(
+                warnings[0].message.contains(why.reason()),
+                "{name}: {warnings:?}"
+            );
+            assert_eq!(left(&scene), [true; 5], "{name}: everything still left");
+            // Readers report it, with why; its own cleanup never prunes it.
+            let pending = pending(&scene.paths).unwrap();
+            assert_eq!(
+                pending,
+                [Pending {
+                    tx: scene.tx,
+                    target: Some(scene.key),
+                    unrecoverable: Some(why),
+                }],
+                "{name}"
+            );
+            assert!(unfinished(&scene.paths, &scene.tx), "{name}");
+            let read = pending_warnings(&scene.paths).unwrap();
+            assert!(read[0].message.contains(why.reason()), "{name}: {read:?}");
+        }
+    }
+
+    #[test]
+    fn a_journal_with_what_this_build_may_ignore_is_recovered() {
+        type Edit = Box<dyn Fn(&str) -> String>;
+        let rows: [(&str, Edit); 4] = [
+            (
+                "an unknown field",
+                Box::new(|t| {
+                    t.replacen(
+                        "{\"type\":\"prepared\",",
+                        "{\"type\":\"prepared\",\"writes_wtf\":true,",
+                        1,
+                    )
+                }),
+            ),
+            (
+                "a newer minor version",
+                Box::new(|t| {
+                    t.replacen(
+                        "\"schema_version\":\"1.1\"",
+                        "\"schema_version\":\"1.9\"",
+                        1,
+                    )
+                }),
+            ),
+            (
+                "a torn final step line",
+                Box::new(|t| format!("{t}{}", &step_line(1)[..40])),
+            ),
+            (
+                "an older version",
+                Box::new(|t| {
+                    t.replacen(
+                        "\"schema_version\":\"1.1\"",
+                        "\"schema_version\":\"1.0\"",
+                        1,
+                    )
+                }),
+            ),
+        ];
+        for (name, edit) in rows {
+            let scene = planted(edit);
+            let warnings = recover_planted(&scene, true).unwrap();
+            assert_eq!(warnings.len(), 1, "{name}: {warnings:?}");
+            assert!(
+                warnings[0]
+                    .message
+                    .ends_with("recovery undid it (rolled back)"),
+                "{name}: {warnings:?}"
+            );
+            assert_eq!(left(&scene), [false; 5], "{name}: all of it pruned");
+        }
+
+        // Only a torn `prepared` line: nothing ran, so it is pruned as before (the client
+        // half, unknown without a `prepared` line, is the orphan sweep's).
+        let scene = planted(|t| t[..20].to_owned());
+        assert_eq!(recover_planted(&scene, true).unwrap(), []);
+        let [journal, inflight, _, _, state] = left(&scene);
+        assert_eq!([journal, inflight, state], [false; 3]);
+    }
+
+    #[test]
+    fn roll_forward_never_appends_after_a_torn_line() {
+        // Swapped, then cut short while writing `committed`.
+        let scene = planted(|t| format!("{t}{{\"type\":\"swapped\"}}\n{{\"type\":\"comm"));
+        let path = scene.paths.journal(&scene.tx);
+        let before = std::fs::read_to_string(&path).unwrap();
+        let parsed = parse(&before);
+        assert_eq!((parsed.phase, parsed.torn_tail), (Phase::Swapped, true));
+        // A crash right after roll-forward, before its prune: the journal is as it was,
+        // with no line merged into the fragment.
+        {
+            let lock = scene.lock();
+            let env = RecoveryEnv {
+                lock: &lock,
+                paths: &scene.paths,
+                scopes: &scene.scopes,
+                own: &[],
+                sv_writable: &|_| false,
+            };
+            let mut s = WriteSession::untracked(Writer::Mutating, &scene.scopes, "recovery");
+            let prepared = parsed.prepared.as_ref().unwrap();
+            roll_forward(&mut s, &env, &path, prepared, true).unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        // The next recovery rolls forward again, and writes nothing twice.
+        let warnings = recover_planted(&scene, true).unwrap();
+        assert!(
+            warnings[0].message.contains("rolled forward"),
+            "{warnings:?}"
+        );
+        assert!(!path.exists());
+        let read = history::read(&scene.paths, &HistoryFilter::default()).unwrap();
+        assert_eq!(read.entries.len(), 1, "one history line");
+        let record = crate::state::records::load_record(&scene.paths, &scene.key).unwrap();
+        assert_eq!(record.value.generation, 1);
     }
 }

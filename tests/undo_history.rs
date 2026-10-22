@@ -1262,3 +1262,163 @@ mod runs {
         assert_eq!(human.stdout.matches("run ").count(), 3, "{}", human.stdout);
     }
 }
+
+/// Undo's conflict analysis fails closed on history it cannot read (M3-D28 rule 5): a
+/// newer line this build cannot decode is assumed to have written every SavedVariables
+/// file of its target and the folders it names, so undo never puts old copies back over
+/// what it did. `history` still lists the rest, with `history_lines_skipped`.
+#[cfg(test)]
+mod unreadable_history {
+    use super::support::ACCOUNT;
+    use super::*;
+
+    /// Appends `line` to history.jsonl, as another omaddons would have.
+    fn plant(s: &Session, line: &str) {
+        let path = s.home.state().join("history.jsonl");
+        fs::create_dir_all(s.home.state()).unwrap();
+        let mut text = fs::read_to_string(&path).unwrap_or_default();
+        text.push_str(line);
+        text.push('\n');
+        fs::write(&path, text).unwrap();
+    }
+
+    /// A newer omaddons' restore on `target`, of `folders`: its op is one this build
+    /// does not know, so the line does not read.
+    fn restore_line(target: &str, folders: &[&str]) -> String {
+        let ops: Vec<Value> = folders
+            .iter()
+            .map(|f| json!({"op": "wtf", "folder": f, "addon": f}))
+            .collect();
+        json!({
+            "schema_version": "1.0",
+            "tx": "01M5ZZZZZZZZZZZZZZZZZZZZZZ",
+            "kind": "restore",
+            "at": "2026-10-21T12:00:00Z",
+            "target": target,
+            "actor": "human",
+            "reason": null,
+            "argv": ["omaddons", "backup", "restore"],
+            "ops": ops,
+            "result": "committed",
+        })
+        .to_string()
+    }
+
+    fn retail_key(s: &Session) -> String {
+        super::common::state::key_of(&s.home, "retail").to_string()
+    }
+
+    /// Foo installed (its snapshot holds Foo's SavedVariables), then played.
+    fn installed() -> (Session, String) {
+        let mut s = Session::new();
+        let tx = s.install("Foo", "1", &[]);
+        s.play();
+        (s, tx)
+    }
+
+    fn refused(s: &mut Session, args: &[&str]) -> Value {
+        let envelope = s.run(args).expect(4);
+        let error = &envelope["error"];
+        assert_eq!(error["code"], "undo_conflict", "{envelope}");
+        assert_eq!(
+            (&error["details"]["reason"], &error["details"]["lines"]),
+            (&json!("history_unreadable"), &json!(1)),
+            "{envelope}"
+        );
+        assert_eq!(error["fix_argv"], Value::Null, "prose: {envelope}");
+        assert_eq!(
+            error["fix"],
+            "a newer omaddons wrote that history; undo it with that version"
+        );
+        envelope
+    }
+
+    #[test]
+    fn a_line_naming_the_folder_refuses_the_undo_outright() {
+        let (mut s, tx) = installed();
+        let key = retail_key(&s);
+        plant(&s, &restore_line(&key, &["Foo"]));
+        let before = tree_hash(&s.addons());
+        for keep in [false, true] {
+            let mut args = vec!["undo", tx.as_str()];
+            if keep {
+                args.extend(["--saved-variables", "keep"]);
+            }
+            let envelope = refused(&mut s, &args);
+            assert_eq!(
+                envelope["error"]["alternatives"],
+                json!([]),
+                "keeping the SavedVariables does not help: {envelope}"
+            );
+        }
+        assert_eq!(tree_hash(&s.addons()), before);
+        assert_eq!(s.sv(&format!("{ACCOUNT}/Foo.lua")).unwrap(), "-- after");
+        // `history` lists the rest, and says a line was skipped.
+        let history = s.run(&["history"]).expect(0);
+        let codes: Vec<&Value> = history["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| &w["code"])
+            .collect();
+        assert!(
+            codes.contains(&&json!("history_lines_skipped")),
+            "{history}"
+        );
+        assert_eq!(history["data"]["entries"][0]["tx"], tx.as_str());
+        s.assert_private();
+    }
+
+    #[test]
+    fn a_line_on_other_folders_leaves_keeping_the_saved_variables() {
+        let (mut s, tx) = installed();
+        let key = retail_key(&s);
+        plant(&s, &restore_line(&key, &["Bar"]));
+        let envelope = refused(&mut s, &["undo", &tx]);
+        let keep = &envelope["error"]["alternatives"][0]["argv"];
+        assert_eq!(
+            keep,
+            &json!(["omaddons", "undo", tx, "--saved-variables", "keep"]),
+            "{envelope}"
+        );
+        let args: Vec<String> = argv_of(keep)[1..].to_vec();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        s.run(&args).expect(0);
+        assert!(!s.addons().join("Foo").exists(), "the install is undone");
+        assert_eq!(
+            s.sv(&format!("{ACCOUNT}/Foo.lua")).unwrap(),
+            "-- after",
+            "its SavedVariables are kept"
+        );
+        s.assert_private();
+    }
+
+    #[test]
+    fn another_targets_line_or_an_older_one_never_counts() {
+        // Another target's.
+        let (mut s, tx) = installed();
+        plant(&s, &restore_line("01M5YYYYYYYYYYYYYYYYYYYYYY", &["Foo"]));
+        s.run(&["undo", &tx]).expect(0);
+        assert_eq!(s.sv(&format!("{ACCOUNT}/Foo.lua")).unwrap(), "-- before");
+
+        // One older than the transaction undone.
+        let mut s = Session::new();
+        plant(&s, &restore_line("01M5YYYYYYYYYYYYYYYYYYYYYY", &[]));
+        plant(&s, "not json at all");
+        let tx = s.install("Foo", "1", &[]);
+        s.play();
+        s.run(&["undo", &tx]).expect(0);
+        assert_eq!(s.sv(&format!("{ACCOUNT}/Foo.lua")).unwrap(), "-- before");
+        s.assert_private();
+    }
+
+    #[test]
+    fn a_line_that_is_not_json_touches_everything() {
+        let (mut s, tx) = installed();
+        plant(&s, "{\"schema_version\":\"1.0\" this is no JSON");
+        refused(&mut s, &["undo", &tx]);
+        // Without SavedVariables to restore it still overlaps every folder.
+        refused(&mut s, &["undo", &tx, "--saved-variables", "keep"]);
+        s.assert_private();
+    }
+}

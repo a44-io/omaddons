@@ -1,0 +1,33 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "undo",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "undo_conflict",
+    "details": {
+      "lines": 1,
+      "reason": "history_unreadable",
+      "tx": "<ulid>"
+    },
+    "fix": "a newer omaddons wrote that history; undo it with that version",
+    "fix_argv": null,
+    "message": "history.jsonl has 1 newer line this omaddons cannot read; they may have changed its folders since <ulid>, so undoing it could overwrite that",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "history_lines_skipped",
+      "fix": "a line was damaged by a crash or a hand edit, or written by a newer omaddons; omaddons never rewrites history.jsonl",
+      "fix_argv": null,
+      "message": "1 line of history.jsonl could not be read and was skipped; the transaction on it is not listed and cannot be undone"
+    }
+  ]
+}

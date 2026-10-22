@@ -53,10 +53,13 @@ use crate::fsx::{
     RenameMode, ScopeTable, SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint, mutate,
     mutate_with, sha256_from_hex,
 };
-use crate::model::{Actor, AddonRecord, FolderName, ReloadRequired, RunId, Target, TxId, TxKind};
+use crate::model::{
+    Actor, AddonRecord, FolderName, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind,
+};
 use crate::state::files_index::FilesIndex;
 use crate::state::history::{
-    self, FolderOp, HistoryEdit, HistoryEntry, HistoryFilter, HistoryOp, TxResult,
+    self, FolderOp, HistoryEdit, HistoryEntry, HistoryFilter, HistoryOp, HistoryRead, TxResult,
+    UnreadableLine,
 };
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::{TargetRecord, load_record};
@@ -174,8 +177,9 @@ fn sv_folder(path: &str) -> Option<FolderName> {
 /// Reverts the selected transaction (vision §5.5): plan without the lock, stage the
 /// snapshot's folders, then the commit window under the global lock, planned again.
 pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
-    let entries = history::read(ctx.paths, &HistoryFilter::default())?.entries;
-    let at = select(&entries, req.selector)?;
+    let read = history::read(ctx.paths, &HistoryFilter::default())?;
+    let entries = &read.entries;
+    let at = select(entries, req.selector)?;
     let reverted = entries[at].clone();
     let discovered = req
         .targets
@@ -194,7 +198,7 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     let target = &discovered.target;
     let running = running_now(ctx, std::slice::from_ref(target));
     let mut hashes = SvHashes::default();
-    let planned = plan(ctx, req, &entries, at, target, &running, &mut hashes, None)?;
+    let planned = plan(ctx, req, &read, at, target, &running, &mut hashes, None)?;
     if req.dry_run {
         return Ok(planned.outcome(target, None, true, true, Vec::new(), None));
     }
@@ -202,6 +206,8 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     if let Some(binding) = ctx.binding {
         binding.undo(&planned.outcome(target, None, true, true, Vec::new(), None))?;
     }
+    // Before anything is staged: never refused only at the save, after the swap.
+    super::tx::refuse_newer_state(ctx.paths, target)?;
 
     let scopes = ScopeTable::new(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
     let tx = TxId::new();
@@ -286,15 +292,17 @@ fn commit(
     };
     let recovered = recover_all(&recovery)?;
     failpoint::hit("engine.recovered").map_err(fail)?;
+    // Again under the lock: a newer omaddons may have written since the first look.
+    super::tx::refuse_newer_state(paths, target)?;
 
     let reverts = before.reverts;
-    let entries = history::read(paths, &HistoryFilter::default())?.entries;
-    let at = select(&entries, UndoSelector::Tx(reverts))?;
+    let read = history::read(paths, &HistoryFilter::default())?;
+    let at = select(&read.entries, UndoSelector::Tx(reverts))?;
     let running = running_now(ctx, std::slice::from_ref(target));
     let mut planned = plan(
         ctx,
         req,
-        &entries,
+        &read,
         at,
         target,
         &running,
@@ -523,13 +531,14 @@ impl Planned {
 fn plan(
     ctx: &EngineCtx<'_>,
     req: &UndoRequest,
-    entries: &[HistoryEntry],
+    history: &HistoryRead,
     at: usize,
     target: &Target,
     running_now: &RunningNow,
     hashes: &mut SvHashes,
     tx: Option<TxId>,
 ) -> Result<Planned> {
+    let entries = &history.entries[..];
     let running = running_now.contains(&target.client_dir);
     let reverted = &entries[at];
     let deferred_by = entries[at + 1..]
@@ -591,6 +600,11 @@ fn plan(
         ctx,
         hashes,
     )?;
+    // Every SavedVariables file of the transaction's snapshot, unless `keep`: a newer line
+    // this build cannot read may have written any of them.
+    let restores = req.sv_policy != SvPolicy::Keep
+        && sv.counts.restored + sv.counts.deferred + sv.counts.unchanged > 0;
+    check_unreadable(&history.unreadable, at, reverted, restores)?;
     if sv.counts.deferred > 0 {
         let is = if running_now.unknown.is_some() {
             "may be running"
@@ -806,6 +820,125 @@ fn check_conflicts(entries: &[HistoryEntry], at: usize, sv_only: Option<usize>) 
         ]),
     )
     .details(serde_json::json!({ "tx": reverted.tx, "conflicting": listed })))
+}
+
+/// What a history line this build cannot read may have touched on a target (M3-D28 rule
+/// 5): every SavedVariables file of it, and these folders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Touched {
+    /// Another target's line.
+    Nothing,
+    /// Folder keys (lowercase).
+    Folders(BTreeSet<String>),
+    /// Every folder: it is not JSON, names no folder, or names `WTF`.
+    Everything,
+}
+
+/// What `line` may have touched on `target`, read from its raw JSON: only a `target`
+/// that names another key rules it out, and only `ops[].folder` strings limit its
+/// folders. Whatever cannot be read is assumed touched.
+fn touched_by(line: &UnreadableLine, target: TargetKey) -> Touched {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&line.raw) else {
+        return Touched::Everything;
+    };
+    let on = value
+        .get("target")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|t| t.parse::<TargetKey>().ok());
+    // ubs:ignore — comparing target keys (public ULIDs), not secrets
+    if on.is_some_and(|t| t != target) {
+        return Touched::Nothing;
+    }
+    let Some(ops) = value.get("ops").and_then(serde_json::Value::as_array) else {
+        return Touched::Everything;
+    };
+    let mut folders = BTreeSet::new();
+    for op in ops {
+        match op.get("folder").and_then(serde_json::Value::as_str) {
+            Some(folder) if !folder.eq_ignore_ascii_case("WTF") => {
+                folders.insert(folder.to_ascii_lowercase());
+            }
+            _ => return Touched::Everything,
+        }
+    }
+    if folders.is_empty() {
+        Touched::Everything
+    } else {
+        Touched::Folders(folders)
+    }
+}
+
+/// M3-D28 rule 5: `undo_conflict` (`details.reason: "history_unreadable"`) when a
+/// history line this build cannot read, newer than `entries[at]` (`reverted`), may have
+/// touched what the undo writes back: one of its folders (refused outright), or, when
+/// the undo `restores` SavedVariables, any of them (refused, with `--saved-variables
+/// keep` as the alternative). A conflict the history hides is never assumed away.
+fn check_unreadable(
+    unreadable: &[UnreadableLine],
+    at: usize,
+    reverted: &HistoryEntry,
+    restores: bool,
+) -> Result<()> {
+    let newer: Vec<Touched> = unreadable
+        .iter()
+        .filter(|line| line.after > at)
+        .map(|line| touched_by(line, reverted.target))
+        .filter(|touched| *touched != Touched::Nothing)
+        .collect();
+    if newer.is_empty() {
+        return Ok(());
+    }
+    let keys: BTreeSet<&str> = reverted
+        .ops
+        .iter()
+        .filter(|o| o.edit.is_none())
+        .map(|o| o.folder.key())
+        .collect();
+    let overlap = newer.iter().any(|touched| match touched {
+        Touched::Everything => !keys.is_empty(),
+        Touched::Folders(folders) => folders.iter().any(|f| keys.contains(f.as_str())),
+        Touched::Nothing => false,
+    });
+    if !overlap && !restores {
+        return Ok(());
+    }
+    Err(unreadable_conflict(reverted, newer.len(), overlap))
+}
+
+/// [`check_unreadable`]'s refusal of undoing `reverted`, for `count` lines that may have
+/// touched its folders (`overlap`) or only its SavedVariables.
+fn unreadable_conflict(reverted: &HistoryEntry, count: usize, overlap: bool) -> Error {
+    let what = if overlap {
+        "its folders"
+    } else {
+        "its SavedVariables"
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    let conflict = Error::new(
+        ErrorCode::UndoConflict,
+        format!(
+            "history.jsonl has {count} newer line{plural} this omaddons cannot read; they may have changed {what} since {}, so undoing it could overwrite that",
+            reverted.tx
+        ),
+        Suggestion::text("a newer omaddons wrote that history; undo it with that version"),
+    )
+    .details(serde_json::json!({
+        "tx": reverted.tx,
+        "reason": "history_unreadable",
+        "lines": count,
+    }));
+    // Keeping the SavedVariables avoids the conflict only when no folder is in question.
+    if overlap {
+        conflict
+    } else {
+        conflict.alternative(Suggestion::command([
+            "omaddons".to_owned(),
+            "undo".to_owned(),
+            reverted.tx.to_string(),
+            "--saved-variables".to_owned(),
+            "keep".to_owned(),
+        ]))
+    }
 }
 
 /// The transactions of `later` that cancel out: each one reverted by a later undo that is

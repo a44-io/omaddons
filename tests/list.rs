@@ -358,16 +358,12 @@ fn a_pending_journal_is_reported_not_recovered() {
     let pending = warnings.iter().find(|w| w["code"] == "journal_pending");
     assert!(pending.is_some(), "{warnings:?}");
     let pending = pending.unwrap();
-    assert!(
-        pending["message"]
-            .as_str()
-            .unwrap()
-            .contains(&tx.to_string())
-    );
-    assert_eq!(
-        pending["fix_argv"],
-        serde_json::json!(["omaddons", "status"])
-    );
+    let message = pending["message"].as_str().unwrap();
+    assert!(message.contains(&tx.to_string()), "{message}");
+    // A `swapped` line without a `prepared` one is a journal no build can tell the
+    // story of (M3-D45): left for manual repair, never taken for "nothing ran".
+    assert!(message.contains("journal_unreadable"), "{message}");
+    assert_eq!(pending["fix_argv"], serde_json::Value::Null);
     assert!(journal.exists(), "readers never recover");
     assert_eq!(tree_hash(&env.state()), before);
 }

@@ -20,7 +20,7 @@ use super::store::SchemaVersion;
 use crate::backup::BackupKind;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{Op, WriteSession, ensure_dir_all, mutate};
-use crate::limits::REASON_MAX_CHARS;
+use crate::limits::{DISCOVERY_FILE_MAX_BYTES, REASON_MAX_CHARS};
 use crate::model::{Actor, BackupId, FolderName, RunId, TargetKey, TxId, TxKind};
 
 /// The version of the line format.
@@ -339,9 +339,36 @@ pub struct HistoryRead {
     /// Lines a crash cut short that a later write closed off. No transaction is lost on
     /// one: recovery appends the whole line again.
     pub torn_lines: usize,
-    /// Other lines that do not read (a hand edit, damage): the transactions on them are
-    /// lost to `history` and `undo`.
+    /// Other lines that do not read (a hand edit, damage, a newer omaddons): the
+    /// transactions on them are lost to `history` and `undo`.
     pub skipped_lines: usize,
+    /// Those lines, for undo's conflict analysis, which assumes each touched whatever it
+    /// may have (M3-D28 rule 5).
+    pub unreadable: Vec<UnreadableLine>,
+}
+
+/// A history line that does not read, where it is and what it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableLine {
+    /// How many of the matching transactions come before it (`entries[..after]`): the
+    /// history is append-only, so it is newer than each of them.
+    pub after: usize,
+    /// The line, cut at [`DISCOVERY_FILE_MAX_BYTES`] (a line cut there reads as no JSON).
+    pub raw: String,
+}
+
+impl UnreadableLine {
+    fn of(line: &str, after: usize) -> Self {
+        let max = usize::try_from(DISCOVERY_FILE_MAX_BYTES).unwrap_or(usize::MAX);
+        let mut end = line.len().min(max);
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        Self {
+            after,
+            raw: line[..end].to_owned(),
+        }
+    }
 }
 
 impl HistoryRead {
@@ -356,7 +383,7 @@ impl HistoryRead {
         };
         Some(
             Warning::new(WarningCode::HistoryLinesSkipped, message).with_fix(Suggestion::text(
-                "a line was damaged by a crash or a hand edit; omaddons never rewrites history.jsonl",
+                "a line was damaged by a crash or a hand edit, or written by a newer omaddons; omaddons never rewrites history.jsonl",
             )),
         )
     }
@@ -409,12 +436,19 @@ pub fn parse(text: &str, filter: &HistoryFilter) -> HistoryRead {
                 }
             }
             Line::Torn => read.torn_lines += 1,
-            Line::Unreadable => read.skipped_lines += 1,
+            Line::Unreadable => {
+                read.skipped_lines += 1;
+                read.unreadable
+                    .push(UnreadableLine::of(line, read.entries.len()));
+            }
         }
     }
     if let Some(limit) = filter.limit {
         let excess = read.entries.len().saturating_sub(limit);
         read.entries.drain(..excess);
+        for line in &mut read.unreadable {
+            line.after = line.after.saturating_sub(excess);
+        }
     }
     read
 }
