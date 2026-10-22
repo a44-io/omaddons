@@ -214,6 +214,7 @@ impl Scene {
             writes_wtf: false,
             staged_stamp: None,
             source_backup: None,
+            client: None,
         };
         Journal::create(s, &self.paths, lock, prepared).unwrap()
     }

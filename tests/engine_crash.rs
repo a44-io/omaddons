@@ -2046,11 +2046,21 @@ mod restore_support {
             self.client().join("Interface/.omaddons/stage")
         }
 
-        /// The one staged `WTF/` left in the stage.
-        pub fn staged(&self) -> PathBuf {
-            let mut left = listed(&self.stage_root());
-            assert_eq!(left.len(), 1, "{left:?}");
-            left.remove(0).join("WTF")
+        /// The `recovered` backups, each as its id and its `WTF/` tree hash.
+        pub fn recovered(&self) -> Vec<(String, String)> {
+            listed(&self.client().join("Interface/.omaddons/backups"))
+                .into_iter()
+                .filter(|dir| {
+                    fs::read(dir.join("backup.json"))
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                        .is_some_and(|meta| meta["kind"] == "recovered")
+                })
+                .map(|dir| {
+                    let id = dir.file_name().unwrap().to_string_lossy().into_owned();
+                    (id, tree_hash(&dir.join("WTF")))
+                })
+                .collect()
         }
 
         /// The backup the scene restores.
@@ -2879,90 +2889,124 @@ fn a_game_started_before_in_process_recovery_leaves_the_restore_pending() {
     assert_eq!(r.s.wtf(), r.played);
 }
 
-/// The conservative stop (M3-D24 (c), until D14): a restore crashed after its exchange,
-/// then played on. Recovery puts the pre-restore tree back, keeps the played-on one
-/// staged, and stops with the journal pending: the next change on that client fails
-/// (`preservation_incomplete`).
+/// Preservation (M3-D24 (c) rule 3): a restore crashed after its exchange, then played
+/// on. Recovery puts the pre-restore tree back live, gives the played-on one a durable
+/// home as a `recovered` backup (byte for byte), says so (`restore_rolled_back`), and only
+/// then cleans up. Nothing names an account, realm or character.
 #[cfg(debug_assertions)]
 #[test]
-fn a_restore_played_on_before_recovery_keeps_the_played_tree() {
+fn a_restore_played_on_before_recovery_is_preserved() {
     let r = restore_support::RestoreScene::new(true);
     assert!(r.restore("engine.restore.exchanged=abort", &[]).is_none());
     let config = r.client().join("WTF/Config.wtf");
     fs::write(&config, "SET locale \"enUS\"\nSET played \"1\"\n").unwrap();
     let played_on = r.s.wtf();
 
-    let stopped = r.s.run(&r.install_bar(), "");
-    let error = &stopped.envelope()["error"];
-    assert_eq!(
-        (&error["code"], &error["details"]["reason"]),
-        (&json!("state_corrupt"), &json!("preservation_incomplete")),
-        "{}",
-        stopped.context()
+    let run = r.s.run(&r.install_bar(), "");
+    let envelope = run.expect(0);
+    common::privacy::assert_private_all(&run.stdout, &run.stderr);
+    let codes = warning_codes(&envelope);
+    assert!(
+        codes.contains(&"journal_recovered".to_owned())
+            && codes.contains(&"restore_rolled_back".to_owned()),
+        "{codes:?}"
     );
     assert_eq!(r.s.wtf(), r.played, "the pre-restore tree is live again");
-    assert_eq!(Some(common::trees::tree_hash(&r.staged())), played_on);
-    assert_eq!(support::pending(&r.s), 1, "kept for preservation");
-    // Every later change on that client stops the same way.
-    assert_ne!(r.s.run(&r.install_bar(), "").code, 0);
-    assert_eq!(support::pending(&r.s), 1);
+    let kept = r.recovered();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(
+        Some(kept[0].1.clone()),
+        played_on,
+        "the played-on tree, byte for byte"
+    );
+    let rolled = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["code"] == "restore_rolled_back")
+        .unwrap();
+    assert_eq!(rolled["fix_argv"][3], kept[0].0, "{rolled}");
+    assert!(r.s.journals().is_empty());
+    assert!(restore_support::listed(&r.stage_root()).is_empty());
 }
 
-/// The conservative stop when the backup a restore staged from was deleted since: the
-/// stage is that content's last copy, so it is kept with the journal.
+/// Preservation of a staged copy whose source backup was deleted since: unchanged, but
+/// that content's last copy, so it becomes a `recovered` backup rather than pruned.
 #[cfg(debug_assertions)]
 #[test]
-fn a_restore_whose_backup_is_gone_keeps_the_stage() {
+fn a_restore_whose_backup_is_gone_is_preserved() {
     let r = restore_support::RestoreScene::new(true);
     assert!(r.restore("engine.restore.exchanged=abort", &[]).is_none());
     let backup = r.backup_dir();
     common::wtf::writable_again(&backup);
     fs::remove_dir_all(&backup).unwrap();
 
-    let stopped = r.s.run(&r.install_bar(), "");
-    let error = &stopped.envelope()["error"];
-    assert_eq!(
-        (&error["code"], &error["details"]["reason"]),
-        (&json!("state_corrupt"), &json!("preservation_incomplete")),
-        "{}",
-        stopped.context()
-    );
+    let envelope = r.s.run(&r.install_bar(), "").expect(0);
+    assert!(warning_codes(&envelope).contains(&"restore_rolled_back".to_owned()));
     assert_eq!(r.s.wtf(), r.played, "rolled back");
-    assert_eq!(Some(common::trees::tree_hash(&r.staged())), r.backed_up);
-    assert_eq!(support::pending(&r.s), 1);
+    let kept = r.recovered();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(Some(kept[0].1.clone()), r.backed_up);
+    assert!(r.s.journals().is_empty());
 }
 
-/// The conservative stop on an identity recovery does not expect: a crashed restore's
-/// live `WTF/` replaced since. Nothing is attributed and nothing is touched: the planted
-/// tree, the moved one and the stage all stay, with the journal (`unexpected_state`).
+/// Rule 2 (M3-D24 (c)): a restore crashed after both its renames, then its restored
+/// live `WTF/` replaced by another directory, as a sync tool would. That directory is
+/// left exactly as it is; the pre-restore tree, found where the journal recorded it, is
+/// preserved. Neither version is lost, and nothing is attributed.
 #[cfg(debug_assertions)]
 #[test]
-fn a_restore_recovery_that_finds_another_wtf_touches_nothing() {
+fn another_wtf_live_is_left_and_the_restored_over_tree_preserved() {
     let r = restore_support::RestoreScene::new(true);
-    assert!(r.restore("engine.restore.exchanged=abort", &[]).is_none());
+    assert!(r.restore("engine.restore.snapshotted=abort", &[]).is_none());
     let wtf = r.client().join("WTF");
     let aside = r.client().join("WTF.aside");
     fs::rename(&wtf, &aside).unwrap();
     fs::create_dir_all(wtf.join("Account")).unwrap();
     fs::write(wtf.join("Config.wtf"), "SET planted \"1\"\n").unwrap();
-    let (planted, moved, staged) = (
-        r.s.wtf(),
-        common::trees::tree_hash(&aside),
-        common::trees::tree_hash(&r.staged()),
-    );
+    let (planted, moved) = (r.s.wtf(), common::trees::tree_hash(&aside));
 
-    let stopped = r.s.run(&r.install_bar(), "");
-    let error = &stopped.envelope()["error"];
-    assert_eq!(
-        error["details"]["reason"],
-        "unexpected_state",
-        "{}",
-        stopped.context()
-    );
+    let envelope = r.s.run(&r.install_bar(), "").expect(0);
+    assert!(warning_codes(&envelope).contains(&"restore_rolled_back".to_owned()));
     assert_eq!(r.s.wtf(), planted, "the live path is never touched");
     assert_eq!(common::trees::tree_hash(&aside), moved);
-    assert_eq!(common::trees::tree_hash(&r.staged()), staged);
+    let kept = r.recovered();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(Some(kept[0].1.clone()), r.played, "the pre-restore tree");
+    assert!(r.s.journals().is_empty());
+}
+
+/// Rule 2's stop: what a restore moved is gone from where the journal recorded it (moved
+/// away by someone between the crash and recovery). Recovery cannot place it, so it
+/// stops (`unexpected_state`) with the journal, the stage, the snapshots and every tree
+/// as they are, and every later change on that client stops the same way.
+#[cfg(debug_assertions)]
+#[test]
+fn a_restore_recovery_that_cannot_place_what_it_moved_keeps_everything() {
+    let r = restore_support::RestoreScene::new(true);
+    assert!(r.restore("engine.restore.snapshotted=abort", &[]).is_none());
+    let snapshots = r.client().join("Interface/.omaddons/snapshots");
+    let snapshot = restore_support::listed(&snapshots).remove(0);
+    let elsewhere = r.client().join("moved");
+    fs::rename(snapshot.join("WTF.previous"), &elsewhere).unwrap();
+    let (live, moved) = (r.s.wtf(), common::trees::tree_hash(&elsewhere));
+
+    for _ in 0..2 {
+        let stopped = r.s.run(&r.install_bar(), "");
+        let error = &stopped.envelope()["error"];
+        assert_eq!(
+            error["details"]["reason"],
+            "unexpected_state",
+            "{}",
+            stopped.context()
+        );
+        common::privacy::assert_private_all(&stopped.stdout, &stopped.stderr);
+    }
+    assert_eq!(r.s.wtf(), live, "the live path is never touched");
+    assert_eq!(common::trees::tree_hash(&elsewhere), moved);
+    assert!(snapshot.is_dir());
     assert_eq!(support::pending(&r.s), 1);
+    assert!(r.recovered().is_empty());
 }
 
 /// A filesystem that cannot exchange: the probe refuses before anything is copied, and

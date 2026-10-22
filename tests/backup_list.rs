@@ -14,7 +14,7 @@ use common::home::Home;
 use common::privacy::assert_private_all;
 use common::wtf::writable_again;
 use jiff::Timestamp;
-use omaddons::backup::{BackupKind, Consistency, ImportSource, Integrity};
+use omaddons::backup::{BackupKind, BackupSource, Consistency, ImportSource, Integrity};
 use omaddons::model::BackupId;
 use serde_json::{Value, json};
 use support::{at, ids, run, targets};
@@ -68,14 +68,14 @@ fn backups_list_newest_first_with_what_each_proves() {
         1,
     );
     let mut imported = meta(BackupKind::Imported, at("2026-10-17T00:00:00Z"), 1);
-    imported.source = Some(ImportSource {
+    imported.source = Some(BackupSource::Import(ImportSource {
         id: BackupId::new(),
         target_id: "retail".to_owned(),
         family: omaddons::rules::Family::Mainline,
         created_at: at("2026-10-16T00:00:00Z"),
         captured_at: at("2026-10-17T00:00:00Z"),
         tool_version: "0.1.0".to_owned(),
-    });
+    }));
     let imported = seed_meta(&retail, &imported);
     let mut torn = meta(BackupKind::Manual, at("2026-10-16T00:00:00Z"), 1);
     torn.consistency = Consistency::BestEffort;

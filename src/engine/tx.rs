@@ -97,6 +97,9 @@ pub const FAILPOINTS: &[&str] = &[
     "engine.restore.staged",
     "engine.restore.exchanged",
     "engine.restore.snapshotted",
+    "engine.preserve.intent",
+    "engine.preserve.moved",
+    "engine.preserve.published",
 ];
 
 /// What a mutating command asks the engine for.
@@ -961,6 +964,7 @@ fn locked(
         writes_wtf: false,
         staged_stamp: None,
         source_backup: None,
+        client: None,
     };
     let mut journal = Journal::create(&mut s, paths, &guard, prepared)?;
 
@@ -1676,10 +1680,14 @@ mod tests {
                     | "engine.recover.sv"
                     | "engine.recover.forward"
                     | "engine.addons_dir.created"
-                    // A restore's own; its matrix is engine_crash's restore scenes.
+                    // A restore's own, and its recovery's preservation: their matrices
+                    // are engine_crash's restore scenes.
                     | "engine.restore.staged"
                     | "engine.restore.exchanged"
                     | "engine.restore.snapshotted"
+                    | "engine.preserve.intent"
+                    | "engine.preserve.moved"
+                    | "engine.preserve.published"
             ) {
                 continue;
             }

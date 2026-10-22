@@ -53,6 +53,39 @@ pub enum JournalLine {
     Step(StepRecord),
     Swapped,
     Committed,
+    /// A rollback's write-ahead preservation intent (M3-D24 (c) rule 3).
+    Preserve(PreserveIntent),
+    /// That intent's completion: only then may recovery prune.
+    Preserved(Preserved),
+}
+
+/// What a `writes_wtf` rollback gives a durable home before it prunes anything: the
+/// displaced versions no other copy holds, as one `recovered` backup under an id reserved
+/// here, so a recovery that dies in the protocol resumes it with the same id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PreserveIntent {
+    pub id: crate::model::BackupId,
+    pub items: Vec<PreserveItem>,
+    /// `<meta>/stage/<tx>/recovered/<id>`: where the backup is assembled before the one
+    /// rename that publishes it.
+    pub assembly: PathBuf,
+}
+
+/// One displaced version to preserve.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PreserveItem {
+    /// Where recovery found it.
+    pub path: PathBuf,
+    pub identity: FileId,
+    /// Its place under the backup's `WTF/`, with `/`: empty for a whole tree.
+    #[serde(default)]
+    pub rel: String,
+}
+
+/// A preservation intent completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Preserved {
+    pub id: crate::model::BackupId,
 }
 
 /// By hand: serde's derived internally tagged enums buffer their content in a form
@@ -76,9 +109,22 @@ impl<'de> Deserialize<'de> for JournalLine {
                 .map_err(D::Error::custom),
             "swapped" => Ok(Self::Swapped),
             "committed" => Ok(Self::Committed),
+            "preserve" => serde_json::from_value(value)
+                .map(Self::Preserve)
+                .map_err(D::Error::custom),
+            "preserved" => serde_json::from_value(value)
+                .map(Self::Preserved)
+                .map_err(D::Error::custom),
             other => Err(D::Error::unknown_variant(
                 other,
-                &["prepared", "step", "swapped", "committed"],
+                &[
+                    "prepared",
+                    "step",
+                    "swapped",
+                    "committed",
+                    "preserve",
+                    "preserved",
+                ],
             )),
         }
     }
@@ -114,6 +160,18 @@ pub struct Prepared {
     /// stage whose source is gone holds the last copy of that content, and is kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_backup: Option<SourceBackup>,
+    /// The client as the transaction found it: what recovery describes a preserved
+    /// backup with (`writes_wtf` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<ClientFacts>,
+}
+
+/// What a `backup.json` says of the client its backup is of.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClientFacts {
+    pub target_id: String,
+    pub family: crate::rules::Family,
+    pub version: String,
 }
 
 /// The backup a restore's stage was copied from.
@@ -218,7 +276,7 @@ impl FileId {
 /// Whether two recorded identities name the same file: both absent, or the same inode
 /// with the same birth time when both know it. The device is ignored: a step's two paths
 /// are on one filesystem by construction, and its number changes across mounts.
-fn same(a: Option<FileId>, b: Option<FileId>) -> bool {
+pub(super) fn same(a: Option<FileId>, b: Option<FileId>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(a), Some(b)) => {
@@ -331,7 +389,7 @@ impl Journal {
     }
 }
 
-fn append_line(s: &mut WriteSession<'_>, path: &Path, line: &JournalLine) -> Result<()> {
+pub(super) fn append_line(s: &mut WriteSession<'_>, path: &Path, line: &JournalLine) -> Result<()> {
     let mut bytes = serde_json::to_vec(line)
         .map_err(|e| Error::internal(format!("serializing a journal line: {e}")))?;
     bytes.push(b'\n');
@@ -371,6 +429,9 @@ pub struct Parsed {
     /// The `prepared` line's target, read even when the line does not decode, so that a
     /// journal this build cannot read fails only its own target's commands.
     pub target: Option<TargetKey>,
+    /// A rollback's preservation intents, and the ids of those completed.
+    pub preserve: Vec<PreserveIntent>,
+    pub preserved: Vec<crate::model::BackupId>,
 }
 
 /// Why recovery leaves a journal for manual repair (M3-D45).
@@ -434,6 +495,8 @@ pub fn parse(text: &str) -> Parsed {
         lines: 0,
         version: None,
         target: None,
+        preserve: Vec::new(),
+        preserved: Vec::new(),
     };
     let complete = text.ends_with('\n');
     let lines: Vec<&str> = text.lines().collect();
@@ -481,6 +544,13 @@ pub fn parse(text: &str) -> Parsed {
                 parsed.phase = Phase::Committed;
             }
             JournalLine::Swapped | JournalLine::Committed => parsed.unknown_lines += 1,
+            JournalLine::Preserve(intent) if parsed.prepared.is_some() => {
+                parsed.preserve.push(intent);
+            }
+            JournalLine::Preserved(done) if parsed.prepared.is_some() => {
+                parsed.preserved.push(done.id);
+            }
+            JournalLine::Preserve(_) | JournalLine::Preserved(_) => parsed.unknown_lines += 1,
         }
     }
     parsed
@@ -923,16 +993,11 @@ fn recover_parsed(
             })
         }
         (Some(prepared), Phase::Prepared) if prepared.writes_wtf => {
-            // Conservative (M3-D24 (c), until D14's preservation): a step in neither its
-            // before nor its after state, or a stage nothing else holds, stops recovery
-            // before any cleanup. The live `WTF/` is put back first when the steps allow.
-            roll_back(&mut s, &parsed.steps)
-                .map_err(|err| stopped(tx, prepared, Stop::UnexpectedState, &err.message))?;
-            stage_accounted_for(tx, prepared)?;
+            let warnings = roll_back_preserving(&mut s, env, tx, path, prepared, parsed)?;
             Some(Recovered {
                 action: RecoveryAction::RolledBack,
                 atomic_swap,
-                warnings: Vec::new(),
+                warnings,
                 sv_deferred: 0,
                 snapshot_kept: None,
             })
@@ -1085,31 +1150,183 @@ fn stopped(tx: &TxId, prepared: &Prepared, stop: Stop, why: &str) -> Error {
     }))
 }
 
-/// After a `writes_wtf` rollback the stage holds the tree that was to be restored
-/// again. It is pruned only when it is still the copy the journal recorded (stamps
-/// unchanged) and its source still exists (a backup with the identity it had, or the
-/// reverted transaction's `WTF.previous`): otherwise it may be the only copy of what
-/// someone played on, or of the tree it was copied from.
-fn stage_accounted_for(tx: &TxId, prepared: &Prepared) -> Result<()> {
+/// A `writes_wtf` rollback (M3-D24 (c)): the reverse walk, which leaves what it cannot
+/// reverse but can place as it is (rule 2), then a durable home for every displaced
+/// version no other copy holds, before any cleanup (rule 3), through a write-ahead intent.
+/// A journal whose intent is written has finished its walk: the items may have moved
+/// since, so it resumes the protocol instead. Returns a `restore_rolled_back` warning per
+/// backup preserved. An identity the walk cannot place stops recovery
+/// (`unexpected_state`), and so does any failure in the protocol
+/// (`preservation_incomplete`), with everything kept for the next recovery.
+fn roll_back_preserving(
+    s: &mut WriteSession<'_>,
+    env: &RecoveryEnv<'_>,
+    tx: &TxId,
+    journal: &Path,
+    prepared: &Prepared,
+    parsed: &Parsed,
+) -> Result<Vec<Warning>> {
+    let incomplete = |error: Error| {
+        let why = super::preserve::redacted(prepared, &error.message);
+        stopped(tx, prepared, Stop::PreservationIncomplete, &why)
+    };
+    let mut intents = parsed.preserve.clone();
+    if intents.is_empty() {
+        let live = ClientPaths::new(&prepared.client_dir).wtf();
+        let displaced = roll_back_wtf(s, &live, &parsed.steps).map_err(|error| {
+            let why = super::preserve::redacted(prepared, &error.message);
+            stopped(tx, prepared, Stop::UnexpectedState, &why)
+        })?;
+        let items = candidates(prepared, displaced).map_err(incomplete)?;
+        if !items.is_empty() {
+            let id = crate::model::BackupId::new();
+            let assembly = prepared
+                .commit
+                .stage_dir
+                .join("recovered")
+                .join(id.to_string());
+            let intent = PreserveIntent {
+                id,
+                items,
+                assembly,
+            };
+            append_line(s, journal, &JournalLine::Preserve(intent.clone())).map_err(incomplete)?;
+            failpoint::hit("engine.preserve.intent").map_err(|e| {
+                incomplete(Error::io(
+                    journal,
+                    &e,
+                    Suggestion::command(["omaddons", "status"]),
+                ))
+            })?;
+            intents.push(intent);
+        }
+    }
+    let mut warnings = Vec::new();
+    for intent in &intents {
+        if !parsed.preserved.contains(&intent.id) {
+            super::preserve::run(s, env.paths, journal, prepared, intent).map_err(incomplete)?;
+        }
+        warnings.push(super::preserve::rolled_back(prepared, intent));
+    }
+    Ok(warnings)
+}
+
+/// What a `writes_wtf` rollback does with a step it finds in neither its before nor its
+/// after state (M3-D24 (c) rule 2). That proves only that the recorded transition is no
+/// longer recognizable, never who changed it (the game, a sync tool, a hand or an
+/// interrupted recovery), so the live path is never touched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Unexpected {
+    /// A rename into the live path whose source is empty while the live entry is not the
+    /// one it put there: our restored copy (of a backup) was replaced, and nothing of ours
+    /// is displaced. The walk goes on.
+    Replaced,
+    /// The step's displaced side, its path outside `WTF/`, holds what it recorded there:
+    /// an item to preserve, and the walk goes on.
+    Displaced(PreserveItem),
+    /// Anything else: recovery stops and keeps everything.
+    Unrecognized,
+}
+
+/// [`Unexpected`] for `step`, whose live paths are `live` and below it.
+fn classify(step: &StepRecord, live: &Path) -> Unexpected {
+    let in_live = |path: &Path| path.starts_with(live);
+    // The displaced side holds `recorded`; its place under `WTF/` is the live side's.
+    let found = |side: &Path, recorded: Option<FileId>, live_side: &Path| match recorded {
+        Some(identity) if same(FileId::of(side), Some(identity)) => {
+            let rel = live_side
+                .strip_prefix(live)
+                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            Unexpected::Displaced(PreserveItem {
+                path: side.to_path_buf(),
+                identity,
+                rel,
+            })
+        }
+        _ => Unexpected::Unrecognized,
+    };
+    match step.op {
+        // What rollback would move back into `WTF/` sits where the exchange put it.
+        StepOp::Exchange if in_live(&step.to) => found(&step.from, step.to_id, &step.to),
+        StepOp::Exchange if in_live(&step.from) => found(&step.to, step.from_id, &step.from),
+        StepOp::Noreplace | StepOp::Rename if in_live(&step.to) => {
+            if FileId::of(&step.from).is_none() && !same(FileId::of(&step.to), step.from_id) {
+                Unexpected::Replaced
+            } else {
+                Unexpected::Unrecognized
+            }
+        }
+        StepOp::Noreplace | StepOp::Rename if in_live(&step.from) => {
+            found(&step.to, step.from_id, &step.from)
+        }
+        StepOp::Exchange | StepOp::Noreplace | StepOp::Rename => Unexpected::Unrecognized,
+    }
+}
+
+/// [`roll_back`] for a journal that moves `WTF/` (`live`), by rule 2: a step in neither
+/// state that [`classify`] can place is left as it is and the walk goes on, its displaced
+/// side becoming an item to preserve; one it cannot place stops the walk.
+fn roll_back_wtf(
+    s: &mut WriteSession<'_>,
+    live: &Path,
+    steps: &[StepRecord],
+) -> Result<Vec<PreserveItem>> {
+    let mut displaced = Vec::new();
+    for (at, step) in steps.iter().enumerate().rev() {
+        match ran_after(step, &steps[..at]) {
+            Ok(true) => undo(s, step)?,
+            Ok(false) => {}
+            Err(neither) => match classify(step, live) {
+                Unexpected::Replaced => {}
+                Unexpected::Displaced(item) => displaced.push(item),
+                Unexpected::Unrecognized => return Err(neither),
+            },
+        }
+        failpoint::hit("engine.recover.step")
+            .map_err(|e| Error::io(&step.from, &e, Suggestion::command(["omaddons", "status"])))?;
+    }
+    Ok(displaced)
+}
+
+/// Rule 3's candidates, after the walk: the `displaced` versions, and the staged tree at
+/// `stage/<tx>/WTF` when it is not one of them and its stamps changed since it was
+/// journaled (the game played on it), or its source is gone (it holds that content's last
+/// copy, which a metadata match cannot vouch for).
+fn candidates(prepared: &Prepared, mut items: Vec<PreserveItem>) -> Result<Vec<PreserveItem>> {
     let staged = prepared.commit.stage_dir.join("WTF");
-    if !staged.exists() {
-        return Ok(());
+    let Some(identity) = FileId::of(&staged) else {
+        return Ok(items);
+    };
+    // ubs:ignore — comparing paths, not secrets
+    if items.iter().any(|item| item.path == staged) {
+        return Ok(items);
     }
-    let now = fsx::StampDigest::compute(&staged)
-        .map_err(|e| Error::io(&staged, &e, Suggestion::command(["omaddons", "status"])))?;
-    // ubs:ignore — comparing stat digests of a tree (evidence of change), not secrets
-    if prepared.staged_stamp.as_deref() != Some(now.to_string().as_str()) {
-        return Err(stopped(
-            tx,
-            prepared,
-            Stop::PreservationIncomplete,
-            "the staged WTF/ changed since it was journaled, so it is kept as it is",
-        ));
+    let changed = match &prepared.staged_stamp {
+        Some(recorded) => {
+            let now = fsx::StampDigest::compute(&staged)
+                .map_err(|e| Error::io(&staged, &e, Suggestion::command(["omaddons", "status"])))?;
+            // ubs:ignore — comparing stat digests of a tree (evidence of change), not secrets
+            now.to_string() != *recorded
+        }
+        None => true,
+    };
+    if changed || source_gone(prepared) {
+        items.push(PreserveItem {
+            path: staged,
+            identity,
+            rel: String::new(),
+        });
     }
-    // A restore's source is its backup, by identity; an undo of one copies the reverted
-    // transaction's `WTF.previous`, a snapshot named by that transaction and never reused.
+    Ok(items)
+}
+
+/// Whether the tree a `writes_wtf` stage was copied from is gone: a restore's backup, by
+/// identity, or, for an undo of one, the reverted transaction's `WTF.previous` (a
+/// snapshot named by that transaction, never reused).
+fn source_gone(prepared: &Prepared) -> bool {
     let client = ClientPaths::new(&prepared.client_dir);
-    let source_gone = match (prepared.source_backup, prepared.commit.history.reverts) {
+    match (prepared.source_backup, prepared.commit.history.reverts) {
         (Some(source), _) => {
             let dir = crate::backup::backup_dir(&client, &source.id);
             !same(FileId::of(&dir), Some(source.dir))
@@ -1119,16 +1336,7 @@ fn stage_accounted_for(tx: &TxId, prepared: &Prepared) -> Result<()> {
             .join(super::retention::WTF_PREVIOUS)
             .is_dir(),
         (None, None) => true,
-    };
-    if source_gone {
-        return Err(stopped(
-            tx,
-            prepared,
-            Stop::PreservationIncomplete,
-            "the tree the stage was copied from is gone, so the stage is its last copy",
-        ));
     }
-    Ok(())
 }
 
 /// Writes the payload's state (each part only if not already written), then `committed`.
@@ -1378,6 +1586,7 @@ mod tests {
             writes_wtf: false,
             staged_stamp: None,
             source_backup: None,
+            client: None,
             commit: CommitPayload {
                 record: TargetRecord::empty(key),
                 index: IndexChanges {
@@ -1782,6 +1991,7 @@ mod tests {
             writes_wtf: false,
             staged_stamp: None,
             source_backup: None,
+            client: None,
             commit: CommitPayload {
                 record: TargetRecord {
                     key,
@@ -1940,6 +2150,7 @@ mod tests {
                 writes_wtf: false,
                 staged_stamp: None,
                 source_backup: None,
+                client: None,
                 commit: CommitPayload {
                     record: TargetRecord {
                         key,
@@ -2106,6 +2317,7 @@ mod tests {
                 writes_wtf: false,
                 staged_stamp: None,
                 source_backup: None,
+                client: None,
                 commit: CommitPayload {
                     record: TargetRecord::empty(key),
                     index: IndexChanges::default(),
@@ -2658,6 +2870,11 @@ mod tests {
                     id,
                     dir: FileId::of(&backup).unwrap(),
                 });
+                prepared.client = Some(ClientFacts {
+                    target_id: "retail".into(),
+                    family: crate::rules::Family::Mainline,
+                    version: "12.1.5.70391".into(),
+                });
                 let mut journal = Journal::create(&mut s, &scene.paths, &lock, prepared).unwrap();
                 if exchanged {
                     let live = scene.client.wtf();
@@ -2760,56 +2977,317 @@ mod tests {
         assert!(!w.journal_kept() && !w.staged().exists());
     }
 
+    impl WtfScene {
+        /// The `recovered` backups the client holds.
+        fn recovered(&self) -> Vec<crate::backup::BackupRef> {
+            crate::backup::list(&self.scene.client)
+                .0
+                .into_iter()
+                .filter(|b| {
+                    b.meta
+                        .as_ref()
+                        .is_some_and(|m| matches!(m.kind, crate::backup::BackupKind::Recovered))
+                })
+                .collect()
+        }
+    }
+
+    /// M3-D24 (c) rule 3: a played-on stage, or a stage whose source backup is gone, gets
+    /// a durable home as one `recovered` backup before cleanup; recovered again, nothing
+    /// more happens. Without either, the stage is pruned and nothing is kept.
     #[test]
-    fn a_played_on_stage_or_a_lost_source_stops_recovery_and_keeps_everything() {
+    fn a_played_on_stage_or_a_lost_source_is_preserved_before_cleanup() {
+        use crate::backup::{BackupSource, Consistency, Integrity};
+
         // The game played on the restored tree before the crash was recovered.
         let w = WtfScene::new(TxKind::Restore, true, true);
-        std::fs::write(
-            w.scene.client.wtf().join("Account/restored.txt"),
-            "played on",
-        )
-        .unwrap();
-        for _ in 0..3 {
-            let err = w.recover(true, false).unwrap_err();
-            assert_eq!(err.code, ErrorCode::StateCorrupt, "{err:?}");
-            assert_eq!(err.details["reason"], "preservation_incomplete");
-            assert!(!w.live_restored(), "the pre-restore tree is live again");
-            assert_eq!(
-                std::fs::read_to_string(w.staged().join("Account/restored.txt")).unwrap(),
-                "played on",
-                "the played-on tree is kept in the stage"
-            );
-            assert!(w.journal_kept());
-        }
+        let played = w.scene.client.wtf().join("Account/restored.txt");
+        std::fs::write(&played, "played on").unwrap();
+        let warnings = w.recover(true, false).unwrap();
+        assert!(!w.live_restored(), "the pre-restore tree is live again");
+        let kept = w.recovered();
+        assert_eq!(kept.len(), 1, "{warnings:?}");
+        assert_eq!(
+            std::fs::read_to_string(kept[0].wtf().join("Account/restored.txt")).unwrap(),
+            "played on"
+        );
+        let meta = kept[0].meta.as_ref().unwrap();
+        assert!(kept[0].restorable);
+        assert_eq!(
+            (
+                meta.integrity,
+                meta.consistency,
+                meta.partial,
+                &meta.target_id
+            ),
+            (
+                Integrity::MetadataOnly,
+                Consistency::BestEffort,
+                false,
+                &"retail".to_owned()
+            )
+        );
+        assert_eq!(
+            meta.source,
+            Some(BackupSource::Recovery {
+                restore_tx: w.scene.tx
+            })
+        );
+        let rolled = warnings
+            .iter()
+            .find(|w| matches!(w.code, WarningCode::RestoreRolledBack))
+            .unwrap();
+        assert!(rolled.message.contains(&meta.id.to_string()), "{rolled:?}");
+        assert_eq!(
+            rolled.fix.as_ref().unwrap().argv().unwrap()[3],
+            meta.id.to_string()
+        );
+        assert!(
+            !w.staged().exists() && !w.journal_kept(),
+            "cleaned up after"
+        );
+        assert!(w.recover(true, false).unwrap().is_empty());
+        assert_eq!(w.recovered().len(), 1, "preserved once");
 
         // Unchanged, but its source backup is gone: the stage is its last copy.
         let w = WtfScene::new(TxKind::Restore, true, true);
         std::fs::remove_dir_all(&w.backup).unwrap();
-        let err = w.recover(true, false).unwrap_err();
-        assert_eq!(err.details["reason"], "preservation_incomplete");
-        assert!(w.staged().join("Account/restored.txt").exists() && w.journal_kept());
+        w.recover(true, false).unwrap();
+        let kept = w.recovered();
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].wtf().join("Account/restored.txt").exists());
+        assert!(!w.staged().exists() && !w.journal_kept());
 
-        // Without the change, recovery completes and prunes the stage.
+        // Neither: nothing to keep, and the stage is pruned.
         let w = WtfScene::new(TxKind::Restore, true, true);
         w.recover(true, false).unwrap();
+        assert!(w.recovered().is_empty());
         assert!(!w.staged().exists() && !w.journal_kept());
     }
 
+    /// M3-D24 (c) rule 2: another `WTF/` in the live path is never touched, and the
+    /// pre-restore tree the exchange displaced, found where the journal recorded it, is
+    /// preserved. With that side gone too, nothing can be placed: recovery stops and
+    /// keeps everything.
     #[test]
-    fn an_unexpected_identity_stops_recovery_and_touches_nothing() {
+    fn another_wtf_live_is_left_and_the_displaced_tree_preserved() {
+        use crate::engine::testing::tree_snapshot;
+
         let w = WtfScene::new(TxKind::Restore, true, true);
+        let before = tree_snapshot(&w.staged());
         // Someone moved the restored tree away and put another WTF/ in its place.
         let live = w.scene.client.wtf();
         let aside = w.scene.client.client_dir().join("WTF.aside");
         std::fs::rename(&live, &aside).unwrap();
         std::fs::create_dir_all(live.join("Account")).unwrap();
         std::fs::write(live.join("Account/other.txt"), "someone else's").unwrap();
-        let err = w.recover(true, false).unwrap_err();
-        assert_eq!(err.details["reason"], "unexpected_state", "{err:?}");
+        w.recover(true, false).unwrap();
         assert!(
             live.join("Account/other.txt").exists(),
             "the live path untouched"
         );
-        assert!(w.staged().exists() && w.journal_kept());
+        assert!(aside.join("Account/restored.txt").exists());
+        let kept = w.recovered();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            tree_snapshot(&kept[0].wtf()),
+            before,
+            "the pre-restore tree"
+        );
+        assert!(!w.journal_kept());
+
+        let w = WtfScene::new(TxKind::Restore, true, true);
+        let live = w.scene.client.wtf();
+        let aside = w.scene.client.client_dir().join("WTF.aside");
+        std::fs::rename(&live, &aside).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        let elsewhere = w.scene.client.client_dir().join("moved");
+        std::fs::rename(w.staged(), &elsewhere).unwrap();
+        let err = w.recover(true, false).unwrap_err();
+        assert_eq!(err.details["reason"], "unexpected_state", "{err:?}");
+        assert!(
+            live.read_dir().unwrap().next().is_none(),
+            "the live path untouched"
+        );
+        assert!(elsewhere.exists() && aside.exists() && w.journal_kept());
+        assert!(w.recovered().is_empty());
+    }
+
+    /// This build reads its own intents back: a journal with `preserve` and `preserved`
+    /// lines parses with nothing unknown, so it is resumed, never `journal_unreadable`.
+    #[test]
+    fn preservation_lines_read_back_and_need_a_prepared_line() {
+        let w = WtfScene::new(TxKind::Restore, true, false);
+        let journal = w.scene.paths.journal(&w.scene.tx);
+        let id = crate::model::BackupId::new();
+        let intent = PreserveIntent {
+            id,
+            items: vec![PreserveItem {
+                path: w.staged(),
+                identity: FileId::of(&w.staged()).unwrap(),
+                rel: String::new(),
+            }],
+            assembly: w
+                .scene
+                .staged
+                .stage_dir
+                .join("recovered")
+                .join(id.to_string()),
+        };
+        let lines = [
+            JournalLine::Preserve(intent.clone()),
+            JournalLine::Preserved(Preserved { id }),
+        ]
+        .map(|line| format!("{}\n", serde_json::to_string(&line).unwrap()))
+        .concat();
+        let text = std::fs::read_to_string(&journal).unwrap();
+        let parsed = parse(&format!("{text}{lines}"));
+        assert_eq!(parsed.unknown_lines, 0);
+        assert!(parsed.unrecoverable().is_none());
+        assert_eq!(
+            (parsed.preserve, parsed.preserved),
+            (vec![intent], vec![id])
+        );
+        assert_eq!(parse(&lines).unknown_lines, 2, "before `prepared`, unknown");
+    }
+
+    /// Rule 2's table: what a step in neither state leaves to preserve, by what its
+    /// displaced side (the path outside `WTF/`) holds.
+    #[test]
+    fn a_step_in_neither_state_is_classified_by_its_displaced_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (live, stage, kept) = (root.join("WTF"), root.join("stage"), root.join("kept"));
+        let fresh = |path: &Path| {
+            let _ = std::fs::remove_dir_all(path);
+            std::fs::create_dir_all(path).unwrap();
+            FileId::of(path)
+        };
+        let step = |op, from: &Path, to: &Path, from_id, to_id| StepRecord {
+            n: 1,
+            op,
+            from: from.to_path_buf(),
+            to: to.to_path_buf(),
+            purpose: StepPurpose::SwapIn,
+            from_id,
+            to_id,
+        };
+        let swap = |a: &Path, b: &Path| {
+            let flags = rustix::fs::RenameFlags::EXCHANGE;
+            rustix::fs::renameat_with(rustix::fs::CWD, a, rustix::fs::CWD, b, flags).unwrap();
+        };
+
+        // An exchange, then something else live: the old tree sits at the stage path.
+        let (staged, old) = (fresh(&stage), fresh(&live));
+        swap(&stage, &live);
+        let exchange = step(StepOp::Exchange, &stage, &live, staged, old);
+        fresh(&live);
+        assert_eq!(
+            classify(&exchange, &live),
+            Unexpected::Displaced(PreserveItem {
+                path: stage.clone(),
+                identity: old.unwrap(),
+                rel: String::new(),
+            })
+        );
+        fresh(&stage);
+        assert_eq!(classify(&exchange, &live), Unexpected::Unrecognized);
+
+        // Out of the live path, then something else live: the destination holds it.
+        let gone = fresh(&live);
+        std::fs::rename(&live, &kept).unwrap();
+        let out = step(StepOp::Noreplace, &live, &kept, gone, None);
+        fresh(&live);
+        assert_eq!(
+            classify(&out, &live),
+            Unexpected::Displaced(PreserveItem {
+                path: kept.clone(),
+                identity: gone.unwrap(),
+                rel: String::new(),
+            })
+        );
+
+        // Into the live path, its source empty and the live entry another: replaced.
+        let _ = std::fs::remove_dir_all(&stage);
+        let into = step(StepOp::Noreplace, &stage, &live, Some(gone.unwrap()), None);
+        assert_eq!(classify(&into, &live), Unexpected::Replaced);
+        fresh(&stage);
+        assert_eq!(classify(&into, &live), Unexpected::Unrecognized);
+
+        // A file restored where none was (a partial restore's step), then rewritten in
+        // place by the game: a new inode, the source empty.
+        let file = live.join("Account/X.lua");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "restored").unwrap();
+        let restored = FileId::of(&file);
+        std::fs::remove_file(&file).unwrap();
+        std::fs::write(&file, "the game's").unwrap();
+        let file_step = step(
+            StepOp::Noreplace,
+            &root.join("staged.lua"),
+            &file,
+            restored,
+            None,
+        );
+        assert_eq!(classify(&file_step, &live), Unexpected::Replaced);
+    }
+
+    /// A recovery that stopped inside the protocol leaves its intent; the next one skips
+    /// the reverse walk and finishes it with the same backup id.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_preservation_that_stopped_is_resumed_with_the_same_id() {
+        for point in [
+            "engine.preserve.intent",
+            "engine.preserve.moved",
+            "engine.preserve.published",
+        ] {
+            let w = WtfScene::new(TxKind::Restore, true, true);
+            let played = w.scene.client.wtf().join("Account/restored.txt");
+            std::fs::write(&played, "played on").unwrap();
+            let err = failpoint::with_spec(&format!("{point}=error"), || w.recover(true, false))
+                .unwrap_err();
+            assert_eq!(err.details["reason"], "preservation_incomplete", "{point}");
+            let parsed = read(&w.scene.paths.journal(&w.scene.tx)).unwrap();
+            assert_eq!(parsed.preserve.len(), 1, "{point}");
+            let id = parsed.preserve[0].id;
+            let published = matches!(point, "engine.preserve.published");
+            assert_eq!(
+                w.recovered().len(),
+                usize::from(published),
+                "{point}: no half-made backup"
+            );
+            assert!(!w.live_restored(), "{point}: the walk is done");
+
+            w.recover(true, false).unwrap();
+            let kept = w.recovered();
+            assert_eq!(kept.len(), 1, "{point}");
+            assert_eq!(kept[0].id, id, "{point}: the same id");
+            assert_eq!(
+                std::fs::read_to_string(kept[0].wtf().join("Account/restored.txt")).unwrap(),
+                "played on"
+            );
+            assert!(!w.staged().exists() && !w.journal_kept(), "{point}");
+        }
+    }
+
+    /// A tree past the backup walk's bounds is never described partially: preservation
+    /// stops with it kept, and the journal stays.
+    #[test]
+    fn a_tree_too_deep_to_describe_stops_preservation_and_keeps_it() {
+        let w = WtfScene::new(TxKind::Restore, true, true);
+        let mut deep = w.scene.client.wtf();
+        for n in 0..=crate::limits::BACKUP_TREE_MAX_DEPTH {
+            deep = deep.join(format!("d{n}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        for _ in 0..2 {
+            let err = w.recover(true, false).unwrap_err();
+            assert_eq!(err.details["reason"], "preservation_incomplete", "{err:?}");
+        }
+        let parsed = read(&w.scene.paths.journal(&w.scene.tx)).unwrap();
+        let assembled = parsed.preserve[0].assembly.join("WTF");
+        assert!(assembled.join("d0").exists(), "kept, in the assembly");
+        assert!(w.recovered().is_empty());
     }
 }

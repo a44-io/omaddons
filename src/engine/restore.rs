@@ -17,8 +17,8 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::journal::{
-    CommitPayload, FileId, IndexChanges, Journal, Prepared, Recovered, RecoveryAction, RecoveryEnv,
-    SourceBackup, Step, StepOp, StepPurpose, recover_all, recover_tx,
+    ClientFacts, CommitPayload, FileId, IndexChanges, Journal, Prepared, Recovered, RecoveryAction,
+    RecoveryEnv, SourceBackup, Step, StepOp, StepPurpose, recover_all, recover_tx,
 };
 use super::retention::WTF_PREVIOUS;
 use super::running::{PolicyContext, PolicyOp};
@@ -815,6 +815,11 @@ impl Window<'_> {
                 .as_ref()
                 .map(|copy| copy.stamp_digest.to_string()),
             source_backup,
+            client: Some(ClientFacts {
+                target_id: target.id.clone(),
+                family: target.family,
+                version: target.version.to_string(),
+            }),
         };
         let actions = paths.state_snapshot(&tx).join("actions.jsonl");
         let mut s = WriteSession::tx(

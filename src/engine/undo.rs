@@ -433,6 +433,7 @@ fn commit(
         writes_wtf: false,
         staged_stamp: None,
         source_backup: None,
+        client: None,
     };
     let touched = planned.folders.touched.clone();
     let mut owned: Vec<FolderName> = touched.clone();

@@ -137,6 +137,16 @@ pub struct ImportSource {
     pub tool_version: String,
 }
 
+/// Where a backup's content came from, when not from capturing its client now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum BackupSource {
+    /// A `recovered` backup: the interrupted restore whose rollback preserved it.
+    Recovery { restore_tx: crate::model::TxId },
+    /// An imported backup's original.
+    Import(ImportSource),
+}
+
 /// `backup.json`: what a backup is and what it proves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BackupMeta {
@@ -173,8 +183,8 @@ pub struct BackupMeta {
     pub verified_at: Option<Timestamp>,
     pub baseline: Option<Baseline>,
     pub tool_version: String,
-    /// Imports only.
-    pub source: Option<ImportSource>,
+    /// Imports and recovered backups only.
+    pub source: Option<BackupSource>,
     /// A recovered backup holding only some files: it restores only one addon's
     /// SavedVariables.
     #[serde(default)]

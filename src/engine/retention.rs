@@ -743,6 +743,29 @@ mod tests {
         assert_eq!(f.has_snapshot(&shared), (true, true), "another target's");
     }
 
+    /// A stage holding a preservation in progress (its assembly) belongs to a journal whose
+    /// `preserve` line has no `preserved` yet: the sweep never takes it, however old.
+    #[test]
+    fn a_stage_with_a_preservation_in_progress_is_never_an_orphan() {
+        let f = fixture();
+        f.commit(HOUR, 1);
+        let tx = TxId::new();
+        let assembly = f
+            .client
+            .stage(&tx)
+            .join("recovered/01M6X00000000000000000000A");
+        std::fs::create_dir_all(assembly.join("WTF")).unwrap();
+        std::fs::create_dir_all(f.paths.journal_dir()).unwrap();
+        let intent = format!(
+            "{{\"type\":\"preserve\",\"id\":\"01M6X00000000000000000000A\",\"items\":[],\"assembly\":{:?}}}\n",
+            assembly.display().to_string()
+        );
+        std::fs::write(f.paths.journal(&tx), intent).unwrap();
+        let report = f.run(&RetentionLimits::default(), &BTreeSet::new());
+        assert_eq!(report.orphans_swept, 0, "{report:?}");
+        assert!(assembly.join("WTF").is_dir());
+    }
+
     #[test]
     fn a_restores_old_wtf_is_left_out_of_the_cap_and_never_an_orphan() {
         let f = fixture();

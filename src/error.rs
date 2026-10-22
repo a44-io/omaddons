@@ -323,6 +323,9 @@ warning_codes! {
     /// A BugGrabber file could not be read completely (being written, over a cap or
     /// bound, or damaged): counts are from what was read.
     ErrorsPartial               = "errors_partial";
+    /// An interrupted restore was rolled back; what it had displaced, which no other copy
+    /// held, is kept as a `recovered` backup.
+    RestoreRolledBack           = "restore_rolled_back";
 }
 
 impl fmt::Display for WarningCode {
@@ -821,7 +824,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 45);
+        assert_eq!(WarningCode::ALL.len(), 46);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

@@ -38,8 +38,8 @@ use crate::state::store::{self, Versioned};
 
 /// Owner-only: a backup holds the player's settings, and its manifest names the account,
 /// realm and character.
-const DIR_MODE: u32 = 0o700;
-const FILE_MODE: u32 = 0o600;
+pub(crate) const DIR_MODE: u32 = 0o700;
+pub(crate) const FILE_MODE: u32 = 0o600;
 
 /// What to capture.
 #[derive(Debug, Clone)]
@@ -369,7 +369,7 @@ fn publish(
 
 /// `addons.json`: each managed addon's name, folders, version and source, from the
 /// target's record (no SavedVariables is read).
-fn addons(paths: &Paths, key: &crate::model::TargetKey) -> Result<AddonsFile> {
+pub(crate) fn addons(paths: &Paths, key: &crate::model::TargetKey) -> Result<AddonsFile> {
     let record = load_record(paths, key)?.value;
     let addons = record
         .addons
@@ -389,7 +389,7 @@ fn addons(paths: &Paths, key: &crate::model::TargetKey) -> Result<AddonsFile> {
 }
 
 /// Writes one of a backup's metadata files, owner-only.
-fn write<T: Versioned>(s: &mut WriteSession<'_>, path: &Path, value: &T) -> Result<()> {
+pub(crate) fn write<T: Versioned>(s: &mut WriteSession<'_>, path: &Path, value: &T) -> Result<()> {
     let json = store::encode(value)?;
     let op = Op::WriteFile {
         content: Content::Bytes(&json),
@@ -401,7 +401,7 @@ fn write<T: Versioned>(s: &mut WriteSession<'_>, path: &Path, value: &T) -> Resu
 
 /// Renames `from` to `to`, which must not exist. Without `renameat2` flags (NTFS through
 /// ntfs-3g, some FUSE mounts), a fresh id's absence is checked and a plain rename used.
-fn rename_new(s: &mut WriteSession<'_>, from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn rename_new(s: &mut WriteSession<'_>, from: &Path, to: &Path) -> Result<()> {
     let op = |mode| Op::Rename { to, mode };
     match mutate(s, from, op(RenameMode::NoReplace)) {
         Err(FsxError::Unsupported) if std::fs::symlink_metadata(to).is_err() => {

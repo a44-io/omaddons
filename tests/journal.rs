@@ -155,6 +155,7 @@ mod support {
                 writes_wtf: false,
                 staged_stamp: None,
                 source_backup: None,
+                client: None,
                 commit: CommitPayload {
                     record: TargetRecord {
                         key: self.key,
