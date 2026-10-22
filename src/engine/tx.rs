@@ -1572,8 +1572,16 @@ pub(super) fn cleanup(
 ) {
     let mut victims = vec![paths.cache_inflight_lock(tx), paths.cache_tmp(tx)];
     if !journal::unfinished(paths, tx) {
-        victims.extend([paths.journal(tx), paths.inflight_lock(tx)]);
-        victims.extend(client.map(|c| c.stage(tx)));
+        victims.extend([
+            paths.journal(tx),
+            paths.journal_wtf(tx),
+            paths.inflight_lock(tx),
+        ]);
+        victims.extend(
+            client
+                .into_iter()
+                .flat_map(|c| [c.stage(tx), c.stage_wtf(tx)]),
+        );
     }
     victims.retain(|v| v.exists());
     if !victims.is_empty() {
@@ -1586,7 +1594,7 @@ pub(super) fn cleanup(
             LockUse::Own(&inflight),
         );
     }
-    if !committed && !paths.journal(tx).exists() {
+    if !committed && journal::existing(paths, tx).is_none() {
         let dead = super::retention::dead_snapshots(paths, client, tx);
         // An unreadable history might name it: kept.
         let in_history =

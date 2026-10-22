@@ -1972,7 +1972,7 @@ mod restore_support {
         let inflight = InflightLock::create(&paths, &tx).unwrap();
         let scopes =
             ScopeTable::new(&paths, std::slice::from_ref(&target.client_dir), None).unwrap();
-        let probe = client.stage(&tx).join("probe");
+        let probe = client.stage_wtf(&tx).join("probe");
         let probe = Probe {
             scopes: &scopes,
             dir: &probe,
@@ -1980,7 +1980,7 @@ mod restore_support {
         let topology = match preflight(&client, &backup.wtf(), Some(probe)) {
             Ok(topology) => topology,
             Err(e) => {
-                let left: Vec<PathBuf> = [client.stage(&tx), paths.inflight_lock(&tx)]
+                let left: Vec<PathBuf> = [client.stage_wtf(&tx), paths.inflight_lock(&tx)]
                     .into_iter()
                     .filter(|p| p.exists())
                     .collect();

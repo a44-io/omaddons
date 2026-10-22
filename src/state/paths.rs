@@ -18,6 +18,18 @@ use crate::model::{PlanId, TargetKey, TxId};
 
 const APP: &str = "omaddons";
 
+/// What a journal or stage name carries after its transaction id when the transaction
+/// puts settings back (a restore, or the undo of one). A build before M3 cannot read
+/// such a journal, and deleted it unread; it lists only names that are a bare id, so
+/// it never sees these (D12, `tests/compat_m2.rs`).
+const WTF_SUFFIX: &str = ".wtf";
+
+/// The transaction a journal (its `.jsonl` stripped) or stage entry is named for: a
+/// bare id, or one with [`WTF_SUFFIX`].
+pub fn tx_named(name: &str) -> Option<TxId> {
+    name.strip_suffix(WTF_SUFFIX).unwrap_or(name).parse().ok()
+}
+
 /// The per-user directories: `<config>/omaddons`, `<state>/omaddons`, `<cache>/omaddons`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -201,6 +213,12 @@ impl Paths {
     /// One in-flight journal, JSON Lines with one fsync'd append per record.
     pub fn journal(&self, tx: &TxId) -> PathBuf {
         self.journal_dir().join(format!("{tx}.jsonl"))
+    }
+
+    /// The journal of a transaction that puts settings back, which a pre-M3 build never
+    /// lists ([`WTF_SUFFIX`]).
+    pub fn journal_wtf(&self, tx: &TxId) -> PathBuf {
+        self.journal_dir().join(format!("{tx}{WTF_SUFFIX}.jsonl"))
     }
 
     pub fn inflight_dir(&self) -> PathBuf {
@@ -422,6 +440,14 @@ impl ClientPaths {
         self.meta_dir().join("stage").join(tx.to_string())
     }
 
+    /// The stage of a restore, which a pre-M3 build's orphan sweep never takes
+    /// ([`WTF_SUFFIX`]).
+    pub fn stage_wtf(&self, tx: &TxId) -> PathBuf {
+        self.meta_dir()
+            .join("stage")
+            .join(format!("{tx}{WTF_SUFFIX}"))
+    }
+
     /// AddOns and SavedVariables snapshots of one transaction.
     pub fn snapshots(&self, tx: &TxId) -> PathBuf {
         self.meta_dir().join("snapshots").join(tx.to_string())
@@ -518,6 +544,10 @@ mod tests {
             (p.status_file(), "/s/omaddons/status.json".into()),
             (p.journal_dir(), "/s/omaddons/journal".into()),
             (p.journal(&tx), format!("/s/omaddons/journal/{TX}.jsonl")),
+            (
+                p.journal_wtf(&tx),
+                format!("/s/omaddons/journal/{TX}.wtf.jsonl"),
+            ),
             (p.inflight_dir(), "/s/omaddons/inflight".into()),
             (
                 p.inflight_lock(&tx),
@@ -566,6 +596,10 @@ mod tests {
                 (
                     c.stage(&tx),
                     format!("{root}/Interface/.omaddons/stage/{TX}"),
+                ),
+                (
+                    c.stage_wtf(&tx),
+                    format!("{root}/Interface/.omaddons/stage/{TX}.wtf"),
                 ),
                 (
                     c.snapshots(&tx),

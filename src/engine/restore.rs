@@ -453,7 +453,7 @@ pub fn begin(paths: &Paths, client: &ClientPaths, backup: &BackupRef) -> Result<
     let scopes = ScopeTable::new(paths, &[client.client_dir().to_path_buf()], None)?;
     let tx = TxId::new();
     let inflight = InflightLock::create(paths, &tx)?;
-    let probe = client.stage(&tx).join("probe");
+    let probe = client.stage_wtf(&tx).join("probe");
     let probe = Probe {
         scopes: &scopes,
         dir: &probe,
@@ -528,7 +528,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: RestoreRequest<'_>) -> Result<RestoreOu
     let client = ClientPaths::new(&target.client_dir);
     let scopes = ScopeTable::new(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
     let names = WtfPathRedactor::for_client(&client);
-    let staged_dir = client.stage(&tx).join("WTF");
+    let staged_dir = client.stage_wtf(&tx).join("WTF");
     let staged = match stage(ctx, &scopes, backup, plan, &staged_dir, &topology, &names) {
         Ok(staged) => staged,
         Err(error) => {
@@ -802,7 +802,7 @@ impl Window<'_> {
         record.generation += 1;
         let now = Timestamp::now();
         let history = self.history_line(key, now)?;
-        let stage_dir = client.stage(&tx);
+        let stage_dir = client.stage_wtf(&tx);
         let staged = stage_dir.join("WTF");
         // A restore's source is checked by identity on recovery; an undo's is the
         // reverted transaction's snapshot, which its history line names.
@@ -1156,13 +1156,13 @@ pub(super) fn undo_whole(
     let scopes = ScopeTable::new(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
     let tx = TxId::new();
     let inflight = InflightLock::create(ctx.paths, &tx)?;
-    let probe = client.stage(&tx).join("probe");
+    let probe = client.stage_wtf(&tx).join("probe");
     let probe = Probe {
         scopes: &scopes,
         dir: &probe,
     };
     let prepared = preflight(&client, &by_hand, Some(probe)).and_then(|topology| {
-        let into = client.stage(&tx).join("WTF");
+        let into = client.stage_wtf(&tx).join("WTF");
         let staged = stage_snapshot(ctx, &scopes, source.as_deref(), &into, &topology, &names)?;
         Ok((topology, staged))
     });
@@ -1539,7 +1539,7 @@ mod tests {
             let tx = TxId::new();
             let inflight = InflightLock::create(&self.scene.paths, &tx)?;
             let scopes = scopes(&self.scene);
-            let probe = self.scene.client.stage(&tx).join("probe");
+            let probe = self.scene.client.stage_wtf(&tx).join("probe");
             let probe = Probe {
                 scopes: &scopes,
                 dir: &probe,

@@ -322,11 +322,11 @@ fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp, text: &str) -> R
             })
     };
     let dead = |tx: &TxId| -> Result<bool> {
-        Ok(!InflightLock::is_live(paths, tx)? && !paths.journal(tx).exists())
+        Ok(!InflightLock::is_live(paths, tx)? && super::journal::existing(paths, tx).is_none())
     };
     let mut found = Vec::new();
     for (name, path) in listing(&client.meta_dir().join("stage")) {
-        if let Ok(tx) = name.parse::<TxId>()
+        if let Some(tx) = crate::state::paths::tx_named(&name)
             && dead(&tx)?
             && old(&path)
         {
@@ -684,6 +684,27 @@ mod tests {
         assert!(
             f.paths.cache_tmp(&held_scratch).exists(),
             "live scratch is kept"
+        );
+    }
+
+    /// A restore's stage and journal carry `.wtf` (hidden from pre-M3 builds): the same
+    /// rules, a dead one swept and a journaled one kept for recovery.
+    #[test]
+    fn restore_stages_are_swept_by_the_same_rules() {
+        let f = fixture();
+        f.commit(HOUR, 1);
+        let (dead, journaled) = (TxId::new(), TxId::new());
+        for tx in [&dead, &journaled] {
+            std::fs::create_dir_all(f.client.stage_wtf(tx).join("WTF")).unwrap();
+        }
+        std::fs::create_dir_all(f.paths.journal_dir()).unwrap();
+        std::fs::write(f.paths.journal_wtf(&journaled), b"").unwrap();
+        let report = f.run(&RetentionLimits::default(), &BTreeSet::new());
+        assert_eq!(report.orphans_swept, 1, "{report:?}");
+        assert!(!f.client.stage_wtf(&dead).exists());
+        assert!(
+            f.client.stage_wtf(&journaled).join("WTF").is_dir(),
+            "journal recovery owns it"
         );
     }
 

@@ -3,13 +3,12 @@
 //! binary prepared. M3 claims no downgrade barrier, so this characterizes, scene by scene,
 //! what that binary refuses and what it would do, and prints the table README Limitations
 //! quotes: committed whole and partial restores then an M2 `undo` of an older install, an
-//! interrupted whole and partial restore then an M2 change, and M3 settings lines then M2
-//! `history` and `undo`. M2's reads must leave an interrupted restore's journal alone;
-//! everything else is asserted as observed, so a change in it is noticed: the blind
-//! SavedVariables undo, and an M2 change pruning an interrupted M3 restore's journal
-//! unread, which leaves the replaced files only in a stage the orphan sweep deletes an
-//! hour later. Ignored by default: it builds an old commit. The current binary must be a
-//! debug build (its failpoints interrupt the restores):
+//! interrupted whole and partial restore then an M2 change (at once and two hours on), and
+//! M3 settings lines then M2 `history` and `undo`. What M3 controls is asserted: M2 never
+//! deletes an M3 journal unread (it recovers it, or never sees one named `<tx>.wtf`), and
+//! M3 recovers the rest. What it does not, the blind SavedVariables undo, is asserted as
+//! observed, so a change in it is noticed. Ignored by default: it builds an old commit.
+//! The current binary must be a debug build (its failpoints interrupt the restores):
 //! `cargo test --test compat_m2 -- --ignored --nocapture`
 #![cfg(debug_assertions)]
 
@@ -235,13 +234,29 @@ mod support {
                     e.file_name()
                         .to_str()
                         .and_then(|n| n.strip_suffix(".jsonl"))
-                        .map(str::to_owned)
+                        .map(|n| n.strip_suffix(".wtf").unwrap_or(n).to_owned())
                 })
                 .unwrap()
         }
 
-        pub fn inflight(&self) -> usize {
-            fs::read_dir(self.home.state().join("inflight")).map_or(0, |l| l.count())
+        /// Moves the mtime of every stage, in-flight lock and `tx` snapshot dir two hours
+        /// back, past either build's orphan age.
+        pub fn age_everything_left(&self, tx: &str) {
+            let past = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
+            let meta = self.home.client("_retail_").join("Interface/.omaddons");
+            let state = self.home.state();
+            let mut dirs: Vec<PathBuf> = [meta.join("stage"), state.join("inflight")]
+                .iter()
+                .filter_map(|dir| fs::read_dir(dir).ok())
+                .flat_map(|listing| listing.map(|e| e.unwrap().path()))
+                .collect();
+            dirs.extend([
+                meta.join("snapshots").join(tx),
+                state.join("snapshots").join(tx),
+            ]);
+            for dir in dirs.iter().filter(|d| d.exists()) {
+                fs::File::open(dir).unwrap().set_modified(past).unwrap();
+            }
         }
 
         /// Whether some file under the stage holds `text`.
@@ -392,12 +407,29 @@ fn the_m2_binary_against_state_m3_wrote() {
         );
     }
 
-    // 3 and 4: an interrupted restore, whole or of Foo alone, then any M2 change.
-    for (scene, more) in [
-        ("interrupted whole restore, then an M2 install", &[][..]),
+    // 3 and 4: an interrupted restore, whole or of Foo alone, then any M2 change: at
+    // once, and with everything the restore left two hours old, which M2's own orphan
+    // sweep then looks at too.
+    for (scene, more, aged) in [
+        (
+            "interrupted whole restore, then an M2 install",
+            &[][..],
+            false,
+        ),
         (
             "interrupted --addon restore, then an M2 install",
             &["--addon", "Foo"][..],
+            false,
+        ),
+        (
+            "interrupted whole restore, then an M2 install two hours on",
+            &[][..],
+            true,
+        ),
+        (
+            "interrupted --addon restore, then an M2 install two hours on",
+            &["--addon", "Foo"][..],
+            true,
         ),
     ] {
         let s = Scene::new(&m2);
@@ -419,47 +451,30 @@ fn the_m2_binary_against_state_m3_wrote() {
             assert_eq!(s.journals(), 1, "{scene}: M2 {read:?}\n{}", r.context());
         }
         assert!(s.changed(&before).is_empty(), "{scene}: M2's reads");
+        if aged {
+            s.age_everything_left(&tx);
+        }
         let bar = s.local("Bar");
         let install = s.m2(&["install", &bar, "-t", "retail"]);
         let journal = s.journals() > 0;
         let (changed, stage, snapshots) = (s.changed(&before), s.stages() > 0, s.snapshots(&tx));
-        let live = s.foo();
         let kept = s.stage_holds(pre_restore);
         let baz = s.local("Baz");
         let next = s.m3(&["install", &baz, "-t", "retail"], "");
         let next_warnings = support::warnings(&next);
-        // An hour on, the next M3 commit's orphan sweep finds the stage dead (no journal,
-        // its lock free).
-        let stages = s.home.client("_retail_").join("Interface/.omaddons/stage");
-        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
-        for entry in fs::read_dir(&stages).unwrap() {
-            let dir = entry.unwrap().path();
-            fs::File::open(&dir).unwrap().set_modified(past).unwrap();
-        }
-        let qux = s.local("Qux");
-        s.m3(&["install", &qux, "-t", "retail"], "").expect(0);
-        let swept = !s.stage_holds(pre_restore);
-        // Observed (M2 cannot be changed): M2 cannot read the M3 `prepared` line, so the
-        // journal is `Unprepared` to it, and it prunes the journal and the in-flight lock
-        // with nothing rolled back. The stage, which holds the pre-restore files, is left
-        // in place; with no journal, the next M3 run neither recovers nor reports it.
-        assert!(!journal, "{scene}: {}", install.context());
-        assert_eq!(s.inflight(), 0, "{scene}");
+        // M2 lists only journals and stages named by a bare id, so it never sees the
+        // restore's (`<tx>.wtf.jsonl`, `stage/<tx>.wtf`): the journal and the stage
+        // holding the pre-restore files survive it, also two hours on, and the next M3
+        // change recovers the restore by its phase (before `swapped`: rolled back).
+        assert!(journal && kept, "{scene}: {}", install.context());
+        assert!(changed.is_empty(), "{scene}: M2 changed {changed:?}");
         assert!(
-            kept,
-            "{scene}: the pre-restore files are still in the stage"
-        );
-        assert_eq!(
-            live, "FooDB = { v = 1 }\n",
-            "{scene}: the restored file stays live"
-        );
-        assert!(
-            !next_warnings
-                .iter()
-                .any(|w| w.starts_with("journal") || w.starts_with("recover")),
+            next_warnings.iter().any(|w| w == "journal_recovered"),
             "{scene}: {}",
             next.context()
         );
+        assert_eq!(s.journals(), 0, "{scene}: {}", next.context());
+        assert_eq!(s.foo(), pre_restore, "{scene}: rolled back");
         rows.push(Row {
             scene,
             m2: format!("install Bar (exit {})", install.code),
@@ -470,7 +485,7 @@ fn the_m2_binary_against_state_m3_wrote() {
             stage,
             snapshots,
             m3_next: format!(
-                "install Baz: exit {}, warnings {next_warnings:?}; pre-restore files only in the stage: {kept}; swept by M3 an hour on: {swept}",
+                "install Baz: exit {}, warnings {next_warnings:?}; WTF/ rolled back to before the restore",
                 next.code,
             ),
         });
@@ -561,4 +576,88 @@ fn the_m2_binary_against_state_m3_wrote() {
         ));
     }
     let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("{table}"));
+}
+
+/// Every M3 journal shape, interrupted right after its `prepared` line, then an M2 change
+/// on the same client: M2 either reads the journal and recovers it (its own
+/// `journal_recovered`), or never sees it, and the next M3 change recovers it. M2 never
+/// deletes one unread.
+#[test]
+#[ignore = "builds the M2 commit: cargo test --test compat_m2 -- --ignored --nocapture"]
+fn every_m3_journal_is_recovered_by_m2_or_left_for_m3() {
+    let Some(m2) = m2_binary() else {
+        common::checkpoint::skip(
+            "every_m3_journal_is_recovered_by_m2_or_left_for_m3",
+            "the M2 commit does not build here",
+        );
+        return;
+    };
+    let mut table = String::from("| shape | M2 | M3 next |\n|---|---|---|\n");
+    let mut unread = Vec::new();
+    let shapes = [
+        "install",
+        "undo of an install",
+        "whole restore",
+        "--addon restore",
+        "undo of a whole restore",
+        "undo of an --addon restore",
+    ];
+    for shape in shapes {
+        let s = Scene::new(&m2);
+        let qux = s.local("Qux");
+        let restore = ["backup", "restore", s.backup.as_str(), "-t", "retail"];
+        let partial = [&restore[..], &["--addon", "Foo"]].concat();
+        let args: Vec<String> = match shape {
+            "install" => vec!["install".into(), qux, "-t".into(), "retail".into()],
+            "undo of an install" => vec!["undo".into(), s.install_tx.clone()],
+            "whole restore" => restore.iter().map(|a| (*a).to_owned()).collect(),
+            "--addon restore" => partial.iter().map(|a| (*a).to_owned()).collect(),
+            _ => {
+                let first = if shape == "undo of a whole restore" {
+                    &restore[..]
+                } else {
+                    &partial[..]
+                };
+                let done = s.m3(first, "").expect(0);
+                vec![
+                    "undo".into(),
+                    done["data"]["tx"].as_str().unwrap().to_owned(),
+                ]
+            }
+        };
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let crashed = s.m3(&args, "engine.journal.prepared=abort");
+        assert_eq!(crashed.code, -1, "{shape}: {}", crashed.context());
+        assert_eq!(s.journals(), 1, "{shape}");
+        let bar = s.local("Bar");
+        let install = s.m2(&["install", &bar, "-t", "retail"]);
+        let m2_recovered = support::warnings(&install)
+            .iter()
+            .any(|w| w == "journal_recovered");
+        let left = s.journals();
+        let baz = s.local("Baz");
+        let next = s.m3(&["install", &baz, "-t", "retail"], "");
+        let m3_recovered = support::warnings(&next)
+            .iter()
+            .any(|w| w == "journal_recovered");
+        table.push_str(&format!(
+            "| {shape} | install exit {}, {} | {} |\n",
+            install.code,
+            match (m2_recovered, left) {
+                (true, _) => "recovered it",
+                (false, 0) => "deleted it unread",
+                (false, _) => "never saw it",
+            },
+            if m3_recovered {
+                "recovered it"
+            } else {
+                "nothing to recover"
+            }
+        ));
+        if !(m2_recovered || (left == 1 && m3_recovered)) || s.journals() != 0 {
+            unread.push(shape);
+        }
+    }
+    let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("{table}"));
+    assert!(unread.is_empty(), "not recovered by either: {unread:?}");
 }

@@ -66,7 +66,7 @@ pub enum JournalLine {
 pub struct PreserveIntent {
     pub id: crate::model::BackupId,
     pub items: Vec<PreserveItem>,
-    /// `<meta>/stage/<tx>/recovered/<id>`: where the backup is assembled before the one
+    /// `<meta>/stage/<tx>.wtf/recovered/<id>`: where the backup is assembled before the one
     /// rename that publishes it.
     pub assembly: PathBuf,
 }
@@ -169,6 +169,16 @@ pub struct Prepared {
     /// backup with (`writes_wtf` only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<ClientFacts>,
+}
+
+impl Prepared {
+    /// Whether the transaction puts settings back: a restore or the undo of one, which
+    /// renames `WTF/` or has `wtf` or `saved_variables` ops. A build before M3 cannot read
+    /// its `prepared` line and deleted such a journal unread, so it is written under a
+    /// name those builds never list ([`Paths::journal_wtf`]).
+    pub fn puts_settings_back(&self) -> bool {
+        self.writes_wtf || self.commit.history.ops.iter().any(|op| !op.op.is_folder())
+    }
 }
 
 /// What a `backup.json` says of the client its backup is of.
@@ -361,8 +371,8 @@ pub struct Journal {
 }
 
 impl Journal {
-    /// Creates `journal/<tx>.jsonl` with its `prepared` line. The guard proves the
-    /// global lock is held.
+    /// Creates `journal/<tx>.jsonl` (`<tx>.wtf.jsonl` for a transaction that puts
+    /// settings back) with its `prepared` line. The guard proves the global lock is held.
     pub fn create(
         s: &mut WriteSession<'_>,
         paths: &Paths,
@@ -370,8 +380,13 @@ impl Journal {
         prepared: Prepared,
     ) -> Result<Self> {
         ensure_dir_all(s, &paths.journal_dir())?;
+        let path = if prepared.puts_settings_back() {
+            paths.journal_wtf(&prepared.tx)
+        } else {
+            paths.journal(&prepared.tx)
+        };
         let journal = Self {
-            path: paths.journal(&prepared.tx),
+            path,
             tx: prepared.tx,
             steps: 0,
         };
@@ -611,7 +626,7 @@ fn journals(paths: &Paths) -> Result<Vec<(TxId, PathBuf)>> {
         .filter_map(|entry| {
             let path = entry.path();
             let name = path.file_name()?.to_str()?;
-            let tx: TxId = name.strip_suffix(".jsonl")?.parse().ok()?;
+            let tx = crate::state::paths::tx_named(name.strip_suffix(".jsonl")?)?;
             Some((tx, path))
         })
         .collect();
@@ -629,12 +644,19 @@ fn read(path: &Path) -> Result<Parsed> {
 /// committed nor recovered. One it cannot read (or read at all) counts too: recovery
 /// reports it, and leaves it.
 pub(crate) fn unfinished(paths: &Paths, tx: &TxId) -> bool {
-    let path = paths.journal(tx);
-    path.exists()
-        && read(&path).map_or(true, |parsed| {
+    existing(paths, tx).is_some_and(|path| {
+        read(&path).map_or(true, |parsed| {
             matches!(parsed.phase, Phase::Prepared | Phase::Swapped)
                 || parsed.unrecoverable().is_some()
         })
+    })
+}
+
+/// `tx`'s journal, under whichever of its two names it has.
+pub(crate) fn existing(paths: &Paths, tx: &TxId) -> Option<PathBuf> {
+    [paths.journal_wtf(tx), paths.journal(tx)]
+        .into_iter()
+        .find(|path| std::fs::symlink_metadata(path).is_ok())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -912,10 +934,9 @@ fn journal_scopes(env: &RecoveryEnv<'_>, prepared: &Prepared) -> Option<ScopeTab
 /// rolls back, after `swapped` rolls forward. No liveness check: the caller is the
 /// writer. Leftovers its in-flight lock still protects are pruned at cleanup.
 pub fn recover_tx(env: &RecoveryEnv<'_>, tx: &TxId) -> Result<Option<Recovered>> {
-    let path = env.paths.journal(tx);
-    if !path.exists() {
+    let Some(path) = existing(env.paths, tx) else {
         return Ok(None);
-    }
+    };
     let parsed = read(&path)?;
     recover_parsed(env, tx, &path, &parsed)
 }
@@ -1341,7 +1362,7 @@ fn redacted(prepared: &Prepared, mut error: Error) -> Error {
 }
 
 /// Rule 3's candidates, after the walk: the `displaced` versions, and the staged tree at
-/// `stage/<tx>/WTF` when it is not one of them and its stamps changed since it was
+/// `stage/<tx>.wtf/WTF` when it is not one of them and its stamps changed since it was
 /// journaled (the game played on it), or its source is gone (it holds that content's last
 /// copy, which a metadata match cannot vouch for).
 fn candidates(prepared: &Prepared, mut items: Vec<PreserveItem>) -> Result<Vec<PreserveItem>> {
@@ -3016,8 +3037,50 @@ mod tests {
         }
 
         fn journal_kept(&self) -> bool {
-            self.scene.paths.journal(&self.scene.tx).exists()
+            existing(&self.scene.paths, &self.scene.tx).is_some()
         }
+    }
+
+    /// A journal that puts settings back is `<tx>.wtf.jsonl`, a name pre-M3 builds never
+    /// list (they deleted such journals unread); every other keeps `<tx>.jsonl`, which
+    /// they read and recover. This build lists and finds both.
+    #[test]
+    fn a_journal_that_puts_settings_back_is_named_for_this_build_only() {
+        let plain = crate::engine::testing::Scene::new();
+        let prepared = {
+            let lock = plain.lock();
+            let mut s = plain.session();
+            let journal = plain.journal(&mut s, &lock);
+            assert_eq!(journal.path(), plain.paths.journal(&plain.tx));
+            let text = std::fs::read_to_string(journal.path()).unwrap();
+            parse(&text).prepared.unwrap()
+        };
+        assert!(!prepared.puts_settings_back(), "folder ops only");
+        // Settings ops alone (the undo of an `--addon` restore) are enough.
+        let mut undo = prepared.clone();
+        undo.commit
+            .history
+            .ops
+            .push(crate::state::history::HistoryOp {
+                op: crate::state::history::FolderOp::SavedVariables,
+                folder: crate::model::FolderName::new("Foo").unwrap(),
+                addon: "Foo".into(),
+                edit: None,
+                backup: None,
+                from: Some(crate::state::history::WtfSource::Snapshot),
+                files: Some(1),
+            });
+        assert!(undo.puts_settings_back());
+        let w = WtfScene::new(TxKind::Restore, true, false);
+        let (paths, tx) = (&w.scene.paths, &w.scene.tx);
+        assert!(paths.journal_wtf(tx).is_file() && !paths.journal(tx).exists());
+        assert_eq!(existing(paths, tx), Some(paths.journal_wtf(tx)));
+        let listed: Vec<TxId> = journals(paths)
+            .unwrap()
+            .into_iter()
+            .map(|(tx, _)| tx)
+            .collect();
+        assert_eq!(listed, [*tx]);
     }
 
     #[test]
@@ -3208,7 +3271,7 @@ mod tests {
     #[test]
     fn preservation_lines_read_back_and_need_a_prepared_line() {
         let w = WtfScene::new(TxKind::Restore, true, false);
-        let journal = w.scene.paths.journal(&w.scene.tx);
+        let journal = existing(&w.scene.paths, &w.scene.tx).unwrap();
         let id = crate::model::BackupId::new();
         let intent = PreserveIntent {
             id,
@@ -3338,7 +3401,7 @@ mod tests {
             let err = failpoint::with_spec(&format!("{point}=error"), || w.recover(true, false))
                 .unwrap_err();
             assert_eq!(err.details["reason"], "preservation_incomplete", "{point}");
-            let parsed = read(&w.scene.paths.journal(&w.scene.tx)).unwrap();
+            let parsed = read(&existing(&w.scene.paths, &w.scene.tx).unwrap()).unwrap();
             assert_eq!(parsed.preserve.len(), 1, "{point}");
             let id = parsed.preserve[0].id;
             let published = matches!(point, "engine.preserve.published");
@@ -3375,7 +3438,7 @@ mod tests {
             let err = w.recover(true, false).unwrap_err();
             assert_eq!(err.details["reason"], "preservation_incomplete", "{err:?}");
         }
-        let parsed = read(&w.scene.paths.journal(&w.scene.tx)).unwrap();
+        let parsed = read(&existing(&w.scene.paths, &w.scene.tx).unwrap()).unwrap();
         let assembled = parsed.preserve[0].assembly.join("WTF");
         assert!(assembled.join("d0").exists(), "kept, in the assembly");
         assert!(w.recovered().is_empty());

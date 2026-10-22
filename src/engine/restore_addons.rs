@@ -515,7 +515,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: AddonsRequest<'_>) -> Result<AddonsOutc
     let client = ClientPaths::new(&target.client_dir);
     let scopes = ScopeTable::new(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
     let names = redactor(&client, backup);
-    let staged_dir = client.stage(&tx).join("WTF");
+    let staged_dir = client.stage_wtf(&tx).join("WTF");
     let prepared =
         check_mounts(&client, plan, topology.stage_mount, &backup.wtf()).and_then(|()| {
             let into = Into {
@@ -825,7 +825,7 @@ impl Window<'_> {
         record.generation += 1;
         let now = Timestamp::now();
         let history = self.history_line(key, now);
-        let stage_dir = client.stage(&tx);
+        let stage_dir = client.stage_wtf(&tx);
         let staged = stage_dir.join("WTF");
         let staged_files: Vec<StagedFile> = self
             .plan
@@ -1294,7 +1294,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let probe_dir = scene.client.stage(&tx).join("probe");
+        let probe_dir = scene.client.stage_wtf(&tx).join("probe");
         let probe = Probe {
             scopes: &scopes,
             dir: &probe_dir,
