@@ -1,14 +1,16 @@
-//! Preview binding (M3-D46) end to end: a `--dry-run` of `remove` or `undo` returns
-//! `data.precondition`, and the real run with `--if-match <it>` does exactly what the
-//! preview showed or nothing. Each scenario changes the world between preview and run (a
-//! commit on the target, before the run plans or between its plan and the lock; a
-//! SavedVariables file the undo would restore) and checks the refusal (`plan_stale`, not
-//! retryable, `details.changed`, the preview as `fix_argv`) and that nothing moved.
+//! Preview binding (M3-D46) end to end: a `--dry-run` of `remove`, `undo` or `backup
+//! prune` returns `data.precondition`, and the real run with `--if-match <it>` does
+//! exactly what the preview showed or nothing. Each scenario changes the world between
+//! preview and run (a commit on the target, before the run plans or between its plan and
+//! the lock; a SavedVariables file the undo would restore; a new backup, or a victim's
+//! metadata rewritten) and checks the refusal (`plan_stale`, not retryable,
+//! `details.changed`, the preview as `fix_argv`) and that nothing moved.
 
 mod common;
 
 use common::engine::Scene;
 use common::pause::Pause;
+use prune_support::{at_noon, backups, prune_preview, three_days};
 use serde_json::{Value, json};
 use support::{argv, preview, token};
 
@@ -287,4 +289,133 @@ fn a_dry_run_with_if_match_previews_afresh() {
     assert_ne!(fresh, stale);
     assert_eq!(fresh, preview(&scene, REMOVE));
     assert!(scene.addons().join("Foo").is_dir());
+}
+
+const PRUNE: &[&str] = &["backup", "prune", "-t", "retail", "--keep", "2"];
+const PRUNE_PREVIEW: &[&str] = &[
+    "omaddons",
+    "backup",
+    "prune",
+    "-t",
+    "retail",
+    "--keep",
+    "2",
+    "--dry-run",
+];
+
+#[cfg(test)]
+mod prune_support {
+    use super::common::engine::Scene;
+    use super::support::{argv, token};
+
+    /// `omaddons <argv>` with the clock frozen, so a backup's age is the same in the
+    /// preview and the run.
+    pub fn at_noon(scene: &Scene, argv: &[String]) -> super::common::home::Run {
+        scene
+            .home
+            .exec_with(argv, &[("OMADDONS_NOW", "2026-10-10T12:00:00Z")])
+    }
+
+    /// `backup prune`'s `--dry-run` token, and the ids it would delete.
+    pub fn prune_preview(scene: &Scene) -> (String, Vec<String>) {
+        let mut run = argv(super::PRUNE);
+        run.extend(["--dry-run", "--json"].map(str::to_owned));
+        let envelope = at_noon(scene, &run).expect(0);
+        let ids = envelope["data"]["targets"][0]["pruned"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap().to_owned())
+            .collect();
+        (token(&envelope), ids)
+    }
+
+    /// Three automatic backups on three old days, and the newest checkpoint: `--keep 2`
+    /// prunes the oldest automatic one.
+    pub fn three_days(scene: &Scene) -> std::path::PathBuf {
+        use omaddons::backup::BackupKind;
+        let client = scene.home.client("_retail_");
+        for day in ["01", "02", "03"] {
+            let at = format!("2026-10-{day}T08:00:00Z").parse().unwrap();
+            super::common::backups::seed_backup(&client, BackupKind::Auto, at, 1);
+        }
+        let at = "2026-10-05T08:00:00Z".parse().unwrap();
+        super::common::backups::seed_backup(&client, BackupKind::Manual, at, 1);
+        client
+    }
+
+    /// The backup ids under `client`'s `<meta>/backups/`, sorted.
+    pub fn backups(client: &std::path::Path) -> Vec<String> {
+        let mut ids: Vec<String> = std::fs::read_dir(client.join("Interface/.omaddons/backups"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        ids.sort();
+        ids
+    }
+}
+
+#[test]
+fn a_backup_prune_deletes_exactly_what_it_previewed() {
+    let scene = Scene::new();
+    let client = three_days(&scene);
+    let (token, ids) = prune_preview(&scene);
+    assert_eq!(ids.len(), 1);
+    assert_eq!(
+        prune_preview(&scene).0,
+        token,
+        "an unchanged home, the same token"
+    );
+    let envelope = at_noon(&scene, &bound(PRUNE, &token)).expect(0);
+    let pruned: Vec<&str> = envelope["data"]["targets"][0]["pruned"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(pruned, ids);
+    assert_eq!(envelope["data"]["precondition"], Value::Null);
+    assert!(!backups(&client).contains(&ids[0]));
+}
+
+#[test]
+fn a_backup_prune_after_a_new_backup_deletes_nothing() {
+    use omaddons::backup::BackupKind;
+    let scene = Scene::new();
+    let client = three_days(&scene);
+    let (stale, _) = prune_preview(&scene);
+    // A new automatic backup: --keep 2 now deletes a different set.
+    let at = "2026-10-04T08:00:00Z".parse().unwrap();
+    common::backups::seed_backup(&client, BackupKind::Auto, at, 1);
+    let before = backups(&client);
+    let envelope = at_noon(&scene, &bound(PRUNE, &stale)).expect(1);
+    assert_stale(&envelope, &["selection", "observed"], PRUNE_PREVIEW);
+    assert_eq!(backups(&client), before, "nothing was deleted");
+
+    // A preview given the stale token previews afresh; the fix's token runs.
+    let mut run = bound(PRUNE, &stale);
+    run.push("--dry-run".to_owned());
+    let fresh = token(&at_noon(&scene, &run).expect(0));
+    let (token, ids) = prune_preview(&scene);
+    assert_eq!(fresh, token);
+    assert_eq!(ids.len(), 2);
+    at_noon(&scene, &bound(PRUNE, &token)).expect(0);
+    assert_eq!(backups(&client).len(), before.len() - 2);
+}
+
+#[test]
+fn a_backup_prune_whose_victim_was_rewritten_deletes_nothing() {
+    let scene = Scene::new();
+    let client = three_days(&scene);
+    let (token, ids) = prune_preview(&scene);
+    // Its metadata rewritten since the preview (a verify records what it hashed).
+    let meta = client
+        .join("Interface/.omaddons/backups")
+        .join(&ids[0])
+        .join("backup.json");
+    let text = std::fs::read_to_string(&meta).unwrap();
+    std::fs::write(&meta, text.replace("metadata_only", "verified")).unwrap();
+    let envelope = at_noon(&scene, &bound(PRUNE, &token)).expect(1);
+    assert_stale(&envelope, &["observed"], PRUNE_PREVIEW);
+    assert!(backups(&client).contains(&ids[0]));
 }

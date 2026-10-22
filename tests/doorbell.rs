@@ -266,6 +266,16 @@ fn every_change_rings_with_its_command_and_actor_and_no_read_does() {
 
     s.silent(&["export"]);
     s.rings(&["export", "--write"], "export");
+
+    // A prune that deletes a backup; one with nothing to delete, and a preview, do not.
+    let retail = s.home.client("_retail_");
+    for captured in ["2025-01-01T08:00:00Z", "2025-01-01T20:00:00Z"] {
+        let at = captured.parse().unwrap();
+        common::backups::seed_backup(&retail, omaddons::backup::BackupKind::Auto, at, 1);
+    }
+    s.silent(&["backup", "prune", "-t", "retail", "--dry-run"]);
+    s.rings(&["backup", "prune", "-t", "retail"], "backup prune");
+    s.silent(&["backup", "prune", "-t", "retail"]);
 }
 
 #[test]

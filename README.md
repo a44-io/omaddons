@@ -38,7 +38,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are done, the fixes from the post-M2 audit are in (the bugs its closing check found are listed under [Known issues](#known-issues)), and omaddons runs daily on the development machine. There, every client it manages (retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and a 3.3.5a server) has been seen in game loading the addons it installed. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their dependencies (from the catalog, Tukui or WoWInterface), WoWInterface and Tukui (ElvUI) addons install and update, `search` and `auth github` work, and `adopt` brings addons installed by hand or by other managers under management. Milestone 3 (the Omarchy widget, Lua errors and `WTF/` backups) is under way: `errors` and `errors dismiss` read and acknowledge BugGrabber's Lua errors, `status` counts the new ones, `backup create` and `backup list` work, and checking and restoring backups come next. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are done, the fixes from the post-M2 audit are in (the bugs its closing check found are listed under [Known issues](#known-issues)), and omaddons runs daily on the development machine. There, every client it manages (retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and a 3.3.5a server) has been seen in game loading the addons it installed. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their dependencies (from the catalog, Tukui or WoWInterface), WoWInterface and Tukui (ElvUI) addons install and update, `search` and `auth github` work, and `adopt` brings addons installed by hand or by other managers under management. Milestone 3 (the Omarchy widget, Lua errors and `WTF/` backups) is under way: `errors` and `errors dismiss` read and acknowledge BugGrabber's Lua errors, `status` counts the new ones, `backup create`, `backup list` and `backup prune` work, and checking and restoring backups come next. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -148,7 +148,7 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | `copy`: one client's addons installed on another where builds exist, the rest skipped and said why | ✅ Done (milestone 2) |
 | `auth github`: an opt-in GitHub token (5,000 REST requests an hour), stored from standard input or `gh`, checked and cleared | ✅ Done (milestone 2) |
 | In-game load checks: retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and 3.3.5a each wrote the SavedVariables of the addons omaddons installed, so the client loaded them | ✅ Observed on the development machine (2026-10-20 and 21) |
-| `backup create`: a copy of each client's `WTF/`, made without the global lock (copy-on-write on btrfs and xfs), that says whether `WTF/` held still while it was copied and which addon versions produced it; `--verify` hashes it. `backup list`: each client's backups, what each proves, and the space they take | 🔄 Milestone 3 (checking and restoring backups are next) |
+| `backup create`: a copy of each client's `WTF/`, made without the global lock (copy-on-write on btrfs and xfs), that says whether `WTF/` held still while it was copied and which addon versions produced it; `--verify` hashes it. `backup list`: each client's backups, what each proves, and the space they take. `backup prune`: automatic backups thinned by day after every backup, and your own deleted only when you ask, never one being read | 🔄 Milestone 3 (checking and restoring backups are next) |
 | `errors`: which addon most likely throws Lua errors, from BugGrabber's data on every client (3.3.5a included), with the attribution's method and confidence, new errors per database, and nothing an addon wrote shown unless asked for; `errors dismiss` marks what was read as seen, bound to that read; `status` shows each client's new errors, and `status --cached` counts them without opening BugGrabber's files | 🔄 Milestone 3 |
 | The Omarchy bar widget, BugGrabber from a new keyless `wowace:` source, checking and restoring `WTF/` backups, automatic backups | 🗓️ Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
@@ -650,7 +650,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters); others accept and ignore it |
 | `--offline` | Fail any network access (`OMADDONS_OFFLINE=1`) |
 | `--while-running` | Allow folder changes while the client runs (never SavedVariables) |
-| `--if-match <TOKEN>` | Change nothing unless the plan is still the one the `--dry-run` that returned this token showed (`data.precondition`); see [Previews and `--if-match`](#previews-and---if-match). Only `remove`, `undo` and `errors dismiss` take it today (later `backup restore` and `backup prune`); on any other command it is a usage error |
+| `--if-match <TOKEN>` | Change nothing unless the plan is still the one the `--dry-run` that returned this token showed (`data.precondition`); see [Previews and `--if-match`](#previews-and---if-match). Only `remove`, `undo`, `backup prune` and `errors dismiss` take it today (later `backup restore`); on any other command it is a usage error |
 | `--no-color` | No ANSI color (also `NO_COLOR`). Color is also off with `--json`, in CI, with `TERM=dumb` and when stderr is not a terminal |
 | `--quiet` | Only errors on stderr |
 | `-v, --verbose` | More detail: paths, and debug `log` events on stderr (repeatable) |
@@ -1010,7 +1010,7 @@ A later transaction that only added or dropped a requester in a dependency's `re
 
 ### `backup`
 
-Each client's `WTF/` backups: copies of its settings, the data players actually lose (milestone 3). `backup create` makes them and `backup list` shows them; checking and restoring them are the next parts of milestone 3. Bare `backup` is `backup list`.
+Each client's `WTF/` backups: copies of its settings, the data players actually lose (milestone 3). `backup create` makes them, `backup list` shows them and `backup prune` deletes old ones; checking and restoring them are the next parts of milestone 3. Bare `backup` is `backup list`.
 
 ```bash
 omaddons backup create                     # every live client that has a WTF/, one backup each
@@ -1020,6 +1020,9 @@ omaddons backup create --dry-run           # what it would copy, copy-on-write o
 omaddons backup list                       # every client with backups, newest capture first
 omaddons backup list -t retail --limit 5
 omaddons backup list 01M6Q2VA -v           # one backup by an id prefix (8+ characters), with its addon versions
+omaddons backup prune --dry-run            # what retention would delete now, and the token that binds it
+omaddons backup prune -t retail --keep 3   # also your own backups beyond the newest 3 of each kind
+omaddons backup prune -t retail -- 01M6Q2VA   # exactly that backup
 ```
 
 #### `backup create`
@@ -1034,6 +1037,7 @@ Copies each selected client's `WTF/` into a new backup. Without `-t` it backs up
 - **Owner only.** `backups/` and every backup in it are mode `0700`, their metadata files `0600`. Stored directories stay owner-writable, so a backup can always be pruned; their exact modes are in the manifest.
 - **Free space.** When less than `limits.backup_min_free_mb` is free beside the backups (default 2,048 MiB; 0 turns the check off), `backup_space_low` warns and the backup is made anyway: it was asked for.
 - **History.** Each backup appends a line of kind `backup` with `backup: {id, kind, files, bytes}` (`history` shows it as `WTF/ as <id> (<files>)`). `undo` never reverts it and steps over it.
+- **Retention.** After each backup, the client's backups get the retention pass [`backup prune`](#backup-prune) runs, outside the lock. It only ever deletes automatic backups, never the one just made. A failure is only `retention_failed` (fix `omaddons backup prune -t <id>`): the backup stands.
 - **`--dry-run`** walks `WTF/` without writing anything and reports `would: {files, bytes, copy, free_bytes}`, where `copy` (`copy_on_write` or `byte_copy`) comes from the filesystem's type, a hint until a clone is tried.
 
 `data` is `{dry_run, run, targets: [{target, backup, tx, skipped, error}]}`. `backup` is the backup as `backup list` shows it, and `tx` its history line (`null` when the line could not be written, with `history_not_recorded`). `skipped` is `null` for a backup you asked for. A `WTF/` past 200,000 entries or 16 levels is `archive_too_large`. One whose files vanished while they were copied, on the second try too, is a retryable `io` error; the path it names keeps no account, realm or character name. Progress is `copy` events labelled `WTF/ files`, and with `--verify` `verify` events labelled `verifying`: counts under a fixed label, never a path.
@@ -1074,6 +1078,30 @@ $ omaddons backup list
 retail (12.1.5.70391, mainline) · 2 backups · 82.4 kB apparent, initially shared copy-on-write · 212 GB free
   01M6Q2VA00000000…  today 18:02       auto (after play)  412 files  41.2 kB  stable
   01M5Z1KB00000000…  2026-10-18 21:15  manual             412 files  41.2 kB  stable · verified  "before the raid"
+```
+
+#### `backup prune`
+
+Deletes old backups, for each client `-t` selects or every client with backups. It cannot be undone.
+
+- **Without ids**, it runs the retention pass described under [Retention](#retention) ("Backups"): automatic backups are thinned by day, and your own backups are kept.
+- **`--keep N`** also deletes every backup beyond the newest N of its kind (`manual`, `auto`, `before_restore`, `imported` and `recovered` each count on their own). **`--older-than D`** also deletes manual, imported and recovered backups captured before then; it takes `history --since`'s forms (`30m`, `12h`, `1d`, `2w` or an RFC 3339 time). Neither ever deletes a backup younger than a day, nor the client's newest checkpoint.
+- **With ids** (8+ character prefixes, after `--` too), it deletes exactly those, whatever their age. It refuses the client's newest checkpoint with `usage` (fix `omaddons backup create -t <id>`: make a newer one first), and deletes nothing. Ids cannot go with `--keep` or `--older-than`.
+- **Busy backups.** A backup that a restore, an export or a verify is reading holds a shared lock on its directory. Each deletion takes that lock exclusively without waiting, once more after 50 ms (so `backup list`'s own instant probe never counts). A backup still held is skipped and listed under `busy`; that never fails the run, and a later prune deletes it. A reader killed outright frees it at once.
+- **How it deletes.** Each backup is moved to `<client>/Interface/.omaddons/trash/` under the global lock, then deleted there, read-only directories included; nothing is left behind. A prune that deleted something rings the doorbell and updates `backups.json`. It appends no history line: the backups themselves are the record.
+- **Preview binding.** `--dry-run` deletes nothing. It lists what would go under `pruned` (and what is held now under `busy`) and returns `precondition`. With `--if-match <token>`, the real run deletes exactly those backups or nothing: if the set changed (a new backup moved `--keep`'s line) or one of them was rewritten since, it fails with `plan_stale`. See [Previews and `--if-match`](#previews-and---if-match).
+
+`data` is `{dry_run, targets: [{target, pruned: [{id, kind, bytes}], busy: [{id}], kept, reclaimed_for_space, error}], precondition}`:
+
+- `bytes` is apparent: on btrfs and xfs a backup may still share most of its data with `WTF/`, so deleting it frees less.
+- `kept` counts the backups left.
+- `reclaimed_for_space` is `true` only for deletions made to free space (by the automatic backups of milestone 3), so always `false` here.
+- A client whose deletions failed carries `error`, and the run is `partial` when another client's prune worked.
+
+```text
+$ omaddons backup prune --dry-run
+retail: would prune 3 backups (45.1 MB apparent), kept 5
+Run it bound to this preview: --if-match pc1:…
 ```
 
 ### `history`
@@ -1546,7 +1574,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `saved_variables_out_of_scope` | SavedVariables of the changed addons are in a `WTF/` reached through a symlink outside the client directory (a sync folder), or under a `WTF`, `Account` or `SavedVariables` folder spelled two ways (`WTF` beside `wtf`): they are never snapshotted or written, so undo leaves them as they are. One warning per reason; it counts the files and never names them |
 | `running_unknown` | `/proc` could not be read, so every client is treated as running: changes follow the running policy, SavedVariables restores wait, and `status` reports `running: null`. Once per command |
 | `snapshot_cap_exceeded` | protected snapshots alone exceed the size cap |
-| `retention_failed` | pruning failed after commit; the transaction stands |
+| `retention_failed` | pruning failed after a commit or a `backup create`; the transaction or the backup stands. After a backup, the fix is `omaddons backup prune -t <id>` |
 | `out_of_date` | the TOC's interface is older than the client's; it loads only with "Load out of date AddOns" enabled |
 | `missing_dependency` | a folder an installed addon's TOC requires was not installed: no keyless source ships it, several projects do, its only build is out of date, a dependency limit was reached, or `--no-deps`; the fix names a candidate when there is one, and searches for the folder (`omaddons search <folder>`) when no keyless source ships it |
 | `toc_comma_on_legacy` | a comma interface list on a client that reads only the first number |
@@ -1588,7 +1616,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 
 ### Previews and `--if-match`
 
-A confirm dialog, or an agent that previews before it acts, must not run something other than what it showed. A `--dry-run` of a destructive command returns `data.precondition`, a token describing exactly what the run would do, and the real run with `--if-match <token>` does that or nothing. `remove`, `undo` and `errors dismiss` bind today; `backup restore` and `backup prune` will. An `errors` read carries its own token for each client (`dismiss.precondition`), so a dismissal can be bound to the read the user saw, not to a later preview.
+A confirm dialog, or an agent that previews before it acts, must not run something other than what it showed. A `--dry-run` of a destructive command returns `data.precondition`, a token describing exactly what the run would do, and the real run with `--if-match <token>` does that or nothing. `remove`, `undo`, `backup prune` and `errors dismiss` bind today; `backup restore` will. An `errors` read carries its own token for each client (`dismiss.precondition`), so a dismissal can be bound to the read the user saw, not to a later preview.
 
 ```bash
 omaddons remove Foo -t retail --dry-run --json     # data.precondition: "pc1:…"
@@ -1597,7 +1625,7 @@ omaddons remove Foo -t retail --if-match pc1:…     # exactly that removal, or 
 
 - The real run plans again and computes the token from its own plan before it stages anything, and compares it again under the lock (a commit that slips in between counts too).
 - A difference is `plan_stale`, not retryable (the same token can only fail again), and nothing is changed. `details.changed` names the parts that differ: `command`, `targets` (a target's records changed, with their generation), `selection` (what it would change) and `observed` (what it saw, such as the SavedVariables an undo would restore, or whether a transaction can be undone). `fix_argv` is the same command with `--dry-run` in place of `--if-match <token>`: preview again.
-- `remove`'s token covers the folders it moves out and the records it changes. `undo`'s covers the transactions it reverts, their folder operations, the SavedVariables files each restores and those files' state now.
+- `remove`'s token covers the folders it moves out and the records it changes. `undo`'s covers the transactions it reverts, their folder operations, the SavedVariables files each restores and those files' state now. `backup prune`'s covers the clients (by key, without generations: an install between preview and run does not change which backups go), the exact backups it would delete, and each one's `backup.json` as it read it.
 - The token is `pc1:` and 64 hex digits. Nothing is stored: it holds as long as what it describes is unchanged, and it is no credential.
 - `--if-match` is opt-in: commands without it behave as before. On a command that does not bind it is a usage error, and so is a malformed token. A `--dry-run` that is given one previews afresh and returns the current token.
 - Real runs carry `precondition: null`.
@@ -1720,7 +1748,16 @@ Retention runs after every commit, for the target just changed:
 - The download cache is an LRU capped at 1 GiB. Archives of releases installed on any target are pinned, so the cache can exceed the cap.
 - Orphaned stage directories, in-flight locks and the snapshots of transactions that never committed are swept: a rolled-back or failed transaction's snapshots at once, a dead planner's temporary downloads as soon as its in-flight lock is free, and anything else a crash left once it is an hour old. A snapshot that still holds an addon folder or a `WTF.previous` is never swept.
 - A whole restore's `WTF.previous` (the tree it replaced) is pruned with its transaction by the count and age rules above, and never counts toward the 2 GiB cap, so a few large restores never evict the snapshots undo needs for addons.
-- `WTF/` backups (`.omaddons/backups/`) are never touched by transaction retention.
+- `WTF/` backups (`.omaddons/backups/`) are never touched by transaction retention. They have their own, below.
+
+**Backups.** After every `backup create` (and on `backup prune`), each client's backups are thinned:
+
+- **Always kept:** every backup younger than 24 hours (since it was made or imported here), the client's newest checkpoint (`qualifying`) whatever its age, and a backup whose `backup.json` cannot be read.
+- **Your backups** (`manual`, `imported` and `recovered`, which holds a play session an interrupted restore would have lost) are only ever deleted when you ask: by id, with `--keep` or with `--older-than`.
+- **Automatic backups** are thinned by local day. For each of the newest `limits.backup_auto_keep_days` days (7) that hold any, the day's first `pre_change` backup, its last `post_session` backup and every `before_restore` backup stay; the rest of those days, and every older day, go. Why per day: with two triggers a day, a bare count of 7 would cover only two or three days of play.
+- **Under space pressure**, the automatic backups of milestone 3 first reclaim space by deleting automatic backups that are not protected above, oldest first, rechecking after each. They never delete one of your backups, the newest checkpoint or one younger than a day. A byte-copy budget only ever deletes byte-copied ones.
+- **Busy:** a backup being read (a restore, an export, a verify) is never deleted under its reader; it is skipped until the next pass.
+- A failed pass after a backup is only `retention_failed`: the backup stands.
 
 The retention and archive limits live in `src/limits.rs`. All but the 24-hour minimum age, the 1-hour orphan age, the 32 MiB ratio floor and the 5-second lock timeout can be changed in `[limits]`. The time budgets (50 ms, 2 s) live in the tests, and the failpoint list in `src/engine/tx.rs`.
 

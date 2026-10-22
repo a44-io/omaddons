@@ -1,0 +1,31 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup prune",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {
+      "id": "<ulid>",
+      "target": "retail"
+    },
+    "fix": "omaddons backup create -t retail",
+    "fix_argv": [
+      "omaddons",
+      "backup",
+      "create",
+      "-t",
+      "retail"
+    ],
+    "message": "<ulid> is retail's newest checkpoint, which pruning always keeps; nothing was deleted: back up first, then prune it",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

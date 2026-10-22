@@ -807,6 +807,38 @@ fn backup_create() {
 }
 
 #[test]
+fn backup_prune() {
+    use common::backups::seed_backup;
+    use omaddons::backup::BackupKind;
+    let s = Scene::new();
+    let client = s.home.client("_retail_");
+    let at = |t: &str| t.parse().unwrap();
+    // One old day's post-session backups (its last stays) and the newest checkpoint.
+    seed_backup(&client, BackupKind::Auto, at("2026-10-01T08:00:00Z"), 1);
+    seed_backup(&client, BackupKind::Auto, at("2026-10-01T20:00:00Z"), 1);
+    let manual = seed_backup(&client, BackupKind::Manual, at("2026-10-05T10:00:00Z"), 1);
+    let env = [("OMADDONS_NOW", "2026-10-15T18:30:00Z")];
+    let c = s.json_env(&["backup", "prune", "-t", "retail", "--dry-run"], &env, 0);
+    insta::assert_json_snapshot!("backup_prune_dry_run", s.stable(&c.envelope));
+    let token = c.envelope["data"]["precondition"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Another of that day's backups appears: the run would delete a different set.
+    seed_backup(&client, BackupKind::Auto, at("2026-10-01T12:00:00Z"), 1);
+    let run = ["backup", "prune", "-t", "retail", "--if-match"];
+    let c = s.json_env(&[&run[..], &[token.as_str()]].concat(), &env, 1);
+    insta::assert_json_snapshot!("backup_prune_stale", s.stable(&c.envelope));
+    let c = s.json_env(&["backup", "prune", "-t", "retail", "--dry-run"], &env, 0);
+    let token = c.envelope["data"]["precondition"].as_str().unwrap();
+    let c = s.json_env(&[&run[..], &[token]].concat(), &env, 0);
+    insta::assert_json_snapshot!("backup_prune_ok", s.stable(&c.envelope));
+    let manual = manual.to_string();
+    let c = s.json_env(&["backup", "prune", "-t", "retail", &manual], &env, 2);
+    insta::assert_json_snapshot!("backup_prune_newest_checkpoint", s.stable(&c.envelope));
+}
+
+#[test]
 fn errors() {
     use common::addons::{addon_folder, toc};
     use common::buggrabber::{self, BugDb, BugEntry, NOW, TimeKind, Writer, write_files};

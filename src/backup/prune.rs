@@ -41,13 +41,13 @@ const PROBE_RETRY: Duration = Duration::from_millis(50);
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PruneOpts {
     /// `backup prune <id>…`: exactly these, the 24 h protection lifted because the request
-    /// is explicit. `keep` and `older_than` do not apply.
+    /// is explicit. `keep` and `captured_before` do not apply.
     pub ids: Option<BTreeSet<BackupId>>,
     /// `--keep N`: also every backup beyond the newest N of its kind.
     pub keep: Option<usize>,
-    /// `--older-than D`: also every manual, imported or recovered backup captured longer
-    /// ago.
-    pub older_than: Option<Duration>,
+    /// `--older-than D`: also every manual, imported or recovered backup captured before
+    /// this.
+    pub captured_before: Option<Timestamp>,
     /// Ids this pass keeps whatever else it says (a restore's source, M3-D26).
     pub pins: BTreeSet<BackupId>,
 }
@@ -77,18 +77,18 @@ pub fn select(
             .map(|b| b.id)
             .collect();
     }
-    let age = |at: Timestamp| now.as_second().saturating_sub(at.as_second());
+    let min_age = i64::try_from(BACKUP_MIN_AGE.as_secs()).unwrap_or(i64::MAX);
     let young = |b: &BackupRef| {
         b.meta
             .as_ref()
-            .is_none_or(|m| age(m.created_at) < seconds(BACKUP_MIN_AGE))
+            .is_none_or(|m| now.as_second().saturating_sub(m.created_at.as_second()) < min_age)
     };
     let daily = by_day(backups, tz, keep_days);
     let newest = opts.keep.map(|n| newest_of_each_kind(backups, n));
     let beyond_keep = |b: &BackupRef| newest.as_ref().is_some_and(|kept| !kept.contains(&b.id));
     let old = |b: &BackupRef| {
-        opts.older_than
-            .is_some_and(|d| b.captured_at().is_some_and(|at| age(at) > seconds(d)))
+        opts.captured_before
+            .is_some_and(|cutoff| b.captured_at().is_some_and(|at| at < cutoff))
     };
     backups
         .iter()
@@ -109,10 +109,6 @@ pub fn select(
 /// checkpoints and the copies a restore takes first.
 fn automatic(kind: BackupKind) -> bool {
     matches!(kind, BackupKind::Auto | BackupKind::BeforeRestore)
-}
-
-fn seconds(d: Duration) -> i64 {
-    i64::try_from(d.as_secs()).unwrap_or(i64::MAX)
 }
 
 /// The newest `n` of each kind, by capture.
@@ -571,7 +567,7 @@ mod tests {
         let opts = PruneOpts {
             pins: BTreeSet::from([pinned.id]),
             keep: Some(0),
-            older_than: Some(Duration::from_secs(1)),
+            captured_before: Some(now),
             ids: None,
         };
         let victims = select(&backups, now, &TimeZone::UTC, 0, &opts);
@@ -676,7 +672,7 @@ mod tests {
             "the newest manual (also the newest checkpoint) and the only import stay"
         );
         let older = PruneOpts {
-            older_than: Some(Duration::from_secs(3 * 86_400)),
+            captured_before: Some(now),
             ..PruneOpts::default()
         };
         assert_eq!(
@@ -818,6 +814,37 @@ mod tests {
         .unwrap();
         assert!(report.busy.is_empty());
         assert!(disk.ids().is_empty());
+    }
+
+    /// `backup list` probes each backup by taking its lock for an instant: a deletion
+    /// that meets one steps around it instead of reporting the backup busy.
+    #[test]
+    fn an_instant_probe_is_no_reader() {
+        let victim = pre("2025-01-01T08:00:00Z");
+        let disk = on_disk(std::slice::from_ref(&victim));
+        let (backups, _) = list(&disk.client);
+        let dir = crate::backup::backup_dir(&disk.client, &victim.id);
+        let (taken, held) = std::sync::mpsc::channel();
+        let probe = std::thread::spawn(move || {
+            let lock = DirLock::try_exclusive(&dir).unwrap();
+            taken.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            drop(lock);
+        });
+        held.recv().unwrap();
+        let report = delete(
+            &disk.paths,
+            &disk.scopes,
+            &disk.client,
+            None,
+            &backups,
+            &[victim.id],
+            RING,
+        )
+        .unwrap();
+        probe.join().unwrap();
+        assert!(report.busy.is_empty(), "{report:?}");
+        assert_eq!(report.pruned.len(), 1);
     }
 
     #[test]

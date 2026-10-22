@@ -1,0 +1,37 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup prune",
+  "commands": [],
+  "data": {
+    "dry_run": true,
+    "precondition": "<precondition>",
+    "targets": [
+      {
+        "busy": [],
+        "error": null,
+        "kept": 2,
+        "pruned": [
+          {
+            "bytes": 100,
+            "id": "<ulid>",
+            "kind": "auto"
+          }
+        ],
+        "reclaimed_for_space": false,
+        "target": {
+          "id": "retail",
+          "key": null
+        }
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

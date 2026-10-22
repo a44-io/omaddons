@@ -7,19 +7,28 @@
 //! `omaddons backup create [-t T] [--verify]` copies each selected client's `WTF/`
 //! without the global lock (M3-D23), then takes the lock only to register the client
 //! and append the backup's history line (M3-D33). Without `-t` it backs up every live
-//! client that has a `WTF/` (M3-D43), one backup each, all under one run.
+//! client that has a `WTF/` (M3-D43), one backup each, all under one run. Each backup is
+//! followed by the retention pass on its client's backups (M3-D32).
+//!
+//! `omaddons backup prune [ID…] [-t T] [--keep N] [--older-than D]` runs that pass on
+//! demand, reaching the user's own backups with `--keep` or `--older-than`, or deletes
+//! exactly the backups named; its preview binds the real run (M3-D46).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use super::outcome::{ItemError, TargetRef};
+use super::precondition::{Precondition, PrunePart, check, of_prune, preview_argv};
 use super::world::World;
 use crate::backup::create::{self as capture, CreateRequest, Created};
 use crate::backup::fs::CloneHint;
 use crate::backup::inventory::{self, AutoLast, Capability, Inventory, Ring};
+use crate::backup::prune::{self, PruneOpts, PruneReport, Pruned};
 use crate::backup::{
     self, BackupKind, BackupMeta, BackupRef, Baseline, Consistency, Integrity, Reflinked, Trigger,
 };
@@ -56,6 +65,9 @@ pub enum BackupAction {
     /// Back up WTF/: every live client's, or the clients -t names
     #[command(after_long_help = CREATE_HELP)]
     Create(BackupCreateArgs),
+    /// Delete old backups, or the ones named (it cannot be undone)
+    #[command(after_long_help = PRUNE_HELP)]
+    Prune(BackupPruneArgs),
 }
 
 impl BackupAction {
@@ -64,6 +76,7 @@ impl BackupAction {
         match self {
             Self::List(_) => "backup list",
             Self::Create(_) => "backup create",
+            Self::Prune(_) => PRUNE_COMMAND,
         }
     }
 }
@@ -96,6 +109,37 @@ Examples:
 
 Sizes are apparent: on btrfs and xfs a backup initially shares its data with the
 live WTF/, so the free space beside them says what is really left.";
+
+const PRUNE_HELP: &str = "\
+Examples:
+  omaddons backup prune                      the retention pass, on every client
+  omaddons backup prune -t retail --keep 3   also the newest 3 of each kind only
+  omaddons backup prune --older-than 30d     also your own backups from before 30 days ago
+  omaddons backup prune -t retail -- 01M6Q2VA   exactly that backup
+  omaddons backup prune --dry-run            what it would delete, and its token
+
+Retention keeps every backup younger than a day, each client's newest checkpoint, its
+manual, imported and recovered backups, and for each of the newest
+limits.backup_auto_keep_days days its first pre-change and last post-session automatic
+backup and every before-restore one. --keep and --older-than reach your own backups
+too, but never one younger than a day nor the newest checkpoint; naming a backup lifts
+only the day. A backup a restore or an export is reading is skipped as busy. Pruning
+cannot be undone: --if-match <token> deletes exactly what that --dry-run showed.";
+
+/// `backup prune`'s flags.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct BackupPruneArgs {
+    /// Only these backups: ids, or prefixes of 8 or more characters
+    #[arg(value_name = "ID")]
+    pub ids: Vec<String>,
+    /// Also prune every backup beyond the newest N of its kind
+    #[arg(long, value_name = "N", conflicts_with = "ids")]
+    pub keep: Option<usize>,
+    /// Also prune manual, imported and recovered backups older than D (12h, 30d, 2w, or
+    /// an RFC 3339 time)
+    #[arg(long, value_name = "D", conflicts_with = "ids")]
+    pub older_than: Option<String>,
+}
 
 /// `backup list`'s flags.
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -360,23 +404,8 @@ pub fn list(ctx: &Context, args: &BackupListArgs) -> Result<BackupListOutcome> {
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
     let mode = world.config.auto_backup.unwrap_or(AutoBackup::Off);
-    let candidates: Vec<&DiscoveredTarget> = match ctx.target {
-        Some(_) => world.select_many(ctx)?,
-        None => world
-            .resolved
-            .targets
-            .iter()
-            .filter(|d| ClientPaths::new(&d.target.client_dir).backups().is_dir())
-            .collect(),
-    };
     let verbose = ctx.output.style.verbose > 0;
-    let mut listed: Vec<(&DiscoveredTarget, Vec<BackupRef>)> = Vec::new();
-    for d in candidates {
-        let (backups, found) = backup::list(&ClientPaths::new(&d.target.client_dir));
-        warnings.extend(found);
-        listed.push((d, backups));
-    }
-    listed.sort_by(|a, b| a.0.target.id.cmp(&b.0.target.id));
+    let mut listed = listed(ctx, &world, &mut warnings)?;
     let mut show = None;
     if let Some(prefix) = &args.id {
         let (client, id) = only(&listed, prefix, ctx.target.as_deref())?;
@@ -419,6 +448,32 @@ pub fn list(ctx: &Context, args: &BackupListArgs) -> Result<BackupListOutcome> {
         commands,
         labels,
     })
+}
+
+/// Each client `-t` selects, else each that has a `backups/` dir, with its backups, by
+/// id. The warnings are `backup.json` files of another version.
+fn listed<'w>(
+    ctx: &Context,
+    world: &'w World,
+    warnings: &mut Vec<Warning>,
+) -> Result<Vec<(&'w DiscoveredTarget, Vec<BackupRef>)>> {
+    let candidates: Vec<&DiscoveredTarget> = match ctx.target {
+        Some(_) => world.select_many(ctx)?,
+        None => world
+            .resolved
+            .targets
+            .iter()
+            .filter(|d| ClientPaths::new(&d.target.client_dir).backups().is_dir())
+            .collect(),
+    };
+    let mut listed: Vec<(&DiscoveredTarget, Vec<BackupRef>)> = Vec::new();
+    for d in candidates {
+        let (backups, found) = backup::list(&ClientPaths::new(&d.target.client_dir));
+        warnings.extend(found);
+        listed.push((d, backups));
+    }
+    listed.sort_by(|a, b| a.0.target.id.cmp(&b.0.target.id));
+    Ok(listed)
 }
 
 /// Whether `d`'s `WTF/` holds SavedVariables and none of `backups` is a qualifying one
@@ -749,6 +804,7 @@ pub fn create(ctx: &Context, args: &BackupCreateArgs) -> Result<BackupCreateOutc
             d,
             verify: args.verify,
             min_free: limits.backup_min_free,
+            keep_days: limits.backup_auto_keep_days,
         };
         let done = match run {
             None => one.dry_run().map(|(would, found)| {
@@ -882,6 +938,8 @@ struct One<'a> {
     verify: bool,
     /// `limits.backup_min_free_mb` in bytes; 0 turns the warning off.
     min_free: u64,
+    /// `limits.backup_auto_keep_days`, for the retention pass after the backup.
+    keep_days: usize,
 }
 
 /// A backup made, its history line (when written) and what it warned.
@@ -946,7 +1004,7 @@ impl One<'_> {
     }
 
     /// Registers the client if needed, copies its `WTF/` (no lock held), then appends
-    /// the backup's history line under the lock and rings the doorbell.
+    /// the backup's history line under the lock, rings the doorbell and runs retention.
     fn create(&self, run: RunId, running: &RunningScan) -> Result<Done> {
         let client = self.client();
         capture::locate(&client, &self.d.target.id)?;
@@ -983,11 +1041,49 @@ impl One<'_> {
             }
         };
         doorbell::ring(&self.world.paths, CREATE_COMMAND, self.ctx.actor);
+        warnings.extend(self.retain(&scopes, &target));
         Ok(Done {
             created,
             tx,
             warnings,
         })
+    }
+
+    /// The retention pass on the client's backups after a backup (M3-D32), outside the
+    /// lock. A failure is only `retention_failed`: the backup stands.
+    fn retain(&self, scopes: &ScopeTable, target: &Target) -> Option<Warning> {
+        let ring = Ring {
+            command: CREATE_COMMAND,
+            actor: self.ctx.actor,
+        };
+        let opts = PruneOpts::default();
+        let client = self.client();
+        let pass = prune::retain(
+            &self.world.paths,
+            scopes,
+            &client,
+            target.key.as_ref(),
+            self.keep_days,
+            &opts,
+            ring,
+        );
+        let error = pass.err()?;
+        Some(
+            Warning::new(
+                WarningCode::RetentionFailed,
+                format!(
+                    "{}: pruning old backups after the backup failed: {}",
+                    target.id, error.message
+                ),
+            )
+            .with_fix(Suggestion::command([
+                "omaddons",
+                "backup",
+                "prune",
+                "-t",
+                target.id.as_str(),
+            ])),
+        )
     }
 
     /// The client as registered: under the global lock (recovering first, as every
@@ -1087,6 +1183,357 @@ fn published(created: &Created) -> BackupItem {
         busy: false,
     };
     item(&b, false)
+}
+
+// ---------------------------------------------------------------------------------------
+// `backup prune`.
+
+/// `backup prune`'s data.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BackupPruneData {
+    pub dry_run: bool,
+    /// One per selected client, by id.
+    pub targets: Vec<BackupPruneTarget>,
+    /// `--dry-run`: the token `--if-match` takes to delete exactly these backups
+    /// (M3-D46); `null` for a real run.
+    pub precondition: Option<String>,
+}
+
+/// One client's prune.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BackupPruneTarget {
+    pub target: TargetRef,
+    /// The backups deleted (with `--dry-run`, that would be), newest capture first.
+    pub pruned: Vec<Pruned>,
+    /// Backups a reader (a restore, an export, a verify) held: skipped, and pruned by a
+    /// later run once free.
+    pub busy: Vec<BusyBackup>,
+    /// The backups left.
+    pub kept: u64,
+    /// The deletions came from a pass under space pressure, which `backup prune` never
+    /// is: always `false` here.
+    pub reclaimed_for_space: bool,
+    pub error: Option<ItemError>,
+}
+
+/// A backup skipped because a reader held it.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BusyBackup {
+    pub id: BackupId,
+}
+
+/// `backup prune`'s outcome.
+#[derive(Debug)]
+pub struct BackupPruneOutcome {
+    data: BackupPruneData,
+    warnings: Vec<Warning>,
+    partial: bool,
+}
+
+impl Outcome for BackupPruneOutcome {
+    type Data = BackupPruneData;
+
+    fn command(&self) -> &'static str {
+        PRUNE_COMMAND
+    }
+
+    fn data(&self) -> &BackupPruneData {
+        &self.data
+    }
+
+    fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
+    fn partial(&self) -> bool {
+        self.partial
+    }
+
+    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
+        if self.data.targets.is_empty() {
+            return writeln!(w, "No backups.");
+        }
+        for t in &self.data.targets {
+            let id = &t.target.id;
+            if let Some(error) = &t.error {
+                writeln!(w, "{id}: not pruned: {}", error.message)?;
+                continue;
+            }
+            if t.pruned.is_empty() {
+                writeln!(w, "{id}: nothing to prune, kept {}", t.kept)?;
+            } else {
+                let bytes: u64 = t.pruned.iter().map(|p| p.bytes).sum();
+                let verb = if self.data.dry_run {
+                    "would prune"
+                } else {
+                    "pruned"
+                };
+                writeln!(
+                    w,
+                    "{id}: {verb} {} ({} apparent), kept {}",
+                    crate::output::count(t.pruned.len(), "backup"),
+                    size(bytes),
+                    t.kept
+                )?;
+            }
+            for b in &t.busy {
+                let short = super::history::short_id(&b.id.to_string());
+                writeln!(w, "{id}: {short} is in use, skipped")?;
+            }
+        }
+        if let Some(token) = &self.data.precondition {
+            writeln!(w, "Run it bound to this preview: --if-match {token}")?;
+        }
+        Ok(())
+    }
+}
+
+const PRUNE_COMMAND: &str = "backup prune";
+
+/// One client's planned prune.
+struct PrunePlan<'w> {
+    d: &'w DiscoveredTarget,
+    backups: Vec<BackupRef>,
+    victims: Vec<BackupId>,
+}
+
+/// Runs `backup prune`: the retention pass (M3-D32) on each selected client's backups,
+/// `--keep` and `--older-than` reaching the user's own too, or exactly the backups named.
+/// With `--if-match`, only when its victims are what the token's preview showed (M3-D46),
+/// checked before anything is deleted. Appends no history line (M3-D33): the backups are
+/// the record.
+pub fn prune_backups(ctx: &Context, args: &BackupPruneArgs) -> Result<BackupPruneOutcome> {
+    let world = World::load(ctx)?;
+    let mut warnings = world.warnings.clone();
+    let now = crate::clock::now();
+    let captured_before = args
+        .older_than
+        .as_deref()
+        .map(|d| older_than(d, now))
+        .transpose()?;
+    let keep_days = world
+        .config
+        .effective_limits()
+        .unwrap_or_default()
+        .backup_auto_keep_days;
+    let mut listed = listed(ctx, &world, &mut warnings)?;
+    let mut named: BTreeMap<String, BTreeSet<BackupId>> = BTreeMap::new();
+    for prefix in &args.ids {
+        let (client, id) = only(&listed, prefix, ctx.target.as_deref())?;
+        named.entry(client).or_default().insert(id);
+    }
+    if !args.ids.is_empty() {
+        listed.retain(|(d, _)| named.contains_key(&d.target.id));
+    }
+    let tz = jiff::tz::TimeZone::system();
+    let plans: Vec<PrunePlan<'_>> = listed
+        .into_iter()
+        .map(|(d, backups)| {
+            let opts = PruneOpts {
+                ids: named.get(&d.target.id).cloned(),
+                keep: args.keep,
+                captured_before,
+                pins: BTreeSet::new(),
+            };
+            let victims = prune::select(&backups, now, &tz, keep_days, &opts);
+            PrunePlan {
+                d,
+                backups,
+                victims,
+            }
+        })
+        .collect();
+    for p in &plans {
+        let named = named.get(&p.d.target.id).into_iter().flatten();
+        if let Some(id) = named.into_iter().find(|id| !p.victims.contains(id)) {
+            return Err(always_kept(&p.d.target.id, id));
+        }
+    }
+    // A preview given a token previews afresh: it returns the current one.
+    if ctx.dry_run {
+        return Ok(BackupPruneOutcome {
+            data: BackupPruneData {
+                dry_run: true,
+                targets: plans.iter().map(would_prune).collect(),
+                precondition: Some(prune_precondition(&plans).token()),
+            },
+            warnings,
+            partial: false,
+        });
+    }
+    check(
+        ctx.if_match.as_deref(),
+        &prune_precondition(&plans),
+        &preview_argv(&ctx.argv),
+    )?;
+    let ring = Ring {
+        command: PRUNE_COMMAND,
+        actor: ctx.actor,
+    };
+    let mut targets = Vec::new();
+    let mut first_error = None;
+    for p in &plans {
+        let client = ClientPaths::new(&p.d.target.client_dir);
+        let pass = ScopeTable::new(
+            &world.paths,
+            std::slice::from_ref(&p.d.target.client_dir),
+            None,
+        )
+        .and_then(|scopes| {
+            prune::delete(
+                &world.paths,
+                &scopes,
+                &client,
+                p.d.target.key.as_ref(),
+                &p.backups,
+                &p.victims,
+                ring,
+            )
+        });
+        let target = target_ref(p.d);
+        match pass {
+            Ok(report) => targets.push(pruned_target(target, report)),
+            Err(error) => {
+                let mut warning = Warning::item(&error);
+                warning.message = format!("{}: {}", p.d.target.id, error.message);
+                warnings.push(warning);
+                targets.push(BackupPruneTarget {
+                    target,
+                    pruned: Vec::new(),
+                    busy: Vec::new(),
+                    kept: p.backups.len() as u64,
+                    reclaimed_for_space: false,
+                    error: Some(ItemError::from(&error)),
+                });
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    let failed = targets.iter().filter(|t| t.error.is_some()).count();
+    if failed == targets.len()
+        && let Some(error) = first_error
+    {
+        return Err(error);
+    }
+    Ok(BackupPruneOutcome {
+        partial: failed > 0,
+        data: BackupPruneData {
+            dry_run: false,
+            targets,
+            precondition: None,
+        },
+        warnings,
+    })
+}
+
+/// `--older-than D`: the capture time before which the user's backups go.
+fn older_than(d: &str, now: Timestamp) -> Result<Timestamp> {
+    super::history::parse_since(d, now).ok_or_else(|| {
+        Error::new(
+            ErrorCode::Usage,
+            format!(
+                "--older-than takes a duration (30m, 12h, 1d, 2w) or an RFC 3339 time, not {d:?}"
+            ),
+            Suggestion::command([
+                "omaddons",
+                "backup",
+                "prune",
+                "--older-than",
+                "30d",
+                "--dry-run",
+            ]),
+        )
+    })
+}
+
+/// `usage`: the backup named is the client's newest checkpoint, which no prune deletes
+/// (M3-D32); naming a backup lifts only the 24 h protection.
+fn always_kept(target: &str, id: &BackupId) -> Error {
+    Error::new(
+        ErrorCode::Usage,
+        format!(
+            "{id} is {target}'s newest checkpoint, which pruning always keeps; nothing was deleted: back up first, then prune it"
+        ),
+        Suggestion::command(["omaddons", "backup", "create", "-t", target]),
+    )
+    .details(serde_json::json!({ "id": id.to_string(), "target": target }))
+}
+
+/// The precondition of `plans` (M3-D46): its victims and their metadata digests.
+fn prune_precondition(plans: &[PrunePlan<'_>]) -> Precondition {
+    let parts: Vec<PrunePart<'_>> = plans
+        .iter()
+        .map(|p| PrunePart {
+            key: p.d.target.key,
+            target_id: &p.d.target.id,
+            victims: p
+                .backups
+                .iter()
+                .filter(|b| p.victims.contains(&b.id))
+                .map(|b| (b.id, meta_digest(b)))
+                .collect(),
+        })
+        .collect();
+    of_prune(&parts)
+}
+
+/// The lowercase hex SHA-256 of `b`'s `backup.json`, `None` when it does not read.
+fn meta_digest(b: &BackupRef) -> Option<String> {
+    let bytes = crate::discover::read_bytes(&b.dir.join("backup.json"))?;
+    Some(
+        Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
+fn target_ref(d: &DiscoveredTarget) -> TargetRef {
+    TargetRef {
+        id: d.target.id.clone(),
+        key: d.target.key,
+        mode: None,
+    }
+}
+
+/// `--dry-run`: what `p` would delete; a victim a reader holds now would be skipped.
+fn would_prune(p: &PrunePlan<'_>) -> BackupPruneTarget {
+    let mut pruned = Vec::new();
+    let mut busy = Vec::new();
+    for b in p.backups.iter().filter(|b| p.victims.contains(&b.id)) {
+        if b.busy {
+            busy.push(BusyBackup { id: b.id });
+        } else {
+            pruned.push(Pruned {
+                id: b.id,
+                kind: b.meta.as_ref().map(|m| m.kind),
+                bytes: b.meta.as_ref().map_or(0, |m| m.bytes),
+            });
+        }
+    }
+    BackupPruneTarget {
+        target: target_ref(p.d),
+        kept: p.backups.len().saturating_sub(pruned.len()) as u64,
+        pruned,
+        busy,
+        reclaimed_for_space: false,
+        error: None,
+    }
+}
+
+fn pruned_target(target: TargetRef, report: PruneReport) -> BackupPruneTarget {
+    BackupPruneTarget {
+        target,
+        pruned: report.pruned,
+        busy: report
+            .busy
+            .into_iter()
+            .map(|id| BusyBackup { id })
+            .collect(),
+        kept: report.kept as u64,
+        reclaimed_for_space: report.reclaimed_for_space,
+        error: None,
+    }
 }
 
 #[cfg(test)]

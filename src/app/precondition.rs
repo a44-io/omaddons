@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use crate::engine::plan::Plan;
 use crate::engine::{Binding, UndoOutcome as EngineUndo};
 use crate::error::{Error, PlanStaleSource, Result, Suggestion};
-use crate::model::{TargetKey, TxId};
+use crate::model::{BackupId, TargetKey, TxId};
 
 /// The command paths whose runs bind to a preview; `--if-match` is a usage error on any
 /// other.
@@ -447,6 +447,48 @@ pub fn of_dismiss(parts: &[DismissPart<'_>]) -> Precondition {
     )
 }
 
+// ---------------------------------------------------------------------------------------
+// `backup prune`.
+
+/// One client's part of a `backup prune`: its key, its id, and each backup it would
+/// delete with the SHA-256 of that backup's `backup.json` (`None` when it does not read).
+pub struct PrunePart<'a> {
+    pub key: Option<TargetKey>,
+    pub target_id: &'a str,
+    pub victims: Vec<(BackupId, Option<String>)>,
+}
+
+/// `backup prune`'s precondition (M3-D46): the target keys without generations (a
+/// prune neither reads nor changes the addon records they count), the exact backups it
+/// would delete per target (by key, or id when unregistered), and each one's
+/// `backup.json` digest as observed.
+pub fn of_prune(parts: &[PrunePart<'_>]) -> Precondition {
+    let mut selection = BTreeMap::new();
+    let mut observed = Vec::new();
+    for part in parts {
+        let name = part
+            .key
+            .map_or_else(|| part.target_id.to_owned(), |k| k.to_string());
+        let mut ids: Vec<String> = part.victims.iter().map(|(id, _)| id.to_string()).collect();
+        ids.sort();
+        selection.insert(name, ids);
+        for (id, digest) in &part.victims {
+            observed.push(json!({"id": id.to_string(), "backup_json": digest}));
+        }
+    }
+    observed.sort_by_key(Value::to_string);
+    Precondition::new(
+        "backup prune",
+        parts
+            .iter()
+            .filter_map(|p| p.key)
+            .map(|k| (k, None))
+            .collect(),
+        json!(selection),
+        Value::Array(observed),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -639,6 +681,50 @@ mod tests {
             ])),
             argv(&["omaddons", "undo", "--dry-run"]),
             "never twice"
+        );
+    }
+
+    #[test]
+    fn a_prune_binds_to_its_victims_and_their_metadata() {
+        let (a, b): (BackupId, BackupId) = (
+            "01M6Q2VA000000000000000000".parse().unwrap(),
+            "01M6Q2VB000000000000000000".parse().unwrap(),
+        );
+        let part = |victims: Vec<(BackupId, Option<String>)>| PrunePart {
+            key: Some(key(KEY)),
+            target_id: "retail",
+            victims,
+        };
+        let digest = |s: &str| Some(s.to_owned());
+        let token = of_prune(&[part(vec![(a, digest("1")), (b, digest("2"))])]).token();
+        assert_eq!(
+            of_prune(&[part(vec![(b, digest("2")), (a, digest("1"))])]).token(),
+            token,
+            "order carries no meaning"
+        );
+        let changed = |actual: Precondition| {
+            let err = check(Some(&token), &actual, &argv(&["omaddons"])).unwrap_err();
+            err.details["changed"].clone()
+        };
+        assert_eq!(
+            changed(of_prune(&[part(vec![(a, digest("1"))])])),
+            json!(["selection", "observed"]),
+            "a different set"
+        );
+        assert_eq!(
+            changed(of_prune(&[part(vec![(a, digest("1")), (b, digest("3"))])])),
+            json!(["observed"]),
+            "a victim's backup.json changed"
+        );
+        let other = PrunePart {
+            key: None,
+            target_id: "retail",
+            victims: vec![(a, digest("1")), (b, digest("2"))],
+        };
+        assert_eq!(
+            changed(of_prune(&[other])),
+            json!(["targets", "selection"]),
+            "unregistered: named by id"
         );
     }
 
