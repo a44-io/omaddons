@@ -1809,10 +1809,10 @@ mod restore_support {
     use omaddons::discover::DiscoverySource;
     use omaddons::discover::battlenet::{BattlenetHints, discover_root};
     use omaddons::discover::registry::reconcile;
-    use omaddons::engine::EngineCtx;
     use omaddons::engine::inspect::ArchiveLimits;
     use omaddons::engine::restore::{Probe, RestoreRequest, plan, preflight, reserve, restore};
     use omaddons::engine::retention::RetentionLimits;
+    use omaddons::engine::{EngineCtx, SvPolicy, UndoRequest, UndoSelector};
     use omaddons::error::{Error, Result};
     use omaddons::fsx::{InflightLock, LockUse, PruneReason, ScopeTable, prune};
     use omaddons::model::{Actor, Channel, RunId, TxId};
@@ -1843,7 +1843,8 @@ mod restore_support {
     /// Battle.net root `root`, in D8's plan order: reserve, plan, a transaction id and its
     /// in-flight lock, the probing preflight (whose leftovers are pruned on a refusal, as
     /// the command's cleanup will), then the engine, with `OMADDONS_RESTORE_FAILPOINTS`
-    /// armed around it alone. Its outcome as JSON.
+    /// armed around it alone. With `OMADDONS_RESTORE_MODE=undo`, the engine's undo of the
+    /// newest transaction instead (the restore a scene committed). Its outcome as JSON.
     pub fn engine_restore(root: &Path) -> Value {
         let var = |key: &str| PathBuf::from(std::env::var_os(key).unwrap());
         let paths = Paths::with_roots(
@@ -1863,15 +1864,6 @@ mod restore_support {
             .unwrap();
         let target = &discovered.target;
         let client = ClientPaths::new(&target.client_dir);
-        let backup = omaddons::backup::list(&client)
-            .0
-            .into_iter()
-            .find(|b| {
-                b.meta
-                    .as_ref()
-                    .is_some_and(|m| m.kind == BackupKind::Manual)
-            })
-            .unwrap();
         let failed = |e: Error| {
             json!({
                 "ok": false,
@@ -1881,6 +1873,68 @@ mod restore_support {
                 "details": e.details,
             })
         };
+        let sources = SourceRegistry::builtin(&SourceConfigView::all_enabled());
+        let argv: Vec<String> = ["omaddons", "backup", "restore"]
+            .map(str::to_owned)
+            .to_vec();
+        let progress = ProgressSink::none();
+        let ctx = EngineCtx {
+            paths: &paths,
+            http: &NoNetwork,
+            registry: &sources,
+            table: &table,
+            policy: RunningPolicy::default(),
+            limits: ArchiveLimits::default(),
+            retention: RetentionLimits::default(),
+            actor: Actor::Agent,
+            argv: &argv,
+            command: "backup restore",
+            // Read live from the fake /proc, so a scene can start the game mid-run.
+            running: None,
+            known_targets: std::slice::from_ref(target),
+            cache: None,
+            progress: &progress,
+            catalog: None,
+            default_channel: Channel::Stable,
+            downloads: None,
+            indexes: None,
+            notes: None,
+            binding: None,
+        };
+        let spec = std::env::var("OMADDONS_RESTORE_FAILPOINTS").unwrap_or_default();
+        let armed = |engine: &mut dyn FnMut() -> Result<Value>| -> Value {
+            let result = match std::env::var_os("OMADDONS_FAILPOINT_DIR") {
+                Some(dir) => omaddons::fsx::with_spec_in(Path::new(&dir), &spec, engine),
+                None => omaddons::fsx::with_spec(&spec, engine),
+            };
+            result.unwrap_or_else(failed)
+        };
+        if std::env::var("OMADDONS_RESTORE_MODE").as_deref() == Ok("undo") {
+            let req = UndoRequest {
+                selector: UndoSelector::Latest,
+                sv_policy: SvPolicy::Auto,
+                dry_run: false,
+                while_running: false,
+                reason: None,
+                targets: vec![discovered.clone()],
+                run: RunId::new(),
+            };
+            return armed(&mut || {
+                omaddons::engine::undo(&req, &ctx).map(|done| {
+                    let (tx, held) = (done.outcome.tx, done.outcome.lock_held_ms);
+                    json!({"ok": true, "tx": tx, "lock_held_ms": held})
+                })
+            });
+        }
+        let backup = omaddons::backup::list(&client)
+            .0
+            .into_iter()
+            .find(|b| {
+                b.meta
+                    .as_ref()
+                    .is_some_and(|m| m.kind == BackupKind::Manual)
+            })
+            .unwrap();
         let reservation = match reserve(&backup) {
             Ok(reservation) => reservation,
             Err(e) => return failed(e),
@@ -1915,35 +1969,7 @@ mod restore_support {
                 return failed(e);
             }
         };
-        let sources = SourceRegistry::builtin(&SourceConfigView::all_enabled());
-        let argv: Vec<String> = ["omaddons", "backup", "restore"]
-            .map(str::to_owned)
-            .to_vec();
-        let progress = ProgressSink::none();
-        let ctx = EngineCtx {
-            paths: &paths,
-            http: &NoNetwork,
-            registry: &sources,
-            table: &table,
-            policy: RunningPolicy::default(),
-            limits: ArchiveLimits::default(),
-            retention: RetentionLimits::default(),
-            actor: Actor::Agent,
-            argv: &argv,
-            command: "backup restore",
-            // Read live from the fake /proc, so a scene can start the game mid-run.
-            running: None,
-            known_targets: std::slice::from_ref(target),
-            cache: None,
-            progress: &progress,
-            catalog: None,
-            default_channel: Channel::Stable,
-            downloads: None,
-            indexes: None,
-            notes: None,
-            binding: None,
-        };
-        let req = RestoreRequest {
+        let mut req = Some(RestoreRequest {
             target: &discovered,
             backup: &backup,
             reservation,
@@ -1954,17 +1980,14 @@ mod restore_support {
             before_restore: None,
             reason: None,
             run: RunId::new(),
-        };
-        let spec = std::env::var("OMADDONS_RESTORE_FAILPOINTS").unwrap_or_default();
-        let engine = || restore(&ctx, req);
-        let result = match std::env::var_os("OMADDONS_FAILPOINT_DIR") {
-            Some(dir) => omaddons::fsx::with_spec_in(Path::new(&dir), &spec, engine),
-            None => omaddons::fsx::with_spec(&spec, engine),
-        };
-        match result {
-            Ok(done) => json!({"ok": true, "tx": done.tx, "lock_held_ms": done.lock_held_ms}),
-            Err(e) => failed(e),
-        }
+        });
+        armed(&mut || {
+            let req = req
+                .take()
+                .ok_or_else(|| Error::internal("restored twice"))?;
+            restore(&ctx, req)
+                .map(|done| json!({"ok": true, "tx": done.tx, "lock_held_ms": done.lock_held_ms}))
+        })
     }
 
     /// A retail client whose `WTF/` was backed up by `backup create`, then played on (a
@@ -2101,6 +2124,20 @@ mod restore_support {
             outcome(&cmd.output().unwrap(), &out)
         }
 
+        /// The engine's undo of the newest transaction in a child process (see
+        /// [`Self::child`]): its outcome, or `None` when an `abort` killed it.
+        pub fn undo(&self, engine: &str, env: &[(&str, &str)]) -> Option<Value> {
+            let mut env = env.to_vec();
+            env.push(("OMADDONS_RESTORE_MODE", "undo"));
+            self.restore(engine, &env)
+        }
+
+        /// A play session on the restored tree: a file rewritten.
+        pub fn play_on_restored(&self) {
+            let path = self.client().join("WTF").join(PLAYED);
+            fs::write(path, "FooDB = { since_the_restore = true }\n").unwrap();
+        }
+
         /// The same with `dir` bind-mounted over itself, so it is a mount point of its own.
         pub fn restore_with_bind(&self, dir: &Path) -> Option<Value> {
             let (mut cmd, out) = self.child("", &[], Some(dir));
@@ -2195,11 +2232,38 @@ mod restore_support {
     /// before `prepared` staged goes with the sweep once old; and two more commands that
     /// take the lock change nothing of `WTF/`.
     pub fn crash(engine: &str, recover: &str, live: bool) -> Restored {
+        crash_op(Op::Restore, engine, recover, live)
+    }
+
+    /// What a restore scene runs in its child.
+    #[derive(Debug, Clone, Copy)]
+    pub enum Op {
+        /// The restore of the backup over the played-on tree (or onto none).
+        Restore,
+        /// The undo of that restore, committed first and played on since: the restored
+        /// tree goes, the one from before it comes back (or, after a restore onto a client
+        /// that had none, no `WTF/`).
+        UndoRestore,
+    }
+
+    /// [`crash`] for `op`.
+    pub fn crash_op(op: Op, engine: &str, recover: &str, live: bool) -> Restored {
         let r = RestoreScene::new(live);
         let s = &r.s;
-        let (old, new) = (r.played.clone(), r.backed_up.clone());
+        let (old, new, kind) = match op {
+            Op::Restore => (r.played.clone(), r.backed_up.clone(), "restore"),
+            Op::UndoRestore => {
+                let restored = r.restore("", &[]).unwrap();
+                assert_eq!(restored["ok"], true, "{restored}");
+                r.play_on_restored();
+                (s.wtf(), r.played.clone(), "undo")
+            }
+        };
         let (old_generation, old_history) = (s.generation(), s.history());
-        let outcome = r.restore(engine, &[]);
+        let outcome = match op {
+            Op::Restore => r.restore(engine, &[]),
+            Op::UndoRestore => r.undo(engine, &[]),
+        };
         let journal_text = || -> Vec<String> {
             s.journals()
                 .iter()
@@ -2208,7 +2272,7 @@ mod restore_support {
         };
         let context = |what: &str| {
             format!(
-                "restore with {engine:?}, then {recover:?}: {what}\noutcome {outcome:?}\nold {old:?}\nnew {new:?}\nnow {:?}\njournals {:?}",
+                "{op:?} with {engine:?}, then {recover:?}: {what}\noutcome {outcome:?}\nold {old:?}\nnew {new:?}\nnow {:?}\njournals {:?}",
                 s.wtf(),
                 journal_text()
             )
@@ -2296,7 +2360,7 @@ mod restore_support {
         }
         let mut history = old_history.clone();
         if went_new {
-            history.push("restore".to_owned());
+            history.push(kind.to_owned());
         }
         history.push("install".to_owned());
         assert_eq!(s.history(), history, "{}", context("history"));
@@ -2370,6 +2434,181 @@ mod restore_support {
             recovering_crashed,
         }
     }
+}
+
+/// Every failpoint as a crash of the undo of a restore that was played on since: the
+/// restored tree goes and the one from before comes back, wholly or not at all.
+#[cfg(debug_assertions)]
+#[test]
+fn crash_matrix_undo_restore() {
+    use restore_support::{Op, crash_op};
+
+    let mut crashed_at = Vec::new();
+    for failpoint in FAILPOINTS {
+        let done = crash_op(Op::UndoRestore, &format!("{failpoint}=abort"), "", true);
+        if done.crashed {
+            crashed_at.push(*failpoint);
+        }
+        if matches!(
+            *failpoint,
+            "engine.restore.exchanged" | "engine.restore.snapshotted"
+        ) {
+            assert!(
+                done.new_at_crash && !done.went_new,
+                "{failpoint}: renamed but not swapped must roll back: {done:?}"
+            );
+        }
+    }
+    let _ = std::io::Write::write_fmt(
+        &mut std::io::stderr(),
+        format_args!(
+            "undo of a restore: crashed at {} of {} failpoints: {crashed_at:?}\n",
+            crashed_at.len(),
+            FAILPOINTS.len()
+        ),
+    );
+    for on_path in [
+        "engine.restore.staged",
+        "engine.lock.acquired",
+        "engine.revalidated",
+        "engine.journal.prepared",
+        "engine.restore.exchanged",
+        "engine.restore.snapshotted",
+        "engine.swapped",
+        "engine.history.appended",
+        "engine.committed",
+    ] {
+        assert!(
+            crashed_at.contains(&on_path),
+            "{on_path} is on an undo of a restore's path: {crashed_at:?}"
+        );
+    }
+}
+
+/// The undo of a restore onto a client that had no `WTF/`: one rename, the restored tree
+/// out to the undo's snapshot, crashed at each point of its window and before it.
+#[cfg(debug_assertions)]
+#[test]
+fn crash_matrix_undo_restore_onto_no_wtf() {
+    use restore_support::{Op, crash_op};
+
+    for failpoint in [
+        "engine.journal.prepared",
+        "engine.restore.exchanged",
+        "engine.restore.snapshotted",
+        "engine.swapped",
+        "engine.committed",
+    ] {
+        let done = crash_op(Op::UndoRestore, &format!("{failpoint}=abort"), "", false);
+        assert!(done.crashed, "{failpoint}: {done:?}");
+    }
+    let mut renames = Vec::new();
+    for n in 1..=3 {
+        let spec = format!("engine.swap.before_rename=abort@{n}");
+        if !crash_op(Op::UndoRestore, &spec, "", false).crashed {
+            break;
+        }
+        renames.push(n);
+    }
+    assert_eq!(renames, [1], "one rename out");
+}
+
+/// A crash before each journaled rename of the undo of a restore, and in its recovery:
+/// after each rename its rollback undoes, and as a roll-forward starts.
+#[cfg(debug_assertions)]
+#[test]
+fn a_crash_at_every_rename_and_recovery_of_an_undo_of_a_restore() {
+    use restore_support::{Op, crash_op};
+
+    let mut renames = Vec::new();
+    for n in 1..=4 {
+        let spec = format!("engine.swap.before_rename=abort@{n}");
+        if !crash_op(Op::UndoRestore, &spec, "", true).crashed {
+            break;
+        }
+        renames.push(n);
+    }
+    assert_eq!(renames, [1, 2]);
+    let mut recoveries = Vec::new();
+    for k in 1..=4 {
+        let recover = format!("engine.recover.step=abort@{k}");
+        let done = crash_op(
+            Op::UndoRestore,
+            "engine.restore.snapshotted=abort",
+            &recover,
+            true,
+        );
+        if !done.recovering_crashed {
+            break;
+        }
+        recoveries.push(k);
+    }
+    assert_eq!(recoveries, [1, 2]);
+    let done = crash_op(
+        Op::UndoRestore,
+        "engine.swapped=abort",
+        "engine.recover.forward=abort",
+        true,
+    );
+    assert!(done.recovering_crashed && done.went_new, "{done:?}");
+}
+
+/// I/O failures where the undo of a restore writes, each injected once at every hit in
+/// turn: `WTF/` stays wholly old or wholly new and what is left recovers. The undo runs
+/// its own probing preflight, so its first atomic writes (the probe's files) fail it
+/// before anything is staged; the record's, after `swapped`, roll forward.
+#[cfg(debug_assertions)]
+#[test]
+fn io_failures_in_an_undo_of_a_restore_leave_wtf_whole() {
+    use restore_support::{Op, crash_op};
+
+    for (failpoint, most) in [
+        ("fsx.clone_file.before", 2),
+        ("fsx.append_durable.before", 8),
+        ("fsx.rename_with.before", 8),
+        ("fsx.write_atomic.after", 4),
+    ] {
+        let mut failed = Vec::new();
+        for n in 1..=most {
+            let done = crash_op(Op::UndoRestore, &format!("{failpoint}=error@{n}"), "", true);
+            if !done.ok {
+                failed.push((n, done.pending, done.went_new));
+            }
+        }
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!("undo of a restore: {failpoint} failed it at {failed:?}\n"),
+        );
+        assert!(!failed.is_empty(), "{failpoint} is on its path");
+    }
+}
+
+/// The undo of a restore crashed after its exchange, the game started since: the next
+/// command refuses (`game_running`, naming the journal) and moves nothing; once the game
+/// exits, the next one rolls it back to the restored tree.
+#[cfg(debug_assertions)]
+#[test]
+fn a_crashed_undo_of_a_restore_waits_while_the_game_runs() {
+    let mut r = restore_support::RestoreScene::new(true);
+    assert_eq!(r.restore("", &[]).unwrap()["ok"], true);
+    r.play_on_restored();
+    let restored = r.s.wtf();
+    assert!(r.undo("engine.restore.exchanged=abort", &[]).is_none());
+    assert_eq!(r.s.wtf(), r.played, "the exchange ran");
+    r.s.home.retail_running();
+    let refused = r.s.run(&r.install_bar(), "");
+    let error = &refused.envelope()["error"];
+    assert_eq!(
+        (&error["code"], &error["details"]["reason"]),
+        (&json!("game_running"), &json!("saved_variables")),
+        "{}",
+        refused.context()
+    );
+    assert_eq!(r.s.wtf(), r.played, "nothing moves while it runs");
+    r.s.home.nothing_running();
+    r.s.run(&r.install_bar(), "").expect(0);
+    assert_eq!(r.s.wtf(), restored, "rolled back once the game exited");
+    assert!(r.s.journals().is_empty());
 }
 
 /// The engine's whole restore, as a child process of the restore scenes: the scene's

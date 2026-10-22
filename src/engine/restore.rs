@@ -1995,6 +1995,22 @@ mod tests {
         r.undo(u, SvPolicy::Auto).unwrap();
         assert_eq!(r.live(), r.before);
         r.assert_no_leftovers();
+
+        // Restored onto nothing, then deleted by hand: the undo has nothing to move, and
+        // commits all the same, so history says the restore was undone.
+        let r = Restorable::new(false);
+        fs::remove_dir_all(r.scene.client.wtf()).unwrap();
+        let restored = r.restore().unwrap().tx;
+        fs::remove_dir_all(r.scene.client.wtf()).unwrap();
+        let u = r
+            .undo(restored, SvPolicy::Auto)
+            .unwrap()
+            .outcome
+            .tx
+            .unwrap();
+        assert_eq!(r.line_of(Some(u)).reverts, Some(restored));
+        assert!(!r.scene.client.wtf().exists());
+        r.assert_no_leftovers();
     }
 
     #[test]
@@ -2041,6 +2057,29 @@ mod tests {
         r.undo(restored, SvPolicy::Auto).unwrap();
         r.undo(install, SvPolicy::Auto).unwrap();
         assert!(!r.scene.client.addons().join("Foo").exists());
+    }
+
+    /// Rule 2 also guards the follow-up of an undo that deferred SavedVariables while the
+    /// game ran: after a restore, `--saved-variables restore` is refused, naming the
+    /// restore, with nothing to keep instead.
+    #[test]
+    fn a_deferred_follow_up_after_a_restore_names_the_restore() {
+        let mut r = Restorable::with_foo();
+        let install = r.install_foo();
+        let sv = r.scene.client.wtf().join(FOO_SV);
+        fs::write(&sv, "FooDB = { played = 1 }\n").unwrap();
+        let client = r.scene.discovered.target.client_dir.clone();
+        r.scene.running.insert(client.clone());
+        r.scene.while_running = true;
+        let deferred = r.undo(install, SvPolicy::Auto).unwrap();
+        assert_eq!(deferred.sv.deferred, 1);
+        r.scene.running.remove(&client);
+        let restored = r.restore().unwrap().tx;
+        let err = r.undo(install, SvPolicy::Restore).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UndoConflict, "{err:?}");
+        assert_eq!(err.fix.argv().unwrap()[2], restored.to_string());
+        assert!(err.alternatives.is_empty(), "{:?}", err.alternatives);
+        assert_eq!(r.live(), r.before, "the restored settings stand");
     }
 
     /// M3-D28 rule 1, end to end: a restore undone, then an older install undone with its
@@ -2096,6 +2135,13 @@ mod tests {
         assert_eq!(
             (r.live(), r.previous(&restored)),
             (r.before.clone(), r.after.clone())
+        );
+        let said = format!("{} {}", err.message, err.details);
+        assert!(
+            ["FAKEACCT", "FakeRealm", "FakeChar"]
+                .iter()
+                .all(|name| !said.contains(name)),
+            "{said}"
         );
         r.scene
             .running
