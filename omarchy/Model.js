@@ -858,6 +858,14 @@ function reduceStatus(env, nowMs) {
   }
 }
 
+// The badge's text: hidden ("") at 0, the count up to 99, then "99+" (past that the
+// number only says "a lot").
+function badgeText(count) {
+  var n = num(count)
+  if (n <= 0) return ""
+  return n > 99 ? "99+" : String(Math.floor(n))
+}
+
 // The bar of a model the service can no longer vouch for (an incompatible binary):
 // the last numbers, dimmed and marked stale.
 function staleBar(bar) {
@@ -1180,6 +1188,7 @@ if (typeof module !== "undefined") {
     outcomeOf: outcomeOf,
     reduceStatus: reduceStatus,
     staleBar: staleBar,
+    badgeText: badgeText,
     reduceList: reduceList,
     reduceSearch: reduceSearch,
     reduceErrors: reduceErrors,

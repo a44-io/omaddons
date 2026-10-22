@@ -504,6 +504,10 @@ describe("reduceStatus", () => {
     expect([model.targets[0].errors, model.targets[0].backups, model.widget]).toEqual([null, null, null])
   })
 
+  test("the badge hides at 0 and caps at 99+", () => {
+    expect([0, -1, null, undefined, 1, 4, 99, 100, 120].map(M.badgeText)).toEqual(["", "", "", "", "1", "4", "99", "99+", "99+"])
+  })
+
   test("a stale bar keeps its numbers, dimmed", () => {
     const bar = M.reduceStatus(fixture("status-attention")).bar
     const stale = M.staleBar(bar)
