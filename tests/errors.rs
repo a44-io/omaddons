@@ -770,12 +770,18 @@ fn an_update_that_may_fix_new_errors_is_offered_and_runs() {
         "{}",
         run.context()
     );
+    // The update first; then dismissing what was read.
     assert_eq!(
         envelope["commands"],
         json!([{
             "action": "update",
             "command": "omaddons update Foo -t retail",
             "argv": ["omaddons", "update", "Foo", "-t", "retail"],
+            "destructive": false
+        }, {
+            "action": "dismiss_errors",
+            "command": "omaddons errors dismiss -t retail",
+            "argv": ["omaddons", "errors", "dismiss", "-t", "retail"],
             "destructive": false
         }])
     );

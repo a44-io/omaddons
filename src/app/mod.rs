@@ -120,6 +120,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("info", Group::Look, false),
     entry("search", Group::Look, false),
     entry("errors", Group::Look, false),
+    entry("errors dismiss", Group::Look, true),
     entry("export", Group::Look, true),
     entry("history", Group::Look, false),
     entry("net-log", Group::Look, false),
@@ -198,7 +199,10 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         Some(Command::Export(_)) => "export",
         Some(Command::Outdated(_)) => "outdated",
         Some(Command::Search(_)) => "search",
-        Some(Command::Errors(_)) => "errors",
+        Some(Command::Errors(args)) => match args.action {
+            Some(errors::ErrorsAction::Dismiss(_)) => "errors dismiss",
+            None => "errors",
+        },
         Some(Command::NetLog(_)) => "net-log",
         Some(Command::List(_)) => "list",
         Some(Command::Targets(args)) => args
@@ -492,7 +496,18 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             out.emit(result)
         }
         Some(Command::NetLog(args)) => out.emit(net_log::run(ctx, args)),
-        Some(Command::Errors(args)) => out.emit(errors::run(ctx, args)),
+        Some(Command::Errors(args)) => match &args.action {
+            Some(errors::ErrorsAction::Dismiss(_)) => out.emit(errors::dismiss(ctx)),
+            None => {
+                let result = errors::run(ctx, args);
+                if let Ok(outcome) = &result {
+                    for note in &outcome.notes {
+                        out.log(output::LogLevel::Debug, note);
+                    }
+                }
+                out.emit(result)
+            }
+        },
         Some(Command::History(args)) => {
             let result = history::run(ctx, args, cli.global.actor.as_deref());
             if result.as_ref().is_ok_and(|o| o.torn_tail) {

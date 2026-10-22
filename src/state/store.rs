@@ -173,6 +173,10 @@ pub const KINDS: &[(&str, SchemaVersion)] = &[
         <crate::errors::memo::ErrorsMemo as Versioned>::KIND,
         <crate::errors::memo::ErrorsMemo as Versioned>::CURRENT,
     ),
+    (
+        <crate::errors::ack::ErrorsAck as Versioned>::KIND,
+        <crate::errors::ack::ErrorsAck as Versioned>::CURRENT,
+    ),
     ("history", super::history::CURRENT),
 ];
 

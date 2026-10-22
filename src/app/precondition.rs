@@ -394,6 +394,52 @@ impl Binding for UndoBinding {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// `errors dismiss`.
+
+/// One client's part of an `errors dismiss`: its key, the key its dismissals are filed
+/// under, and what was observed there.
+pub struct DismissPart<'a> {
+    pub key: Option<TargetKey>,
+    pub filed_as: &'a str,
+    pub observation: &'a crate::errors::Observation,
+}
+
+/// `errors dismiss`'s precondition (M3-D46): the target keys without generations (an
+/// update between the read and the dismissal does not change what was shown), the
+/// databases it would acknowledge (those read whole), and each database's file stamp and
+/// session as observed. A session ended since the read changes `observed`.
+pub fn of_dismiss(parts: &[DismissPart<'_>]) -> Precondition {
+    let mut selection = Vec::new();
+    let mut observed = Vec::new();
+    for part in parts {
+        for db in &part.observation.databases {
+            let key = crate::errors::ack::db_key(&db.path);
+            if db.state.complete() {
+                selection.push(json!({"target": part.filed_as, "database": key}));
+            }
+            observed.push(json!({
+                "target": part.filed_as,
+                "database": key,
+                "stamp": db.stamp.fingerprint(),
+                "session": db.session,
+            }));
+        }
+    }
+    selection.sort_by_key(Value::to_string);
+    observed.sort_by_key(Value::to_string);
+    Precondition::new(
+        "errors dismiss",
+        parts
+            .iter()
+            .filter_map(|p| p.key)
+            .map(|k| (k, None))
+            .collect(),
+        Value::Array(selection),
+        Value::Array(observed),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

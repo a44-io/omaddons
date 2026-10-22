@@ -1,0 +1,33 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "errors dismiss",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "plan_stale",
+    "details": {
+      "changed": [
+        "observed"
+      ]
+    },
+    "fix": "omaddons errors dismiss -t retail --dry-run",
+    "fix_argv": [
+      "omaddons",
+      "errors",
+      "dismiss",
+      "-t",
+      "retail",
+      "--dry-run"
+    ],
+    "message": "this errors dismiss is no longer what its preview showed (observed changed); nothing was changed: preview it again",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

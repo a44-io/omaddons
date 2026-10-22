@@ -192,7 +192,7 @@ pub enum Command {
     Search(crate::app::search::SearchArgs),
     /// Which addon most likely throws Lua errors, how often, and whether an update may
     /// fix it (from BugGrabber)
-    #[command(after_long_help = ERRORS_HELP)]
+    #[command(after_long_help = ERRORS_HELP, args_conflicts_with_subcommands = true)]
     Errors(crate::app::errors::ErrorsArgs),
     /// Every client's addon set as one addons.toml for sync (stdout, or --write)
     #[command(after_long_help = EXPORT_HELP)]

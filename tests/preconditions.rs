@@ -238,6 +238,11 @@ fn a_token_for_another_command_is_stale() {
     let changed = envelope["error"]["details"]["changed"].as_array().unwrap();
     assert!(changed.contains(&json!("command")), "{envelope}");
     assert!(scene.addons().join("Foo").is_dir());
+    // A dismissal takes no other command's token either.
+    let dismiss = bound(&["errors", "dismiss", "-t", "retail"], &token);
+    let envelope = scene.run(&dismiss, "").expect(1);
+    let changed = envelope["error"]["details"]["changed"].as_array().unwrap();
+    assert!(changed.contains(&json!("command")), "{envelope}");
 }
 
 #[test]

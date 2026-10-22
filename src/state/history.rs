@@ -101,6 +101,18 @@ pub struct SettingEntry {
     pub ops: Vec<HistoryOp>,
     pub result: TxResult,
     pub run: RunId,
+    /// `errors dismiss`: what it acknowledged, as counts (never any error's text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismissed: Option<Dismissed>,
+}
+
+/// What one `errors dismiss` acknowledged on its target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Dismissed {
+    /// Databases acknowledged.
+    pub databases: u64,
+    /// New local errors that stopped being new.
+    pub errors: u64,
 }
 
 impl SettingEntry {
@@ -124,6 +136,7 @@ impl SettingEntry {
             ops: Vec::new(),
             result: TxResult::Committed,
             run: RunId::new(),
+            dismissed: None,
         }
     }
 }
@@ -1114,7 +1127,13 @@ mod tests {
             ..HistoryFilter::default()
         };
         assert_eq!(read(&f.paths, &by_agent).unwrap().settings, [config]);
-        for kind in [TxKind::Config, TxKind::Target, TxKind::Auth, TxKind::Export] {
+        for kind in [
+            TxKind::Config,
+            TxKind::Target,
+            TxKind::Auth,
+            TxKind::Export,
+            TxKind::Dismiss,
+        ] {
             assert!(kind.is_setting() && !kind.is_undoable(), "{kind:?}");
         }
         for kind in [TxKind::Install, TxKind::Undo, TxKind::Pin, TxKind::Sync] {

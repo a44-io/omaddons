@@ -1,0 +1,45 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "errors dismiss",
+  "commands": [],
+  "data": {
+    "dry_run": false,
+    "targets": [
+      {
+        "acknowledged": [],
+        "errors": 0,
+        "skipped": [
+          {
+            "database": "db-1",
+            "reason": "partial"
+          }
+        ],
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        }
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": true,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "errors_partial",
+      "fix": "omaddons errors -t retail",
+      "fix_argv": [
+        "omaddons",
+        "errors",
+        "-t",
+        "retail"
+      ],
+      "message": "A BugGrabber file of account 1 on retail could not be read completely: it ends early (the game may be writing it). Counts are from what was read"
+    }
+  ]
+}

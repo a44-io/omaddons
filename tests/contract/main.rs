@@ -326,11 +326,15 @@ mod support {
         }
     }
 
-    /// Replaces the tempdir root, ULIDs and RFC 3339 times in a string.
+    /// Replaces the tempdir root, ULIDs, RFC 3339 times and precondition tokens (they hash
+    /// file stamps) in a string.
     fn redact(s: &str, root: &str) -> String {
         let s = s.replace(root, "<root>");
         if s.parse::<jiff::Timestamp>().is_ok() {
             return "<time>".to_owned();
+        }
+        if omaddons::app::precondition::is_token(&s) {
+            return "<precondition>".to_owned();
         }
         let crockford =
             |c: char| c.is_ascii_digit() || (c.is_ascii_uppercase() && !"ILOU".contains(c));

@@ -1,0 +1,33 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "errors dismiss",
+  "commands": [],
+  "data": {
+    "dry_run": false,
+    "targets": [
+      {
+        "acknowledged": [
+          {
+            "database": "db-1",
+            "session": 11
+          }
+        ],
+        "errors": 1,
+        "skipped": [],
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        }
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

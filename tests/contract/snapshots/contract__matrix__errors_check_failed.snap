@@ -4,7 +4,20 @@ expression: s.stable(&c.envelope)
 ---
 {
   "command": "errors",
-  "commands": [],
+  "commands": [
+    {
+      "action": "dismiss_errors",
+      "argv": [
+        "omaddons",
+        "errors",
+        "dismiss",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons errors dismiss -t retail",
+      "destructive": false
+    }
+  ],
   "data": {
     "raw_details": false,
     "summary": {
@@ -104,6 +117,11 @@ expression: s.stable(&c.envelope)
             "state": "complete"
           }
         ],
+        "dismiss": {
+          "databases": 1,
+          "precondition": "<precondition>"
+        },
+        "dismissed": null,
         "files": {
           "accounts": 1,
           "partial": 0,

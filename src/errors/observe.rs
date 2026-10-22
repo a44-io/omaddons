@@ -14,9 +14,10 @@ use jiff::tz::TimeZone;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::ack::{Ack, TargetAck, db_key};
 use super::attribute::{Attributed, Attribution, FolderSet, attribute};
 use super::buggrabber::{
-    BugDb, BugEntry, DbShape, EntryType, Origin, TimeEvidence, decode, evidence,
+    BugDb, BugEntry, DbShape, EntryType, Origin, TimeEvidence, Tri, decode, evidence,
 };
 use super::locate::{Capture, Coverage, GLOBAL, Listing, Skipped, locate};
 use super::memo::TargetMemo;
@@ -76,6 +77,8 @@ pub struct Database {
     pub state: ReadState,
     /// Sessions above it are new (M3-D19).
     pub baseline: u32,
+    /// The user's dismissal, while it is valid (not above the current session).
+    pub acknowledged: Option<Ack>,
     /// Relative to the client folder: for the memo only, never shown.
     pub path: String,
     pub stamp: FileStamp,
@@ -145,6 +148,8 @@ pub struct Observe<'a> {
     pub owner: &'a dyn Fn(&str) -> Option<String>,
     /// What the last run observed on this client.
     pub memo: Option<&'a TargetMemo>,
+    /// The user's dismissals on this client.
+    pub ack: Option<&'a TargetAck>,
     pub now: Timestamp,
     /// Where local-time strings are read.
     pub tz: &'a TimeZone,
@@ -181,17 +186,30 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
                 .then(|| previous.and_then(|p| p.session))
                 .flatten()
         });
+        let ack = cx
+            .ack
+            .and_then(|a| a.databases.get(&db_key(&path)))
+            .copied();
         let baseline = match previous {
             // Reset (or replaced): the old baseline is not this database's history.
             Some(p) if session.is_some_and(|s| s < p.baseline) => 0,
             Some(p) => p.baseline,
-            None => session.map_or(0, |s| s.saturating_sub(1)),
+            // A first read starts from the dismissal when there is one, so wiping the
+            // cache never resurrects dismissed errors nor hides undismissed ones.
+            None => match ack.filter(|a| session.is_none_or(|s| a.acked_session <= s)) {
+                Some(a) => a.acked_session,
+                None => session.map_or(0, |s| s.saturating_sub(1)),
+            },
         };
         let written_at = std::fs::metadata(&file.path)
             .and_then(|m| m.modified())
             .ok()
             .and_then(|t| Timestamp::try_from(t).ok());
-        let fresh = written_at.is_some_and(|at| within(at, cx.now, ERRORS_NEW_MAX_AGE));
+        let state_of = DbState {
+            session,
+            baseline,
+            written_at,
+        };
         if !state.complete() {
             observation
                 .warnings
@@ -199,7 +217,26 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
         }
         let index = observation.databases.len();
         let legacy = db.shape == DbShape::Legacy;
-        for entry in db.entries {
+        let read: Vec<(BugEntry, TimeEvidence)> = db
+            .entries
+            .into_iter()
+            .map(|e| {
+                let at = evidence(e.time.as_ref(), cx.tz);
+                (e, at)
+            })
+            .collect();
+        // Each session's newest time, which the time clause judges per session.
+        let mut newest: std::collections::BTreeMap<u32, TimeEvidence> =
+            std::collections::BTreeMap::new();
+        for (e, at) in &read {
+            if let (Origin::Local, Some(s)) = (e.origin, e.session) {
+                newest
+                    .entry(s)
+                    .and_modify(|n| *n = TimeEvidence::weakest(n, at))
+                    .or_insert(*at);
+            }
+        }
+        for (entry, at) in read {
             let attribution = attribute(
                 &entry.message,
                 entry.stack.as_deref(),
@@ -209,12 +246,13 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
             );
             let (name, managed, kind, folder) = group_of(&attribution.target, cx.owner);
             let new = entry.origin == Origin::Local
-                && fresh
-                && entry.session.is_some_and(|s| s > baseline);
+                && entry.session.is_some_and(|s| {
+                    session_is_new(&state_of, s, newest.get(&s), ack.as_ref(), cx.now)
+                });
             observation.entries.push(Observed {
                 database: index,
                 fingerprint: identity(&entry.message),
-                evidence: evidence(entry.time.as_ref(), cx.tz),
+                evidence: at,
                 attribution,
                 name,
                 managed,
@@ -232,12 +270,55 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
             session,
             state,
             baseline,
+            acknowledged: ack.filter(|a| session.is_none_or(|s| a.acked_session <= s)),
             path,
             stamp: file.stamp,
             written_at,
         });
     }
     observation
+}
+
+/// What deciding newness needs of a database, from a read or from the memo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DbState {
+    /// Its current session.
+    pub session: Option<u32>,
+    /// The first-read baseline.
+    pub baseline: u32,
+    /// When the client last wrote the file.
+    pub written_at: Option<Timestamp>,
+}
+
+/// Whether a database's errors of `session` are new (M3-D19), its file written within
+/// [`ERRORS_NEW_MAX_AGE`] of `now`: the session is above the larger of the first-read
+/// baseline and the acknowledged session (each void while above the database's current
+/// session, which a reset or a replaced file explains), or, after a dismissal, its
+/// newest time (`newest`) proves it occurred after `acked_at`. One rule for `errors`,
+/// `status` and the memo, so their counts agree.
+pub fn session_is_new(
+    db: &DbState,
+    session: u32,
+    newest: Option<&TimeEvidence>,
+    ack: Option<&Ack>,
+    now: Timestamp,
+) -> bool {
+    if !db
+        .written_at
+        .is_some_and(|at| within(at, now, ERRORS_NEW_MAX_AGE))
+    {
+        return false;
+    }
+    let valid = |mark: u32| {
+        if db.session.is_some_and(|s| mark > s) {
+            0
+        } else {
+            mark
+        }
+    };
+    let baseline = valid(db.baseline).max(ack.map_or(0, |a| valid(a.acked_session)));
+    session > baseline
+        || ack.is_some_and(|a| newest.is_some_and(|t| t.at_or_after(a.acked_at) == Tri::Yes))
 }
 
 /// An error's fingerprint: its message and location, both normalized, so a library
@@ -532,5 +613,88 @@ mod tests {
         assert!(within("2026-10-20T00:00:00Z".parse().unwrap(), now, day));
         assert!(within("2026-10-14T18:30:00Z".parse().unwrap(), now, day));
         assert!(!within("2026-10-14T18:29:59Z".parse().unwrap(), now, day));
+    }
+
+    mod new {
+        use super::*;
+
+        const NOW: &str = "2026-10-15T18:30:00Z";
+
+        fn at(s: &str) -> Timestamp {
+            s.parse().unwrap()
+        }
+
+        fn db(session: u32, baseline: u32) -> DbState {
+            DbState {
+                session: Some(session),
+                baseline,
+                written_at: Some(at(NOW)),
+            }
+        }
+
+        fn ack(session: u32, when: &str) -> Ack {
+            Ack {
+                acked_session: session,
+                acked_at: at(when),
+            }
+        }
+
+        fn seen(when: &str, meaning: TimeMeaning) -> TimeEvidence {
+            TimeEvidence {
+                at: Some(at(when)),
+                meaning,
+                tz: TzEvidence::Explicit,
+            }
+        }
+
+        #[test]
+        fn sessions_above_the_baseline_are_new_while_the_file_is_fresh() {
+            let now = at(NOW);
+            assert!(session_is_new(&db(3, 0), 3, None, None, now));
+            assert!(!session_is_new(&db(5, 5), 5, None, None, now));
+            assert!(session_is_new(&db(6, 5), 6, None, None, now));
+            let stale = DbState {
+                written_at: Some(at("2026-10-01T00:00:00Z")),
+                ..db(6, 0)
+            };
+            assert!(!session_is_new(&stale, 6, None, None, now));
+            let unknown = DbState {
+                written_at: None,
+                ..db(6, 0)
+            };
+            assert!(!session_is_new(&unknown, 6, None, None, now));
+        }
+
+        #[test]
+        fn a_dismissal_covers_its_session_and_no_later_one() {
+            let now = at(NOW);
+            let a = ack(10, "2026-10-15T18:00:00Z");
+            assert!(!session_is_new(&db(10, 0), 10, None, Some(&a), now));
+            assert!(!session_is_new(&db(11, 0), 9, None, Some(&a), now));
+            assert!(session_is_new(&db(11, 0), 11, None, Some(&a), now));
+        }
+
+        #[test]
+        fn a_reset_voids_the_dismissal_until_the_session_passes_it_again() {
+            let now = at(NOW);
+            let a = ack(48, "2026-10-15T18:00:00Z");
+            // `/bugsack reset`: 48 is above the database's session, so it means nothing.
+            assert!(session_is_new(&db(1, 0), 1, None, Some(&a), now));
+            // Past 48 again: session 2 is below it, but its time is after the dismissal.
+            let after = seen("2026-10-15T18:10:00Z", TimeMeaning::Last);
+            assert!(session_is_new(&db(50, 0), 2, Some(&after), Some(&a), now));
+            // Before it, or not known to be after it: covered.
+            let before = seen("2026-10-15T17:00:00Z", TimeMeaning::Last);
+            assert!(!session_is_new(&db(50, 0), 2, Some(&before), Some(&a), now));
+            let unsure = seen("2026-10-15T17:00:00Z", TimeMeaning::FirstOrLast);
+            assert!(!session_is_new(&db(50, 0), 2, Some(&unsure), Some(&a), now));
+            assert!(!session_is_new(&db(50, 0), 2, None, Some(&a), now));
+        }
+
+        #[test]
+        fn a_baseline_above_the_session_is_void_too() {
+            let now = at(NOW);
+            assert!(session_is_new(&db(2, 30), 2, None, None, now));
+        }
     }
 }

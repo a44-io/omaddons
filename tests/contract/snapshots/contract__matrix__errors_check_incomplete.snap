@@ -104,6 +104,11 @@ expression: s.stable(&c.envelope)
             "state": "partial"
           }
         ],
+        "dismiss": {
+          "databases": 0,
+          "precondition": "<precondition>"
+        },
+        "dismissed": null,
         "files": {
           "accounts": 1,
           "partial": 1,

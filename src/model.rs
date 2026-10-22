@@ -440,6 +440,8 @@ pub enum TxKind {
     Auth,
     /// `export --write`: recorded, never undone.
     Export,
+    /// `errors dismiss`: Lua errors acknowledged; recorded, never undone.
+    Dismiss,
 }
 
 impl TxKind {
@@ -447,12 +449,13 @@ impl TxKind {
         !matches!(self, Self::Backup) && !self.is_setting()
     }
 
-    /// A settings change (`config`, `target`, `auth`, `export`): a history line that
-    /// changes no addon folder, so undo never reverts it (vision §5.9 Attribution).
+    /// A settings change (`config`, `target`, `auth`, `export`, `dismiss`): a history
+    /// line that changes no addon folder, so undo never reverts it (vision §5.9
+    /// Attribution).
     pub fn is_setting(self) -> bool {
         matches!(
             self,
-            Self::Config | Self::Target | Self::Auth | Self::Export
+            Self::Config | Self::Target | Self::Auth | Self::Export | Self::Dismiss
         )
     }
 }

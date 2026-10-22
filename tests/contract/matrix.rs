@@ -832,3 +832,53 @@ fn errors() {
     let c = s.json(&["errors", "--limit", "0"], 2);
     insta::assert_json_snapshot!("errors_limit_zero", s.stable(&c.envelope));
 }
+
+#[test]
+fn errors_dismiss() {
+    use common::addons::{addon_folder, toc};
+    use common::buggrabber::{self, BugDb, BugEntry, NOW, TimeKind, Writer, write_files};
+
+    let s = Scene::new();
+    s.install_foo();
+    let bug_toc = toc("120105", &["## SavedVariables: BugGrabberDB"]);
+    addon_folder(
+        &s.home.addons("_retail_"),
+        "!BugGrabber",
+        &[("!BugGrabber.toc", &bug_toc)],
+        &[],
+    );
+    let db = |session: u32| {
+        BugDb::new(Writer::Modern, session).entry(BugEntry::new(
+            &format!(
+                "{} attempt to call a nil value",
+                buggrabber::stack_era_c("Foo", "core.lua", 12)
+            ),
+            session,
+            (TimeKind::Unix, NOW - 60),
+        ))
+    };
+    let wtf = s.home.client("_retail_").join("WTF");
+    write_files(&wtf, &[db(10).file()]);
+    let env = [("OMADDONS_NOW", "2026-10-15T18:30:00Z")];
+    let read = s.json_env(&["errors", "-t", "retail"], &env, 0);
+    let token = read.envelope["data"]["targets"][0]["dismiss"]["precondition"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let c = s.json_env(&["errors", "dismiss", "-t", "retail", "--dry-run"], &env, 0);
+    insta::assert_json_snapshot!("errors_dismiss_dry_run", s.stable(&c.envelope));
+    // A session ended between the read and the dismissal.
+    write_files(&wtf, &[db(11).file()]);
+    let bound = ["errors", "dismiss", "-t", "retail", "--if-match", &token];
+    let c = s.json_env(&bound, &env, 1);
+    insta::assert_json_snapshot!("errors_dismiss_stale", s.stable(&c.envelope));
+    let c = s.json_env(&["errors", "dismiss", "-t", "retail"], &env, 0);
+    insta::assert_json_snapshot!("errors_dismiss_ok", s.stable(&c.envelope));
+    // A file the game is writing is never acknowledged.
+    let mut cut = db(12).file();
+    let at = cut.bytes.len() - 20;
+    cut.bytes.truncate(at);
+    write_files(&wtf, &[cut]);
+    let c = s.json_env(&["errors", "dismiss", "-t", "retail"], &env, 0);
+    insta::assert_json_snapshot!("errors_dismiss_partial", s.stable(&c.envelope));
+}
