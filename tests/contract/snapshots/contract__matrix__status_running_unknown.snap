@@ -43,6 +43,20 @@ expression: s.stable(&c.envelope)
         },
         "adoptable": 0,
         "attention": [],
+        "backups": {
+          "auto": {
+            "capability": "unsupported",
+            "last": null,
+            "mode": "daily"
+          },
+          "bytes": null,
+          "count": 0,
+          "free_bytes": 68719476736,
+          "latest": null,
+          "latest_qualifying": null,
+          "snapshot_bytes": null,
+          "stale": false
+        },
         "default": false,
         "drift": [],
         "errors": {
@@ -102,6 +116,20 @@ expression: s.stable(&c.envelope)
         },
         "adoptable": 0,
         "attention": [],
+        "backups": {
+          "auto": {
+            "capability": "unsupported",
+            "last": null,
+            "mode": "daily"
+          },
+          "bytes": null,
+          "count": 0,
+          "free_bytes": 68719476736,
+          "latest": null,
+          "latest_qualifying": null,
+          "snapshot_bytes": null,
+          "stale": false
+        },
         "default": false,
         "drift": [],
         "errors": {

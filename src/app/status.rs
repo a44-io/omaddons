@@ -11,6 +11,10 @@
 //! Lua errors (M3-D20): plain `status` reads BugGrabber's files as `errors` does;
 //! `--cached` recounts the errors memo and only stats files to tell it is stale. Neither
 //! writes the memo.
+//!
+//! Backups (M3-D37): both modes read each client's block from the backup inventory,
+//! validated by listing, and never rebuild it; a client without a recent checkpoint is
+//! offered `backup create` whatever `auto_backup` says.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -22,6 +26,7 @@ use jiff::tz::TimeZone;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::backups_status::{self, BackupSummary};
 use super::drift::{DriftItem, needs_reinstall, reinstall_hint};
 use super::errors::CoverageState;
 use super::errors_status::{self, TargetErrors};
@@ -29,6 +34,7 @@ use super::history::ChangeCounts;
 use super::issues::{Issue, SeverityCounts, issues_for};
 use super::remembered::Remembered;
 use super::world::World;
+use crate::backup::inventory;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::cache::{CacheStats, DiscoveryMode};
@@ -222,6 +228,9 @@ pub struct StatusTarget {
     /// Its Lua errors, from BugGrabber: read live, or under `--cached` recounted from what
     /// `errors` last read (M3-D20).
     pub errors: TargetErrors,
+    /// Its `WTF/` backups, from the inventory projection (M3-D37); `null` for a client
+    /// whose directory is gone.
+    pub backups: Option<BackupSummary>,
     /// `-v` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_dir: Option<PathBuf>,
@@ -381,8 +390,9 @@ impl Outcome for StatusOutcome {
                 ]
             })
             .collect();
-        // Each target's row, then its issues and its Lua errors under it.
+        // Each target's row, then its issues, its Lua errors and its backups under it.
         let text = table(&rows);
+        let now = crate::clock::now();
         for (row, t) in text.lines().zip(&self.data.targets) {
             writeln!(w, "{row}")?;
             for issue in &t.issues {
@@ -394,6 +404,9 @@ impl Outcome for StatusOutcome {
             }
             if let Some(line) = errors_status::human_line(&t.id, &t.errors) {
                 writeln!(w, "{line}")?;
+            }
+            if let Some(backups) = &t.backups {
+                writeln!(w, "{}", backups_status::human_line(backups, now))?;
             }
         }
         for line in &self.drift_lines {
@@ -567,6 +580,10 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     let (errors_memo, _) = memo::load(&world.paths);
     let (acks, ack_note) = ack::read(&world.paths);
     notes.extend(ack_note);
+    // Read once too, never rebuilt here: what the backups add up to, per client.
+    let backup_inventory = inventory::load_file(&world.paths);
+    let auto_mode = world.config.auto_backup.unwrap_or_default();
+    // Lua errors' ages and backups' are told by the one clock.
     let errors_now = crate::clock::now();
     // Plain `status` reads BugGrabber's files, as `errors` does (local-time strings in
     // this machine's zone, within one run's byte budget).
@@ -720,6 +737,13 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
                 )
             }
         };
+        let backups = backups_status::summary(
+            &backup_inventory,
+            &client,
+            t.key.as_ref(),
+            auto_mode,
+            errors_now,
+        );
         targets.push(StatusTarget {
             id: t.id.clone(),
             key: t.key,
@@ -749,6 +773,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             attention,
             issues: Vec::new(),
             errors,
+            backups: Some(backups),
             client_dir: verbose.then(|| t.client_dir.clone()),
             install_root: verbose.then(|| t.install_root.clone()),
             exe_name: if verbose { t.exe_name.clone() } else { None },
@@ -792,6 +817,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             issues: Vec::new(),
             // Nothing to read: the directory is gone.
             errors: TargetErrors::uncaptured(CoverageState::Complete),
+            backups: None,
             client_dir: verbose.then(|| e.client_dir.clone()),
             install_root: verbose.then(|| e.install_root.clone()),
             exe_name: None,
@@ -1140,6 +1166,11 @@ fn recommendations(
             false,
         ));
     }
+    for t in targets {
+        if let Some(backups) = &t.backups {
+            commands.extend(backups_status::hints(&t.id, backups));
+        }
+    }
     for t in targets.iter().filter(|t| !t.orphan_names.is_empty()) {
         let argv = ["omaddons", "remove"]
             .into_iter()
@@ -1304,6 +1335,7 @@ pub(crate) fn test_target(
         attention: attention.to_vec(),
         issues: Vec::new(),
         errors: TargetErrors::uncaptured(CoverageState::Complete),
+        backups: None,
         client_dir: None,
         install_root: None,
         exe_name: None,

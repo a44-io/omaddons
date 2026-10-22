@@ -4,6 +4,7 @@
 pub mod adopt;
 pub mod auth;
 pub mod backup;
+pub mod backups_status;
 pub mod config;
 pub mod copy;
 pub mod drift;

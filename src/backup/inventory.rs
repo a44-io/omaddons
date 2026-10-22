@@ -151,12 +151,24 @@ pub fn auto_state(paths: &Paths, key: &TargetKey) -> AutoState {
 /// `key`'s projection, validated by one `read_dir` of `client`'s `<meta>/backups/` and
 /// one of its `<meta>/snapshots/` (with an `lstat` per snapshot).
 pub fn load_validated(paths: &Paths, client: &ClientPaths, key: &TargetKey) -> Inventory {
+    validate(&load(paths), client, Some(key))
+}
+
+/// The projection file as it is (missing, corrupt or newer reads as empty), for a caller
+/// that validates several targets against one read.
+pub fn load_file(paths: &Paths) -> InventoryFile {
+    load(paths)
+}
+
+/// `key`'s projection in `file`, validated as [`load_validated`] does; a target without
+/// a key has none.
+pub fn validate(file: &InventoryFile, client: &ClientPaths, key: Option<&TargetKey>) -> Inventory {
     let on_disk = covers(client);
     let count = on_disk.backups.len() as u64;
-    match load(paths).targets.remove(key) {
+    match key.and_then(|key| file.targets.get(key)) {
         // ubs:ignore — comparing backup id sets, not secrets
-        Some(inventory) if inventory.covers == on_disk => Inventory::Fresh(inventory),
-        Some(inventory) => Inventory::Stale(inventory, count),
+        Some(inventory) if inventory.covers == on_disk => Inventory::Fresh(inventory.clone()),
+        Some(inventory) => Inventory::Stale(inventory.clone(), count),
         None => Inventory::Missing(count),
     }
 }

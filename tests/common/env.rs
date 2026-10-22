@@ -9,11 +9,16 @@ use assert_cmd::Command;
 /// Variables cleared from every child, so the developer's settings never leak in.
 const CLEARED: &[&str] = &["CI", "NO_COLOR", "TERM", "XDG_DATA_DIRS", "XDG_CONFIG_DIRS"];
 
-/// Settings every child gets: local times in UTC (M3 common rule 13), and a filesystem
-/// that clones no file (a debug-build hint), so automatic backups, which clone or do
-/// nothing, write nothing in a scene that does not ask for them with
-/// `OMADDONS_FS_CLONE=yes`.
-const SETTINGS: &[(&str, &str)] = &[("TZ", "UTC"), ("OMADDONS_FS_CLONE", "no")];
+/// Settings every child gets: local times in UTC (M3 common rule 13), a filesystem that
+/// clones no file (a debug-build hint), so automatic backups, which clone or do nothing,
+/// write nothing in a scene that does not ask for them with `OMADDONS_FS_CLONE=yes`, and
+/// 64 GiB free (another), so `status` and the backup commands report the same space on
+/// every run; a test about space sets its own `OMADDONS_FS_FREE_MB`.
+const SETTINGS: &[(&str, &str)] = &[
+    ("TZ", "UTC"),
+    ("OMADDONS_FS_CLONE", "no"),
+    ("OMADDONS_FS_FREE_MB", "65536"),
+];
 
 /// A tempdir holding `home/`, `config/`, `state/`, `cache/` and `home/.local/share`.
 pub struct TestEnv {

@@ -280,7 +280,7 @@ pub struct BackupTarget {
 }
 
 /// Automatic backups on one client: the configured mode and what attempts observed.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct AutoView {
     pub mode: AutoBackup,
     pub capability: Capability,
@@ -476,7 +476,7 @@ fn row(b: &BackupItem, now: Timestamp) -> Vec<String> {
 }
 
 /// `today 18:02`, else `2026-10-18 21:15`, in the local time zone.
-fn when(at: Timestamp, now: Timestamp) -> String {
+pub(super) fn when(at: Timestamp, now: Timestamp) -> String {
     when_in(at, now, &jiff::tz::TimeZone::system())
 }
 
@@ -491,7 +491,7 @@ fn when_in(at: Timestamp, now: Timestamp, tz: &jiff::tz::TimeZone) -> String {
 
 /// `15.2 MB`, `61.0 MB`, `212 GB`: decimal units, as disks are sold, one decimal below
 /// 100.
-fn size(bytes: u64) -> String {
+pub(super) fn size(bytes: u64) -> String {
     let units = [(1e12, "TB"), (1e9, "GB"), (1e6, "MB"), (1e3, "kB")];
     let value = bytes as f64;
     for (scale, unit) in units {

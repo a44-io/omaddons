@@ -3,14 +3,16 @@
 //! built from the same scenario (the registry stores absolute client paths, so a copied
 //! home would act on the original's clients), exits 0 and keeps its promise:
 //! `reinstall` clears the drift, `update` leaves nothing to update, `remove_orphans`
-//! leaves no orphan and the explicit addons alone, `forget_target` forgets the client.
+//! leaves no orphan and the explicit addons alone, `forget_target` forgets the client,
+//! `backup_create` leaves a checkpoint and `refresh_backups` a projection that is fresh,
+//! each recommendation then gone.
 //! Each issue's remediation command runs the same way and clears its issue.
 
 use std::collections::BTreeSet;
 
 use scenarios::{
     Builder, adoptable, behind, degraded, edited, errors_partial, errors_stale, errors_unread,
-    orphaned, target, unchecked, unmanaged, unplugged,
+    orphaned, stale_backups, target, unchecked, unmanaged, unplugged, unprotected,
 };
 use serde_json::json;
 
@@ -108,6 +110,28 @@ mod scenarios {
         s
     }
 
+    /// Retail played (it has SavedVariables) and never backed up.
+    pub fn unprotected() -> Scene {
+        let s = Scene::new();
+        common::wtf::Wtf::at(s.home.client("_retail_"))
+            .saved_variables("Foo", 100)
+            .build();
+        s
+    }
+
+    /// The same backed up, then a backup its projection does not cover.
+    pub fn stale_backups() -> Scene {
+        let s = unprotected();
+        s.json(&["backup", "create", "-t", "retail"], 0);
+        common::backups::seed_backup(
+            &s.home.client("_retail_"),
+            omaddons::backup::BackupKind::Manual,
+            jiff::Timestamp::now(),
+            1,
+        );
+        s
+    }
+
     /// A folder no catalog entry names.
     pub fn unmanaged() -> Scene {
         let s = Scene::new();
@@ -187,7 +211,7 @@ mod scenarios {
 
 #[test]
 fn every_status_recommendation_runs_on_a_fresh_home() {
-    let scenarios: [(&str, Builder, &str); 8] = [
+    let scenarios: [(&str, Builder, &str); 10] = [
         ("edited", edited, "reinstall"),
         ("behind", behind, "update"),
         ("adoptable", adoptable, "adopt"),
@@ -196,6 +220,8 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
         ("unplugged", unplugged, "forget_target"),
         ("degraded", degraded, "inspect"),
         ("unmanaged", unmanaged, "list_unmanaged"),
+        ("unprotected", unprotected, "backup_create"),
+        ("stale_backups", stale_backups, "refresh_backups"),
     ];
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut fixed: BTreeSet<String> = BTreeSet::new();
@@ -259,6 +285,19 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
                         .collect();
                     assert!(!ids.contains(&"classic"), "{name}: {ids:?}");
                 }
+                "backup_create" | "refresh_backups" => {
+                    let id = &argv[argv.len() - 1];
+                    let backups = &target(&after, id).unwrap()["backups"];
+                    assert!(
+                        backups["latest_qualifying"].is_object() && backups["stale"] == false,
+                        "{name}: {after:#}"
+                    );
+                    let again = after["commands"].as_array().unwrap();
+                    assert!(
+                        !again.iter().any(|c| c["action"] == action.as_str()),
+                        "{name}: {after:#}"
+                    );
+                }
                 _ => {}
             }
         }
@@ -305,6 +344,8 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
         "forget_target",
         "inspect",
         "list_unmanaged",
+        "backup_create",
+        "refresh_backups",
     ]
     .iter()
     .map(|a| (*a).to_owned())

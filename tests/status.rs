@@ -191,12 +191,24 @@ fn status_writes_nothing() {
         .entry(entry(3))
         .entry(entry(4));
     write_files(&wtf, &[next.file()]);
+    // A backup and the projection that adds it up, then one behind its back: `status`
+    // reads both and rebuilds neither.
+    let retail = m.home.client("_retail_");
+    let manual = omaddons::backup::BackupKind::Manual;
+    common::backups::seed_backup(&retail, manual, Timestamp::now(), 1);
+    m.home.run(&["backup", "list"]).expect(0);
+    common::backups::seed_backup(&retail, manual, Timestamp::now(), 1);
     m.status(&[], 0); // warms the discovery cache
     let before = m.hashes();
     let live = m.status(&[], 0);
     assert_eq!(target(&live, "mainline")["errors"]["new"], 1, "{live}");
     let cached = m.status(&["--cached"], 0);
     assert_eq!(target(&cached, "mainline")["errors"]["state"], "stale");
+    let backups = &target(&cached, "mainline")["backups"];
+    assert_eq!(
+        (&backups["count"], &backups["stale"]),
+        (&2.into(), &true.into())
+    );
     m.status(&["--cached", "--offline"], 0);
     assert_eq!(m.hashes(), before);
 }
@@ -1032,5 +1044,334 @@ mod last_change {
             human.context()
         );
         assert!(!human.stdout.contains("last change"), "{}", human.stdout);
+    }
+}
+
+/// Backups in `status` (M3-D37, M3-D30, M3-D31, M3-D48): each client's block from the
+/// inventory projection, fresh, stale or missing; what automatic attempts recorded; the
+/// free space; the `backup_create` and `refresh_backups` recommendations; the human line.
+/// Every run is checked for the fake account, realm and character names on both streams.
+#[cfg(test)]
+mod backups {
+    use super::*;
+    use common::backups::{meta, seed_backup, seed_meta};
+    use common::home::Run;
+    use common::privacy::assert_private_all;
+    use common::wtf::Wtf;
+    use jiff::SignedDuration;
+    use omaddons::backup::{BackupKind, BackupMeta, BackupSource, Consistency, ImportSource};
+    use omaddons::model::BackupId;
+    use omaddons::rules::Family;
+    use serde_json::json;
+
+    /// A registered retail client whose `WTF/` holds SavedVariables.
+    fn played() -> Home {
+        let home = Home::new(&["wow"]);
+        Wtf::at(home.client("_retail_"))
+            .saved_variables("Foo", 100)
+            .build();
+        home.run(&["targets", "default", "retail"]).expect(0);
+        home
+    }
+
+    /// `hours` before now.
+    fn ago(hours: i64) -> Timestamp {
+        Timestamp::now() - SignedDuration::from_hours(hours)
+    }
+
+    /// `omaddons <args>` with `extra` set, checked for privacy.
+    fn run(home: &Home, args: &[&str], extra: &[(&str, &str)]) -> Run {
+        let argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        let r = home.exec_with(&argv, extra);
+        assert_private_all(&r.stdout, &r.stderr);
+        r
+    }
+
+    /// `status --json <args>`'s envelope.
+    fn status(home: &Home, args: &[&str]) -> Value {
+        let mut argv = vec!["status", "--json"];
+        argv.extend_from_slice(args);
+        run(home, &argv, &[]).expect(0)
+    }
+
+    /// Retail's backups block.
+    fn block(envelope: &Value) -> Value {
+        target(envelope, "mainline")["backups"].clone()
+    }
+
+    /// The recommendations' actions and argvs.
+    fn actions(envelope: &Value) -> Vec<(String, Value)> {
+        envelope["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| (c["action"].as_str().unwrap().to_owned(), c["argv"].clone()))
+            .collect()
+    }
+
+    fn has(envelope: &Value, action: &str) -> bool {
+        actions(envelope).iter().any(|(a, _)| a == action)
+    }
+
+    fn projection(home: &Home) -> PathBuf {
+        home.env.cache().join("omaddons/backups.json")
+    }
+
+    /// The projection with retail's `auto` replaced by `auto`.
+    fn record_auto(home: &Home, auto: &Value) {
+        let path = projection(home);
+        let mut file: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for (_, t) in file["targets"].as_object_mut().unwrap() {
+            t["auto"] = auto.clone();
+        }
+        fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn four_backups_add_up_from_the_projection() {
+        let home = played();
+        let retail = home.client("_retail_");
+        seed_backup(&retail, BackupKind::Manual, ago(72), 3);
+        seed_backup(&retail, BackupKind::BeforeRestore, ago(48), 2);
+        let imported = BackupMeta {
+            source: Some(import_source()),
+            ..meta(BackupKind::Imported, ago(30), 4)
+        };
+        seed_meta(&retail, &imported);
+        let newest = ago(1);
+        let auto = seed_backup(&retail, BackupKind::Auto, newest, 1);
+        run(&home, &["backup", "list", "--json"], &[]).expect(0);
+        for args in [&[][..], &["--cached"]] {
+            let envelope = status(&home, args);
+            assert_eq!(
+                block(&envelope),
+                json!({
+                    "count": 4,
+                    "stale": false,
+                    "latest": {"id": auto.to_string(), "captured_at": newest.to_string(),
+                        "kind": "auto", "trigger": "post_session"},
+                    "latest_qualifying": {"id": auto.to_string(),
+                        "captured_at": newest.to_string()},
+                    "auto": {"mode": "daily", "capability": "unsupported", "last": null},
+                    "bytes": 1000,
+                    "snapshot_bytes": 0,
+                    "free_bytes": 65_536u64 * 1024 * 1024,
+                }),
+                "{args:?}"
+            );
+            assert!(!has(&envelope, "backup_create"), "{envelope:#}");
+            assert!(!has(&envelope, "refresh_backups"), "{envelope:#}");
+        }
+        let free = run(
+            &home,
+            &["status", "--json", "--cached"],
+            &[("OMADDONS_FS_FREE_MB", "1234")],
+        )
+        .expect(0);
+        assert_eq!(block(&free)["free_bytes"], 1234u64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn a_backup_behind_the_projections_back_makes_it_stale_until_listed() {
+        let home = played();
+        let retail = home.client("_retail_");
+        seed_backup(&retail, BackupKind::Manual, ago(2), 1);
+        run(&home, &["backup", "list", "--json"], &[]).expect(0);
+        seed_backup(&retail, BackupKind::Manual, ago(1), 1);
+        let envelope = status(&home, &["--cached"]);
+        let b = block(&envelope);
+        assert_eq!(
+            (&b["stale"], &b["count"]),
+            (&json!(true), &json!(2)),
+            "{b:#}"
+        );
+        assert!(
+            actions(&envelope).contains(&(
+                "refresh_backups".to_owned(),
+                json!(["omaddons", "backup", "list", "-t", "retail"])
+            )),
+            "{envelope:#}"
+        );
+        let human = run(&home, &["status", "--cached"], &[]);
+        assert!(
+            human.stdout.contains("details out of date"),
+            "{}",
+            human.stdout
+        );
+        run(&home, &["backup", "list", "-t", "retail", "--json"], &[]).expect(0);
+        let envelope = status(&home, &["--cached"]);
+        assert_eq!(block(&envelope)["stale"], false, "{envelope:#}");
+        assert!(!has(&envelope, "refresh_backups"), "{envelope:#}");
+    }
+
+    #[test]
+    fn without_a_projection_only_the_count_is_known_and_nothing_is_written() {
+        let home = played();
+        let retail = home.client("_retail_");
+        seed_backup(&retail, BackupKind::Manual, ago(1), 1);
+        seed_backup(&retail, BackupKind::Manual, ago(2), 1);
+        assert!(!projection(&home).exists());
+        let before = [
+            tree_hash(&home.env.cache()),
+            tree_hash(&home.env.state()),
+            tree_hash(&retail),
+        ];
+        let envelope = status(&home, &["--cached"]);
+        assert_eq!(
+            block(&envelope),
+            json!({
+                "count": 2, "stale": true, "latest": null, "latest_qualifying": null,
+                "auto": {"mode": "daily", "capability": "unsupported", "last": null},
+                "bytes": null, "snapshot_bytes": null,
+                "free_bytes": 65_536u64 * 1024 * 1024,
+            })
+        );
+        // Whether a checkpoint exists is not known: the refresh comes first.
+        assert!(has(&envelope, "refresh_backups"), "{envelope:#}");
+        assert!(!has(&envelope, "backup_create"), "{envelope:#}");
+        status(&home, &[]);
+        assert!(!projection(&home).exists(), "status never rebuilds it");
+        let after = [
+            tree_hash(&home.env.cache()),
+            tree_hash(&home.env.state()),
+            tree_hash(&retail),
+        ];
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn what_automatic_attempts_recorded_is_reported_as_is() {
+        let home = played();
+        let retail = home.client("_retail_");
+        seed_backup(&retail, BackupKind::Manual, ago(1), 1);
+        run(&home, &["backup", "list", "--json"], &[]).expect(0);
+        let at = ago(3).to_string();
+        // The filesystem hint says it cannot clone; what an attempt observed wins.
+        for (capability, result, line) in [
+            ("supported", "created", "auto: daily, working"),
+            (
+                "unsupported",
+                "no_reflink",
+                "auto: daily, but this filesystem cannot clone; use daily-copy or back up by hand",
+            ),
+            (
+                "supported",
+                "space_low",
+                "auto: daily, but space ran low (limits.backup_min_free_mb)",
+            ),
+        ] {
+            let recorded = json!({"capability": capability,
+                "last": {"at": at, "result": result}});
+            record_auto(&home, &recorded);
+            let envelope = status(&home, &["--cached"]);
+            assert_eq!(
+                block(&envelope)["auto"],
+                json!({"mode": "daily", "capability": capability,
+                    "last": {"at": at, "result": result}}),
+                "{result}"
+            );
+            assert_eq!(
+                block(&envelope)["stale"],
+                false,
+                "{result}: auto is not covers"
+            );
+            let human = run(&home, &["status", "--cached"], &[]);
+            assert!(human.stdout.contains(line), "{result}: {}", human.stdout);
+        }
+        run(
+            &home,
+            &["config", "set", "auto_backup", "off", "--json"],
+            &[],
+        )
+        .expect(0);
+        let human = run(&home, &["status"], &[]);
+        assert!(
+            human.stdout.contains("  backups: 1 (newest today ")
+                && human
+                    .stdout
+                    .contains(", manual) · auto: off · 68.7 GB free"),
+            "{}",
+            human.stdout
+        );
+    }
+
+    #[test]
+    fn backup_create_is_recommended_when_no_recent_capture_qualifies() {
+        let home = played();
+        let retail = home.client("_retail_");
+        run(
+            &home,
+            &["config", "set", "auto_backup", "off", "--json"],
+            &[],
+        )
+        .expect(0);
+        // Nothing yet: recommended, whatever the mode.
+        let envelope = status(&home, &["--cached"]);
+        let create = (
+            "backup_create".to_owned(),
+            json!(["omaddons", "backup", "create", "-t", "retail"]),
+        );
+        assert!(actions(&envelope).contains(&create), "{envelope:#}");
+        // A week-old checkpoint, then captures today that are no checkpoint: an import of
+        // an old archive, a recovered partial backup, a best-effort capture.
+        seed_backup(&retail, BackupKind::Manual, ago(24 * 8), 1);
+        let today: [BackupMeta; 3] = [
+            BackupMeta {
+                source: Some(import_source()),
+                ..meta(BackupKind::Imported, ago(24 * 30), 1)
+            },
+            BackupMeta {
+                partial: true,
+                ..meta(BackupKind::Recovered, ago(1), 1)
+            },
+            BackupMeta {
+                consistency: Consistency::BestEffort,
+                ..meta(BackupKind::Manual, ago(1), 1)
+            },
+        ];
+        for seeded in &today {
+            seed_meta(&retail, seeded);
+            run(&home, &["backup", "list", "--json"], &[]).expect(0);
+            let envelope = status(&home, &["--cached"]);
+            assert!(
+                actions(&envelope).contains(&create),
+                "{:?}: {envelope:#}",
+                seeded.kind
+            );
+            assert!(!has(&envelope, "refresh_backups"), "{envelope:#}");
+        }
+        // A checkpoint today silences it.
+        run(&home, &["backup", "create", "-t", "retail", "--json"], &[]).expect(0);
+        let envelope = status(&home, &["--cached"]);
+        assert!(!has(&envelope, "backup_create"), "{envelope:#}");
+    }
+
+    #[test]
+    fn a_client_without_saved_variables_is_not_asked_to_back_up() {
+        let home = Home::new(&["wow"]);
+        home.run(&["targets", "default", "retail"]).expect(0);
+        let envelope = status(&home, &["--cached"]);
+        let b = block(&envelope);
+        assert_eq!((&b["count"], &b["stale"]), (&json!(0), &json!(false)));
+        assert!(!has(&envelope, "backup_create"), "{envelope:#}");
+        let human = run(&home, &["status"], &[]);
+        assert!(
+            human.stdout.contains(
+                "  backups: none · auto: daily, but this filesystem cannot clone; use daily-copy or back up by hand · 68.7 GB free"
+            ),
+            "{}",
+            human.stdout
+        );
+    }
+
+    fn import_source() -> BackupSource {
+        BackupSource::Import(ImportSource {
+            id: BackupId::new(),
+            target_id: "retail".to_owned(),
+            family: Family::Mainline,
+            created_at: ago(24 * 30),
+            captured_at: ago(24 * 30),
+            tool_version: "0.1.0".to_owned(),
+        })
     }
 }

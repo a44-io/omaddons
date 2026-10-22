@@ -381,9 +381,9 @@ fn update_across_clients_downloads_each_archive_once() {
     common::netlog::assert_no_github_rest(new);
 }
 
-/// `status --cached` (the widget's view) with 100 records and a memo of 200 entries
-/// copied from recorded release metadata (DBM, BigWigs and WeakAuras), median of 21
-/// runs of the binary: under 5 ms.
+/// `status --cached` (the widget's view) with 100 records, a memo of 200 entries copied
+/// from recorded release metadata (DBM, BigWigs and WeakAuras), Lua errors and 200
+/// backups, median of 21 runs of the binary: under 5 ms.
 #[test]
 #[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
 fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
@@ -499,6 +499,11 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
     let errors_memo_bytes = fs::metadata(&errors_memo).unwrap().len();
     assert!(home.state().join("errors_ack.json").is_file());
 
+    // Backups (M3-D37): 200 manual ones, added up by `backup list` in the projection;
+    // `--cached` lists them and opens no `backup.json`.
+    common::backups::seed_many(&home.client("_retail_"), 200);
+    home.run(&["backup", "list"]).expect(0);
+
     // A cold run, then 21 warm ones.
     let start = Instant::now();
     let check = home.run(&["status", "--cached"]).expect(0);
@@ -521,6 +526,12 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
         "the memo stands and the dismissal holds: {errors}"
     );
     assert!(errors["total"].as_u64().unwrap() > 0, "{errors}");
+    let backups = &check["data"]["targets"][0]["backups"];
+    assert_eq!(
+        (&backups["count"], &backups["stale"]),
+        (&serde_json::json!(200), &serde_json::json!(false)),
+        "the projection covers them: {backups}"
+    );
     let (median, times) = median_of_21(|| {
         home.run(&["status", "--cached"]).expect(0);
     });
@@ -528,7 +539,7 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
     measured(format_args!(
         "status --cached: median {median:?}, p95 {p95:?}, first {cold:?}; memo {memo_bytes} \
          bytes, 100 records; 16 accounts with a {} byte BugGrabber file each, errors memo \
-         {errors_memo_bytes} bytes",
+         {errors_memo_bytes} bytes; 200 backups",
         bug.len()
     ));
     assert!(
