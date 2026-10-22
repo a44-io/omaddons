@@ -954,6 +954,9 @@ fn locked(
             stage_dir: staged.stage_dir.clone(),
             sv_restore: None,
         },
+        writes_wtf: false,
+        staged_stamp: None,
+        source_backup: None,
     };
     let mut journal = Journal::create(&mut s, paths, &guard, prepared)?;
 

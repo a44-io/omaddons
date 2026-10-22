@@ -287,6 +287,9 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
         kind: TxKind::Install,
         started_at: Timestamp::now(),
         creates_dirs: Vec::new(),
+        writes_wtf: false,
+        staged_stamp: None,
+        source_backup: None,
         commit: CommitPayload {
             record: TargetRecord::empty(key),
             index: IndexChanges::default(),

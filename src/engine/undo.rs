@@ -362,6 +362,9 @@ fn commit(
             stage_dir: staged.stage_dir.clone(),
             sv_restore: sv_restore.clone(),
         },
+        writes_wtf: false,
+        staged_stamp: None,
+        source_backup: None,
     };
     let touched = planned.folders.touched.clone();
     let mut owned: Vec<FolderName> = touched.clone();

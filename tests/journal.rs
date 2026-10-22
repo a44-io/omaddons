@@ -152,6 +152,9 @@ mod support {
                 kind: TxKind::Install,
                 started_at: Timestamp::now(),
                 creates_dirs: Vec::new(),
+                writes_wtf: false,
+                staged_stamp: None,
+                source_backup: None,
                 commit: CommitPayload {
                     record: TargetRecord {
                         key: self.key,
