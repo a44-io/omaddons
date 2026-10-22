@@ -25,7 +25,6 @@ use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{AddonRecord, Ref, RunId, TxId, TxKind};
 use crate::output::{Outcome, Style};
 use crate::resolve::cache::Freshness;
-use crate::resolve::catalog::Catalog;
 use crate::resolve::updates::{UpdateStatus, evaluate, update_floor};
 use crate::state::memo::{self, FactIndex};
 
@@ -132,7 +131,7 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
     let verbose = ctx.output.style.verbose > 0;
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();
-    let (catalog, catalog_warnings) = Catalog::load(&world.paths);
+    let (catalog, catalog_warnings) = world.catalog(ctx);
     warnings.extend(catalog_warnings);
     let mut targets: Vec<&DiscoveredTarget> = world.select_many(ctx)?;
     targets.sort_by(|a, b| a.target.id.cmp(&b.target.id));

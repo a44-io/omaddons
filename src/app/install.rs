@@ -40,7 +40,6 @@ use crate::model::{
 };
 use crate::output::{Outcome, Style};
 use crate::resolve::cache::{Freshness, ReleaseCache};
-use crate::resolve::catalog::Catalog;
 use crate::resolve::deps::BridgeDependency;
 use crate::rules::{RulesTable, TargetKind};
 use crate::sources::refs::ParsedRef;
@@ -403,7 +402,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
     let file = args.file.as_ref().map(|f| cwd.join(f));
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
-    let (catalog, catalog_warnings) = Catalog::load(&world.paths);
+    let (catalog, catalog_warnings) = world.catalog(ctx);
     warnings.extend(catalog_warnings);
     let records = world.records()?;
 

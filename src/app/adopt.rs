@@ -45,7 +45,6 @@ use crate::resolve::adopt::{
     TukuiProject, WowiProject, identify, normalise,
 };
 use crate::resolve::cache::{Fetched, Freshness, Origin, ReleaseCache};
-use crate::resolve::catalog::Catalog;
 use crate::resolve::select::select;
 use crate::sources::wowi::index::{IndexPolicy, WowiIndex};
 use crate::sources::{SourceId, SourceSkipReason, SourceSkipped, Wanted};
@@ -470,7 +469,7 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
     let mut warnings = world.warnings.clone();
     let mut notes: Vec<String> = Vec::new();
     let records = world.records()?;
-    let (catalog, catalog_warnings) = Catalog::load(&world.paths);
+    let (catalog, catalog_warnings) = world.catalog(ctx);
     warnings.extend(catalog_warnings);
     // `--ref` lands on one target, with the ref read as `install` reads it.
     let (targets, over) = match &mode {

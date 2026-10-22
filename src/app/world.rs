@@ -42,6 +42,16 @@ pub struct World {
 }
 
 impl World {
+    /// The catalog (built-in and `catalog.d`). Its `catalog_override_invalid` warnings
+    /// also go to the run's notes as soon as they are found, as `load`'s do, so a failure
+    /// later in the command still reports them. Every command that reports catalog
+    /// warnings loads it here.
+    pub fn catalog(&self, ctx: &Context) -> (Catalog, Vec<Warning>) {
+        let (catalog, warnings) = Catalog::load(&self.paths);
+        ctx.notes.warn_all(&warnings);
+        (catalog, warnings)
+    }
+
     /// Discovers every target under the user's home, config's `extra_roots` and the
     /// registry's manual roots, reusing unchanged roots from the discovery cache, and
     /// gives each its registered or provisional identity and config overrides. Each

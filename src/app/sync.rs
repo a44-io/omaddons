@@ -607,7 +607,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
         return Err(error);
     }
     warnings.extend(desired::validate(&state, &known));
-    let (catalog, catalog_warnings) = Catalog::load(&world.paths);
+    let (catalog, catalog_warnings) = world.catalog(ctx);
     warnings.extend(catalog_warnings);
     let mut targets: Vec<&DiscoveredTarget> = world.select_many(ctx)?;
     targets.sort_by(|a, b| a.target.id.cmp(&b.target.id));

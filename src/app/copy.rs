@@ -180,7 +180,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
     let verbose = ctx.output.style.verbose > 0;
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();
-    let (catalog, catalog_warnings) = Catalog::load(&world.paths);
+    let (catalog, catalog_warnings) = world.catalog(ctx);
     warnings.extend(catalog_warnings);
     let from = side(ctx, &world, "--from", &args.from)?;
     let to = side(ctx, &world, "--to", &args.to)?;

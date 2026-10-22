@@ -688,7 +688,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         check_due |= due;
         let adoptable = if inv.counts.unmanaged > 0 {
             let catalog = catalog.get_or_insert_with(|| {
-                let (catalog, loaded) = Catalog::load(&world.paths);
+                let (catalog, loaded) = world.catalog(ctx);
                 warnings.extend(loaded);
                 catalog
             });

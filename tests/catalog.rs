@@ -407,3 +407,59 @@ fn adoption_never_guesses_another_familys_build() {
         run.context()
     );
 }
+
+/// A broken `catalog.d` override is reported by a command that then fails too (it may
+/// be why the name is unknown): once in the envelope's `warnings`, and as a stderr
+/// `warning` event before the `error` event. A command that succeeds reports it once.
+#[test]
+fn a_broken_override_is_reported_by_a_failing_command_too() {
+    let home = Home::new(&["wow"]);
+    let catalog_d = home.env.config().join("omaddons/catalog.d");
+    std::fs::create_dir_all(&catalog_d).unwrap();
+    std::fs::write(
+        catalog_d.join("90-broken.toml"),
+        "schema_version = \"1.0\"\nbogus_key = 1\n",
+    )
+    .unwrap();
+    let once = |run: &common::home::Run, envelope: &Value| {
+        let codes: Vec<&Value> = envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| &w["code"])
+            .filter(|c| *c == "catalog_override_invalid")
+            .collect();
+        assert_eq!(codes.len(), 1, "{}", run.context());
+    };
+    for args in [
+        &["info", "nosuchaddonxyz"][..],
+        &["install", "nosuchaddonxyz", "-t", "retail"],
+        &["pin", "nosuchaddonxyz", "-t", "retail"],
+        &["unpin", "nosuchaddonxyz", "-t", "retail"],
+        &["update", "nosuchaddonxyz", "-t", "retail"],
+        &["adopt", "nosuchaddonxyz", "-t", "retail"],
+    ] {
+        let mut argv: Vec<&str> = args.to_vec();
+        argv.push("--offline");
+        let run = home.run(&argv);
+        assert_ne!(run.code, 0, "{}", run.context());
+        let envelope: Value = serde_json::from_str(&run.stdout).unwrap();
+        once(&run, &envelope);
+        let events: Vec<String> = run
+            .stderr
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|e| match e["event"].as_str() {
+                Some("warning") if e["code"] == "catalog_override_invalid" => {
+                    Some("warning".to_owned())
+                }
+                Some("error") => Some("error".to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(events, ["warning", "error"], "{}", run.context());
+    }
+    let run = home.run(&["info", "weakauras", "--offline"]);
+    let envelope = run.expect(0);
+    once(&run, &envelope);
+}

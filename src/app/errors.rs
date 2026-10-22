@@ -830,7 +830,7 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
     let seen = observe(ctx, &world, &mut memo, &acks, now, &mut warnings)?;
     let found: Vec<Target> = seen.iter().map(|s| s.target.clone()).collect();
     let running_scan = detect_running(&found);
-    let (catalog, catalog_warnings) = Catalog::load(&world.paths);
+    let (catalog, catalog_warnings) = world.catalog(ctx);
     warnings.extend(catalog_warnings);
     let mut view = View {
         since,

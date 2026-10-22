@@ -21,7 +21,6 @@ use crate::model::Ref;
 use crate::output::{Outcome, Phase, Style};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::Freshness;
-use crate::resolve::catalog::Catalog;
 use crate::resolve::search::{
     Compat, CompatBasis, Hit, HitSource, Popularity, cap_summary, compat, rank,
 };
@@ -323,7 +322,7 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
 
     // The catalog: offline, built in (with catalog.d).
     if wants(SourceFilter::Catalog) {
-        let (catalog, loaded) = Catalog::load(&world.paths);
+        let (catalog, loaded) = world.catalog(ctx);
         warnings.extend(loaded);
         // One hit per name, its default variant's; each client is judged by the variant
         // it would get, so the families are every variant's.

@@ -2372,11 +2372,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 
 ### Known issues
 
-The README describes the intended behaviour; these are the places where the code at HEAD does not match it yet. Each one has a bead (`br show <id>`), and the README changes only if a fix decides otherwise.
-
-| Bead | Priority | Where the code differs |
-|---|---|---|
-| `omad-hp8r` | P3 | A failed command's envelope leaves out the `catalog_override_invalid` warning the run found before failing (a successful one carries it) |
+The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise. None is known at the moment.
 
 ---
 

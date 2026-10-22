@@ -32,7 +32,6 @@ use crate::net::{NetConfig, NetLog, stack};
 use crate::output::{Outcome, Style};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::{Freshness, ReleaseCache};
-use crate::resolve::catalog::Catalog;
 use crate::resolve::select::{newest, select};
 use crate::resolve::updates::{Confidence, rank_confidence};
 use crate::rules::Family;
@@ -341,7 +340,7 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
     let world = World::load(ctx)?;
     let verbose = ctx.output.style.verbose > 0;
     let mut warnings = world.warnings.clone();
-    let (catalog, catalog_warnings) = Catalog::load(&world.paths);
+    let (catalog, catalog_warnings) = world.catalog(ctx);
     warnings.extend(catalog_warnings);
     let records = world.records()?;
     let cwd = std::env::current_dir().unwrap_or_default();
