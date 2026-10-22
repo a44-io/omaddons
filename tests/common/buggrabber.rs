@@ -557,12 +557,13 @@ pub fn embedded_bdui(writer: Writer) -> Vec<SvFile> {
     vec![SvFile::account("FAKEACCT", "bdUI.lua", bytes)]
 }
 
-/// A `LUA_WARNING` entry (no `stack` key: its stack is embedded in the message after
-/// `|cffffd200Stack:|r`), next to an ordinary error.
+/// A `LUA_WARNING` entry (its message starts `LUA_WARNING: `, and it has no `stack` key:
+/// its stack is embedded in the message after `|cffffd200Stack:|r`), next to an
+/// ordinary error.
 pub fn warnings(writer: Writer) -> BugDb {
     let warning = BugEntry::new(
         &format!(
-            "{} Couldn't find inherited node \"BackdropTemplate\"\n|cffffd200Stack:|r\n{}",
+            "LUA_WARNING: {} Couldn't find inherited node \"BackdropTemplate\"\n|cffffd200Stack:|r\n{}",
             stack_era_c("Baz", "Baz.xml", 5),
             frame(stack_era_c("Baz", "Baz.lua", 20), "<main chunk>")
         ),

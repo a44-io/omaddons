@@ -607,6 +607,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Issues the SavedVariables parser records per parse; past it only a count"
+    },
+    {
+      "name": "BUGGRABBER_MAX_ENTRIES",
+      "value": {
+        "count": 5000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Entries decoded per BugGrabber database, the newest kept (BugGrabber caps at 500/1000)"
     }
   ]
 ]

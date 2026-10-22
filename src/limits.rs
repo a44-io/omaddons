@@ -136,6 +136,9 @@ pub const LUA_MAX_DEPTH: usize = 64;
 pub const LUA_MAX_NODES: u64 = 2_000_000;
 /// Issues the SavedVariables parser records per parse; past it, only a count.
 pub const LUA_MAX_ISSUES: usize = 64;
+/// BugGrabber entries decoded per database, the newest kept (BugGrabber itself keeps
+/// 500, r152 50).
+pub const BUGGRABBER_MAX_ENTRIES: usize = 5_000;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -527,6 +530,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Issues the SavedVariables parser records per parse; past it only a count",
     ),
+    limit(
+        "BUGGRABBER_MAX_ENTRIES",
+        LimitValue::Count(BUGGRABBER_MAX_ENTRIES as u64),
+        "count",
+        None,
+        "Entries decoded per BugGrabber database, the newest kept (BugGrabber caps at 500/1000)",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -733,6 +743,7 @@ mod tests {
         "LUA_MAX_DEPTH",
         "LUA_MAX_NODES",
         "LUA_MAX_ISSUES",
+        "BUGGRABBER_MAX_ENTRIES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

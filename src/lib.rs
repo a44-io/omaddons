@@ -16,6 +16,7 @@ pub mod discover;
 pub mod drift;
 pub mod engine;
 pub mod error;
+pub mod errors;
 pub mod fsx;
 pub mod inventory;
 pub mod limits;
