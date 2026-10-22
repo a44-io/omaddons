@@ -23,7 +23,7 @@ pub(crate) use mutate::count_hashed;
 pub(crate) use mutate::files_hashed;
 pub use mutate::{
     ActionRecord, Expect, FsxError, MutateOpts, StampDigest, TreeDigest, ensure_dir_all, mutate,
-    mutate_with, sha256_from_hex, sync_filesystem,
+    mutate_with, probe_exchange, sha256_from_hex, sync_filesystem,
 };
 pub use op::Op;
 pub use prune::{LockUse, PruneReason, PruneReport, prune};
@@ -31,5 +31,6 @@ pub use scope::{Access, OwnedFolders, Refusal, Scope, ScopeMatch, ScopeTable, Si
 pub use session::{SnapshotRoots, WriteSession};
 pub use stamp::{FileStamp, TreeStamp};
 pub use sys::{
-    CloneKind, ClonePolicy, Content, Durability, RenameMode, SyncCounts, WriteResult, sync_counts,
+    CloneKind, ClonePolicy, Content, Durability, RenameMode, SyncCounts, WriteResult, mount_id,
+    sync_counts,
 };

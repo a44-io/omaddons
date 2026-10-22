@@ -189,6 +189,23 @@ pub(crate) fn append_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// The id of the mount `path` is on (`statx` `STATX_MNT_ID`, Linux 5.8 and later), the
+/// final component not followed. Two paths a rename can join share it; a device number
+/// cannot tell (two bind mounts of one filesystem have the same device, and a rename
+/// between them fails with `EXDEV`). `Unsupported` when the kernel gives none.
+pub fn mount_id(path: &Path) -> io::Result<u64> {
+    use rustix::fs::{AtFlags, StatxFlags};
+    let stx = rustix::fs::statx(CWD, path, AtFlags::SYMLINK_NOFOLLOW, StatxFlags::MNT_ID)?;
+    if StatxFlags::from_bits_retain(stx.stx_mask).contains(StatxFlags::MNT_ID) {
+        Ok(stx.stx_mnt_id)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("{}: the kernel gives no mount id", path.display()),
+        ))
+    }
+}
+
 /// `renameat2(2)` with the given mode. `EXDEV` is a real error, never "unsupported":
 /// fsx keeps stage, snapshots and AddOns on one filesystem by construction.
 pub(crate) fn rename_with(from: &Path, to: &Path, mode: RenameMode) -> Result<(), RenameError> {

@@ -145,6 +145,10 @@ pub enum Access {
     /// Creating a directory. Scope roots (and the XDG bases above the app dirs, and
     /// `<client dir>/Interface`) accept only this.
     CreateDir,
+    /// Renaming the path as a whole, or onto it: either end of a rename. Below a root it
+    /// is a write like any other; at a root only `WTF` accepts it, from `BackupRestore`
+    /// (a whole restore's exchange, M3-D24).
+    Rename,
     /// Anything else.
     Write,
 }
@@ -340,7 +344,12 @@ impl ScopeTable {
             if !candidate.scope.admits(writer) {
                 continue;
             }
-            if candidate.position != Position::Below && access != Access::CreateDir {
+            // A whole `WTF/` is renamed only by a restore, which the row admits alone.
+            let renames_wtf = access == Access::Rename
+                && candidate.scope == Scope::Wtf
+                && candidate.position == Position::Root;
+            if candidate.position != Position::Below && access != Access::CreateDir && !renames_wtf
+            {
                 continue;
             }
             if let Some(folder) = &candidate.saved_variables_of {
@@ -360,10 +369,10 @@ impl ScopeTable {
             .collect();
         Err(Refusal::ScopeDenied(format!(
             "writer {writer} may not {} {} (scope {})",
-            if access == Access::CreateDir {
-                "create"
-            } else {
-                "write"
+            match access {
+                Access::CreateDir => "create",
+                Access::Rename => "rename",
+                Access::Write => "write",
             },
             path.display(),
             rows.join(", ")
@@ -656,6 +665,45 @@ mod tests {
         for (path, writers) in cases {
             assert_eq!(allowed(path, Access::Write, &none), writers, "{path}");
         }
+    }
+
+    /// A whole restore exchanges `WTF` itself (M3-D24): only `BackupRestore` may rename
+    /// the root, and nothing may write it otherwise. Its history line is admitted by the
+    /// `State` row, which comes before the narrower `History` row.
+    #[test]
+    fn only_a_restore_renames_the_wtf_root() {
+        use Writer as W;
+        let none = OwnedFolders::default();
+        let root = "games/wow/_retail_/WTF";
+        assert_eq!(allowed(root, Access::Rename, &none), vec![W::BackupRestore]);
+        assert_eq!(allowed(root, Access::Write, &none), vec![]);
+        for writer in [W::Mutating, W::Undo, W::Doctor] {
+            assert!(
+                !allowed(root, Access::Rename, &none).contains(&writer),
+                "{writer:?}"
+            );
+        }
+        // Other roots still take no rename, a restore's included.
+        for other in [
+            "games/wow/_retail_/Interface/AddOns",
+            "games/wow/_retail_/Interface/.omaddons",
+            "home/.local/state/omaddons",
+        ] {
+            assert_eq!(allowed(other, Access::Rename, &none), vec![], "{other}");
+        }
+        // Below a root a rename is a write like any other.
+        assert_eq!(
+            allowed(
+                "games/wow/_retail_/Interface/.omaddons/stage/T/WTF",
+                Access::Rename,
+                &none
+            ),
+            vec![W::Mutating, W::Undo, W::Backup, W::BackupRestore, W::Doctor]
+        );
+        let t = table();
+        let history = p("home/.local/state/omaddons/history.jsonl");
+        let decided = t.check(W::BackupRestore, &none, &history, Access::Write);
+        assert_eq!(decided.map(|m| m.scope), Ok(Scope::State));
     }
 
     #[test]

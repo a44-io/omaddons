@@ -22,7 +22,7 @@ use super::failpoint;
 use super::op::Op;
 use super::scope::{Access, Refusal};
 use super::session::{SessionKind, TxState, WriteSession};
-use super::sys::{self, CloneKind, ClonePolicy, Durability, RenameError, RenameMode};
+use super::sys::{self, CloneKind, ClonePolicy, Content, Durability, RenameError, RenameMode};
 use crate::error::{Error, ErrorCode, Suggestion};
 use crate::model::TxId;
 
@@ -104,6 +104,12 @@ pub struct MutateOpts {
     pub sha256_before: Option<[u8; 32]>,
     /// The same, for what is at the path afterwards (an exchange).
     pub sha256_after: Option<[u8; 32]>,
+    /// A whole tree's stat digest before the operation (M3-D25), recorded instead of a
+    /// content digest: a renamed `WTF/` is never hashed in a transaction session. It
+    /// takes precedence over `tree_before` for a directory.
+    pub stamp_before: Option<StampDigest>,
+    /// The same, for what is at the path afterwards (an exchange).
+    pub stamp_after: Option<StampDigest>,
     /// [`Durability::Deferred`] is accepted only in untracked sessions, for
     /// `WriteFile`/`CreateDir` under a client's `Interface/.omaddons/stage/`.
     pub durability: Durability,
@@ -257,6 +263,7 @@ impl fmt::Display for StampDigest {
 enum StateDigest {
     File([u8; 32]),
     Tree(TreeDigest),
+    Stamp(StampDigest),
     Len(u64),
     Mode(u32),
     Link(PathBuf),
@@ -267,6 +274,7 @@ impl fmt::Display for StateDigest {
         match self {
             Self::File(sha) => write!(f, "sha256:{}", hex(sha)),
             Self::Tree(tree) => tree.fmt(f),
+            Self::Stamp(stamp) => stamp.fmt(f),
             Self::Len(len) => write!(f, "len:{len}"),
             Self::Mode(mode) => write!(f, "mode:{mode:o}"),
             Self::Link(target) => write!(f, "link:{}", target.display()),
@@ -332,13 +340,14 @@ pub fn mutate_with(
     let target = normalize(path, matches!(op, Op::SymlinkAtomic { .. }))?;
     let access = match op {
         Op::CreateDir => Access::CreateDir,
+        Op::Rename { .. } => Access::Rename,
         _ => Access::Write,
     };
     let matched = s.scopes.check(s.writer, &s.owned, &target, access)?;
     let to = match &op {
         Op::Rename { to, .. } => {
             let to = normalize(to, false)?;
-            s.scopes.check(s.writer, &s.owned, &to, Access::Write)?;
+            s.scopes.check(s.writer, &s.owned, &to, Access::Rename)?;
             Some(to)
         }
         _ => None,
@@ -387,6 +396,7 @@ pub fn mutate_with(
     // 2. Before-digest.
     let known_before = Known {
         tree: opts.tree_before,
+        stamp: opts.stamp_before,
         sha256: opts.sha256_before,
     };
     let before = digest(&target, &op, known_before).map_err(io_err(&target))?;
@@ -412,6 +422,7 @@ pub fn mutate_with(
     // 4–5. Execute.
     let known_after = Known {
         tree: opts.tree_after,
+        stamp: opts.stamp_after,
         sha256: opts.sha256_after,
     };
     let digest_op = DigestOp::of(&op);
@@ -495,6 +506,31 @@ pub fn ensure_dir_all(
         }
     }
     Ok(created)
+}
+
+/// Whether the filesystem holding `dir` can `RENAME_EXCHANGE` (M3-D24): two empty files
+/// created in `dir` are exchanged. A restore probes before it copies anything, in its own
+/// stage, which goes with the transaction; `false` only when the kernel says the flag is
+/// unsupported there, any other failure an error.
+pub fn probe_exchange(s: &mut WriteSession<'_>, dir: &Path) -> Result<bool, FsxError> {
+    ensure_dir_all(s, dir)?;
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    for file in [&a, &b] {
+        let op = Op::WriteFile {
+            content: Content::Bytes(b""),
+            mode: Some(0o600),
+        };
+        mutate(s, file, op)?;
+    }
+    let exchange = Op::Rename {
+        to: &b,
+        mode: RenameMode::Exchange,
+    };
+    match mutate(s, &a, exchange) {
+        Ok(_) => Ok(true),
+        Err(FsxError::Unsupported) => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 /// Makes everything written on the filesystem holding `path` durable (`syncfs(2)`);
@@ -653,6 +689,7 @@ impl DigestOp {
 #[derive(Debug, Clone, Copy, Default)]
 struct Known {
     tree: Option<TreeDigest>,
+    stamp: Option<StampDigest>,
     sha256: Option<[u8; 32]>,
 }
 
@@ -675,10 +712,11 @@ fn digest_after(path: &Path, op: DigestOp, known: Known) -> io::Result<Option<St
             StateDigest::Link(fs::read_link(path)?)
         }
         DigestOp::Link => return Ok(None),
-        DigestOp::Content if meta.is_dir() => StateDigest::Tree(match known.tree {
-            Some(tree) => tree,
-            None => TreeDigest::compute(path)?,
-        }),
+        DigestOp::Content if meta.is_dir() => match (known.stamp, known.tree) {
+            (Some(stamp), _) => StateDigest::Stamp(stamp),
+            (None, Some(tree)) => StateDigest::Tree(tree),
+            (None, None) => StateDigest::Tree(TreeDigest::compute(path)?),
+        },
         DigestOp::Content => StateDigest::File(match known.sha256 {
             Some(sha256) => sha256,
             None => hash_file(path)?,
@@ -1500,5 +1538,70 @@ mod tests {
         .into();
         assert_eq!(io.code, ErrorCode::Io);
         assert!(!ErrorCode::ScopeDenied.default_retryable());
+    }
+
+    /// A restore's renames of a whole `WTF/` record the stat digests it passes
+    /// (`stamp:sha256:`), never a content digest computed in the session (M3-D25); a
+    /// rename without them keeps the content digest.
+    #[test]
+    fn a_whole_tree_rename_records_its_stamps() {
+        let f = Fixture::new();
+        let mut s = f.tx_session(Writer::BackupRestore);
+        let staged = f.stage().join("WTF");
+        ensure_dir_all(&mut s, &staged.join("Account/A")).unwrap();
+        fs::write(staged.join("Account/A/bindings-cache.wtf"), b"x").unwrap();
+        let live = f.client.join("WTF");
+        let (staged_stamp, live_stamp) = (
+            StampDigest::compute(&staged).unwrap(),
+            StampDigest::compute(&live).unwrap(),
+        );
+        let opts = MutateOpts {
+            stamp_before: Some(staged_stamp),
+            stamp_after: Some(live_stamp),
+            ..MutateOpts::default()
+        };
+        let op = Op::Rename {
+            to: &live,
+            mode: RenameMode::Exchange,
+        };
+        let swapped = mutate_with(&mut s, &staged, op, opts).unwrap();
+        assert_eq!(
+            (swapped.before_hash, swapped.after_hash),
+            (Some(staged_stamp.to_string()), Some(live_stamp.to_string()))
+        );
+        assert!(staged_stamp.to_string().starts_with("stamp:sha256:"));
+        assert!(
+            live.join("Account/A/bindings-cache.wtf").is_file(),
+            "exchanged"
+        );
+        // The same rename back, without stamps: the content digest, as before.
+        let back = mutate(
+            &mut s,
+            &staged,
+            Op::Rename {
+                to: &live,
+                mode: RenameMode::Exchange,
+            },
+        )
+        .unwrap();
+        assert!(
+            back.before_hash.unwrap().starts_with("tree:sha256:"),
+            "no stamp given"
+        );
+    }
+
+    #[test]
+    fn the_exchange_probe_says_what_the_filesystem_can_do() {
+        let f = Fixture::new();
+        let mut s = WriteSession::untracked(Writer::BackupRestore, &f.scopes, "probe");
+        let probe = f.stage().join("probe");
+        assert!(probe_exchange(&mut s, &probe).unwrap(), "tempdirs exchange");
+        #[cfg(debug_assertions)]
+        {
+            let again = f.stage().join("probe-again");
+            let unsupported =
+                failpoint::with_spec("fsx.renameat2.einval", || probe_exchange(&mut s, &again));
+            assert!(!unsupported.unwrap(), "EINVAL is unsupported, not an error");
+        }
     }
 }

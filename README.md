@@ -1481,7 +1481,7 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its `commands` offer `omaddons undo <tx>` for a transaction that committed before it, and its warnings are the ones the run found. A panic after the result was written leaves that result and its exit status, with one stderr `log` line saying so (dropped by `--quiet`); a panic the program recovers from prints nothing.
 
 <details>
-<summary><strong>Every error code (39)</strong></summary>
+<summary><strong>Every error code (40)</strong></summary>
 
 | Code | Exit | Retryable | When |
 |---|---|---|---|
@@ -1507,6 +1507,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `host_blocked` | 4 | no | an HTTP request or redirect to a host not on the allowlist, or a `git:` ref to a host not in `git_hosts` |
 | `scope_denied` | 4 | no | the filesystem writer refused a path outside its scope |
 | `state_too_new` | 4 | no | a state file written by a newer omaddons: a change is refused before anything is staged when its client's record or files index, or (to register a client) the registry, is newer; a journal a newer omaddons started (`details.reason: "journal_too_new"`, `details.journal_pending`) |
+| `filesystem_unsupported` | 4 | no | a `WTF/` restore (later in milestone 3) cannot run on this client: `WTF/` is a mount point (`details.reason: "wtf_is_mount_point"`), the client's `Interface/.omaddons/` is on another mount (`stage_cross_mount`), or the filesystem cannot exchange two directories atomically (`no_rename_exchange`); `details.backup_dir` is the backup's folder to copy from by hand, with the game closed. Checked before anything is copied |
 | `locked` | 5 | yes | lock held past 5 s; `details.holder` |
 | `check_failed` | 6 | no | `--check` or `--strict` |
 | `network` | 1 | yes (no for too many redirects or an undecodable encoding) | connection failure, also mid-body; more than 5 redirects; a `Content-Encoding` omaddons does not decode; a source response it cannot read; a git run that times out, or fails outside clone and fetch |
