@@ -45,6 +45,18 @@ expression: s.stable(&c.envelope)
         "attention": [],
         "default": false,
         "drift": [],
+        "errors": {
+          "addons": 0,
+          "capture": "none",
+          "coverage": "complete",
+          "dismissed_at": null,
+          "last_session_at": null,
+          "new": 0,
+          "received": 0,
+          "state": "ok",
+          "top": [],
+          "total": 0
+        },
         "family": "mists",
         "folders": {
           "invalid": 0,
@@ -92,6 +104,18 @@ expression: s.stable(&c.envelope)
         "attention": [],
         "default": false,
         "drift": [],
+        "errors": {
+          "addons": 0,
+          "capture": "none",
+          "coverage": "complete",
+          "dismissed_at": null,
+          "last_session_at": null,
+          "new": 0,
+          "received": 0,
+          "state": "ok",
+          "top": [],
+          "total": 0
+        },
         "family": "mainline",
         "folders": {
           "invalid": 0,

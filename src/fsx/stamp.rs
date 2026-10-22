@@ -63,6 +63,11 @@ impl FileStamp {
         self.size
     }
 
+    /// The modification time, in nanoseconds since the epoch.
+    pub fn mtime_ns(&self) -> i128 {
+        self.mtime_ns
+    }
+
     /// Every field as one string: equal for equal stamps, so a preview can record what it
     /// observed and a later run compare it (M3-D46).
     pub fn fingerprint(&self) -> String {

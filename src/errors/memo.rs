@@ -99,6 +99,10 @@ pub struct AddonMemo {
     pub managed: bool,
     pub kind: SourceKind,
     pub sessions: BTreeMap<u32, SessionMemo>,
+    /// The folders attribution named, sorted ignoring case (`status`' `top[].folder`).
+    /// Absent from a memo written before it, which reads as none.
+    #[serde(default)]
+    pub folders: Vec<String>,
 }
 
 /// The memo of `observation`. A database this run could not read keeps what `previous`
@@ -154,12 +158,21 @@ pub fn target_memo(observation: &Observation, previous: Option<&TargetMemo>) -> 
                             managed: e.managed,
                             kind: e.kind,
                             sessions: BTreeMap::new(),
+                            folders: Vec::new(),
                         });
                         let last = memo.addons.len() - 1;
                         &mut memo.addons[last]
                     }
                 };
                 add(&mut addon.sessions, session, occurrences, e.evidence);
+                if let Some(folder) = &e.folder
+                    && !addon.folders.iter().any(|f| f.eq_ignore_ascii_case(folder))
+                {
+                    addon.folders.push(folder.clone());
+                }
+            }
+            for addon in &mut memo.addons {
+                addon.folders.sort_by_key(|f| f.to_ascii_lowercase());
             }
             memo.addons.sort_by(|a, b| {
                 (a.addon.to_ascii_lowercase(), a.kind).cmp(&(b.addon.to_ascii_lowercase(), b.kind))

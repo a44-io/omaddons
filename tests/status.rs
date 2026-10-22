@@ -152,12 +152,51 @@ fn two_clients_before_and_after_registration() {
 
 #[test]
 fn status_writes_nothing() {
+    use common::addons::addon_folder;
+    use common::buggrabber::{BugDb, BugEntry, NOW, TimeKind, Writer, stack_era_c, write_files};
+
     let m = Machine::new();
     m.install("retail", "120105");
+    // Lua errors read and dismissed (the errors memo and the dismissals exist), then a
+    // session the memo has not seen: `--cached` is stale, plain `status` reads it live.
+    let bug_toc = toc("120105", &["## SavedVariables: BugGrabberDB"]);
+    addon_folder(
+        &m.home.addons("_retail_"),
+        "!BugGrabber",
+        &[("!BugGrabber.toc", &bug_toc)],
+        &[],
+    );
+    let entry = |session| {
+        let at = stack_era_c("Foo", "a.lua", session);
+        BugEntry::new(
+            &format!("{at} attempt to call a nil value"),
+            session,
+            (TimeKind::Unix, NOW - 60),
+        )
+    };
+    let wtf = m.home.client("_retail_").join("WTF");
+    write_files(
+        &wtf,
+        &[BugDb::new(Writer::Modern, 3).entry(entry(3)).file()],
+    );
+    let clock = [("OMADDONS_NOW", "2026-10-15T18:30:00Z")];
+    for args in [&["errors"][..], &["errors", "dismiss", "-t", "retail"]] {
+        let mut argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        argv.push("--json".to_owned());
+        m.home.exec_with(&argv, &clock).expect(0);
+    }
+    assert!(m.home.env.cache().join("omaddons/errors.json").is_file());
+    assert!(m.home.state().join("errors_ack.json").is_file());
+    let next = BugDb::new(Writer::Modern, 4)
+        .entry(entry(3))
+        .entry(entry(4));
+    write_files(&wtf, &[next.file()]);
     m.status(&[], 0); // warms the discovery cache
     let before = m.hashes();
-    m.status(&[], 0);
-    m.status(&["--cached"], 0);
+    let live = m.status(&[], 0);
+    assert_eq!(target(&live, "mainline")["errors"]["new"], 1, "{live}");
+    let cached = m.status(&["--cached"], 0);
+    assert_eq!(target(&cached, "mainline")["errors"]["state"], "stale");
     m.status(&["--cached", "--offline"], 0);
     assert_eq!(m.hashes(), before);
 }

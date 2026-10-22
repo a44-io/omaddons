@@ -217,26 +217,9 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
         }
         let index = observation.databases.len();
         let legacy = db.shape == DbShape::Legacy;
-        let read: Vec<(BugEntry, TimeEvidence)> = db
-            .entries
-            .into_iter()
-            .map(|e| {
-                let at = evidence(e.time.as_ref(), cx.tz);
-                (e, at)
-            })
-            .collect();
-        // Each session's newest time, which the time clause judges per session.
-        let mut newest: std::collections::BTreeMap<u32, TimeEvidence> =
-            std::collections::BTreeMap::new();
-        for (e, at) in &read {
-            if let (Origin::Local, Some(s)) = (e.origin, e.session) {
-                newest
-                    .entry(s)
-                    .and_modify(|n| *n = TimeEvidence::weakest(n, at))
-                    .or_insert(*at);
-            }
-        }
-        for (entry, at) in read {
+        let first = observation.entries.len();
+        for entry in db.entries {
+            let at = evidence(entry.time.as_ref(), cx.tz);
             let attribution = attribute(
                 &entry.message,
                 entry.stack.as_deref(),
@@ -245,10 +228,6 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
                 legacy,
             );
             let (name, managed, kind, folder) = group_of(&attribution.target, cx.owner);
-            let new = entry.origin == Origin::Local
-                && entry.session.is_some_and(|s| {
-                    session_is_new(&state_of, s, newest.get(&s), ack.as_ref(), cx.now)
-                });
             observation.entries.push(Observed {
                 database: index,
                 fingerprint: identity(&entry.message),
@@ -258,10 +237,16 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
                 managed,
                 kind,
                 folder,
-                new,
+                new: false,
                 entry,
             });
         }
+        mark_new(
+            &mut observation.entries[first..],
+            &state_of,
+            ack.as_ref(),
+            cx.now,
+        );
         observation.databases.push(Database {
             id: format!("db-{}", at + 1),
             account: file.account,
@@ -319,6 +304,29 @@ pub fn session_is_new(
     let baseline = valid(db.baseline).max(ack.map_or(0, |a| valid(a.acked_session)));
     session > baseline
         || ack.is_some_and(|a| newest.is_some_and(|t| t.at_or_after(a.acked_at) == Tri::Yes))
+}
+
+/// Marks each entry of one database (`entries`, all of it) new or not (M3-D19): a local
+/// entry's session judged by [`session_is_new`], with that session's newest time among
+/// the database's local entries. An entry without a session, or received from another
+/// player, is never new.
+pub fn mark_new(entries: &mut [Observed], db: &DbState, ack: Option<&Ack>, now: Timestamp) {
+    let mut newest: std::collections::BTreeMap<u32, TimeEvidence> =
+        std::collections::BTreeMap::new();
+    for e in entries.iter() {
+        if let (Origin::Local, Some(s)) = (e.entry.origin, e.entry.session) {
+            newest
+                .entry(s)
+                .and_modify(|n| *n = TimeEvidence::weakest(n, &e.evidence))
+                .or_insert(e.evidence);
+        }
+    }
+    for e in entries {
+        e.new = e.entry.origin == Origin::Local
+            && e.entry
+                .session
+                .is_some_and(|s| session_is_new(db, s, newest.get(&s), ack, now));
+    }
 }
 
 /// An error's fingerprint: its message and location, both normalized, so a library
@@ -431,7 +439,8 @@ pub fn shown_time(aggregate: TimeEvidence) -> Option<TimeEvidence> {
 }
 
 /// `entries` grouped by addon and kind (and origin), each group's entries merged by
-/// database and fingerprint; addons by new entries, then occurrences, then name.
+/// database and fingerprint; addons by new entries, then occurrences, then name, then
+/// kind (so `status`' recount from the memo lists them alike).
 pub fn group<'o>(entries: &[&'o Observed]) -> Vec<AddonErrors<'o>> {
     let mut addons: Vec<AddonErrors<'o>> = Vec::new();
     let mut addon_at: std::collections::BTreeMap<(String, SourceKind, bool), usize> =
@@ -498,11 +507,14 @@ pub fn group<'o>(entries: &[&'o Observed]) -> Vec<AddonErrors<'o>> {
         addon.folders.sort_by_key(|f| f.to_ascii_lowercase());
     }
     addons.sort_by(|a, b| {
-        (b.new, b.count).cmp(&(a.new, a.count)).then_with(|| {
-            a.name
-                .to_ascii_lowercase()
-                .cmp(&b.name.to_ascii_lowercase())
-        })
+        (b.new, b.count)
+            .cmp(&(a.new, a.count))
+            .then_with(|| {
+                a.name
+                    .to_ascii_lowercase()
+                    .cmp(&b.name.to_ascii_lowercase())
+            })
+            .then(a.kind.cmp(&b.kind))
     });
     addons
 }

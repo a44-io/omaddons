@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5a4162ab75053fa574475cd45b93c52e0f9c17f542521f2e04b545ed43ed4c6c # shrinks to dbs = [GenDb { session: None, baseline: 0, written_ago: 0, ack: None, entries: [GenEntry { session: Some(1), received: false, who: 2, counter: 4, ago: None, meaning: Last }, GenEntry { session: Some(1), received: false, who: 1, counter: 5, ago: None, meaning: Last }, GenEntry { session: Some(1), received: false, who: 0, counter: 1, ago: None, meaning: Last }] }, GenDb { session: None, baseline: 0, written_ago: 0, ack: None, entries: [GenEntry { session: Some(1), received: false, who: 2, counter: 2, ago: None, meaning: Last }] }]

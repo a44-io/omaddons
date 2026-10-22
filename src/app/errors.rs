@@ -956,7 +956,7 @@ fn observe<'w>(
 }
 
 /// The managed addon whose record lists `folder`.
-fn owner_of(record: Option<&TargetRecord>, folder: &str) -> Option<String> {
+pub(crate) fn owner_of(record: Option<&TargetRecord>, folder: &str) -> Option<String> {
     let key = folder.to_ascii_lowercase();
     record?
         .addons

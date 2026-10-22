@@ -7,6 +7,10 @@
 //! cache's roots, or without a cache parses only the registered roots and recommends a
 //! full `omaddons status`. Running state is live either way. `--check` turns any
 //! attention into exit 6 (`check_failed`) with the data still there.
+//!
+//! Lua errors (M3-D20): plain `status` reads BugGrabber's files as `errors` does;
+//! `--cached` recounts the errors memo and only stats files to tell it is stale. Neither
+//! writes the memo.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -14,10 +18,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::drift::{DriftItem, needs_reinstall, reinstall_hint};
+use super::errors::CoverageState;
+use super::errors_status::{self, TargetErrors};
 use super::history::ChangeCounts;
 use super::issues::{Issue, SeverityCounts, issues_for};
 use super::remembered::Remembered;
@@ -30,8 +37,11 @@ use crate::discover::shared::{SharedAddons, shared_addons};
 use crate::drift::{AddonDrift, DriftMode, DriftState};
 use crate::engine::journal;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
+use crate::errors::observe::{Observe, read_target};
+use crate::errors::{ack, memo};
 use crate::fsx::{LockState, probe_global};
 use crate::inventory::{Counts, Depth, FolderClass, Inventory, inventory_shared};
+use crate::limits::ERRORS_MAX_TOTAL_BYTES;
 use crate::model::{Actor, AddonState, FolderName, Ref, RunId, Target, TargetKey, TxKind};
 use crate::output::{Outcome, Style, table};
 use crate::politeness::DEFAULT_CHECK_INTERVAL;
@@ -40,6 +50,7 @@ use crate::resolve::updates::{StatusKind, UncheckedReason, UpdateStatus};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
 use crate::state::history::{self, HistoryEntry, HistoryFilter};
 use crate::state::history_tail::{self, Answer};
+use crate::state::paths::ClientPaths;
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::registry::RegistryEntry;
 use crate::state::store::VersionStatus;
@@ -103,10 +114,11 @@ pub struct SummaryUpdates {
     pub targets: Vec<String>,
 }
 
-/// New Lua errors across the targets (`errors` fills them in).
+/// New local Lua errors across the targets (received ones never count).
 #[derive(Debug, Clone, Default, Serialize, JsonSchema)]
 pub struct SummaryErrors {
     pub new: usize,
+    /// The ids of the targets with new errors.
     pub targets: Vec<String>,
 }
 
@@ -207,6 +219,9 @@ pub struct StatusTarget {
     /// severities and a remediation each. `--cached` checks drift by presence only, so a
     /// modified addon is not among them there.
     pub issues: Vec<Issue>,
+    /// Its Lua errors, from BugGrabber: read live, or under `--cached` recounted from what
+    /// `errors` last read (M3-D20).
+    pub errors: TargetErrors,
     /// `-v` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_dir: Option<PathBuf>,
@@ -366,7 +381,7 @@ impl Outcome for StatusOutcome {
                 ]
             })
             .collect();
-        // Each target's row, then its issues under it.
+        // Each target's row, then its issues and its Lua errors under it.
         let text = table(&rows);
         for (row, t) in text.lines().zip(&self.data.targets) {
             writeln!(w, "{row}")?;
@@ -375,6 +390,9 @@ impl Outcome for StatusOutcome {
                 if let Some(command) = &issue.remediation.command {
                     line.push_str(&format!(" → {command}"));
                 }
+                writeln!(w, "{line}")?;
+            }
+            if let Some(line) = errors_status::human_line(&t.id, &t.errors) {
                 writeln!(w, "{line}")?;
             }
         }
@@ -403,7 +421,8 @@ impl Outcome for StatusOutcome {
     }
 }
 
-/// The first line: `3 updates on 2 clients · 1 issue (P2) · retail running`.
+/// The first line: `3 updates on 2 clients · 1 issue (P2) · 4 new Lua errors on 1 client
+/// · retail running`.
 fn summary_line(s: &Summary) -> String {
     let plural = |n: usize, one: &str, many: &str| {
         if n == 1 {
@@ -436,6 +455,13 @@ fn summary_line(s: &Summary) -> String {
             "{} ({})",
             plural(total, "issue", "issues"),
             severities.join(", ")
+        ));
+    }
+    if s.errors.new > 0 {
+        parts.push(format!(
+            "{} on {}",
+            plural(s.errors.new, "new Lua error", "new Lua errors"),
+            plural(s.errors.targets.len(), "client", "clients")
         ));
     }
     if !s.running.is_empty() {
@@ -536,7 +562,16 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     let held = matches!(probe_global(&world.paths)?, LockState::Held { .. });
     // Read once: what earlier commands learned about releases.
     let remembered = Remembered::load(&world);
-    let notes: Vec<String> = remembered.note.iter().cloned().collect();
+    let mut notes: Vec<String> = remembered.note.iter().cloned().collect();
+    // Read once too, and never written: what `errors` last read, and the dismissals.
+    let (errors_memo, _) = memo::load(&world.paths);
+    let (acks, ack_note) = ack::read(&world.paths);
+    notes.extend(ack_note);
+    let errors_now = crate::clock::now();
+    // Plain `status` reads BugGrabber's files, as `errors` does (local-time strings in
+    // this machine's zone, within one run's byte budget).
+    let live_errors = (!args.cached).then(TimeZone::system);
+    let mut errors_budget = ERRORS_MAX_TOTAL_BYTES;
     let interval = world
         .config
         .effective_limits()
@@ -579,12 +614,19 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             }
             None => None,
         };
+        // Plain `status` reads the loaded TOCs too: an addon that embeds BugGrabber's
+        // database says so in its TOC.
+        let depth = if args.cached {
+            Depth::Classes
+        } else {
+            Depth::Full
+        };
         let inv = inventory_shared(
             t,
             record.as_ref().map(|l| &l.value),
             &world.sibling_records(t)?,
             &world.table,
-            Depth::Classes,
+            depth,
         )?;
         let addons = record
             .as_ref()
@@ -641,6 +683,43 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             .as_ref()
             .map(|l| orphans(&l.value))
             .unwrap_or_default();
+        let filed_as = t.key.map_or_else(|| t.id.clone(), |k| k.to_string());
+        let client = ClientPaths::new(&t.client_dir);
+        let errors = match &live_errors {
+            Some(tz) => {
+                let owner = |folder: &str| {
+                    super::errors::owner_of(record.as_ref().map(|l| &l.value), folder)
+                };
+                let observation = read_target(
+                    &Observe {
+                        target: &t.id,
+                        client: &client,
+                        inventory: &inv,
+                        owner: &owner,
+                        memo: errors_memo.targets.get(&filed_as),
+                        ack: acks.targets.get(&filed_as),
+                        now: errors_now,
+                        tz,
+                    },
+                    &mut errors_budget,
+                );
+                errors_status::live(&observation)
+            }
+            None => {
+                let installed = |folder: &str| {
+                    inv.folders
+                        .iter()
+                        .any(|f| f.name.eq_ignore_ascii_case(folder))
+                };
+                errors_status::cached(
+                    &client,
+                    &installed,
+                    errors_memo.targets.get(&filed_as),
+                    acks.targets.get(&filed_as),
+                    errors_now,
+                )
+            }
+        };
         targets.push(StatusTarget {
             id: t.id.clone(),
             key: t.key,
@@ -669,6 +748,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             orphan_names,
             attention,
             issues: Vec::new(),
+            errors,
             client_dir: verbose.then(|| t.client_dir.clone()),
             install_root: verbose.then(|| t.install_root.clone()),
             exe_name: if verbose { t.exe_name.clone() } else { None },
@@ -710,6 +790,8 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             orphan_names: Vec::new(),
             attention,
             issues: Vec::new(),
+            // Nothing to read: the directory is gone.
+            errors: TargetErrors::uncaptured(CoverageState::Complete),
             client_dir: verbose.then(|| e.client_dir.clone()),
             install_root: verbose.then(|| e.install_root.clone()),
             exe_name: None,
@@ -881,7 +963,11 @@ fn summary(targets: &[StatusTarget], commands: &[CommandHint]) -> Summary {
         available: with_updates.iter().map(|t| t.updates.available).sum(),
         targets: with_updates.iter().map(|t| t.id.clone()).collect(),
     };
-    let errors = SummaryErrors::default();
+    let with_errors: Vec<&StatusTarget> = targets.iter().filter(|t| t.errors.new > 0).collect();
+    let errors = SummaryErrors {
+        new: with_errors.iter().map(|t| t.errors.new).sum(),
+        targets: with_errors.iter().map(|t| t.id.clone()).collect(),
+    };
     let state = summary_state(&issues, errors.new, updates.available);
     Summary {
         targets: targets.len(),
@@ -998,7 +1084,8 @@ pub(super) fn inspect_hint(target: &str) -> CommandHint {
 /// The commands `status` recommends, in M2's order: (1) journal and state fixes (none
 /// have a command), (2) `reinstall` (E3), (3) `update`, one for all targets with
 /// updates or `-t` when only one has them, (4) `adopt` (E5.3), (5) `check_updates`
-/// when `check_due`, (6) `remove_orphans` (C6), (7) the attention fixes (target order,
+/// when `check_due`, then `check_errors` when a target's Lua errors are stale or
+/// unchecked (M3), (6) `remove_orphans` (C6), (7) the attention fixes (target order,
 /// then item order); then a look at unmanaged folders. Also the first attention item's
 /// message and fix, for `--check`.
 fn recommendations(
@@ -1036,6 +1123,14 @@ fn recommendations(
         commands.push(CommandHint::new(
             "check_updates",
             ["omaddons", "outdated"],
+            false,
+        ));
+    }
+    // Never for a read that was incomplete: reading it again would not complete it.
+    if targets.iter().any(|t| t.errors.worth_checking()) {
+        commands.push(CommandHint::new(
+            "check_errors",
+            ["omaddons", "errors"],
             false,
         ));
     }
@@ -1202,6 +1297,7 @@ pub(crate) fn test_target(
         orphan_names: Vec::new(),
         attention: attention.to_vec(),
         issues: Vec::new(),
+        errors: TargetErrors::uncaptured(CoverageState::Complete),
         client_dir: None,
         install_root: None,
         exe_name: None,
@@ -1261,6 +1357,70 @@ mod tests {
             summary_line(&summary(&[target("retail", 0, &[], 0)], &[])),
             "Nothing needs doing"
         );
+    }
+
+    /// A target's errors block with `new` new and `received` received errors.
+    fn lua(state: errors_status::ErrorsState, new: usize, received: usize) -> TargetErrors {
+        TargetErrors {
+            capture: crate::app::errors::CaptureState::Buggrabber,
+            state,
+            new,
+            total: new + 1,
+            received,
+            ..TargetErrors::uncaptured(CoverageState::Complete)
+        }
+    }
+
+    #[test]
+    fn new_local_errors_count_and_received_ones_never_do() {
+        use errors_status::ErrorsState;
+        let mut retail = target("retail", 2, &[], 0);
+        retail.errors = lua(ErrorsState::Ok, 4, 0);
+        let mut classic = target("classic", 0, &[], 0);
+        classic.errors = lua(ErrorsState::Ok, 0, 3);
+        let s = summary(&[classic.clone(), retail], &[]);
+        assert_eq!(
+            (s.errors.new, s.errors.targets.clone()),
+            (4, vec!["retail".to_owned()])
+        );
+        assert_eq!(s.state, SummaryState::Errors, "errors outrank updates");
+        assert_eq!(
+            summary_line(&s),
+            "2 updates on 1 client · 4 new Lua errors on 1 client"
+        );
+        let s = summary(&[classic], &[]);
+        assert_eq!((s.errors.new, s.state), (0, SummaryState::Idle));
+        assert_eq!(summary_line(&s), "Nothing needs doing");
+    }
+
+    #[test]
+    fn errors_are_checked_again_only_when_stale_or_unchecked() {
+        use errors_status::ErrorsState;
+        let with = |state| {
+            let mut t = target("retail", 0, &[], 0);
+            t.errors = lua(state, 1, 0);
+            recommendations(&[t], true).0
+        };
+        for state in [ErrorsState::Stale, ErrorsState::Unchecked] {
+            let commands = with(state);
+            assert_eq!(
+                actions(&commands),
+                ["check_updates", "check_errors"],
+                "{state:?}"
+            );
+            assert_eq!(commands[1].argv(), ["omaddons", "errors"]);
+            assert_eq!(
+                serde_json::to_value(&commands[1]).unwrap()["destructive"],
+                false
+            );
+        }
+        for state in [
+            ErrorsState::Ok,
+            ErrorsState::Partial,
+            ErrorsState::Unreadable,
+        ] {
+            assert_eq!(actions(&with(state)), ["check_updates"], "{state:?}");
+        }
     }
 
     #[test]

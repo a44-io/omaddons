@@ -9,7 +9,8 @@
 use std::collections::BTreeSet;
 
 use scenarios::{
-    Builder, adoptable, behind, degraded, edited, orphaned, target, unchecked, unmanaged, unplugged,
+    Builder, adoptable, behind, degraded, edited, errors_partial, errors_stale, errors_unread,
+    orphaned, target, unchecked, unmanaged, unplugged,
 };
 use serde_json::json;
 
@@ -112,6 +113,62 @@ mod scenarios {
         let s = Scene::new();
         unmanaged_folder(&s, "Mystery");
         s
+    }
+
+    /// BugGrabber on retail with errors on disk that no `errors` run has read; `status`
+    /// has run once, so `--cached` knows the clients.
+    pub fn errors_unread() -> Scene {
+        use common::addons::{addon_folder, toc};
+        let s = Scene::new();
+        let bug_toc = toc("120105", &["## SavedVariables: BugGrabberDB"]);
+        addon_folder(
+            &s.home.addons("_retail_"),
+            "!BugGrabber",
+            &[("!BugGrabber.toc", &bug_toc)],
+            &[],
+        );
+        write_errors(&s, 3);
+        s.json(&["status"], 0);
+        s
+    }
+
+    /// The same, read by `errors`, then a session it has not seen.
+    pub fn errors_stale() -> Scene {
+        let s = errors_unread();
+        s.json(&["errors"], 0);
+        write_errors(&s, 4);
+        s
+    }
+
+    /// The same, read while the game was writing the file: incomplete.
+    pub fn errors_partial() -> Scene {
+        let s = errors_unread();
+        let wtf = s.home.client("_retail_").join("WTF");
+        let mut file = errors_db(3).file();
+        let cut = file.bytes.len() - 20;
+        file.bytes.truncate(cut);
+        common::buggrabber::write_files(&wtf, &[file]);
+        s.json(&["errors"], 0);
+        s
+    }
+
+    fn errors_db(session: u32) -> common::buggrabber::BugDb {
+        use common::buggrabber::{BugDb, BugEntry, NOW, TimeKind, Writer, stack_era_c};
+        (1..=session).fold(BugDb::new(Writer::Modern, session), |db, s| {
+            db.entry(BugEntry::new(
+                &format!(
+                    "{} attempt to call a nil value",
+                    stack_era_c("Foo", "a.lua", s)
+                ),
+                s,
+                (TimeKind::Unix, NOW - 60),
+            ))
+        })
+    }
+
+    fn write_errors(s: &Scene, session: u32) {
+        let wtf = s.home.client("_retail_").join("WTF");
+        common::buggrabber::write_files(&wtf, &[errors_db(session).file()]);
     }
 
     fn unmanaged_folder(s: &Scene, name: &str) {
@@ -254,4 +311,54 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
     .collect();
     let missing: Vec<&String> = expected.difference(&seen).collect();
     assert!(missing.is_empty(), "never recommended: {missing:?}");
+}
+
+/// `check_errors` (M3): `status --cached` recommends `omaddons errors` exactly when a
+/// client's Lua errors are stale or were never read, and running it, on a home freshly
+/// built the same way, leaves them read and the recommendation gone. A read that was
+/// incomplete is never recommended again: reading it again would not complete it.
+#[test]
+fn check_errors_runs_and_settles_the_cached_view() {
+    let errors_of =
+        |status: &serde_json::Value| target(status, "retail").unwrap()["errors"].clone();
+    let check_errors = |status: &serde_json::Value| {
+        status["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["action"] == "check_errors")
+            .cloned()
+    };
+    for (name, build, state) in [
+        ("unread", errors_unread as Builder, "unchecked"),
+        ("stale", errors_stale, "stale"),
+    ] {
+        let s = build();
+        let status = s.json(&["status", "--cached"], 0).envelope;
+        assert_eq!(errors_of(&status)["state"], state, "{name}: {status:#}");
+        let found = check_errors(&status);
+        assert!(found.is_some(), "{name}: no check_errors in {status:#}");
+        let found = found.unwrap();
+        assert_eq!(
+            (&found["argv"], &found["destructive"]),
+            (&json!(["omaddons", "errors"]), &json!(false)),
+            "{name}"
+        );
+        let fresh = build();
+        let argv: Vec<String> = serde_json::from_value(found["argv"].clone()).unwrap();
+        let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+        fresh.json(&args, 0);
+        let after = fresh.json(&["status", "--cached"], 0).envelope;
+        assert_eq!(errors_of(&after)["state"], "ok", "{name}: {after:#}");
+        assert!(check_errors(&after).is_none(), "{name}: {after:#}");
+    }
+    let s = errors_partial();
+    let status = s.json(&["status", "--cached"], 0).envelope;
+    assert_eq!(errors_of(&status)["state"], "partial", "{status:#}");
+    assert!(check_errors(&status).is_none(), "{status:#}");
+    // Plain `status` reads live: never stale or unchecked, so never the hint.
+    for build in [errors_unread as Builder, errors_stale] {
+        let status = build().json(&["status"], 0).envelope;
+        assert!(check_errors(&status).is_none(), "{status:#}");
+    }
 }

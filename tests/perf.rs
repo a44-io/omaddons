@@ -465,8 +465,40 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
     let memo_bytes = fs::metadata(home.memo()).unwrap().len();
     assert!(memo_bytes > 100_000, "a realistic memo: {memo_bytes} bytes");
 
-    // Warm, then measure.
+    // Lua errors (M3-D20): BugGrabber, with a 2 MB database in each of 16 accounts whose
+    // SavedVariables hold 40 other files, read by `errors` (the errors memo) and
+    // dismissed (the acknowledgement). `--cached` stats and lists them, never opens one.
+    common::addons::addon_folder(
+        &home.addons("_retail_"),
+        "!BugGrabber",
+        &[(
+            "!BugGrabber.toc",
+            &toc("120105", &["## SavedVariables: BugGrabberDB"]),
+        )],
+        &[],
+    );
+    let bug = common::buggrabber::flood(common::buggrabber::Writer::Modern, 16_000).render();
+    assert!(bug.len() >= 2 << 20, "a 2 MB database: {} bytes", bug.len());
+    for account in 0..16 {
+        let sv = home
+            .client("_retail_")
+            .join(format!("WTF/Account/FAKEACCT{account:02}/SavedVariables"));
+        fs::create_dir_all(&sv).unwrap();
+        fs::write(sv.join(common::buggrabber::FILE), &bug).unwrap();
+        for other in 0..40 {
+            fs::write(sv.join(format!("Addon{other:03}.lua")), "Addon = {}\n").unwrap();
+        }
+    }
+    home.run(&["errors"]).expect(0);
+    home.run(&["errors", "dismiss"]).expect(0);
+    let errors_memo = home.env.cache().join("omaddons/errors.json");
+    let errors_memo_bytes = fs::metadata(&errors_memo).unwrap().len();
+    assert!(home.state().join("errors_ack.json").is_file());
+
+    // A cold run, then 21 warm ones.
+    let start = Instant::now();
     let check = home.run(&["status", "--cached"]).expect(0);
+    let cold = start.elapsed();
     let updates = &check["data"]["targets"][0]["updates"];
     assert!(updates["checked_at"].is_string(), "{updates}");
     assert_eq!(
@@ -474,17 +506,26 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
         serde_json::json!([]),
         "every managed folder is present"
     );
-    let mut times: Vec<Duration> = (0..21)
-        .map(|_| {
-            let start = Instant::now();
-            home.run(&["status", "--cached"]).expect(0);
-            start.elapsed()
-        })
-        .collect();
-    times.sort();
-    let median = times[times.len() / 2];
+    let errors = &check["data"]["targets"][0]["errors"];
+    assert_eq!(
+        (&errors["state"], &errors["coverage"], &errors["new"]),
+        (
+            &serde_json::json!("ok"),
+            &serde_json::json!("complete"),
+            &serde_json::json!(0)
+        ),
+        "the memo stands and the dismissal holds: {errors}"
+    );
+    assert!(errors["total"].as_u64().unwrap() > 0, "{errors}");
+    let (median, times) = median_of_21(|| {
+        home.run(&["status", "--cached"]).expect(0);
+    });
+    let p95 = times[times.len() * 95 / 100];
     measured(format_args!(
-        "status --cached: median {median:?}, memo {memo_bytes} bytes, 100 records"
+        "status --cached: median {median:?}, p95 {p95:?}, first {cold:?}; memo {memo_bytes} \
+         bytes, 100 records; 16 accounts with a {} byte BugGrabber file each, errors memo \
+         {errors_memo_bytes} bytes",
+        bug.len()
     ));
     assert!(
         median < Duration::from_millis(5),
