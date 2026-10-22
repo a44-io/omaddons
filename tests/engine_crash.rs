@@ -1901,6 +1901,7 @@ mod restore_support {
             indexes: None,
             notes: None,
             binding: None,
+            auto_backup: None,
         };
         let spec = std::env::var("OMADDONS_RESTORE_FAILPOINTS").unwrap_or_default();
         let armed = |engine: &mut dyn FnMut() -> Result<Value>| -> Value {
@@ -3336,4 +3337,42 @@ fn a_wtf_mount_point_or_a_stage_on_another_mount_is_refused_before_a_copy() {
             "{reason}"
         );
     }
+}
+
+/// An automatic backup crashed where it starts (`engine.autobackup`, before it copies
+/// anything and before the change stages): the change is wholly old and no backup is
+/// half-made. The next run makes the backup and the change (M3-D31). Off this scene,
+/// every other crash scene runs the default `daily` on a filesystem the clone hint calls
+/// incapable, so it never reaches this failpoint.
+#[cfg(debug_assertions)]
+#[test]
+fn a_crash_at_the_automatic_backup_leaves_the_change_wholly_old() {
+    let s = Scene::new();
+    let client = s.home.client("_retail_");
+    common::wtf::Wtf::at(client.clone())
+        .saved_variables("Foo", 100)
+        .build();
+    let r = s.run(&s.args(&["config", "set", "auto_backup", "daily-copy"]), "");
+    assert_eq!(r.code, 0, "{}", r.context());
+    let before = s.folders();
+    let r = s.run(&s.install_args("gh:o/foo", "v1"), "engine.autobackup=abort");
+    assert_eq!(r.code, -1, "aborted: {}", r.context());
+    assert_eq!(s.folders(), before, "wholly old");
+    let backups = client.join("Interface/.omaddons/backups");
+    let made = |dir: &std::path::Path| fs::read_dir(dir).map_or(0, |entries| entries.count());
+    assert_eq!(made(&backups), 0, "no backup, not even half of one");
+
+    s.install("gh:o/foo", "v1");
+    assert_ne!(s.folders(), before, "the change, made");
+    assert_eq!(made(&backups), 1, "and its backup");
+    let kinds: Vec<String> = fs::read_to_string(s.home.state().join("history.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["kind"].to_string())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["\"config\"", "\"backup\"", "\"install\""],
+        "the setting, then the backup just before the change"
+    );
 }

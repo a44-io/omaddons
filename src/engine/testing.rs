@@ -406,6 +406,7 @@ impl TxScene {
             indexes: None,
             notes: None,
             binding: None,
+            auto_backup: None,
         };
         f(&ctx)
     }

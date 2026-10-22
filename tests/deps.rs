@@ -1673,6 +1673,7 @@ mod engine_api {
             indexes: None,
             notes: None,
             binding: None,
+            auto_backup: None,
         };
         omaddons::engine::run(&req, &ctx).unwrap()
     }

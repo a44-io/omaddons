@@ -27,6 +27,7 @@ use super::precondition::{
     Precondition, PrunePart, RestoreBinding, RestorePart, check, of_prune, of_restore, preview_argv,
 };
 use super::world::World;
+use crate::backup::auto::{self, AutoResult, AutoRun, Decision};
 use crate::backup::create::{self as capture, CreateRequest, Created};
 use crate::backup::fs::CloneHint;
 use crate::backup::inventory::{self, AutoLast, Capability, Inventory, Ring};
@@ -43,7 +44,9 @@ use crate::engine::journal::{no_saved_variables, recover_under};
 use crate::engine::restore::{self, Exchange, RestoreFiles, RestoreRequest};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{ClonePolicy, GlobalLock, ScopeTable, WriteSession, Writer, ensure_dir_all};
-use crate::limits::{BACKUP_STALE_AFTER, BACKUP_TREE_MAX_DEPTH, BACKUP_TREE_MAX_ENTRIES};
+use crate::limits::{
+    BACKUP_STALE_AFTER, BACKUP_TREE_MAX_DEPTH, BACKUP_TREE_MAX_ENTRIES, EffectiveLimits,
+};
 use crate::model::{
     Actor, BackupId, FolderName, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind,
 };
@@ -119,11 +122,14 @@ Examples:
   omaddons backup create -t retail --reason \"before the raid\"
   omaddons backup create -t era --verify also hash every file it copied
   omaddons backup create --dry-run       how much it would copy, and the space free
+  omaddons backup create --auto -t retail   an automatic checkpoint, only when due
 
 A backup is a copy of WTF/ in Interface/.omaddons/backups/, made without stopping
 other changes. On btrfs and xfs it shares its data with WTF/ until either changes.
 Stable means WTF/ was observed not to change while it was copied (not a filesystem
-snapshot); best effort means it changed even on a second try.";
+snapshot); best effort means it changed even on a second try. --auto follows
+auto_backup: it makes none while the game runs, when WTF/ is unchanged since the last
+checkpoint, or (with daily) where the filesystem cannot clone files.";
 
 /// `backup create`'s flags.
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -131,6 +137,10 @@ pub struct BackupCreateArgs {
     /// Hash every file copied, so the backup records its content (integrity: verified)
     #[arg(long)]
     pub verify: bool,
+    /// Only when due: the automatic checkpoint after a play session, skipped (exit 0,
+    /// with the reason) when WTF/ is unchanged since the last checkpoint
+    #[arg(long, conflicts_with = "verify")]
+    pub auto: bool,
 }
 
 const LIST_HELP: &str = "\
@@ -440,7 +450,7 @@ fn size(bytes: u64) -> String {
 pub fn list(ctx: &Context, args: &BackupListArgs) -> Result<BackupListOutcome> {
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
-    let mode = world.config.auto_backup.unwrap_or(AutoBackup::Off);
+    let mode = world.config.auto_backup.unwrap_or_default();
     let verbose = ctx.output.style.verbose > 0;
     let mut listed = listed(ctx, &world, &mut warnings)?;
     let mut show = None;
@@ -799,9 +809,26 @@ impl Outcome for BackupCreateOutcome {
                 )?;
             } else if let Some(error) = &t.error {
                 writeln!(w, "{id}: not backed up: {}", error.message)?;
+            } else if let Some(skipped) = &t.skipped {
+                writeln!(w, "{id}: no automatic backup: {}", why(&skipped.reason))?;
             }
         }
         Ok(())
+    }
+}
+
+/// A skip's reason as human output says it.
+fn why(reason: &str) -> &'static str {
+    match reason {
+        "off" => "auto_backup is off",
+        "no_wtf" => "there is no WTF/ yet",
+        "running" => "the game is running (it writes WTF/ when it exits)",
+        "done_today" => "today's checkpoint was made",
+        "unchanged" => "WTF/ is unchanged since the last checkpoint",
+        "no_reflink" => "the filesystem cannot clone files (auto_backup = \"daily\")",
+        "space_low" => "too little space, even after pruning old automatic backups",
+        "in_progress" => "another automatic backup of this client is running",
+        _ => "not due",
     }
 }
 
@@ -816,25 +843,26 @@ const CREATE_COMMAND: &str = "backup create";
 pub fn create(ctx: &Context, args: &BackupCreateArgs) -> Result<BackupCreateOutcome> {
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
-    let selected = create_selection(ctx, &world, args)?;
+    let selected = if args.auto {
+        auto_selection(ctx, &world)?
+    } else {
+        create_selection(ctx, &world, args)?
+    };
     let limits = world.config.effective_limits().unwrap_or_default();
-    let running = if ctx.dry_run {
+    // An automatic backup's decision reads it, a dry run's too.
+    let running = if ctx.dry_run && !args.auto {
         RunningScan::default()
     } else {
         let targets: Vec<Target> = selected.iter().map(|d| d.target.clone()).collect();
         detect_running(&targets)
     };
     warnings.extend(running.warning());
+    let mode = world.config.auto_backup.unwrap_or_default();
     let run = (!ctx.dry_run).then(RunId::new);
     let mut targets = Vec::new();
     let mut first_error = None;
     let mut succeeded = false;
     for d in selected {
-        let target = || TargetRef {
-            id: d.target.id.clone(),
-            key: d.target.key,
-            mode: None,
-        };
         let one = One {
             ctx,
             world: &world,
@@ -844,35 +872,22 @@ pub fn create(ctx: &Context, args: &BackupCreateArgs) -> Result<BackupCreateOutc
             keep_days: limits.backup_auto_keep_days,
         };
         let done = match run {
+            None if args.auto => one.auto_dry_run(&running, mode, &limits),
             None => one.dry_run().map(|(would, found)| {
-                warnings.extend(found);
-                BackupCreateTarget {
-                    target: target(),
-                    backup: None,
-                    tx: None,
-                    skipped: None,
-                    error: None,
+                let item = BackupCreateTarget {
                     would: Some(would),
-                }
+                    ..empty_item(d)
+                };
+                (item, found)
             }),
-            Some(run) => one.create(run, &running).map(|done| {
-                warnings.extend(done.warnings);
-                BackupCreateTarget {
-                    target: TargetRef {
-                        key: Some(done.created.meta.target),
-                        id: done.created.meta.target_id.clone(),
-                        mode: None,
-                    },
-                    backup: Some(published(&done.created)),
-                    tx: done.tx,
-                    skipped: None,
-                    error: None,
-                    would: None,
-                }
-            }),
+            Some(run) if args.auto => one.auto(run, &running, mode, &limits),
+            Some(run) => one
+                .create(run, &running)
+                .map(|done| (made_item(&done.created, done.tx), done.warnings)),
         };
         match done {
-            Ok(item) => {
+            Ok((item, found)) => {
+                warnings.extend(found);
                 succeeded = true;
                 targets.push(item);
             }
@@ -881,12 +896,8 @@ pub fn create(ctx: &Context, args: &BackupCreateArgs) -> Result<BackupCreateOutc
                 warning.message = format!("{}: {}", d.target.id, error.message);
                 warnings.push(warning);
                 targets.push(BackupCreateTarget {
-                    target: target(),
-                    backup: None,
-                    tx: None,
-                    skipped: None,
                     error: Some(ItemError::from(&error)),
-                    would: None,
+                    ..empty_item(d)
                 });
                 first_error.get_or_insert(error);
             }
@@ -904,6 +915,51 @@ pub fn create(ctx: &Context, args: &BackupCreateArgs) -> Result<BackupCreateOutc
         },
         warnings,
     })
+}
+
+/// `d`'s item before anything is said about it.
+fn empty_item(d: &DiscoveredTarget) -> BackupCreateTarget {
+    BackupCreateTarget {
+        target: target_ref(d),
+        backup: None,
+        tx: None,
+        skipped: None,
+        error: None,
+        would: None,
+    }
+}
+
+/// The item of a backup `created`, its history line `tx`.
+fn made_item(created: &Created, tx: Option<TxId>) -> BackupCreateTarget {
+    BackupCreateTarget {
+        target: TargetRef {
+            key: Some(created.meta.target),
+            id: created.meta.target_id.clone(),
+            mode: None,
+        },
+        backup: Some(published(created)),
+        tx,
+        skipped: None,
+        error: None,
+        would: None,
+    }
+}
+
+/// The clients `backup create --auto` considers: those `-t` names, else every live
+/// client, by id (one without a `WTF/` is skipped `no_wtf`, never an error).
+fn auto_selection<'w>(ctx: &Context, world: &'w World) -> Result<Vec<&'w DiscoveredTarget>> {
+    if ctx.target.is_some() {
+        return world.select_many(ctx);
+    }
+    let mut live: Vec<&DiscoveredTarget> = world
+        .resolved
+        .targets
+        .iter()
+        // ubs:ignore — comparing target kinds, not secrets
+        .filter(|d| d.target.kind == TargetKind::Live)
+        .collect();
+    live.sort_by(|a, b| a.target.id.cmp(&b.target.id));
+    Ok(live)
 }
 
 /// The clients `backup create` backs up (M3-D43): those `-t` names, else every live
@@ -1084,6 +1140,111 @@ impl One<'_> {
             tx,
             warnings,
         })
+    }
+
+    /// `--auto`: the after-play checkpoint (M3-D31), made only when due; a skip is a
+    /// success with its reason. A backup made gets its history line, the doorbell and
+    /// retention, as one asked for does.
+    fn auto(
+        &self,
+        run: RunId,
+        running: &RunningScan,
+        mode: AutoBackup,
+        limits: &EffectiveLimits,
+    ) -> Result<(BackupCreateTarget, Vec<Warning>)> {
+        let scopes = ScopeTable::new(
+            &self.world.paths,
+            std::slice::from_ref(&self.d.target.client_dir),
+            None,
+        )?;
+        let req = self.auto_run(&scopes, running, mode, limits);
+        let register = || registered(self.ctx, self.world, self.d, &scopes, CREATE_COMMAND);
+        let outcome = auto::run(&req, &register);
+        let mut warnings = outcome.warnings;
+        match outcome.result {
+            AutoResult::Skipped(skip) => {
+                let item = BackupCreateTarget {
+                    skipped: Some(BackupSkip {
+                        reason: skip.wire().to_owned(),
+                    }),
+                    ..empty_item(self.d)
+                };
+                Ok((item, warnings))
+            }
+            AutoResult::Failed(error) => Err(error),
+            AutoResult::Created(created) => {
+                let target = outcome.target.unwrap_or_else(|| self.d.target.clone());
+                warnings.extend(created.warnings.iter().cloned());
+                let tx = match self.record(&scopes, &created, run) {
+                    Ok(()) => Some(created.tx),
+                    Err(error) => {
+                        warnings.push(not_recorded(&self.world.paths, &target.id, &error));
+                        None
+                    }
+                };
+                doorbell::ring(&self.world.paths, CREATE_COMMAND, self.ctx.actor);
+                warnings.extend(self.retain(&scopes, &target));
+                Ok((made_item(&created, tx), warnings))
+            }
+        }
+    }
+
+    /// `--auto --dry-run`: whether one is due, and what it would copy; writes nothing.
+    fn auto_dry_run(
+        &self,
+        running: &RunningScan,
+        mode: AutoBackup,
+        limits: &EffectiveLimits,
+    ) -> Result<(BackupCreateTarget, Vec<Warning>)> {
+        let scopes = ScopeTable::new(
+            &self.world.paths,
+            std::slice::from_ref(&self.d.target.client_dir),
+            None,
+        )?;
+        let req = self.auto_run(&scopes, running, mode, limits);
+        match auto::due(&req, &self.client()) {
+            Decision::Skip(skip) => {
+                let item = BackupCreateTarget {
+                    skipped: Some(BackupSkip {
+                        reason: skip.wire().to_owned(),
+                    }),
+                    ..empty_item(self.d)
+                };
+                Ok((item, Vec::new()))
+            }
+            Decision::Go(_) => self.dry_run().map(|(would, found)| {
+                let item = BackupCreateTarget {
+                    would: Some(would),
+                    ..empty_item(self.d)
+                };
+                (item, found)
+            }),
+        }
+    }
+
+    /// The after-play attempt on this client.
+    fn auto_run<'s>(
+        &'s self,
+        scopes: &'s ScopeTable,
+        running: &RunningScan,
+        mode: AutoBackup,
+        limits: &'s EffectiveLimits,
+    ) -> AutoRun<'s> {
+        AutoRun {
+            paths: &self.world.paths,
+            scopes,
+            target: self.d,
+            trigger: Trigger::PostSession,
+            mode,
+            limits,
+            running: running.unavailable.is_some()
+                || running.clients.contains_key(&self.d.target.client_dir),
+            actor: self.ctx.actor,
+            reason: self.ctx.reason.clone(),
+            command: CREATE_COMMAND,
+            progress: &self.ctx.progress,
+            record_skips: true,
+        }
     }
 
     /// The retention pass on the client's backups after a backup (M3-D32), outside the

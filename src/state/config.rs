@@ -66,12 +66,18 @@ pub enum RunningPolicy {
     Allow,
 }
 
-/// Automatic WTF backups (used in M3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Automatic `WTF/` backups (M3-D30): a checkpoint before the day's first change and after
+/// each play session that changed settings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoBackup {
     Off,
+    /// Clones only: where the filesystem cannot clone files, none is made.
+    #[default]
     Daily,
+    /// Byte copies too, within `limits.backup_copy_max_mb`.
+    #[serde(rename = "daily-copy")]
+    DailyCopy,
 }
 
 /// `[limits]`: only the constants marked config-overridable.
@@ -89,6 +95,9 @@ pub struct LimitsConfig {
     /// MiB free beside a client's backups below which backups warn or skip,
     /// 0–[`BACKUP_MIN_FREE_MB_MAX`]; 0 turns the check off.
     pub backup_min_free_mb: Option<u64>,
+    /// MiB of automatic byte-copy backups per target (`daily-copy`), 0–
+    /// [`BACKUP_MIN_FREE_MB_MAX`]; 0 turns the budget off.
+    pub backup_copy_max_mb: Option<u64>,
     /// Local days of automatic backups kept per target, 1–[`BACKUP_AUTO_KEEP_DAYS_MAX`].
     pub backup_auto_keep_days: Option<u64>,
 }
@@ -210,7 +219,7 @@ impl KeyKind {
             Self::Text => "a string",
             Self::Channel => "stable, beta or alpha",
             Self::RunningPolicy => "safe, refuse or allow",
-            Self::AutoBackup => "off or daily",
+            Self::AutoBackup => "off, daily (copy-on-write only) or daily-copy",
             Self::Hours => "an integer from 0 to 48",
             Self::HostList => "a TOML array of host names, e.g. '[\"codeberg.org\"]'",
             Self::Count => "a positive integer",
@@ -311,6 +320,11 @@ pub const KEYS: &[KeySpec] = &[
         "limits.backup_min_free_mb",
         KeyKind::Mebibytes,
         "MiB free beside backups below which they warn or skip",
+    ),
+    spec(
+        "limits.backup_copy_max_mb",
+        KeyKind::Mebibytes,
+        "MiB of automatic byte-copy backups per target (daily-copy)",
     ),
     spec(
         "limits.backup_auto_keep_days",
@@ -458,17 +472,24 @@ impl Config {
                 "must be from 0 to 48",
             ));
         }
-        if config
-            .limits
-            .backup_min_free_mb
-            .is_some_and(|mb| mb > BACKUP_MIN_FREE_MB_MAX)
-        {
-            return Err(invalid(
-                path,
-                text,
+        for (key, mb) in [
+            (
                 "limits.backup_min_free_mb",
-                &format!("must be from 0 to {BACKUP_MIN_FREE_MB_MAX}"),
-            ));
+                config.limits.backup_min_free_mb,
+            ),
+            (
+                "limits.backup_copy_max_mb",
+                config.limits.backup_copy_max_mb,
+            ),
+        ] {
+            if mb.is_some_and(|mb| mb > BACKUP_MIN_FREE_MB_MAX) {
+                return Err(invalid(
+                    path,
+                    text,
+                    key,
+                    &format!("must be from 0 to {BACKUP_MIN_FREE_MB_MAX}"),
+                ));
+            }
         }
         if config
             .limits
@@ -541,6 +562,9 @@ impl Config {
         }
         if let Some(mb) = l.backup_min_free_mb {
             apply("backup_min_free", int(mb.saturating_mul(1 << 20)))?;
+        }
+        if let Some(mb) = l.backup_copy_max_mb {
+            apply("backup_copy_max", int(mb.saturating_mul(1 << 20)))?;
         }
         if let Some(days) = l.backup_auto_keep_days {
             apply("backup_auto_keep_days", int(days))?;

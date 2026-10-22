@@ -1025,6 +1025,7 @@ mod runs {
                     indexes: None,
                     notes: None,
                     binding: None,
+                    auto_backup: None,
                 };
                 let done = omaddons::engine::run(&req, &ctx).unwrap();
                 let committed = done.outcomes.iter().filter(|o| o.tx.is_some()).count();

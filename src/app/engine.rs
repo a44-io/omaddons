@@ -4,6 +4,7 @@
 //! and argv.
 
 use super::world::World;
+use crate::backup::auto::AutoPolicy;
 use crate::cli::Context;
 use crate::engine::indexes::DepIndexes;
 use crate::engine::inspect::ArchiveLimits;
@@ -11,6 +12,7 @@ use crate::engine::plan::DownloadMemo;
 use crate::engine::retention::RetentionLimits;
 use crate::engine::{Binding, EngineCtx, TxOutcomes, TxRequest, UndoOutcome, UndoRequest};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
+use crate::limits::EffectiveLimits;
 use crate::model::{Actor, Channel, Target};
 use crate::net::{Http, NetConfig, NetLog, stack};
 use crate::output::ProgressSink;
@@ -19,7 +21,7 @@ use crate::resolve::catalog::Catalog;
 use crate::rules::RulesTable;
 use crate::sources::SourceRegistry;
 use crate::sources::git_hosts::GitRunner;
-use crate::state::config::RunningPolicy;
+use crate::state::config::{AutoBackup, RunningPolicy};
 use crate::state::paths::Paths;
 
 /// The engine for one command.
@@ -51,6 +53,9 @@ pub struct Engine {
     indexes: DepIndexes,
     /// Every discovered target, for recovery's running check.
     known_targets: Vec<Target>,
+    /// `auto_backup`, and the limits automatic backups keep.
+    auto_mode: AutoBackup,
+    backup_limits: EffectiveLimits,
 }
 
 impl Engine {
@@ -95,6 +100,8 @@ impl Engine {
                 .iter()
                 .map(|d| d.target.clone())
                 .collect(),
+            auto_mode: world.config.auto_backup.unwrap_or_default(),
+            backup_limits: limits,
         })
     }
 
@@ -129,6 +136,10 @@ impl Engine {
             indexes: Some(&self.indexes),
             notes: Some(&self.notes),
             binding,
+            auto_backup: Some(AutoPolicy {
+                mode: self.auto_mode,
+                limits: &self.backup_limits,
+            }),
         }
     }
 

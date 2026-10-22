@@ -138,6 +138,16 @@ pub struct Rebuilt {
     pub changed: bool,
 }
 
+/// What the last automatic attempt on `key` recorded (whether its projection is fresh or
+/// not: a rebuild carries it over), the default when none did.
+pub fn auto_state(paths: &Paths, key: &TargetKey) -> AutoState {
+    load(paths)
+        .targets
+        .remove(key)
+        .map(|inventory| inventory.auto)
+        .unwrap_or_default()
+}
+
 /// `key`'s projection, validated by one `read_dir` of `client`'s `<meta>/backups/` and
 /// one of its `<meta>/snapshots/` (with an `lstat` per snapshot).
 pub fn load_validated(paths: &Paths, client: &ClientPaths, key: &TargetKey) -> Inventory {

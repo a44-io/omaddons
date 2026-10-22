@@ -38,6 +38,9 @@ use super::swap::{
     SvSkipped, SwapOp, finish_saved_variables, out_of_scope_warnings, predigest,
     prestage_saved_variables, snapshot_state, swap, with_predigests,
 };
+use crate::backup::Trigger;
+use crate::backup::auto::{self, AutoResult, AutoRun};
+use crate::backup::create::Created;
 use crate::discover::registry::{LockedRegistry, same_dir};
 use crate::discover::running::{RunningScan, detect_running, running_unknown};
 use crate::discover::target::DiscoveredTarget;
@@ -59,7 +62,9 @@ use crate::sources::SourceRegistry;
 use crate::state::config::RunningPolicy;
 use crate::state::doorbell;
 use crate::state::files_index::{FilesIndex, FolderIndex};
-use crate::state::history::{self, FolderOp, HistoryEdit, HistoryEntry, HistoryOp, TxResult};
+use crate::state::history::{
+    self, BackupNote, FolderOp, HistoryEdit, HistoryEntry, HistoryOp, TxResult,
+};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::status::{StatusFile, TargetMeta, write_monotonic};
@@ -100,6 +105,7 @@ pub const FAILPOINTS: &[&str] = &[
     "engine.preserve.intent",
     "engine.preserve.moved",
     "engine.preserve.published",
+    "engine.autobackup",
 ];
 
 /// What a mutating command asks the engine for.
@@ -170,6 +176,8 @@ pub struct EngineCtx<'a> {
     pub notes: Option<&'a crate::output::RunNotes>,
     /// `--if-match`: the preview this run is bound to (M3-D46); `None` binds nothing.
     pub binding: Option<&'a dyn Binding>,
+    /// Automatic backups before the day's first change (M3-D31); `None` makes none.
+    pub auto_backup: Option<crate::backup::auto::AutoPolicy<'a>>,
 }
 
 /// A run bound to the preview it was confirmed from (`--if-match`, M3-D46): what it plans
@@ -586,6 +594,150 @@ pub(super) fn refuse_newer_state(paths: &Paths, target: &Target) -> Result<()> {
     }
 }
 
+/// Appends a backup's history `line` under `_lock`, unless the history has it already:
+/// the backup stands whatever the change it came with does. A history that cannot be
+/// read might hold it, so nothing is appended then.
+pub(super) fn append_once(
+    paths: &Paths,
+    scopes: &ScopeTable,
+    _lock: &GlobalLockGuard,
+    line: &HistoryEntry,
+    writer: Writer,
+) -> Result<()> {
+    let text = history::text(paths)?;
+    if super::retention::in_history(&text, &line.tx) {
+        return Ok(());
+    }
+    let mut s = WriteSession::untracked(writer, scopes, "history");
+    ensure_dir_all(&mut s, paths.state_dir())?;
+    history::append(&mut s, paths, line)
+}
+
+/// Appends a backup's `line` under a short lock of its own when the change failed before
+/// its window appended it. Best effort: the backup is then listed without a line.
+pub(super) fn append_alone(
+    ctx: &EngineCtx<'_>,
+    scopes: &ScopeTable,
+    line: Option<&HistoryEntry>,
+    writer: Writer,
+) {
+    let Some(line) = line else { return };
+    let Ok(guard) = GlobalLock::acquire(ctx.paths, ctx.command) else {
+        return;
+    };
+    let _ = append_once(ctx.paths, scopes, &guard, line, writer);
+    drop(guard);
+}
+
+/// The pre-change automatic backup of `discovered` (M3-D31), before a change that moves
+/// folders or writes SavedVariables (`moves`) stages anything: at most one a local day,
+/// and never failing the change. Its history line (of `run`, with `reason`), when one was
+/// made, for the commit window, and what it warned.
+pub(super) fn pre_change(
+    ctx: &EngineCtx<'_>,
+    scopes: &ScopeTable,
+    discovered: &DiscoveredTarget,
+    moves: bool,
+    reason: Option<&String>,
+    run: RunId,
+) -> (Option<HistoryEntry>, Vec<Warning>) {
+    let Some(policy) = ctx.auto_backup.filter(|_| moves) else {
+        return (None, Vec::new());
+    };
+    let target = &discovered.target;
+    // Recorded, never refused: SavedVariables change on disk only at logout.
+    let running = running_now(ctx, std::slice::from_ref(target)).contains(&target.client_dir);
+    let auto = AutoRun {
+        paths: ctx.paths,
+        scopes,
+        target: discovered,
+        trigger: Trigger::PreChange,
+        mode: policy.mode,
+        limits: policy.limits,
+        running,
+        actor: ctx.actor,
+        reason: reason.cloned(),
+        command: ctx.command,
+        progress: ctx.progress,
+        record_skips: false,
+    };
+    let mut outcome = auto::run(&auto, &|| register_early(ctx, scopes, discovered));
+    let line = match &outcome.result {
+        AutoResult::Created(created) => Some(backup_line(ctx, created, reason, run)),
+        AutoResult::Skipped(_) => None,
+        AutoResult::Failed(error) => {
+            outcome.warnings.push(auto::failed(&target.id, error));
+            None
+        }
+    };
+    (line, outcome.warnings)
+}
+
+/// `discovered` registered before its change's commit window, for an automatic backup
+/// that must name its key: under a short global lock, recovering first as every change
+/// does.
+fn register_early(
+    ctx: &EngineCtx<'_>,
+    scopes: &ScopeTable,
+    discovered: &DiscoveredTarget,
+) -> Result<Target> {
+    let guard = GlobalLock::acquire(ctx.paths, ctx.command)?;
+    let sv_writable = |dir: &Path| sv_writable(ctx, dir);
+    let recovery = RecoveryEnv {
+        lock: &guard,
+        paths: ctx.paths,
+        scopes,
+        own: discovered.target.key.as_slice(),
+        sv_writable: &sv_writable,
+    };
+    let recovered = recover_all(&recovery)?;
+    if let Some(notes) = ctx.notes {
+        notes.warn_all(&recovered);
+    }
+    let mut s = WriteSession::untracked(Writer::Mutating, scopes, "registry");
+    let mut registry = LockedRegistry::load(&guard, ctx.paths)?;
+    let key = registry.ensure_registered(&mut s, discovered)?;
+    let mut target = discovered.target.clone();
+    if let Some(entry) = registry.registry().entry(&key) {
+        target.id.clone_from(&entry.id);
+    }
+    target.key = Some(key);
+    Ok(target)
+}
+
+/// An automatic backup's history line (M3-D33), of the change's `run`.
+fn backup_line(
+    ctx: &EngineCtx<'_>,
+    created: &Created,
+    reason: Option<&String>,
+    run: RunId,
+) -> HistoryEntry {
+    let meta = &created.meta;
+    HistoryEntry {
+        schema_version: history::CURRENT,
+        tx: created.tx,
+        kind: TxKind::Backup,
+        at: crate::clock::now(),
+        target: meta.target,
+        actor: ctx.actor,
+        reason: reason.cloned(),
+        argv: ctx.argv.to_vec(),
+        ops: Vec::new(),
+        result: TxResult::Committed,
+        reverts: None,
+        sv_deferred: false,
+        sv_restored: None,
+        created_addons_dir: false,
+        run: Some(run),
+        backup: Some(BackupNote {
+            id: meta.id,
+            kind: meta.kind,
+            files: meta.files,
+            bytes: meta.bytes,
+        }),
+    }
+}
+
 /// One target's transaction, from staging to cleanup.
 #[allow(clippy::too_many_arguments)]
 fn commit_target(
@@ -603,6 +755,9 @@ fn commit_target(
     let tx = TxId::new();
     let inflight = InflightLock::create(ctx.paths, &tx)?;
     let client = ClientPaths::new(&target.client_dir);
+    let moves = tp.work.iter().any(|w| !w.swap().is_empty());
+    let (auto_line, auto_warnings) =
+        pre_change(ctx, scopes, discovered, moves, req.reason.as_ref(), req.run);
     let staged = match stage_all(&inflight, scopes, target, &tp.work) {
         Ok(staged) => {
             ctx.progress.event(Phase::Stage, with_work, &target.id);
@@ -610,6 +765,7 @@ fn commit_target(
         }
         Err(error) => {
             cleanup(ctx.paths, scopes, inflight, &tx, Some(&client), false);
+            append_alone(ctx, scopes, auto_line.as_ref(), Writer::Mutating);
             return Err(error);
         }
     };
@@ -617,13 +773,31 @@ fn commit_target(
     // racy slack.
     staged.wait_out_racy_slack();
     let result = locked(
-        req, ctx, scopes, plan_req, blobs, discovered, tp, &tx, &staged,
+        req,
+        ctx,
+        scopes,
+        plan_req,
+        blobs,
+        discovered,
+        tp,
+        &tx,
+        &staged,
+        auto_line.as_ref(),
     );
     let committed = result
         .as_ref()
         .is_ok_and(|(outcome, _)| outcome.tx.is_some());
     cleanup(ctx.paths, scopes, inflight, &tx, Some(&client), committed);
+    // A lock that timed out once is not waited on twice.
+    // ubs:ignore — comparing error codes, not secrets
+    if !committed && !matches!(&result, Err(e) if e.code == ErrorCode::Locked) {
+        append_alone(ctx, scopes, auto_line.as_ref(), Writer::Mutating);
+    }
     ring_after_window(ctx, &result);
+    let result = result.map(|(mut outcome, recovered)| {
+        outcome.warnings.extend(auto_warnings);
+        (outcome, recovered)
+    });
     let fail = |e: std::io::Error| {
         Error::io(
             ctx.paths.state_dir(),
@@ -733,6 +907,7 @@ fn locked(
     tp: &TargetPlan,
     tx: &TxId,
     staged: &Staged,
+    auto_line: Option<&HistoryEntry>,
 ) -> Result<(TxOutcome, Vec<Warning>)> {
     let paths = ctx.paths;
     let fail = |e: std::io::Error| {
@@ -774,6 +949,12 @@ fn locked(
     };
     let recovered = recover_all(&recovery)?;
     failpoint::hit("engine.recovered").map_err(fail)?;
+    // The automatic backup stands whatever the change does: its line goes first, before
+    // the journal, so a roll-forward (which replays only the change's own line) never
+    // leaves it out (M3-D33).
+    if let Some(line) = auto_line {
+        append_once(paths, scopes, &guard, line, Writer::Mutating)?;
+    }
 
     let mut target = discovered.target.clone();
     let key = match target.key {
@@ -1688,6 +1869,9 @@ mod tests {
                     | "engine.preserve.intent"
                     | "engine.preserve.moved"
                     | "engine.preserve.published"
+                    // An automatic backup's: its failure never fails the change, and its
+                    // scenes are engine_crash's and backup_auto's.
+                    | "engine.autobackup"
             ) {
                 continue;
             }
@@ -1956,12 +2140,15 @@ mod tests {
         use crate::source_scan::{Literals, production_code, sources};
 
         let mut found = BTreeSet::new();
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine");
-        for (_, text) in sources(&dir) {
-            let code = production_code(&text, Literals::Keep).unwrap_or_default();
-            for (at, _) in code.match_indices("failpoint::hit(\"engine.") {
-                let rest = &code[at + "failpoint::hit(\"".len()..];
-                found.insert(rest.split('"').next().unwrap().to_owned());
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        // The engine's, and the automatic backup its changes start with.
+        for dir in [root.join("src/engine"), root.join("src/backup")] {
+            for (_, text) in sources(&dir) {
+                let code = production_code(&text, Literals::Keep).unwrap_or_default();
+                for (at, _) in code.match_indices("failpoint::hit(\"engine.") {
+                    let rest = &code[at + "failpoint::hit(\"".len()..];
+                    found.insert(rest.split('"').next().unwrap().to_owned());
+                }
             }
         }
         let listed: BTreeSet<String> = FAILPOINTS.iter().map(|s| (*s).to_owned()).collect();

@@ -11,7 +11,7 @@ expression: s.stable(&c.envelope)
         "auto": {
           "capability": "unknown",
           "last": null,
-          "mode": "off"
+          "mode": "daily"
         },
         "backups": [
           {

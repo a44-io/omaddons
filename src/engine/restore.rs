@@ -24,8 +24,8 @@ use super::retention::WTF_PREVIOUS;
 use super::running::{PolicyContext, PolicyOp};
 use super::swap::snapshot_state;
 use super::tx::{
-    EngineCtx, TxOutcome, cleanup, millis, note_undo, recovery_failed, refuse_newer_state, retain,
-    ring_after_window, running_now, sv_writable, write_status,
+    EngineCtx, TxOutcome, append_alone, append_once, cleanup, millis, note_undo, recovery_failed,
+    refuse_newer_state, retain, ring_after_window, running_now, sv_writable, write_status,
 };
 use super::undo::{SvCounts, UndoFacts, UndoOutcome, UndoRequest, WtfUndo};
 use crate::backup::tree::{CloneOpts, TreeCopy, clone_tree, hash_files, walk};
@@ -34,9 +34,9 @@ use crate::discover::registry::LockedRegistry;
 use crate::discover::target::DiscoveredTarget;
 use crate::error::{Error, ErrorCode, PlanStaleSource, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
-    ClonePolicy, DirLock, FsxError, GlobalLock, GlobalLockGuard, InflightLock, MutateOpts, Op,
-    RenameMode, ScopeTable, SnapshotRoots, StampDigest, WriteSession, Writer, ensure_dir_all,
-    failpoint, mount_id, mutate_with, probe_exchange,
+    ClonePolicy, DirLock, FsxError, GlobalLock, InflightLock, MutateOpts, Op, RenameMode,
+    ScopeTable, SnapshotRoots, StampDigest, WriteSession, Writer, ensure_dir_all, failpoint,
+    mount_id, mutate_with, probe_exchange,
 };
 use crate::limits::{BACKUP_TREE_MAX_DEPTH, BACKUP_TREE_MAX_ENTRIES};
 use crate::model::{FolderName, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind};
@@ -529,7 +529,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: RestoreRequest<'_>) -> Result<RestoreOu
         Ok(staged) => staged,
         Err(error) => {
             cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), false);
-            append_alone(ctx, &scopes, before_restore.as_ref());
+            append_alone(ctx, &scopes, before_restore.as_ref(), Writer::BackupRestore);
             return Err(error);
         }
     };
@@ -556,7 +556,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: RestoreRequest<'_>) -> Result<RestoreOu
     // A lock that timed out once is not waited on twice.
     // ubs:ignore — comparing error codes, not secrets
     if !committed && !matches!(&result, Err(e) if e.code == ErrorCode::Locked) {
-        append_alone(ctx, &scopes, before_restore.as_ref());
+        append_alone(ctx, &scopes, before_restore.as_ref(), Writer::BackupRestore);
     }
     let (key, held, mut warnings) = result?;
     warnings.extend(retain(ctx, &scopes, key, &target.client_dir));
@@ -653,36 +653,6 @@ fn stage(
     })
 }
 
-/// Appends the `before_restore` backup's line under `lock`, unless the history has it
-/// already: the backup stands whatever the restore does. A history that cannot be read
-/// might hold it, so nothing is appended then.
-fn append_before_restore(
-    paths: &Paths,
-    scopes: &ScopeTable,
-    _lock: &GlobalLockGuard,
-    line: &HistoryEntry,
-) -> Result<()> {
-    let text = history::text(paths)?;
-    if super::retention::in_history(&text, &line.tx) {
-        return Ok(());
-    }
-    let mut s = WriteSession::untracked(Writer::BackupRestore, scopes, "history");
-    ensure_dir_all(&mut s, paths.state_dir())?;
-    history::append(&mut s, paths, line)
-}
-
-/// Appends the `before_restore` backup's line under a short lock of its own when the
-/// restore failed before its window appended it (M3-D26). Best effort: the backup is
-/// then listed without a line.
-fn append_alone(ctx: &EngineCtx<'_>, scopes: &ScopeTable, line: Option<&HistoryEntry>) {
-    let Some(line) = line else { return };
-    let Ok(guard) = GlobalLock::acquire(ctx.paths, ctx.command) else {
-        return;
-    };
-    let _ = append_before_restore(ctx.paths, scopes, &guard, line);
-    drop(guard);
-}
-
 /// The `WTF/` change a commit window makes.
 enum WtfChange<'a> {
     /// A restore of `backup` as `plan` planned it, the `before_restore` backup's line
@@ -771,7 +741,7 @@ impl Window<'_> {
             ..
         } = &self.change
         {
-            append_before_restore(paths, self.scopes, &guard, line)?;
+            append_once(paths, self.scopes, &guard, line, Writer::BackupRestore)?;
         }
         let key = match target.key {
             Some(key) => key,

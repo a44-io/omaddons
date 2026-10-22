@@ -637,6 +637,35 @@ fn commits_hold_the_lock_under_50_ms() {
     );
 }
 
+/// An automatic backup costs the commit window one history append: the day's first
+/// change, with `auto_backup = "daily-copy"` over 16 MiB of settings, still holds the
+/// lock under 50 ms (the copy is made before it).
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+fn a_change_with_an_automatic_backup_holds_the_lock_under_50_ms() {
+    let s = Scene::new();
+    common::wtf::Wtf::at(s.home.client("_retail_"))
+        .saved_variables("Foo", 16 << 20)
+        .build();
+    let r = s.run(&s.args(&["config", "set", "auto_backup", "daily-copy"]), "");
+    assert_eq!(r.code, 0, "{}", r.context());
+    let mut args = s.install_args("gh:o/foo", "v1");
+    args.push("-v".to_owned());
+    let r = s.run(&args, "");
+    assert_eq!(r.code, 0, "{}", r.context());
+    let ms = lock_held_ms(&r);
+    measured(format_args!(
+        "lock_held_ms with an automatic backup: {ms:?}"
+    ));
+    let listed = s.run(&s.args(&["backup", "list"]), "");
+    assert!(
+        listed.stdout.contains("\"kind\":\"auto\""),
+        "the backup was made: {}",
+        listed.context()
+    );
+    assert!(ms.is_some_and(|ms| ms < 50), "{ms:?}");
+}
+
 /// 16 MiB of SavedVariables and a 64 MiB folder still hold the lock under 50 ms: what
 /// can be copied or hashed is done before the lock. A release build ignores failpoints,
 /// so SavedVariables are copied the way this filesystem allows (reflinks where it can).

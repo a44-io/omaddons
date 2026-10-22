@@ -137,7 +137,7 @@ fn default_value(key: &str) -> serde_json::Value {
         "extra_roots" | "git_hosts" => serde_json::json!([]),
         "default_channel" => serde_json::json!("stable"),
         "running_policy" => serde_json::json!("safe"),
-        "auto_backup" => serde_json::json!("off"),
+        "auto_backup" => serde_json::json!(crate::state::config::AutoBackup::default()),
         "check_interval_hours" => serde_json::json!(DEFAULT_CHECK_INTERVAL.as_secs() / 3600),
         "limits.archive_max_entries" => serde_json::json!(limits.archive_max_entries),
         "limits.archive_max_uncompressed" => serde_json::json!(limits.archive_max_uncompressed),
@@ -150,6 +150,7 @@ fn default_value(key: &str) -> serde_json::Value {
         "limits.snapshot_max_bytes" => serde_json::json!(limits.snapshot_max_bytes),
         "limits.blob_cache_max_bytes" => serde_json::json!(limits.blob_cache_max_bytes),
         "limits.backup_min_free_mb" => serde_json::json!(limits.backup_min_free >> 20),
+        "limits.backup_copy_max_mb" => serde_json::json!(limits.backup_copy_max >> 20),
         "limits.backup_auto_keep_days" => serde_json::json!(limits.backup_auto_keep_days),
         _ => serde_json::Value::Null,
     }

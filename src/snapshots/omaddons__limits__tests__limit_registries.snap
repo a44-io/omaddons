@@ -555,6 +555,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Free space below which automatic backups reclaim, then skip, and a manual one warns (config.toml: limits.backup_min_free_mb, in MiB; 0 turns the check off)"
     },
     {
+      "name": "BACKUP_COPY_MAX",
+      "value": {
+        "bytes": 4294967296
+      },
+      "unit": "bytes",
+      "config_key": "backup_copy_max",
+      "notes": "Apparent bytes of automatic byte-copy backups per target (auto_backup daily-copy; config.toml: limits.backup_copy_max_mb, in MiB; 0 turns the budget off)"
+    },
+    {
       "name": "BACKUP_STALE_AFTER",
       "value": {
         "millis": 604800000

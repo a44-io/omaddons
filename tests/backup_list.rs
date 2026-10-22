@@ -172,7 +172,8 @@ fn backups_list_newest_first_with_what_each_proves() {
     assert_eq!(t["free_bytes"], 1024 * 1024 * 1024, "OMADDONS_FS_FREE_MB");
     assert_eq!(
         t["auto"],
-        json!({"mode": "off", "capability": "unknown", "last": null})
+        json!({"mode": "daily", "capability": "unknown", "last": null}),
+        "the default (M3-D30)"
     );
 
     // Bare `backup` is the same listing.

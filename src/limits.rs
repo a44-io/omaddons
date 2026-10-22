@@ -122,6 +122,10 @@ pub const BACKUP_CAPTURE_ATTEMPTS: u32 = 2;
 /// (`backup_space_low`) and automatic ones reclaim, then skip. (config, as
 /// `limits.backup_min_free_mb`; 0 turns the check off)
 pub const BACKUP_MIN_FREE: u64 = 2_048 * MIB;
+/// The apparent bytes of a target's automatic byte-copy backups (`auto_backup =
+/// "daily-copy"` only): beyond it, eligible ones are reclaimed oldest first, or the capture
+/// is skipped. (config, as `limits.backup_copy_max_mb`; 0 turns the budget off)
+pub const BACKUP_COPY_MAX: u64 = 4_096 * MIB;
 /// A client whose newest qualifying backup was captured longer ago than this (or that
 /// has none) is offered `backup create`.
 pub const BACKUP_STALE_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -516,6 +520,14 @@ pub const REGISTRY: &[LimitInfo] = &[
          (config.toml: limits.backup_min_free_mb, in MiB; 0 turns the check off)",
     ),
     limit(
+        "BACKUP_COPY_MAX",
+        LimitValue::Bytes(BACKUP_COPY_MAX),
+        "bytes",
+        Some("backup_copy_max"),
+        "Apparent bytes of automatic byte-copy backups per target (auto_backup daily-copy; \
+         config.toml: limits.backup_copy_max_mb, in MiB; 0 turns the budget off)",
+    ),
+    limit(
         "BACKUP_STALE_AFTER",
         LimitValue::Millis(ms(BACKUP_STALE_AFTER)),
         "ms",
@@ -667,6 +679,8 @@ pub struct EffectiveLimits {
     pub blob_cache_max_bytes: u64,
     /// Bytes; 0 turns the free-space check off.
     pub backup_min_free: u64,
+    /// Bytes; 0 turns the byte-copy budget off.
+    pub backup_copy_max: u64,
     pub backup_auto_keep_days: usize,
 }
 
@@ -682,6 +696,7 @@ impl Default for EffectiveLimits {
             snapshot_max_bytes: SNAPSHOT_MAX_BYTES,
             blob_cache_max_bytes: BLOB_CACHE_MAX_BYTES,
             backup_min_free: BACKUP_MIN_FREE,
+            backup_copy_max: BACKUP_COPY_MAX,
             backup_auto_keep_days: BACKUP_AUTO_KEEP_DAYS,
         }
     }
@@ -701,8 +716,9 @@ pub enum LimitOverrideError {
 }
 
 impl EffectiveLimits {
-    /// Applies one `[limits]` entry. Values must be positive, except `backup_min_free`,
-    /// whose 0 turns its check off. Byte, count and ratio limits take integers;
+    /// Applies one `[limits]` entry. Values must be positive, except `backup_min_free` and
+    /// `backup_copy_max`, whose 0 turns their check off. Byte, count and ratio limits take
+    /// integers;
     /// `default_check_interval` takes a duration string such as `"6h"` or `"PT6H"`;
     /// `tx_retention` takes `{ keep_last = N, window_days = N }` (either key may be left
     /// out). Its 24 h minimum age is not overridable.
@@ -721,6 +737,7 @@ impl EffectiveLimits {
             "blob_cache_max_bytes" => self.blob_cache_max_bytes = positive_integer(key, value)?,
             "tx_retention" => self.tx_retention = retention(key, value, self.tx_retention)?,
             "backup_min_free" => self.backup_min_free = non_negative_integer(key, value)?,
+            "backup_copy_max" => self.backup_copy_max = non_negative_integer(key, value)?,
             "backup_auto_keep_days" => {
                 let days = positive_integer(key, value)?;
                 self.backup_auto_keep_days = usize::try_from(days)
@@ -861,6 +878,7 @@ mod tests {
         "BACKUP_TREE_MAX_DEPTH",
         "BACKUP_CAPTURE_ATTEMPTS",
         "BACKUP_MIN_FREE",
+        "BACKUP_COPY_MAX",
         "BACKUP_STALE_AFTER",
         "BACKUP_AUTO_KEEP_DAYS",
         "BACKUP_AUTO_KEEP_DAYS_MAX",
@@ -892,6 +910,7 @@ mod tests {
         "SNAPSHOT_MAX_BYTES",
         "BLOB_CACHE_MAX_BYTES",
         "BACKUP_MIN_FREE",
+        "BACKUP_COPY_MAX",
         "BACKUP_AUTO_KEEP_DAYS",
     ];
 

@@ -9,6 +9,7 @@
 //! the bounded summary `status --cached` reads is [`inventory`], and the filesystem
 //! hints are [`fs`].
 
+pub mod auto;
 pub mod create;
 pub mod fs;
 pub mod inventory;

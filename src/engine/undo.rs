@@ -230,10 +230,20 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     let tx = TxId::new();
     let inflight = InflightLock::create(ctx.paths, &tx)?;
     let client = ClientPaths::new(&target.client_dir);
+    let moves = !planned.folders.swap.is_empty() || !planned.sv.restore.is_empty();
+    let (auto_line, auto_warnings) = super::tx::pre_change(
+        ctx,
+        &scopes,
+        discovered,
+        moves,
+        req.reason.as_ref(),
+        req.run,
+    );
     let staged = match stage_trees(&inflight, &scopes, target, &planned.folders.sources) {
         Ok(staged) => staged,
         Err(error) => {
             cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), false);
+            super::tx::append_alone(ctx, &scopes, auto_line.as_ref(), Writer::Mutating);
             return Err(error);
         }
     };
@@ -241,12 +251,26 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     // racy slack.
     staged.wait_out_racy_slack();
     let result = commit(
-        ctx, req, &scopes, discovered, &planned, &tx, &staged, hashes,
+        ctx,
+        req,
+        &scopes,
+        discovered,
+        &planned,
+        &tx,
+        &staged,
+        hashes,
+        auto_line.as_ref(),
     );
     let committed = result.as_ref().is_ok_and(|done| done.outcome.tx.is_some());
     cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), committed);
+    // A lock that timed out once is not waited on twice.
+    // ubs:ignore — comparing error codes, not secrets
+    if !committed && !matches!(&result, Err(e) if e.code == ErrorCode::Locked) {
+        super::tx::append_alone(ctx, &scopes, auto_line.as_ref(), Writer::Mutating);
+    }
     super::tx::ring_after_window(ctx, &result);
     let mut done = result?;
+    done.outcome.warnings.extend(auto_warnings);
     if let (Some(key), Some(_)) = (done.outcome.key, done.outcome.tx) {
         let retained = super::tx::retain(ctx, &scopes, key, &target.client_dir);
         done.outcome.warnings.extend(retained);
@@ -319,6 +343,7 @@ fn commit(
     tx: &TxId,
     staged: &Staged,
     mut hashes: SvHashes,
+    auto_line: Option<&HistoryEntry>,
 ) -> Result<UndoOutcome> {
     let paths = ctx.paths;
     let fail = |e: std::io::Error| {
@@ -358,6 +383,10 @@ fn commit(
     };
     let recovered = recover_all(&recovery)?;
     failpoint::hit("engine.recovered").map_err(fail)?;
+    // The automatic backup's line first, before the journal (M3-D33).
+    if let Some(line) = auto_line {
+        super::tx::append_once(paths, scopes, &guard, line, Writer::Mutating)?;
+    }
     // Again under the lock: a newer omaddons may have written since the first look.
     super::tx::refuse_newer_state(paths, target)?;
 
