@@ -173,7 +173,9 @@ TestCase {
     compare(view.view, "backups")
     child("view_installed").clicked()
     compare(view.view, "installed")
+    verify(child("content").item !== null)
     // A view without a component leaves the slot empty; the switcher lists all five.
+    keyClick("3")
     compare(child("content").item, null)
   }
 
@@ -430,6 +432,15 @@ TestCase {
     svc.lastError = { "message": "Omarchy is not installed here", "code": "not_found", "fixes": [],
       "fixText": "this needs the Omarchy desktop (omarchy.org); everything else works without it" }
     compare(child("fixText").text, "this needs the Omarchy desktop (omarchy.org); everything else works without it")
+  }
+
+  function test_a_partial_result_offers_each_failed_items_fix() {
+    svc.lastResult = { "ok": true, "line": "Updated 2 of 3; Plater failed: the download stopped", "partial": true, "commands": [],
+      "fixes": [{ "command": "omaddons update -t era -- Plater", "argv": ["omaddons", "update", "-t", "era", "--", "Plater"], "runnable": true }] }
+    compare(child("resultLine").text, "Updated 2 of 3; Plater failed: the download stopped")
+    compare(child("itemFix_0").text, "Fix: omaddons update -t era -- Plater")
+    child("itemFix_0").clicked()
+    compare(json(svc.cliRuns[0]), json([["omaddons", "update", "-t", "era", "--", "Plater"], "Fix"]))
   }
 
   function test_the_hero_reads_the_summary() {

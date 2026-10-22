@@ -620,6 +620,89 @@ describe("the panel frame", () => {
   })
 })
 
+describe("the Updates and Installed views", () => {
+  const STATUS = () => M.reduceStatus(fixture("status-updates"), NOW).targets
+
+  test("a ref's source kind", () => {
+    expect(["gh:o/r", "wowi:123", "tukui:elvui", "git:host/o/r", "wowace:bug-grabber", "https://x/y.zip", "./Foo.zip", "", null]
+      .map(M.sourceKind)).toEqual(["gh", "wowi", "tukui", "git", "wowace", "file", "file", "file", "file"])
+  })
+
+  test("updates per client: updates first, grouped in All, filtered otherwise", () => {
+    const lists = M.reduceList(fixture("list"))
+    const all = M.updateRows(lists, "", STATUS())
+    expect(all.map((r) => [r.group, r.target, r.name, r.kind, r.version, r.latest]))
+      .toEqual([["era", "era", "Bar", "update", "v1", "v2"], ["", "era", "Foo", "update", "v1", "v2"],
+        ["retail", "retail", "Bar", "update", "v1", "v2"], ["", "retail", "Foo", "update", "v1", "v2"]])
+    expect(M.updateCount(all)).toBe(4)
+    const retail = M.updateRows(lists, "retail", STATUS())
+    expect(retail.map((r) => [r.group, r.name])).toEqual([["", "Bar"], ["", "Foo"]])
+    expect(M.updateCount(retail)).toBe(2)
+    expect(M.updateRows(null, "", [])).toEqual([])
+  })
+
+  test("pinned with a newer release, blocked and failed follow, labelled", () => {
+    const env = JSON.parse(JSON.stringify(fixture("list-markers")))
+    const addons = env.data.targets[0].addons
+    addons.push(Object.assign({}, addons[0], { name: "Zed", latest: { version: "v9", status: "blocked" } }))
+    addons.push(Object.assign({}, addons[0], { name: "Aaa", latest: { version: null, status: "failed" } }))
+    addons.push(Object.assign({}, addons[0], { name: "Old", pinned: true, latest: { version: "v1", status: "pinned" } }))
+    const running = JSON.parse(JSON.stringify(fixture("status-running")))
+    const rows = M.updateRows(M.reduceList(env), "retail", M.reduceStatus(running, NOW).targets)
+    expect(rows.map((r) => [r.name, r.kind, r.label])).toEqual([
+      ["Bar", "update", ""], ["Foo", "update", ""], ["Baz", "pinned", "pinned"], ["Zed", "blocked", "blocked"], ["Aaa", "failed", "check failed"]])
+    expect(rows.every((r) => r.reload)).toBe(true)
+  })
+
+  test("nothing to update says when it was checked", () => {
+    const targets = M.reduceStatus(fixture("status-running"), NOW).targets
+    const at = Date.parse(targets[0].updates.checkedAt) + 25 * 60000
+    expect(M.updatesEmptyText(targets, "", at)).toBe("Everything is current · checked 25 min ago")
+    expect(M.updatesEmptyText(targets, "nosuch", at)).toBe("Everything is current")
+  })
+
+  test("installed rows carry their markers and Enter's action", () => {
+    const env = JSON.parse(JSON.stringify(fixture("list-markers")))
+    env.data.targets[0].addons[1].reason = "dependency"
+    env.data.targets[0].addons[1].orphan = true
+    const rows = M.installedRows(M.reduceList(env), "")
+    expect(rows.map((r) => [r.group, r.name, r.source, r.markers, r.primary])).toEqual([
+      ["retail", "Bar", "gh", ["missing"], "reinstall"],
+      ["", "Baz", "gh", ["dep", "orphan", "pinned"], ""],
+      ["", "Foo", "gh", ["modified"], "reinstall"]])
+    const plain = M.installedRows(M.reduceList(fixture("list")), "retail")
+    expect(plain.map((r) => [r.name, r.primary])).toEqual([["Bar", "update"], ["Baz", ""], ["Foo", "update"]])
+    expect(M.unmanagedLines(M.reduceList(fixture("list")), "")).toEqual(["1 unmanaged folder on retail: omaddons adopt -t retail"])
+    expect(M.unmanagedLines(M.reduceList(fixture("list")), "era")).toEqual([])
+  })
+
+  test("row actions are templates with the row's slots, and build", () => {
+    const row = { target: "retail", name: "-rf Foo", pinned: false }
+    expect(M.rowAction(row, "pin").template).toBe("pin")
+    expect(M.rowAction(Object.assign({}, row, { pinned: true }), "pin").template).toBe("unpin")
+    for (const which of ["pin", "update", "reinstall", "remove"]) {
+      const action = M.rowAction(row, which)
+      const built = M.buildArgv(action.template, action.slots, opts({ preview: which === "remove" }))
+      expect(built.argv.slice(-2)).toEqual(["--", "-rf Foo"])
+    }
+    expect(M.rowAction(row, "nonsense")).toBeNull()
+  })
+
+  test("release notes only for the row they were asked for, links only when safe", () => {
+    const data = fixture("changelog").data
+    const row = { target: "retail", name: "Foo" }
+    const notes = M.notesFor({ selection: { target: "retail", addon: "Foo" }, data: data }, row)
+    expect(notes).toEqual({ version: "v2", text: "Fixes the pull timer.", url: "https://github.com/o/foo/releases", link: "more on GitHub" })
+    expect(M.notesFor({ selection: { target: "retail", addon: "Bar" }, data: data }, row)).toBeNull()
+    expect(M.notesFor(null, row)).toBeNull()
+    const hostile = JSON.parse(JSON.stringify(data))
+    hostile.changelog.more_url = "http://github.com/o/foo"
+    hostile.changelog.entries[0].text = "x".repeat(900)
+    const cut = M.notesFor({ selection: { target: "retail", addon: "Foo" }, data: hostile }, row)
+    expect([cut.url, cut.link, cut.text.length]).toEqual(["", "", 401])
+  })
+})
+
 describe("the other reducers", () => {
   test("list", () => {
     const model = M.reduceList(fixture("list"))
@@ -661,6 +744,25 @@ describe("the other reducers", () => {
     const reload = JSON.parse(JSON.stringify(fixture("update")))
     reload.data.targets[1].reload_required = "reload"
     expect(M.resultLine(reload)).toBe("Updated 4 addons on 2 clients · /reload in game")
+  })
+
+  test("a partial result names what failed, with its fix as a button", () => {
+    const partial = JSON.parse(JSON.stringify(fixture("update")))
+    partial.partial = true
+    const items = partial.data.targets[0].items
+    items[0].status = "failed"
+    items[0].name = "Plater"
+    items[0].error = { code: "download_failed", message: "the download stopped", fix: "omaddons update -t era -- Plater",
+      fix_argv: ["omaddons", "update", "-t", "era", "--", "Plater"], alternatives: [], retryable: true, details: {} }
+    expect(M.resultLine(partial)).toBe("Updated 3 of 4; Plater failed: the download stopped")
+    expect(M.itemFixes(partial).map((f) => f.argv)).toEqual([["omaddons", "update", "-t", "era", "--", "Plater"]])
+    items[1].status = "failed"
+    items[1].error = { code: "x", message: "y", fix: "rm -rf /", fix_argv: ["rm", "-rf", "/"], alternatives: [], retryable: false, details: {} }
+    expect(M.resultLine(partial)).toBe("Updated 2 of 4; Plater failed: the download stopped (and 1 more)")
+    expect(M.itemFixes(partial).length).toBe(1)
+    for (const item of partial.data.targets.flatMap((t) => t.items)) item.status = "failed"
+    expect(M.resultLine(partial).startsWith("Plater failed: the download stopped")).toBe(true)
+    expect(M.itemFixes(fixture("update"))).toEqual([])
   })
 
   test("confirmation and stale texts", () => {

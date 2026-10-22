@@ -4,6 +4,7 @@ import Quickshell
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
+import "views"
 import "Model.js" as Model
 import "Build.js" as Build
 
@@ -47,7 +48,7 @@ Item {
   // A view without one leaves its slot empty; the switcher and the key map are final.
   // A view may offer `frame` (set on load), `rowCount`, `rowItem(i)`, `typing`,
   // `focusSearch()` and `handleKey(name, cursor)`.
-  property var viewComponents: ({})
+  property var viewComponents: ({ "updates": updatesView, "installed": installedView })
   // Frame-wide keys a later task registers (b, d, …): name → function(frame).
   property var keyHandlers: ({})
 
@@ -723,6 +724,31 @@ Item {
             }
           }
 
+          // A partial result: each failed item's fix the classifier accepts.
+          Flow {
+            visible: !!root.lastResult && !root.busy
+            width: parent.width
+            spacing: Style.spacing.sm
+
+            Repeater {
+              model: root.lastResult && Array.isArray(root.lastResult.fixes) ? root.lastResult.fixes : []
+
+              Button {
+                required property var modelData
+                required property int index
+                objectName: "itemFix_" + index
+                enabled: root.canAct && !root.busy
+                opacity: enabled ? 1.0 : 0.4
+                text: "Fix: " + modelData.command
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.runCli(modelData, "Fix")
+              }
+            }
+          }
+
           BorderSurface {
             objectName: "errorCard"
             visible: !!root.lastError && !root.cardMode
@@ -833,6 +859,16 @@ Item {
     fontFamily: root.fontFamily
     onConfirmed: root.confirmYes()
     onCanceled: root.confirmNo()
+  }
+
+  Component {
+    id: updatesView
+    UpdatesView {}
+  }
+
+  Component {
+    id: installedView
+    InstalledView {}
   }
 
   // Takes the keyboard while the dialog is open: it sees auto-repeat, which the key

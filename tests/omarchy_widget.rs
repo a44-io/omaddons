@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use common::home::Home;
-use common::http::{gh_latest, gh_release, github_search};
+use common::http::{gh_feed, gh_latest, gh_release, github_search};
 use common::tukui::{elvui, tukui_list};
 use common::wowi::{FileEntry, wowi_filelist};
 use omaddons::app::precondition::BINDING_COMMANDS;
@@ -864,6 +864,62 @@ fn write_widget_fixtures() {
         3,
     );
     assert_eq!(failure["error"]["code"], "target_not_found", "{failure}");
+
+    // The Installed view's markers: Foo edited by hand, Bar's folder gone, Baz pinned
+    // behind its latest; and Foo's release notes, which the Updates view's `i` reads.
+    let mut home = Home::new(&["wow"]);
+    for (base, name) in [
+        (support::FOO, "Foo"),
+        (support::BAR, "Bar"),
+        (support::BAZ, "Baz"),
+    ] {
+        let (old, new) = (Rel::new(name, "v1"), Rel::new(name, "v2"));
+        home.installed_behind(
+            base,
+            ("v1", &old.assets()),
+            ("v2", &new.assets()),
+            &["retail"],
+        );
+    }
+    home.exec(&fill(&t, "check", &[])).expect(0);
+    home.exec(&fill(&t, "pin", &[("target", "retail"), ("addon", "Baz")]))
+        .expect(0);
+    let toc = home.addons("_retail_").join("Foo/Foo.toc");
+    fs::write(&toc, "## Interface: 120105\n## Title: edited by hand\n").unwrap();
+    fs::remove_dir_all(home.addons("_retail_").join("Bar")).unwrap();
+    let markers = write_fixture(&dir, "list-markers", &home.exec(&fill(&t, "list", &[])), 0);
+    let drift: Vec<(&str, &str, &str)> = markers["data"]["targets"][0]["addons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["name"].as_str().unwrap(),
+                a["drift"]["state"].as_str().unwrap(),
+                a["latest"]["status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        drift,
+        [
+            ("Bar", "missing", "update_available"),
+            ("Baz", "clean", "pinned"),
+            ("Foo", "modified", "update_available"),
+        ],
+        "{markers}"
+    );
+    gh_feed(
+        &home.http,
+        support::FOO,
+        &[
+            ("v2", "<p>Fixes the <b>pull</b> timer.</p>"),
+            ("v1", "<p>First.</p>"),
+        ],
+        None,
+    );
+    let changelog = fill(&t, "changelog", &[("target", "retail"), ("addon", "Foo")]);
+    write_fixture(&dir, "changelog", &home.exec(&changelog), 0);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);

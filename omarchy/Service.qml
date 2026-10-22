@@ -482,7 +482,8 @@ Item {
             "argv": verdict && verdict.ok ? c.argv.slice() : null, "runnable": verdict !== null && verdict.ok })
         }
       }
-      lastResult = { "ok": outcome === "ok", "line": Model.resultLine(env), "partial": !!env && env.partial === true, "commands": commandsOf }
+      lastResult = { "ok": outcome === "ok", "line": Model.resultLine(env), "partial": !!env && env.partial === true, "commands": commandsOf,
+        "fixes": Model.itemFixes(env) }
       lastError = outcome === "ok" ? null : errorOf(env, r.label + " failed")
       var stale = outcome === "failed" && env.error && env.error.code === "plan_stale"
       // A preview gone stale is previewed again, never rerun with the same token.

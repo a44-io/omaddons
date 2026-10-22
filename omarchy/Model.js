@@ -897,6 +897,7 @@ function reduceList(env) {
         "key": str(t.key),
         "label": str(t.label) || str(t.id),
         "counts": t.counts && typeof t.counts === "object" ? t.counts : {},
+        "unmanaged": t.counts && typeof t.counts === "object" ? num(t.counts.unmanaged) : 0,
         "addons": addons.map(function(a) {
           var latest = a.latest && typeof a.latest === "object" ? a.latest : {}
           var drift = a.drift && typeof a.drift === "object" ? a.drift : {}
@@ -904,11 +905,15 @@ function reduceList(env) {
             "name": str(a.name),
             "version": strOrNull(a.version),
             "ref": strOrNull(a.ref),
+            "source": sourceKind(a.ref),
             "pinned": a.pinned === true,
             "state": str(a.state),
             "latest": strOrNull(latest.version),
+            // current, update_available, pinned, ahead, blocked, failed, unchecked, static.
+            "status": str(latest.status),
             "updateAvailable": latest.status === "update_available",
             "drift": str(drift.state),
+            "dependency": a.reason === "dependency",
             "orphan": a.orphan === true,
             "requiredBy": stringList(a.required_by),
             "folders": stringList(a.folders)
@@ -1040,6 +1045,40 @@ function isChange(item) {
 // A finished command as one line: "Updated 4 addons on 2 clients", with the reload a
 // client needs; a failure's message. Multi-target commands (update, pin, unpin) carry
 // `targets[]`; install and remove carry one target's `items`.
+// The items of a change result that failed, each with its error: `[{name, error}]`.
+function failedItems(env) {
+  var out = []
+  var data = env && env.data && typeof env.data === "object" ? env.data : {}
+  var targets = Array.isArray(data.targets) ? data.targets : [data]
+  for (var i = 0; i < targets.length; i++) {
+    var items = targets[i] && Array.isArray(targets[i].items) ? targets[i].items : []
+    for (var j = 0; j < items.length; j++) {
+      var item = items[j]
+      if (!item || !(item.error || item.status === "failed")) continue
+      var error = item.error && typeof item.error === "object" ? item.error : {}
+      out.push({ "name": str(item.name) || str(item.request), "error": error })
+    }
+  }
+  return out
+}
+
+// The fixes of a partial result's failed items, as buttons when the classifier accepts
+// them (one per command).
+function itemFixes(env) {
+  var out = []
+  var seen = {}
+  var failed = failedItems(env)
+  for (var i = 0; i < failed.length; i++) {
+    var error = failed[i].error
+    if (!Array.isArray(error.fix_argv)) continue
+    var fix = cliAction(error.fix, error.fix_argv, false)
+    if (!fix.runnable || seen[fix.command]) continue
+    seen[fix.command] = true
+    out.push(fix)
+  }
+  return out
+}
+
 function resultLine(env) {
   if (!envelopeOk(env)) return "omaddons did not answer"
   if (!env.ok) return env.error && typeof env.error.message === "string" ? env.error.message : "omaddons failed"
@@ -1054,8 +1093,12 @@ function resultLine(env) {
     if (changed > before) touched++
   }
   var verb = RESULT_VERBS[env.command] || "Done:"
-  var line = changed === 0 && env.command === "update" ? "Everything was up to date"
-    : verb + " " + plural(changed, "addon") + (touched > 1 ? " on " + plural(touched, "client") : "")
+  var failed = failedItems(env)
+  var line = changed === 0 && failed.length === 0 && env.command === "update" ? "Everything was up to date"
+    : failed.length === 0 ? verb + " " + plural(changed, "addon") + (touched > 1 ? " on " + plural(touched, "client") : "")
+    : (changed > 0 ? verb + " " + changed + " of " + (changed + failed.length) + "; " : "")
+      + failed[0].name + " failed: " + str(failed[0].error.message)
+      + (failed.length > 1 ? " (and " + (failed.length - 1) + " more)" : "")
   var reload = reloadOf(targets)
   if (reload === "reload") line += " · /reload in game"
   if (reload === "restart") line += " · restart the game"
@@ -1275,6 +1318,144 @@ function progressFraction(action) {
   return Math.max(0, Math.min(1, current / action.total))
 }
 
+// -------------------------------------------------------------- the Updates and Installed views (F5)
+
+// The source a ref names (README's ref grammar): gh, wowi, tukui, git, wowace, or file
+// for a URL or a local path.
+var SOURCE_KINDS = ["gh", "wowi", "tukui", "git", "wowace"]
+
+function sourceKind(ref) {
+  var r = str(ref)
+  var colon = r.indexOf(":")
+  var prefix = colon > 0 ? r.slice(0, colon) : ""
+  return SOURCE_KINDS.indexOf(prefix) >= 0 ? prefix : "file"
+}
+
+// The Updates view's rows, in the filter: per client, updates first, then pinned
+// addons with a newer release, blocked ones, and those whose check failed. In the All
+// filter the first row of each client carries `group`, its id. `reload` marks a running
+// client's rows ("then /reload").
+var UPDATE_KINDS = { "update_available": "update", "pinned": "pinned", "blocked": "blocked", "failed": "failed" }
+var UPDATE_ORDER = ["update", "pinned", "blocked", "failed"]
+var UPDATE_LABELS = { "update": "", "pinned": "pinned", "blocked": "blocked", "failed": "check failed" }
+
+function listTargets(lists, filter) {
+  var targets = lists && Array.isArray(lists.targets) ? lists.targets : []
+  return targets.filter(function(t) { return !filter || t.id === filter })
+}
+
+function updateRows(lists, filter, statusTargets) {
+  var out = []
+  var targets = listTargets(lists, filter)
+  for (var i = 0; i < targets.length; i++) {
+    var t = targets[i]
+    var status = targetById(statusTargets, t.id)
+    var rows = []
+    for (var j = 0; j < t.addons.length; j++) {
+      var a = t.addons[j]
+      var kind = UPDATE_KINDS[a.status]
+      if (!kind || (kind === "pinned" && (!a.latest || a.latest === a.version))) continue
+      rows.push({
+        "key": t.id + "/" + a.name, "target": t.id, "name": a.name, "version": a.version, "latest": a.latest,
+        "kind": kind, "label": UPDATE_LABELS[kind], "pinned": a.pinned, "reload": !!status && status.running === true,
+        "group": ""
+      })
+    }
+    rows.sort(function(x, y) { return UPDATE_ORDER.indexOf(x.kind) - UPDATE_ORDER.indexOf(y.kind) })
+    if (!filter && rows.length > 0) rows[0].group = t.id
+    out = out.concat(rows)
+  }
+  return out
+}
+
+// What `u` would update in the filter: the "Update all (N)" header's N.
+function updateCount(rows) {
+  return rows.filter(function(r) { return r.kind === "update" }).length
+}
+
+// The Updates view with nothing to update: "Everything is current · checked 25 min
+// ago", the oldest check of the clients in the filter.
+function updatesEmptyText(statusTargets, filter, nowMs) {
+  var oldest = null
+  var targets = Array.isArray(statusTargets) ? statusTargets : []
+  for (var i = 0; i < targets.length; i++) {
+    if (filter && targets[i].id !== filter) continue
+    var checked = targets[i].updates ? targets[i].updates.checkedAt : null
+    if (checked && (!oldest || Date.parse(checked) < Date.parse(oldest))) oldest = checked
+  }
+  var age = oldest ? ageText(oldest, nowMs) : ""
+  return "Everything is current" + (age ? " · " + age : "")
+}
+
+// The Installed view's rows, in the filter: every managed addon, its source and its
+// markers (dep, orphan, pinned, modified or missing), and what Enter does: reinstall
+// drifted files, else update when one is available, else nothing ("").
+function installedRows(lists, filter) {
+  var out = []
+  var targets = listTargets(lists, filter)
+  for (var i = 0; i < targets.length; i++) {
+    var t = targets[i]
+    for (var j = 0; j < t.addons.length; j++) {
+      var a = t.addons[j]
+      var markers = []
+      if (a.dependency) markers.push("dep")
+      if (a.orphan) markers.push("orphan")
+      if (a.pinned) markers.push("pinned")
+      if (a.drift === "modified" || a.drift === "missing") markers.push(a.drift)
+      out.push({
+        "key": t.id + "/" + a.name, "target": t.id, "name": a.name, "version": a.version, "source": a.source,
+        "markers": markers, "pinned": a.pinned,
+        "primary": a.drift === "modified" || a.drift === "missing" ? "reinstall" : (a.updateAvailable ? "update" : ""),
+        "group": !filter && j === 0 ? t.id : ""
+      })
+    }
+  }
+  return out
+}
+
+// The unmanaged folders of the clients in the filter, as text (adoption is the CLI's
+// in M3): "1 unmanaged folder on retail: omaddons adopt -t retail".
+function unmanagedLines(lists, filter) {
+  return listTargets(lists, filter)
+    .filter(function(t) { return t.unmanaged > 0 })
+    .map(function(t) { return plural(t.unmanaged, "unmanaged folder") + " on " + t.id + ": omaddons adopt -t " + t.id })
+}
+
+// A row's action, as a template run: Enter's, and `p`'s pin or unpin.
+function rowAction(row, which) {
+  var slots = { "target": row.target, "addon": row.name }
+  if (which === "pin") return row.pinned ? { "template": "unpin", "slots": slots, "label": "Unpin " + row.name }
+    : { "template": "pin", "slots": slots, "label": "Pin " + row.name }
+  if (which === "update") return { "template": "update_addon", "slots": slots, "label": "Update " + row.name }
+  if (which === "reinstall") return { "template": "reinstall", "slots": slots, "label": "Reinstall " + row.name }
+  if (which === "remove") return { "template": "remove", "slots": slots, "label": "Remove " + row.name }
+  return null
+}
+
+var NOTES_MAX_CHARS = 400
+var MORE_HOSTS = { "github.com": "GitHub", "www.wowinterface.com": "WoWInterface", "www.tukui.org": "Tukui", "www.wowace.com": "WowAce" }
+
+// `i`'s release notes for `row`, from the service's view-bound changelog (`{selection,
+// data}`): null until the answer for this row arrives (a late one for another row never
+// matches). The newest entry, cut at 400 characters, and a link only when isSafeUrl
+// accepts it.
+function notesFor(changelog, row) {
+  if (!changelog || !changelog.selection || !row) return null
+  if (changelog.selection.target !== row.target || changelog.selection.addon !== row.name) return null
+  var log = changelog.data && changelog.data.changelog && typeof changelog.data.changelog === "object" ? changelog.data.changelog : {}
+  var entries = Array.isArray(log.entries) ? log.entries : []
+  var first = entries.length ? entries[0] : null
+  var text = first ? str(first.text) : ""
+  var more = str(log.more_url)
+  var safe = more && isSafeUrl(more)
+  return {
+    "version": first ? str(first.version) : "",
+    "text": text.length > NOTES_MAX_CHARS ? text.slice(0, NOTES_MAX_CHARS) + "…" : (text || "No release notes"),
+    "url": safe ? more : "",
+    "link": safe ? "more on " + (MORE_HOSTS[more.split("/")[2].toLowerCase()] || "the web") : ""
+  }
+}
+
 // The last result's Undo: its `undo` command when the classifier accepted it.
 function resultUndo(result) {
   if (!result || !Array.isArray(result.commands)) return null
@@ -1329,6 +1510,8 @@ if (typeof module !== "undefined") {
     ageText: ageText,
     progressLine: progressLine,
     resultLine: resultLine,
+    failedItems: failedItems,
+    itemFixes: itemFixes,
     isSafeUrl: isSafeUrl,
     fixButtons: fixButtons,
     confirmText: confirmText,
@@ -1347,6 +1530,14 @@ if (typeof module !== "undefined") {
     updateRequest: updateRequest,
     undoAction: undoAction,
     progressFraction: progressFraction,
-    resultUndo: resultUndo
+    resultUndo: resultUndo,
+    sourceKind: sourceKind,
+    updateRows: updateRows,
+    updateCount: updateCount,
+    updatesEmptyText: updatesEmptyText,
+    installedRows: installedRows,
+    unmanagedLines: unmanagedLines,
+    rowAction: rowAction,
+    notesFor: notesFor
   }
 }

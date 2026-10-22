@@ -8,3 +8,4 @@ Button 1.0 Button.qml
 PanelHero 1.0 PanelHero.qml
 PanelActionButton 1.0 PanelActionButton.qml
 BorderSurface 1.0 BorderSurface.qml
+CursorSurface 1.0 CursorSurface.qml
