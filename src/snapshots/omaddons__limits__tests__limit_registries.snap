@@ -823,6 +823,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "ms",
       "config_key": null,
       "notes": "A BugGrabber file older than this has no new errors"
+    },
+    {
+      "name": "WIDGET_READBACK_MAX_BYTES",
+      "value": {
+        "bytes": 65536
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "An installed widget's manifest.json or Build.js read back; a larger one is not omaddons'"
     }
   ]
 ]

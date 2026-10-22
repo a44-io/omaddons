@@ -23,6 +23,7 @@ pub mod limits;
 pub mod lua;
 pub mod model;
 pub mod net;
+pub mod omarchy;
 pub mod output;
 pub mod politeness;
 pub mod privacy;

@@ -18,6 +18,9 @@ use crate::model::{PlanId, TargetKey, TxId};
 
 const APP: &str = "omaddons";
 
+/// The Omarchy widget's plugin id (M3-D6); its folder is `<plugins>/omaddons`.
+pub const WIDGET_ID: &str = "a44.omaddons";
+
 /// What a journal or stage name carries after its transaction id when the transaction
 /// puts settings back (a restore, or the undo of one). A build before M3 cannot read
 /// such a journal, and deleted it unread; it lists only names that are a bare id, so
@@ -42,6 +45,20 @@ pub struct Paths {
     config: PathBuf,
     state: PathBuf,
     cache: PathBuf,
+    /// `OMADDONS_WIDGET_ID` (debug builds only): a separate checkpoint widget,
+    /// `a44.omaddons-<suffix>` in `<plugins>/omaddons-<suffix>`.
+    widget: Option<String>,
+}
+
+/// The widget id suffix `value` asks for, when it is `[a-z0-9-]{1,32}` and the build is a
+/// debug one (DEC-7); anything else keeps the normal widget.
+pub fn widget_suffix(value: Option<OsString>, debug: bool) -> Option<String> {
+    let value = value?.into_string().ok()?;
+    let valid = (1..=32).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    (debug && valid).then_some(value)
 }
 
 impl Paths {
@@ -77,6 +94,7 @@ impl Paths {
         let data = xdg("XDG_DATA_HOME", ".local/share");
         Ok(Self {
             data_home: data,
+            widget: widget_suffix(lookup("OMADDONS_WIDGET_ID"), cfg!(debug_assertions)),
             ..Self::with_roots(home, config, state, cache)
         })
     }
@@ -97,6 +115,7 @@ impl Paths {
             config: config.as_ref().join(APP),
             state: state.as_ref().join(APP),
             cache: cache.as_ref().join(APP),
+            widget: None,
         }
     }
 
@@ -113,6 +132,16 @@ impl Paths {
     /// `<data>` (`$XDG_DATA_HOME`).
     pub fn data_home(&self) -> &Path {
         &self.data_home
+    }
+
+    /// `<state>` (`$XDG_STATE_HOME`), the root before `omaddons`.
+    pub fn state_home(&self) -> &Path {
+        self.state.parent().unwrap_or(&self.state)
+    }
+
+    /// `<cache>` (`$XDG_CACHE_HOME`), the root before `omaddons`.
+    pub fn cache_home(&self) -> &Path {
+        self.cache.parent().unwrap_or(&self.cache)
     }
 
     /// `<config>/omaddons`
@@ -160,14 +189,33 @@ impl Paths {
 
     // ---- Other tools' locations ------------------------------------------------------
 
+    /// The widget's plugin id: [`WIDGET_ID`], or `a44.omaddons-<suffix>` under the
+    /// debug checkpoint seam.
+    pub fn omarchy_plugin_id(&self) -> String {
+        self.widget
+            .as_ref()
+            .map_or_else(|| WIDGET_ID.to_owned(), |s| format!("{WIDGET_ID}-{s}"))
+    }
+
+    /// The widget's folder name under `<plugins>`: `omaddons`, or `omaddons-<suffix>`.
+    fn omarchy_plugin_name(&self) -> String {
+        self.widget
+            .as_ref()
+            .map_or_else(|| APP.to_owned(), |s| format!("{APP}-{s}"))
+    }
+
     /// The installed Omarchy widget (M3): `<config>/omarchy/plugins/omaddons`.
     pub fn omarchy_plugin_dir(&self) -> PathBuf {
-        self.config_home.join("omarchy/plugins/omaddons")
+        self.config_home
+            .join("omarchy/plugins")
+            .join(self.omarchy_plugin_name())
     }
 
     /// The widget's hidden staging sibling, invisible to the plugin registry.
     pub fn omarchy_plugin_stage(&self) -> PathBuf {
-        self.config_home.join("omarchy/plugins/.omaddons.stage")
+        self.config_home
+            .join("omarchy/plugins")
+            .join(format!(".{}.stage", self.omarchy_plugin_name()))
     }
 
     /// The default agent skill location (M4): `<home>/.claude/skills/omaddons`.
@@ -696,6 +744,68 @@ mod tests {
             assert_eq!(err.fix.argv(), None);
             assert!(err.message.contains(is), "{}", err.message);
         }
+    }
+
+    /// The roots before `omaddons`, as `from_lookup` resolved them.
+    #[test]
+    fn state_and_cache_homes_are_the_roots() {
+        let p = Paths::from_lookup(lookup(&[
+            ("HOME", "/h"),
+            ("XDG_STATE_HOME", "/xs"),
+            ("XDG_CACHE_HOME", "relative"),
+        ]))
+        .unwrap();
+        assert_eq!(p.state_home(), Path::new("/xs"));
+        assert_eq!(p.cache_home(), Path::new("/h/.cache"));
+        assert_eq!(paths().state_home(), Path::new("/s"));
+    }
+
+    /// `OMADDONS_WIDGET_ID` (debug builds only) moves the widget's id and folders
+    /// together; a value outside `[a-z0-9-]{1,32}`, or a release build, keeps the normal
+    /// widget.
+    #[test]
+    fn the_checkpoint_widget_seam() {
+        let at = |id: Option<&str>| {
+            let mut vars = vec![("HOME", "/h"), ("XDG_CONFIG_HOME", "/c")];
+            if let Some(id) = id {
+                vars.push(("OMADDONS_WIDGET_ID", id));
+            }
+            Paths::from_lookup(lookup(&vars)).unwrap()
+        };
+        let p = at(Some("checkpoint"));
+        if cfg!(debug_assertions) {
+            assert_eq!(p.omarchy_plugin_id(), "a44.omaddons-checkpoint");
+            assert_eq!(
+                p.omarchy_plugin_dir(),
+                Path::new("/c/omarchy/plugins/omaddons-checkpoint")
+            );
+            assert_eq!(
+                p.omarchy_plugin_stage(),
+                Path::new("/c/omarchy/plugins/.omaddons-checkpoint.stage")
+            );
+        }
+        for id in [
+            None,
+            Some(""),
+            Some("Checkpoint"),
+            Some("../x"),
+            Some("a b"),
+        ] {
+            let p = at(id);
+            assert_eq!(p.omarchy_plugin_id(), WIDGET_ID, "{id:?}");
+            assert_eq!(
+                p.omarchy_plugin_dir(),
+                Path::new("/c/omarchy/plugins/omaddons"),
+                "{id:?}"
+            );
+        }
+        assert_eq!(widget_suffix(Some("x".repeat(33).into()), true), None);
+        assert_eq!(
+            widget_suffix(Some("x".repeat(32).into()), true),
+            Some("x".repeat(32))
+        );
+        // A release build ignores the variable.
+        assert_eq!(widget_suffix(Some("checkpoint".into()), false), None);
     }
 
     #[test]

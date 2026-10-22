@@ -193,6 +193,9 @@ pub const ERRORS_CHUNK_MAX_CHARS: usize = 40;
 pub const ERRORS_MAX_TOTAL_BYTES: u64 = 256 * MIB;
 /// A BugGrabber file last written longer ago than this has no new errors.
 pub const ERRORS_NEW_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Bytes read of an installed widget's `manifest.json` or `Build.js` (a few kilobytes
+/// when omaddons wrote them); a larger file is not one it wrote.
+pub const WIDGET_READBACK_MAX_BYTES: u64 = 64 * 1024;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -754,6 +757,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "A BugGrabber file older than this has no new errors",
     ),
+    limit(
+        "WIDGET_READBACK_MAX_BYTES",
+        LimitValue::Bytes(WIDGET_READBACK_MAX_BYTES),
+        "bytes",
+        None,
+        "An installed widget's manifest.json or Build.js read back; a larger one is not omaddons'",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1001,6 +1011,7 @@ mod tests {
         "ERRORS_CHUNK_MAX_CHARS",
         "ERRORS_MAX_TOTAL_BYTES",
         "ERRORS_NEW_MAX_AGE",
+        "WIDGET_READBACK_MAX_BYTES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

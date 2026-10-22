@@ -193,6 +193,39 @@ fn the_plugin_id_is_a_literal_in_the_manifest_only() {
     assert!(seen > 0, "no QML or JS under omarchy/");
 }
 
+/// The embedded asset table is exactly the runtime files under `omarchy/`, its tests and
+/// a generated `Build.js` aside, so a view added there is embedded in the same commit
+/// (E1). A row naming a missing file already fails the build, through `include_str!`.
+#[test]
+fn every_runtime_file_is_embedded() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy");
+    let mut on_disk = BTreeSet::new();
+    let mut pending = vec![root.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let relative = path
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            if relative == "tests" || relative == "Build.js" {
+                continue;
+            }
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                on_disk.insert(relative);
+            }
+        }
+    }
+    let embedded: BTreeSet<String> = omaddons::omarchy::assets::ASSETS
+        .iter()
+        .map(|(path, _)| (*path).to_owned())
+        .collect();
+    assert_eq!(on_disk, embedded);
+}
+
 /// The flags the widget owns and puts first are the binary's global flags, so a clap
 /// rename fails here and in `validate_built_argv`.
 #[test]
