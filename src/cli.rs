@@ -190,6 +190,10 @@ pub enum Command {
     /// Find addons by name in the catalog, WoWInterface, Tukui and GitHub
     #[command(visible_alias = "find", after_long_help = SEARCH_HELP)]
     Search(crate::app::search::SearchArgs),
+    /// Which addon most likely throws Lua errors, how often, and whether an update may
+    /// fix it (from BugGrabber)
+    #[command(after_long_help = ERRORS_HELP)]
+    Errors(crate::app::errors::ErrorsArgs),
     /// Every client's addon set as one addons.toml for sync (stdout, or --write)
     #[command(after_long_help = EXPORT_HELP)]
     Export(crate::app::export::ExportArgs),
@@ -527,6 +531,17 @@ Examples:
 Only GitHub's search receives the query; the catalog, the WoWInterface index and
 the Tukui list are searched on this machine. Compatibility per client is a hint:
 install verifies each addon's TOC.";
+
+/// `errors`' long help.
+const ERRORS_HELP: &str = "\
+Examples:
+  omaddons errors                                  every client, newest first
+  omaddons errors --since 1d --json                the last day, for an agent
+  omaddons errors -t retail --addon WeakAuras -v   one addon, every frame
+  omaddons errors --check                          exit 6 on new errors
+
+Messages an addon wrote itself may hold other players' names: they show only
+with --raw-details. Errors other players sent through BugSack are counted apart.";
 
 /// `auth`'s long help.
 const AUTH_HELP: &str = "\

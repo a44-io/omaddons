@@ -20,7 +20,7 @@ use jiff::Timestamp;
 use jiff::civil::DateTime;
 use jiff::tz::TimeZone;
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::limits::BUGGRABBER_MAX_ENTRIES;
 use crate::lua::{Table, Value};
@@ -92,7 +92,9 @@ pub enum BugTime {
 }
 
 /// What a time says about the last occurrence, weakest first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeMeaning {
     Unknown,
@@ -104,7 +106,9 @@ pub enum TimeMeaning {
 }
 
 /// How sure the instant's zone is, weakest first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TzEvidence {
     /// A local string read in this machine's zone, which may not be the zone that wrote
@@ -115,7 +119,7 @@ pub enum TzEvidence {
 }
 
 /// An instant with what it means and how sure its zone is: the wire's `last_seen`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TimeEvidence {
     #[schemars(with = "Option<String>")]
     pub at: Option<Timestamp>,

@@ -317,6 +317,9 @@ warning_codes! {
     BackupUnsettled             = "backup_unsettled";
     /// The free space beside a client's backups is below `limits.backup_min_free_mb`.
     BackupSpaceLow              = "backup_space_low";
+    /// A BugGrabber file could not be read completely (being written, over a cap or
+    /// bound, or damaged): counts are from what was read.
+    ErrorsPartial               = "errors_partial";
 }
 
 impl fmt::Display for WarningCode {
@@ -814,7 +817,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 44);
+        assert_eq!(WarningCode::ALL.len(), 45);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

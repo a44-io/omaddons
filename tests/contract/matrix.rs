@@ -775,3 +775,60 @@ fn backup_create() {
     let c = s.json_env(&["backup", "create", "-t", "classic"], &env, 3);
     insta::assert_json_snapshot!("backup_create_no_wtf", s.stable(&c.envelope));
 }
+
+#[test]
+fn errors() {
+    use common::addons::{addon_folder, toc};
+    use common::buggrabber::{self, BugDb, BugEntry, NOW, TimeKind, Writer, write_files};
+
+    let s = Scene::new();
+    s.install_foo();
+    let bug_toc = toc("120105", &["## SavedVariables: BugGrabberDB"]);
+    addon_folder(
+        &s.home.addons("_retail_"),
+        "!BugGrabber",
+        &[("!BugGrabber.toc", &bug_toc)],
+        &[],
+    );
+    let at = |file: &str, line| buggrabber::stack_era_c("Foo", file, line);
+    let db = BugDb::new(Writer::Modern, 10)
+        .entry(BugEntry::new(
+            &format!("{} FakeChar pulled", at("boss.lua", 3)),
+            9,
+            (TimeKind::Unix, NOW - 86_400),
+        ))
+        .entry(
+            BugEntry::new(
+                &format!(
+                    "{} attempt to index a nil value (field 'x')",
+                    at("core.lua", 12)
+                ),
+                10,
+                (TimeKind::Unix, NOW - 60),
+            )
+            .stack(&[
+                format!("{} in function 'Refresh'", at("core.lua", 12)),
+                "[C]: in function 'xpcall'".to_owned(),
+            ])
+            .counter(4),
+        );
+    let wtf = s.home.client("_retail_").join("WTF");
+    let mut file = db.file();
+    write_files(&wtf, std::slice::from_ref(&file));
+    let env = [("OMADDONS_NOW", "2026-10-15T18:30:00Z")];
+    let c = s.json_env(&["errors", "-t", "retail"], &env, 0);
+    insta::assert_json_snapshot!("errors_ok", s.stable(&c.envelope));
+    let c = s.json_env(&["errors", "-t", "retail", "--check"], &env, 6);
+    insta::assert_json_snapshot!("errors_check_failed", s.stable(&c.envelope));
+    // A file the game is writing: what came before its end is kept, and the check
+    // cannot certify it.
+    let cut = file.bytes.len() - 20;
+    file.bytes.truncate(cut);
+    write_files(&wtf, &[file]);
+    let c = s.json_env(&["errors", "-t", "retail", "--check"], &env, 6);
+    insta::assert_json_snapshot!("errors_check_incomplete", s.stable(&c.envelope));
+    let c = s.json(&["errors", "-t", "nowhere"], 3);
+    insta::assert_json_snapshot!("errors_unknown_target", s.stable(&c.envelope));
+    let c = s.json(&["errors", "--limit", "0"], 2);
+    insta::assert_json_snapshot!("errors_limit_zero", s.stable(&c.envelope));
+}

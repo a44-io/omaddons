@@ -326,6 +326,7 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             "outdated" => &["outdated"],
             "info" => &["info", "Foo"],
             "search" => &["search", "foo"],
+            "errors" => &["errors"],
             "history" => &["history"],
             "net-log" => &["net-log"],
             "targets" => &["targets"],

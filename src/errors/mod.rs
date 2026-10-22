@@ -5,6 +5,9 @@ pub mod attribute;
 pub mod buggrabber;
 pub mod frames;
 pub mod locate;
+pub mod memo;
+pub mod observe;
 pub mod sanitize;
 
 pub use buggrabber::{BugDb, BugEntry};
+pub use observe::{AddonErrors, ErrorGroup, Observation, read_target};

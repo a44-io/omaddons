@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::drift::DriftSummary;
-use super::status::Remembered;
+use super::remembered::Remembered;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;

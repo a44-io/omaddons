@@ -8,6 +8,7 @@ pub mod config;
 pub mod copy;
 pub mod drift;
 pub mod engine;
+pub mod errors;
 pub mod export;
 pub mod help;
 pub mod history;
@@ -20,6 +21,7 @@ pub mod outcome;
 pub mod outdated;
 pub mod pin;
 pub mod precondition;
+pub mod remembered;
 pub mod remove;
 pub mod resolve_args;
 pub mod search;
@@ -117,6 +119,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("outdated", Group::Look, false),
     entry("info", Group::Look, false),
     entry("search", Group::Look, false),
+    entry("errors", Group::Look, false),
     entry("export", Group::Look, true),
     entry("history", Group::Look, false),
     entry("net-log", Group::Look, false),
@@ -195,6 +198,7 @@ pub fn command_name(command: Option<&Command>) -> &'static str {
         Some(Command::Export(_)) => "export",
         Some(Command::Outdated(_)) => "outdated",
         Some(Command::Search(_)) => "search",
+        Some(Command::Errors(_)) => "errors",
         Some(Command::NetLog(_)) => "net-log",
         Some(Command::List(_)) => "list",
         Some(Command::Targets(args)) => args
@@ -488,6 +492,7 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             out.emit(result)
         }
         Some(Command::NetLog(args)) => out.emit(net_log::run(ctx, args)),
+        Some(Command::Errors(args)) => out.emit(errors::run(ctx, args)),
         Some(Command::History(args)) => {
             let result = history::run(ctx, args, cli.global.actor.as_deref());
             if result.as_ref().is_ok_and(|o| o.torn_tail) {

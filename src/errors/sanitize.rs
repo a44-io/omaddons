@@ -389,7 +389,7 @@ pub fn strict_frames(raw: &str, verbose: bool) -> Vec<String> {
                 continue;
             }
             (FrameKind::Path, Some(path), Some(line)) => {
-                format!("{}:{line}{}", display_path(path), function_of(f.raw))
+                format!("{}:{line}:{}", display_path(path), function_of(f.raw))
             }
             (FrameKind::Chunk, ..) => "[custom code]".to_owned(),
             _ => continue,
@@ -811,14 +811,14 @@ mod tests {
         assert_eq!(
             strict_frames(&stack, false),
             [
-                "Foo/core.lua:12 in function 'Refresh'",
+                "Foo/core.lua:12: in function 'Refresh'",
                 "… (2 C frames)",
-                "Foo/b.lua:7 in function <Foo/b.lua:5>",
-                "Foo/a.lua:3 in main chunk",
+                "Foo/b.lua:7: in function <Foo/b.lua:5>",
+                "Foo/a.lua:3: in main chunk",
                 "[custom code]",
                 "… (1 C frame)",
-                "Foo-1.2/core.lua:9 in function 'Old'",
-                "AceEvent-3 (Foo):120 in function '?'",
+                "Foo-1.2/core.lua:9: in function 'Old'",
+                "AceEvent-3 (Foo):120: in function '?'",
             ]
         );
         let long: String = (1..=50)

@@ -313,6 +313,11 @@ impl Paths {
         self.cache.join("history_tail.json")
     }
 
+    /// The errors memo: what `errors` last observed on each client.
+    pub fn errors_memo(&self) -> PathBuf {
+        self.cache.join("errors.json")
+    }
+
     /// The bar widget's doorbell: rung by every write that can change `status --cached`.
     pub fn doorbell_file(&self) -> PathBuf {
         self.cache.join("doorbell.json")

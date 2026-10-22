@@ -8,7 +8,7 @@
 //! full `omaddons status`. Running state is live either way. `--check` turns any
 //! attention into exit 6 (`check_failed`) with the data still there.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -20,6 +20,7 @@ use serde::Serialize;
 use super::drift::{DriftItem, needs_reinstall, reinstall_hint};
 use super::history::ChangeCounts;
 use super::issues::{Issue, SeverityCounts, issues_for};
+use super::remembered::Remembered;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -31,20 +32,14 @@ use crate::engine::journal;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{LockState, probe_global};
 use crate::inventory::{Counts, Depth, FolderClass, Inventory, inventory_shared};
-use crate::model::{
-    Actor, AddonRecord, AddonState, Channel, FolderName, Ref, RunId, Target, TargetKey, TxKind,
-};
+use crate::model::{Actor, AddonState, FolderName, Ref, RunId, Target, TargetKey, TxKind};
 use crate::output::{Outcome, Style, table};
 use crate::politeness::DEFAULT_CHECK_INTERVAL;
 use crate::resolve::catalog::Catalog;
-use crate::resolve::updates::{
-    StatusKind, StatusRow, UncheckedReason, UpdateStatus, installed_primary_interface, statuses,
-};
+use crate::resolve::updates::{StatusKind, UncheckedReason, UpdateStatus};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
-use crate::sources::{SourceId, SourceRegistry};
 use crate::state::history::{self, HistoryEntry, HistoryFilter};
 use crate::state::history_tail::{self, Answer};
-use crate::state::memo::{self, FactIndex, ReleaseMemo};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::registry::RegistryEntry;
 use crate::state::store::VersionStatus;
@@ -753,53 +748,6 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         discovery: world.discovery,
         notes,
     })
-}
-
-/// The release memo as read-only commands use it: read once, never written, never
-/// fetched; a memo that cannot be read is empty (`note` says why, for `-v`).
-pub(super) struct Remembered {
-    memo: ReleaseMemo,
-    facts: FactIndex,
-    enabled: BTreeSet<SourceId>,
-    pub note: Option<String>,
-}
-
-impl Remembered {
-    pub(super) fn load(world: &World) -> Self {
-        let (memo, note) = memo::load(&world.paths);
-        let facts = FactIndex::new(&memo.candidates);
-        Self {
-            memo,
-            facts,
-            enabled: SourceRegistry::builtin(&world.sources()).enabled(),
-            note,
-        }
-    }
-
-    /// What the memo says about each of `record`'s addons on `target`, from the shared
-    /// evaluator (the statuses `outdated` shows).
-    pub(super) fn statuses(
-        &self,
-        target: &Target,
-        record: &TargetRecord,
-        table: &RulesTable,
-    ) -> Vec<StatusRow> {
-        let entry = |r: &Ref, c: Channel| self.memo.entries.get(&memo::key(r, c)).cloned();
-        statuses(
-            &[(target, record)],
-            &entry,
-            &self.facts,
-            &self.enabled,
-            &|t, a| installed_primary_interface(t, a, table),
-        )
-    }
-
-    fn fetched_at(&self, a: &AddonRecord) -> Option<Timestamp> {
-        self.memo
-            .entries
-            .get(&memo::key(&a.r#ref, a.channel))
-            .map(|e| e.fetched_at)
-    }
 }
 
 /// A target's update counts, and whether it is due a check: it has checkable addons

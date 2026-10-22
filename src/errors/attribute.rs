@@ -189,13 +189,16 @@ fn resolve<'p>(path: &'p str, installed: &FolderSet, legacy: bool) -> Option<Res
         });
     }
     if let Some(rest) = path.strip_prefix("...") {
-        // A cut inside `Interface/AddOns/` (`dOns/`, `ns/`): the next segment.
+        // A cut inside `Interface/AddOns/` (`dOns/`, `ns/`): the next segment, when it is
+        // an installed folder. A short tail such as `s/` also ends folder names
+        // (`...s/Nameplates/` cut from `Modules/`), so an uninstalled segment is not
+        // taken for one.
         if let Some(stripped) = strip_addons_tail(rest)
             && let Some((folder, below)) = split_segment(stripped)
-            && !folder.is_empty()
+            && let Some(installed) = installed.get(folder)
         {
             return Some(Resolved {
-                folder: spelled(folder),
+                folder: installed.to_owned(),
                 read: Read::TruncatedPrefix,
                 below,
             });
@@ -598,6 +601,11 @@ mod tests {
             folder_of("...s/x.lua", &installed(), false),
             None,
             "a file, not a folder"
+        );
+        assert_eq!(
+            folder_of("...s/Nameplates/Widgets/x.lua", &installed(), false),
+            None,
+            "a tail of `Modules/`, not of `Interface/AddOns/`: no installed folder"
         );
     }
 

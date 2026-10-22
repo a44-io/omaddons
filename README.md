@@ -149,7 +149,8 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | `auth github`: an opt-in GitHub token (5,000 REST requests an hour), stored from standard input or `gh`, checked and cleared | ✅ Done (milestone 2) |
 | In-game load checks: retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and 3.3.5a each wrote the SavedVariables of the addons omaddons installed, so the client loaded them | ✅ Observed on the development machine (2026-10-20 and 21) |
 | `backup create`: a copy of each client's `WTF/`, made without the global lock (copy-on-write on btrfs and xfs), that says whether `WTF/` held still while it was copied and which addon versions produced it; `--verify` hashes it. `backup list`: each client's backups, what each proves, and the space they take | 🔄 Milestone 3 (checking and restoring backups are next) |
-| The Omarchy bar widget, Lua error capture (`errors`, with BugGrabber from a new keyless `wowace:` source), checking and restoring `WTF/` backups, automatic backups | 🗓️ Milestone 3 |
+| `errors`: which addon most likely throws Lua errors, from BugGrabber's data on every client (3.3.5a included), with the attribution's method and confidence, new errors per database, and nothing an addon wrote shown unless asked for | 🔄 Milestone 3 (dismissing errors and errors in `status` are next) |
+| The Omarchy bar widget, BugGrabber from a new keyless `wowace:` source, checking and restoring `WTF/` backups, automatic backups | 🗓️ Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
@@ -1270,6 +1271,51 @@ Names, authors and versions from WoWInterface are shown with their HTML entities
 
 `commands` holds `omaddons install <ref> -t <client>` for up to three results, each on its best client: the strongest hint (`yes`, then `likely`, then `unknown`), and among equals the default target, then a live client before a test one, then the client with the most managed addons, then retail, then by id. Never for `no`, `unlikely` or `abandoned`. A source not consulted is listed in `sources_skipped` (`offline`, `rate_limited` with `reset_at`, `disabled`, `no_index`). A spent GitHub search is not a failure; any other GitHub error lists `github` as `no_index`. Any source that could not be read, other than a spent GitHub search, makes the run `partial`, with a warning naming the failure: its fetch failed, or it is rate limited. When every result is `no`, `unlikely` or `abandoned` on the selected clients, the human output says "No install suggested". A stored WoWInterface index that answers because a refresh failed is no failure: its `stale_check` warning says the refresh failed and why. `--offline` searches the catalog, the stored index and the remembered Tukui list, and lists the other sources `offline`.
 
+### `errors`
+
+Which addon most likely throws Lua errors, how often, since when, and whether an update may fix it, read from [BugGrabber](https://www.wowace.com/projects/bug-grabber)'s SavedVariables on every client, 3.3.5a included. It reads, and writes only its memo in the cache.
+
+```text
+$ omaddons errors
+retail (12.1.5.70391, mainline) · BugGrabber · 4 errors from 4 addons · 2 new
+  WeakAuras   57×  1 new  last 2026-10-15 17:30  likely source (custom code)
+    [custom code]:4: attempt to perform arithmetic on a nil value
+      [custom code]
+      … (1 C frame)
+      WeakAuras/WeakAuras.lua:4512: in function 'RunTrigger'
+  Foo         3×  last 2026-10-13 18:30  likely source  1.2 → 1.3 available (may fix it)
+    Foo/core.lua:12: attempt to index a nil value (field 'db')
+      Foo/core.lua:12: in function 'Refresh'
+era (1.15.8.64907, vanilla) · no Lua errors are captured: BugGrabber is not installed
+Update them: omaddons update Foo -t retail
+```
+
+| Flag | Meaning |
+|---|---|
+| `--since D` | Only errors seen since then: `30m`, `12h`, `1d`, `2w`, or an RFC 3339 time |
+| `--addon A` | Only one addon's errors, by addon or folder name |
+| `--limit N` | Addons shown per client (default 10) |
+| `--received` | Also list the errors other players sent through BugSack, apart |
+| `--raw-details` | Also show messages, locals and code as written (see Privacy below) |
+| `--check` | Exit 6 when a client has new errors, or could not be read completely |
+| `-v` | Every frame (up to 40), and each database's file with its account as `account N` |
+
+**What it reads.** Each account's `!BugGrabber.lua`, and the file of every installed addon whose loaded TOC lists `BugGrabberDB` under `## SavedVariables` (packs such as bdUI embed BugGrabber). The walk examines at most 32 account folders and 64 files per client, and reads at most 256 MiB per run and 64 MiB per file. A file over those, one the game is still writing (it ends early), or one that cannot be read is reported with `errors_partial` and counted from what was read; a bound hit makes `coverage` `truncated`. `SavedVariables/` folders that `undo` leaves alone (outside the client folder, or spelled two ways) are skipped and counted. While a client runs, its errors since the last `/reload` are not on disk yet, and the output says so.
+
+**Attribution.** A stack shows where an error surfaced, not its cause, so the output says "likely source", never "caused by", and an available update "may fix it". The first frame of an addon's own code wins over a library it embeds (an addon whose callback another addon's copy of CallbackHandler dispatched is still blamed, not the copy's owner); a blocked or forbidden call names the addon that made it ("blocked call from"); WeakAuras custom code is "likely source (custom code)". Each error carries `attribution.method` (`protected_call`, `first_addon_frame`, `library_frame`, `blizzard_only` or `none`) and `attribution.confidence` (`high`, `medium` or `low`), and each addon a `kind` (`addon`, `library` when only an embedded library was found, `blizzard` or `unknown`). A folder no record manages is listed under its folder name with `managed: false`.
+
+**New errors.** "New" is decided per database (one file of one account), never across them. The first read marks the errors of the latest session (UI load) new; after that, errors from every later session stay new, however many `/reload`s pass. A database whose session restarts below that mark (`/bugsack reset`, a restored `WTF/`) counts everything since as new. A file the game last wrote more than 7 days ago has no new errors. Dismissing errors is planned.
+
+**Privacy.** By default and with `-v`, an error's text shows only when it is one of Lua's or the client's own messages, whose variable parts are identifiers from source code (`attempt to index a nil value (field 'x')`, `bad argument #1 to 'SetText' (string expected, got nil)`). Any other message, written by an addon, may hold a party member's name, so only its length shows (`custom error message (28 characters; --raw-details shows it)`, `message_kind: custom`, `message_chars`). Code chunks show as `[custom code]`, paths relative to `AddOns/`, and accounts as `account N`. `--raw-details` adds each error's message, stack, locals and chunk contents, bounded and stripped of UI codes and control characters, with player GUIDs and links replaced by `<player>` and this client's account, realm and character names by `<account>`, `<realm>` and `<character>`. It cannot recognize every name, so it says "raw details may contain other players' names and your own code; share with care". Errors other players sent through BugSack (a `source` key) are counted apart (`received`), never new, never behind an update hint; `--received` lists them in groups marked `origin: received`. The sender's name is never kept.
+
+**`--since`.** A unix time (BugGrabber 12.0.11 and later) is the last occurrence. A string time is the first capture or the last occurrence, depending on the version that wrote it, so an error whose string time is before the cutoff may have recurred since: it is counted as `uncertain` and named in the footer ("1 older first-seen error may have recurred since then (string times cannot tell)"), never silently dropped. `no_time` counts errors without a usable time.
+
+**The observation comes first.** Each client's counts, `new`, the memo and `--check` come from every error read; `--since`, `--addon` and `--limit` only shape what is listed (`summary.matched` and `summary.shown` say what they kept), so a narrow read never makes a client look clean. `errors` exits 0 whether or not there are errors. `--check` exits 6 (`check_failed`, the data kept) when a selected client has new local errors among those `--addon` and `--since` keep (an `uncertain` one counts), with `details.reason` `new_errors`, or when it could not read everything, with `details.reason` `incomplete`; it never looks at `--limit`.
+
+`commands` holds `omaddons update <addons> -t <id>` for managed addons with new errors and a newer release in the release memo (no request is made), and `omaddons search buggrabber` (action `install_buggrabber`) for a client without BugGrabber. `--addon` on clients none of which capture errors is `not_found`.
+
+The JSON lists per client `capture` (`buggrabber` or `none`), `coverage` (`complete` or `truncated`), `files` (`read`, `accounts`, `partial`, `skipped`), `databases` (`id`, `account`, `provider`, `shape`, `session`, `state`, `baseline`, `acknowledged`), `summary` (`entries`, `occurrences`, `addons`, `new`, `matched`, `shown`, `uncertain`, `no_time`, `received`) and `addons`, each with `count`, `new`, `entries`, `last_seen` and its `errors`. An error has its `fingerprint` (`e:` and 16 hex digits, the same in both file formats and across reformatting), `database`, `origin`, `message_kind`, `message` (or `null` and `message_chars`), `location`, `attribution`, strict `stack`, `count`, `sessions`, `new`, `last_seen` and `type` (`error`, `event` or `warning`). A `last_seen` is `{at, meaning, tz}`: `meaning` is `last`, `first_or_last` or `unknown`, `tz` is `explicit` (a unix time) or `system_assumed` (a string read in this machine's zone, which may not be the one that wrote it); a combination of times keeps the weakest.
+
 ### `info <REF>`
 
 What an addon is: installed records on every target, the catalog entry, and the newest release (`show` is an alias).
@@ -1509,6 +1555,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `backup_copied` | `backup create`: the filesystem could not clone some or all of a backup's files, so they were byte-copied and take their full size; it says how many bytes. No fix |
 | `backup_unsettled` | `backup create`: `WTF/` changed while it was copied, and again on a second try, so the backup is `best_effort`; it counts the files still changing and those changed, added and removed after their copy. The fix is advice: make another backup after the game exits |
 | `backup_space_low` | `backup create`: less than `limits.backup_min_free_mb` is free beside the client's backups; the backup is made anyway. The fix is advice: free space, or lower the setting |
+| `errors_partial` | `errors`: a BugGrabber file could not be read completely (the game was writing it, it is over a size cap, or it could not be read); counts are from what was read. Its fix is `omaddons errors -t <id>`, after the game exits |
 
 </details>
 
@@ -1824,6 +1871,7 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDON
 | `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), failures retrying cannot change, and what downloading candidates taught (each archive's hash, and whether it loads on a client) | Yes; the next commands fetch and download again |
 | `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim, its text decoded and made safe (format 1.1; a 1.0 index is decoded once on load), refreshed after its hour | Yes; the next search or dependency lookup fetches it again |
 | `~/.cache/omaddons/doorbell.json` | A signal for the bar widget: rewritten (`{at, command, actor}`) by every change that can alter what `status --cached` reports, never by a read | Yes; the next change writes it again |
+| `~/.cache/omaddons/errors.json` | The errors memo: what `errors` last observed per client and database (file stamps, sessions, first-read baselines, counts per session and addon), so `status` can tell new errors without reading BugGrabber's files. No message, stack or locals text | Yes; but deleting it forgets which older errors were new |
 | `~/.cache/omaddons/history_tail.json` | The history projection: the end of `history.jsonl` that holds its newest 16 runs with something to undo (at most 1 MiB), so `status --cached` reports the last change without reading a history of any size. Believed only while the history is exactly as long as it says and ends with its last line | Yes; `--cached` says `unknown` until the next change rebuilds it |
 | `~/.cache/omaddons/export.json` | The hash of the `addons.toml` `export --write` last wrote, so a hand-edited file is not overwritten | Yes; the next `--write` then needs `--overwrite` |
 | `<client>/Interface/.omaddons/target.json` | The client's identity, so a moved install keeps its id | Loses identity |
@@ -2169,6 +2217,14 @@ Yes, by default. Updates that keep the loaded TOC land and tell you to `/reload`
 ### How do I update my addons?
 
 Run `omaddons outdated` to see what has updates on every client, then `omaddons update` to install them (or `omaddons update <addon>` for some). Each client gets its own transaction, and `omaddons undo` reverts the whole update. `url:` refs are one exception: their release is the URL, so install a new URL instead. Pinned addons (`omaddons pin <addon>`, or installed with `--version`) are the other: they stay put until `omaddons unpin <addon>`.
+
+### How do I find which addon throws Lua errors?
+
+Install [BugGrabber](https://www.wowace.com/projects/bug-grabber) (BugSack shows them in game), play, and run `omaddons errors` after the game exits. It lists each addon's errors on every client, the likely source with how sure it is, which are new, and whether an update may fix them. `omaddons errors --check` exits 6 when something is new.
+
+### Why is an error's message hidden?
+
+An addon can write anything into its own error messages, a party member's name included, and nothing can reliably tell a name from other text. So `errors` shows a message only when it is one of Lua's or the game's own, whose variable parts are identifiers from code; any other shows its length. `omaddons errors --raw-details` shows them all, with your own account, realm and character names and every player link replaced, but it cannot catch every name: share its output with care.
 
 ### Does it work with Turtle WoW, Warmane or other private servers?
 

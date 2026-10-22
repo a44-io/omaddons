@@ -46,6 +46,12 @@ expression: envelope
         "name": "search"
       },
       {
+        "about": "Which addon most likely throws Lua errors, how often, and whether an update may fix it (from BugGrabber)",
+        "aliases": [],
+        "group": "look",
+        "name": "errors"
+      },
+      {
         "about": "Every client's addon set as one addons.toml for sync (stdout, or --write)",
         "aliases": [],
         "group": "look",

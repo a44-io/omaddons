@@ -679,6 +679,24 @@ expression: "(politeness, REGISTRY)"
       "unit": "chars",
       "config_key": null,
       "notes": "[string \"…\"] contents shown with --raw-details"
+    },
+    {
+      "name": "ERRORS_MAX_TOTAL_BYTES",
+      "value": {
+        "bytes": 268435456
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "BugGrabber bytes read per errors run, every target together"
+    },
+    {
+      "name": "ERRORS_NEW_MAX_AGE",
+      "value": {
+        "millis": 604800000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "A BugGrabber file older than this has no new errors"
     }
   ]
 ]

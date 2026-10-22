@@ -6,7 +6,8 @@ World of Warcraft addon manager for Linux
 
 Usage: omaddons [OPTIONS] <COMMAND>
 
-Look      status  list  outdated  info  search  export  history  net-log
+Look      status  list  outdated  info  search  errors  export  history
+          net-log
 Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  backup
 Setup     targets  config  auth  help
 

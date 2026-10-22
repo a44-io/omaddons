@@ -1,0 +1,169 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "errors",
+  "commands": [],
+  "data": {
+    "raw_details": false,
+    "summary": {
+      "addons": 1,
+      "new": 1,
+      "received": 0,
+      "targets": 1,
+      "uncertain": 0
+    },
+    "targets": [
+      {
+        "addons": [
+          {
+            "addon": "Foo",
+            "count": 2,
+            "entries": 2,
+            "errors": [
+              {
+                "attribution": {
+                  "confidence": "high",
+                  "method": "first_addon_frame"
+                },
+                "count": 1,
+                "database": "db-1",
+                "fingerprint": "e:87db00f6ab6136f1",
+                "last_seen": {
+                  "at": "<time>",
+                  "meaning": "last",
+                  "tz": "explicit"
+                },
+                "location": "Foo/core.lua:12",
+                "message": "attempt to index a nil value (field 'x')",
+                "message_kind": "lua_runtime",
+                "new": true,
+                "origin": "local",
+                "sessions": 1,
+                "stack": [
+                  "Foo/core.lua:12: in function 'Refresh'",
+                  "… (1 C frame)"
+                ],
+                "type": "error"
+              },
+              {
+                "attribution": {
+                  "confidence": "high",
+                  "method": "first_addon_frame"
+                },
+                "count": 1,
+                "database": "db-1",
+                "fingerprint": "e:d56bd2b608d97274",
+                "last_seen": {
+                  "at": "<time>",
+                  "meaning": "last",
+                  "tz": "explicit"
+                },
+                "location": "Foo/boss.lua:3",
+                "message": null,
+                "message_chars": 15,
+                "message_kind": "custom",
+                "new": false,
+                "origin": "local",
+                "sessions": 1,
+                "stack": [],
+                "type": "error"
+              }
+            ],
+            "folders": [
+              "Foo"
+            ],
+            "kind": "addon",
+            "last_seen": {
+              "at": "<time>",
+              "meaning": "last",
+              "tz": "explicit"
+            },
+            "latest": {
+              "status": "static",
+              "version": null
+            },
+            "managed": true,
+            "new": 1,
+            "origin": "local",
+            "version": "1"
+          }
+        ],
+        "capture": "buggrabber",
+        "coverage": "complete",
+        "databases": [
+          {
+            "account": "account 1",
+            "acknowledged": null,
+            "baseline": 9,
+            "id": "db-1",
+            "provider": "!BugGrabber",
+            "session": 10,
+            "shape": "modern",
+            "state": "partial"
+          }
+        ],
+        "files": {
+          "accounts": 1,
+          "partial": 1,
+          "read": 0,
+          "skipped": {
+            "symlinked": 0,
+            "two_spellings": 0
+          }
+        },
+        "summary": {
+          "addons": 1,
+          "entries": 2,
+          "matched": 2,
+          "new": 1,
+          "no_time": 0,
+          "occurrences": 2,
+          "received": 0,
+          "shown": 2,
+          "uncertain": 0
+        },
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        }
+      }
+    ]
+  },
+  "error": {
+    "alternatives": [],
+    "code": "check_failed",
+    "details": {
+      "reason": "incomplete",
+      "target": "retail"
+    },
+    "fix": "omaddons errors -t retail",
+    "fix_argv": [
+      "omaddons",
+      "errors",
+      "-t",
+      "retail"
+    ],
+    "message": "retail: BugGrabber's data could not be read completely",
+    "retryable": false
+  },
+  "exit_code": 6,
+  "ok": false,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "errors_partial",
+      "fix": "omaddons errors -t retail",
+      "fix_argv": [
+        "omaddons",
+        "errors",
+        "-t",
+        "retail"
+      ],
+      "message": "A BugGrabber file of account 1 on retail could not be read completely: it ends early (the game may be writing it). Counts are from what was read"
+    }
+  ]
+}

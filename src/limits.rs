@@ -153,6 +153,10 @@ pub const ERRORS_STACK_LINES_VERBOSE: usize = 40;
 pub const ERRORS_LOCALS_MAX_CHARS: usize = 4_096;
 /// Characters of a `[string "…"]` chunk's contents shown with `--raw-details`.
 pub const ERRORS_CHUNK_MAX_CHARS: usize = 40;
+/// Bytes of BugGrabber files one `errors` run reads, every client together.
+pub const ERRORS_MAX_TOTAL_BYTES: u64 = 256 * MIB;
+/// A BugGrabber file last written longer ago than this has no new errors.
+pub const ERRORS_NEW_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -600,6 +604,20 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "[string \"…\"] contents shown with --raw-details",
     ),
+    limit(
+        "ERRORS_MAX_TOTAL_BYTES",
+        LimitValue::Bytes(ERRORS_MAX_TOTAL_BYTES),
+        "bytes",
+        None,
+        "BugGrabber bytes read per errors run, every target together",
+    ),
+    limit(
+        "ERRORS_NEW_MAX_AGE",
+        LimitValue::Millis(ms(ERRORS_NEW_MAX_AGE)),
+        "ms",
+        None,
+        "A BugGrabber file older than this has no new errors",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -814,6 +832,8 @@ mod tests {
         "ERRORS_STACK_LINES_VERBOSE",
         "ERRORS_LOCALS_MAX_CHARS",
         "ERRORS_CHUNK_MAX_CHARS",
+        "ERRORS_MAX_TOTAL_BYTES",
+        "ERRORS_NEW_MAX_AGE",
     ];
 
     const CONFIG_NAMES: &[&str] = &[
