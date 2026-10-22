@@ -1239,9 +1239,11 @@ fn with_dependency_items(
     out
 }
 
-/// At most three `install <candidate> -t <id>` hints (action `install`): the candidates
-/// of the items' unresolved requirements in item order (not a project that does not ship
-/// the folder here), then what each `bridge_dependency` warning's fix installs.
+/// At most three hints: `install <candidate> -t <id>` for the candidates of the items'
+/// unresolved requirements in item order (not a project that does not ship the folder
+/// here), then each `bridge_dependency` warning's fix, which installs the requirement or,
+/// when nothing resolves it, searches for it. Each is labelled by the verb its argv runs
+/// (`install` or `search`), never by where it came from.
 fn install_hints(items: &[InstallItem], warnings: &[Warning], target: &str) -> Vec<CommandHint> {
     let candidates = items
         .iter()
@@ -1265,11 +1267,14 @@ fn install_hints(items: &[InstallItem], warnings: &[Warning], target: &str) -> V
     }
     argvs
         .into_iter()
-        .map(|argv| CommandHint::new("install", argv, false))
+        .map(|argv| {
+            let verb = argv.get(1).cloned().unwrap_or_default();
+            CommandHint::new(verb, argv, false)
+        })
         .collect()
 }
 
-/// How many `install` hints a run suggests at most.
+/// How many install (or search) hints a run suggests at most.
 const INSTALL_HINTS_MAX: usize = 3;
 
 /// `a`, `a and b`, `a, b and c`.

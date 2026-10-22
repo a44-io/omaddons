@@ -195,6 +195,12 @@ mod support {
                 command["action"].is_string() && command["destructive"].is_boolean(),
                 "{ctx}"
             );
+            // An agent trusts `action` without parsing argv: these name the verb run.
+            for verb in ["install", "search"] {
+                if command["action"] == verb {
+                    assert_eq!(argv.get(1).map(String::as_str), Some(verb), "{ctx}");
+                }
+            }
         }
 
         // NDJSON on stderr, with exactly one error event per failure.

@@ -424,7 +424,7 @@ fn info() {
 }
 
 /// Dependency items, fields, warnings and hints: an install with a dependency, with one
-/// that nothing ships, and with a bridge requirement.
+/// that nothing ships, and with a bridge requirement, resolved or not.
 #[test]
 fn install_with_dependencies() {
     use super::common::graph::{Folder, Node, release_graph};
@@ -453,6 +453,10 @@ fn install_with_dependencies() {
                 &[folder("Plug", &[]), folder("Plug_Masque", &["Masque"])],
             ),
             node("https://github.com/o/masque", &[folder("Masque", &[])]),
+            node(
+                "https://github.com/o/lone",
+                &[folder("Lone", &[]), folder("Lone_Nowhere", &["Nowhere"])],
+            ),
         ],
     );
     // Tukui and WoWInterface are consulted for Nowhere, and neither ships it.
@@ -496,6 +500,34 @@ fn install_with_dependencies() {
             s.json(&args, 0);
         }
     }
+    // A bridge requirement nothing resolves is searched for, and its hint says so.
+    let c = s.json(&["install", "gh:o/lone", "-t", "retail"], 0);
+    let bridge = c.envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["code"] == "bridge_dependency")
+        .unwrap();
+    assert_eq!(
+        bridge["fix_argv"],
+        serde_json::json!(["omaddons", "search", "Nowhere"])
+    );
+    let hints: Vec<(&serde_json::Value, &serde_json::Value)> = c.envelope["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|h| h["action"] != "undo")
+        .map(|h| (&h["action"], &h["argv"]))
+        .collect();
+    assert_eq!(
+        hints,
+        [(
+            &serde_json::json!("search"),
+            &serde_json::json!(["omaddons", "search", "Nowhere"])
+        )],
+        "{}",
+        c.envelope
+    );
 }
 
 /// `search`: a catalog hit merged with its GitHub duplicate, the offline skips, and the
