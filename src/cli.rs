@@ -255,7 +255,7 @@ impl Context {
         )
         .map_err(|err| {
             let fix = if matches!(err.origin, "--actor") {
-                Suggestion::command(fix_argv(&without_flag(argv, "--actor")))
+                actor_fix(argv, global.actor.as_deref().unwrap_or_default())
             } else {
                 Suggestion::text("unset OMADDONS_ACTOR, or set it to human, agent or widget")
             };
@@ -766,6 +766,21 @@ fn help_for(path: &[String]) -> Suggestion {
     let mut argv = vec!["omaddons".to_owned(), "help".to_owned()];
     argv.extend(path.iter().cloned());
     Suggestion::command(argv)
+}
+
+/// The fix for a mistyped `--actor` value (`bad`): the command with the closest actor in
+/// its place, every other argument kept, or `omaddons help <command>` when none is close
+/// (a guessed actor would record the change as someone else's).
+fn actor_fix(argv: &[String], bad: &str) -> Suggestion {
+    let closest = ["agent", "human", "widget"]
+        .iter()
+        .map(|actor| (levenshtein(bad, actor), *actor))
+        .filter(|(d, _)| *d <= 2)
+        .min();
+    match closest {
+        Some((_, actor)) => Suggestion::command(fix_argv(&with_flag_value(argv, "--actor", actor))),
+        None => help_for(&command_path(argv)),
+    }
 }
 
 /// Synonym words a nested level knows (vision §5.10), as an exact intent: `targets
@@ -1783,9 +1798,22 @@ mod tests {
         let fixed = err.fix.argv().unwrap();
         assert_eq!(fixed.last().unwrap().chars().count(), 200);
 
+        // A mistyped actor is corrected in place; one nothing is close to gets help,
+        // never a guess (README "Command reference").
         let err = make(&["--actor", "robot"], &env_none).unwrap_err();
         assert_eq!(err.code, ErrorCode::Usage);
-        assert_eq!(err.fix.argv().unwrap(), ["omaddons"]);
+        assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help"]);
+        let err = make(&["--actor", "humna", "--target", "retail"], &env_none).unwrap_err();
+        assert_eq!(
+            err.fix.argv().unwrap(),
+            ["omaddons", "--actor", "human", "--target", "retail"]
+        );
+        let err = make(&["--actor=agnet"], &env_none).unwrap_err();
+        assert_eq!(err.fix.argv().unwrap(), ["omaddons", "--actor=agent"]);
+        // ubs:ignore — comparing environment variable names, not secrets
+        let env_typo = |name: &str| (name == "OMADDONS_ACTOR").then(|| "humna".to_owned());
+        let err = make(&[], &env_typo).unwrap_err();
+        assert_eq!(err.fix.argv(), None, "the environment's fix stays prose");
 
         // ubs:ignore — comparing environment variable names, not secrets
         let env_widget = |name: &str| (name == "OMADDONS_ACTOR").then(|| "widget".to_owned());

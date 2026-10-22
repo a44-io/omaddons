@@ -81,6 +81,45 @@ const CORPUS: &[(&[&str], Option<&str>)] = &[
     (&["install", "x", "--channel", "betaa"], Some("install")),
     (&["search", "x", "--source", "wowii"], Some("search")),
     (&["undo", "--saved-variables", "restor"], Some("undo")),
+    (
+        &["undo", "--last-by", "humna", "-t", "retail", "--dry-run"],
+        Some("undo"),
+    ),
+    (
+        &["undo", "--last-by", "agnet", "-t", "retail"],
+        Some("undo"),
+    ),
+    (&["undo", "--last-by", "xyzzy"], None),
+    (
+        &["install", "x", "-t", "retail", "--actor", "humna"],
+        Some("install"),
+    ),
+    (&["install", "x", "--actor", "xyzzy"], None),
+];
+
+/// Mistyped values (argv, the value's index): the fix is the typed command with that
+/// value corrected and every other argument where it was.
+const VALUE_TYPOS: &[(&[&str], usize)] = &[
+    (&["install", "x", "--channel", "betaa"], 3),
+    (&["search", "x", "--source", "wowii"], 3),
+    (
+        &[
+            "undo",
+            "--saved-variables",
+            "restor",
+            "-t",
+            "retail",
+            "--dry-run",
+        ],
+        2,
+    ),
+    (
+        &["undo", "--last-by", "humna", "-t", "retail", "--dry-run"],
+        2,
+    ),
+    (&["undo", "--last-by", "agnet", "-t", "retail"], 2),
+    (&["install", "x", "-t", "retail", "--actor", "humna"], 5),
+    (&["install", "x", "--actor=agnet", "-t", "retail"], 2),
 ];
 
 /// The fixes decided by omad-m2-audit-yegz.5.1, exactly.
@@ -117,6 +156,38 @@ const DECIDED: &[(&[&str], &[&str])] = &[
     ),
 ];
 
+/// The fixes decided by omad-rnk8: a mistyped actor is corrected in place, and one
+/// nothing is close to gets help, never a guessed actor (undo can restore
+/// SavedVariables).
+const DECIDED_ACTORS: &[(&[&str], &[&str])] = &[
+    (
+        &["undo", "--last-by", "humna", "-t", "retail", "--dry-run"],
+        &[
+            "omaddons",
+            "undo",
+            "--last-by",
+            "human",
+            "-t",
+            "retail",
+            "--dry-run",
+        ],
+    ),
+    (
+        &["undo", "--last-by", "xyzzy"],
+        &["omaddons", "help", "undo"],
+    ),
+    (
+        &["install", "x", "-t", "retail", "--actor", "humna"],
+        &[
+            "omaddons", "install", "x", "-t", "retail", "--actor", "human",
+        ],
+    ),
+    (
+        &["install", "x", "--actor", "xyzzy"],
+        &["omaddons", "help", "install"],
+    ),
+];
+
 #[test]
 fn a_mistyped_command_line_gets_a_fix_that_runs_and_is_never_another_change() {
     let s = Scene::new();
@@ -128,7 +199,11 @@ fn a_mistyped_command_line_gets_a_fix_that_runs_and_is_never_another_change() {
         for suggestion in &found {
             never_another_mutating_command(suggestion, *typed, &ctx);
         }
-        if let Some((_, fix)) = DECIDED.iter().find(|(a, _)| a == argv) {
+        if let Some((_, fix)) = DECIDED
+            .iter()
+            .chain(DECIDED_ACTORS)
+            .find(|(a, _)| a == argv)
+        {
             assert_eq!(found[0], owned(fix), "{ctx}");
         }
     }
@@ -136,6 +211,22 @@ fn a_mistyped_command_line_gets_a_fix_that_runs_and_is_never_another_change() {
     let unpin = s.json(&["unpn", "x"], 2);
     for suggestion in suggestions(&unpin.envelope) {
         assert_ne!(command_path(&suggestion), ["undo"], "{suggestion:?}");
+    }
+}
+
+/// A value fix changes the mistyped value alone: no argument is dropped or moved.
+#[test]
+fn a_mistyped_value_is_corrected_in_place_with_every_argument_kept() {
+    let s = Scene::new();
+    for (argv, at) in VALUE_TYPOS {
+        let checked = s.json(argv, 2);
+        let ctx = checked.run.context();
+        let fix = &suggestions(&checked.envelope)[0];
+        let mut typed = vec!["omaddons".to_owned()];
+        typed.extend(owned(argv));
+        assert_eq!(fix.len(), typed.len(), "{fix:?}\n{ctx}");
+        let changed: Vec<usize> = (0..typed.len()).filter(|i| fix[*i] != typed[*i]).collect();
+        assert_eq!(changed, [at + 1], "{fix:?}\n{ctx}");
     }
 }
 

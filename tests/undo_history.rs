@@ -244,6 +244,16 @@ fn conflicts_prefixes_and_last_by() {
     assert_eq!(r.expect(2)["error"]["code"], "usage");
     let r = s.run(&["undo", "--last-by", "robot"]);
     assert_eq!(r.expect(2)["error"]["code"], "usage");
+    // A typo is corrected in place, the preview kept: never another actor's real undo.
+    let before = tree_hash(&s.addons());
+    let r = s.run(&["undo", "--last-by", "humna", "--dry-run"]);
+    assert_eq!(
+        r.expect(2)["error"]["fix_argv"],
+        json!(["omaddons", "undo", "--last-by", "human", "--dry-run"]),
+        "{}",
+        r.context()
+    );
+    assert_eq!(tree_hash(&s.addons()), before, "nothing changed");
     s.assert_private();
 }
 

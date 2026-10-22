@@ -39,7 +39,12 @@ pub struct UndoArgs {
     #[arg(value_name = "TX")]
     pub tx: Option<String>,
     /// Revert this actor's most recent run: human, agent or widget
-    #[arg(long, value_name = "ACTOR", conflicts_with = "tx")]
+    #[arg(
+        long,
+        value_name = "ACTOR",
+        conflicts_with = "tx",
+        value_parser = ["human", "agent", "widget"]
+    )]
     pub last_by: Option<String>,
     /// Revert every transaction of this run: its id or a unique prefix of 8+ characters
     #[arg(long, value_name = "RUN", conflicts_with_all = ["tx", "last_by"])]
@@ -269,6 +274,8 @@ fn render_undone(w: &mut dyn Write, u: &Undone, dry_run: bool, hint: bool) -> st
 
 /// Runs `undo`.
 pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
+    // clap admits only the three actors (its value fix corrects a typo in place); this
+    // guard never guesses one.
     let last_by = args
         .last_by
         .as_deref()
@@ -277,7 +284,7 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
                 Error::new(
                     ErrorCode::Usage,
                     format!("--last-by is human, agent or widget, not {a:?}"),
-                    Suggestion::command(["omaddons", "undo", "--last-by", "agent"]),
+                    Suggestion::command(["omaddons", "help", "undo"]),
                 )
             })
         })
