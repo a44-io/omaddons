@@ -2151,6 +2151,8 @@ mod tests {
         );
     }
 
+    // Failpoints exist only in debug builds (DEC-7).
+    #[cfg(debug_assertions)]
     #[test]
     fn an_undo_of_a_restore_without_an_exchange_or_while_the_game_runs_moves_nothing() {
         let mut r = Restorable::new(false);

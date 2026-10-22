@@ -8,21 +8,16 @@
 
 mod common;
 
-use std::collections::BTreeSet;
-use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::archives::zip_text;
 use common::http::{fixture, fixture_bytes};
 use common::netlog::read_net_log;
-use common::trees::tree_hash;
-use omaddons::app::outcome::{ItemStatus, TargetsData};
-use omaddons::engine::{UndoRequest, UndoSelector};
-use omaddons::model::{Actor, RunId};
+use omaddons::app::outcome::TargetsData;
+use omaddons::model::RunId;
 use omaddons::sources::SourceRegistry;
 use omaddons::state::history::{self, HistoryFilter};
-use omaddons::state::paths::ClientPaths;
 use support::{CANONICAL, DOWNLOAD, Deferring, EVERY, requests, scene, scene_with, texts};
 
 /// The `asset` lines in `net.log`.
@@ -341,8 +336,19 @@ mod support {
     }
 }
 
+// Failpoints exist only in debug builds (DEC-7).
+#[cfg(debug_assertions)]
 #[test]
 fn a_failed_commit_on_one_target_leaves_the_others_committed_and_undoable() {
+    use std::collections::BTreeSet;
+    use std::fs;
+
+    use common::trees::tree_hash;
+    use omaddons::app::outcome::ItemStatus;
+    use omaddons::engine::{UndoRequest, UndoSelector};
+    use omaddons::model::Actor;
+    use omaddons::state::paths::ClientPaths;
+
     let s = scene();
     let run = RunId::new();
     let done =

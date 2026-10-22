@@ -18,6 +18,10 @@
 //! Records-only transactions (a pin, a forget) change no folder, so their oracle is the
 //! record: the edit is there exactly when history holds the transaction, the generation
 //! agrees, and every folder is byte-identical to before.
+//!
+//! Debug builds only: every scene arms failpoints, in process or in the binary it runs,
+//! and they exist only there (DEC-7).
+#![cfg(debug_assertions)]
 
 mod common;
 
