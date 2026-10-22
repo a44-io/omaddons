@@ -413,6 +413,9 @@ fn delete_entry(entry: &Path) -> io::Result<u64> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(err) => return Err(err),
     };
+    if meta.is_dir() {
+        grant_owner(entry);
+    }
     let bytes = if meta.is_dir() {
         tree_bytes(entry)
     } else {
@@ -428,6 +431,36 @@ fn delete_entry(entry: &Path) -> io::Result<u64> {
         // ubs:ignore — an io::ErrorKind, not a secret
         Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
         _ => Ok(bytes),
+    }
+}
+
+/// Gives every directory under `dir` (itself included) the owner access a delete needs.
+/// A stored tree keeps exact modes (a restore's stage, a `WTF.previous`, an imported
+/// backup), and a `0500` directory cannot be emptied otherwise. Top down, so a directory
+/// that could not be listed is listed once granted; symlinks are never followed. Best
+/// effort: the delete reports what still fails.
+fn grant_owner(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(meta) = fs::symlink_metadata(&dir) else {
+            continue;
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+        let mode = meta.permissions().mode() & 0o7777;
+        if mode & 0o700 != 0o700 {
+            let _ = super::sys::chmod(&dir, mode | 0o700);
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                pending.push(entry.path());
+            }
+        }
     }
 }
 
@@ -699,6 +732,34 @@ mod tests {
         .unwrap();
         assert_eq!(report.removed, victims);
         assert!(!victim.exists());
+    }
+
+    #[test]
+    fn a_tree_kept_with_exact_modes_is_deleted_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = fixture();
+        let tx: TxId = TX.parse().unwrap();
+        // A restore's stage: a stored 0500 directory holding a 0000 one.
+        let stage = crate::state::paths::ClientPaths::new(&f.client).stage(&tx);
+        let locked = stage.join("WTF/Account/Locked");
+        fs::create_dir_all(locked.join("Sealed")).unwrap();
+        fs::write(locked.join("Sealed/S.lua"), b"S = 1").unwrap();
+        fs::write(locked.join("L.lua"), b"L = 1").unwrap();
+        for (dir, mode) in [(locked.join("Sealed"), 0o000), (locked.clone(), 0o500)] {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let victims = std::slice::from_ref(&stage);
+        let report = prune(
+            &f.scopes,
+            PruneReason::PostCommitCleanup,
+            victims,
+            LockUse::Acquire,
+        )
+        .unwrap();
+        assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+        assert_eq!(report.removed, victims);
+        assert_eq!(report.bytes, 10, "measured through the sealed directory");
+        assert!(!stage.exists());
     }
 
     #[test]

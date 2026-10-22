@@ -157,10 +157,17 @@ pub fn run(
         .iter()
         .filter_map(|e| {
             let halves = [client.snapshots(&e.tx), paths.state_snapshot(&e.tx)];
+            // A restore's `WTF.previous` is undo data the size cap never counts, so a few
+            // large restores never evict AddOns snapshots (M3-D48).
+            let wtf_previous = apparent_size(&client.snapshots(&e.tx).join(WTF_PREVIOUS));
             halves.iter().any(|p| p.exists()).then(|| SnapshotTx {
                 tx: e.tx,
                 at: e.at,
-                bytes: halves.iter().map(|p| apparent_size(p)).sum(),
+                bytes: halves
+                    .iter()
+                    .map(|p| apparent_size(p))
+                    .sum::<u64>()
+                    .saturating_sub(wtf_previous),
                 most_recent: Some(e.tx) == latest,
                 pinned: pinned.contains(&e.tx),
             })
@@ -266,16 +273,23 @@ pub(super) fn dead_snapshots(
     dead
 }
 
-/// The entries in a client snapshot's `AddOns/`: none when it is absent, one when it
-/// cannot be read (kept, as if it held a folder).
+/// The entries in a client snapshot's `AddOns/`, plus its `WTF.previous` when present:
+/// none when both are absent, one for an `AddOns/` that cannot be read (kept, as if it
+/// held a folder).
 fn snapshot_folders(client_snapshot: &Path) -> usize {
-    match std::fs::read_dir(client_snapshot.join("AddOns")) {
+    let addons = match std::fs::read_dir(client_snapshot.join("AddOns")) {
         Ok(listing) => listing.count(),
         // ubs:ignore — an io::ErrorKind, not a secret
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
         Err(_) => 1,
-    }
+    };
+    // A restore's old `WTF/` may be the only copy of someone's settings too.
+    let wtf_previous = std::fs::symlink_metadata(client_snapshot.join(WTF_PREVIOUS)).is_ok();
+    addons + usize::from(wtf_previous)
 }
+
+/// Where a whole restore keeps the `WTF/` it replaced, in its client snapshot.
+pub const WTF_PREVIOUS: &str = "WTF.previous";
 
 /// Whether history `text` names `tx` anywhere. The raw text, not the parsed entries: a
 /// committed transaction whose line is torn or merged into the next still counts, so
@@ -725,6 +739,28 @@ mod tests {
         assert_eq!(f.has_snapshot(&torn), (true, true), "history names it");
         assert_eq!(f.has_snapshot(&committed), (true, true));
         assert_eq!(f.has_snapshot(&shared), (true, true), "another target's");
+    }
+
+    #[test]
+    fn a_restores_old_wtf_is_left_out_of_the_cap_and_never_an_orphan() {
+        let f = fixture();
+        // Past the 24 h protection: only the cap could prune it.
+        let restored = f.commit(2 * DAY, 10);
+        let previous = f.client.snapshots(&restored).join(WTF_PREVIOUS);
+        std::fs::create_dir_all(&previous).unwrap();
+        std::fs::write(previous.join("Config.wtf"), vec![b'x'; 1000]).unwrap();
+        f.commit(HOUR, 10);
+        let report = f.run(&limits(100), &BTreeSet::new());
+        assert_eq!(report.pruned_tx, 0, "40 bytes count, not 1040: {report:?}");
+        assert!(!report.cap_exceeded);
+        assert!(previous.join("Config.wtf").exists());
+        // A dead restore's old WTF/ may be the only copy of those settings: the orphan
+        // sweep keeps its client half (recovery owns it), the state half goes.
+        let dead = TxId::new();
+        std::fs::create_dir_all(f.client.snapshots(&dead).join(WTF_PREVIOUS)).unwrap();
+        std::fs::create_dir_all(f.paths.state_snapshot(&dead)).unwrap();
+        let report = f.run(&RetentionLimits::default(), &BTreeSet::new());
+        assert_eq!(f.has_snapshot(&dead), (true, false), "{report:?}");
     }
 
     #[cfg(debug_assertions)]

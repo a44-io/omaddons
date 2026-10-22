@@ -94,6 +94,9 @@ pub const FAILPOINTS: &[&str] = &[
     "engine.recover.step",
     "engine.recover.sv",
     "engine.recover.forward",
+    "engine.restore.staged",
+    "engine.restore.exchanged",
+    "engine.restore.snapshotted",
 ];
 
 /// What a mutating command asks the engine for.
@@ -1672,6 +1675,10 @@ mod tests {
                     | "engine.recover.sv"
                     | "engine.recover.forward"
                     | "engine.addons_dir.created"
+                    // A restore's own; its matrix is engine_crash's restore scenes.
+                    | "engine.restore.staged"
+                    | "engine.restore.exchanged"
+                    | "engine.restore.snapshotted"
             ) {
                 continue;
             }
