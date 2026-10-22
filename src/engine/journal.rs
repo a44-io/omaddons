@@ -684,11 +684,16 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
                 (Some(other), Some(why)) => {
                     warnings.push(unrecoverable_warning(&tx, Some(other), why));
                 }
+                // A warning has no details: a stop's or a wait's reason goes in its text.
                 (Some(other), None) => warnings.push(
                     Warning::new(
                         WarningCode::JournalPending,
                         format!(
-                            "transaction {tx} on target {other} did not finish and could not be recovered: {}",
+                            "transaction {tx} on target {other} did not finish and could not be recovered{}: {}",
+                            error.details["reason"]
+                                .as_str()
+                                .map(|why| format!(" ({why})"))
+                                .unwrap_or_default(),
                             error.message
                         ),
                     )
@@ -1254,14 +1259,30 @@ fn finish_saved_variables(
 /// after each undo, so a crash between replayed steps can be simulated; the next
 /// recovery skips what was already undone.
 fn roll_back(s: &mut WriteSession<'_>, steps: &[StepRecord]) -> Result<()> {
-    for step in steps.iter().rev() {
-        if ran(step)? {
+    for (at, step) in steps.iter().enumerate().rev() {
+        if ran_after(step, &steps[..at])? {
             undo(s, step)?;
         }
         failpoint::hit("engine.recover.step")
             .map_err(|e| Error::io(&step.from, &e, Suggestion::command(["omaddons", "status"])))?;
     }
     Ok(())
+}
+
+/// [`ran`], for a step recorded after `earlier`. Steps run first to last and roll back
+/// last first, so while one of `earlier` is in its before state this one cannot have
+/// run, or was undone already: an exchange's old side moved on from the stage path, and
+/// a recovery that died after undoing both put the staged tree back at that path, which
+/// this step then sees in neither of its states. Anything else in neither state still
+/// stops.
+fn ran_after(step: &StepRecord, earlier: &[StepRecord]) -> Result<bool> {
+    match ran(step) {
+        Err(neither) if earlier.iter().any(|e| matches!(ran(e), Ok(false))) => {
+            let _ = neither;
+            Ok(false)
+        }
+        decided => decided,
+    }
 }
 
 /// Whether a recorded step's rename happened, from the identities now at its paths.
@@ -1535,6 +1556,76 @@ mod tests {
         assert!(
             ran(&rename).is_err(),
             "something new at `from` is neither state"
+        );
+    }
+
+    /// An exchange of `stage` with `live`, then the old side moved on from `stage` to
+    /// `kept`: the shape of a replace, and of a restore. Rolled back whole by a recovery
+    /// that died before pruning, it rolls back again as a no-op; with a foreign tree at
+    /// `live` instead, it still stops.
+    #[test]
+    fn a_rollback_repeated_after_both_steps_were_undone_skips_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let client = root.join("_retail_");
+        let tx = TxId::new();
+        let meta = client.join("Interface/.omaddons");
+        let stage = meta.join(format!("stage/{tx}/Foo"));
+        let live = client.join("Interface/AddOns/Foo");
+        let kept = meta.join(format!("snapshots/{tx}/AddOns/Foo"));
+        for (dir, file) in [(&stage, "new"), (&live, "old")] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(file), "").unwrap();
+        }
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        let exchange = StepRecord {
+            n: 1,
+            op: StepOp::Exchange,
+            from_id: FileId::of(&stage),
+            to_id: FileId::of(&live),
+            from: stage.clone(),
+            to: live.clone(),
+            purpose: StepPurpose::SwapIn,
+        };
+        let swap = |a: &Path, b: &Path| {
+            let flags = rustix::fs::RenameFlags::EXCHANGE;
+            rustix::fs::renameat_with(rustix::fs::CWD, a, rustix::fs::CWD, b, flags).unwrap();
+        };
+        swap(&stage, &live);
+        let onward = StepRecord {
+            n: 2,
+            op: StepOp::Noreplace,
+            from_id: FileId::of(&stage),
+            to_id: None,
+            from: stage.clone(),
+            to: kept.clone(),
+            purpose: StepPurpose::OldToSnapshot,
+        };
+        std::fs::rename(&stage, &kept).unwrap();
+        let steps = [exchange, onward];
+        let paths = Paths::with_roots(&root, root.join("c"), root.join("s"), root.join("k"));
+        let scopes = ScopeTable::new(&paths, std::slice::from_ref(&client), None).unwrap();
+        let mut s = WriteSession::untracked(Writer::Mutating, &scopes, "test");
+
+        // A recovery that undid both and died: the staged tree is back at `stage`.
+        std::fs::rename(&kept, &stage).unwrap();
+        swap(&stage, &live);
+        assert!(
+            ran(&steps[1]).is_err(),
+            "on its own, the step is in neither state"
+        );
+        roll_back(&mut s, &steps).unwrap();
+        assert!(stage.join("new").exists() && live.join("old").exists());
+
+        // A tree recovery does not know at `live`: the exchange is in neither state.
+        swap(&stage, &live);
+        std::fs::rename(&stage, &kept).unwrap();
+        std::fs::rename(&live, root.join("aside")).unwrap();
+        std::fs::create_dir(&live).unwrap();
+        assert!(roll_back(&mut s, &steps).is_err());
+        assert!(
+            live.read_dir().unwrap().next().is_none(),
+            "the foreign tree stays"
         );
     }
 

@@ -744,6 +744,9 @@ mod tests {
     #[test]
     fn a_restores_old_wtf_is_left_out_of_the_cap_and_never_an_orphan() {
         let f = fixture();
+        // Past 7 days: pruned with its transaction, its old WTF/ too.
+        let aged = f.commit(10 * DAY, 10);
+        std::fs::create_dir_all(f.client.snapshots(&aged).join(WTF_PREVIOUS)).unwrap();
         // Past the 24 h protection: only the cap could prune it.
         let restored = f.commit(2 * DAY, 10);
         let previous = f.client.snapshots(&restored).join(WTF_PREVIOUS);
@@ -751,7 +754,8 @@ mod tests {
         std::fs::write(previous.join("Config.wtf"), vec![b'x'; 1000]).unwrap();
         f.commit(HOUR, 10);
         let report = f.run(&limits(100), &BTreeSet::new());
-        assert_eq!(report.pruned_tx, 0, "40 bytes count, not 1040: {report:?}");
+        assert_eq!(report.pruned_tx, 1, "40 bytes count, not 1040: {report:?}");
+        assert_eq!(f.has_snapshot(&aged), (false, false), "pruned by age");
         assert!(!report.cap_exceeded);
         assert!(previous.join("Config.wtf").exists());
         // A dead restore's old WTF/ may be the only copy of those settings: the orphan

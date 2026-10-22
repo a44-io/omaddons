@@ -1054,6 +1054,11 @@ mod tests {
 
     impl Restorable {
         fn new(verify: bool) -> Self {
+            Self::with(verify, |_| {})
+        }
+
+        /// [`Self::new`], with `more` adding to the tree before it is backed up.
+        fn with(verify: bool, more: impl FnOnce(&Path)) -> Self {
             let mut scene = TxScene::new();
             let wtf = scene.client.wtf();
             fs::create_dir_all(wtf.join(SV)).unwrap();
@@ -1067,6 +1072,7 @@ mod tests {
             chmod(&wtf.join("Account/FAKEACCT/Modes"), 0o750);
             std::os::unix::fs::symlink("SavedVariables", wtf.join("Account/FAKEACCT/link"))
                 .unwrap();
+            more(&wtf);
             let before = tree_snapshot(&wtf);
             let scopes = scopes(&scene);
             let guard = GlobalLock::acquire(&scene.paths, "test").unwrap();
@@ -1315,6 +1321,28 @@ mod tests {
                 .all(|l| l.contains("stamp:sha256:") && !l.contains("tree:sha256:")),
             "{actions}"
         );
+    }
+
+    /// Staging and every stat walk run before the lock; under it, a restore of a
+    /// 5,000-file tree journals, takes undo data and renames two directories. The
+    /// release budget (50 ms) is `tests/perf.rs`'s; this is the debug sanity ceiling.
+    #[test]
+    fn a_large_tree_holds_the_lock_briefly() {
+        let r = Restorable::with(false, |wtf| {
+            for character in 0..10 {
+                let dir = wtf.join(format!(
+                    "Account/FAKEACCT/FakeRealm/Char{character}/SavedVariables"
+                ));
+                fs::create_dir_all(&dir).unwrap();
+                for n in 0..500 {
+                    fs::write(dir.join(format!("Addon{n}.lua")), [b'x'; 256]).unwrap();
+                }
+            }
+        });
+        let done = r.restore().unwrap();
+        assert_eq!(done.files.restored, 5_004);
+        assert!(done.lock_held_ms < 2_000, "{} ms", done.lock_held_ms);
+        assert_eq!(r.live(), r.before);
     }
 
     #[test]
