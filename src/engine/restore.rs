@@ -24,11 +24,12 @@ use super::retention::WTF_PREVIOUS;
 use super::running::{PolicyContext, PolicyOp};
 use super::swap::snapshot_state;
 use super::tx::{
-    EngineCtx, cleanup, millis, recovery_failed, refuse_newer_state, retain, ring_after_window,
-    running_now, sv_writable, write_status,
+    EngineCtx, TxOutcome, cleanup, millis, note_undo, recovery_failed, refuse_newer_state, retain,
+    ring_after_window, running_now, sv_writable, write_status,
 };
+use super::undo::{SvCounts, UndoFacts, UndoOutcome, UndoRequest, WtfUndo};
 use crate::backup::tree::{CloneOpts, TreeCopy, clone_tree, hash_files, walk};
-use crate::backup::{BackupRef, EntryKind, Integrity, Manifest};
+use crate::backup::{BackupRef, EntryKind, Integrity, Manifest, ManifestEntry};
 use crate::discover::registry::LockedRegistry;
 use crate::discover::target::DiscoveredTarget;
 use crate::error::{Error, ErrorCode, PlanStaleSource, Result, Suggestion, Warning, WarningCode};
@@ -38,7 +39,7 @@ use crate::fsx::{
     failpoint, mount_id, mutate_with, probe_exchange,
 };
 use crate::limits::{BACKUP_TREE_MAX_DEPTH, BACKUP_TREE_MAX_ENTRIES};
-use crate::model::{FolderName, RunId, Target, TargetKey, TxId, TxKind};
+use crate::model::{FolderName, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind};
 use crate::privacy::WtfPathRedactor;
 use crate::state::history::{self, FolderOp, HistoryEntry, HistoryOp, TxResult, WtfSource};
 use crate::state::paths::{ClientPaths, Paths};
@@ -383,12 +384,74 @@ pub struct RestoreOutcome {
     pub warnings: Vec<Warning>,
 }
 
-/// The staged copy, before the lock.
+/// What goes in place and what is there now, read before the lock.
 struct Staged {
-    copy: TreeCopy,
+    /// The staged copy; `None` when the live tree only moves out (the undo of a restore
+    /// onto a client that had no `WTF/`).
+    copy: Option<TreeCopy>,
     /// The live `WTF/`'s stamp digest; `None` when there is none.
     live_stamp: Option<StampDigest>,
     integrity: Integrity,
+}
+
+impl Staged {
+    /// The bytes the copy wrote, where the filesystem could not clone.
+    fn copied_bytes(&self) -> u64 {
+        self.copy.as_ref().map_or(0, |copy| copy.copied_bytes)
+    }
+}
+
+/// `backup_copied`, when `staged` wrote `bytes` to put a tree back on `target_id`.
+fn copied(target_id: &str, bytes: u64) -> Option<Warning> {
+    (bytes > 0).then(|| {
+        Warning::new(
+            WarningCode::BackupCopied,
+            format!(
+                "{target_id}: the filesystem could not clone the files put back, so {bytes} bytes were copied"
+            ),
+        )
+    })
+}
+
+/// The live `WTF/`'s stamp digest (a stat walk, before the lock); `None` without one.
+fn live_stamp(topology: &Topology) -> Result<Option<StampDigest>> {
+    topology
+        .wtf
+        .as_deref()
+        .map(|live| {
+            StampDigest::compute(live)
+                .map_err(|e| Error::io(live, &e, Suggestion::command(["omaddons", "status"])))
+        })
+        .transpose()
+}
+
+/// `game_running` while `target`'s client runs or may (M3-D29): a whole `WTF/` is never
+/// written then, whatever the running policy or `--while-running`.
+fn refuse_running(ctx: &EngineCtx<'_>, target: &Target, files: u64) -> Result<()> {
+    let running = running_now(ctx, std::slice::from_ref(target));
+    if !running.dirs.contains(&target.client_dir) {
+        return Ok(());
+    }
+    let policy_ctx = PolicyContext {
+        target_id: &target.id,
+        argv: ctx.argv,
+        running_unknown: running.unknown.as_deref(),
+    };
+    let files = usize::try_from(files).unwrap_or(usize::MAX);
+    super::running::evaluate(
+        &policy_ctx,
+        ctx.policy,
+        true,
+        &target.rules,
+        &[PolicyOp::RestoreSavedVariables { files }],
+        true,
+    )
+    .map(|_| ())
+}
+
+/// `WTF`, as a history op's folder.
+fn wtf_folder() -> Result<FolderName> {
+    FolderName::new("WTF").map_err(|_| Error::internal("WTF is a folder name"))
 }
 
 /// Restores `req.backup` over the client's whole `WTF/` (M3-D24).
@@ -422,12 +485,14 @@ pub fn restore(ctx: &EngineCtx<'_>, req: RestoreRequest<'_>) -> Result<RestoreOu
         ctx,
         scopes: &scopes,
         discovered,
-        backup,
-        plan,
         topology: &topology,
         tx,
         staged: &staged,
-        before_restore: before_restore.as_ref(),
+        change: WtfChange::Restore {
+            backup,
+            plan,
+            before_restore: before_restore.as_ref(),
+        },
         reason,
         run,
     };
@@ -448,15 +513,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: RestoreRequest<'_>) -> Result<RestoreOu
         actor: ctx.actor,
     };
     crate::backup::inventory::rebuild(ctx.paths, &client, &key, ring);
-    if staged.copy.copied_bytes > 0 {
-        warnings.push(Warning::new(
-            WarningCode::BackupCopied,
-            format!(
-                "{}: the filesystem could not clone the backup's files, so {} bytes were copied to restore them",
-                target.id, staged.copy.copied_bytes
-            ),
-        ));
-    }
+    warnings.extend(copied(&target.id, staged.copied_bytes()));
     Ok(RestoreOutcome {
         tx,
         key,
@@ -537,13 +594,9 @@ fn stage(
     } else {
         Integrity::MetadataOnly
     };
-    let live_stamp = match &topology.wtf {
-        Some(live) => Some(StampDigest::compute(live).map_err(fail)?),
-        None => None,
-    };
     Ok(Staged {
-        copy,
-        live_stamp,
+        copy: Some(copy),
+        live_stamp: live_stamp(topology)?,
         integrity,
     })
 }
@@ -578,17 +631,54 @@ fn append_alone(ctx: &EngineCtx<'_>, scopes: &ScopeTable, line: Option<&HistoryE
     drop(guard);
 }
 
+/// The `WTF/` change a commit window makes.
+enum WtfChange<'a> {
+    /// A restore of `backup` as `plan` planned it, the `before_restore` backup's line
+    /// appended first.
+    Restore {
+        backup: &'a BackupRef,
+        plan: &'a RestorePlan,
+        before_restore: Option<&'a HistoryEntry>,
+    },
+    /// The undo of `reverted` (a restore, or the undo of one), recorded as `op`. `by_hand`
+    /// is what a user copies from when the filesystem cannot exchange; `recheck` runs
+    /// under the lock with the record generation now (the history's conflicts, a bound
+    /// preview).
+    Undo {
+        reverted: &'a HistoryEntry,
+        op: &'a HistoryOp,
+        by_hand: &'a Path,
+        recheck: &'a dyn Fn(u64) -> Result<()>,
+    },
+}
+
+impl WtfChange<'_> {
+    /// The tree a user copies from by hand when the filesystem cannot exchange.
+    fn by_hand(&self) -> PathBuf {
+        match self {
+            Self::Restore { backup, .. } => backup.wtf(),
+            Self::Undo { by_hand, .. } => by_hand.to_path_buf(),
+        }
+    }
+
+    /// The files it puts in place.
+    fn files(&self) -> u64 {
+        match self {
+            Self::Restore { plan, .. } => plan.files.restored,
+            Self::Undo { op, .. } => op.files.unwrap_or(0),
+        }
+    }
+}
+
 /// Everything the commit window reads.
 struct Window<'a> {
     ctx: &'a EngineCtx<'a>,
     scopes: &'a ScopeTable,
     discovered: &'a DiscoveredTarget,
-    backup: &'a BackupRef,
-    plan: &'a RestorePlan,
     topology: &'a Topology,
     tx: TxId,
     staged: &'a Staged,
-    before_restore: Option<&'a HistoryEntry>,
+    change: WtfChange<'a>,
     reason: Option<String>,
     run: RunId,
 }
@@ -624,7 +714,11 @@ impl Window<'_> {
         // The `before_restore` backup stands whatever the restore does: its line goes
         // first, before the journal, so a roll-forward (which replays only the restore's
         // own line) never leaves it out.
-        if let Some(line) = self.before_restore {
+        if let WtfChange::Restore {
+            before_restore: Some(line),
+            ..
+        } = &self.change
+        {
             append_before_restore(paths, self.scopes, &guard, line)?;
         }
         let key = match target.key {
@@ -653,15 +747,21 @@ impl Window<'_> {
             ),
         };
         let current = load_record(paths, &key)?;
-        // ubs:ignore — comparing record generations, not secrets
-        if current.value.generation != self.plan.generation {
-            return Err(moved("records"));
+        match &self.change {
+            WtfChange::Restore { plan, .. } => {
+                // ubs:ignore — comparing record generations, not secrets
+                if current.value.generation != plan.generation {
+                    return Err(moved("records"));
+                }
+            }
+            WtfChange::Undo { recheck, .. } => recheck(current.value.generation)?,
         }
         // The mounts again, and the client's WTF/ as the stage expects it.
-        let seen = topology(&client, &self.backup.wtf(), &mount_id)?;
+        let by_hand = self.change.by_hand();
+        let seen = topology(&client, &by_hand, &mount_id)?;
         // ubs:ignore — comparing mount ids, not secrets
         if seen.mounts() != self.topology.mounts() {
-            return Err(unsupported("stage_cross_mount", &self.backup.wtf()));
+            return Err(unsupported("stage_cross_mount", &by_hand));
         }
         // ubs:ignore — comparing paths, not secrets
         if seen.wtf != self.topology.wtf {
@@ -669,23 +769,7 @@ impl Window<'_> {
         }
         // The last running check before the live transition (M3-D29): a refusal check,
         // not exclusion; `--while-running` never lifts it.
-        let running = running_now(ctx, std::slice::from_ref(&target));
-        if running.dirs.contains(&target.client_dir) {
-            let policy_ctx = PolicyContext {
-                target_id: &target.id,
-                argv: ctx.argv,
-                running_unknown: running.unknown.as_deref(),
-            };
-            let files = usize::try_from(self.plan.files.restored).unwrap_or(usize::MAX);
-            super::running::evaluate(
-                &policy_ctx,
-                ctx.policy,
-                true,
-                &target.rules,
-                &[PolicyOp::RestoreSavedVariables { files }],
-                true,
-            )?;
-        }
+        refuse_running(ctx, &target, self.change.files())?;
         failpoint::hit("engine.revalidated").map_err(fail)?;
 
         let mut record = current.value.clone();
@@ -694,12 +778,27 @@ impl Window<'_> {
         let history = self.history_line(key, now)?;
         let stage_dir = client.stage(&tx);
         let staged = stage_dir.join("WTF");
+        // A restore's source is checked by identity on recovery; an undo's is the
+        // reverted transaction's snapshot, which its history line names.
+        let source_backup = match &self.change {
+            WtfChange::Restore { backup, .. } => Some(SourceBackup {
+                id: backup.id,
+                dir: FileId::of(&backup.dir).ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::NotFound,
+                        format!("backup {} is gone", backup.id),
+                        Suggestion::command(["omaddons", "backup", "list"]),
+                    )
+                })?,
+            }),
+            WtfChange::Undo { .. } => None,
+        };
         let prepared = Prepared {
             schema_version: super::journal::CURRENT,
             tx,
             target_key: key,
             client_dir: target.client_dir.clone(),
-            kind: TxKind::Restore,
+            kind: history.kind,
             started_at: now,
             creates_dirs: Vec::new(),
             commit: CommitPayload {
@@ -710,17 +809,12 @@ impl Window<'_> {
                 sv_restore: None,
             },
             writes_wtf: true,
-            staged_stamp: Some(self.staged.copy.stamp_digest.to_string()),
-            source_backup: Some(SourceBackup {
-                id: self.backup.id,
-                dir: FileId::of(&self.backup.dir).ok_or_else(|| {
-                    Error::new(
-                        ErrorCode::NotFound,
-                        format!("backup {} is gone", self.backup.id),
-                        Suggestion::command(["omaddons", "backup", "list"]),
-                    )
-                })?,
-            }),
+            staged_stamp: self
+                .staged
+                .copy
+                .as_ref()
+                .map(|copy| copy.stamp_digest.to_string()),
+            source_backup,
         };
         let actions = paths.state_snapshot(&tx).join("actions.jsonl");
         let mut s = WriteSession::tx(
@@ -738,42 +832,67 @@ impl Window<'_> {
             // when there is no live WTF/ (an undo relies on it).
             snapshot_state(&mut s, paths, &tx, &key)?;
             ensure_dir_all(&mut s, &client.snapshots(&tx))?;
-            let into_place = match &live {
-                Some(live) => (live.clone(), StepOp::Exchange, RenameMode::Exchange),
-                None => (client.wtf(), StepOp::Noreplace, RenameMode::NoReplace),
-            };
-            let backup_wtf = self.backup.wtf();
-            rename_tree(
-                &mut s,
-                &mut journal,
-                &Move {
-                    from: &staged,
-                    to: &into_place.0,
-                    op: into_place.1,
-                    mode: into_place.2,
-                    purpose: StepPurpose::SwapIn,
-                    stamp_before: Some(self.staged.copy.stamp_digest),
-                    stamp_after: self.staged.live_stamp,
-                },
-                &backup_wtf,
-            )?;
-            failpoint::hit("engine.restore.exchanged").map_err(fail)?;
-            if live.is_some() {
-                let previous = client.snapshots(&tx).join(WTF_PREVIOUS);
-                rename_tree(
-                    &mut s,
-                    &mut journal,
-                    &Move {
-                        from: &staged,
-                        to: &previous,
-                        op: StepOp::Noreplace,
-                        mode: RenameMode::NoReplace,
-                        purpose: StepPurpose::OldToSnapshot,
-                        stamp_before: self.staged.live_stamp,
-                        stamp_after: None,
-                    },
-                    &backup_wtf,
-                )?;
+            let previous = client.snapshots(&tx).join(WTF_PREVIOUS);
+            match (&self.staged.copy, &live) {
+                // The copy goes in (exchanged with the live tree, or into its empty
+                // place), and the old tree on from the stage to this snapshot.
+                (Some(copy), _) => {
+                    let into_place = match &live {
+                        Some(live) => (live.clone(), StepOp::Exchange, RenameMode::Exchange),
+                        None => (client.wtf(), StepOp::Noreplace, RenameMode::NoReplace),
+                    };
+                    rename_tree(
+                        &mut s,
+                        &mut journal,
+                        &Move {
+                            from: &staged,
+                            to: &into_place.0,
+                            op: into_place.1,
+                            mode: into_place.2,
+                            purpose: StepPurpose::SwapIn,
+                            stamp_before: Some(copy.stamp_digest),
+                            stamp_after: self.staged.live_stamp,
+                        },
+                        &by_hand,
+                    )?;
+                    failpoint::hit("engine.restore.exchanged").map_err(fail)?;
+                    if live.is_some() {
+                        rename_tree(
+                            &mut s,
+                            &mut journal,
+                            &Move {
+                                from: &staged,
+                                to: &previous,
+                                op: StepOp::Noreplace,
+                                mode: RenameMode::NoReplace,
+                                purpose: StepPurpose::OldToSnapshot,
+                                stamp_before: self.staged.live_stamp,
+                                stamp_after: None,
+                            },
+                            &by_hand,
+                        )?;
+                    }
+                }
+                // Nothing to put back (the undo of a restore onto a client that had no
+                // `WTF/`): the live tree only moves out, to this snapshot.
+                (None, Some(live)) => {
+                    rename_tree(
+                        &mut s,
+                        &mut journal,
+                        &Move {
+                            from: live,
+                            to: &previous,
+                            op: StepOp::Noreplace,
+                            mode: RenameMode::NoReplace,
+                            purpose: StepPurpose::RemoveToSnapshot,
+                            stamp_before: self.staged.live_stamp,
+                            stamp_after: None,
+                        },
+                        &by_hand,
+                    )?;
+                    failpoint::hit("engine.restore.exchanged").map_err(fail)?;
+                }
+                (None, None) => {}
             }
             failpoint::hit("engine.restore.snapshotted").map_err(fail)?;
             journal.mark_swapped(&mut s)?;
@@ -787,6 +906,7 @@ impl Window<'_> {
             )?;
             failpoint::hit("engine.record.written").map_err(fail)?;
             history::append(&mut s, paths, &history)?;
+            note_undo(ctx, &tx);
             failpoint::hit("engine.history.appended").map_err(fail)?;
             journal.mark_committed(&mut s)?;
             failpoint::hit("engine.committed").map_err(fail)?;
@@ -812,29 +932,39 @@ impl Window<'_> {
         Ok((key, held, warnings))
     }
 
-    /// The restore's history line: one `wtf` op naming the backup.
+    /// The history line: one `wtf` op, naming the backup a restore put in place, or, for
+    /// an undo, the snapshot it put back.
     fn history_line(&self, key: TargetKey, at: Timestamp) -> Result<HistoryEntry> {
-        let wtf = FolderName::new("WTF").map_err(|_| Error::internal("WTF is a folder name"))?;
+        let (kind, reverts, op) = match &self.change {
+            WtfChange::Restore { backup, plan, .. } => (
+                TxKind::Restore,
+                None,
+                HistoryOp {
+                    op: FolderOp::Wtf,
+                    folder: wtf_folder()?,
+                    addon: String::new(),
+                    edit: None,
+                    backup: Some(backup.id),
+                    from: Some(WtfSource::Backup),
+                    files: Some(plan.files.restored),
+                },
+            ),
+            WtfChange::Undo { reverted, op, .. } => {
+                (TxKind::Undo, Some(reverted.tx), (*op).clone())
+            }
+        };
         Ok(HistoryEntry {
             schema_version: history::CURRENT,
             tx: self.tx,
-            kind: TxKind::Restore,
+            kind,
             at,
             target: key,
             actor: self.ctx.actor,
             reason: self.reason.clone(),
             argv: self.ctx.argv.to_vec(),
-            ops: vec![HistoryOp {
-                op: FolderOp::Wtf,
-                folder: wtf,
-                addon: String::new(),
-                edit: None,
-                backup: Some(self.backup.id),
-                from: Some(WtfSource::Backup),
-                files: Some(self.plan.files.restored),
-            }],
+            ops: vec![op],
             result: TxResult::Committed,
-            reverts: None,
+            reverts,
             sv_deferred: false,
             sv_restored: None,
             created_addons_dir: false,
@@ -893,6 +1023,257 @@ fn rename_tree(
         Err(FsxError::Unsupported) => Err(unsupported("no_rename_exchange", backup_wtf)),
         Err(err) => Err(err.into()),
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// Undoing a whole restore (M3-D28 rule 4): the same transaction, put back from the
+// reverted transaction's `WTF.previous` instead of a backup, with the same preflight, no
+// fallback and the same running checks; the tree it replaces goes to the undo's own
+// `WTF.previous`, so the undo is undoable in turn.
+
+/// Undoes `reverted` (a whole restore, or the undo of one) on `discovered`. A dry run
+/// stops after the plan and the preflight's mount checks. `recheck` runs under the lock:
+/// the history's conflicts again.
+pub(super) fn undo_whole(
+    ctx: &EngineCtx<'_>,
+    req: &UndoRequest,
+    reverted: &HistoryEntry,
+    discovered: &DiscoveredTarget,
+    recheck: &dyn Fn() -> Result<()>,
+) -> Result<UndoOutcome> {
+    let target = &discovered.target;
+    let client = ClientPaths::new(&target.client_dir);
+    let names = WtfPathRedactor::for_client(&client);
+    let snapshot = client.snapshots(&reverted.tx);
+    if !snapshot.is_dir() {
+        return Err(super::undo::pruned(&reverted.tx));
+    }
+    // `None`: there was no `WTF/` before it, so the undo only moves the live one out.
+    let source = Some(snapshot.join(WTF_PREVIOUS)).filter(|previous| previous.is_dir());
+    let by_hand = source.clone().unwrap_or_else(|| snapshot.clone());
+    let files = match &source {
+        Some(source) => walk(source, BACKUP_TREE_MAX_ENTRIES, BACKUP_TREE_MAX_DEPTH)
+            .map_err(|e| e.error(&names))?
+            .entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::File)
+            .count() as u64,
+        None => 0,
+    };
+    refuse_running(ctx, target, files)?;
+    let live = client.wtf();
+    let observed = if live.is_dir() {
+        StampDigest::compute(&live)
+            .map_err(|e| Error::io(&live, &e, Suggestion::command(["omaddons", "status"])))?
+            .to_string()
+    } else {
+        "absent".to_owned()
+    };
+    let op = HistoryOp {
+        op: FolderOp::Wtf,
+        folder: wtf_folder()?,
+        addon: String::new(),
+        edit: None,
+        backup: None,
+        from: Some(WtfSource::Snapshot),
+        files: Some(files),
+    };
+    let wtf = WtfUndo {
+        changed_since: changed_since(&client, reverted),
+    };
+    let generation = load_record(ctx.paths, &reverted.target)?.value.generation;
+    let outcome = |generation: u64, tx: Option<TxId>, warnings: Vec<Warning>, held: Option<u64>| {
+        UndoOutcome {
+            undoes: reverted.tx,
+            outcome: TxOutcome {
+                target: target.id.clone(),
+                key: Some(reverted.target),
+                tx,
+                kind: Some(TxKind::Undo),
+                dry_run: tx.is_none(),
+                changes: Vec::new(),
+                atomic_swap: true,
+                // Informational: the client reads `WTF/` at startup, and this never runs
+                // while it does.
+                reload_required: ReloadRequired::Restart,
+                warnings,
+                creates_addons_dir: false,
+                lock_held_ms: held,
+                notes: Vec::new(),
+            },
+            sv: SvCounts::default(),
+            plan: UndoFacts {
+                generation,
+                ops: vec![op.clone()],
+                saved_variables: Vec::new(),
+                wtf: Some(observed.clone()),
+            },
+            wtf: Some(wtf),
+        }
+    };
+    if req.dry_run {
+        preflight(&client, &by_hand, None)?;
+        return Ok(outcome(generation, None, Vec::new(), None));
+    }
+    // A bound run stages nothing unless it planned what the preview showed (M3-D46).
+    if let Some(binding) = ctx.binding {
+        binding.undo(&outcome(generation, None, Vec::new(), None))?;
+    }
+    refuse_newer_state(ctx.paths, target)?;
+
+    let scopes = ScopeTable::new(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
+    let tx = TxId::new();
+    let inflight = InflightLock::create(ctx.paths, &tx)?;
+    let probe = client.stage(&tx).join("probe");
+    let probe = Probe {
+        scopes: &scopes,
+        dir: &probe,
+    };
+    let prepared = preflight(&client, &by_hand, Some(probe)).and_then(|topology| {
+        let into = client.stage(&tx).join("WTF");
+        let staged = stage_snapshot(ctx, &scopes, source.as_deref(), &into, &topology, &names)?;
+        Ok((topology, staged))
+    });
+    let (topology, staged) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), false);
+            return Err(error);
+        }
+    };
+    // Under the lock: the history's conflicts, and a bound preview against the records
+    // as they are now (the live tree's digest was taken before the lock, as D5's are).
+    let recheck = |generation: u64| -> Result<()> {
+        recheck()?;
+        if let Some(binding) = ctx.binding {
+            binding.undo(&outcome(generation, None, Vec::new(), None))?;
+        }
+        Ok(())
+    };
+    let window = Window {
+        ctx,
+        scopes: &scopes,
+        discovered,
+        topology: &topology,
+        tx,
+        staged: &staged,
+        change: WtfChange::Undo {
+            reverted,
+            op: &op,
+            by_hand: &by_hand,
+            recheck: &recheck,
+        },
+        reason: req.reason.clone(),
+        run: req.run,
+    };
+    let result = window.commit();
+    let committed = result.is_ok();
+    ring_after_window(ctx, &result);
+    cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), committed);
+    let (key, held, mut warnings) = result?;
+    warnings.extend(retain(ctx, &scopes, key, &target.client_dir));
+    let ring = crate::backup::inventory::Ring {
+        command: ctx.command,
+        actor: ctx.actor,
+    };
+    crate::backup::inventory::rebuild(ctx.paths, &client, &key, ring);
+    warnings.extend(copied(&target.id, staged.copied_bytes()));
+    Ok(outcome(generation, Some(tx), warnings, Some(held)))
+}
+
+/// Stages `source` (the reverted transaction's `WTF.previous`) at `into` without the lock:
+/// an untracked copy keeping the source's own modes, then the live tree's stamp digest.
+/// `None` stages nothing.
+fn stage_snapshot(
+    ctx: &EngineCtx<'_>,
+    scopes: &ScopeTable,
+    source: Option<&Path>,
+    into: &Path,
+    topology: &Topology,
+    names: &WtfPathRedactor,
+) -> Result<Staged> {
+    let copy = match source {
+        Some(source) => {
+            let mut s = WriteSession::untracked(Writer::BackupRestore, scopes, "restore-stage");
+            let opts = CloneOpts::restore(ClonePolicy::Preferred);
+            let copy = clone_tree(&mut s, source, into, &opts, None, ctx.progress)
+                .map_err(|e| e.error(names))?;
+            failpoint::hit("engine.restore.staged")
+                .map_err(|e| Error::io(into, &e, Suggestion::command(["omaddons", "status"])))?;
+            Some(copy)
+        }
+        None => None,
+    };
+    Ok(Staged {
+        copy,
+        live_stamp: live_stamp(topology)?,
+        integrity: Integrity::MetadataOnly,
+    })
+}
+
+/// How many files the play since `reverted` changed in the live `WTF/`, which undoing it
+/// reverts too (they stay in the undo's own snapshot). Against the tree `reverted` put in
+/// place (the restored backup's manifest, or the snapshot an undo copied from): a live
+/// file it did not hold, holds at another size, or written after `reverted` committed
+/// (the copies it put in place all predate that), and a file it held that is gone. The
+/// copies get new times, so a time alone is never compared with the manifest's. `None`
+/// when that tree's record is gone, or a tree is too large to walk.
+fn changed_since(client: &ClientPaths, reverted: &HistoryEntry) -> Option<u64> {
+    let op = reverted
+        .ops
+        .iter()
+        .find(|o| matches!(o.op, FolderOp::Wtf))?;
+    let walked = |root: &Path| {
+        walk(root, BACKUP_TREE_MAX_ENTRIES, BACKUP_TREE_MAX_DEPTH)
+            .ok()
+            .map(|walk| walk.entries)
+    };
+    let put = match op.from? {
+        WtfSource::Backup => {
+            let dir = crate::backup::backup_dir(client, &op.backup?);
+            store::load::<Manifest>(&dir.join("manifest.json"))
+                .ok()??
+                .value
+                .entries
+        }
+        WtfSource::Snapshot => {
+            let snapshot = client.snapshots(&reverted.reverts?);
+            let previous = snapshot.join(WTF_PREVIOUS);
+            if previous.is_dir() {
+                walked(&previous)?
+            } else if snapshot.is_dir() {
+                // The undo of a restore onto a client that had no `WTF/` put none back.
+                Vec::new()
+            } else {
+                return None;
+            }
+        }
+    };
+    let live = client.wtf();
+    let live = if live.is_dir() {
+        walked(&live)?
+    } else {
+        Vec::new()
+    };
+    let files = |entries: &[ManifestEntry]| -> BTreeMap<String, (u64, i64)> {
+        entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::File)
+            .map(|e| (e.path.clone(), (e.size, e.mtime_ns)))
+            .collect()
+    };
+    let (put, live) = (files(&put), files(&live));
+    let since = reverted.at.as_nanosecond();
+    let changed = live
+        .iter()
+        .filter(|(path, (size, mtime))| match put.get(*path) {
+            // ubs:ignore — comparing file sizes, not secrets
+            Some((was, _)) => was != size || i128::from(*mtime) > since,
+            None => true,
+        })
+        .count();
+    let gone = put.keys().filter(|path| !live.contains_key(*path)).count();
+    u64::try_from(changed + gone).ok()
 }
 
 #[cfg(test)]
@@ -1497,6 +1878,310 @@ mod tests {
         fs::rename(&r.backup.dir, &aside).unwrap();
         let err = reserve(&r.backup).unwrap_err();
         assert_eq!(err.code, ErrorCode::NotFound);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Undoing a whole restore (M3-D28 rule 4).
+
+    use crate::engine::undo::{SvPolicy, UndoSelector};
+
+    /// Foo's account-wide SavedVariables, which installing Foo snapshots.
+    const FOO_SV: &str = "Account/FAKEACCT/SavedVariables/Foo.lua";
+
+    impl Restorable {
+        /// A scene whose `WTF/` also holds Foo's SavedVariables.
+        fn with_foo() -> Self {
+            Self::with(false, |wtf| {
+                fs::write(wtf.join(FOO_SV), "FooDB = {}\n").unwrap()
+            })
+        }
+
+        fn undo(&self, tx: TxId, policy: SvPolicy) -> Result<UndoOutcome> {
+            self.scene.undo(UndoSelector::Tx(tx), policy)
+        }
+
+        /// Installs Foo; returns its transaction.
+        fn install_foo(&self) -> TxId {
+            let zip = self
+                .scene
+                .zip("foo.zip", &[("Foo/Foo.toc", "## Interface: 120105\n")]);
+            let done = self
+                .scene
+                .run(vec![self.scene.install("gh:o/foo", &zip)])
+                .unwrap();
+            assert!(done.failures.is_empty(), "{:?}", done.failures);
+            done.outcomes[0].tx.unwrap()
+        }
+
+        fn previous(&self, tx: &TxId) -> Vec<TreeEntry> {
+            tree_snapshot(&self.scene.client.snapshots(tx).join(WTF_PREVIOUS))
+        }
+
+        /// The history line of `tx`.
+        fn line_of(&self, tx: Option<TxId>) -> HistoryEntry {
+            self.history()
+                .into_iter()
+                // ubs:ignore — comparing transaction ids (public ULIDs), not secrets
+                .find(|e| Some(e.tx) == tx)
+                .unwrap()
+        }
+    }
+
+    #[test]
+    fn a_restore_is_undone_and_its_undo_undone_again() {
+        let r = Restorable::new(false);
+        let restored = r.restore().unwrap().tx;
+        let undone = r.undo(restored, SvPolicy::Auto).unwrap();
+        let u = undone.outcome.tx.unwrap();
+        assert_eq!(r.live(), r.after, "the tree from before the restore");
+        assert_eq!(
+            r.previous(&u),
+            r.before,
+            "the restored tree, kept for this undo's undo"
+        );
+        assert_eq!(
+            r.previous(&restored),
+            r.after,
+            "the reverted snapshot stays whole"
+        );
+        assert_eq!(
+            (undone.wtf, undone.outcome.reload_required),
+            (
+                Some(WtfUndo {
+                    changed_since: Some(0)
+                }),
+                ReloadRequired::Restart
+            ),
+            "no play since the restore"
+        );
+        let line = r.line_of(Some(u));
+        assert_eq!((line.kind, line.reverts), (TxKind::Undo, Some(restored)));
+        assert_eq!(
+            (line.ops[0].op, line.ops[0].from, line.ops[0].files),
+            (FolderOp::Wtf, Some(WtfSource::Snapshot), Some(4)),
+            "B.lua and C.lua, and the played A.lua and New.lua"
+        );
+        let actions =
+            fs::read_to_string(r.scene.paths.state_snapshot(&u).join("actions.jsonl")).unwrap();
+        let renames: Vec<&str> = actions.lines().filter(|l| l.contains("rename")).collect();
+        assert_eq!(renames.len(), 2, "{actions}");
+        assert!(
+            renames.iter().all(|l| l.contains("stamp:sha256:")),
+            "{actions}"
+        );
+
+        // The undo, undone in turn: the restored tree again.
+        r.undo(u, SvPolicy::Auto).unwrap();
+        assert_eq!(r.live(), r.before);
+        r.assert_no_leftovers();
+    }
+
+    #[test]
+    fn a_restore_onto_no_wtf_is_undone_by_moving_the_tree_out() {
+        let r = Restorable::new(false);
+        fs::remove_dir_all(r.scene.client.wtf()).unwrap();
+        let restored = r.restore().unwrap().tx;
+        let u = r
+            .undo(restored, SvPolicy::Auto)
+            .unwrap()
+            .outcome
+            .tx
+            .unwrap();
+        assert!(
+            !r.scene.client.wtf().exists(),
+            "no WTF/, as before the restore"
+        );
+        assert_eq!(r.previous(&u), r.before);
+        r.undo(u, SvPolicy::Auto).unwrap();
+        assert_eq!(r.live(), r.before);
+        r.assert_no_leftovers();
+    }
+
+    #[test]
+    fn the_undo_of_a_restore_needs_its_snapshot_and_all_its_settings() {
+        let r = Restorable::new(false);
+        let restored = r.restore().unwrap().tx;
+        let keep = r.undo(restored, SvPolicy::Keep).unwrap_err();
+        assert_eq!(keep.code, ErrorCode::Usage, "nothing would be left to undo");
+        let snapshot = r.scene.client.snapshots(&restored);
+        fs::rename(&snapshot, snapshot.with_extension("aside")).unwrap();
+        let err = r.undo(restored, SvPolicy::Auto).unwrap_err();
+        assert_eq!(
+            (err.code, err.details["reason"].as_str()),
+            (ErrorCode::NotFound, Some("snapshot_pruned"))
+        );
+        assert_eq!(r.live(), r.before);
+    }
+
+    /// M3-D28 rule 2, end to end: an install before a restore, undone after it, would
+    /// put its SavedVariables back over the restored ones: refused, naming the restore,
+    /// unless they are kept; once the restore is undone, it goes through.
+    #[test]
+    fn an_install_before_a_restore_is_undone_only_keeping_settings() {
+        let r = Restorable::with_foo();
+        let install = r.install_foo();
+        let restored = r.restore().unwrap().tx;
+        let err = r.undo(install, SvPolicy::Auto).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UndoConflict, "{err:?}");
+        assert_eq!(err.fix.argv().unwrap()[2], restored.to_string());
+        assert!(
+            err.alternatives[0]
+                .argv()
+                .unwrap()
+                .ends_with(&["--saved-variables".into(), "keep".into()])
+        );
+        r.undo(install, SvPolicy::Keep).unwrap();
+        assert!(!r.scene.client.addons().join("Foo").exists());
+        assert_eq!(r.live(), r.before, "the restored settings stand");
+
+        // A restore undone since no longer stands in the way.
+        let r = Restorable::with_foo();
+        let install = r.install_foo();
+        let restored = r.restore().unwrap().tx;
+        r.undo(restored, SvPolicy::Auto).unwrap();
+        r.undo(install, SvPolicy::Auto).unwrap();
+        assert!(!r.scene.client.addons().join("Foo").exists());
+    }
+
+    /// M3-D28 rule 1, end to end: a restore undone, then an older install undone with its
+    /// SavedVariables restored. Redoing the restore (undoing its undo) would put a whole
+    /// tree over what that undo wrote: refused, naming that undo. An install and its own
+    /// undo after a restore cancel out, so they never block its undo.
+    #[test]
+    fn a_restore_is_not_put_back_over_settings_an_undo_restored_since() {
+        let played = "FooDB = { played = 1 }\n";
+        let r = Restorable::with_foo();
+        let install = r.install_foo();
+        let restored = r.restore().unwrap().tx;
+        let undone = r
+            .undo(restored, SvPolicy::Auto)
+            .unwrap()
+            .outcome
+            .tx
+            .unwrap();
+        fs::write(r.scene.client.wtf().join(FOO_SV), played).unwrap();
+        let undid = r.undo(install, SvPolicy::Auto).unwrap();
+        assert_eq!(undid.sv.restored, 1);
+        let line = r.line_of(undid.outcome.tx);
+        assert_eq!(line.sv_restored, Some(1));
+        let err = r.undo(undone, SvPolicy::Auto).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UndoConflict, "{err:?}");
+        assert_eq!(err.fix.argv().unwrap()[2], line.tx.to_string());
+
+        let r = Restorable::with_foo();
+        let restored = r.restore().unwrap().tx;
+        let install = r.install_foo();
+        fs::write(r.scene.client.wtf().join(FOO_SV), played).unwrap();
+        assert_eq!(r.undo(install, SvPolicy::Auto).unwrap().sv.restored, 1);
+        r.undo(restored, SvPolicy::Auto).unwrap();
+        assert!(
+            !r.scene.client.wtf().join("Config.wtf").exists(),
+            "the pre-restore tree, played without Config.wtf, is back"
+        );
+    }
+
+    #[test]
+    fn an_undo_of_a_restore_without_an_exchange_or_while_the_game_runs_moves_nothing() {
+        let mut r = Restorable::new(false);
+        let restored = r.restore().unwrap().tx;
+        let err = failpoint::with_spec("fsx.renameat2.einval", || r.undo(restored, SvPolicy::Auto))
+            .unwrap_err();
+        assert_eq!(
+            reason(&err),
+            (
+                ErrorCode::FilesystemUnsupported,
+                "no_rename_exchange".into()
+            )
+        );
+        assert_eq!(
+            (r.live(), r.previous(&restored)),
+            (r.before.clone(), r.after.clone())
+        );
+        r.scene
+            .running
+            .insert(r.scene.discovered.target.client_dir.clone());
+        r.scene.while_running = true;
+        let err = r.undo(restored, SvPolicy::Auto).unwrap_err();
+        assert_eq!(
+            (err.code, err.details["reason"].as_str()),
+            (ErrorCode::GameRunning, Some("saved_variables"))
+        );
+        assert_eq!(r.live(), r.before);
+        r.assert_no_leftovers();
+    }
+
+    /// The preview's token covers the live `WTF/`: a play session between the dry run and
+    /// the bound run refuses it (`plan_stale`, `observed`), and nothing changes.
+    #[test]
+    fn a_play_session_after_the_preview_refuses_the_bound_undo() {
+        use crate::app::precondition::{UndoBinding, of_undo};
+
+        let r = Restorable::new(false);
+        let restored = r.restore().unwrap().tx;
+        let preview = r
+            .scene
+            .undo_with(UndoSelector::Tx(restored), SvPolicy::Auto, true)
+            .unwrap();
+        assert!(preview.outcome.dry_run && preview.outcome.tx.is_none());
+        let token = of_undo(&[(restored, r.key(), Ok(&preview))]).token();
+        let binding = UndoBinding {
+            tokens: BTreeMap::from([(restored, token)]),
+            preview: vec!["omaddons".into(), "undo".into(), "--dry-run".into()],
+        };
+        fs::write(r.scene.client.wtf().join(SV).join("A.lua"), "A = 333\n").unwrap();
+        let played = r.live();
+        let req = UndoRequest {
+            selector: UndoSelector::Tx(restored),
+            sv_policy: SvPolicy::Auto,
+            dry_run: false,
+            while_running: false,
+            reason: None,
+            targets: vec![r.scene.current_target()],
+            run: RunId::new(),
+        };
+        let err = r
+            .scene
+            .with_ctx("undo", |ctx| {
+                let bound = EngineCtx {
+                    binding: Some(&binding),
+                    ..*ctx
+                };
+                crate::engine::undo::undo(&req, &bound)
+            })
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::PlanStale, "{err:?}");
+        assert!(
+            err.details["changed"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("observed")),
+            "{err:?}"
+        );
+        assert_eq!(r.live(), played, "nothing changed");
+        r.assert_no_leftovers();
+    }
+
+    /// `changed_since` counts the play since the restore against the backup's manifest,
+    /// and is unknown once that backup is gone.
+    #[test]
+    fn changed_since_counts_the_play_since_the_restore() {
+        let r = Restorable::new(false);
+        let restored = r.restore().unwrap().tx;
+        let wtf = r.scene.client.wtf();
+        fs::write(wtf.join(SV).join("A.lua"), "A = 4444\n").unwrap();
+        fs::write(wtf.join(SV).join("Played.lua"), "P = 1\n").unwrap();
+        fs::remove_file(wtf.join("Config.wtf")).unwrap();
+        let dry = |r: &Restorable| {
+            r.scene
+                .undo_with(UndoSelector::Tx(restored), SvPolicy::Auto, true)
+                .unwrap()
+                .wtf
+                .unwrap()
+                .changed_since
+        };
+        assert_eq!(dry(&r), Some(3), "one rewritten, one created, one gone");
+        fs::remove_dir_all(&r.backup.dir).unwrap();
+        assert_eq!(dry(&r), None);
     }
 
     #[cfg(debug_assertions)]

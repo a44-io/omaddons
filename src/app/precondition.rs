@@ -342,11 +342,18 @@ pub fn of_undo(planned: &[UndoPlanned<'_>]) -> Precondition {
                     .map(|(path, stamp)| json!({"path": path, "stamp": stamp}))
                     .collect();
                 stamps.sort_by_key(Value::to_string);
-                observed.push(json!({
+                let mut seen = json!({
                     "tx": tx.to_string(),
                     "verdict": "ok",
                     "saved_variables": stamps,
-                }));
+                });
+                // The undo of a whole restore: the live `WTF/` as previewed, so a play
+                // session before the run refuses it (M3-D46). Absent otherwise, so no
+                // other token moves.
+                if let (Some(wtf), Some(map)) = (&facts.wtf, seen.as_object_mut()) {
+                    map.insert("wtf".to_owned(), json!(wtf));
+                }
+                observed.push(seen);
             }
             Err(error) => {
                 targets.push((*key, None));

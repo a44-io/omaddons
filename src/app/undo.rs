@@ -25,7 +25,7 @@ use super::outcome::ItemError;
 use super::precondition;
 use super::world::World;
 use crate::cli::Context;
-use crate::engine::{SvPolicy, UndoOutcome as EngineUndo, UndoRequest, UndoSelector};
+use crate::engine::{SvPolicy, UndoOutcome as EngineUndo, UndoRequest, UndoSelector, WtfUndo};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{Actor, FolderName, ReloadRequired, RunId, TargetKey, TxId, TxKind};
 use crate::output::{Outcome, Style};
@@ -65,6 +65,11 @@ pub struct UndoData {
     pub tx: Option<TxId>,
     pub folders: UndoFolders,
     pub saved_variables: SavedVariables,
+    /// The undo of a whole `WTF/` restore only: the files the play since it changed,
+    /// which this undo reverts too and keeps in its own snapshot; `null` when that cannot
+    /// be told (the backup it restored is gone).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_since: Option<Option<u64>>,
     pub reload_required: ReloadRequired,
     /// `null` when no swap happened.
     pub atomic_swap: Option<bool>,
@@ -146,6 +151,8 @@ struct Undone {
     sv: SavedVariables,
     reload: ReloadRequired,
     atomic_swap: Option<bool>,
+    /// The undo of a whole restore.
+    wtf: Option<WtfUndo>,
 }
 
 /// One transaction tried: undone, or why not.
@@ -227,6 +234,10 @@ fn render_undone(w: &mut dyn Write, u: &Undone, dry_run: bool, hint: bool) -> st
         local_time(r.at),
         r.target.id
     )?;
+    if let Some(wtf) = u.wtf {
+        render_whole(w, r.kind, wtf, dry_run)?;
+        return render_tail(w, u, hint);
+    }
     let sv = &u.sv;
     let (restore, remove) = if dry_run {
         ("would restore", "remove")
@@ -254,6 +265,52 @@ fn render_undone(w: &mut dyn Write, u: &Undone, dry_run: bool, hint: bool) -> st
     }
     parts.push(format!("SavedVariables: {}", counts.join(", ")));
     writeln!(w, "{}", parts.join(" · "))?;
+    render_tail(w, u, hint)
+}
+
+/// The middle line of the undo of a whole restore (`kind` `restore`), or of the undo of
+/// one: `WTF/` put back, and the play since that goes with it.
+fn render_whole(
+    w: &mut dyn Write,
+    kind: TxKind,
+    wtf: WtfUndo,
+    dry_run: bool,
+) -> std::io::Result<()> {
+    let (back, since) = match kind {
+        TxKind::Restore => ("as it was before the restore", "since the restore"),
+        _ => ("as the restore left it", "since that undo"),
+    };
+    // (one file is reverted, several are, it stays, they stay)
+    let (put, is, are, it, they) = if dry_run {
+        (
+            format!("would put WTF/ back {back}"),
+            "would be reverted",
+            "would be reverted",
+            "it would stay",
+            "they would stay",
+        )
+    } else {
+        (
+            format!("WTF/ put back {back}"),
+            "is reverted",
+            "are reverted",
+            "it stays",
+            "they stay",
+        )
+    };
+    let changed = match wtf.changed_since {
+        Some(1) => format!("1 file changed {since} {is} too; {it} in this undo's snapshot"),
+        Some(n) => format!("{n} files changed {since} {are} too; {they} in this undo's snapshot"),
+        None => format!(
+            "files changed {since} cannot be counted (its backup is gone); {they} in this undo's snapshot"
+        ),
+    };
+    writeln!(w, "{put} · {changed}")
+}
+
+/// The last line of an undone block: the undo's tx, the reload it needs, and (`hint`) how
+/// to undo it.
+fn render_tail(w: &mut dyn Write, u: &Undone, hint: bool) -> std::io::Result<()> {
     let mut tail = Vec::new();
     if let Some(tx) = u.tx {
         tail.push(format!("tx {tx}"));
@@ -616,6 +673,7 @@ fn outcome(
             tx: first.tx,
             folders: first.folders,
             saved_variables: first.sv,
+            changed_since: first.wtf.map(|wtf| wtf.changed_since),
             reload_required: first.reload,
             atomic_swap: first.atomic_swap,
             client_dir,
@@ -677,6 +735,7 @@ fn undone(reverted: Reverted, policy: SvPolicy, done: &EngineUndo) -> Undone {
         },
         reload: done.outcome.reload_required,
         atomic_swap: tx.map(|_| done.outcome.atomic_swap),
+        wtf: done.wtf,
     }
 }
 

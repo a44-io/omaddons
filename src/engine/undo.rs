@@ -126,6 +126,17 @@ pub struct UndoOutcome {
     /// What its plan covers, for a preview's token (M3-D46).
     #[serde(skip)]
     pub plan: UndoFacts,
+    /// The undo of a whole restore: what it reverts besides (M3-D28 rule 4).
+    #[serde(skip)]
+    pub wtf: Option<WtfUndo>,
+}
+
+/// What undoing a whole restore (or the undo of one) reverts with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WtfUndo {
+    /// The files the play since it changed in the live `WTF/`, which the undo's own
+    /// snapshot keeps; `None` when that cannot be told (the backup it restored is gone).
+    pub changed_since: Option<u64>,
 }
 
 /// What an undo's plan covers, so that a run can be bound to its preview (M3-D46).
@@ -138,6 +149,9 @@ pub struct UndoFacts {
     /// Each SavedVariables file it restores (relative to `WTF/`) with the stamp that file
     /// has now ([`FileStamp::fingerprint`]; `None` when absent).
     pub saved_variables: Vec<(String, Option<String>)>,
+    /// The undo of a whole restore: the live `WTF/`'s stamp digest when planned (`absent`
+    /// without one), so a play session after the preview refuses the bound run.
+    pub wtf: Option<String>,
 }
 
 /// The SavedVariables an undo writes back after its swap (journal payload).
@@ -195,6 +209,9 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
                 Suggestion::command(["omaddons", "targets"]),
             )
         })?;
+    if restores_wtf(&reverted) {
+        return undo_whole(req, ctx, &read, at, discovered);
+    }
     let target = &discovered.target;
     let running = running_now(ctx, std::slice::from_ref(target));
     let mut hashes = SvHashes::default();
@@ -235,6 +252,55 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
         done.outcome.warnings.extend(retained);
     }
     Ok(done)
+}
+
+/// Undoes `read.entries[at]`, a whole restore or the undo of one (M3-D28 rule 4): its
+/// snapshot's `WTF.previous` goes back in place by one journaled exchange, and the tree it
+/// replaces is kept in this undo's own snapshot, so the undo is undoable in turn. It puts
+/// every setting back, so `--saved-variables keep` has nothing to keep, and it never runs
+/// while the client runs, whatever the policy or flag.
+fn undo_whole(
+    req: &UndoRequest,
+    ctx: &EngineCtx<'_>,
+    read: &HistoryRead,
+    at: usize,
+    discovered: &DiscoveredTarget,
+) -> Result<UndoOutcome> {
+    let reverted = &read.entries[at];
+    if req.sv_policy == SvPolicy::Keep {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            format!(
+                "transaction {} put a whole WTF/ in place; undoing it puts every setting back, so --saved-variables keep would leave nothing to undo",
+                reverted.tx
+            ),
+            Suggestion::command([
+                "omaddons".to_owned(),
+                "undo".to_owned(),
+                reverted.tx.to_string(),
+            ]),
+        ));
+    }
+    whole_conflicts(read, at)?;
+    // Under the lock, the history is read again: a write of settings since the plan
+    // conflicts as it would have then.
+    let recheck = || -> Result<()> {
+        let read = history::read(ctx.paths, &HistoryFilter::default())?;
+        let at = select(&read.entries, UndoSelector::Tx(reverted.tx))?;
+        whole_conflicts(&read, at)
+    };
+    super::restore::undo_whole(ctx, req, reverted, discovered, &recheck)
+}
+
+/// M3-D28 rules 1 and 5 for undoing the whole restore `read.entries[at]`: a later write of
+/// settings, or a newer line this build cannot read, refuses it. Keeping SavedVariables
+/// is no way out here, so rule 5 offers no `keep`.
+fn whole_conflicts(read: &HistoryRead, at: usize) -> Result<()> {
+    check_conflicts(&read.entries, at, None, false)?;
+    check_unreadable(&read.unreadable, at, &read.entries[at], true).map_err(|mut error| {
+        error.alternatives.clear();
+        error
+    })
 }
 
 /// What `before` (the plan made without the lock) reads and copies before the lock,
@@ -503,7 +569,9 @@ impl Planned {
                 generation: self.generation,
                 ops: self.folders.history.clone(),
                 saved_variables,
+                wtf: None,
             },
+            wtf: None,
             undoes: self.reverts,
             outcome: TxOutcome {
                 target: target.id.clone(),
@@ -546,7 +614,11 @@ fn plan(
     let entries = &history.entries[..];
     let running = running_now.contains(&target.client_dir);
     let reverted = &entries[at];
-    if reverted.ops.iter().any(|o| !o.op.is_folder()) {
+    if reverted
+        .ops
+        .iter()
+        .any(|o| matches!(o.op, FolderOp::SavedVariables))
+    {
         return Err(restore_undo_unsupported(reverted));
     }
     let deferred_by = entries[at + 1..]
@@ -1067,9 +1139,9 @@ fn cancelled_after(later: &[HistoryEntry], reverted: TxId) -> BTreeSet<TxId> {
     cancelled
 }
 
-/// Undoing a transaction that put settings back (`wtf` or `saved_variables` ops) has
-/// rules of its own (M3-D28, D6 and D7); until they exist this build refuses it rather
-/// than revert its AddOns side alone.
+/// Undoing a restore of single addons' SavedVariables (`saved_variables` ops) has rules
+/// of its own (M3-D28 rule 3, D7); until they exist this build refuses it rather than
+/// revert its AddOns side alone.
 fn restore_undo_unsupported(reverted: &HistoryEntry) -> Error {
     Error::internal(format!(
         "transaction {} put settings back, which this omaddons cannot undo yet",
@@ -1102,7 +1174,7 @@ fn deferred(reverted: &HistoryEntry, by: &HistoryEntry) -> Error {
 }
 
 /// The snapshot a transaction needs is gone.
-fn pruned(tx: &TxId) -> Error {
+pub(super) fn pruned(tx: &TxId) -> Error {
     Error::new(
         ErrorCode::NotFound,
         format!("snapshot for {tx} was pruned by retention"),

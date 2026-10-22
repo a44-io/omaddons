@@ -1087,8 +1087,9 @@ fn stopped(tx: &TxId, prepared: &Prepared, stop: Stop, why: &str) -> Error {
 
 /// After a `writes_wtf` rollback the stage holds the tree that was to be restored
 /// again. It is pruned only when it is still the copy the journal recorded (stamps
-/// unchanged) and its source backup still exists with the identity it had: otherwise it
-/// may be the only copy of what someone played on, or of the backup's content.
+/// unchanged) and its source still exists (a backup with the identity it had, or the
+/// reverted transaction's `WTF.previous`): otherwise it may be the only copy of what
+/// someone played on, or of the tree it was copied from.
 fn stage_accounted_for(tx: &TxId, prepared: &Prepared) -> Result<()> {
     let staged = prepared.commit.stage_dir.join("WTF");
     if !staged.exists() {
@@ -1105,17 +1106,26 @@ fn stage_accounted_for(tx: &TxId, prepared: &Prepared) -> Result<()> {
             "the staged WTF/ changed since it was journaled, so it is kept as it is",
         ));
     }
-    let source_gone = prepared.source_backup.is_none_or(|source| {
-        let client = ClientPaths::new(&prepared.client_dir);
-        let dir = crate::backup::backup_dir(&client, &source.id);
-        !same(FileId::of(&dir), Some(source.dir))
-    });
+    // A restore's source is its backup, by identity; an undo of one copies the reverted
+    // transaction's `WTF.previous`, a snapshot named by that transaction and never reused.
+    let client = ClientPaths::new(&prepared.client_dir);
+    let source_gone = match (prepared.source_backup, prepared.commit.history.reverts) {
+        (Some(source), _) => {
+            let dir = crate::backup::backup_dir(&client, &source.id);
+            !same(FileId::of(&dir), Some(source.dir))
+        }
+        (None, Some(reverted)) => !client
+            .snapshots(&reverted)
+            .join(super::retention::WTF_PREVIOUS)
+            .is_dir(),
+        (None, None) => true,
+    };
     if source_gone {
         return Err(stopped(
             tx,
             prepared,
             Stop::PreservationIncomplete,
-            "the backup the stage was copied from is gone, so the stage is its last copy",
+            "the tree the stage was copied from is gone, so the stage is its last copy",
         ));
     }
     Ok(())
