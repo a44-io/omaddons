@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:ns0="DAV:">
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/</D:href>
+<D:propstat><D:prop>
+<lp1:resourcetype><D:collection/></lp1:resourcetype>
+<lp1:version-name>401</lp1:version-name>
+</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.9/</D:href

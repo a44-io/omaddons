@@ -429,6 +429,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Largest decoded API response: a decompression-bomb guard"
     },
     {
+      "name": "WOWACE_TREE_MAX_FILES",
+      "value": {
+        "count": 2000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Most entries a WowAce listing or tag list names, and most files a WowAce tree holds"
+    },
+    {
       "name": "DEPENDENCY_MAX_DEPTH",
       "value": {
         "count": 4

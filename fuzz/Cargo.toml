@@ -142,3 +142,10 @@ path = "fuzz_targets/savedvariables.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "wowace_listing"
+path = "fuzz_targets/wowace_listing.rs"
+test = false
+doc = false
+bench = false

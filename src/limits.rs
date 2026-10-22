@@ -83,6 +83,9 @@ pub const CHANGELOG_MAX_ENTRIES: usize = 10;
 /// The largest decoded API response (JSON, feeds): a decompression-bomb guard. Archives
 /// have `DOWNLOAD_MAX_BYTES`.
 pub const API_RESPONSE_MAX_BYTES: u64 = 64 * MIB;
+/// Most entries a WowAce directory listing or tag list may name, and most files one
+/// WowAce tree may hold: past it, the listing fails `too_many_entries`.
+pub const WOWACE_TREE_MAX_FILES: usize = 2_000;
 /// Most dependency rounds one install plans per target (a chain longer than this stops
 /// with `missing_dependency`, reason `limit_reached`).
 pub const DEPENDENCY_MAX_DEPTH: usize = 4;
@@ -419,6 +422,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "bytes",
         None,
         "Largest decoded API response: a decompression-bomb guard",
+    ),
+    limit(
+        "WOWACE_TREE_MAX_FILES",
+        LimitValue::Count(WOWACE_TREE_MAX_FILES as u64),
+        "count",
+        None,
+        "Most entries a WowAce listing or tag list names, and most files a WowAce tree holds",
     ),
     limit(
         "DEPENDENCY_MAX_DEPTH",
@@ -864,6 +874,7 @@ mod tests {
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",
         "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",
         "CHANGELOG_MAX_ENTRIES", "API_RESPONSE_MAX_BYTES",
+        "WOWACE_TREE_MAX_FILES",
         "DEPENDENCY_MAX_DEPTH",
         "DEPENDENCY_MAX_ADDONS",
         "RACY_SLACK_NS",

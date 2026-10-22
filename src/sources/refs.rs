@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::error::{Error, ErrorCode, Result, Suggestion};
-use crate::model::{Ref, RefKind};
+use crate::model::{Ref, RefKind, WowAceRev, is_wowace_slug};
 use crate::sources::github::{percent_unescape, valid_tag};
 
 /// A parsed user ref and the hints its URL carried.
@@ -379,6 +379,9 @@ fn url(input: &str, rest: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
                 )),
             };
         }
+        "repos.wowace.com" | "wowace.com" => {
+            return wowace_link(input, &host, &segments).map(with_url);
+        }
         "curseforge.com" | "addons.wago.io" => {
             let name = if host == "curseforge.com" {
                 "CurseForge"
@@ -408,6 +411,52 @@ fn url(input: &str, rest: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
     Ok(with_url(url.parse().map_err(
         |e: crate::model::RefParseError| invalid(input, &e.to_string()),
     )?))
+}
+
+/// A WowAce link's ref. The SVN repository's project root or trunk is the newest stable
+/// tag (an unpinned trunk path names no revision to pin); a tag directory, or a path
+/// below one, is that tag, also at a peg revision (the tag's own last-changed revision is
+/// what a fetch pins, not where the browser was); a peg revision of trunk is that
+/// revision. The website's project pages are the project.
+fn wowace_link(input: &str, host: &str, segments: &[&str]) -> Result<Ref> {
+    let project = |slug: &str, rev: Option<WowAceRev>| {
+        let slug = percent_unescape(slug).to_ascii_lowercase();
+        if is_wowace_slug(&slug) {
+            Ok(Ref::WowAce { slug, rev })
+        } else {
+            Err(invalid(input, "the WowAce project name is not valid"))
+        }
+    };
+    let tag = |tag: &str| match WowAceRev::parse(&percent_unescape(tag)) {
+        Some(WowAceRev::Tag(tag)) => Ok(Some(WowAceRev::Tag(tag))),
+        // A tag named like a revision would read back as one.
+        _ => Err(invalid(input, "the WowAce tag is not valid")),
+    };
+    if host == "wowace.com" {
+        return match segments {
+            ["projects", slug, ..] => project(slug, None),
+            _ => Err(invalid(
+                input,
+                "a WowAce link names a project: https://www.wowace.com/projects/<name>",
+            )),
+        };
+    }
+    match segments {
+        ["wow", slug] | ["wow", slug, "trunk", ..] => project(slug, None),
+        ["wow", slug, "tags", t, ..] | ["wow", slug, "!svn", "bc", _, "tags", t, ..] => {
+            project(slug, tag(t)?)
+        }
+        ["wow", slug, "!svn", "bc", rev, "trunk", ..] => {
+            let rev = rev
+                .parse::<u32>()
+                .map_err(|_| invalid(input, "the WowAce revision is not a number"))?;
+            project(slug, Some(WowAceRev::Revision(rev)))
+        }
+        _ => Err(invalid(
+            input,
+            "a WowAce link names a project: https://repos.wowace.com/wow/<name>/, a tag below its tags/, or a revision of its trunk",
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -633,6 +682,30 @@ mod tests {
         ("tukui:ElvUI", "tukui:elvui", Some(MatchKind::Canonical), None, None),
         ("tukui:elv_ui", "ref_invalid", None, None, None),
         ("wago:abcd", "wago:abcd", Some(MatchKind::Canonical), None, None),
+        // WowAce: the newest stable tag, a pinned tag, a trunk revision.
+        ("wowace:bug-grabber", "wowace:bug-grabber", Some(MatchKind::Canonical), None, None),
+        ("wowace:bug-grabber#v12.1.0", "wowace:bug-grabber#v12.1.0", Some(MatchKind::Canonical), None, None),
+        ("wowace:bug-grabber#r152", "wowace:bug-grabber#r152", Some(MatchKind::Canonical), None, None),
+        ("wowace:Bug_Grabber", "ref_invalid", None, None, None),
+        ("wowace:-x", "ref_invalid", None, None, None),
+        ("wowace:x#v1/2", "ref_invalid", None, None, None),
+        ("wowace:x#", "ref_invalid", None, None, None),
+        ("wowace:x#r99999999999", "ref_invalid", None, None, None),
+        ("https://repos.wowace.com/wow/bug-grabber/", "wowace:bug-grabber", Some(MatchKind::Url), None, None),
+        ("https://repos.wowace.com/wow/bug-grabber", "wowace:bug-grabber", Some(MatchKind::Url), None, None),
+        ("https://repos.wowace.com/wow/bug-grabber/trunk/BugGrabber.lua", "wowace:bug-grabber", Some(MatchKind::Url), None, None),
+        ("https://repos.wowace.com/wow/bug-grabber/tags/v12.1.0/", "wowace:bug-grabber#v12.1.0", Some(MatchKind::Url), None, None),
+        ("https://repos.wowace.com/wow/bug-grabber/tags/v12.1.0/load.xml", "wowace:bug-grabber#v12.1.0", Some(MatchKind::Url), None, None),
+        ("https://repos.wowace.com/wow/bug-grabber/!svn/bc/401/tags/v12.1.0/", "wowace:bug-grabber#v12.1.0", Some(MatchKind::Url), None, None),
+        ("https://repos.wowace.com/wow/bug-grabber/!svn/bc/152/trunk/", "wowace:bug-grabber#r152", Some(MatchKind::Url), None, None),
+        ("https://repos.wowace.com/wow/bug-grabber/!svn/bc/152/trunk/BugGrabber.lua", "wowace:bug-grabber#r152", Some(MatchKind::Url), None, None),
+        ("https://www.wowace.com/projects/bug-grabber", "wowace:bug-grabber", Some(MatchKind::Url), None, None),
+        ("https://www.wowace.com/projects/bug-grabber/files", "wowace:bug-grabber", Some(MatchKind::Url), None, None),
+        ("https://repos.wowace.com/wow/bug-grabber/tags/r5/", "ref_invalid", None, None, None),
+        ("https://repos.wowace.com/wow/bug-grabber/!svn/bc/x/trunk/", "ref_invalid", None, None, None),
+        ("https://repos.wowace.com/svn/", "ref_invalid", None, None, None),
+        ("https://www.wowace.com/addons", "ref_invalid", None, None, None),
+        ("http://repos.wowace.com/wow/bug-grabber/", "ref_invalid", None, None, None),
         ("git:https://codeberg.org/a/b.git#main", "git:https://codeberg.org/a/b.git#main", Some(MatchKind::Canonical), None, None),
         ("git:https://codeberg.org/a/b.git#", "ref_invalid", None, None, None),
         ("git:http://codeberg.org/a/b.git", "ref_invalid", None, None, None),
@@ -718,6 +791,11 @@ mod tests {
                     Some("https://www.wowinterface.com/downloads/info123-x.html"),
                     None,
                 ),
+                (
+                    "http://repos.wowace.com/wow/bug-grabber/tags/v12.1.0/",
+                    Some("https://repos.wowace.com/wow/bug-grabber/tags/v12.1.0/"),
+                    None,
+                ),
                 ("http://example.com/a.zip", None, Some("example.com")),
                 ("url:http://example.com/a.zip", None, Some("example.com")),
                 (
@@ -764,6 +842,39 @@ mod tests {
             }
             let e = parse_user_ref("http://github.com/a_b/c", ctx).unwrap_err();
             assert!(e.message.contains("and with https:"), "{}", e.message);
+        });
+    }
+
+    /// Each `wowace:` form parses, displays and parses back the same, through serde too.
+    #[test]
+    fn wowace_refs_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        with_ctx(dir.path(), |ctx| {
+            for input in [
+                "wowace:bug-grabber",
+                "wowace:bug-grabber#v12.1.0",
+                "wowace:bug-grabber#r152",
+            ] {
+                let r = parse_user_ref(input, ctx).unwrap().r#ref;
+                assert_eq!(r.to_string(), input);
+                assert_eq!(parse_user_ref(&r.to_string(), ctx).unwrap().r#ref, r);
+                let json = serde_json::to_string(&r).unwrap();
+                assert_eq!(serde_json::from_str::<Ref>(&json).unwrap(), r);
+                assert_eq!(r.kind(), RefKind::WowAce);
+            }
+            let rev = parse_user_ref("wowace:x#r152", ctx).unwrap().r#ref;
+            assert!(matches!(
+                rev,
+                Ref::WowAce {
+                    rev: Some(WowAceRev::Revision(152)),
+                    ..
+                }
+            ));
+            let slug = format!("wowace:{}", "a".repeat(64));
+            assert!(parse_user_ref(&slug, ctx).is_ok());
+            let long = format!("wowace:{}", "a".repeat(65));
+            let e = parse_user_ref(&long, ctx).unwrap_err();
+            assert_eq!(e.code, ErrorCode::RefInvalid);
         });
     }
 

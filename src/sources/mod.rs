@@ -22,6 +22,7 @@ pub mod refs;
 pub mod release_json;
 pub mod tukui;
 pub mod url;
+pub mod wowace;
 pub mod wowi;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,10 +92,11 @@ pub enum SourceId {
     Tukui,
     Curseforge,
     Wago,
+    Wowace,
 }
 
 impl SourceId {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Github,
         Self::Git,
         Self::Url,
@@ -103,6 +105,7 @@ impl SourceId {
         Self::Tukui,
         Self::Curseforge,
         Self::Wago,
+        Self::Wowace,
     ];
 
     pub fn of(r: &Ref) -> Self {
@@ -115,6 +118,7 @@ impl SourceId {
             Ref::Tukui { .. } => Self::Tukui,
             Ref::CurseForge { .. } => Self::Curseforge,
             Ref::Wago { .. } => Self::Wago,
+            Ref::WowAce { .. } => Self::Wowace,
         }
     }
 
@@ -128,6 +132,7 @@ impl SourceId {
             Self::Tukui => "tukui",
             Self::Curseforge => "curseforge",
             Self::Wago => "wago",
+            Self::Wowace => "wowace",
         }
     }
 
@@ -147,6 +152,7 @@ impl SourceId {
             Self::Tukui => "Tukui",
             Self::Curseforge => "CurseForge",
             Self::Wago => "Wago",
+            Self::Wowace => "WowAce",
         }
     }
 
@@ -154,7 +160,13 @@ impl SourceId {
     const fn later(self) -> Option<&'static str> {
         match self {
             Self::Curseforge | Self::Wago => Some("M5"),
-            Self::Github | Self::Git | Self::Url | Self::Local | Self::Wowi | Self::Tukui => None,
+            Self::Github
+            | Self::Git
+            | Self::Url
+            | Self::Local
+            | Self::Wowi
+            | Self::Tukui
+            | Self::Wowace => None,
         }
     }
 }
@@ -748,6 +760,21 @@ mod tests {
             assert_eq!(SourceId::from_wire(id.wire()), Some(id));
         }
         assert_eq!(SourceId::from_wire("wowinterface"), None);
+        assert_eq!(SourceId::ALL.len(), 9);
+        let wowace = SourceId::of(&r("wowace:bug-grabber#r152"));
+        assert_eq!((wowace.wire(), wowace.name()), ("wowace", "WowAce"));
+    }
+
+    /// Until its source is registered, a `wowace:` ref is honestly unavailable.
+    #[test]
+    fn an_unregistered_wowace_source_is_not_available() {
+        let registry = SourceRegistry::builtin(&config(&[]));
+        let error = registry.unavailable(SourceId::Wowace, "wowace:bug-grabber");
+        assert_eq!(error.code, ErrorCode::SourceDisabled);
+        assert_eq!(
+            error.message,
+            "wowace:bug-grabber: the WowAce source is not available"
+        );
     }
 
     fn config(entries: &[(&str, Option<bool>)]) -> SourceConfigView {

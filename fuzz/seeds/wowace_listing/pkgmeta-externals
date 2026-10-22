@@ -1,0 +1,7 @@
+package-as: Foo
+externals:
+  Libs/LibStub: https://repos.wowace.com/wow/libstub/trunk
+ignore:
+  - README.md
+move-folders:
+  Foo/Modules: FooModules

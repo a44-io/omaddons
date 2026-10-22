@@ -614,18 +614,21 @@ pub enum RefKind {
     Tukui,
     Cf,
     Wago,
+    #[serde(rename = "wowace")]
+    WowAce,
     Git,
     Url,
     File,
 }
 
 impl RefKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Gh,
         Self::Wowi,
         Self::Tukui,
         Self::Cf,
         Self::Wago,
+        Self::WowAce,
         Self::Git,
         Self::Url,
         Self::File,
@@ -639,6 +642,7 @@ impl RefKind {
             Self::Tukui => "tukui",
             Self::Cf => "cf",
             Self::Wago => "wago",
+            Self::WowAce => "wowace",
             Self::Git => "git",
             Self::Url => "url",
             Self::File => "file",
@@ -669,6 +673,12 @@ pub enum Ref {
     CurseForge { id: u64 },
     /// `wago:<id>`
     Wago { id: String },
+    /// `wowace:<slug>[#<tag>|#r<rev>]`: a WowAce project's newest stable tag, a pinned
+    /// tag, or a trunk revision.
+    WowAce {
+        slug: String,
+        rev: Option<WowAceRev>,
+    },
     /// `git:<https-url>[#<rev>]`
     Git { url: String, rev: Option<String> },
     /// `url:<https-url>`
@@ -685,6 +695,7 @@ impl Ref {
             Self::Tukui { .. } => RefKind::Tukui,
             Self::CurseForge { .. } => RefKind::Cf,
             Self::Wago { .. } => RefKind::Wago,
+            Self::WowAce { .. } => RefKind::WowAce,
             Self::Git { .. } => RefKind::Git,
             Self::Url { .. } => RefKind::Url,
             Self::File { .. } => RefKind::File,
@@ -746,6 +757,11 @@ impl fmt::Display for Ref {
             Self::Tukui { slug } => write!(f, "tukui:{slug}"),
             Self::CurseForge { id } => write!(f, "cf:{id}"),
             Self::Wago { id } => write!(f, "wago:{id}"),
+            Self::WowAce { slug, rev: None } => write!(f, "wowace:{slug}"),
+            Self::WowAce {
+                slug,
+                rev: Some(rev),
+            } => write!(f, "wowace:{slug}#{rev}"),
             Self::Git { url, rev: None } => write!(f, "git:{url}"),
             Self::Git {
                 url,
@@ -817,6 +833,30 @@ impl FromStr for Ref {
                     id: rest.to_owned(),
                 })
             }
+            RefKind::WowAce => {
+                let (slug, rev) = match rest.split_once('#') {
+                    Some((slug, rev)) => (slug, Some(rev)),
+                    None => (rest, None),
+                };
+                if !is_wowace_slug(slug) {
+                    return Err(invalid(
+                        "slug must be 1 to 64 lowercase letters, digits or '-', starting with a letter or digit",
+                    ));
+                }
+                let rev = rev
+                    .map(|rev| {
+                        WowAceRev::parse(rev).ok_or_else(|| {
+                            invalid(
+                                "after '#' comes a tag (1 to 64 letters, digits, '.', '_', '+' or '-') or r<revision>",
+                            )
+                        })
+                    })
+                    .transpose()?;
+                Ok(Self::WowAce {
+                    slug: slug.to_owned(),
+                    rev,
+                })
+            }
             RefKind::Git => {
                 let (url, rev) = match rest.split_once('#') {
                     Some((url, rev)) => (url, Some(rev)),
@@ -875,11 +915,11 @@ impl From<Ref> for String {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RefParseError {
     #[error(
-        "ref {input:?} has no source prefix; expected gh:, wowi:, tukui:, cf:, wago:, git:, url: or file:"
+        "ref {input:?} has no source prefix; expected gh:, wowi:, tukui:, cf:, wago:, wowace:, git:, url: or file:"
     )]
     MissingPrefix { input: String },
     #[error(
-        "ref {input:?} has unknown source {prefix:?}; expected gh, wowi, tukui, cf, wago, git, url or file"
+        "ref {input:?} has unknown source {prefix:?}; expected gh, wowi, tukui, cf, wago, wowace, git, url or file"
     )]
     UnknownPrefix { input: String, prefix: String },
     #[error("invalid {kind} ref {input:?}: {reason}")]
@@ -888,6 +928,52 @@ pub enum RefParseError {
         kind: RefKind,
         reason: &'static str,
     },
+}
+
+/// What follows `#` in a `wowace:` ref: a tag, or a trunk revision.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WowAceRev {
+    /// A tag directory, e.g. `v12.1.0`.
+    Tag(String),
+    /// A trunk peg revision, written `r152`.
+    Revision(u32),
+}
+
+impl WowAceRev {
+    /// `r<digits>` (a `u32`) is a revision, always; anything else is a tag of 1 to 64
+    /// letters, digits, `.`, `_`, `+` or `-`. WowAce tags are version names (`v12.1.0`),
+    /// so no real tag reads as a revision.
+    pub fn parse(s: &str) -> Option<Self> {
+        if let Some(digits) = s.strip_prefix('r')
+            && !digits.is_empty()
+            && digits.bytes().all(|b| b.is_ascii_digit())
+        {
+            return digits.parse().ok().map(Self::Revision);
+        }
+        let tag = (1..=64).contains(&s.len())
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'));
+        tag.then(|| Self::Tag(s.to_owned()))
+    }
+}
+
+impl fmt::Display for WowAceRev {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tag(tag) => f.write_str(tag),
+            Self::Revision(rev) => write!(f, "r{rev}"),
+        }
+    }
+}
+
+/// A WowAce project slug: `^[a-z0-9][a-z0-9-]{0,63}$`.
+pub fn is_wowace_slug(s: &str) -> bool {
+    let mut bytes = s.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && s.len() <= 64
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// A non-empty path segment of letters, digits, `_`, `.` and `-` that is not `.`/`..`.

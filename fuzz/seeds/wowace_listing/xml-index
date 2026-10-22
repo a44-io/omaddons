@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<?xml-stylesheet type="text/xsl" href="/svnindex.xsl"?>
+<svn version="1.9.3 (r1718519)" href="http://subversion.apache.org/">
+  <index rev="401" path="/bug-grabber/tags/v12.1.0" base="wow">
+    <updir href="../"/>
+    <file name=".pkgmeta" href=".pkgmeta"/>
+    <file name="!BugGrabber.toc" href="%21BugGrabber.toc"/>
+    <file name="BugGrabber.lua" href="BugGrabber.lua"/>
+    <file name="load.xml" href="load.xml"/>
+  </index>
+</svn>

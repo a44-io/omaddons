@@ -34,6 +34,7 @@ const TARGETS: &[&str] = &[
     "tukui_addons",
     "atom_feed",
     "savedvariables",
+    "wowace_listing",
 ];
 
 fn fuzz_dir() -> PathBuf {
@@ -469,6 +470,37 @@ fn write_fuzz_seeds() {
         br#"[{"UID":"x","UIDir":[1,null,"a/b"]},{"UID":3,"UIDir":null,"UIDate":"soon"},"#,
     );
 
+    // wowace_listing: mod_dav_svn's two index formats and the PROPFIND tag list, as
+    // documented; BugGrabber's .pkgmeta and one that needs the packager; a document cut
+    // short, and names a listing refuses.
+    write("wowace_listing", "html-index", WOWACE_HTML.as_bytes());
+    write("wowace_listing", "xml-index", WOWACE_XML.as_bytes());
+    write(
+        "wowace_listing",
+        "propfind-tags",
+        WOWACE_PROPFIND.as_bytes(),
+    );
+    write(
+        "wowace_listing",
+        "pkgmeta-bug-grabber",
+        b"package-as: \"!BugGrabber\"\n",
+    );
+    write(
+        "wowace_listing",
+        "pkgmeta-externals",
+        b"package-as: Foo\nexternals:\n  Libs/LibStub: https://repos.wowace.com/wow/libstub/trunk\nignore:\n  - README.md\nmove-folders:\n  Foo/Modules: FooModules\n",
+    );
+    write(
+        "wowace_listing",
+        "malformed-truncated",
+        &WOWACE_PROPFIND.as_bytes()[..WOWACE_PROPFIND.len() / 2],
+    );
+    write(
+        "wowace_listing",
+        "malformed-names",
+        b"<title>wow - Revision 9: /x</title><ul><li><a href=\"../\">..</a></li><li><a href=\"a%2Fb\">x</a></li><li><a href=\"Core.lua\">a</a></li><li><a href=\"core.lua\">b</a></li><li><a href=\"%01\">c</a></li></ul>\n--@debug@\n@project-revision@ a@b",
+    );
+
     // desired_toml: the documented example, an empty file, a broken one.
     write("desired_toml", "example.toml", DESIRED_EXAMPLE.as_bytes());
     write("desired_toml", "empty.toml", b"");
@@ -518,6 +550,62 @@ fn write_fuzz_seeds() {
     deep.extend(b"}\r\n");
     write("savedvariables", "malformed-deep", &deep);
 }
+
+/// mod_dav_svn's HTML index of BugGrabber v12.1.0, as documented (C2 records the real one).
+const WOWACE_HTML: &str = r#"<html><head><title>wow - Revision 401: /bug-grabber/tags/v12.1.0</title></head>
+<body>
+ <h2>wow - Revision 401: /bug-grabber/tags/v12.1.0</h2>
+ <ul>
+  <li><a href="../">..</a></li>
+  <li><a href=".pkgmeta">.pkgmeta</a></li>
+  <li><a href="%21BugGrabber.toc">!BugGrabber.toc</a></li>
+  <li><a href="BugGrabber.lua">BugGrabber.lua</a></li>
+  <li><a href="load.xml">load.xml</a></li>
+ </ul>
+ <hr noshade><em>Powered by <a href="http://subversion.apache.org/">Apache Subversion</a> version 1.9.3 (r1718519).</em>
+</body></html>
+"#;
+
+/// The XML index of the same directory.
+const WOWACE_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<?xml-stylesheet type="text/xsl" href="/svnindex.xsl"?>
+<svn version="1.9.3 (r1718519)" href="http://subversion.apache.org/">
+  <index rev="401" path="/bug-grabber/tags/v12.1.0" base="wow">
+    <updir href="../"/>
+    <file name=".pkgmeta" href=".pkgmeta"/>
+    <file name="!BugGrabber.toc" href="%21BugGrabber.toc"/>
+    <file name="BugGrabber.lua" href="BugGrabber.lua"/>
+    <file name="load.xml" href="load.xml"/>
+  </index>
+</svn>
+"#;
+
+/// The `PROPFIND Depth: 1` multistatus of BugGrabber's `tags/`: the collection, two tags.
+const WOWACE_PROPFIND: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:ns0="DAV:">
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/</D:href>
+<D:propstat><D:prop>
+<lp1:resourcetype><D:collection/></lp1:resourcetype>
+<lp1:version-name>401</lp1:version-name>
+</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.0.9/</D:href>
+<D:propstat><D:prop>
+<lp1:resourcetype><D:collection/></lp1:resourcetype>
+<lp1:version-name>369</lp1:version-name>
+</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+</D:response>
+<D:response xmlns:lp1="DAV:" xmlns:lp2="http://subversion.tigris.org/xmlns/dav/">
+<D:href>/wow/bug-grabber/tags/v12.1.0/</D:href>
+<D:propstat><D:prop>
+<lp1:resourcetype><D:collection/></lp1:resourcetype>
+<lp1:version-name>401</lp1:version-name>
+</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+</D:response>
+</D:multistatus>
+"#;
 
 /// The `addons.toml` example of `src/state/desired.rs`.
 const DESIRED_EXAMPLE: &str = r#"# Desired addon sets for omaddons. `omaddons sync` makes each client match this file.

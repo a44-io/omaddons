@@ -36,7 +36,7 @@ use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::model::{
     AddonReason, AddonRecord, Channel, FolderName, Ref, ReloadRequired, RunId, TxId, TxKind,
-    VersionConfidence,
+    VersionConfidence, WowAceRev,
 };
 use crate::output::{Outcome, Style};
 use crate::resolve::cache::{Freshness, ReleaseCache};
@@ -437,6 +437,29 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
                     "--version {v} disagrees with the rev {rev} that {} names",
                     item.request
                 )));
+            }
+            if let (Some(v), Ref::WowAce { rev, .. }) = (&args.version, &p.r#ref) {
+                let without = crate::cli::without_flag(&ctx.argv, "--version");
+                let fix = Suggestion::command(crate::cli::fix_argv(&without));
+                if WowAceRev::parse(v).is_none() {
+                    return Err(Error::new(
+                        ErrorCode::Usage,
+                        format!(
+                            "--version on a wowace: ref takes a tag (v12.1.0) or a trunk revision (r152), not {v:?}"
+                        ),
+                        Suggestion::command(["omaddons", "help", "install"]),
+                    ));
+                }
+                if let Some(rev) = rev.as_ref().filter(|rev| rev.to_string() != *v) {
+                    return Err(Error::new(
+                        ErrorCode::Usage,
+                        format!(
+                            "--version {v} disagrees with the {rev} that {} names; give one of the two",
+                            item.request
+                        ),
+                        fix,
+                    ));
+                }
             }
             if let (Some(v), Some(hint)) = (&args.version, &p.version_hint)
                 && v.trim_start_matches('v') != hint.trim_start_matches('v')
