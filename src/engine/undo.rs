@@ -339,6 +339,8 @@ fn commit(
         result: TxResult::Committed,
         reverts: Some(reverts),
         sv_deferred: planned.sv.counts.deferred > 0,
+        // Always set, 0 included: only lines from before M3 lack it (M3-D28).
+        sv_restored: Some(u64::try_from(planned.sv.counts.restored).unwrap_or(u64::MAX)),
         created_addons_dir: false,
         run: Some(req.run),
         backup: None,
@@ -556,10 +558,12 @@ fn plan(
         Some(i) => return Err(deferred(reverted, &entries[at + 1 + i])),
         None => None,
     };
-    check_conflicts(entries, at, sv_only)?;
-
     let paths = ctx.paths;
     let client = ClientPaths::new(&target.client_dir);
+    // A follow-up restores SavedVariables only; an undo, when its snapshot has them.
+    let manifest = client.snapshots(&reverted.tx).join("WTF.manifest.json");
+    let restores_sv = sv_only.is_some() || (req.sv_policy != SvPolicy::Keep && manifest.is_file());
+    check_conflicts(entries, at, sv_only, restores_sv)?;
     if !client.snapshots(&reverted.tx).is_dir() || !paths.state_snapshot(&reverted.tx).is_dir() {
         return Err(pruned(&reverted.tx));
     }
@@ -757,67 +761,160 @@ pub(super) fn pending_sv_restores(entries: &[HistoryEntry]) -> BTreeSet<TxId> {
         .enumerate()
         .filter_map(|(at, e)| {
             let by = *deferred.get(&e.tx)?;
-            (by > at && check_conflicts(entries, at, Some(by)).is_ok()).then_some(e.tx)
+            (by > at && check_conflicts(entries, at, Some(by), true).is_ok()).then_some(e.tx)
         })
         .collect()
 }
 
 /// `undo_conflict` when a transaction after `entries[at]` (or after the deferred undo
-/// `sv_only`, for a SavedVariables follow-up) touched one of its folders on its target,
-/// or already undid it. Ops carrying an in-place `required_by` edit count on neither
-/// side: they are undone in place (M2-D35). A later transaction that a later undo
-/// reverted cancels out with that undo, and neither counts (see [`cancelled_after`]).
-fn check_conflicts(entries: &[HistoryEntry], at: usize, sv_only: Option<usize>) -> Result<()> {
+/// `sv_only`, for a SavedVariables follow-up), on its target, already undid it or would
+/// be overwritten by undoing it (M3-D28):
+/// - a later transaction touched one of its folders;
+/// - rule 1: it is a whole restore (a `wtf` op), and a later one wrote settings: a `wtf`
+///   or `saved_variables` op, or an undo that restored SavedVariables (one from before M3,
+///   without `sv_restored`, may have);
+/// - rule 2: the undo `restores_sv` (its snapshot holds a SavedVariables manifest and
+///   `--saved-variables keep` was not asked; always, for a follow-up), and a whole
+///   restore came later: that restore's undo is the fix, `keep` the alternative;
+/// - a later `saved_variables` op conflicts with every earlier transaction, until D7
+///   gives partial restores their own rule: never silently disjoint.
+///
+/// Ops carrying an in-place `required_by` edit count on neither side: they are undone in
+/// place (M2-D35). A later transaction that a later undo reverted cancels out with that
+/// undo, and neither counts (see [`cancelled_after`]): a restore followed by its own
+/// undo no longer counts as a later restore.
+fn check_conflicts(
+    entries: &[HistoryEntry],
+    at: usize,
+    sv_only: Option<usize>,
+    restores_sv: bool,
+) -> Result<()> {
     let reverted = &entries[at];
     let keys: BTreeSet<&str> = reverted
         .ops
         .iter()
-        .filter(|o| o.edit.is_none())
+        .filter(|o| o.edit.is_none() && o.op.is_folder())
         .map(|o| o.folder.key())
         .collect();
+    let whole = restores_wtf(reverted);
     let after = sv_only.unwrap_or(at) + 1;
-    let cancelled = cancelled_after(&entries[after..], reverted.tx);
-    // Until undo and restores have their own rules (M3-D28, D6), a later restore
-    // conflicts with every earlier transaction on its target: never silently disjoint.
-    let conflicts =
-        |o: &HistoryOp| o.edit.is_none() && (!o.op.is_folder() || keys.contains(o.folder.key()));
-    let conflicting: Vec<&HistoryEntry> = entries[after..]
+    let later: Vec<&HistoryEntry> = entries[after..]
         .iter()
-        .filter(|e| {
-            let touches = e.ops.iter().any(conflicts);
-            let undid = e.kind == TxKind::Undo && e.reverts == Some(reverted.tx);
-            e.target == reverted.target && (undid || (touches && !cancelled.contains(&e.tx)))
-        })
+        .filter(|e| e.target == reverted.target)
         .collect();
-    let Some(newest) = conflicting.last() else {
-        return Ok(());
+    let cancelled = cancelled_after(&entries[after..], reverted.tx);
+    let conflicts = |o: &HistoryOp| {
+        o.edit.is_none()
+            && match o.op {
+                FolderOp::Wtf => whole,
+                FolderOp::SavedVariables => true,
+                FolderOp::Add | FolderOp::Replace | FolderOp::Remove | FolderOp::Record => {
+                    keys.contains(o.folder.key())
+                }
+            }
     };
-    let message = if newest.kind == TxKind::Undo && newest.reverts == Some(reverted.tx) {
-        format!(
-            "transaction {} was already undone by {}",
-            reverted.tx, newest.tx
-        )
-    } else {
-        format!(
-            "{} later transaction(s) changed the folders of {}; the newest is {}",
-            conflicting.len(),
-            reverted.tx,
-            newest.tx
-        )
+    let touches = |e: &HistoryEntry| {
+        e.ops.iter().any(conflicts)
+            || (whole && matches!(e.kind, TxKind::Undo) && may_have_restored(e))
     };
+    let undid = |e: &HistoryEntry| matches!(e.kind, TxKind::Undo) && e.reverts == Some(reverted.tx);
+    let conflicting: Vec<&HistoryEntry> = later
+        .iter()
+        .copied()
+        .filter(|e| undid(e) || (touches(e) && !cancelled.contains(&e.tx)))
+        .collect();
+    if let Some(newest) = conflicting.last() {
+        let message = if undid(newest) {
+            format!(
+                "transaction {} was already undone by {}",
+                reverted.tx, newest.tx
+            )
+        } else if whole {
+            format!(
+                "{} later transaction(s) wrote settings after the restore {}; the newest is {}",
+                conflicting.len(),
+                reverted.tx,
+                newest.tx
+            )
+        } else {
+            format!(
+                "{} later transaction(s) changed the folders of {}; the newest is {}",
+                conflicting.len(),
+                reverted.tx,
+                newest.tx
+            )
+        };
+        return Err(undo_first(
+            reverted,
+            newest,
+            message,
+            &conflicting,
+            &conflicts,
+        ));
+    }
+    // Rule 2: a later whole restore put settings in place that this undo would overwrite.
+    if restores_sv && !whole {
+        let restored: Vec<&HistoryEntry> = later
+            .iter()
+            .copied()
+            .filter(|e| restores_wtf(e) && !cancelled.contains(&e.tx))
+            .collect();
+        if let Some(newest) = restored.last() {
+            let message = format!(
+                "{} restored WTF/ after {}; undoing {} would put its older SavedVariables back over the restored ones",
+                newest.tx, reverted.tx, reverted.tx
+            );
+            let wtf = |o: &HistoryOp| matches!(o.op, FolderOp::Wtf);
+            let refusal = undo_first(reverted, newest, message, &restored, &wtf);
+            // A follow-up restores SavedVariables only: keeping them leaves nothing.
+            return Err(match sv_only {
+                Some(_) => refusal,
+                None => refusal.alternative(Suggestion::command([
+                    "omaddons".to_owned(),
+                    "undo".to_owned(),
+                    reverted.tx.to_string(),
+                    "--saved-variables".to_owned(),
+                    "keep".to_owned(),
+                ])),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Whether `entry` put a whole `WTF/` in place: a restore, or the undo of one.
+fn restores_wtf(entry: &HistoryEntry) -> bool {
+    entry.ops.iter().any(|o| matches!(o.op, FolderOp::Wtf))
+}
+
+/// Whether the undo `entry` may have written SavedVariables: it says it restored some, or
+/// it is from before M3 and does not say (M3-D28: unknown counts as "may have").
+fn may_have_restored(entry: &HistoryEntry) -> bool {
+    entry.sv_restored != Some(0)
+}
+
+/// The `undo_conflict` refusal of undoing `reverted` while `conflicting` stand (the ops
+/// of each that `counts` lists in `details`): undo `newest` first.
+fn undo_first(
+    reverted: &HistoryEntry,
+    newest: &HistoryEntry,
+    message: String,
+    conflicting: &[&HistoryEntry],
+    counts: &dyn Fn(&HistoryOp) -> bool,
+) -> Error {
     let listed: Vec<serde_json::Value> = conflicting
         .iter()
         .map(|e| {
             let folders: Vec<&str> = e
                 .ops
                 .iter()
-                .filter(|o| conflicts(o))
+                .filter(|o| counts(o))
                 .map(|o| o.folder.as_str())
                 .collect();
             serde_json::json!({ "tx": e.tx, "kind": e.kind, "folders": folders })
         })
         .collect();
-    Err(Error::new(
+    Error::new(
         ErrorCode::UndoConflict,
         message,
         Suggestion::command([
@@ -826,7 +923,7 @@ fn check_conflicts(entries: &[HistoryEntry], at: usize, sv_only: Option<usize>) 
             newest.tx.to_string(),
         ]),
     )
-    .details(serde_json::json!({ "tx": reverted.tx, "conflicting": listed })))
+    .details(serde_json::json!({ "tx": reverted.tx, "conflicting": listed }))
 }
 
 /// What a history line this build cannot read may have touched on a target (M3-D28 rule
@@ -1976,50 +2073,153 @@ mod tests {
             result: TxResult::Committed,
             reverts: None,
             sv_deferred: false,
+            sv_restored: None,
             created_addons_dir: false,
             run: None,
             backup: None,
         }
     }
 
-    /// Until undo and restores have their own rules (D6), a later restore conflicts with
-    /// undoing anything before it on its target, and a restore is not undone at all.
+    /// A line on `target` of `kind` with one op per `(op, folder)`.
+    fn line(target: TargetKey, kind: TxKind, ops: &[(FolderOp, &str)]) -> HistoryEntry {
+        HistoryEntry {
+            kind,
+            ops: ops
+                .iter()
+                .map(|(op, folder)| HistoryOp {
+                    op: *op,
+                    folder: FolderName::new(folder).unwrap(),
+                    addon: (*folder).to_owned(),
+                    edit: None,
+                    backup: None,
+                    from: None,
+                    files: None,
+                })
+                .collect(),
+            ..restore_line(target)
+        }
+    }
+
+    /// An undo on `target` of `of` that restored `sv_restored` SavedVariables files.
+    fn undo_line(target: TargetKey, of: TxId, sv_restored: Option<u64>) -> HistoryEntry {
+        HistoryEntry {
+            reverts: Some(of),
+            sv_restored,
+            ..line(target, TxKind::Undo, &[(FolderOp::Replace, "Other")])
+        }
+    }
+
+    /// The tx `check_conflicts` names to undo first, or `None` when there is no conflict.
+    fn first(
+        entries: &[HistoryEntry],
+        at: usize,
+        sv_only: Option<usize>,
+        sv: bool,
+    ) -> Option<TxId> {
+        check_conflicts(entries, at, sv_only, sv).err().map(|err| {
+            assert_eq!(err.code, ErrorCode::UndoConflict);
+            err.fix.argv().unwrap()[2].parse().unwrap()
+        })
+    }
+
+    /// M3-D28 rule 1: undoing a whole restore conflicts with every later write of
+    /// settings on its target, an undo from before M3 counting as one; folders alone, an
+    /// undo that restored nothing, or another target's restore do not.
     #[test]
-    fn a_later_restore_conflicts_and_a_restore_is_not_undone_yet() {
-        let scene = TxScene::new();
-        let tx = install(&scene, "v1.zip", V1);
-        let key = history(&scene)[0].target;
-        let mut entries = history(&scene);
-        entries.push(restore_line(TargetKey::new()));
-        assert!(
-            check_conflicts(&entries, 0, None).is_ok(),
-            "another target's restore"
+    fn undoing_a_restore_conflicts_with_every_later_write_of_settings() {
+        let key = TargetKey::new();
+        let restore = restore_line(key);
+        let with = |later: HistoryEntry| vec![restore.clone(), later];
+        for quiet in [
+            line(key, TxKind::Install, &[(FolderOp::Add, "Foo")]),
+            undo_line(key, TxId::new(), Some(0)),
+            restore_line(TargetKey::new()),
+        ] {
+            assert_eq!(
+                first(&with(quiet.clone()), 0, None, true),
+                None,
+                "{quiet:?}"
+            );
+        }
+        for writes in [
+            restore_line(key),
+            line(key, TxKind::Restore, &[(FolderOp::SavedVariables, "Foo")]),
+            undo_line(key, TxId::new(), Some(2)),
+            undo_line(key, TxId::new(), None),
+        ] {
+            let tx = writes.tx;
+            let entries = with(writes);
+            assert_eq!(first(&entries, 0, None, true), Some(tx), "{:?}", entries[1]);
+            let err = check_conflicts(&entries, 0, None, true).unwrap_err();
+            assert!(
+                err.message.contains("wrote settings after the restore"),
+                "{}",
+                err.message
+            );
+        }
+        // Undone by its own undo, the later restore counts no more.
+        let later = restore_line(key);
+        let undone = undo_line(key, later.tx, None);
+        assert_eq!(
+            first(&[restore.clone(), later, undone], 0, None, true),
+            None
         );
-        entries.push(restore_line(key));
-        let err = check_conflicts(&entries, 0, None).unwrap_err();
-        assert_eq!(err.code, ErrorCode::UndoConflict);
+    }
+
+    /// M3-D28 rule 2: undoing a transaction whose SavedVariables it would restore, after a
+    /// later whole restore, names that restore to undo first, keeping them the
+    /// alternative; a follow-up gets no `keep`; a restore undone since does not count.
+    #[test]
+    fn undoing_settings_from_before_a_restore_names_the_restore_first() {
+        let key = TargetKey::new();
+        let install = line(key, TxKind::Install, &[(FolderOp::Add, "Foo")]);
+        let restore = restore_line(key);
+        let entries = [install.clone(), restore.clone()];
+        assert_eq!(
+            first(&entries, 0, None, false),
+            None,
+            "keep, or no manifest"
+        );
+        let err = check_conflicts(&entries, 0, None, true).unwrap_err();
+        assert_eq!(err.fix.argv().unwrap()[2], restore.tx.to_string());
+        let keep = err.alternatives[0].argv().unwrap();
+        assert_eq!(
+            keep[2..],
+            [
+                install.tx.to_string(),
+                "--saved-variables".into(),
+                "keep".into()
+            ]
+        );
         assert_eq!(
             err.details["conflicting"][0]["folders"],
             serde_json::json!(["WTF"])
         );
-        // A restore on disk is refused before anything is planned.
-        let line = format!("{}\n", serde_json::to_string(&restore_line(key)).unwrap());
-        let path = scene.paths.history_file();
-        let mut text = std::fs::read_to_string(&path).unwrap();
-        text.push_str(&line);
-        std::fs::write(&path, text).unwrap();
-        let err = scene
-            .undo(UndoSelector::Latest, SvPolicy::Auto)
-            .unwrap_err();
-        assert!(err.message.contains("cannot undo yet"), "{err:?}");
-        assert_eq!(
-            scene
-                .undo(UndoSelector::Tx(tx), SvPolicy::Auto)
-                .unwrap_err()
-                .code,
-            ErrorCode::UndoConflict,
-            "the install before it conflicts"
-        );
+
+        // The deferred follow-up: refused the same way, with nothing to keep.
+        let deferred = HistoryEntry {
+            sv_deferred: true,
+            ..undo_line(key, install.tx, Some(0))
+        };
+        let entries = [install.clone(), deferred, restore.clone()];
+        let err = check_conflicts(&entries, 0, Some(1), true).unwrap_err();
+        assert_eq!(err.fix.argv().unwrap()[2], restore.tx.to_string());
+        assert!(err.alternatives.is_empty());
+
+        // The restore was undone: nothing stands in the way.
+        let undone = undo_line(key, restore.tx, None);
+        assert_eq!(first(&[install, restore, undone], 0, None, true), None);
+    }
+
+    /// Until D7 gives partial restores their rule, a later `saved_variables` op conflicts
+    /// with undoing anything before it on its target: never silently disjoint.
+    #[test]
+    fn a_later_partial_restore_conflicts_with_everything_before_it() {
+        let key = TargetKey::new();
+        let install = line(key, TxKind::Install, &[(FolderOp::Add, "Foo")]);
+        let partial = line(key, TxKind::Restore, &[(FolderOp::SavedVariables, "Bar")]);
+        let tx = partial.tx;
+        assert_eq!(first(&[install, partial], 0, None, false), Some(tx));
     }
 
     fn install_as(scene: &TxScene, r: &str, name: &str, entries: &[(&str, &str)]) -> TxId {
@@ -3275,7 +3475,7 @@ mod tests {
             assert!(ops(&scene, later).iter().all(|(_, _, e)| e.is_some()));
             let entries = history(&scene);
             let at = entries.iter().position(|e| e.tx == tx1).unwrap();
-            assert!(check_conflicts(&entries, at, None).is_ok());
+            assert!(check_conflicts(&entries, at, None, false).is_ok());
             // A later change to R's folder does.
             install_as(
                 &scene,
@@ -3285,7 +3485,7 @@ mod tests {
             );
             let entries = history(&scene);
             assert_eq!(
-                check_conflicts(&entries, at, None).unwrap_err().code,
+                check_conflicts(&entries, at, None, false).unwrap_err().code,
                 ErrorCode::UndoConflict
             );
         }

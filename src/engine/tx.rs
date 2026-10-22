@@ -934,6 +934,7 @@ fn locked(
         result: TxResult::Committed,
         reverts: None,
         sv_deferred: false,
+        sv_restored: None,
         created_addons_dir: creates_addons_dir,
         run: Some(req.run),
         backup: None,

@@ -836,6 +836,7 @@ impl Window<'_> {
             result: TxResult::Committed,
             reverts: None,
             sv_deferred: false,
+            sv_restored: None,
             created_addons_dir: false,
             run: Some(self.run),
             backup: None,
@@ -1195,6 +1196,7 @@ mod tests {
                 result: TxResult::Committed,
                 reverts: None,
                 sv_deferred: false,
+                sv_restored: None,
                 created_addons_dir: false,
                 run: None,
                 backup: Some(BackupNote {

@@ -49,6 +49,11 @@ pub struct HistoryEntry {
     /// client was running; `undo <reverts> --saved-variables restore` finishes it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sv_deferred: bool,
+    /// How many SavedVariables files an undo restored (M3-D28), 0 included, so a later
+    /// undo of a restore knows whether this one wrote settings since. Absent on every
+    /// other kind and on undo lines from before M3, which count as "may have restored".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sv_restored: Option<u64>,
     /// The transaction created the client's `Interface/AddOns` (a client that had
     /// never been launched); undo leaves it in place.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -678,6 +683,7 @@ mod tests {
             result: TxResult::Committed,
             reverts: None,
             sv_deferred: false,
+            sv_restored: None,
             created_addons_dir: false,
             run: None,
             backup: None,

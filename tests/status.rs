@@ -306,6 +306,7 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
                 result: TxResult::Committed,
                 reverts: None,
                 sv_deferred: false,
+                sv_restored: None,
                 created_addons_dir: false,
                 run: None,
                 backup: None,
