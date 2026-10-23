@@ -106,8 +106,8 @@ pub struct ErrorsDismissArgs {}
 pub struct DismissData {
     pub dry_run: bool,
     pub targets: Vec<DismissTarget>,
-    /// `--dry-run`: the token a run takes with `--if-match`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `--dry-run`: the token `--if-match` takes to bind the real run to this preview
+    /// (M3-D46); `null` for a real run.
     pub precondition: Option<String>,
 }
 

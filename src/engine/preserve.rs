@@ -86,7 +86,7 @@ fn place(dir: &Path, rel: &str) -> PathBuf {
 
 /// Moves each item from where recovery found it to its place in the assembly (`0700`,
 /// as every backup directory is): an item there already is skipped, one in neither place
-/// is an error. Whole trees move with their stamp digest (M3-D25).
+/// is an error. Whole trees move with their stamp digest (M3-D25) when `s` logs actions.
 fn move_items(s: &mut WriteSession<'_>, intent: &PreserveIntent) -> Result<()> {
     for item in &intent.items {
         let to = place(&intent.assembly, &item.rel);
@@ -101,8 +101,10 @@ fn move_items(s: &mut WriteSession<'_>, intent: &PreserveIntent) -> Result<()> {
         if let Some(parent) = to.parent() {
             ensure_dir_all(s, parent)?;
         }
+        // A stamp digest is a stat walk of the whole tree, which only a session that logs
+        // its actions records; recovery's sessions log none.
         let tree = std::fs::symlink_metadata(&item.path).is_ok_and(|m| m.is_dir());
-        let stamp_before = if tree {
+        let stamp_before = if tree && s.actions_log().is_some() {
             Some(StampDigest::compute(&item.path).map_err(|e| {
                 Error::io(&item.path, &e, Suggestion::command(["omaddons", "status"]))
             })?)
@@ -296,4 +298,49 @@ pub(super) fn redacted(prepared: &Prepared, message: &str) -> String {
     let live = WtfPathRedactor::for_client(&ClientPaths::new(&prepared.client_dir));
     let staged = WtfPathRedactor::for_client(&ClientPaths::new(&prepared.commit.stage_dir));
     staged.text(&live.text(message))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+    use crate::engine::journal::PreserveItem;
+    use crate::fsx::Writer;
+
+    /// Recovery's sessions log no actions, so a whole tree moves into the assembly without
+    /// the stat walk of a stamp digest nobody would record: one holding a folder that
+    /// cannot be listed, which that walk cannot read, moves all the same.
+    #[test]
+    fn an_untracked_move_takes_no_stamp_of_the_tree() {
+        let scene = crate::engine::testing::Scene::new();
+        let stage = scene.client.stage_wtf(&scene.tx);
+        let tree = stage.join("WTF");
+        let sealed = tree.join("Account/Sealed");
+        std::fs::create_dir_all(&sealed).unwrap();
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(
+            StampDigest::compute(&tree).is_err(),
+            "the walk cannot read it"
+        );
+        let intent = PreserveIntent {
+            id: "01M6X00000000000000000000A".parse().unwrap(),
+            items: vec![PreserveItem {
+                path: tree.clone(),
+                identity: FileId::of(&tree).unwrap(),
+                rel: String::new(),
+            }],
+            assembly: stage.join("recovered/01M6X00000000000000000000A"),
+        };
+        let mut s = WriteSession::untracked(Writer::BackupRestore, &scene.scopes, "recovery");
+        let moved = move_items(&mut s, &intent);
+        let placed = place(&intent.assembly, "");
+        std::fs::set_permissions(
+            placed.join("Account/Sealed"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .ok();
+        moved.unwrap();
+        assert!(placed.is_dir() && !tree.exists());
+    }
 }

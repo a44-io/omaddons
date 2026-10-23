@@ -138,7 +138,8 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("copy", Group::Change, true),
     entry("remove", Group::Change, true),
     entry("undo", Group::Change, true),
-    entry("backup", Group::Change, true),
+    // Bare `backup` is `backup list`, bare `omarchy` `omarchy status`: reads.
+    entry("backup", Group::Change, false),
     entry("backup list", Group::Change, false),
     entry("backup create", Group::Change, true),
     entry("backup restore", Group::Change, true),
@@ -156,7 +157,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("config set", Group::Setup, true),
     entry("config path", Group::Setup, false),
     entry("auth", Group::Setup, true),
-    entry("omarchy", Group::Setup, true),
+    entry("omarchy", Group::Setup, false),
     entry("omarchy status", Group::Setup, false),
     entry("omarchy install", Group::Setup, true),
     entry("omarchy remove", Group::Setup, true),

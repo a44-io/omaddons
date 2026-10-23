@@ -741,7 +741,7 @@ expression: "(politeness, REGISTRY)"
       },
       "unit": "count",
       "config_key": null,
-      "notes": "Entries decoded per BugGrabber database, the newest kept (BugGrabber caps at 500/1000)"
+      "notes": "Entries decoded per BugGrabber database, the newest kept (BugGrabber itself keeps 500, r152 50)"
     },
     {
       "name": "ERRORS_MAX_ACCOUNTS",

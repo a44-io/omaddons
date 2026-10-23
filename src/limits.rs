@@ -707,7 +707,7 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitValue::Count(BUGGRABBER_MAX_ENTRIES as u64),
         "count",
         None,
-        "Entries decoded per BugGrabber database, the newest kept (BugGrabber caps at 500/1000)",
+        "Entries decoded per BugGrabber database, the newest kept (BugGrabber itself keeps 500, r152 50)",
     ),
     limit(
         "ERRORS_MAX_ACCOUNTS",
