@@ -1,5 +1,5 @@
-//! The transaction driver (vision §5.5 steps 5–9): the only code that holds the global
-//! lock for a mutation, and only for revalidate → journal → swap → commit (D24).
+//! The transaction driver (vision §5.5 steps 5–9): it holds the global lock for a
+//! transaction only for revalidate → journal → swap → commit (D24).
 //!
 //! Plan (no lock, `plan_tx`'s in-flight lock protects its downloads), then per target,
 //! in key order, one transaction with its own id and in-flight lock: stage and clone
