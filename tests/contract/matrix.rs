@@ -1026,6 +1026,28 @@ fn backup_import() {
         4,
     );
     insta::assert_json_snapshot!("backup_import_unsafe_archive", s.stable(&c.envelope));
+    // A fixed bound: `archive_too_large` with the number and the constant's name, as
+    // every `archive_too_large` gives them (`config_key` instead when config raises it).
+    let mut entries = tar_entries(&std::fs::read(&file).unwrap());
+    let last = entries.len() - 1;
+    let long = format!(
+        "WTF/{}",
+        "a".repeat(omaddons::limits::BACKUP_IMPORT_MAX_PATH as usize)
+    );
+    entries.insert(last, TarEntry::file(&long, b"x"));
+    let deep = dir.join("long.tar.zst");
+    std::fs::write(&deep, tar_zst(&entries)).unwrap();
+    let c = s.json(
+        &[
+            "backup",
+            "import",
+            &deep.display().to_string(),
+            "-t",
+            "retail",
+        ],
+        4,
+    );
+    insta::assert_json_snapshot!("backup_import_archive_too_large", s.stable(&c.envelope));
 }
 
 #[test]

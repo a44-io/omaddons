@@ -1802,7 +1802,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `case_collision` | 4 | no | a folder name differs only in case from an existing one; AddOns already holds such a pair; `Interface` or `Interface/AddOns` exists in two spellings (`details.paths`) |
 | `wrong_flavor` | 4 | no | a `url:`, `file:` or `--file` archive does not load on the client |
 | `unsafe_archive` | 4 | no | traversal, absolute paths, symlinks, devices, duplicate or case-colliding entries, the compression-ratio limit; for `backup import`, any archive that is not exactly an export (`details.reason`) |
-| `archive_too_large` | 4 | no | over the entry, uncompressed-size or download limit (also a download past it while streaming, a `git:` checkout growing past it, an API response over 64 MiB, a live folder `adopt` indexes, or a `WTF/` a backup copies, past 200,000 entries or 16 levels); `details.limit`, and `details.config_key` when `config.toml` can raise it |
+| `archive_too_large` | 4 | no | over the entry, uncompressed-size or download limit (also a download past it while streaming, a `git:` checkout growing past it, an API response over 64 MiB, a live folder `adopt` indexes, or a `WTF/` a backup copies, past 200,000 entries or 16 levels, a `backup import` archive or a WowAce tree past its bounds); `details.limit` is always the number, with `details.config_key` when `config.toml` can raise it, else `details.constant`, the fixed bound's name |
 | `undo_conflict` | 4 | no | a later transaction touched the same folders, already undone, or a removed folder put back by hand; a newer history line this omaddons cannot read may have touched the folders or SavedVariables the undo writes back (`details.reason: "history_unreadable"`, `details.lines`) |
 | `host_blocked` | 4 | no | an HTTP request or redirect to a host not on the allowlist, or a `git:` ref to a host not in `git_hosts` |
 | `scope_denied` | 4 | no | the filesystem writer refused a path outside its scope |
@@ -2529,7 +2529,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 
 The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
 
-- **`archive_too_large` details** (`omad-36gn`). `details.limit` is the numeric bound for archives, downloads and WowAce trees, but the constant's name for a `WTF/` backup and `backup import` (whose number is in `details.max`); WowAce adds the name as `details.constant`.
+None is known at HEAD.
 
 ---
 

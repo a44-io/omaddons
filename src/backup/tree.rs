@@ -132,8 +132,8 @@ pub enum CloneError {
 
 impl CloneError {
     /// The command error, with any path passed through `redactor`: `TooLarge` is
-    /// `archive_too_large` (`details.limit`), a change is a retryable `io`, and so is a
-    /// failed read or write.
+    /// `archive_too_large` (`details.limit` the bound, `details.constant` its name), a
+    /// change is a retryable `io`, and so is a failed read or write.
     pub fn error(&self, redactor: &WtfPathRedactor) -> Error {
         let retry = || Suggestion::text("run it again once the game and any sync tool are idle");
         match self {
@@ -142,7 +142,7 @@ impl CloneError {
                 format!("WTF/ is larger than a backup copies ({limit}: {max})"),
                 Suggestion::text("move files that do not belong in WTF/ out of it"),
             )
-            .details(serde_json::json!({ "limit": limit, "max": max })),
+            .details(serde_json::json!({ "limit": max, "constant": limit })),
             Self::NotReflinkable => Error::new(
                 ErrorCode::Io,
                 "the filesystem under this client cannot clone files, and this copy may not byte-copy",
@@ -1026,7 +1026,10 @@ mod tests {
             err.error(&WtfPathRedactor::for_paths(std::iter::empty())),
         );
         assert_eq!(body.code, ErrorCode::ArchiveTooLarge);
-        assert_eq!(body.details["limit"], "BACKUP_TREE_MAX_DEPTH");
+        assert_eq!(
+            body.details,
+            serde_json::json!({ "limit": 3, "constant": "BACKUP_TREE_MAX_DEPTH" })
+        );
     }
 
     #[test]

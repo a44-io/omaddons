@@ -362,6 +362,7 @@ fn api_responses_and_downloads_each_have_their_own_cap() {
         err.fix.display()
     );
     assert_eq!(err.details["limit"], 10);
+    assert_eq!(err.details["constant"], "API_RESPONSE_MAX_BYTES");
     assert!(err.details.get("config_key").is_none(), "{}", err.details);
     // A download of the same size is under its own cap.
     let h = harness_capped(config, Some(10), vec![ok(&[b'x'; 100])]);

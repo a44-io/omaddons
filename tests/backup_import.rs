@@ -100,8 +100,14 @@ mod support {
     }
 
     /// The archive `bytes` imported into retail: refused with `code` and `reason`, no
-    /// stage left and no backup more.
-    pub fn refuse(home: &Home, name: &str, bytes: &[u8], code: &str, reason: Option<&str>) {
+    /// stage left and no backup more. Returns the error.
+    pub fn refuse(
+        home: &Home,
+        name: &str,
+        bytes: &[u8],
+        code: &str,
+        reason: Option<&str>,
+    ) -> Value {
         let before = ids(home);
         let file = home.env.root().join("usb").join(name);
         fs::write(&file, bytes).unwrap();
@@ -132,6 +138,7 @@ mod support {
             .unwrap_or_default();
         assert!(left.is_empty(), "{name}: a stage is left: {left:?}");
         assert_eq!(ids(home), before, "{name}: nothing listed");
+        error.clone()
     }
 
     /// `entries` with their `manifest.json` changed by `edit`.
@@ -547,7 +554,15 @@ fn an_archive_with_too_many_entries_is_refused() {
         .map(|i| TarEntry::dir(&format!("WTF/d{i}")))
         .collect();
     entries.splice(at..at, many);
-    refuse(&home, "many", &tar_zst(&entries), "archive_too_large", None);
+    let error = refuse(&home, "many", &tar_zst(&entries), "archive_too_large", None);
+    // One shape for every bound: the number, and the constant's name (no config key).
+    assert_eq!(
+        error["details"],
+        json!({
+            "limit": omaddons::limits::BACKUP_IMPORT_MAX_ENTRIES,
+            "constant": "BACKUP_IMPORT_MAX_ENTRIES",
+        })
+    );
 }
 
 /// Another family's backup is refused unless `--force`; the fix names a client of that

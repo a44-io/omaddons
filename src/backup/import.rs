@@ -855,14 +855,14 @@ fn refused(reason: &str, path: Option<(&str, &WtfPathRedactor)>) -> Error {
 /// Every refusal's fix: prose, naming no command.
 const UNMODIFIED: &str = "use the file a backup export wrote, unmodified";
 
-/// `archive_too_large`, naming the bound.
-fn too_large(limit: &str, max: u64) -> Error {
+/// `archive_too_large` past the bound `max` of the constant `name`.
+fn too_large(name: &str, max: u64) -> Error {
     Error::new(
         ErrorCode::ArchiveTooLarge,
-        format!("the archive is larger than {limit} allows ({max})"),
+        format!("the archive is larger than {name} allows ({max})"),
         Suggestion::text(UNMODIFIED),
     )
-    .details(serde_json::json!({ "limit": limit, "max": max }))
+    .details(serde_json::json!({ "limit": max, "constant": name }))
 }
 
 /// `bad_archive` with `details.reason`: a corrupt or truncated stream, a decoder window

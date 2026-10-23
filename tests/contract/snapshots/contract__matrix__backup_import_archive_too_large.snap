@@ -1,0 +1,25 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup import",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "archive_too_large",
+    "details": {
+      "constant": "BACKUP_IMPORT_MAX_PATH",
+      "limit": 4096
+    },
+    "fix": "use the file a backup export wrote, unmodified",
+    "fix_argv": null,
+    "message": "the archive is larger than BACKUP_IMPORT_MAX_PATH allows (4096)",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

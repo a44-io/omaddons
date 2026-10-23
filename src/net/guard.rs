@@ -278,7 +278,7 @@ pub(crate) fn too_large(max_bytes: u64, api_host: Option<&str>) -> Error {
             ),
             Suggestion::text("retry later; the source sent an unexpectedly large response"),
         )
-        .details(serde_json::json!({ "limit": max_bytes })),
+        .details(serde_json::json!({ "limit": max_bytes, "constant": "API_RESPONSE_MAX_BYTES" })),
     }
 }
 
