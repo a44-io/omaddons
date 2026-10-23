@@ -30,7 +30,10 @@ const PAUSE_POLL: Duration = Duration::from_millis(5);
 /// What an armed failpoint does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Action {
-    /// `std::process::abort()`: a simulated crash with no unwinding or destructors.
+    /// `std::process::abort()`: a simulated crash with no unwinding or destructors. The
+    /// process is made not dumpable first: a simulated crash leaves no core dump (the
+    /// crash matrices abort thousands of times a run, each a coredump handler's work and
+    /// a desktop's "Process crashed" notification).
     Abort,
     /// Return an I/O error from [`hit`].
     Error,
@@ -112,7 +115,11 @@ fn parse_action(action: &str) -> Option<Action> {
 pub(crate) fn hit(name: &str) -> io::Result<()> {
     match configured(name) {
         None => Ok(()),
-        Some(Action::Abort) => std::process::abort(),
+        Some(Action::Abort) => {
+            use rustix::process::{DumpableBehavior, set_dumpable_behavior};
+            let _ = set_dumpable_behavior(DumpableBehavior::NotDumpable);
+            std::process::abort()
+        }
         Some(Action::Error) => Err(io::Error::other(format!("failpoint {name}"))),
         Some(Action::Sleep(ms)) => {
             std::thread::sleep(std::time::Duration::from_millis(ms));
