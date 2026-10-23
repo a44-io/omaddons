@@ -381,6 +381,43 @@ fn an_addon_restore_puts_its_files_back_and_undo_returns_each_state() {
     assert_eq!(rest_hash(&s.wtf), rest);
 }
 
+/// A partial restore and its undo keep both snapshot halves as `<tx>.wtf`, which a pre-M3
+/// build's orphan sweep never takes (omad-aepa). One committed before that, its halves
+/// under the bare id, is undone all the same.
+#[test]
+fn partial_restore_snapshots_are_named_wtf_and_found_under_either_name() {
+    let s = Scene::new();
+    s.play();
+    let played = files_of(&s.wtf, &["WeakAuras.lua", "WeakAurasOptions.lua"]);
+    let client = s
+        .home
+        .client("_retail_")
+        .join("Interface/.omaddons/snapshots");
+    let state = s.home.state().join("snapshots");
+    let halves = |tx: &str| {
+        let wtf = format!("{tx}.wtf");
+        (
+            client.join(&wtf).is_dir() && state.join(&wtf).is_dir(),
+            client.join(tx).exists() || state.join(tx).exists(),
+        )
+    };
+    let done = s.restore(&["WeakAuras"], &[], &[]).expect(0);
+    let tx = done["data"]["tx"].as_str().unwrap().to_owned();
+    assert_eq!(halves(&tx), (true, false), "the restore's");
+    // As a build before omad-aepa named them.
+    for dir in [&client, &state] {
+        fs::rename(dir.join(format!("{tx}.wtf")), dir.join(&tx)).unwrap();
+    }
+    let undone = run(&s.home, &["undo", &tx], &[]).expect(0);
+    assert_eq!(
+        files_of(&s.wtf, &["WeakAuras.lua", "WeakAurasOptions.lua"]),
+        played,
+        "{undone:#}"
+    );
+    let undo_tx = undone["data"]["tx"].as_str().unwrap();
+    assert_eq!(halves(undo_tx), (true, false), "the undo's");
+}
+
 /// The folders come from the backup's addon record: after the addon was removed, after
 /// it renamed a folder (the new one is reported and left alone), and by one of its
 /// folders; a bare folder of an addon never managed is its own.

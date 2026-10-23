@@ -191,7 +191,8 @@ fn build(client: &ClientPaths, old: Option<&TargetInventory>) -> TargetInventory
         snapshot_bytes: on_disk
             .wtf_previous
             .iter()
-            .map(|tx| tree_bytes(&client.snapshots(tx).join("WTF.previous")))
+            .filter_map(|tx| wtf_previous(client, tx))
+            .map(|previous| tree_bytes(&previous))
             .sum(),
         covers: on_disk,
         auto: old.map(|old| old.auto.clone()).unwrap_or_default(),
@@ -368,17 +369,24 @@ fn covers(client: &ClientPaths) -> Covers {
     let snapshots = client.meta_dir().join("snapshots");
     let mut wtf_previous: Vec<TxId> = names(snapshots)
         .iter()
-        .filter_map(|n| n.parse::<TxId>().ok())
-        .filter(|tx| {
-            std::fs::symlink_metadata(client.snapshots(tx).join("WTF.previous"))
-                .is_ok_and(|m| m.is_dir())
-        })
+        .filter_map(|n| crate::state::paths::tx_named(n))
+        .filter(|tx| self::wtf_previous(client, tx).is_some())
         .collect();
     wtf_previous.sort();
+    wtf_previous.dedup();
     Covers {
         backups,
         wtf_previous,
     }
+}
+
+/// `tx`'s `WTF.previous` (the tree a restore replaced), in its snapshot under either
+/// name: `<tx>.wtf` from omad-aepa on, `<tx>` for a restore before it.
+fn wtf_previous(client: &ClientPaths, tx: &TxId) -> Option<std::path::PathBuf> {
+    [client.snapshots_wtf(tx), client.snapshots(tx)]
+        .into_iter()
+        .map(|snapshot| snapshot.join("WTF.previous"))
+        .find(|previous| std::fs::symlink_metadata(previous).is_ok_and(|m| m.is_dir()))
 }
 
 /// The apparent size of the files below `dir`, by a bounded stat walk; what it could
@@ -515,6 +523,20 @@ mod tests {
             load_validated(&f.paths, &f.client, &f.key),
             Inventory::Stale(_, 3)
         ));
+        // A restore's, named `<tx>.wtf` from omad-aepa on: the same.
+        rebuild(&f.paths, &f.client, &f.key);
+        let previous = f.client.snapshots_wtf(&tx).join("WTF.previous");
+        fs::create_dir_all(&previous).unwrap();
+        fs::write(previous.join("Config.wtf"), b"1234567").unwrap();
+        assert!(matches!(
+            load_validated(&f.paths, &f.client, &f.key),
+            Inventory::Stale(_, 3)
+        ));
+        let rebuilt = rebuild(&f.paths, &f.client, &f.key).inventory;
+        assert_eq!(
+            (rebuilt.snapshot_bytes, rebuilt.covers.wtf_previous),
+            (7, vec![tx])
+        );
     }
 
     #[test]

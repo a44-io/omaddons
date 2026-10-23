@@ -335,7 +335,7 @@ impl Kind {
 /// below a prunable category dir with a well-formed name.
 fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
     let is_tx = |name: &str| name.parse::<TxId>().is_ok();
-    // A stage or journal may also be named `<tx>.wtf` (`state::paths::tx_named`).
+    // A stage, journal or snapshot may also be named `<tx>.wtf` (`state::paths::tx_named`).
     let is_tx_named = |name: &str| crate::state::paths::tx_named(name).is_some();
     for client in scopes.client_dirs() {
         let Ok(rel) = victim.strip_prefix(client) else {
@@ -349,7 +349,7 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
             return None;
         }
         let kind = match category.to_ascii_lowercase().as_str() {
-            "snapshots" if is_tx(name) => Kind::ClientSnapshot,
+            "snapshots" if is_tx_named(name) => Kind::ClientSnapshot,
             "stage" if is_tx_named(name) => Kind::ClientStage,
             "backups" if is_plain(name) => Kind::ClientBackup,
             _ => return None,
@@ -360,7 +360,7 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
     if let Ok(rel) = victim.strip_prefix(scopes.state_dir()) {
         let c: Vec<&str> = rel.iter().map(|s| s.to_str().unwrap_or("")).collect();
         let kind = match c.as_slice() {
-            ["snapshots", name] if is_tx(name) => Kind::StateSnapshot,
+            ["snapshots", name] if is_tx_named(name) => Kind::StateSnapshot,
             ["journal", name] if name.strip_suffix(".jsonl").is_some_and(is_tx_named) => {
                 Kind::Journal
             }
@@ -655,6 +655,10 @@ mod tests {
         let blob = "ab".repeat(32);
         let cases = [
             (meta.join("snapshots").join(TX), PruneReason::Retention),
+            (
+                meta.join("snapshots").join(format!("{TX}.wtf")),
+                PruneReason::Retention,
+            ),
             (meta.join("stage").join(TX), PruneReason::PostCommitCleanup),
             (
                 meta.join("stage").join(format!("{TX}.wtf")),
@@ -665,6 +669,10 @@ mod tests {
                 PruneReason::BackupPrune,
             ),
             (state.join("snapshots").join(TX), PruneReason::Retention),
+            (
+                state.join("snapshots").join(format!("{TX}.wtf")),
+                PruneReason::Retention,
+            ),
             (
                 state.join("journal").join(format!("{TX}.jsonl")),
                 PruneReason::PostCommitCleanup,

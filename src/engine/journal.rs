@@ -175,9 +175,9 @@ impl Prepared {
     /// Whether the transaction puts settings back: a restore or the undo of one, which
     /// renames `WTF/` or has `wtf` or `saved_variables` ops. A build before M3 cannot read
     /// its `prepared` line and deleted such a journal unread, so it is written under a
-    /// name those builds never list ([`Paths::journal_wtf`]).
+    /// name those builds never list ([`Paths::journal_wtf`]), as are its snapshots.
     pub fn puts_settings_back(&self) -> bool {
-        self.writes_wtf || self.commit.history.ops.iter().any(|op| !op.op.is_folder())
+        self.writes_wtf || history::puts_settings_back(&self.commit.history.ops)
     }
 }
 
@@ -1438,8 +1438,7 @@ fn source_gone(prepared: &Prepared) -> bool {
             let dir = crate::backup::backup_dir(&client, &source.id);
             !same(FileId::of(&dir), Some(source.dir))
         }
-        (None, Some(reverted)) => !client
-            .snapshots(&reverted)
+        (None, Some(reverted)) => !super::retention::snapshot_of(&client, &reverted)
             .join(super::retention::WTF_PREVIOUS)
             .is_dir(),
         (None, None) => true,
@@ -1547,11 +1546,17 @@ fn finish_saved_variables(
             .and_then(|()| {
                 let mut undo = WriteSession::untracked(Writer::Undo, env.scopes, "recovery")
                     .with_owned_folders(sv.owned_folders());
+                // The undo's own snapshot, named as its journal is.
+                let snapshot = if prepared.puts_settings_back() {
+                    client.snapshots_wtf(&tx)
+                } else {
+                    client.snapshots(&tx)
+                };
                 super::undo::restore_saved_variables(
                     &mut undo,
                     &client,
                     sv,
-                    &tx,
+                    &snapshot,
                     &super::undo::SvCopies::default(),
                     &mut super::undo::SvHashes::default(),
                 )
@@ -2527,9 +2532,18 @@ mod tests {
             let mut journal = scene.journal(&mut s, &lock);
             let touched = ["Foo", "Bar", "Gone"].map(|n| FolderName::new(n).unwrap());
             snapshot_saved_variables(&mut s, &scene.tx, &scene.client, &touched).unwrap();
-            snapshot_state(&mut s, &scene.paths, &scene.tx, &scene.key).unwrap();
+            let state = scene.paths.state_snapshot(&scene.tx);
+            snapshot_state(&mut s, &scene.paths, &state, &scene.key).unwrap();
+            let snapshot = scene.snapshot();
             let swapped = failpoint::with_spec("engine.swap.before_rename=error@4", || {
-                swap(&mut s, &mut journal, &ops, &scene.staged, &scene.client)
+                swap(
+                    &mut s,
+                    &mut journal,
+                    &ops,
+                    &scene.staged,
+                    &scene.client,
+                    &snapshot,
+                )
             });
             assert!(swapped.is_err());
         }
@@ -2721,7 +2735,8 @@ mod tests {
             scene.journal(&mut s, &lock);
             let touched = [FolderName::new("Foo").unwrap()];
             snapshot_saved_variables(&mut s, &scene.tx, &scene.client, &touched).unwrap();
-            snapshot_state(&mut s, &scene.paths, &scene.tx, &scene.key).unwrap();
+            let state = scene.paths.state_snapshot(&scene.tx);
+            snapshot_state(&mut s, &scene.paths, &state, &scene.key).unwrap();
         }
         let path = scene.paths.journal(&scene.tx);
         let text = std::fs::read_to_string(&path).unwrap();

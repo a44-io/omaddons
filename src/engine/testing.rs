@@ -29,7 +29,8 @@ pub fn snapshot_saved_variables(
     client: &ClientPaths,
     folders: &[FolderName],
 ) -> crate::error::Result<SvReport> {
-    finish_saved_variables(s, tx, client, folders, SvPrestage::default())
+    let snapshot = client.snapshots(tx);
+    finish_saved_variables(s, tx, &snapshot, client, folders, SvPrestage::default())
 }
 
 /// A retail target whose client dir is `client_dir`.
@@ -146,6 +147,11 @@ impl Scene {
             SnapshotRoots::for_tx(&self.paths, &self.tx),
             self.actions_log(),
         )
+    }
+
+    /// The transaction's client snapshot (folder ops: the bare name).
+    pub fn snapshot(&self) -> PathBuf {
+        self.client.snapshots(&self.tx)
     }
 
     pub fn actions_log(&self) -> PathBuf {

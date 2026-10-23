@@ -848,12 +848,14 @@ impl Window<'_> {
                 version: target.version.to_string(),
             }),
         };
-        let actions = paths.state_snapshot(&tx).join("actions.jsonl");
+        // Named `<tx>.wtf` like the journal and the stage, so a pre-M3 build's orphan
+        // sweep never takes the replaced tree.
+        let actions = paths.state_snapshot_wtf(&tx).join("actions.jsonl");
         let mut s = WriteSession::tx(
             tx,
             Writer::BackupRestore,
             self.scopes,
-            SnapshotRoots::for_tx(paths, &tx),
+            SnapshotRoots::for_wtf_tx(paths, &tx),
             actions,
         );
         let mut journal = Journal::create(&mut s, paths, &guard, prepared)?;
@@ -862,9 +864,9 @@ impl Window<'_> {
             failpoint::hit("engine.journal.prepared").map_err(fail)?;
             // Undo data before the first rename, a client snapshot dir included even
             // when there is no live WTF/ (an undo relies on it).
-            snapshot_state(&mut s, paths, &tx, &key)?;
-            ensure_dir_all(&mut s, &client.snapshots(&tx))?;
-            let previous = client.snapshots(&tx).join(WTF_PREVIOUS);
+            snapshot_state(&mut s, paths, &paths.state_snapshot_wtf(&tx), &key)?;
+            ensure_dir_all(&mut s, &client.snapshots_wtf(&tx))?;
+            let previous = client.snapshots_wtf(&tx).join(WTF_PREVIOUS);
             match (&self.staged.copy, &live) {
                 // The copy goes in (exchanged with the live tree, or into its empty
                 // place), and the old tree on from the stage to this snapshot.
@@ -1076,7 +1078,7 @@ pub(super) fn undo_whole(
     let target = &discovered.target;
     let client = ClientPaths::new(&target.client_dir);
     let names = WtfPathRedactor::for_client(&client);
-    let snapshot = client.snapshots(&reverted.tx);
+    let snapshot = super::retention::snapshot_of(&client, &reverted.tx);
     if !snapshot.is_dir() {
         return Err(super::undo::pruned(&reverted.tx));
     }
@@ -1269,7 +1271,7 @@ fn changed_since(client: &ClientPaths, reverted: &HistoryEntry) -> Option<u64> {
                 .entries
         }
         WtfSource::Snapshot => {
-            let snapshot = client.snapshots(&reverted.reverts?);
+            let snapshot = super::retention::snapshot_of(client, &reverted.reverts?);
             let previous = snapshot.join(WTF_PREVIOUS);
             if previous.is_dir() {
                 walked(&previous)?
@@ -1686,7 +1688,7 @@ mod tests {
             r.before,
             "kinds, modes, links, empty dirs and contents"
         );
-        let previous = r.scene.client.snapshots(&done.tx).join(WTF_PREVIOUS);
+        let previous = r.scene.client.snapshots_wtf(&done.tx).join(WTF_PREVIOUS);
         assert_eq!(tree_snapshot(&previous), r.after, "the old tree, for undo");
         assert_eq!(
             done.files,
@@ -1725,9 +1727,13 @@ mod tests {
         );
         r.assert_no_leftovers();
         // Every whole-tree rename was logged with stamp digests, never content hashes.
-        let actions =
-            fs::read_to_string(r.scene.paths.state_snapshot(&done.tx).join("actions.jsonl"))
-                .unwrap();
+        let actions = fs::read_to_string(
+            r.scene
+                .paths
+                .state_snapshot_wtf(&done.tx)
+                .join("actions.jsonl"),
+        )
+        .unwrap();
         let renames: Vec<&str> = actions.lines().filter(|l| l.contains("rename")).collect();
         assert_eq!(renames.len(), 2, "{actions}");
         assert!(
@@ -1783,7 +1789,7 @@ mod tests {
         fs::remove_dir_all(r.scene.client.wtf()).unwrap();
         let done = r.restore().unwrap();
         assert_eq!(r.live(), r.before);
-        let snapshot = r.scene.client.snapshots(&done.tx);
+        let snapshot = r.scene.client.snapshots_wtf(&done.tx);
         assert!(
             snapshot.is_dir(),
             "the client snapshot dir exists all the same"
@@ -1946,7 +1952,7 @@ mod tests {
         }
 
         fn previous(&self, tx: &TxId) -> Vec<TreeEntry> {
-            tree_snapshot(&self.scene.client.snapshots(tx).join(WTF_PREVIOUS))
+            tree_snapshot(&self.scene.client.snapshots_wtf(tx).join(WTF_PREVIOUS))
         }
 
         /// The history line of `tx`.
@@ -1994,7 +2000,7 @@ mod tests {
             "B.lua and C.lua, and the played A.lua and New.lua"
         );
         let actions =
-            fs::read_to_string(r.scene.paths.state_snapshot(&u).join("actions.jsonl")).unwrap();
+            fs::read_to_string(r.scene.paths.state_snapshot_wtf(&u).join("actions.jsonl")).unwrap();
         let renames: Vec<&str> = actions.lines().filter(|l| l.contains("rename")).collect();
         assert_eq!(renames.len(), 2, "{actions}");
         assert!(
@@ -2045,13 +2051,53 @@ mod tests {
         r.assert_no_leftovers();
     }
 
+    /// A restore and its undo keep both snapshot halves as `<tx>.wtf`, which a pre-M3
+    /// build's orphan sweep never takes (omad-aepa). A restore committed before that, its
+    /// halves under the bare id, is undone all the same.
+    #[test]
+    fn restore_snapshots_are_named_wtf_and_found_under_either_name() {
+        let r = Restorable::new(false);
+        let restored = r.restore().unwrap().tx;
+        let (client, paths) = (&r.scene.client, &r.scene.paths);
+        let named = |tx: &TxId| {
+            (
+                client.snapshots_wtf(tx).join(WTF_PREVIOUS).is_dir(),
+                paths.state_snapshot_wtf(tx).is_dir(),
+                client.snapshots(tx).exists() || paths.state_snapshot(tx).exists(),
+            )
+        };
+        assert_eq!(named(&restored), (true, true, false), "the restore");
+        let undone = r
+            .undo(restored, SvPolicy::Auto)
+            .unwrap()
+            .outcome
+            .tx
+            .unwrap();
+        assert_eq!(named(&undone), (true, true, false), "its undo");
+        assert_eq!(r.live(), r.after);
+
+        // A restore committed under the bare names, then undone.
+        let r = Restorable::new(false);
+        let restored = r.restore().unwrap().tx;
+        let (client, paths) = (&r.scene.client, &r.scene.paths);
+        fs::rename(client.snapshots_wtf(&restored), client.snapshots(&restored)).unwrap();
+        fs::rename(
+            paths.state_snapshot_wtf(&restored),
+            paths.state_snapshot(&restored),
+        )
+        .unwrap();
+        r.undo(restored, SvPolicy::Auto).unwrap();
+        assert_eq!(r.live(), r.after, "the tree from before the restore");
+        r.assert_no_leftovers();
+    }
+
     #[test]
     fn the_undo_of_a_restore_needs_its_snapshot_and_all_its_settings() {
         let r = Restorable::new(false);
         let restored = r.restore().unwrap().tx;
         let keep = r.undo(restored, SvPolicy::Keep).unwrap_err();
         assert_eq!(keep.code, ErrorCode::Usage, "nothing would be left to undo");
-        let snapshot = r.scene.client.snapshots(&restored);
+        let snapshot = r.scene.client.snapshots_wtf(&restored);
         fs::rename(&snapshot, snapshot.with_extension("aside")).unwrap();
         let err = r.undo(restored, SvPolicy::Auto).unwrap_err();
         assert_eq!(
@@ -2310,7 +2356,7 @@ mod tests {
                 assert!(result.is_ok(), "{at}: {result:?}");
                 let done = result.unwrap();
                 assert_eq!(r.live(), r.before, "{at}");
-                let previous = r.scene.client.snapshots(&done.tx).join(WTF_PREVIOUS);
+                let previous = r.scene.client.snapshots_wtf(&done.tx).join(WTF_PREVIOUS);
                 assert_eq!(tree_snapshot(&previous), r.after, "{at}");
                 assert_eq!(r.generation(), generation + 1, "{at}");
                 let restores = r

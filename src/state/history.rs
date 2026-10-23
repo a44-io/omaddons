@@ -235,6 +235,13 @@ impl FolderOp {
     }
 }
 
+/// Whether a transaction with `ops` puts settings back (a restore, a partial one, or the
+/// undo of either): any op about settings. Its journal, stage and snapshots are named
+/// `<tx>.wtf`, which a pre-M3 build never lists.
+pub fn puts_settings_back(ops: &[HistoryOp]) -> bool {
+    ops.iter().any(|op| !op.op.is_folder())
+}
+
 /// How a transaction ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

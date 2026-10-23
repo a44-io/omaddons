@@ -156,10 +156,10 @@ pub fn run(
     let txs: Vec<SnapshotTx> = entries
         .iter()
         .filter_map(|e| {
-            let halves = [client.snapshots(&e.tx), paths.state_snapshot(&e.tx)];
+            let halves = snapshot_dirs(paths, client, &e.tx);
             // A restore's `WTF.previous` is undo data the size cap never counts, so a few
             // large restores never evict AddOns snapshots (M3-D48).
-            let wtf_previous = apparent_size(&client.snapshots(&e.tx).join(WTF_PREVIOUS));
+            let wtf_previous = apparent_size(&snapshot_of(client, &e.tx).join(WTF_PREVIOUS));
             halves.iter().any(|p| p.exists()).then(|| SnapshotTx {
                 tx: e.tx,
                 at: e.at,
@@ -183,7 +183,7 @@ pub fn run(
     let victims: Vec<PathBuf> = selection
         .prune
         .iter()
-        .flat_map(|tx| [client.snapshots(tx), paths.state_snapshot(tx)])
+        .flat_map(|tx| snapshot_dirs(paths, client, tx))
         .filter(|p| p.exists())
         .collect();
     if !victims.is_empty() {
@@ -237,6 +237,37 @@ pub fn pinned_blobs(paths: &Paths) -> Result<BTreeSet<String>> {
     Ok(pins)
 }
 
+/// `tx`'s client snapshot under whichever of its two names it has (`<tx>.wtf` for a
+/// transaction that puts settings back, `<tx>` for any other or a restore from before
+/// omad-aepa); the bare name when neither exists.
+pub(crate) fn snapshot_of(client: &ClientPaths, tx: &TxId) -> PathBuf {
+    either_name(client.snapshots_wtf(tx), client.snapshots(tx))
+}
+
+/// `tx`'s state snapshot under whichever of its two names it has, as [`snapshot_of`].
+pub(crate) fn state_snapshot_of(paths: &Paths, tx: &TxId) -> PathBuf {
+    either_name(paths.state_snapshot_wtf(tx), paths.state_snapshot(tx))
+}
+
+fn either_name(wtf: PathBuf, plain: PathBuf) -> PathBuf {
+    if std::fs::symlink_metadata(&wtf).is_ok() {
+        wtf
+    } else {
+        plain
+    }
+}
+
+/// Both halves of `tx`'s snapshots under both of their names: `<tx>`, and `<tx>.wtf` for
+/// a transaction that puts settings back. Of each half, at most one exists.
+fn snapshot_dirs(paths: &Paths, client: &ClientPaths, tx: &TxId) -> [PathBuf; 4] {
+    [
+        client.snapshots(tx),
+        client.snapshots_wtf(tx),
+        paths.state_snapshot(tx),
+        paths.state_snapshot_wtf(tx),
+    ]
+}
+
 /// The snapshot dirs of `tx`, a transaction that never committed and never will, that
 /// may go.
 #[derive(Debug, Default)]
@@ -250,7 +281,8 @@ pub(super) struct DeadSnapshots {
 /// What of `tx`'s snapshots may go once it is known never to commit: the state half,
 /// and the client half (when `client` is known) unless its `AddOns/` still holds a
 /// folder. A rollback brings every folder back out of it, so one left there is what a
-/// recovery bug left, and may be the only copy of an addon.
+/// recovery bug left, and may be the only copy of an addon. Each half under either of
+/// its names.
 pub(super) fn dead_snapshots(
     paths: &Paths,
     client: Option<&ClientPaths>,
@@ -258,17 +290,19 @@ pub(super) fn dead_snapshots(
 ) -> DeadSnapshots {
     let mut dead = DeadSnapshots::default();
     if let Some(client) = client {
-        let snapshot = client.snapshots(tx);
-        if snapshot.exists() {
-            match snapshot_folders(&snapshot) {
-                0 => dead.victims.push(snapshot),
-                n => dead.kept = Some((snapshot, n)),
+        for snapshot in [client.snapshots(tx), client.snapshots_wtf(tx)] {
+            if snapshot.exists() {
+                match snapshot_folders(&snapshot) {
+                    0 => dead.victims.push(snapshot),
+                    n => dead.kept = Some((snapshot, n)),
+                }
             }
         }
     }
-    let state = paths.state_snapshot(tx);
-    if state.exists() {
-        dead.victims.push(state);
+    for state in [paths.state_snapshot(tx), paths.state_snapshot_wtf(tx)] {
+        if state.exists() {
+            dead.victims.push(state);
+        }
     }
     dead
 }
@@ -354,7 +388,7 @@ fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp, text: &str) -> R
     ];
     for (root, client_side) in roots {
         for (name, path) in listing(&root) {
-            if let Ok(tx) = name.parse::<TxId>()
+            if let Some(tx) = crate::state::paths::tx_named(&name)
                 && !in_history(text, &tx)
                 && dead(&tx)?
                 && old(&path)
@@ -706,6 +740,55 @@ mod tests {
             f.client.stage_wtf(&journaled).join("WTF").is_dir(),
             "journal recovery owns it"
         );
+    }
+
+    /// A settings transaction's snapshot halves carry `.wtf` too (omad-aepa), and follow
+    /// the same rules: a committed restore's go by age with their transaction, its
+    /// `WTF.previous` left out of the cap; a dead one's state half goes and its client half,
+    /// holding `WTF.previous`, stays; a dead one holding nothing goes whole; a journaled
+    /// one stays for recovery.
+    #[test]
+    fn restore_snapshots_named_wtf_follow_the_same_rules() {
+        let f = fixture();
+        let wtf_named = |tx: &TxId| {
+            std::fs::rename(f.client.snapshots(tx), f.client.snapshots_wtf(tx)).unwrap();
+            std::fs::rename(f.paths.state_snapshot(tx), f.paths.state_snapshot_wtf(tx)).unwrap();
+        };
+        let has = |tx: &TxId| {
+            (
+                f.client.snapshots_wtf(tx).exists(),
+                f.paths.state_snapshot_wtf(tx).exists(),
+            )
+        };
+        let aged = f.commit(10 * DAY, 10);
+        let restored = f.commit(2 * DAY, 10);
+        f.commit(HOUR, 10);
+        for tx in [&aged, &restored] {
+            wtf_named(tx);
+        }
+        let previous = f.client.snapshots_wtf(&restored).join(WTF_PREVIOUS);
+        std::fs::create_dir_all(&previous).unwrap();
+        std::fs::write(previous.join("Config.wtf"), vec![b'x'; 1000]).unwrap();
+        let report = f.run(&limits(100), &BTreeSet::new());
+        assert_eq!(report.pruned_tx, 1, "40 bytes count, not 1040: {report:?}");
+        assert_eq!(has(&aged), (false, false), "pruned by age");
+        assert_eq!(has(&restored), (true, true));
+
+        let [holding, empty, journaled] = [(); 3].map(|()| TxId::new());
+        for tx in [&holding, &empty, &journaled] {
+            std::fs::create_dir_all(f.client.snapshots_wtf(tx)).unwrap();
+            std::fs::create_dir_all(f.paths.state_snapshot_wtf(tx)).unwrap();
+        }
+        for tx in [&holding, &journaled] {
+            std::fs::create_dir_all(f.client.snapshots_wtf(tx).join(WTF_PREVIOUS)).unwrap();
+        }
+        std::fs::create_dir_all(f.paths.journal_dir()).unwrap();
+        std::fs::write(f.paths.journal_wtf(&journaled), b"").unwrap();
+        let report = f.run(&RetentionLimits::default(), &BTreeSet::new());
+        assert_eq!(report.orphans_swept, 3, "{report:?}");
+        assert_eq!(has(&holding), (true, false), "its WTF.previous");
+        assert_eq!(has(&empty), (false, false));
+        assert_eq!(has(&journaled), (true, true), "recovery owns it");
     }
 
     #[test]

@@ -35,6 +35,7 @@ use super::journal::{
     recover_all, recover_tx,
 };
 use super::plan::{Change, ChangeKind, FolderSummary};
+use super::retention::{snapshot_of, state_snapshot_of};
 use super::running::{self, PolicyContext, PolicyOp};
 use super::stage::{Staged, stage_trees};
 use super::swap::{
@@ -369,20 +370,30 @@ fn commit(
     };
     let target = &discovered.target;
     let client = ClientPaths::new(&target.client_dir);
-    let actions = paths.state_snapshot(tx).join("actions.jsonl");
-    let mut s = WriteSession::tx(
-        *tx,
-        Writer::Undo,
-        scopes,
-        SnapshotRoots::for_tx(paths, tx),
-        actions,
-    );
+    // The undo of a partial restore puts settings back: its snapshots are named
+    // `<tx>.wtf`, as its journal will be.
+    let (snapshot, state_snapshot, roots) = if history::puts_settings_back(&before.folders.history)
+    {
+        (
+            client.snapshots_wtf(tx),
+            paths.state_snapshot_wtf(tx),
+            SnapshotRoots::for_wtf_tx(paths, tx),
+        )
+    } else {
+        (
+            client.snapshots(tx),
+            paths.state_snapshot(tx),
+            SnapshotRoots::for_tx(paths, tx),
+        )
+    };
+    let actions = state_snapshot.join("actions.jsonl");
+    let mut s = WriteSession::tx(*tx, Writer::Undo, scopes, roots, actions);
     // Before the lock (D24): the undo's own SavedVariables snapshot, the copies its
     // restore brings back (checked against the manifest), and the digests of folders the
     // files index does not give. Under the lock, what is unchanged since costs a stat.
-    let prestage = prestage_saved_variables(&mut s, tx, &client, &before.folders.touched)?;
+    let prestage = prestage_saved_variables(&mut s, &snapshot, &client, &before.folders.touched)?;
     hashes.absorb(&prestage);
-    let copies = prestage_restores(&mut s, &client, before, tx)?;
+    let copies = prestage_restores(&mut s, &client, before, &snapshot)?;
     let predigests = predigest(&client.addons(), &before.folders.swap);
     failpoint::hit("engine.snapshot.prestaged").map_err(fail)?;
     let guard = GlobalLock::acquire(paths, ctx.command)?;
@@ -489,11 +500,12 @@ fn commit(
 
     let committed = (|| -> Result<(bool, Vec<Warning>)> {
         failpoint::hit("engine.journal.prepared").map_err(fail)?;
-        finish_saved_variables(&mut s, tx, &client, &touched, prestage)?;
-        snapshot_state(&mut s, paths, tx, &key)?;
-        let report = swap(&mut s, &mut journal, &planned.folders.swap, staged, &client)?;
+        finish_saved_variables(&mut s, tx, &snapshot, &client, &touched, prestage)?;
+        snapshot_state(&mut s, paths, &state_snapshot, &key)?;
+        let swap_ops = &planned.folders.swap;
+        let report = swap(&mut s, &mut journal, swap_ops, staged, &client, &snapshot)?;
         if let Some(sv) = &sv_restore {
-            restore_saved_variables(&mut s, &client, sv, tx, &copies, &mut hashes)?;
+            restore_saved_variables(&mut s, &client, sv, &snapshot, &copies, &mut hashes)?;
         }
         ensure_dir_all(&mut s, &paths.targets_dir())?;
         let current = load_record(paths, &key)?;
@@ -671,10 +683,11 @@ fn plan(
     let paths = ctx.paths;
     let client = ClientPaths::new(&target.client_dir);
     // A follow-up restores SavedVariables only; an undo, when its snapshot has them.
-    let manifest = client.snapshots(&reverted.tx).join("WTF.manifest.json");
+    let snapshot = snapshot_of(&client, &reverted.tx);
+    let manifest = snapshot.join("WTF.manifest.json");
     let restores_sv = sv_only.is_some() || (req.sv_policy != SvPolicy::Keep && manifest.is_file());
     check_conflicts(entries, at, sv_only, restores_sv)?;
-    if !client.snapshots(&reverted.tx).is_dir() || !paths.state_snapshot(&reverted.tx).is_dir() {
+    if !snapshot.is_dir() || !state_snapshot_of(paths, &reverted.tx).is_dir() {
         return Err(pruned(&reverted.tx));
     }
     let key = reverted.target;
@@ -787,20 +800,23 @@ fn plan(
         &ctx.retention,
     ));
     let notes = match tx {
-        Some(tx) => only
-            .iter()
-            .map(|folder| {
-                format!(
-                    "the only copy of {} is kept in {}",
-                    folder.as_str(),
-                    client
-                        .snapshots(&tx)
-                        .join("AddOns")
-                        .join(folder.as_str())
-                        .display()
-                )
-            })
-            .collect(),
+        Some(tx) => {
+            // Named as `commit` names it.
+            let snapshot = if history::puts_settings_back(&folders.history) {
+                client.snapshots_wtf(&tx)
+            } else {
+                client.snapshots(&tx)
+            };
+            only.iter()
+                .map(|folder| {
+                    format!(
+                        "the only copy of {} is kept in {}",
+                        folder.as_str(),
+                        snapshot.join("AddOns").join(folder.as_str()).display()
+                    )
+                })
+                .collect()
+        }
         None => Vec::new(),
     };
     Ok(Planned {
@@ -1310,7 +1326,7 @@ impl FolderPlan {
         index: Option<&FilesIndex>,
     ) -> Result<Self> {
         let addons = client.addons();
-        let snapshots = client.snapshots(&reverted.tx).join("AddOns");
+        let snapshots = snapshot_of(client, &reverted.tx).join("AddOns");
         let mut plan = Self::default();
         let old_tree = |live: &FolderName| {
             index?
@@ -1540,7 +1556,7 @@ fn restored_state(
 ) -> Result<Restored> {
     let reverted = &entries[at];
     let key = reverted.target;
-    let snapshot = paths.state_snapshot(&reverted.tx);
+    let snapshot = state_snapshot_of(paths, &reverted.tx);
     let named = |path: PathBuf| path.file_name().map(|n| snapshot.join(n));
     let before = match named(paths.target_record(&key)) {
         Some(path) => store::load::<TargetRecord>(&path)?.map(|l| l.value),
@@ -1807,7 +1823,7 @@ fn plan_saved_variables(
     ctx: &EngineCtx<'_>,
     hashes: &mut SvHashes,
 ) -> Result<SvPlan> {
-    let manifest_path = client.snapshots(&reverted.tx).join("WTF.manifest.json");
+    let manifest_path = snapshot_of(client, &reverted.tx).join("WTF.manifest.json");
     let bytes = std::fs::read(&manifest_path).map_err(|_| pruned(&reverted.tx))?;
     let manifest: SvManifest = serde_json::from_slice(&bytes).map_err(|_| {
         Error::internal(format!(
@@ -1957,15 +1973,15 @@ impl SvCopies {
 }
 
 /// Before the lock: clones each file `before` restores that existed before the reverted
-/// transaction out of its snapshot, into `snapshots/<undo_tx>/sv-restore/<attempt>/`,
-/// and checks the copy's hash against the manifest. A copy that does not match means
-/// the snapshot was changed or damaged: the undo fails `state_corrupt` before anything
+/// transaction out of its snapshot, into `<undo_snapshot>/sv-restore/<attempt>/`, and
+/// checks the copy's hash against the manifest. A copy that does not match means the
+/// snapshot was changed or damaged: the undo fails `state_corrupt` before anything
 /// moves.
 fn prestage_restores(
     s: &mut WriteSession<'_>,
     client: &ClientPaths,
     before: &Planned,
-    undo_tx: &TxId,
+    undo_snapshot: &Path,
 ) -> Result<SvCopies> {
     let attempt = ulid::Ulid::generate().to_string();
     let mut copies = SvCopies::default();
@@ -1975,7 +1991,7 @@ fn prestage_restores(
         };
         let rel = relative(&entry.path)?;
         let (staged, copy_hash) =
-            clone_restore(s, client, &before.reverts, undo_tx, &attempt, &rel)
+            clone_restore(s, client, &before.reverts, undo_snapshot, &attempt, &rel)
                 .map_err(not_restored)?;
         let copy_hash = match copy_hash {
             Some(copy_hash) => copy_hash,
@@ -1992,22 +2008,18 @@ fn prestage_restores(
 }
 
 /// Clones `rel` out of `from`'s SavedVariables snapshot into
-/// `snapshots/<undo_tx>/sv-restore/<attempt>/`: the copy, and its SHA-256 when the
-/// session hashed it.
+/// `<undo_snapshot>/sv-restore/<attempt>/`: the copy, and its SHA-256 when the session
+/// hashed it.
 fn clone_restore(
     s: &mut WriteSession<'_>,
     client: &ClientPaths,
     from: &TxId,
-    undo_tx: &TxId,
+    undo_snapshot: &Path,
     attempt: &str,
     rel: &Path,
 ) -> Result<(PathBuf, Option<String>)> {
-    let source = client.snapshots(from).join("WTF").join(rel);
-    let staged = client
-        .snapshots(undo_tx)
-        .join("sv-restore")
-        .join(attempt)
-        .join(rel);
+    let source = snapshot_of(client, from).join("WTF").join(rel);
+    let staged = undo_snapshot.join("sv-restore").join(attempt).join(rel);
     if let Some(parent) = staged.parent() {
         ensure_dir_all(s, parent)?;
     }
@@ -2060,13 +2072,14 @@ fn not_restored(e: Error) -> Error {
 /// checked copy in `copies` (else a copy cloned now) by an exchange with the live one:
 /// no backup copy is needed, and the live file stays at the copy's path, inside the
 /// undo's snapshot. A rename replaces it instead where the filesystem cannot exchange
-/// or nothing is there. A file that did not exist moves into the undo's snapshot. Files
-/// are hashed through `hashes`, so one unchanged since its last hash is not read again.
+/// or nothing is there. A file that did not exist moves into the undo's snapshot
+/// (`undo_snapshot`). Files are hashed through `hashes`, so one unchanged since its last
+/// hash is not read again.
 pub(super) fn restore_saved_variables(
     s: &mut WriteSession<'_>,
     client: &ClientPaths,
     sv: &SvRestore,
-    undo_tx: &TxId,
+    undo_snapshot: &Path,
     copies: &SvCopies,
     hashes: &mut SvHashes,
 ) -> Result<usize> {
@@ -2075,7 +2088,7 @@ pub(super) fn restore_saved_variables(
     let restore = Restore {
         client,
         from: &sv.from,
-        undo_tx,
+        undo_snapshot,
         attempt: &attempt,
         copies,
     };
@@ -2097,7 +2110,8 @@ struct Restore<'a> {
     client: &'a ClientPaths,
     /// The reverted transaction.
     from: &'a TxId,
-    undo_tx: &'a TxId,
+    /// The undo's client snapshot.
+    undo_snapshot: &'a Path,
     attempt: &'a str,
     copies: &'a SvCopies,
 }
@@ -2115,7 +2129,7 @@ fn restore_one(
     let known = |sha256: Option<&str>| sha256.and_then(sha256_from_hex);
     let Some(expected) = entry.sha256.as_deref() else {
         // The reverted transaction's code created it: it moves into the undo's snapshot.
-        let away = r.client.snapshots(r.undo_tx).join("sv-created").join(&rel);
+        let away = r.undo_snapshot.join("sv-created").join(&rel);
         if let Some(parent) = away.parent() {
             ensure_dir_all(s, parent)?;
         }
@@ -2132,7 +2146,7 @@ fn restore_one(
     };
     let (staged, staged_sha256) = match r.copies.get(entry) {
         Some(copy) => (copy.to_path_buf(), Some(expected.to_owned())),
-        None => clone_restore(s, r.client, r.from, r.undo_tx, r.attempt, &rel)?,
+        None => clone_restore(s, r.client, r.from, r.undo_snapshot, r.attempt, &rel)?,
     };
     let staged_known = known(staged_sha256.as_deref());
     if live_sha256.is_some() {

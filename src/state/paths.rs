@@ -21,14 +21,15 @@ const APP: &str = "omaddons";
 /// The Omarchy widget's plugin id (M3-D6); its folder is `<plugins>/omaddons`.
 pub const WIDGET_ID: &str = "a44.omaddons";
 
-/// What a journal or stage name carries after its transaction id when the transaction
-/// puts settings back (a restore, or the undo of one). A build before M3 cannot read
-/// such a journal, and deleted it unread; it lists only names that are a bare id, so
-/// it never sees these (D12, `tests/compat_m2.rs`).
+/// What a journal, stage or snapshot name carries after its transaction id when the
+/// transaction puts settings back (a restore, or the undo of one). A build before M3
+/// cannot read such a journal, and deleted it unread; its orphan sweep took the stage
+/// and both snapshot halves an hour later. It lists only names that are a bare id, so it
+/// never sees these (D12, `tests/compat_m2.rs`).
 const WTF_SUFFIX: &str = ".wtf";
 
-/// The transaction a journal (its `.jsonl` stripped) or stage entry is named for: a
-/// bare id, or one with [`WTF_SUFFIX`].
+/// The transaction a journal (its `.jsonl` stripped), stage or snapshot entry is named
+/// for: a bare id, or one with [`WTF_SUFFIX`].
 pub fn tx_named(name: &str) -> Option<TxId> {
     name.strip_suffix(WTF_SUFFIX).unwrap_or(name).parse().ok()
 }
@@ -328,6 +329,12 @@ impl Paths {
         self.state_snapshots_dir().join(tx.to_string())
     }
 
+    /// The state snapshot of a transaction that puts settings back, which a pre-M3
+    /// build's orphan sweep never takes ([`WTF_SUFFIX`]).
+    pub fn state_snapshot_wtf(&self, tx: &TxId) -> PathBuf {
+        self.state_snapshots_dir().join(format!("{tx}{WTF_SUFFIX}"))
+    }
+
     pub fn plans_dir(&self) -> PathBuf {
         self.state.join("plans")
     }
@@ -542,6 +549,14 @@ impl ClientPaths {
         self.meta_dir().join("snapshots").join(tx.to_string())
     }
 
+    /// The snapshots of a transaction that puts settings back, whose `WTF.previous` a
+    /// pre-M3 build's orphan sweep would take ([`WTF_SUFFIX`]).
+    pub fn snapshots_wtf(&self, tx: &TxId) -> PathBuf {
+        self.meta_dir()
+            .join("snapshots")
+            .join(format!("{tx}{WTF_SUFFIX}"))
+    }
+
     /// Where `prune()` stages client-side victims before deleting them.
     pub fn trash(&self) -> PathBuf {
         self.meta_dir().join("trash")
@@ -655,6 +670,10 @@ mod tests {
             ),
             (p.state_snapshots_dir(), "/s/omaddons/snapshots".into()),
             (p.state_snapshot(&tx), format!("/s/omaddons/snapshots/{TX}")),
+            (
+                p.state_snapshot_wtf(&tx),
+                format!("/s/omaddons/snapshots/{TX}.wtf"),
+            ),
             (p.plans_dir(), "/s/omaddons/plans".into()),
             (p.plan(&plan), format!("/s/omaddons/plans/{TX}.json")),
             (p.doctor_runs_dir(), "/s/omaddons/doctor/runs".into()),
@@ -704,6 +723,10 @@ mod tests {
                 (
                     c.snapshots(&tx),
                     format!("{root}/Interface/.omaddons/snapshots/{TX}"),
+                ),
+                (
+                    c.snapshots_wtf(&tx),
+                    format!("{root}/Interface/.omaddons/snapshots/{TX}.wtf"),
                 ),
                 (c.trash(), format!("{root}/Interface/.omaddons/trash")),
                 (c.backups(), format!("{root}/Interface/.omaddons/backups")),

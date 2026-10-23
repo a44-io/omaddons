@@ -12,17 +12,19 @@ use crate::state::paths::{ClientPaths, Paths};
 
 /// Where a transaction's verbatim backups go, per side: home-side paths back up under
 /// `home_side`; paths inside a client dir back up under that client's
-/// `Interface/.omaddons/snapshots/<tx>/files/`, on the same filesystem, so backups are
-/// reflinks.
+/// `Interface/.omaddons/snapshots/<tx>/files/` (`<tx>.wtf/` for a transaction that puts
+/// settings back), on the same filesystem, so backups are reflinks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotRoots {
     home_side: PathBuf,
+    wtf: bool,
 }
 
 impl SnapshotRoots {
     pub fn new(home_side: impl Into<PathBuf>) -> Self {
         Self {
             home_side: home_side.into(),
+            wtf: false,
         }
     }
 
@@ -31,9 +33,21 @@ impl SnapshotRoots {
         Self::new(paths.state_snapshot(tx).join("files"))
     }
 
+    /// The layout of a transaction that puts settings back: both halves named
+    /// `<tx>.wtf` ([`Paths::state_snapshot_wtf`], [`ClientPaths::snapshots_wtf`]).
+    pub fn for_wtf_tx(paths: &Paths, tx: &TxId) -> Self {
+        Self {
+            home_side: paths.state_snapshot_wtf(tx).join("files"),
+            wtf: true,
+        }
+    }
+
     pub(crate) fn dir_for(&self, side: &Side, tx: &TxId) -> PathBuf {
         match side {
             Side::Home => self.home_side.clone(),
+            Side::Client(client_dir) if self.wtf => {
+                ClientPaths::new(client_dir).snapshots_wtf(tx).join("files")
+            }
             Side::Client(client_dir) => ClientPaths::new(client_dir).snapshots(tx).join("files"),
         }
     }

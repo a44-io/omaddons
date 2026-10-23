@@ -890,12 +890,14 @@ impl Window<'_> {
         let manifest = serde_json::to_vec_pretty(&manifest).map_err(|e| {
             Error::internal(format!("serializing the SavedVariables manifest: {e}"))
         })?;
-        let actions = paths.state_snapshot(&tx).join("actions.jsonl");
+        // Named `<tx>.wtf` like the journal and the stage, so a pre-M3 build's orphan
+        // sweep never takes the replaced files.
+        let actions = paths.state_snapshot_wtf(&tx).join("actions.jsonl");
         let mut s = WriteSession::tx(
             tx,
             Writer::BackupRestore,
             self.scopes,
-            SnapshotRoots::for_tx(paths, &tx),
+            SnapshotRoots::for_wtf_tx(paths, &tx),
             actions,
         );
         let mut journal = Journal::create(&mut s, paths, &guard, prepared)?;
@@ -903,8 +905,8 @@ impl Window<'_> {
         let committed = (|| -> Result<()> {
             failpoint::hit("engine.journal.prepared").map_err(fail)?;
             // Undo data before the first rename.
-            snapshot_state(&mut s, paths, &tx, &key)?;
-            let snapshot = client.snapshots(&tx);
+            snapshot_state(&mut s, paths, &paths.state_snapshot_wtf(&tx), &key)?;
+            let snapshot = client.snapshots_wtf(&tx);
             ensure_dir_all(&mut s, &snapshot)?;
             let op = Op::WriteFile {
                 content: crate::fsx::Content::Bytes(&manifest),
@@ -1339,7 +1341,7 @@ mod tests {
             read("Account/FAKEACCT/SavedVariables/Bar.lua").as_deref(),
             Some("Bar = 2\n")
         );
-        let snapshot = scene.client.snapshots(&tx);
+        let snapshot = scene.client.snapshots_wtf(&tx);
         let manifest: SvManifest =
             serde_json::from_slice(&fs::read(snapshot.join("WTF.manifest.json")).unwrap()).unwrap();
         let before: Vec<(&str, bool)> = manifest

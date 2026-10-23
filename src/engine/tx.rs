@@ -982,10 +982,8 @@ fn locked(
             Suggestion::command(["omaddons", "status"]),
         )
     };
-    let actions = paths
-        .state_snapshots_dir()
-        .join(tx.to_string())
-        .join("actions.jsonl");
+    // Folder ops only: the bare names, which a pre-M3 build recovers as its own.
+    let actions = paths.state_snapshot(tx).join("actions.jsonl");
     let mut s = WriteSession::tx(
         *tx,
         Writer::Mutating,
@@ -997,10 +995,11 @@ fn locked(
     // folder costs a stat. A copy left by a failure here goes with the transaction's
     // cleanup.
     let client = ClientPaths::new(&discovered.target.client_dir);
+    let snapshot = client.snapshots(tx);
     let planned_ops: Vec<SwapOp> = tp.work.iter().flat_map(|w| w.swap().to_vec()).collect();
     let planned_folders: Vec<FolderName> = planned_ops.iter().map(touched_folder).collect();
     let predigests = predigest(&client.addons(), &planned_ops);
-    let prestage = prestage_saved_variables(&mut s, tx, &client, &planned_folders)?;
+    let prestage = prestage_saved_variables(&mut s, &snapshot, &client, &planned_folders)?;
     failpoint::hit("engine.snapshot.prestaged").map_err(fail)?;
     let guard = GlobalLock::acquire(paths, ctx.command)?;
     failpoint::hit("engine.lock.acquired").map_err(fail)?;
@@ -1224,9 +1223,10 @@ fn locked(
             failpoint::hit("engine.addons_dir.created").map_err(fail)?;
         }
         let touched: Vec<FolderName> = swap_ops.iter().map(touched_folder).collect();
-        sv_skipped = finish_saved_variables(&mut s, tx, &client, &touched, prestage)?.sv_skipped;
-        snapshot_state(&mut s, paths, tx, &key)?;
-        let report = swap(&mut s, &mut journal, &swap_ops, staged, &client)?;
+        sv_skipped =
+            finish_saved_variables(&mut s, tx, &snapshot, &client, &touched, prestage)?.sv_skipped;
+        snapshot_state(&mut s, paths, &paths.state_snapshot(tx), &key)?;
+        let report = swap(&mut s, &mut journal, &swap_ops, staged, &client, &snapshot)?;
         ensure_dir_all(&mut s, &paths.targets_dir())?;
         store::save(
             &mut s,

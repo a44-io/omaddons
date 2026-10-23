@@ -2587,18 +2587,27 @@ mod restore_support {
         );
         let snapshots = r.client().join("Interface/.omaddons/snapshots");
         if went_new {
+            // Both halves named `<tx>.wtf`, which a pre-M3 build's orphan sweep never takes
+            // (omad-aepa).
             let tx = s.history_txs()[old_history.len()].clone();
-            let previous = snapshots.join(&tx).join("WTF.previous");
+            let named = format!("{tx}.wtf");
+            let previous = snapshots.join(&named).join("WTF.previous");
             assert_eq!(
                 previous.is_dir().then(|| tree_hash(&previous)),
                 old,
                 "{}",
                 context("WTF.previous is not the tree it replaced")
             );
+            let state = s.home.state().join("snapshots");
             assert!(
-                s.home.state().join("snapshots").join(&tx).is_dir(),
+                state.join(&named).is_dir(),
                 "{}",
                 context("the restore's state snapshot")
+            );
+            assert!(
+                !snapshots.join(&tx).exists() && !state.join(&tx).exists(),
+                "{}",
+                context("a snapshot half under the bare name")
             );
         }
         // No snapshot of a restore that never committed is left. A recovering command that
@@ -3704,9 +3713,16 @@ mod addon_support {
             context("generation")
         );
         if went_new && matches!(op, Op::RestoreAddon) {
-            // The undo data: the pre-restore manifest, and the files as they were.
+            // The undo data: the pre-restore manifest, and the files as they were, under
+            // `<tx>.wtf`, which a pre-M3 build's orphan sweep never takes (omad-aepa).
             let tx = s.history_txs()[old_history.len()].clone();
-            let snapshot = a.r.client().join("Interface/.omaddons/snapshots").join(&tx);
+            let snapshots = a.r.client().join("Interface/.omaddons/snapshots");
+            let snapshot = snapshots.join(format!("{tx}.wtf"));
+            assert!(
+                !snapshots.join(&tx).exists(),
+                "{}",
+                context("a snapshot under the bare name")
+            );
             assert!(
                 snapshot.join("WTF.manifest.json").is_file(),
                 "{}",

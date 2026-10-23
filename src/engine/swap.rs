@@ -192,17 +192,16 @@ struct SvClone {
 
 /// Clones the SavedVariables of `folders` (account and per-character `<Folder>.lua` and
 /// `.lua.bak`, any case; never Blizzard's own `SavedVariables.lua`) into
-/// `snapshots/<tx>/WTF/` before the global lock, reading each file once: its hash is
-/// the copy's. A file written within the racy slack is waited out, as staging does. One
-/// that is still unsettled, vanishes or changes during its copy is left for
-/// [`finish_saved_variables`].
+/// `<snapshot>/WTF/` (the transaction's client snapshot) before the global lock, reading
+/// each file once: its hash is the copy's. A file written within the racy slack is
+/// waited out, as staging does. One that is still unsettled, vanishes or changes during
+/// its copy is left for [`finish_saved_variables`].
 pub fn prestage_saved_variables(
     s: &mut WriteSession<'_>,
-    tx: &TxId,
+    snapshot: &Path,
     client: &ClientPaths,
     folders: &[FolderName],
 ) -> Result<SvPrestage> {
-    let snapshot = client.snapshots(tx);
     let mut prestage = SvPrestage::default();
     for (rel, present) in sv_candidates(client, folders).files {
         let Some(source) = present else {
@@ -211,7 +210,7 @@ pub fn prestage_saved_variables(
         let Some(stamp) = settled_stamp(&source) else {
             continue;
         };
-        let clone = clone_sv(s, &snapshot, &rel, &source)?;
+        let clone = clone_sv(s, snapshot, &rel, &source)?;
         if FileStamp::read(&source).ok().flatten() == Some(stamp) {
             let entry = Prestaged {
                 source,
@@ -220,7 +219,7 @@ pub fn prestage_saved_variables(
             };
             prestage.entries.insert(rel, entry);
         } else {
-            set_aside(s, &snapshot, &rel)?;
+            set_aside(s, snapshot, &rel)?;
         }
     }
     Ok(prestage)
@@ -230,16 +229,17 @@ pub fn prestage_saved_variables(
 /// manifest. A file prestaged at the stamp it still has keeps its copy and hash, which
 /// costs one `lstat`. Any other (new since, changed, unsettled, or not prestaged) is
 /// cloned and hashed now, and a copy that no longer matches a candidate is set aside.
-/// Files outside the client directory are only counted.
+/// Files outside the client directory are only counted. `snapshot` is `tx`'s client
+/// snapshot, as [`prestage_saved_variables`] took it.
 pub fn finish_saved_variables(
     s: &mut WriteSession<'_>,
     tx: &TxId,
+    snapshot: &Path,
     client: &ClientPaths,
     folders: &[FolderName],
     mut prestage: SvPrestage,
 ) -> Result<SvReport> {
     failpoint::hit("engine.snapshot.sv").map_err(|e| fail(&client.wtf(), &e))?;
-    let snapshot = client.snapshots(tx);
     let candidates = sv_candidates(client, folders);
     let mut entries = Vec::new();
     let mut report = SvReport {
@@ -259,9 +259,9 @@ pub fn finish_saved_variables(
                     }
                     stale => {
                         if stale.is_some() {
-                            set_aside(s, &snapshot, &rel)?;
+                            set_aside(s, snapshot, &rel)?;
                         }
-                        clone_sv(s, &snapshot, &rel, &path)?
+                        clone_sv(s, snapshot, &rel, &path)?
                     }
                 };
                 report.sv_files_snapshotted += 1;
@@ -274,12 +274,12 @@ pub fn finish_saved_variables(
     }
     // Copies of files that are gone, or no longer candidates.
     for rel in prestage.entries.into_keys() {
-        set_aside(s, &snapshot, &rel)?;
+        set_aside(s, snapshot, &rel)?;
     }
     let manifest = SvManifest { tx: *tx, entries };
     let json = serde_json::to_vec_pretty(&manifest)
         .map_err(|e| Error::internal(format!("serializing the SavedVariables manifest: {e}")))?;
-    ensure_dir_all(s, &snapshot)?;
+    ensure_dir_all(s, snapshot)?;
     mutate(
         s,
         &snapshot.join("WTF.manifest.json"),
@@ -618,17 +618,16 @@ pub fn with_predigests(ops: &mut [SwapOp], addons: &Path, pre: &PreDigests) {
     }
 }
 
-/// Clones the target's record, files index and the registry into
-/// `<state>/omaddons/snapshots/<tx>/`.
+/// Clones the target's record, files index and the registry into `dir`, the
+/// transaction's state snapshot (`<state>/omaddons/snapshots/<tx>/`, or `<tx>.wtf/`).
 pub fn snapshot_state(
     s: &mut WriteSession<'_>,
     paths: &Paths,
-    tx: &TxId,
+    dir: &Path,
     key: &TargetKey,
 ) -> Result<()> {
-    let dir = paths.state_snapshots_dir().join(tx.to_string());
-    failpoint::hit("engine.snapshot.state").map_err(|e| fail(&dir, &e))?;
-    ensure_dir_all(s, &dir)?;
+    failpoint::hit("engine.snapshot.state").map_err(|e| fail(dir, &e))?;
+    ensure_dir_all(s, dir)?;
     for source in [
         paths.target_record(key),
         paths.files_index(key),
@@ -651,17 +650,19 @@ pub fn snapshot_state(
 // ---------------------------------------------------------------------------------------
 // The swap.
 
-/// Swaps the staged folders in, old versions and removals out, in folder-key order,
-/// journaling each rename first; ends with `swapped`.
+/// Swaps the staged folders in, old versions and removals out (to `<snapshot>/AddOns/`,
+/// the transaction's client snapshot), in folder-key order, journaling each rename
+/// first; ends with `swapped`.
 pub fn swap(
     s: &mut WriteSession<'_>,
     journal: &mut Journal,
     ops: &[SwapOp],
     staged: &Staged,
     client: &ClientPaths,
+    snapshot: &Path,
 ) -> Result<SwapReport> {
     let addons = client.addons();
-    let snapshot = client.snapshots(&staged.tx).join("AddOns");
+    let snapshot = snapshot.join("AddOns");
     let mut ops: Vec<&SwapOp> = ops.iter().collect();
     ops.sort_by(|a, b| a.key().cmp(b.key()));
     if ops.iter().any(|op| !matches!(op, SwapOp::Add { .. })) {
@@ -1061,7 +1062,15 @@ mod tests {
         let lock = scene.lock();
         let mut s = scene.session();
         let mut journal = scene.journal(&mut s, &lock);
-        swap(&mut s, &mut journal, ops, &scene.staged, &scene.client)
+        let snapshot = scene.snapshot();
+        swap(
+            &mut s,
+            &mut journal,
+            ops,
+            &scene.staged,
+            &scene.client,
+            &snapshot,
+        )
     }
 
     fn tree(path: &Path) -> TreeDigest {
@@ -1348,7 +1357,7 @@ mod tests {
         let mut s = scene.session();
         let hashed = crate::fsx::files_hashed();
         let prestage =
-            prestage_saved_variables(&mut s, &scene.tx, &scene.client, &folders).unwrap();
+            prestage_saved_variables(&mut s, &scene.snapshot(), &scene.client, &folders).unwrap();
         assert_eq!(prestage.len(), 4);
         assert_eq!(
             crate::fsx::files_hashed() - hashed,
@@ -1356,8 +1365,15 @@ mod tests {
             "each file hashed once, as its copy"
         );
         let hashed = crate::fsx::files_hashed();
-        let report =
-            finish_saved_variables(&mut s, &scene.tx, &scene.client, &folders, prestage).unwrap();
+        let report = finish_saved_variables(
+            &mut s,
+            &scene.tx,
+            &scene.snapshot(),
+            &scene.client,
+            &folders,
+            prestage,
+        )
+        .unwrap();
         assert_eq!(
             crate::fsx::files_hashed(),
             hashed,
@@ -1398,14 +1414,21 @@ mod tests {
             .join("Account/123456#1/RealmName/CharName/SavedVariables");
         let mut s = scene.session();
         let prestage =
-            prestage_saved_variables(&mut s, &scene.tx, &scene.client, &folders).unwrap();
+            prestage_saved_variables(&mut s, &scene.snapshot(), &scene.client, &folders).unwrap();
         // A client logged out in between: one file rewritten, one deleted, one new.
         std::thread::sleep(std::time::Duration::from_millis(30));
         std::fs::write(account.join("Foo.lua"), "-- played a session\n").unwrap();
         std::fs::remove_file(character.join("Gone.lua")).unwrap();
         std::fs::write(account.join("Bar.lua"), "-- new\n").unwrap();
-        let report =
-            finish_saved_variables(&mut s, &scene.tx, &scene.client, &folders, prestage).unwrap();
+        let report = finish_saved_variables(
+            &mut s,
+            &scene.tx,
+            &scene.snapshot(),
+            &scene.client,
+            &folders,
+            prestage,
+        )
+        .unwrap();
         assert_eq!(report.sv_files_snapshotted, 4, "Foo x3 and Bar");
 
         let snapshot = scene.client.snapshots(&scene.tx);
@@ -1447,10 +1470,17 @@ mod tests {
         let planned = [name("Foo"), name("Gone")].map(MutableFolderName::into_folder);
         let mut s = scene.session();
         let prestage =
-            prestage_saved_variables(&mut s, &scene.tx, &scene.client, &planned).unwrap();
+            prestage_saved_variables(&mut s, &scene.snapshot(), &scene.client, &planned).unwrap();
         let now = [name("Foo")].map(MutableFolderName::into_folder);
-        let report =
-            finish_saved_variables(&mut s, &scene.tx, &scene.client, &now, prestage).unwrap();
+        let report = finish_saved_variables(
+            &mut s,
+            &scene.tx,
+            &scene.snapshot(),
+            &scene.client,
+            &now,
+            prestage,
+        )
+        .unwrap();
         assert_eq!(report.sv_files_snapshotted, 3);
         let snapshot = scene.client.snapshots(&scene.tx);
         assert!(
@@ -1476,8 +1506,17 @@ mod tests {
         let mut s = scene.session();
         failpoint::with_spec("fsx.renameat2.einval", || {
             let prestage =
-                prestage_saved_variables(&mut s, &scene.tx, &scene.client, &planned).unwrap();
-            finish_saved_variables(&mut s, &scene.tx, &scene.client, &now, prestage).unwrap();
+                prestage_saved_variables(&mut s, &scene.snapshot(), &scene.client, &planned)
+                    .unwrap();
+            finish_saved_variables(
+                &mut s,
+                &scene.tx,
+                &scene.snapshot(),
+                &scene.client,
+                &now,
+                prestage,
+            )
+            .unwrap();
         });
         let snapshot = scene.client.snapshots(&scene.tx);
         assert_eq!(files_under(&snapshot.join("sv-stale")).len(), 1);
@@ -1686,8 +1725,8 @@ mod tests {
         std::fs::create_dir_all(scene.paths.targets_dir()).unwrap();
         std::fs::write(scene.paths.target_record(&scene.key), "{}").unwrap();
         std::fs::write(scene.paths.registry_file(), "{}").unwrap();
-        snapshot_state(&mut s, &scene.paths, &scene.tx, &scene.key).unwrap();
-        let dir = scene.paths.state_snapshots_dir().join(scene.tx.to_string());
+        let dir = scene.paths.state_snapshot(&scene.tx);
+        snapshot_state(&mut s, &scene.paths, &dir, &scene.key).unwrap();
         assert!(dir.join(format!("{}.json", scene.key)).is_file());
         assert!(dir.join("registry.json").is_file());
         assert!(

@@ -341,8 +341,9 @@ impl Scene {
             .collect()
     }
 
-    /// Snapshot dirs, client and state halves, of transactions history does not name:
-    /// once recovered, a transaction that never committed leaves none.
+    /// Snapshot dirs, client and state halves (either name: `<tx>`, or `<tx>.wtf` for a
+    /// transaction that puts settings back), of transactions history does not name: once
+    /// recovered, a transaction that never committed leaves none.
     pub fn orphan_snapshots(&self) -> Vec<PathBuf> {
         let committed = self.history_txs();
         [
@@ -358,20 +359,22 @@ impl Scene {
                 .unwrap_or_default()
         })
         .filter(|p| {
-            !committed
-                .iter()
-                .any(|tx| p.file_name() == Some(tx.as_ref()))
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            let tx = name.strip_suffix(".wtf").unwrap_or(name);
+            !committed.iter().any(|committed| committed == tx)
         })
         .collect()
     }
 
-    /// Transactions in history whose state snapshot is gone. Retention keeps a day of
-    /// them, so a test sees none.
+    /// Transactions in history whose state snapshot (either name) is gone. Retention
+    /// keeps a day of them, so a test sees none.
     pub fn lost_snapshots(&self) -> Vec<String> {
         let snapshots = self.home.state().join("snapshots");
         self.history_txs()
             .into_iter()
-            .filter(|tx| !snapshots.join(tx).is_dir())
+            .filter(|tx| {
+                !snapshots.join(tx).is_dir() && !snapshots.join(format!("{tx}.wtf")).is_dir()
+            })
             .collect()
     }
 

@@ -5,8 +5,9 @@
 //! quotes: committed whole and partial restores then an M2 `undo` of an older install, an
 //! interrupted whole and partial restore then an M2 change (at once and two hours on), and
 //! M3 settings lines then M2 `history` and `undo`. What M3 controls is asserted: M2 never
-//! deletes an M3 journal unread (it recovers it, or never sees one named `<tx>.wtf`), and
-//! M3 recovers the rest. What it does not, the blind SavedVariables undo, is asserted as
+//! deletes an M3 journal unread (it recovers it, or never sees one named `<tx>.wtf`), nor
+//! the snapshots of a transaction that puts settings back, crashed at any of its steps
+//! (named `<tx>.wtf` too), and M3 recovers the rest. What it does not, the blind SavedVariables undo, is asserted as
 //! observed, so a change in it is noticed. Ignored by default: it builds an old commit.
 //! The current binary must be a debug build (its failpoints interrupt the restores):
 //! `cargo test --test compat_m2 -- --ignored --nocapture`
@@ -207,15 +208,17 @@ mod support {
             .map_or(0, |l| l.count())
         }
 
-        /// Which halves of `tx`'s snapshot exist.
+        /// Which halves of `tx`'s snapshot exist, under either name (`<tx>.wtf` for a
+        /// transaction that puts settings back).
         pub fn snapshots(&self, tx: &str) -> String {
-            let state = self.home.state().join("snapshots").join(tx).exists();
-            let client = self
-                .home
-                .client("_retail_")
-                .join("Interface/.omaddons/snapshots")
-                .join(tx)
-                .exists();
+            let named =
+                |dir: PathBuf| dir.join(tx).exists() || dir.join(format!("{tx}.wtf")).exists();
+            let state = named(self.home.state().join("snapshots"));
+            let client = named(
+                self.home
+                    .client("_retail_")
+                    .join("Interface/.omaddons/snapshots"),
+            );
             match (state, client) {
                 (true, true) => "both",
                 (true, false) => "state",
@@ -239,8 +242,8 @@ mod support {
                 .unwrap()
         }
 
-        /// Moves the mtime of every stage, in-flight lock and `tx` snapshot dir two hours
-        /// back, past either build's orphan age.
+        /// Moves the mtime of every stage, in-flight lock and `tx` snapshot dir (either
+        /// name) two hours back, past either build's orphan age.
         pub fn age_everything_left(&self, tx: &str) {
             let past = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
             let meta = self.home.client("_retail_").join("Interface/.omaddons");
@@ -250,13 +253,24 @@ mod support {
                 .filter_map(|dir| fs::read_dir(dir).ok())
                 .flat_map(|listing| listing.map(|e| e.unwrap().path()))
                 .collect();
-            dirs.extend([
-                meta.join("snapshots").join(tx),
-                state.join("snapshots").join(tx),
-            ]);
+            for name in [tx.to_owned(), format!("{tx}.wtf")] {
+                dirs.extend([
+                    meta.join("snapshots").join(&name),
+                    state.join("snapshots").join(&name),
+                ]);
+            }
             for dir in dirs.iter().filter(|d| d.exists()) {
                 fs::File::open(dir).unwrap().set_modified(past).unwrap();
             }
+        }
+
+        /// Whether history names `tx`: its change committed, or was rolled forward.
+        pub fn in_history(&self, tx: &str) -> bool {
+            fs::read_to_string(self.home.state().join("history.jsonl"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .any(|v| v["tx"] == tx)
         }
 
         /// Whether some file under the stage holds `text`.
@@ -660,4 +674,134 @@ fn every_m3_journal_is_recovered_by_m2_or_left_for_m3() {
     }
     let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("{table}"));
     assert!(unread.is_empty(), "not recovered by either: {unread:?}");
+}
+
+/// Every transaction that puts settings back, interrupted at each of its steps (around
+/// each journaled rename, and after `swapped`, the record and the history line), then
+/// everything it left aged two hours and an M2 change on the same client (omad-aepa). M2
+/// sees none of it: its journal, stage and both snapshot halves are named `<tx>.wtf`. It
+/// changes nothing under `WTF/` and deletes neither half. The next M3 change recovers the
+/// transaction, and `WTF/` is as it was before the interrupted command: rolled back, or
+/// rolled forward and then undone, which needs the undo data M2 used to sweep (a whole
+/// restore's `WTF.previous`, a partial one's copies).
+#[test]
+#[ignore = "builds the M2 commit: cargo test --test compat_m2 -- --ignored --nocapture"]
+fn every_interrupted_settings_change_survives_m2_two_hours_on() {
+    let Some(m2) = m2_binary() else {
+        common::checkpoint::skip(
+            "every_interrupted_settings_change_survives_m2_two_hours_on",
+            "the M2 commit does not build here",
+        );
+        return;
+    };
+    // A restore and the undo of a whole one share one commit window: each journaled
+    // rename is announced (`before_rename`), then made. A partial restore renames each
+    // file, then moves the stage into the snapshot.
+    let restores = [
+        "engine.journal.prepared=abort",
+        "engine.swap.before_rename=abort@1",
+        "engine.swap.before_rename=abort@2",
+        "engine.restore.exchanged=abort",
+        "engine.restore.snapshotted=abort",
+        "engine.swapped=abort",
+        "engine.record.written=abort",
+        "engine.history.appended=abort",
+    ];
+    // The undo of a partial restore puts the files back after `swapped`.
+    let undo_partial = [
+        "engine.journal.prepared=abort",
+        "engine.swapped=abort",
+        "engine.record.written=abort",
+        "engine.history.appended=abort",
+    ];
+    let shapes: [(&str, &[&str]); 4] = [
+        ("whole restore", &restores),
+        ("--addon restore", &restores),
+        ("undo of a whole restore", &restores),
+        ("undo of an --addon restore", &undo_partial),
+    ];
+    let mut table = String::from(
+        "| shape | interrupted at | snapshots after M2 | M3 next | WTF/ as before |\n|---|---|---|---|---|\n",
+    );
+    let mut lost = Vec::new();
+    for (shape, points) in shapes {
+        for point in points {
+            let s = Scene::new(&m2);
+            let restore = ["backup", "restore", s.backup.as_str(), "-t", "retail"];
+            let partial = [&restore[..], &["--addon", "Foo"]].concat();
+            let args: Vec<String> = match shape {
+                "whole restore" => restore.iter().map(|a| (*a).to_owned()).collect(),
+                "--addon restore" => partial.iter().map(|a| (*a).to_owned()).collect(),
+                _ => {
+                    let first = if shape == "undo of a whole restore" {
+                        &restore[..]
+                    } else {
+                        &partial[..]
+                    };
+                    let done = s.m3(first, "").expect(0);
+                    vec![
+                        "undo".into(),
+                        done["data"]["tx"].as_str().unwrap().to_owned(),
+                    ]
+                }
+            };
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let before = s.files();
+            let crashed = s.m3(&args, point);
+            let case = format!("{shape} at {point}");
+            assert_eq!(crashed.code, -1, "{case}: {}", crashed.context());
+            assert_eq!(s.journals(), 1, "{case}");
+            let tx = s.journal_tx();
+            s.age_everything_left(&tx);
+            let left = (s.files(), s.snapshots(&tx));
+            let bar = s.local("Bar");
+            let install = s.m2(&["install", &bar, "-t", "retail"]);
+            let after_m2 = s.snapshots(&tx);
+            assert_eq!(
+                s.journals(),
+                1,
+                "{case}: M2 left the journal\n{}",
+                install.context()
+            );
+            assert!(
+                s.changed(&left.0).is_empty(),
+                "{case}: M2 changed nothing under WTF/"
+            );
+            if after_m2 != left.1 {
+                lost.push(format!("{case}: snapshots {} -> {after_m2}", left.1));
+            }
+            let baz = s.local("Baz");
+            let next = s.m3(&["install", &baz, "-t", "retail"], "");
+            let recovered = support::warnings(&next)
+                .iter()
+                .any(|w| w == "journal_recovered");
+            assert!(recovered, "{case}: {}", next.context());
+            assert_eq!(s.journals(), 0, "{case}: {}", next.context());
+            let forward = s.in_history(&tx);
+            if forward {
+                let undone = s.m3(&["undo", &tx], "");
+                if undone.code != 0 {
+                    lost.push(format!(
+                        "{case}: rolled forward, undo failed: {}",
+                        undone.context()
+                    ));
+                }
+            }
+            let back = s.changed(&before);
+            if !back.is_empty() {
+                lost.push(format!("{case}: WTF/ differs from before in {back:?}"));
+            }
+            table.push_str(&format!(
+                "| {shape} | {point} | {after_m2} | recovered, rolled {} | {} |\n",
+                if forward {
+                    "forward (then undone)"
+                } else {
+                    "back"
+                },
+                back.is_empty()
+            ));
+        }
+    }
+    let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("{table}"));
+    assert!(lost.is_empty(), "{}", lost.join("\n"));
 }
