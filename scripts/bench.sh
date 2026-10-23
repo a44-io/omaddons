@@ -54,7 +54,9 @@ measure() {
     local json="$results/${name// /_}.json"
     hyperfine --style none --export-json "$json" "$@" >/dev/null
     local median
-    median="$(jq -r '.results[0].median * 1000 | . * 100 | round / 100' "$json")"
+    # hyperfine 1.x exports `median`; 2.x (schema_version 2) a per-metric `summary`.
+    median="$(jq -r '.results[0] | (.median // .summary.time_wall_clock.median)
+        | . * 1000 | . * 100 | round / 100' "$json")"
     rows+=("$name|$label|$median")
     printf '%-28s %-16s %10s ms\n' "$name" "$label" "$median" >&2
 }
