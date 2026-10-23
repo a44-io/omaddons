@@ -38,7 +38,7 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are done, the fixes from the post-M2 audit are in (the bugs its closing check found are listed under [Known issues](#known-issues)), and omaddons runs daily on the development machine. There, every client it manages (retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and a 3.3.5a server) has been seen in game loading the addons it installed. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their dependencies (from the catalog, Tukui or WoWInterface), WoWInterface and Tukui (ElvUI) addons install and update, `search` and `auth github` work, and `adopt` brings addons installed by hand or by other managers under management. Milestone 3 (the Omarchy widget, Lua errors and `WTF/` backups) is under way: `errors` and `errors dismiss` read and acknowledge BugGrabber's Lua errors, `status` counts the new ones, `backup create`, `backup list`, `backup restore` (the whole `WTF/`, undoable), `backup prune`, `backup export` and `backup import` work, automatic checkpoints are taken before the day's first change and after play, `status` reports each client's backups and recommends one when none is recent, `backup restore --addon` puts back one addon's settings, and `backup verify` checks a backup's content or records its first hashes. `omaddons omarchy install` puts the widget's button on Omarchy's bar, and `omarchy status` and `omarchy remove` inspect and remove it; its panel and its five views, the restore chooser included, are in, and it takes the after-play checkpoint, reads the session's Lua errors and notifies about them on its own. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha.** Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are done, the fixes from the post-M2 audit are in (the bugs its closing check found are listed under [Known issues](#known-issues)), and omaddons runs daily on the development machine. There, every client it manages (retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and a 3.3.5a server) has been seen in game loading the addons it installed. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4). `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their dependencies (from the catalog, Tukui or WoWInterface), WoWInterface and Tukui (ElvUI) addons install and update, `search` and `auth github` work, and `adopt` brings addons installed by hand or by other managers under management. Milestone 3 (the Omarchy widget, Lua errors and `WTF/` backups) has all its features in: `errors` and `errors dismiss` read and acknowledge BugGrabber's Lua errors, `status` counts the new ones, `backup create`, `backup list`, `backup restore` (the whole `WTF/`, undoable), `backup prune`, `backup export` and `backup import` work, automatic checkpoints are taken before the day's first change and after play, `status` reports each client's backups and recommends one when none is recent, `backup restore --addon` puts back one addon's settings, and `backup verify` checks a backup's content or records its first hashes. `omaddons omarchy install` puts the widget's button on Omarchy's bar, and `omarchy status` and `omarchy remove` inspect and remove it; its panel and its five views, the restore chooser included, are in, and it takes the after-play checkpoint, reads the session's Lua errors and notifies about them on its own. Its checkpoint is next. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
 
 ---
 
@@ -90,6 +90,9 @@ There is no packaged release, installer or prebuilt binary yet; see [Installatio
 | **Safe around a running game** | With the default policy, updates that keep the loaded TOC can land while you play (`/reload` to pick them up). Removing a loaded addon is refused until the client exits, and SavedVariables are never written while it runs. |
 | **Verifiable privacy** | A hard host allowlist is checked on every redirect hop. Every request that reaches the network and every git run is logged locally (`omaddons net-log`), `--offline` refuses all network access, and there is no telemetry. |
 | **Built for agents** | `--json` gives exactly one envelope on stdout, success or failure. Error codes are typed, fixes come as `fix_argv` and `alternatives` argv arrays whenever they are commands, exit codes 0 to 6 are documented, and every change records its actor and argv. |
+| **Settings backups** | Each client's `WTF/` is backed up before the day's first change and after a play session, cloned on btrfs and xfs so a backup costs no space at first. `backup restore` puts back the whole `WTF/` or one addon's settings; it is refused while the game runs and can be undone. |
+| **Lua errors, attributed** | `omaddons errors` reads BugGrabber's captures on every client, names the likely source and how sure it is, marks which errors are new, and says whether an update may fix them. It never shows text an addon wrote unless asked. |
+| **A bar widget** | On [Omarchy](https://omarchy.org), `omaddons omarchy install` puts a button on the bar with updates, issues, Lua errors and backups in a keyboard panel, and every action runs an omaddons command. |
 
 ### Quick example
 
@@ -122,7 +125,7 @@ omaddons install plater -t forever --json --actor agent --reason "user asked for
 
 ## What works today
 
-Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are complete, and milestone 3 has started. Everything in this README describes code that exists and is tested, unless it is marked as planned. Bugs the code has today, where it differs from what this README says, are listed under [Known issues](#known-issues).
+Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desired state) are complete. Milestone 3's features (the Omarchy widget, Lua errors and `WTF/` backups) are all in and tested; they are marked done at its checkpoint, which is next. Everything in this README describes code that exists and is tested, unless it is marked as planned. Bugs the code has today, where it differs from what this README says, are listed under [Known issues](#known-issues).
 
 | Area | State |
 |---|---|
@@ -130,7 +133,7 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | The TOC load-rule engine (`ClientRules`) for all 12 Battle.net products and five legacy private-server versions | ✅ Done |
 | The transaction engine: plan, stage, journal, atomic swap, crash recovery, undo, retention | ✅ Done |
 | Keyless sources: GitHub releases, git (GitHub without the binary, other hosts with it), direct URLs, local zips and folders | ✅ Done |
-| A catalog of 62 verified addons (46 GitHub release entries, 9 WoWInterface entries, ElvUI and Tukui from Tukui, 5 legacy private-server addons from git) | ✅ Done |
+| A catalog of 63 verified addons in 66 entries (46 GitHub release entries, 9 WoWInterface entries, ElvUI and Tukui from Tukui, 5 legacy private-server addons from git, and BugGrabber's 4 builds from WowAce) | ✅ Done (BugGrabber in milestone 3) |
 | The CLI contract: one JSON envelope, typed errors with fixes (an argv whenever the fix is a command), exit codes 0 to 6, contract snapshot tests | ✅ Done (freezes in M4) |
 | Commands: `status`, `install`, `remove`, `undo`, `history`, `list`, `targets`, `info`, `config`, `net-log`, `help` | ✅ Done |
 | `outdated` (alias `check`): what has updates, on every client | ✅ Done (milestone 2) |
@@ -150,9 +153,11 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | In-game load checks: retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and 3.3.5a each wrote the SavedVariables of the addons omaddons installed, so the client loaded them | ✅ Observed on the development machine (2026-10-20 and 21) |
 | `backup create`: a copy of each client's `WTF/`, made without the global lock (copy-on-write on btrfs and xfs), that says whether `WTF/` held still while it was copied and which addon versions produced it; `--verify` hashes it. `backup list`: each client's backups, what each proves, and the space they take. `backup restore`: the whole `WTF/` back in one atomic exchange, or with `--addon` one addon's settings only, file by file, refused while the game runs, undoable. `backup prune`: automatic backups thinned by day after every backup, and your own deleted only when you ask, never one being read. `backup export`: one backup as a reproducible `.tar.zst` off this disk, checked against its hashes, never replacing a file. `backup import`: such a file back as a verified backup, accepting only an exact export. `backup verify`: a backup's files against its recorded hashes (a byte changed at the same size is caught), or a first baseline recorded, said to prove nothing of the capture. `status` shows each client's backups, whether automatic ones work there and the space free, and recommends a backup when none is recent | 🔄 Milestone 3 |
 | `errors`: which addon most likely throws Lua errors, from BugGrabber's data on every client (3.3.5a included), with the attribution's method and confidence, new errors per database, and nothing an addon wrote shown unless asked for; `errors dismiss` marks what was read as seen, bound to that read; `status` shows each client's new errors, and `status --cached` counts them without opening BugGrabber's files | 🔄 Milestone 3 |
-| Automatic `WTF/` checkpoints: before the day's first change and after a play session (`backup create --auto`, which the widget runs when a client stops and for every stopped client when it starts), skipped when nothing changed, clone-only by default, within the free-space floor | ✅ Milestone 3 |
-| WowAce: `wowace:` refs and links, keyless, every tree fetched at one pinned revision; projects that need nothing from the packager but `package-as` and `@project-version@` (BugGrabber). `omaddons install buggrabber` installs each client's own build (catalog variants), and `errors` offers exactly that command where BugGrabber is missing | ✅ Done (milestone 3) |
-| The Omarchy bar widget: `omarchy install` renders it for this binary, validates it, swaps it in atomically and puts it on the bar; `omarchy status` says whether it is current and on the bar, and `status` reports it on every call (an outdated one is warned about and turns read-only); `omarchy remove` takes it away. The button shows a badge for updates (urgent for problems and new Lua errors) and a summary on hover, and right-click checks for updates; its keyboard panel has its frame (summary, Check now, Undo last, the client filter, the view switcher, progress and results, the confirm dialog) and its five views (Updates, Installed, Issues, Search, Backups, with the restore chooser); on its own it follows a game starting and exiting, takes the after-play checkpoint and reads the session's Lua errors, checks for updates when due, and notifies about new errors (and, when asked, new updates); its safety rules are scanned on every gate | 🔄 Milestone 3 (the README pass and the checkpoint are next) |
+| Automatic `WTF/` checkpoints: before the day's first change and after a play session (`backup create --auto`, which the widget runs when a client stops and for every stopped client when it starts), skipped when nothing changed, clone-only by default, within the free-space floor | 🔄 Milestone 3 |
+| WowAce: `wowace:` refs and links, keyless, every tree fetched at one pinned revision; projects that need nothing from the packager but `package-as` and `@project-version@` (BugGrabber). `omaddons install buggrabber` installs each client's own build (catalog variants), and `errors` offers exactly that command where BugGrabber is missing | 🔄 Milestone 3 |
+| `status` as triage for the widget and agents: a summary of every client, issues with a failure-mode id, a severity and a remediation, each client's Lua errors and backups, the last change and its undo, and the bar widget; `--cached` answers in a few milliseconds, without a scan | 🔄 Milestone 3 |
+| Previews that bind: a `--dry-run` of `remove`, `undo`, `backup restore`, `backup prune` or `errors dismiss` returns a token, and the real run with `--if-match` does exactly what it showed, or nothing (`plan_stale`) | 🔄 Milestone 3 |
+| The Omarchy bar widget: `omarchy install` renders it for this binary, validates it, swaps it in atomically and puts it on the bar; `omarchy status` says whether it is current and on the bar, and `status` reports it on every call (an outdated one is warned about and turns read-only); `omarchy remove` takes it away. The button shows a badge for updates (urgent for problems and new Lua errors) and a summary on hover, and right-click checks for updates; its keyboard panel has its frame (summary, Check now, Undo last, the client filter, the view switcher, progress and results, the confirm dialog) and its five views (Updates, Installed, Issues, Backups, Search, with the restore chooser); on its own it follows a game starting and exiting, takes the after-play checkpoint and reads the session's Lua errors, checks for updates when due, and notifies about new errors (and, when asked, new updates); its safety rules are scanned on every gate | 🔄 Milestone 3 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
@@ -184,6 +189,8 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | Private-server clients 1.12.1 to 5.4.8 as first-class targets | ✅ | ❌ | ❌ | ❌ | ⚠️ by hand |
 | Checks the archive's TOCs against the client's load rules before writing | ✅ | ⚠️ host metadata | ⚠️ host metadata | ⚠️ host metadata | ❌ |
 | Undo installs and removals byte for byte, SavedVariables included | ✅ | ❌ | ❌ | ⚠️ `rollback` of updates | ❌ |
+| Settings (`WTF/`) backups and restore | ✅ automatic, whole or one addon's, undoable | ✅ by hand, whole | ❌ ² | ❌ | ⚠️ copy `WTF/` |
+| Lua error triage: which addon, how often, whether an update may fix it | ✅ `errors`, every client | ❌ | ❌ | ❌ | ⚠️ BugSack in game |
 | Update everything in one command | ✅ `update`, every client in one run | ✅ | ✅ | ✅ | ❌ |
 | GitHub releases | ✅ keyless | ✅ | ❌ | ✅ | ⚠️ |
 | WoWInterface, Tukui | ✅ keyless | ✅ | ❌ | ✅ | ⚠️ |
@@ -192,6 +199,8 @@ Milestones 1 (the working slice) and 2 (updates, dependencies, adoption and desi
 | Documented machine contract for agents | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 ¹ They detect standard install locations; other clients are added by pointing the app at their folder.
+
+² The CurseForge app documents no settings backup: its support FAQ suggests a sync profile, or copying the `AddOns` folders.
 
 This comparison is from each project's own documentation as of October 2026. Corrections are welcome.
 
@@ -290,6 +299,14 @@ omaddons install dbm bigwigs
 omaddons list -t retail
 omaddons history
 omaddons undo
+```
+
+**6. Optionally:** read the last session's Lua errors (BugGrabber captures them; `omaddons install buggrabber` adds it), back up a client's settings by hand, and, on Omarchy, put the widget on your bar:
+
+```bash
+omaddons errors
+omaddons backup create -t retail
+omaddons omarchy install
 ```
 
 ### A whole session
@@ -547,7 +564,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 
 ## The built-in catalog
 
-65 entries are embedded in the binary: 62 addons, and BugGrabber's three builds. Each was checked against its publisher on 2026-10-14 (BugSack, ElvUI and Tukui on 2026-10-16; TellMeWhen through BattlePetBreedID, and the WoWInterface entries, on 2026-10-20; BugGrabber on 2026-10-22): the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip; the Tukui entries against the Tukui API's list and the folders and TOCs of the zip it hands out; the WoWInterface entries against the API's file details (the project's current file and its MD5) and the folders and TOCs of that file, MD5-checked (their families are where those TOCs load, since the site's compatibility tags lag); the legacy entries against their TOC's `## Interface` line; and BugGrabber against WowAce: the newest tag's TOC for the modern build, and trunk's TOC revision by revision for the legacy ones. The last column is the families the publisher declares (in `release.json`, or the TOCs' interfaces). It is shown by `info`, gives `search`'s `yes` or `no`, and orders lookups. A dependency or an adopted folder is matched first to entries declaring the client's family. For a dependency, other entries of the same generation are tried only after Tukui and WoWInterface. For an adopted folder, they claim it at catalog strength, but only when no entry declares the client's family. A built-in entry is never matched across generations, legacy on a modern client or the reverse. For a name without variants it never refuses an install: TOC verification decides. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but its TOCs also load on vanilla and mists.
+66 entries are embedded in the binary: 62 addons with one entry each, and BugGrabber's four builds. Each was checked against its publisher on 2026-10-14 (BugSack, ElvUI and Tukui on 2026-10-16; TellMeWhen through BattlePetBreedID, and the WoWInterface entries, on 2026-10-20; BugGrabber on 2026-10-22): the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip; the Tukui entries against the Tukui API's list and the folders and TOCs of the zip it hands out; the WoWInterface entries against the API's file details (the project's current file and its MD5) and the folders and TOCs of that file, MD5-checked (their families are where those TOCs load, since the site's compatibility tags lag); the legacy entries against their TOC's `## Interface` line; and BugGrabber against WowAce: the newest tag's TOC for the modern build, and trunk's TOC revision by revision for the legacy ones. The last column is the families the publisher declares (in `release.json`, or the TOCs' interfaces). It is shown by `info`, gives `search`'s `yes` or `no`, and orders lookups. A dependency or an adopted folder is matched first to entries declaring the client's family. For a dependency, other entries of the same generation are tried only after Tukui and WoWInterface. For an adopted folder, they claim it at catalog strength, but only when no entry declares the client's family. A built-in entry is never matched across generations, legacy on a modern client or the reverse. For a name without variants it never refuses an install: TOC verification decides. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but its TOCs also load on vanilla and mists.
 
 **Variants.** One name can have a build per set of client families. Each is a `variant`, and their families never overlap, so `omaddons install buggrabber` installs the build that client's family has: the newest WowAce tag on every modern client, trunk at r152 on 3.3.5a and at r130 on 2.4.3, and the 1.12-era tree outside trunk at r43 on 1.12.1. A client no variant covers gets what a name the catalog does not know gets (`not_found`, with `search` as the fix), never another family's build. BugGrabber has no 4.3.4 or 5.4.8 build: every 4.3 and 5.4-era revision needs the WowAce packager (`@localization` keywords, filled in from CurseForge's localization service), so none stays keyless unless a CurseForge source (milestone 5) offers packaged files for them. Without `-t`, a name with variants resolves for the default target's family; with no default target, `install` probes every live client with its own build and skips one no build is known for. `info` shows the variant of the selected client (else the default target's, else the modern one) and lists the other variants' families. `update`, `pin` and `unpin` find an installed variant by the name or any alias. `search` lists one hit per name, judging each client by the build it would get.
 
@@ -670,7 +687,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 
 ### `status`
 
-Triage: every client, its addon and folder counts, whether it is running, its new Lua errors, and what needs attention (a missing client, a pending journal, a degraded addon, a newer state version, managed files changed on disk or managed folders gone).
+Triage: every client, its addon and folder counts, whether it is running, its new Lua errors and its backups, what needs attention (a missing client, a pending journal, a degraded addon, a newer state version, managed files changed on disk or managed folders gone), and the bar widget.
 
 ```bash
 omaddons status               # scan, then report (managed files checked stat-first)
@@ -1263,7 +1280,7 @@ retail: backup 01M6Q8PN00000000… damaged: 410 files, 1 files differ from their
 
 What changed, when, by whom and why, newest first (`log` is an alias).
 
-Settings changes appear too: `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write` each record a line of kind `config`, `target`, `auth` or `export`, with zero folder counts (human output shows what was run instead). `errors dismiss` records one line of kind `dismiss` per client it acknowledged, with `dismissed: {databases, errors}` (the table shows `2 errors in 1 database`). A dry run, or a change to nothing, records none (`auth github set` and `clear` currently record a line every time; see [Known issues](#known-issues)). Their `target` is the client for a `target` or `dismiss` line (`null` for a client not registered yet) and `null` otherwise, so `-t` shows only those lines. `undo` never reverts them and steps over them; `undo <tx>` of one is `not_found`. A line that cannot be written after the change was made warns `history_not_recorded`. Each backup `backup create` makes is a line of kind `backup` on its client, with no folder counts and the backup it made (`backup: {id, kind, files, bytes}` in JSON, `WTF/ as <id> (<files>)` in the table); `undo` steps over it too.
+Settings changes appear too: `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write` each record a line of kind `config`, `target`, `auth` or `export`, with zero folder counts (human output shows what was run instead). `errors dismiss` records one line of kind `dismiss` per client it acknowledged, with `dismissed: {databases, errors}` (the table shows `2 errors in 1 database`), and `omarchy install` and `omarchy remove` one of kind `widget`. A dry run, or a change to nothing, records none (`auth github set` and `clear` currently record a line every time; see [Known issues](#known-issues)). Their `target` is the client for a `target` or `dismiss` line (`null` for a client not registered yet) and `null` otherwise, so `-t` shows only those lines. `undo` never reverts them and steps over them; `undo <tx>` of one is `not_found`. A line that cannot be written after the change was made warns `history_not_recorded`. Each backup `backup create` makes is a line of kind `backup` on its client, with no folder counts and the backup it made (`backup: {id, kind, files, bytes}` in JSON, `WTF/ as <id> (<files>)` in the table); `undo` steps over it too.
 
 ```bash
 omaddons history
@@ -1275,7 +1292,7 @@ omaddons history -t retail -v --json       # each folder operation (ops) instead
 
 `--limit` defaults to 20, and `truncated` says more lines matched. `--since` takes `30m`, `12h`, `1d`, `2w` or an RFC 3339 time. An explicit `--actor` filters too (`OMADDONS_ACTOR` never does); given with a different `--by`, it is a usage error. In JSON every line has its `run` (`null` for transactions from before milestone 2, each of which is a run by itself), and an undo has `reverts`; the human table names a run only on rows whose run holds more than one line.
 
-Each line counts the folders added (`+`), replaced (`~`) and removed (`-`). A transaction that changed records without moving a folder, such as forgetting an addon whose folders were gone, also shows `=N` for the folders it recorded (`changes.recorded` in JSON). `changes.restored` counts the settings files a restore put back (`· N files restored`); it stays 0 until restores ship later in milestone 3, whose lines carry an op `wtf` (`{"op":"wtf","folder":"WTF","addon":"","backup":…,"from":"backup","files":N}`) or `saved_variables`.
+Each line counts the folders added (`+`), replaced (`~`) and removed (`-`). A transaction that changed records without moving a folder, such as forgetting an addon whose folders were gone, also shows `=N` for the folders it recorded (`changes.recorded` in JSON). A `backup restore` is a transaction of kind `restore`, undone like any other. `changes.restored` counts the settings files the restore put back (`· N files restored`), and its ops name settings, not AddOns folders: `wtf` for a whole `WTF/` (`{"op":"wtf","folder":"WTF","addon":"","backup":…,"from":"backup","files":N}`) and `saved_variables` for one addon's files.
 
 ### `list`
 
@@ -1600,7 +1617,7 @@ omaddons net-log --since 1d --json
 
 The bar widget for [Omarchy](https://omarchy.org)'s desktop: one gamepad button on every monitor's bar, with a badge for pending updates that turns urgent for problems and new Lua errors, a summary on hover, and a check for updates on right-click. The widget reads the same envelopes the CLI prints and runs omaddons command lines for everything it does, so each change it makes is recorded with `--actor widget` and can be undone.
 
-A left click (or the bar's keybinding) opens its keyboard panel, and a middle click opens it on Issues. The panel's frame is in: a summary ("2 clients · 3 updates · 1 issue", when the last check ran, which client is running) with Check now, Undo last and Open AddOns, a filter by client, the switcher between its five views (Updates, Installed, Issues, Backups, Search), the progress of a running change, the last result with its Undo, and a failure with its Fix. Opening it and switching views make no network request.
+A left click (or the bar's keybinding) opens its keyboard panel, and a middle click opens it on Issues. The panel has a summary ("2 clients · 3 updates · 1 issue", when the last check ran, which client is running) with Check now, Undo last and Open AddOns, a filter by client, the switcher between its five views (Updates, Installed, Issues, Backups, Search, keys `1` to `5`), the progress of a running change, the last result with its Undo, and a failure with its Fix. Opening it and switching views make no network request.
 
 - **Updates** lists what is behind, per client: updates first (`DBM  12.1.14 → 12.1.15`, "then /reload" while that client runs), then pinned addons with a newer release, blocked ones and failed checks. Its header updates everything in the filter (**Update all (3)**); with nothing to do it says "Everything is current · checked 25 min ago".
 - **Installed** lists every managed addon per client with its version, source (`gh`, `wowi`, `tukui`, `git`, `wowace`, `file`) and markers: `dep`, `orphan`, `pinned`, and `modified` or `missing` when its files changed on disk. Unmanaged folders show as a hint (`omaddons adopt -t <id>`).
@@ -1741,7 +1758,7 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 | `data` | object | the command's result (success, and `check_failed`) |
 | `error` | object | `code`, `message`, `fix` (display string), `fix_argv` (argv array, or `null` when the fix is prose or needs a value only you can supply; such a fix shows the command with each missing value as a `<placeholder>`, as in `omaddons targets add <path>`), `alternatives` (`[{display, argv}]`), `retryable`, `details` (always an object) |
 | `warnings` | array | `{code, message, fix, fix_argv}`. On a partial run, each failed item is mirrored here. On a failure, it holds what the run found before it failed (a `journal_pending`, a `config_unknown_key`), and stderr carries each as a `warning` event before the `error` event |
-| `commands` | array | suggested next steps: `{action, command, argv, destructive}`. The actions: `undo` (`undo <tx>` after a change), `undo_run` (`undo --run <run>` after a change on several clients), `update`, `check_updates`, `adopt`, `adopt_folder` and `adopt_with_ref` (`adopt`'s guesses), `install` (search results, missing or bridge dependencies), `search` (a bridge dependency nothing resolves), `reinstall`, `inspect` (`list -v` for degraded addons), `status` (after `status --cached` with no cache), `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive), `backup_create` (`backup list` and `status`, for a client with no recent qualifying backup), `refresh_backups` (`status`, `backup list -t <id>` when a client's backup inventory is stale), `check_errors` (`omaddons errors`, when `status --cached` finds a client's Lua errors stale or unchecked), `dismiss_errors` and `install_buggrabber` (`errors`) |
+| `commands` | array | suggested next steps: `{action, command, argv, destructive}`. The actions: `undo` (`undo <tx>` after a change), `undo_run` (`undo --run <run>` after a change on several clients), `update`, `check_updates`, `adopt`, `adopt_folder` and `adopt_with_ref` (`adopt`'s guesses), `install` (search results, missing or bridge dependencies), `search` (a bridge dependency nothing resolves), `reinstall`, `inspect` (`list -v` for degraded addons), `status` (after `status --cached` with no cache), `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive), `backup_create` (`backup list` and `status`, for a client with no recent qualifying backup), `refresh_backups` (`status`, `backup list -t <id>` when a client's backup inventory is stale), `check_errors` (`omaddons errors`, when `status --cached` finds a client's Lua errors stale or unchecked), `dismiss_errors` and `install_buggrabber` (`errors`), `reinstall_widget` (`status` and `omarchy status`, for an outdated bar widget) and `enable_widget` (`omarchy status`, for one that is not on the bar) |
 | `meta` | object | `elapsed_ms`, `offline` (`--offline` or `OMADDONS_OFFLINE=1`, usage errors included) |
 
 `check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status. On every other failure `commands` is empty, except a panic's, which can offer `undo` (below). Long commands also stream NDJSON `progress` events on stderr with `--progress json` (see [stderr events](#stderr-events)); stdout stays one envelope.
@@ -1761,7 +1778,7 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its `commands` offer `omaddons undo <tx>` for a transaction that committed before it, and its warnings are the ones the run found. A panic after the result was written leaves that result and its exit status, with one stderr `log` line saying so (dropped by `--quiet`); a panic the program recovers from prints nothing.
 
 <details>
-<summary><strong>Every error code (40)</strong></summary>
+<summary><strong>Every error code (41)</strong></summary>
 
 | Code | Exit | Retryable | When |
 |---|---|---|---|
@@ -1810,7 +1827,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 </details>
 
 <details>
-<summary><strong>Every warning code (48)</strong></summary>
+<summary><strong>Every warning code (49)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -1862,6 +1879,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `restore_rolled_back` | an interrupted `WTF/` restore was rolled back by the next change, and what it had displaced, which no other copy held (a tree the game played on, the last copy of a deleted backup, the tree from before it), is kept as a `recovered` backup; the message names only the backup and the client, and the fix restores it (`omaddons backup restore <id> -t <target>`) |
 | `before_restore_skipped` | `backup restore` kept no `before_restore` backup of the current `WTF/` (the filesystem cannot clone files, or there was no `WTF/`); the restore went on, and its undo snapshot keeps the replaced tree until retention |
 | `auto_backup_failed` | the automatic backup before a change failed; the change went ahead without it. The fix makes one by hand (`omaddons backup create -t <id>`) |
+| `omarchy_shell_unreachable` | `omarchy install` or `remove`: Omarchy's shell could not be reached (over SSH, or with the shell stopped), so the widget's files changed but its place on the bar did not; the fix runs the command again from the desktop session (for `remove`, `omarchy plugin disable a44.omaddons`) |
 
 </details>
 
@@ -2074,7 +2092,9 @@ Production purposes for HTTP are `release-latest`, `release-json`, `releases-ato
 
 **Fetch once.** Within one command each ref is fetched once, however many targets and engine runs need it: `install` without `-t` probes every live client and then installs with the same answer. `install`, `copy` and `pin --version` always ask the source (a cheap probe may confirm the remembered release). `outdated`, `update`, `sync`, `adopt`, `search` and `info` reuse an answer up to 15 minutes old (`SOURCE_RECHECK_MIN_INTERVAL`); `--refresh`, where a command has it, asks anyway.
 
-**Account, realm and character names.** `WTF/` paths name them, so omaddons keeps them out of what it prints: SavedVariables warnings count files and never name them, and a backup's `manifest.json`, which lists every path, never leaves the machine (`src/privacy.rs` holds the one redactor, used by backups today).
+**Account, realm and character names.** `WTF/` paths name them, so omaddons keeps them out of what it prints: SavedVariables warnings count files and never name them; a path below `WTF/` in an error, a progress line or a verify note shows accounts as `account N` and realm and character folders as `…`; and a backup's `manifest.json`, which lists every path, never leaves the machine. `src/privacy.rs` holds the one redactor, which backups, restores and `errors` all use.
+
+**Lua errors.** By default `errors` prints only what cannot hold a name: Lua's and the client's own messages, paths relative to `AddOns/`, accounts as `account N`. An addon's own message shows only its length, and errors other players sent appear only as counts, with the sender never kept. `--raw-details` adds the rest, with the names it recognizes replaced, and says it cannot promise to catch every name (see [`errors`](#errors)). The bar widget's notifications carry addon names, client ids and counts only.
 
 **Also:** TLS uses rustls with the bundled Mozilla root store (webpki-roots), not the system store. HTTP proxies are not supported. There is no telemetry.
 
@@ -2135,7 +2155,7 @@ label = "my 3.3.5a server"
 | `default_channel` | `stable` | Channel for new installs |
 | `running_policy` | `safe` | `safe`, `refuse` or `allow` |
 | `git_hosts` | `[]` | Hosts allowed for `git:` refs through the git binary. Never an HTTP host from [Network and privacy](#network-and-privacy) (always allowed, CurseForge or Wago, in any case): `config set` refuses one, and a `config.toml` that lists one fails to load, naming it |
-| `auto_backup` | `daily` | Automatic `WTF/` checkpoints (see [Automatic backups](#automatic-backups)). `daily` makes them only by cloning (btrfs, xfs), so they cost no space at first; where the filesystem cannot clone it makes none and writes nothing. `daily-copy` also byte-copies, within `limits.backup_copy_max_mb`. `off` makes none |
+| `auto_backup` | `daily` | Automatic `WTF/` checkpoints (see [Automatic backups](#automatic-backups)). `daily` makes them only by cloning (btrfs, xfs), so they cost no space at first; where the filesystem cannot clone it makes none and writes nothing. `daily-copy` also byte-copies, within `limits.backup_copy_max_mb`. `off` makes none. The default is `daily` (before milestone 3 this README said `off`), so checkpoints are made with no setup. |
 | `check_interval_hours` | `6` | `status` reports `updates.stale` when the oldest check is older than this (1–48; 0 keeps the default) |
 | `limits.archive_max_entries` | `20000` | Entries per archive |
 | `limits.archive_max_uncompressed` | `1GiB` | Expanded size per archive |
@@ -2225,7 +2245,7 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDON
 | `~/.cache/omaddons/history_tail.json` | The history projection: the end of `history.jsonl` that holds its newest 16 runs with something to undo (at most 1 MiB), so `status --cached` reports the last change without reading a history of any size. Believed only while the history is exactly as long as it says and ends with its last line | Yes; `--cached` says `unknown` until the next change rebuilds it |
 | `~/.cache/omaddons/export.json` | The hash of the `addons.toml` `export --write` last wrote, so a hand-edited file is not overwritten | Yes; the next `--write` then needs `--overwrite` |
 | `<client>/Interface/.omaddons/target.json` | The client's identity, so a moved install keeps its id | Loses identity |
-| `<client>/Interface/.omaddons/snapshots/<tx>/` | `AddOns/` (replaced and removed folders) and `WTF/` (SavedVariables copies with a manifest): most of the undo data | Loses undo |
+| `<client>/Interface/.omaddons/snapshots/<tx>/` | `AddOns/` (replaced and removed folders), `WTF/` (SavedVariables copies with a manifest) and, for a whole restore, `WTF.previous/` (the tree it replaced): most of the undo data | Loses undo |
 | `<client>/Interface/.omaddons/stage/`, `trash/` | Staging (same filesystem as AddOns) and staged deletions | No |
 | `<client>/Interface/.omaddons/backups/<id>/` | One `WTF/` backup, owner-only (`0700`): `backup.json` (what it is and proves), `manifest.json` (every entry's stats, and hashes after `--verify`; it names the account, realm and character, so it leaves this machine only inside an archive you export), `addons.json` (the addon versions that produced it) and the `WTF/` copy (see [`backup`](#backup)) | Loses that backup |
 | `~/.cache/omaddons/backups.json` | The backup inventory: what each client's backups add up to, checked against the directories before it is believed | Yes; the next `backup list` rebuilds it |
@@ -2299,7 +2319,7 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 |---|---|
 | `src/main.rs`, `src/lib.rs` | Entry point and module tree |
 | `src/cli.rs` | clap definitions, global flags, argv for fixes |
-| `src/app/` | One module per command, plus `world.rs` (discovery + registry for a run) and `engine.rs` (wiring) |
+| `src/app/` | One module per command, plus `world.rs` (discovery + registry for a run), `engine.rs` (wiring), `precondition.rs` (the preview tokens `--if-match` binds to) and `issues.rs` (`status`'s findings) |
 | `src/output/` | The JSON envelope, human rendering, stderr events, terminal detection |
 | `src/error.rs` | The error and warning code registries and the exit-code table |
 | `src/model.rs` | Domain types: refs, folder names, actors, channels, records |
@@ -2310,24 +2330,29 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `src/drift.rs` | Drift: managed files changed on disk since their commit, checked against the files index |
 | `src/text.rs` | Release notes and source text made plain and terminal-safe |
 | `src/source_scan.rs` | Test-only: the crate's own source with comments and test items blanked, for the unit tests that scan it |
-| `src/sources/` | Ref grammar and every source: GitHub (release.json, REST, Atom feeds, search, token), git (GitHub without the binary, other hosts with it), WoWInterface, Tukui, url, local, changelogs |
+| `src/sources/` | Ref grammar and every source: GitHub (release.json, REST, Atom feeds, search, token), git (GitHub without the binary, other hosts with it), WoWInterface, Tukui, WowAce (its Subversion listing and the packaging it supports), url, local, changelogs |
 | `src/resolve/` | Candidate selection, the catalog, dependency resolution, adoption evidence, search, update statuses, and `ReleaseCache`, the one way a command gets release metadata (each ref fetched once per run, the release memo across runs) |
 | `src/net/` | HTTP client, allowlist, guard, retries, concurrency limits, validators, net.log, record/replay |
-| `src/engine/` | The transaction engine |
+| `src/engine/` | The transaction engine, with `restore.rs` and `restore_addons.rs` (settings put back by exchange) and `preserve.rs` (what a restore's recovery keeps as a `recovered` backup) |
 | `src/fsx/` | The only code allowed to write to the filesystem: the write-scope table, the global flock and per-directory locks, `renameat2`, the reflink clone policy, stamp digests, pruning, failpoints |
 | `src/state/` | Config, paths, registry, records and the files index, history, status, the release memo, `addons.toml`, the export memo, the doorbell |
-| `src/backup/` | `WTF/` backups: the on-disk model, the one tree copy, the inventory projection, filesystem hints |
-| `src/privacy.rs` | The one redactor for account, realm and character names in `WTF/` paths (backups use it today) |
+| `src/backup/` | `WTF/` backups: the on-disk model, the one tree copy, the inventory projection, automatic backups, export, import and verify, filesystem hints |
+| `src/lua.rs` | A parser of the Lua literals the client writes as SavedVariables, read-only and infallible |
+| `src/errors/` | Lua errors: BugGrabber's databases decoded into one model, attribution, the errors memo and dismissals |
+| `src/omarchy/` | The bar widget: its embedded files (`assets.rs`), rendering it for a given binary and state, `omarchy install`, `status` and `remove`, the port of Omarchy's plugin validator, and the calls to Omarchy's tools |
+| `src/privacy.rs` | The one redactor for account, realm and character names in `WTF/` paths, used by backups, restores and `errors` |
 | `src/clock.rs` | The clock time rules read (`OMADDONS_NOW` freezes it in debug builds) |
 | `src/politeness.rs`, `src/limits.rs` | Every network-politeness constant and every safety limit, each in one place |
 | `catalog/catalog.toml` | The built-in catalog, embedded with `include_str!` |
+| `omarchy/` | The bar widget's QML and JavaScript, embedded by `src/omarchy/assets.rs`: `Model.js` turns envelopes into what the views show and builds every argv the widget may run, `Service.qml` is its one service (the processes, the doorbell, the triggers), `views/` holds the panel's views; its tests are under `omarchy/tests/` (bun and `qmltestrunner`) |
+| `build.rs` | The digest of the widget's files, so `status` compares an installed widget with this build without hashing them on every call |
 | `tests/`, `fuzz/` | Integration, contract, crash, concurrency and live tests; cargo-fuzz targets |
 
 **One doorbell.** Every write that can change what `status --cached` reports rings `~/.cache/omaddons/doorbell.json` once, after the write: each commit window (undo's too, after its lock is released), a recovery that rolled a journal back or forward, a release memo write that changed the memo, a backup inventory write that changed it (a backup made, or a stale summary rebuilt), each backup's history line, and every settings command. Reads never ring it, so `status` stays write-free and the bar widget can watch the cache directory instead of polling. The file is a signal, never a source of state: the widget reads `status --cached` again when it rings.
 
 **Invariants the build enforces:**
 
-- Only `src/fsx/` writes to the filesystem (`tests/single_writer.rs` scans every production item of the source, test-only items aside). Only two modules start processes, each named with its reason and held to that by the same test: git checkouts (`src/sources/git_hosts.rs`) and the credential command (`src/state/config.rs`, which reads its output).
+- Only `src/fsx/` writes to the filesystem (`tests/single_writer.rs` scans every production item of the source, test-only items aside). Only three modules start processes, each named with its reason and held to that by the same test: git checkouts (`src/sources/git_hosts.rs`), the credential command (`src/state/config.rs`, which reads its output) and Omarchy's own tools (`src/omarchy/shell.rs`: the plugin validator, the shell's ping and rescan, bar placement and plugin disable).
 - Commands never print: `print!` and `eprint!` are denied by clippy.
 - No `unwrap` or `expect` outside tests, and `unsafe` is forbidden.
 - Nothing calls `std::process::exit`. Every exit goes through one table, and every error code used in `src/` must be registered (`tests/contract/exit_sites.rs`).
@@ -2427,6 +2452,23 @@ omaddons config set git_hosts '["codeberg.org", "gitlab.com"]'
 
 A source turned off in `config.toml` (`[sources.wowi] enabled = false`) refuses its refs with this error, and its `fix_argv` turns it back on (`omaddons config set sources.wowi.enabled true`). CurseForge and Wago refs arrive in milestone 5. Many popular addons also publish GitHub releases, so try `gh:Owner/Repo`. Otherwise, download the zip in a browser and install it as a local path (`./Addon.zip`). The same error for a `git:` ref on another host means `git` is missing or older than 2.32.
 
+### No Lua errors are captured
+
+`omaddons errors` reads what BugGrabber saved, so for a client without it, `errors` says "no Lua errors are captured: BugGrabber is not installed" and offers `omaddons install buggrabber -t <id>`, which installs that client's own build. 4.3.4 and 5.4.8 clients have no keyless build (`errors` says so). With BugGrabber installed, errors reach the disk only when the game saves its SavedVariables, at `/reload` or logout: a session still running shows nothing new yet.
+
+### The bar icon is dimmed
+
+The widget has nothing it can show. Open its panel to see which of these it is:
+
+- **"omaddons not found at …":** the binary the widget was installed for moved or was removed. The panel shows the two commands that fix it: `omaddons omarchy install` from the binary you use now, or `omarchy bar set a44.omaddons binary <path>`.
+- **"omaddons gave no answer the widget can read":** the binary ran but printed no envelope; the panel shows its last lines of output, or why it stopped (a timeout, say).
+- **"No World of Warcraft clients found":** see [A client is missing from `status`](#a-client-is-missing-from-status).
+- **The widget is from another build** (below).
+
+### The widget says it is from another build
+
+The binary changed since the widget was installed (an update, a rebuild), or the widget's files differ from what this binary would install. `status` says so too (`widget_outdated`). The widget stays read-only rather than run command lines another build may read differently: its panel keeps only Retry and Reinstall widget. Reinstall it with **Reinstall widget**, or run `omaddons omarchy install` from the binary you use.
+
 ### `omarchy plugin remove` says the widget is not installed
 
 `omarchy plugin remove a44.omaddons` answers "plugin 'a44.omaddons' is not installed" because it looks for a folder named after the id, and the widget's is `omaddons`. Use `omaddons omarchy remove`, which takes it off the bar, deletes it and records the removal (see [`omarchy remove`](#omarchy-remove)).
@@ -2467,6 +2509,11 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
   From M3 on, every build refuses what it cannot read (see [Transactions](#transactions)).
 - The download cache reuses an asset whose SHA-256 is known: from the source (GitHub REST assets carry a digest) or remembered from an earlier download of that release's asset in the release memo. A release's assets are taken to be immutable, so a publisher re-uploading different bytes under the same tag and file name is not noticed while the old blob is cached (unless the source declares a different size or hash). Within one command, the same asset is still downloaded once per target that tries it. An unchanged release is never downloaded.
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
+- Lua errors are only as fresh as BugGrabber's last save, at `/reload` or logout.
+- `errors` was validated on fixtures that follow BugGrabber's published structure in both writer formats; it has not yet been run against a capture from a real play session.
+- `backup export`, `backup import` and `backup verify` are CLI only; the bar widget backs up, restores and prunes.
+- `backup import` refuses an archive holding a symlink that leads outside `WTF/` (`symlink_escape`), so a `WTF/` with such a link backs up and restores here, but its export cannot be imported.
+- "Not while the game runs" is a check, not a lock on the game: a client launched in the milliseconds before a restore's exchange may write its in-memory settings over the restored files at logout. The restore's undo keeps the tree it replaced (see [Transactions](#transactions)).
 - WowAce projects that need packaging steps (externals, ignored or moved folders, build-time keywords such as `--@debug@` blocks, nolib builds) are refused with `packaging_unsupported`, never installed half-built; download a packaged release in a browser instead. A WowAce tree is fetched one request at a time.
 - Private GitHub repositories and HTTP proxies are not supported.
 - Restores need atomic renames: a whole restore exchanges `WTF/`, and `--addon` exchanges each file in place. On a filesystem without `RENAME_EXCHANGE` (NTFS through ntfs-3g, many FUSE and network filesystems), or with SavedVariables on another mount than `Interface/.omaddons/`, both are refused (`filesystem_unsupported`). The workaround: with the game closed, copy what you need by hand from the backup's own folder, `Interface/.omaddons/backups/<id>/WTF/`, a plain directory (`details.backup_dir` names it).
@@ -2489,7 +2536,7 @@ The README describes the intended behaviour. A place where the code at HEAD does
 | Follow-up: Classic and Forever gaps | Multi-flavor archives, never-launched clients, game modes, real-machine tests for every live client, the catalog × flavor probe, and the in-game load check on the real Forever client | ✅ Done (2026-10-21) |
 | **M2: updates and adoption** | `outdated`, `update`, `pin`/`unpin`; WoWInterface and Tukui; changelogs; dependencies; drift detection; tiered `adopt`; `addons.toml` with `export`, `sync` and `copy`; `search`; `auth github` | ✅ Done (2026-10-16) |
 | Post-M2 audit | An independent audit of M1 and M2 (engine failure paths, contract holes, integrity and privacy statements, discovery and rules fields, test blind spots, this README) and real-world checks on real clients: running detection under Proton, in-game loading on every client, legacy `/reload` behaviour | ✅ Done (2026-10-21) |
-| **M3: the widget** | The Omarchy bar widget (QML, embedded in the binary, managed by `omaddons omarchy install`, `status` and `remove`), `errors` (BugGrabber, installed keyless from a new `wowace:` source), `backup` of `WTF/` (list, create, verify, restore, export and import, automatic backups) | 🔄 In progress: the doorbell, the privacy redactor, `errors` and `errors dismiss`, errors in `status`, `backup list`, `backup create`, `backup restore`, `backup prune`, `backup export`, `backup import`, `backup verify`, `backup restore --addon`, backups in `status`, automatic checkpoints, the `wowace:` source, the widget's bar button, its panel and its five views with the restore chooser, its after-play work and notifications, `omarchy install`, `omarchy status` and `omarchy remove` are in |
+| **M3: the widget** | The Omarchy bar widget (QML, embedded in the binary, managed by `omaddons omarchy install`, `status` and `remove`), `errors` (BugGrabber, installed keyless from a new `wowace:` source), `backup` of `WTF/` (list, create, verify, restore, export and import, automatic backups) | 🔄 In progress: the doorbell, the privacy redactor, `errors` and `errors dismiss`, errors in `status`, `backup list`, `backup create`, `backup restore`, `backup prune`, `backup export`, `backup import`, `backup verify`, `backup restore --addon`, backups in `status`, automatic checkpoints, the `wowace:` source, the widget's bar button, its panel and its five views with the restore chooser, its after-play work and notifications, its security scans, the widget in `status`, `omarchy install`, `omarchy status` and `omarchy remove` are in; the checkpoint is next |
 | **M4: the agent surface** | `capabilities`, `robot-docs`, `install-skill`, intent inference, the full `doctor`, stored plans (`--dry-run` then `apply`), `completions`, wire-name golden tests; **the first tag freezes the contract** | 🗓️ Planned |
 | **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: versioning, CHANGELOG, a local PKGBUILD, packaged completions and a man page | 🗓️ Planned |
 
@@ -2523,7 +2570,7 @@ Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`, `argc fuzz <target>`
 
 ### Tests
 
-At the close of the post-M2 audit (2026-10-21) there are 1,645 tests: 883 unit tests in `src/`, 761 integration tests in 75 test binaries and one doctest. The gate runs 1,592 of them. The other 53 are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine and real-client checks, time budgets and the bench homes (`tests/perf.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. (At the M2 checkpoint, 2026-10-16, there were 1,333.) `cargo test -- --list` counts today's.
+With milestone 3's features in, there are 2,279 Rust tests: 1,154 unit tests in `src/`, 1,124 integration tests in 96 test binaries and one doctest. The gate runs 2,211 of them. The other 68 are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine and real-client checks, time budgets and the bench homes (`tests/perf.rs`), the M2 build against M3 state (`tests/compat_m2.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. (At the close of the post-M2 audit there were 1,645, and at the M2 checkpoint 1,333.) The widget adds 108 `bun` tests and 116 QML tests under `omarchy/tests/`, run by the gate's widget pipeline. `cargo test -- --list` counts today's.
 
 | Suite | What it covers |
 |---|---|
@@ -2535,8 +2582,11 @@ At the close of the post-M2 audit (2026-10-21) there are 1,645 tests: 883 unit t
 | `tests/discover_*.rs` | The discovery matrix, launchers, scanning, custom clients, the cache |
 | `tests/catalog.rs` | The 46 GitHub and 5 `git:` catalog entries replayed offline from recorded HTTP fixtures with no REST calls, and the 9 WoWInterface entries in one `filedetails` request with their MD5s (the two Tukui entries: `tests/sources_tukui.rs`) |
 | `tests/sources_wowace.rs` | The WowAce source over a recording of the live server (BugGrabber's tag list, v12.1.0, v12.1.1, trunk at r130 and r152, and the 1.12-era tree at r43) and edits of it: pinned-only requests, a poisoned live tag path never asked for, reproducible archives, re-tags against unrelated commits, `sync --locked` at the recorded revision, every packaging refusal, collisions and the tree bounds |
-| `tests/single_writer.rs` | Only `src/fsx/` writes to the filesystem, and only the two named modules start processes |
-| `tests/backup_list.rs`, `tests/backup_create.rs`, `tests/doorbell.rs` | Milestone 3 so far: `backup list` over fixture backups; `backup create` over a fixture `WTF/` (exact copies, owner-only modes, capture consistency with the tree changed mid-copy through `pause` failpoints, no lock while copying, dry runs writing nothing, privacy on both streams); the doorbell's ring sites (directory locks: unit tests in `src/fsx/lock.rs`) |
+| `tests/single_writer.rs` | Only `src/fsx/` writes to the filesystem, and only the three named modules start processes |
+| `tests/backup_*.rs`, `tests/restore.rs`, `tests/restore_addon.rs`, `tests/restore_undo.rs`, `tests/doorbell.rs` | `WTF/` backups: `create` over a fixture `WTF/` (exact copies, owner-only modes, capture consistency with the tree changed mid-copy through `pause` failpoints, no lock while copying, privacy on both streams), `list`, `prune`, `export`, `import` (every refusal) and `verify`, and automatic backups; whole and `--addon` restores and their undos; the doorbell's ring sites (directory locks: unit tests in `src/fsx/lock.rs`) |
+| `tests/errors*.rs`, `tests/status_errors.rs`, `tests/lua.rs` | Lua errors: both SavedVariables writer formats, attribution, privacy on both streams, dismissals bound to their read, and `status`'s counts with and without `--cached` |
+| `tests/preconditions.rs`, `tests/fail_closed.rs` | Previews bound by `--if-match` (`plan_stale` for each change between preview and run), and state a build cannot read refused, never acted on |
+| `tests/omarchy.rs`, `tests/omarchy_widget.rs`, `omarchy/tests/` | The bar widget: `omarchy install`, `status` and `remove` over stub Omarchy tools (never this machine's shell), `status`'s widget block; and the widget pipeline: envelopes from the real binary, `bun` over `Model.js` and the source's security scans, the binary's parser over every argv `bun` built, `qmltestrunner` over the QML |
 | `tests/fsx_lock.rs` | The global lock and the in-flight locks |
 
 Recorded HTTP fixtures live in `tests/fixtures/http/<scenario>/`. Debug builds replay them with `OMADDONS_HTTP_FIXTURES=<dir>` and re-record them with `OMADDONS_RECORD=1`. Recording never stores request headers, drops `set-cookie`, and strips secret query parameters from URLs and `location` headers.
@@ -2612,6 +2662,18 @@ Old folders and SavedVariables copies go to `<client>/Interface/.omaddons/snapsh
 
 No. By default (`auto_backup = "daily"`) they are made only by cloning. On btrfs and xfs a fresh backup shares every byte with `WTF/`, and grows only as the game rewrites files afterwards. Elsewhere none is made at all. `backup list` shows each backup's apparent size, which on those filesystems overstates what it really takes, next to the free space, which is what really counts. Before each automatic backup, omaddons checks that `limits.backup_min_free_mb` (2 GiB) stays free, pruning old automatic backups first and skipping with `backup_space_low` otherwise. Retention keeps the automatic backups of the newest 7 days (see [Retention](#retention)). Your own backups are never deleted unless you ask. `daily-copy` makes byte copies where cloning fails, within `limits.backup_copy_max_mb` (4 GiB) per client.
 
+### Where are my backups, and how much space do they use?
+
+In each client's `Interface/.omaddons/backups/`, one folder per backup, readable only by you. `omaddons backup list` shows them with each one's apparent size and the space free. On btrfs and xfs a backup starts out sharing its data with the live `WTF/`, so the apparent size overstates what it takes; the free space is what counts. A backup is also a plain `WTF/` copy you can open in that folder.
+
+### Does omaddons read my SavedVariables?
+
+Only BugGrabber's (`BugGrabberDB`), read-only, for `omaddons errors`. Everything else it copies as files without reading what they say: into undo snapshots (hashed, so an undo restores exactly those files) and backups (hashed with `--verify`). It writes them only when you undo a change or restore a backup, and never while the game runs.
+
+### Can I get just one addon's settings back?
+
+Yes: `omaddons backup restore <id> --addon <name> -t <client>` puts back only that addon's SavedVariables from a backup, account-wide and for every character, and leaves the rest of `WTF/` as it is. Preview it with `--dry-run`, which also says which version of the addon wrote those settings. It is undoable, and the widget's restore chooser offers it first.
+
 ### Can a coding agent drive it?
 
 That is a primary design goal. Use `--json`, read `error.fix_argv` and `commands[].argv`, pass `--actor agent --reason "…"`, and keep `undo --last-by agent` as the escape hatch. An agent is also detected automatically: without `--actor`, a run whose stdin is not a terminal is recorded as `agent`. See [For coding agents](#for-coding-agents).
@@ -2644,10 +2706,18 @@ Core loop
   omaddons undo --last-by agent --json           # the escape hatch
   omaddons search <words> --json                 # find a ref; install verifies it
   omaddons backup create --json --actor agent --reason "<why>"   # copy every live client's WTF/
+  omaddons backup create -t <target> --verify --json            # also hash every file copied
   omaddons backup list --json                    # WTF/ backups and what each proves
+  omaddons backup restore <id> -t <target> --addon <name> --dry-run --json   # one addon's settings,
+  omaddons backup restore <id> -t <target> --addon <name> --if-match <token> --json   # then bound
+  omaddons backup verify <id> -t <target> --json # check a backup against its hashes, or record them
+  omaddons errors --json                         # Lua errors: attribution {method, confidence}, new
+                                                 # counts; a string-time error before --since is
+                                                 # counted as uncertain, never dropped
 
-Refs     catalog name | gh:Owner/Repo | Owner/Repo | wowi:<id> | tukui:<slug> | git:https://…#rev
-         | url:https://… | a pasted GitHub, WoWInterface or Tukui link | ./zip-or-folder
+Refs     catalog name | gh:Owner/Repo | Owner/Repo | wowi:<id> | tukui:<slug> | wowace:<slug>
+         | git:https://…#rev | url:https://… | a pasted GitHub, WoWInterface, Tukui or WowAce link
+         | ./zip-or-folder
 Targets  -t retail | era | sod | hardcore | classic | anniversary | forever | wotlk | <key> | <path>
 
 Read the envelope
@@ -2663,8 +2733,10 @@ Exit codes  0 ok (check partial) · 1 failed (see retryable) · 2 usage · 3 not
 
 Rules
   - --dry-run first for anything destructive; --force only after reading the refusal.
-  - Bind the real remove or undo to that preview: --if-match <data.precondition>. A plan_stale
-    answer (not retryable) means the world changed since: preview again.
+  - Bind the real remove, undo, backup restore or backup prune to that preview, and errors dismiss
+    to the read it acknowledges: --if-match <data.precondition> (errors: dismiss.precondition).
+    A plan_stale answer (not retryable) means the world changed since: preview again.
+  - Restores and SavedVariables writes are refused while the game runs; never work around it.
   - Never write into Interface/AddOns yourself; every change must go through omaddons to stay undoable.
   - --offline for read-only work; net-log shows the requests that reached the network (the 50 most recent; --limit N).
   - update installs the newest releases on every client in one run; one undo reverts it. Pinned addons stay
