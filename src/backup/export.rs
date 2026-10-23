@@ -373,16 +373,7 @@ fn changed(backup: &BackupRef, entry: &ManifestEntry, names: &WtfPathRedactor) -
 /// A file of the backup differs from the hash it was recorded with: damaged on disk,
 /// which retrying does not mend.
 fn damaged(backup: &BackupRef, entry: &ManifestEntry, names: &WtfPathRedactor) -> Error {
-    Error::hash_mismatch(
-        2,
-        format!(
-            "backup {} is damaged: {} does not match the hash it was recorded with",
-            backup.id,
-            names.rel(&entry.path)
-        ),
-        Suggestion::command(["omaddons", "backup", "list"]),
-    )
-    .details(serde_json::json!({ "backup": backup.id }))
+    super::verify::mismatch(&backup.id, &names.rel(&entry.path))
 }
 
 /// Hashes and counts what is read through it (also `backup import`'s).

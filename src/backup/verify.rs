@@ -15,13 +15,14 @@ use jiff::Timestamp;
 
 use super::create::write;
 use super::export::reserve;
+use super::inventory::Ring;
 use super::tree::hash_files;
 use super::{
     BackupMeta, BackupRef, Baseline, EntryKind, Integrity, Manifest, check_structure, meta_file,
 };
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::fsx::{ScopeTable, WriteSession, Writer};
-use crate::model::Actor;
+use crate::model::{Actor, BackupId};
 use crate::output::ProgressSink;
 use crate::privacy::WtfPathRedactor;
 use crate::state::doorbell;
@@ -193,6 +194,48 @@ fn judge(
     // `backup.json`; they are a `later` baseline.
     let against = meta.baseline.unwrap_or(Baseline::Later);
     (VerifyOutcome::Verified { against }, 0, None)
+}
+
+/// `hash_mismatch` for a file of `backup` (`rel`, redacted) that differs from the hash it
+/// was recorded with: damaged on disk, which retrying does not mend. A restore or an
+/// export that finds it hands it to [`damage_found`].
+pub fn mismatch(backup: &BackupId, rel: &str) -> Error {
+    Error::hash_mismatch(
+        2,
+        format!("backup {backup} is damaged: {rel} does not match the hash it was recorded with"),
+        Suggestion::command(["omaddons", "backup", "verify", &backup.to_string()]),
+    )
+    .details(serde_json::json!({ "backup": backup }))
+}
+
+/// A restore or an export that read `backup`'s files and found one differing from its
+/// recorded hash (`error`, from [`mismatch`]) has the evidence `backup verify` has: it
+/// records `integrity: damaged` the same way, under the caller's reservation, so `backup
+/// list` stops calling the backup verified and restorable, and rings the doorbell. The
+/// fix becomes `backup verify <id> -t <target>`, which checks it again and reports what
+/// it finds. Recording is best effort: the error stands either way. Any other error
+/// passes through.
+pub fn damage_found(
+    paths: &Paths,
+    scopes: &ScopeTable,
+    backup: &BackupRef,
+    target_id: &str,
+    ring: Ring<'_>,
+    mut error: Error,
+) -> Error {
+    if error.code != ErrorCode::HashMismatch {
+        return error;
+    }
+    if let Some(mut meta) = backup.meta.clone() {
+        meta.integrity = Integrity::Damaged;
+        let mut s = WriteSession::untracked(Writer::Backup, scopes, "verify");
+        if write(&mut s, &meta_file(&backup.dir), &meta).is_ok() {
+            doorbell::ring(paths, ring.command, ring.actor);
+        }
+    }
+    let id = backup.id.to_string();
+    error.fix = Suggestion::command(["omaddons", "backup", "verify", &id, "-t", target_id]);
+    error
 }
 
 /// Writes `outcome`: the manifest with the hashes recorded (when there are any), then

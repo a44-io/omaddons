@@ -27,7 +27,7 @@ use super::journal::{
     recover_tx,
 };
 use super::restore::{
-    Reservation, Topology, copied, incomplete, refuse_running, topology, unsupported,
+    Reservation, Topology, copied, damage_found, incomplete, refuse_running, topology, unsupported,
 };
 use super::swap::{
     SvEntry, SvManifest, SvSkipped, sha256_file, snapshot_state, sv_candidates, sv_skip,
@@ -528,6 +528,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: AddonsRequest<'_>) -> Result<AddonsOutc
     let staged = match prepared {
         Ok(staged) => staged,
         Err(error) => {
+            let error = damage_found(ctx, &scopes, backup, &target.id, error);
             cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), false);
             return Err(error);
         }
@@ -625,16 +626,10 @@ fn stage(
         };
         if let Some(want) = &entry.sha256 {
             if !want.eq_ignore_ascii_case(&sha256) {
-                return Err(Error::hash_mismatch(
-                    2,
-                    format!(
-                        "backup {} is damaged: {} does not match the hash it was recorded with",
-                        backup.id,
-                        names.rel(&entry.path)
-                    ),
-                    Suggestion::command(["omaddons", "backup", "list"]),
-                )
-                .details(serde_json::json!({ "backup": backup.id })));
+                return Err(crate::backup::verify::mismatch(
+                    &backup.id,
+                    &names.rel(&entry.path),
+                ));
             }
             checked += 1;
         }

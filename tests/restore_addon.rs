@@ -757,6 +757,17 @@ fn what_cannot_be_exchanged_or_is_damaged_is_refused_before_anything_moves() {
         "{}",
         refused.context()
     );
+    assert_eq!(
+        refused.envelope()["error"]["fix_argv"],
+        json!(["omaddons", "backup", "verify", id, "-t", "retail"])
+    );
+    let listed = run(&verified.home, &["backup", "list", "-t", "retail"], &[]).expect(0);
+    let entry = &listed["data"]["targets"][0]["backups"][0];
+    assert_eq!(
+        (&entry["integrity"], &entry["restorable"]),
+        (&json!("damaged"), &json!(false)),
+        "recorded as backup verify records it: {listed:#}"
+    );
     assert_eq!(files_of(&verified.wtf, &[]), before);
     assert!(
         verified.leftovers().is_empty(),

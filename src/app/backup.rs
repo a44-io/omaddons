@@ -2561,7 +2561,14 @@ pub fn export_backup(ctx: &Context, args: &BackupExportArgs) -> Result<BackupExp
         }
         (None, None)
     } else {
-        let exported = export::export(&scopes, &backup, &plan, &file, (&names, &ctx.progress))?;
+        let ring = Ring {
+            command: EXPORT_COMMAND,
+            actor: ctx.actor,
+        };
+        let exported = export::export(&scopes, &backup, &plan, &file, (&names, &ctx.progress))
+            .map_err(|e| {
+                backup::verify::damage_found(&world.paths, &scopes, &backup, &d.target.id, ring, e)
+            })?;
         (Some(exported.compressed_bytes), Some(exported.sha256))
     };
     drop(reservation);

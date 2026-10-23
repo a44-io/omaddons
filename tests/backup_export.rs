@@ -411,8 +411,22 @@ fn a_failed_export_leaves_nothing_behind() {
         message.contains("is damaged") && message.contains("SavedVariables/Foo.lua"),
         "{message}"
     );
+    assert_eq!(
+        error["fix_argv"],
+        json!(["omaddons", "backup", "verify", id, "-t", "retail"])
+    );
     assert!(!file.exists() && hidden(&dir).is_empty());
+    // Recorded as `backup verify` records it (M3-D47); with the bytes back, the fix
+    // checks it again and finds it whole.
+    let listed = run(&home, &["backup", "list", "-t", "retail"]).expect(0);
+    let entry = &listed["data"]["targets"][0]["backups"][0];
+    assert_eq!(
+        (&entry["integrity"], &entry["restorable"]),
+        (&json!("damaged"), &json!(false)),
+        "{listed:#}"
+    );
     fs::write(&foo, &original).unwrap();
+    run(&home, &["backup", "verify", &id, "-t", "retail"]).expect(0);
 
     // A file gone since the backup was made.
     fs::remove_file(wtf.join("Account/FAKEACCT/Sealed/Kept.lua")).ok();

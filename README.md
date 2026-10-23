@@ -1146,7 +1146,7 @@ Every refusal comes before anything is copied, in this order:
 Then, on a real run:
 
 - **The current `WTF/` is kept as a backup** (kind `before_restore`), but only where the filesystem clones files (btrfs, xfs), so it costs no space at first. Elsewhere, or when there is no `WTF/`, `before_restore_skipped` says so, and the restore goes on: the transaction's own snapshot keeps the replaced tree until retention. Making it runs no backup retention, and it keeps its history line even when the restore then fails.
-- **The copy is checked.** The backup's `WTF/` is copied into the stage with the modes its manifest recorded, then compared with the manifest: entries and sizes, and every file's content when the backup holds hashes. A mismatch is `hash_mismatch` ("backup … is damaged"), and nothing changed.
+- **The copy is checked.** The backup's `WTF/` is copied into the stage with the modes its manifest recorded, then compared with the manifest: entries and sizes, and every file's content when the backup holds hashes. A mismatch is `hash_mismatch` ("backup … is damaged"), and nothing changed. A restore or export that finds the damage records it as [`backup verify`](#backup-verify) does (`integrity: damaged`, no longer restorable), and its fix is `omaddons backup verify <id> -t <target>`, which checks the backup again.
 - **One exchange.** Under the lock, the copy replaces `WTF/` in one atomic exchange, and the old tree goes to the transaction's snapshot for `undo`.
 - **Retention.** Backup retention then runs once with the restored backup kept whatever its age, so a restore never prunes its own source.
 
@@ -1815,7 +1815,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `rate_limited` | 1 | yes | GitHub REST budget exhausted, or any host's rate-limit answer (403/429 with no requests remaining, `Retry-After` over 60 s, a 429 that outlasts the retries); `details.reset_at` |
 | `download_failed` | 1 | no | the git binary could not clone or fetch a `git:` ref on another host: it needs a login (private repositories are not supported), the server refused to send the commit (fix: name a branch or tag), or another git failure |
 | `http_status` | 1 | 5xx only | unexpected status; `details.status` |
-| `hash_mismatch` | 1 | first attempt | downloaded bytes did not match the expected hash |
+| `hash_mismatch` | 1 | first attempt (never a backup's) | downloaded bytes did not match the expected hash, or a backup's file differs from the hash it was recorded with (`details.backup`): recorded `damaged`, fix `backup verify <id> -t <target>` |
 | `plan_stale` | 1 | yes (no under `--if-match`) | another run changed the target between plan and commit, a folder `adopt` hashed changed before the lock, or a `git:` branch moved between resolve and checkout; under `--if-match`, the run is no longer what its preview showed (`details.changed`, fix the `--dry-run` form; see [Previews and `--if-match`](#previews-and---if-match)) |
 | `offline` | 1 | no | `--offline` blocked a request |
 | `bad_archive` | 1 | no | malformed, encrypted, or not Stored/Deflate |

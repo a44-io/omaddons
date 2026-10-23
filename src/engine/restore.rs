@@ -405,6 +405,23 @@ impl Staged {
     }
 }
 
+/// A staging failure of a restore of `backup` onto `target_id`, with a damaged backup
+/// recorded as such ([`crate::backup::verify::damage_found`]); the reservation is still
+/// held.
+pub(super) fn damage_found(
+    ctx: &EngineCtx<'_>,
+    scopes: &ScopeTable,
+    backup: &BackupRef,
+    target_id: &str,
+    error: Error,
+) -> Error {
+    let ring = crate::backup::inventory::Ring {
+        command: ctx.command,
+        actor: ctx.actor,
+    };
+    crate::backup::verify::damage_found(ctx.paths, scopes, backup, target_id, ring, error)
+}
+
 /// `backup_copied`, when `staged` wrote `bytes` to put a tree back on `target_id`.
 pub(super) fn copied(target_id: &str, bytes: u64) -> Option<Warning> {
     (bytes > 0).then(|| {
@@ -532,6 +549,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: RestoreRequest<'_>) -> Result<RestoreOu
     let staged = match stage(ctx, &scopes, backup, plan, &staged_dir, &topology, &names) {
         Ok(staged) => staged,
         Err(error) => {
+            let error = damage_found(ctx, &scopes, backup, &target.id, error);
             cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), false);
             append_alone(ctx, &scopes, before_restore.as_ref(), Writer::BackupRestore);
             return Err(error);
@@ -635,16 +653,10 @@ fn stage(
             .zip(&hashes)
             .find(|(entry, now)| entry.sha256.is_some() && entry.sha256 != **now);
         if let Some((entry, _)) = damaged {
-            return Err(Error::hash_mismatch(
-                2,
-                format!(
-                    "backup {} is damaged: {} does not match the hash it was recorded with",
-                    backup.id,
-                    names.rel(&entry.path)
-                ),
-                Suggestion::command(["omaddons", "backup", "list"]),
-            )
-            .details(serde_json::json!({ "backup": backup.id })));
+            return Err(crate::backup::verify::mismatch(
+                &backup.id,
+                &names.rel(&entry.path),
+            ));
         }
         Integrity::Verified
     } else {

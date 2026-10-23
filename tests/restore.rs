@@ -256,8 +256,27 @@ fn a_damaged_backup_or_one_whose_copy_fails_its_hashes_changes_nothing() {
         envelope["error"]["retryable"], false,
         "a damaged backup stays damaged"
     );
+    assert_eq!(
+        envelope["error"]["fix_argv"],
+        json!(["omaddons", "backup", "verify", id, "-t", "retail"])
+    );
     assert_eq!(tree_hash(&wtf), before);
     assert!(leftovers(&home).is_empty(), "{:?}", leftovers(&home));
+    // The damage is recorded as `backup verify` records it (M3-D47): no longer verified
+    // or restorable. The fix checks it again and says so.
+    let listed = run(&home, &["backup", "list", "-t", "retail"], &[]).expect(0);
+    let entry = &listed["data"]["targets"][0]["backups"][0];
+    assert_eq!(
+        (&entry["integrity"], &entry["restorable"]),
+        (&json!("damaged"), &json!(false)),
+        "{listed:#}"
+    );
+    let verified = run(&home, &["backup", "verify", &id, "-t", "retail"], &[]);
+    assert!(
+        verified.stdout.contains("\"damaged\""),
+        "{}",
+        verified.context()
+    );
 
     fs::write(dir.join("backup.json"), "{").unwrap();
     let envelope = run(&home, &["backup", "restore", &id], &[]).expect(1);
