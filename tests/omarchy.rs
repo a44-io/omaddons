@@ -82,7 +82,8 @@ impl Desk {
     /// `unknown:<n>` for n "not a known widget" answers first) and, placing, writes the
     /// section into `shell.json` as Omarchy's shell would; `omarchy-plugin-validate`
     /// refuses when `<root>/validate-mode` says `bad`. `omarchy-shell` answers `shell
-    /// ping` as `<root>/shell-mode` says (`ok`, `silent` for `-q`'s bare exit 0, `hang`),
+    /// ping` as `<root>/shell-mode` says (`ok`, `silent` for `-q`'s bare exit 0, `hang`,
+    /// `orphan` for a hang that leaves a child running, its pid in `<root>/orphan.pid`),
     /// and `setPluginEnabled`, like `omarchy-plugin-disable` (which fails when
     /// `<root>/disable-mode` says `fail`), splices the bar layout out of `shell.json`.
     fn tool(&self, name: &str) {
@@ -110,7 +111,11 @@ if [ "$mode" = bad ]; then echo "manifest.json: entryPoints.barWidget is missing
             "omarchy-shell" => format!(
                 r#"mode=ok; [ -f {root}/shell-mode ] && read mode < {root}/shell-mode
 case "$1 $2" in
-  "shell ping") case "$mode" in silent) exit 0 ;; hang) exec /bin/sleep 5 ;; esac; echo ok ;;
+  "shell ping") case "$mode" in
+      silent) exit 0 ;;
+      hang) exec /bin/sleep 5 ;;
+      orphan) /bin/sleep 30 & echo $! > {root}/orphan.pid; exec /bin/sleep 5 ;;
+    esac; echo ok ;;
   "shell setPluginEnabled")
     printf '{{"bar":{{"layout":{{}}}}}}' > "$XDG_CONFIG_HOME/omarchy/shell.json"; echo ok ;;
 esac"#
@@ -933,6 +938,34 @@ fn the_shell_is_running_only_when_ping_answers_ok() {
     let took = started.elapsed();
     assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
     assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+}
+
+/// A tool that times out is stopped with every process it started (its process group):
+/// a child it left running in the background is gone once omaddons returns.
+#[test]
+fn a_timed_out_tool_leaves_no_process_of_its_own_behind() {
+    let desk = Desk::new();
+    desk.set("shell-mode", "orphan");
+    let shell = desk.run(&["omarchy"]).expect(0)["data"]["omarchy"]["shell_running"].clone();
+    assert_eq!(shell, false);
+    let pid = fs::read_to_string(desk.root().join("orphan.pid")).unwrap();
+    let stat = Path::new("/proc").join(pid.trim()).join("stat");
+    // Gone, or a zombie its new parent has not reaped yet.
+    let alive = || {
+        fs::read_to_string(&stat).is_ok_and(|s| {
+            s.rsplit_once(") ")
+                .is_some_and(|(_, rest)| !rest.starts_with('Z'))
+        })
+    };
+    let started = std::time::Instant::now();
+    while alive() && started.elapsed() < std::time::Duration::from_secs(2) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        !alive(),
+        "the tool's background child {} still runs",
+        pid.trim()
+    );
 }
 
 #[test]

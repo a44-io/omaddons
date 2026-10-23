@@ -208,6 +208,9 @@ pub const OMARCHY_SHELL_JSON_MAX_BYTES: u64 = 4 * MIB;
 /// `omarchy status` asks the shell `shell ping`; a shell that has not answered `ok` in
 /// this long counts as not running.
 pub const OMARCHY_PING_TIMEOUT: Duration = Duration::from_secs(2);
+/// An Omarchy tool that timed out gets SIGTERM, with its process group, and this long
+/// to exit before the group gets SIGKILL.
+pub const OMARCHY_KILL_GRACE: Duration = Duration::from_millis(200);
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -804,6 +807,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "omarchy status's shell ping; a shell that has not answered ok by then is not running",
     ),
+    limit(
+        "OMARCHY_KILL_GRACE",
+        LimitValue::Millis(ms(OMARCHY_KILL_GRACE)),
+        "ms",
+        None,
+        "a timed-out Omarchy tool's process group, between SIGTERM and SIGKILL",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1056,6 +1066,7 @@ mod tests {
         "OMARCHY_COMMAND_TIMEOUT",
         "OMARCHY_SHELL_JSON_MAX_BYTES",
         "OMARCHY_PING_TIMEOUT",
+        "OMARCHY_KILL_GRACE",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

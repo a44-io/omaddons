@@ -868,6 +868,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "ms",
       "config_key": null,
       "notes": "omarchy status's shell ping; a shell that has not answered ok by then is not running"
+    },
+    {
+      "name": "OMARCHY_KILL_GRACE",
+      "value": {
+        "millis": 200
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "a timed-out Omarchy tool's process group, between SIGTERM and SIGKILL"
     }
   ]
 ]

@@ -4,16 +4,19 @@
 //! `omarchy-plugin-disable` takes it off, which write Omarchy's `shell.json` (omaddons
 //! never writes it). Each runs from `PATH` with argv only, the user's environment
 //! inherited unchanged (the tools need `OMARCHY_PATH`, the Wayland and Hyprland
-//! variables and the D-Bus session), killed after [`OMARCHY_COMMAND_TIMEOUT`] (the
-//! ping after [`OMARCHY_PING_TIMEOUT`]), its output read up to
-//! [`API_RESPONSE_MAX_BYTES`].
+//! variables and the D-Bus session), in its own process group, which is stopped after
+//! [`OMARCHY_COMMAND_TIMEOUT`] (the ping after [`OMARCHY_PING_TIMEOUT`]), its output read
+//! up to [`API_RESPONSE_MAX_BYTES`].
 
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::limits::{API_RESPONSE_MAX_BYTES, OMARCHY_COMMAND_TIMEOUT, OMARCHY_PING_TIMEOUT};
+use crate::limits::{
+    API_RESPONSE_MAX_BYTES, OMARCHY_COMMAND_TIMEOUT, OMARCHY_KILL_GRACE, OMARCHY_PING_TIMEOUT,
+};
 
 /// The validator Omarchy ships.
 pub const VALIDATOR: &str = "omarchy-plugin-validate";
@@ -74,13 +77,15 @@ pub fn run(program: &str, args: &[&str]) -> Result<Ran, NotRun> {
 
 /// [`run`], killed after `timeout`.
 fn run_for(program: &str, args: &[&str], timeout: Duration) -> Result<Ran, NotRun> {
-    // Omarchy's own tools, by name, from the user's PATH: no shell, argv only.
+    // Omarchy's own tools, by name, from the user's PATH: no shell, argv only. Each in
+    // its own process group, so a timeout stops the children the script started too.
     let mut command = Command::new(program); // ubs:ignore — fixed Omarchy tool names
     let mut child = command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
         .map_err(|err| match err.kind() {
             // ubs:ignore — an io::ErrorKind, not a secret
@@ -117,13 +122,11 @@ fn run_for(program: &str, args: &[&str], timeout: Duration) -> Result<Ran, NotRu
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop(&mut child);
                 return Err(NotRun::TimedOut);
             }
             Err(err) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop(&mut child);
                 return Err(NotRun::Failed(err.to_string()));
             }
         }
@@ -133,6 +136,21 @@ fn run_for(program: &str, args: &[&str], timeout: Duration) -> Result<Ran, NotRu
         stdout: stdout.join().unwrap_or_default(),
         stderr: stderr.join().unwrap_or_default(),
     })
+}
+
+/// Stops `child` and every process of the group it leads: SIGTERM, then SIGKILL after
+/// [`OMARCHY_KILL_GRACE`], then reaps it. It is not reaped before the SIGKILL, so the
+/// group's id cannot have passed to another process meanwhile.
+fn stop(child: &mut Child) {
+    use rustix::process::{Pid, Signal, kill_process_group};
+    let group = i32::try_from(child.id()).ok().and_then(Pid::from_raw);
+    if let Some(group) = group {
+        let _ = kill_process_group(group, Signal::TERM);
+        std::thread::sleep(OMARCHY_KILL_GRACE);
+        let _ = kill_process_group(group, Signal::KILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// What Omarchy's validator says about the plugin at `dir`: `None` when it is not on
