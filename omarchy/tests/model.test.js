@@ -823,6 +823,19 @@ describe("the Backups view and the restore chooser", () => {
   const LISTED = () => M.reduceBackups(fixture("backups"))
   const DETAIL = () => M.reduceBackups(fixture("backups-detail"))
 
+  test("times are local, as the bar's clock shows them", () => {
+    const zone = process.env.TZ
+    process.env.TZ = "America/Chicago"
+    try {
+      expect(M.dateText("2026-10-23T05:31:00Z")).toBe("2026-10-23 00:31")
+      expect(M.dateText("not a time")).toBe("not a time")
+      expect(M.dateText("")).toBe("")
+    } finally {
+      if (zone === undefined) delete process.env.TZ
+      else process.env.TZ = zone
+    }
+  })
+
   test("rows say when, what, how big and what they prove; never verified for metadata only", () => {
     const listed = LISTED()
     const retail = listed.targets[0]

@@ -1369,9 +1369,15 @@ function confirmText(name, env) {
 }
 
 // "2026-10-22 22:46" (UTC, as the CLI writes it).
+// An instant as local "YYYY-MM-DD HH:MM", the zone the bar's clock shows; a text that
+// does not parse, as it is.
 function dateText(iso) {
   var s = str(iso)
-  return s.length >= 16 ? s.slice(0, 10) + " " + s.slice(11, 16) : s
+  var at = new Date(s)
+  if (s === "" || isNaN(at.getTime())) return s
+  var two = function(n) { return n < 10 ? "0" + n : String(n) }
+  return at.getFullYear() + "-" + two(at.getMonth() + 1) + "-" + two(at.getDate())
+    + " " + two(at.getHours()) + ":" + two(at.getMinutes())
 }
 
 // A restore's dry run (D7, D8): what it would put back, the versions that wrote the
@@ -2199,6 +2205,7 @@ if (typeof module !== "undefined") {
     confidenceDots: confidenceDots,
     popularityText: popularityText,
     sinceText: sinceText,
+    dateText: dateText,
     bytesText: bytesText,
     kindText: kindText,
     integrityText: integrityText,
