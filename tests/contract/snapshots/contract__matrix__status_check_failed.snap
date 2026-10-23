@@ -7,6 +7,7 @@ expression: s.stable(&c.envelope)
   "commands": [],
   "data": {
     "cached": false,
+    "issues": [],
     "journal": {
       "in_progress": false,
       "pending": 1
@@ -221,7 +222,8 @@ expression: s.stable(&c.envelope)
         },
         "version": "12.1.5.70391"
       }
-    ]
+    ],
+    "widget": null
   },
   "error": {
     "alternatives": [],

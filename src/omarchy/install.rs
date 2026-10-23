@@ -94,6 +94,10 @@ pub struct PluginInfo {
     pub section: Option<Section>,
     /// It was installed under this run's `HOME` and XDG directories.
     pub context_matches: bool,
+    /// Its `Build.js` says which directories it serves. Without that it serves no state,
+    /// so a reinstall from any run retargets nothing (not on the wire).
+    #[serde(skip)]
+    pub context_known: bool,
 }
 
 /// What to do.
@@ -140,7 +144,7 @@ pub fn install(ctx: &Context, opts: Options) -> Result<Report> {
     let unchanged = |paths: &Paths| Report {
         installed: Installed::Unchanged,
         enabled: enabled_now(placed),
-        plugin: describe(paths, &binary),
+        plugin: describe(paths),
         warnings: Vec::new(),
     };
     if same && (!opts.enable || placed.is_some()) {
@@ -158,7 +162,7 @@ pub fn install(ctx: &Context, opts: Options) -> Result<Report> {
         return Ok(Report {
             installed,
             enabled: enabled_now(placed),
-            plugin: describe(&paths, &binary),
+            plugin: describe(&paths),
             warnings: Vec::new(),
         });
     }
@@ -195,7 +199,7 @@ pub fn install(ctx: &Context, opts: Options) -> Result<Report> {
     Ok(Report {
         installed,
         enabled,
-        plugin: describe(&paths, &binary),
+        plugin: describe(&paths),
         warnings,
     })
 }
@@ -544,19 +548,21 @@ pub fn layout_entry(paths: &Paths, id: &str) -> Option<(Section, Value)> {
         })
 }
 
-/// The installed widget as this run sees it.
-pub fn describe(paths: &Paths, binary: &Path) -> PluginInfo {
+/// The installed widget as this run sees it. File reads only, all bounded, and no
+/// subprocess: `status` reads it on every call (E4).
+pub fn describe(paths: &Paths) -> PluginInfo {
     let dir = paths.omarchy_plugin_dir();
     let id = paths.omarchy_plugin_id();
-    let manifest: Option<Value> = std::fs::read(dir.join(super::assets::MANIFEST))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let manifest = render::installed_manifest(&dir);
     let installed = manifest.is_some();
     let context = render::installed_context(&dir);
+    // What this binary renders for the installed context (M3-D7): another build or
+    // other assets, never merely another context. A missing or foreign `Build.js` in an
+    // installed widget is outdated.
     let outdated = installed
         && match (&context, render::installed_sha256(&dir)) {
             (Some(context), Some(sha)) => {
-                render::render(binary, context, &id).map_or(true, |r| r.content_sha256 != sha)
+                render::content_sha256(context, &id).map_or(true, |own| own != sha)
             }
             _ => true,
         };
@@ -573,6 +579,7 @@ pub fn describe(paths: &Paths, binary: &Path) -> PluginInfo {
         enabled: section.is_some(),
         section,
         context_matches: installed && context == Some(WidgetContext::of(paths)),
+        context_known: installed && context.is_some(),
         path: dir,
         id,
     }

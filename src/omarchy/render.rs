@@ -124,30 +124,16 @@ pub struct Rendered {
 /// The widget for `plugin_id`, run by `binary` under `ctx`. A path that is not UTF-8
 /// cannot be written into `Build.js` and is refused.
 pub fn render(binary: &Path, ctx: &Context, plugin_id: &str) -> Result<Rendered> {
-    let version = env!("CARGO_PKG_VERSION");
-    let mut manifest = manifest_asset()?;
-    if let Value::Object(fields) = &mut manifest {
-        fields.insert("version".to_owned(), Value::String(version.to_owned()));
-        fields.insert("id".to_owned(), Value::String(plugin_id.to_owned()));
-    }
+    let mut manifest = stamped_manifest(plugin_id)?;
+    let manifest_bytes = pretty(&manifest)?;
+    let content_sha256 = content_hash(ctx, &manifest_bytes)?;
     let mut logical: Vec<(String, Vec<u8>)> = ASSETS
         .iter()
         .filter(|(path, _)| *path != MANIFEST)
         .map(|(path, text)| ((*path).to_owned(), text.as_bytes().to_vec()))
         .collect();
-    logical.push((MANIFEST.to_owned(), pretty(&manifest)?));
+    logical.push((MANIFEST.to_owned(), manifest_bytes));
     logical.sort();
-
-    let mut content = Fields::new("omaddons widget content 1");
-    content.field(version.as_bytes());
-    for (_, path) in ctx.as_env() {
-        content.field(utf8(path)?.as_bytes());
-    }
-    for (path, bytes) in &logical {
-        content.field(path.as_bytes());
-        content.field(bytes);
-    }
-    let content_sha256 = content.hex();
 
     let build_js = build_js(binary, ctx, plugin_id, &content_sha256)?;
     let mut code: Vec<(String, Vec<u8>)> = logical
@@ -181,6 +167,42 @@ pub fn render(binary: &Path, ctx: &Context, plugin_id: &str) -> Result<Rendered>
         content_sha256,
         code_dir,
     })
+}
+
+/// [`Rendered::content_sha256`] alone, without building the files: what `status` compares
+/// with an installed widget's `CONTENT_SHA256`, on every call (E4).
+pub fn content_sha256(ctx: &Context, plugin_id: &str) -> Result<String> {
+    content_hash(ctx, &pretty(&stamped_manifest(plugin_id)?)?)
+}
+
+/// The embedded manifest with this build's `version` and `plugin_id` stamped.
+fn stamped_manifest(plugin_id: &str) -> Result<Value> {
+    let mut manifest = manifest_asset()?;
+    if let Value::Object(fields) = &mut manifest {
+        fields.insert(
+            "version".to_owned(),
+            Value::String(env!("CARGO_PKG_VERSION").to_owned()),
+        );
+        fields.insert("id".to_owned(), Value::String(plugin_id.to_owned()));
+    }
+    Ok(manifest)
+}
+
+// The digest of the embedded runtime files, the manifest aside, computed by build.rs.
+include!(concat!(env!("OUT_DIR"), "/assets_digest.rs"));
+
+/// The version, the context's directories, the runtime files (through their build-time
+/// digest) and the stamped manifest: everything the widget is, `BINARY` aside, so
+/// another path to the same build is the same widget (M3-D7).
+fn content_hash(ctx: &Context, manifest: &[u8]) -> Result<String> {
+    let mut content = Fields::new("omaddons widget content 2");
+    content.field(env!("CARGO_PKG_VERSION").as_bytes());
+    for (_, path) in ctx.as_env() {
+        content.field(utf8(path)?.as_bytes());
+    }
+    content.field(&ASSETS_DIGEST);
+    content.field(manifest);
+    Ok(content.hex())
 }
 
 /// The embedded manifest, parsed.
@@ -308,10 +330,16 @@ fn only_line<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
     found.next().is_none().then_some(value)
 }
 
+/// An installed widget's manifest at `dir`, read bounded like everything here; `None`
+/// when it is missing, unreadable or not JSON.
+pub fn installed_manifest(dir: &Path) -> Option<Value> {
+    serde_json::from_str(&read_small(&dir.join(MANIFEST))?).ok()
+}
+
 /// `Build.js` beside the installed service entry point: the manifest names the code
 /// folder, which must be one plain component inside `dir`.
 fn installed_build_js(dir: &Path) -> Option<String> {
-    let manifest: Value = serde_json::from_str(&read_small(&dir.join(MANIFEST))?).ok()?;
+    let manifest = installed_manifest(dir)?;
     let service = Path::new(manifest.get("entryPoints")?.get("service")?.as_str()?);
     let folder = service.parent()?;
     let plain = folder
@@ -387,6 +415,36 @@ mod tests {
             a.code_dir.starts_with("r-") && a.code_dir.len() == 18,
             "{}",
             a.code_dir
+        );
+    }
+
+    /// build.rs's digest is the embedded files' (the manifest aside), so the hash `status`
+    /// computes covers exactly what `render` writes; and `content_sha256` is render's.
+    #[test]
+    fn the_build_time_digest_is_the_embedded_assets() {
+        let mut files: Vec<(&str, &str)> = ASSETS
+            .iter()
+            .filter(|(path, _)| *path != MANIFEST)
+            .copied()
+            .collect();
+        files.sort();
+        let mut digest = Sha256::new();
+        for bytes in std::iter::once("omaddons widget assets 1")
+            .chain(files.iter().flat_map(|(path, text)| [*path, *text]))
+        {
+            digest.update((bytes.len() as u64).to_be_bytes());
+            digest.update(bytes);
+        }
+        assert_eq!(digest.finalize().as_slice(), ASSETS_DIGEST);
+        let rendered = render(&binary(), &ctx("/r"), "a44.omaddons").unwrap();
+        assert_eq!(
+            content_sha256(&ctx("/r"), "a44.omaddons").unwrap(),
+            rendered.content_sha256
+        );
+        assert_ne!(
+            content_sha256(&ctx("/r"), "a44.omaddons-other").unwrap(),
+            rendered.content_sha256,
+            "the id is in the stamped manifest"
         );
     }
 

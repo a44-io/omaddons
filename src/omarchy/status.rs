@@ -30,6 +30,51 @@ pub struct Validation {
     pub errors: Vec<String>,
 }
 
+/// The bar widget as `status` reports it (E4, M3-D7): whether it is installed, on the
+/// bar, and from this build.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct WidgetInfo {
+    /// Omarchy's shell is installed too, not only its config directory.
+    pub omarchy: bool,
+    pub installed: bool,
+    /// It is in a section of the bar.
+    pub enabled: bool,
+    /// The installed manifest's `version`; `null` when none is installed.
+    pub version: Option<String>,
+    /// The installed code is not what this binary renders for the installed context:
+    /// another build or other assets, never merely another context.
+    pub outdated: bool,
+    /// It was installed under this run's `HOME` and XDG directories; `null` when none is
+    /// installed, or when its `Build.js` cannot say (it then serves no state at all).
+    pub context_matches: Option<bool>,
+}
+
+impl WidgetInfo {
+    /// `status` warns, raises the issue and recommends `omarchy install`: an outdated
+    /// widget on an Omarchy desktop, unless it serves another omaddons state, which a
+    /// reinstall from this run would point at this run's state instead (M3-D7).
+    pub fn needs_reinstall(&self) -> bool {
+        self.omarchy && self.installed && self.outdated && self.context_matches != Some(false)
+    }
+}
+
+/// The bar widget for `status`: `None` without Omarchy's config directory. File reads
+/// only, so `status --cached` keeps its budget.
+pub fn widget(paths: &Paths) -> Option<WidgetInfo> {
+    if !paths.omarchy_config_dir().is_dir() {
+        return None;
+    }
+    let plugin = install::describe(paths);
+    Some(WidgetInfo {
+        omarchy: install::present(paths),
+        installed: plugin.installed,
+        enabled: plugin.installed && plugin.enabled,
+        version: plugin.version,
+        outdated: plugin.outdated,
+        context_matches: plugin.context_known.then_some(plugin.context_matches),
+    })
+}
+
 /// What `omarchy status` found.
 #[derive(Debug, Clone)]
 pub struct Report {
@@ -43,8 +88,7 @@ pub struct Report {
 /// Reads it all; see the module docs.
 pub fn status() -> Result<Report> {
     let paths = Paths::from_env()?;
-    let binary = install::current_binary()?;
-    let plugin = install::describe(&paths, &binary);
+    let plugin = install::describe(&paths);
     let omarchy = OmarchyInfo {
         present: install::present(&paths),
         shell_running: shell::ping(),
@@ -66,20 +110,33 @@ pub fn status() -> Result<Report> {
 }
 
 /// `omarchy install` for an outdated widget, or for one installed but on no section of
-/// the bar. Never for another context alone (M3-D7): reinstalling from this run would
-/// point the widget at this run's omaddons state, which is the user's call.
+/// the bar. Never from another context (M3-D7), outdated or not: reinstalling from this
+/// run would point the widget at this run's omaddons state, which is the user's call.
 fn recommendations(plugin: &PluginInfo) -> Vec<CommandHint> {
-    let install = ["omaddons", "omarchy", "install"];
-    if !plugin.installed {
+    if !plugin.installed || plugin.context_known && !plugin.context_matches {
         return Vec::new();
     }
     if plugin.outdated {
-        return vec![CommandHint::new("reinstall_widget", install, false)];
+        return vec![reinstall_hint()];
     }
     if !plugin.enabled {
-        return vec![CommandHint::new("enable_widget", install, false)];
+        return vec![CommandHint::new(
+            "enable_widget",
+            ["omaddons", "omarchy", "install"],
+            false,
+        )];
     }
     Vec::new()
+}
+
+/// `omarchy install` for an outdated widget, as `omarchy status` and `status` recommend
+/// it.
+pub fn reinstall_hint() -> CommandHint {
+    CommandHint::new(
+        "reinstall_widget",
+        ["omaddons", "omarchy", "install"],
+        false,
+    )
 }
 
 #[cfg(test)]
@@ -99,6 +156,7 @@ mod tests {
             enabled,
             section: None,
             context_matches: context,
+            context_known: installed,
         }
     }
 
@@ -131,10 +189,44 @@ mod tests {
             actions(&plugin(true, false, true, true)),
             Vec::<String>::new()
         );
-        // Another omaddons state alone recommends nothing.
+        // Another omaddons state recommends nothing, even for an outdated widget.
         assert_eq!(
             actions(&plugin(true, false, true, false)),
             Vec::<String>::new()
+        );
+        assert_eq!(
+            actions(&plugin(true, true, true, false)),
+            Vec::<String>::new()
+        );
+        // A widget whose `Build.js` cannot say what it serves serves nothing.
+        let unknown = PluginInfo {
+            context_known: false,
+            ..plugin(true, true, true, false)
+        };
+        assert_eq!(actions(&unknown), ["\"reinstall_widget\""]);
+    }
+
+    fn widget(omarchy: bool, installed: bool, outdated: bool, context: Option<bool>) -> WidgetInfo {
+        WidgetInfo {
+            omarchy,
+            installed,
+            enabled: installed,
+            version: None,
+            outdated,
+            context_matches: context,
+        }
+    }
+
+    #[test]
+    fn only_an_outdated_widget_of_this_state_on_omarchy_asks_for_a_reinstall() {
+        assert!(widget(true, true, true, Some(true)).needs_reinstall());
+        assert!(!widget(true, true, false, Some(true)).needs_reinstall());
+        assert!(!widget(true, true, true, Some(false)).needs_reinstall());
+        assert!(!widget(false, true, true, Some(true)).needs_reinstall());
+        assert!(!widget(true, false, false, None).needs_reinstall());
+        assert!(
+            widget(true, true, true, None).needs_reinstall(),
+            "a widget serving no known state"
         );
     }
 }

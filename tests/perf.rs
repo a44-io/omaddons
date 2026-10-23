@@ -403,8 +403,8 @@ fn update_across_clients_downloads_each_archive_once() {
 }
 
 /// `status --cached` (the widget's view) with 100 records, a memo of 200 entries copied
-/// from recorded release metadata (DBM, BigWigs and WeakAuras), Lua errors and 200
-/// backups, median of 21 runs of the binary: under 5 ms.
+/// from recorded release metadata (DBM, BigWigs and WeakAuras), Lua errors, 200 backups
+/// and the bar widget installed, median of 21 runs of the binary: under 5 ms.
 #[test]
 #[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
 fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
@@ -525,6 +525,22 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
     common::backups::seed_many(&home.client("_retail_"), 200);
     home.run(&["backup", "list"]).expect(0);
 
+    // The bar widget, installed and current (E4): `status` hashes what this binary would
+    // render for it and compares, on every call. Written from E1's render, so no Omarchy
+    // tool runs.
+    let state = paths(&home.env);
+    let rendered = omaddons::omarchy::render::render(
+        std::path::Path::new(env!("CARGO_BIN_EXE_omaddons")),
+        &omaddons::omarchy::render::Context::of(&state),
+        &state.omarchy_plugin_id(),
+    )
+    .unwrap();
+    for (rel, bytes) in &rendered.files {
+        let path = state.omarchy_plugin_dir().join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
     // A cold run, then 21 warm ones.
     let start = Instant::now();
     let check = home.run(&["status", "--cached"]).expect(0);
@@ -553,6 +569,12 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
         (&serde_json::json!(200), &serde_json::json!(false)),
         "the projection covers them: {backups}"
     );
+    let widget = &check["data"]["widget"];
+    assert_eq!(
+        (&widget["installed"], &widget["outdated"]),
+        (&serde_json::json!(true), &serde_json::json!(false)),
+        "the widget is compared: {widget}"
+    );
     let (median, times) = median_of_21(|| {
         home.run(&["status", "--cached"]).expect(0);
     });
@@ -560,7 +582,7 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
     measured(format_args!(
         "status --cached: median {median:?}, p95 {p95:?}, first {cold:?}; memo {memo_bytes} \
          bytes, 100 records; 16 accounts with a {} byte BugGrabber file each, errors memo \
-         {errors_memo_bytes} bytes; 200 backups",
+         {errors_memo_bytes} bytes; 200 backups; the bar widget installed",
         bug.len()
     ));
     assert!(

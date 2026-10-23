@@ -961,6 +961,156 @@ fn status_and_its_human_output_note_another_state() {
 }
 
 // ---------------------------------------------------------------------------------------
+// `status`'s widget block (E4).
+
+/// The warning codes of an envelope.
+fn warning_codes(d: &Value) -> Vec<String> {
+    d["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["code"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// `omaddons <args>`'s human output on `desk`, with `extra`.
+fn human(desk: &Desk, args: &[&str], extra: &[(&str, &str)]) -> String {
+    let binary = Path::new(env!("CARGO_BIN_EXE_omaddons"));
+    let out = desk.command(binary, args, extra).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert_private_all(&text, &String::from_utf8(out.stderr).unwrap());
+    text
+}
+
+/// `status` reports the bar widget: `null` without Omarchy, then not installed, current,
+/// off the bar, outdated (with the warning, the machine's issue, the recommendation and
+/// `summary.widget_outdated`), seen from another omaddons state (a note, nothing
+/// recommended), and without its `Build.js`. It runs no Omarchy tool and writes nothing.
+#[test]
+fn status_reports_the_bar_widget() {
+    let bare = Desk::bare();
+    let d = bare.run(&["status"]).expect(0);
+    assert_eq!(d["data"]["widget"], Value::Null);
+    assert_eq!(d["data"]["issues"], serde_json::json!([]));
+    assert!(!warning_codes(&d).contains(&"widget_outdated".to_owned()));
+
+    let desk = Desk::new();
+    let widget = |d: &Value| d["data"]["widget"].clone();
+    let d = desk.run(&["status"]).expect(0);
+    assert_eq!(
+        widget(&d),
+        serde_json::json!({"omarchy": true, "installed": false, "enabled": false, "version": null,
+            "outdated": false, "context_matches": null})
+    );
+    assert!(warning_codes(&d).is_empty(), "{d:#}");
+
+    desk.install();
+    let history = fs::read(desk.history()).unwrap();
+    let bell = fs::read(desk.doorbell()).unwrap();
+    let before = tree(&desk.config_omarchy());
+    let calls = desk.calls().len();
+    for args in [&["status"][..], &["status", "--cached"]] {
+        let d = desk.run(args).expect(0);
+        assert_eq!(
+            widget(&d),
+            serde_json::json!({"omarchy": true, "installed": true, "enabled": true,
+                "version": env!("CARGO_PKG_VERSION"), "outdated": false, "context_matches": true})
+        );
+        assert_eq!(d["data"]["summary"]["widget_outdated"], false);
+        assert_eq!(d["data"]["issues"], serde_json::json!([]));
+        assert!(warning_codes(&d).is_empty(), "{d:#}");
+    }
+    assert_eq!(desk.calls().len(), calls, "status runs no Omarchy tool");
+    assert_eq!(fs::read(desk.history()).unwrap(), history);
+    assert_eq!(fs::read(desk.doorbell()).unwrap(), bell);
+    assert_eq!(tree(&desk.config_omarchy()), before);
+    assert!(
+        !human(&desk, &["status"], &[]).contains("bar widget"),
+        "a current widget goes unmentioned"
+    );
+
+    fs::write(desk.config_omarchy().join("shell.json"), "{}").unwrap();
+    assert_eq!(widget(&desk.run(&["status"]).expect(0))["enabled"], false);
+
+    // Another build's code hash: outdated, and the triage says so.
+    restamp(
+        &desk,
+        "var CONTENT_SHA256 = ",
+        &format!("\"{}\"", "0".repeat(64)),
+    );
+    let d = desk.run(&["status", "--cached"]).expect(0);
+    assert_eq!(widget(&d)["outdated"], true);
+    assert_eq!(warning_codes(&d), ["widget_outdated"]);
+    assert_eq!(d["data"]["summary"]["widget_outdated"], true);
+    assert_eq!(d["data"]["summary"]["issues"]["p3"], 1);
+    assert_eq!(d["data"]["summary"]["state"], "idle", "a P3 is not urgent");
+    assert_eq!(
+        d["data"]["issues"][0]["id"],
+        "fm-plugins-widget-version-drift"
+    );
+    assert_eq!(actions(&d), ["reinstall_widget"]);
+    assert!(
+        human(&desk, &["status"], &[])
+            .contains("bar widget: from another omaddons build → omaddons omarchy install")
+    );
+
+    // From another omaddons state: the facts and a note, but no reinstall from here,
+    // which would point the widget at this state.
+    let elsewhere = desk.root().join("other-state");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let other = [("XDG_STATE_HOME", elsewhere.to_str().unwrap())];
+    let d = desk.run_with(&["status"], &other).expect(0);
+    assert_eq!(
+        (&widget(&d)["outdated"], &widget(&d)["context_matches"]),
+        (&Value::Bool(true), &Value::Bool(false))
+    );
+    assert!(warning_codes(&d).is_empty(), "{d:#}");
+    assert_eq!(d["data"]["issues"], serde_json::json!([]));
+    assert_eq!(d["data"]["summary"]["widget_outdated"], false);
+    assert_eq!(actions(&d), Vec::<String>::new());
+    let note =
+        "bar widget: serves another omaddons state (installed under other HOME or XDG directories)";
+    let text = human(&desk, &["status"], &other);
+    assert!(
+        text.contains(&format!("{note}, from another omaddons build")),
+        "{text}"
+    );
+    assert!(!text.contains("→ omaddons omarchy install"), "{text}");
+
+    desk.install();
+    let d = desk.run(&["status"]).expect(0);
+    assert_eq!(widget(&d)["outdated"], false);
+    assert!(warning_codes(&d).is_empty(), "{d:#}");
+    let text = human(&desk, &["status"], &other);
+    assert!(
+        text.contains(note) && !text.contains("from another omaddons build"),
+        "{text}"
+    );
+
+    // No `Build.js`: outdated, and serving no known state, so a reinstall from any run
+    // retargets nothing.
+    let (rel, _) = tree(&desk.plugin())
+        .into_iter()
+        .find(|(rel, _)| rel.ends_with("/Build.js"))
+        .unwrap();
+    fs::remove_file(desk.plugin().join(rel)).unwrap();
+    for extra in [&[][..], &other] {
+        let d = desk.run_with(&["status"], extra).expect(0);
+        assert_eq!(
+            (&widget(&d)["outdated"], &widget(&d)["context_matches"]),
+            (&Value::Bool(true), &Value::Null)
+        );
+        assert_eq!(warning_codes(&d), ["widget_outdated"]);
+        assert_eq!(actions(&d), ["reinstall_widget"]);
+    }
+    assert_eq!(
+        actions(&desk.run_with(&["omarchy"], &other).expect(0)),
+        ["reinstall_widget"]
+    );
+}
+
+// ---------------------------------------------------------------------------------------
 // `omarchy remove`.
 
 #[test]

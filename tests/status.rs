@@ -1285,9 +1285,10 @@ mod backups {
             &[],
         )
         .expect(0);
+        // The backup is an hour old: "today" or, in the day's first hour, a date.
         let human = run(&home, &["status"], &[]);
         assert!(
-            human.stdout.contains("  backups: 1 (newest today ")
+            human.stdout.contains("  backups: 1 (newest ")
                 && human
                     .stdout
                     .contains(", manual) · auto: off · 68.7 GB free"),

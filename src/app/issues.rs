@@ -12,6 +12,7 @@ use super::drift::reinstall_hint;
 use super::status::{Attention, StatusTarget, forget_target_hint, inspect_hint};
 use crate::drift::DriftState;
 use crate::error::CommandHint;
+use crate::omarchy::status::{self as omarchy_status, WidgetInfo};
 
 /// The failure-mode ids (vision D20), one table the M4 doctor imports.
 pub mod ids {
@@ -86,6 +87,22 @@ pub struct Issue {
     /// The addon it is about, when it is about one.
     pub addon: Option<String>,
     pub remediation: Remediation,
+}
+
+/// The issues of no client: the machine's own, today the bar widget's (E4). `status`
+/// lists them in `data.issues`, and `summary.issues` counts each once.
+pub fn machine_issues(widget: Option<&WidgetInfo>) -> Vec<Issue> {
+    let mut out = Vec::new();
+    if widget.is_some_and(WidgetInfo::needs_reinstall) {
+        out.push(Issue {
+            id: ids::WIDGET_VERSION_DRIFT,
+            severity: Severity::P3,
+            title: "The bar widget is from another omaddons build".to_owned(),
+            addon: None,
+            remediation: Remediation::hint(&omarchy_status::reinstall_hint()),
+        });
+    }
+    out
 }
 
 /// `target`'s issues, ranked by severity, then id, then addon. `journal_reason` is why a

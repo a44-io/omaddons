@@ -354,6 +354,131 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
     assert!(missing.is_empty(), "never recommended: {missing:?}");
 }
 
+/// `reinstall_widget` (E4): with an outdated bar widget, `status` warns `widget_outdated`,
+/// lists the machine's issue `fm-plugins-widget-version-drift` (P3) and recommends
+/// `omarchy install`. Run on a home freshly built the same way, the recommendation and
+/// the issue's remediation each bring the widget current, and all three go. Every run
+/// has a fake Omarchy (`OMARCHY_PATH`) and no Omarchy tool on `PATH`: never this
+/// machine's shell or bar.
+#[test]
+fn reinstall_widget_runs_and_clears_the_widget_issue() {
+    use super::{Scene, fs};
+    let env_of = |s: &Scene| -> [(&'static str, String); 2] {
+        let root = s.home.env.root();
+        [
+            ("PATH", root.join("no-tools").display().to_string()),
+            ("OMARCHY_PATH", root.join("omarchy").display().to_string()),
+        ]
+    };
+    let run = |s: &Scene, args: &[&str]| -> serde_json::Value {
+        let env = env_of(s);
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        s.json_env(args, &env, 0).envelope
+    };
+    let build = || {
+        let s = Scene::new();
+        let root = s.home.env.root().to_path_buf();
+        for dir in [root.join("omarchy/shell"), root.join("no-tools")] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::create_dir_all(s.home.env.config().join("omarchy")).unwrap();
+        run(&s, &["omarchy", "install"]);
+        // Another build's code hash in the installed Build.js.
+        let plugin = s.home.env.config().join("omarchy/plugins/omaddons");
+        let code = fs::read_dir(&plugin)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.is_dir())
+            .unwrap();
+        let build_js = code.join("Build.js");
+        let text = fs::read_to_string(&build_js).unwrap();
+        let stamped: Vec<String> = text
+            .lines()
+            .map(|line| {
+                if line.starts_with("var CONTENT_SHA256 = ") {
+                    format!("var CONTENT_SHA256 = \"{}\";", "0".repeat(64))
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect();
+        fs::write(&build_js, stamped.join("\n") + "\n").unwrap();
+        s
+    };
+    let install = json!(["omaddons", "omarchy", "install"]);
+
+    let s = build();
+    let status = run(&s, &["status"]);
+    let data = &status["data"];
+    assert_eq!(
+        (
+            &data["widget"]["outdated"],
+            &data["widget"]["context_matches"]
+        ),
+        (&json!(true), &json!(true)),
+        "{status:#}"
+    );
+    assert_eq!(
+        (
+            &data["summary"]["widget_outdated"],
+            &data["summary"]["issues"]["p3"]
+        ),
+        (&json!(true), &json!(1))
+    );
+    let warning = status["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["code"] == "widget_outdated")
+        .cloned();
+    assert!(warning.is_some(), "no widget_outdated: {status:#}");
+    assert_eq!(warning.unwrap()["fix_argv"], install);
+    let issue = &data["issues"][0];
+    assert_eq!(data["issues"].as_array().unwrap().len(), 1, "{status:#}");
+    assert_eq!(issue["id"], "fm-plugins-widget-version-drift");
+    assert_eq!(issue["severity"], "P3");
+    assert_eq!(
+        issue["remediation"],
+        json!({"command": "omaddons omarchy install", "argv": install, "destructive": false})
+    );
+    let recommended = status["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["action"] == "reinstall_widget")
+        .cloned();
+    assert!(recommended.is_some(), "no reinstall_widget: {status:#}");
+    let recommended = recommended.unwrap();
+    assert_eq!(
+        (&recommended["argv"], &recommended["destructive"]),
+        (&install, &json!(false))
+    );
+
+    for argv in [&recommended["argv"], &issue["remediation"]["argv"]] {
+        let fresh = build();
+        let argv: Vec<String> = serde_json::from_value(argv.clone()).unwrap();
+        let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+        run(&fresh, &args);
+        let after = run(&fresh, &["status"]);
+        let data = &after["data"];
+        assert_eq!(data["widget"]["outdated"], false, "{after:#}");
+        assert_eq!(data["issues"], json!([]), "{after:#}");
+        assert_eq!(data["summary"]["widget_outdated"], false);
+        let named = |key: &str, field: &str, value: &str| {
+            after[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry[field] == value)
+        };
+        assert!(
+            !named("warnings", "code", "widget_outdated")
+                && !named("commands", "action", "reinstall_widget"),
+            "{after:#}"
+        );
+    }
+}
+
 /// `check_errors` (M3): `status --cached` recommends `omaddons errors` exactly when a
 /// client's Lua errors are stale or were never read, and running it, on a home freshly
 /// built the same way, leaves them read and the recommendation gone. A read that was

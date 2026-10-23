@@ -31,7 +31,7 @@ use super::drift::{DriftItem, needs_reinstall, reinstall_hint};
 use super::errors::CoverageState;
 use super::errors_status::{self, TargetErrors};
 use super::history::ChangeCounts;
-use super::issues::{Issue, SeverityCounts, issues_for};
+use super::issues::{Issue, SeverityCounts, issues_for, machine_issues};
 use super::remembered::Remembered;
 use super::world::World;
 use crate::backup::inventory;
@@ -49,6 +49,7 @@ use crate::fsx::{LockState, probe_global};
 use crate::inventory::{Counts, Depth, FolderClass, Inventory, inventory_shared};
 use crate::limits::ERRORS_MAX_TOTAL_BYTES;
 use crate::model::{Actor, AddonState, FolderName, Ref, RunId, Target, TargetKey, TxKind};
+use crate::omarchy::status::{self as omarchy_status, WidgetInfo};
 use crate::output::{Outcome, Style, table};
 use crate::politeness::DEFAULT_CHECK_INTERVAL;
 use crate::resolve::catalog::Catalog;
@@ -94,6 +95,11 @@ pub struct StatusData {
     /// `last_change_state: "unknown"`, when `--cached` cannot tell (never "nothing").
     pub last_change: Option<LastChange>,
     pub last_change_state: LastChangeState,
+    /// The bar widget (E4): installed, on the bar, from this build; `null` without
+    /// Omarchy's config directory.
+    pub widget: Option<WidgetInfo>,
+    /// Issues of no client: the machine's own (today, an outdated bar widget's).
+    pub issues: Vec<Issue>,
 }
 
 /// Every target at a glance.
@@ -107,7 +113,8 @@ pub struct Summary {
     pub errors: SummaryErrors,
     /// `commands` holds `check_updates`: a check is due.
     pub check_due: bool,
-    /// The bar widget is from another omaddons build (the widget fills it in).
+    /// The bar widget serving this omaddons state is from another build: `widget`'s
+    /// `outdated`, on an Omarchy desktop, for this run's `HOME` and XDG directories.
     pub widget_outdated: bool,
     pub state: SummaryState,
 }
@@ -342,10 +349,14 @@ impl Outcome for StatusOutcome {
 
     fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
         if self.data.targets.is_empty() {
-            return writeln!(
+            writeln!(
                 w,
                 "No WoW client found. Add one with: omaddons targets add <path>"
-            );
+            )?;
+            if let Some(line) = widget_line(self.data.widget.as_ref()) {
+                writeln!(w, "{line}")?;
+            }
+            return Ok(());
         }
         writeln!(w, "{}", summary_line(&self.data.summary))?;
         let rows: Vec<Vec<String>> = self
@@ -410,6 +421,9 @@ impl Outcome for StatusOutcome {
             }
         }
         for line in &self.drift_lines {
+            writeln!(w, "{line}")?;
+        }
+        if let Some(line) = widget_line(self.data.widget.as_ref()) {
             writeln!(w, "{line}")?;
         }
         match (&self.data.last_change, self.data.last_change_state) {
@@ -529,6 +543,29 @@ fn drift_line(target: &str, addon: &AddonDrift, verbose: bool) -> String {
             )
         }
     }
+}
+
+/// The bar widget's human line, when there is something to say: an outdated widget, with
+/// its fix, or one serving another omaddons state, as a note with no command (M3-D7).
+fn widget_line(widget: Option<&WidgetInfo>) -> Option<String> {
+    let widget = widget.filter(|w| w.installed)?;
+    if widget.needs_reinstall() {
+        return Some(
+            "bar widget: from another omaddons build → omaddons omarchy install".to_owned(),
+        );
+    }
+    if widget.context_matches == Some(false) {
+        let build = if widget.outdated {
+            ", from another omaddons build"
+        } else {
+            ""
+        };
+        return Some(format!(
+            "bar widget: serves another omaddons state (installed under other HOME or XDG \
+             directories){build}"
+        ));
+    }
+    None
 }
 
 /// Runs `status`.
@@ -833,12 +870,26 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         t.issues = issues_for(t, reason);
     }
 
-    let (mut commands, first_fix) = recommendations(&targets, check_due);
+    // The bar widget: file reads only, no subprocess (E4).
+    let widget = omarchy_status::widget(&world.paths);
+    let widget_outdated = widget.as_ref().is_some_and(WidgetInfo::needs_reinstall);
+    if widget_outdated {
+        warnings.push(
+            Warning::new(
+                WarningCode::WidgetOutdated,
+                "the bar widget is from another omaddons build, so it stays read-only",
+            )
+            .with_fix(Suggestion::command(["omaddons", "omarchy", "install"])),
+        );
+    }
+    let issues = machine_issues(widget.as_ref());
+
+    let (mut commands, first_fix) = recommendations(&targets, check_due, widget_outdated);
     if args.cached && !world.paths.discovery_cache().exists() {
         commands.push(CommandHint::new("status", ["omaddons", "status"], false));
     }
     let needs_attention = targets.iter().any(|t| !t.attention.is_empty());
-    let summary = summary(&targets, &commands);
+    let summary = summary(&targets, &issues, &commands, widget_outdated);
     let (last_change, last_change_state) = last_change(&world, args.cached);
     Ok(StatusOutcome {
         data: StatusData {
@@ -852,6 +903,8 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             summary,
             last_change,
             last_change_state,
+            widget,
+            issues,
         },
         warnings,
         commands,
@@ -982,12 +1035,19 @@ pub(crate) fn adoptable(
         .count()
 }
 
-/// Every target at a glance, from the targets and the recommendations.
-fn summary(targets: &[StatusTarget], commands: &[CommandHint]) -> Summary {
+/// Every target at a glance, from the targets, the machine's own issues and the
+/// recommendations.
+fn summary(
+    targets: &[StatusTarget],
+    machine: &[Issue],
+    commands: &[CommandHint],
+    widget_outdated: bool,
+) -> Summary {
     let mut issues = SeverityCounts::default();
     for t in targets {
         issues.add(&t.issues);
     }
+    issues.add(machine);
     let with_updates: Vec<&StatusTarget> =
         targets.iter().filter(|t| t.updates.available > 0).collect();
     let updates = SummaryUpdates {
@@ -1011,7 +1071,7 @@ fn summary(targets: &[StatusTarget], commands: &[CommandHint]) -> Summary {
         issues,
         errors,
         check_due: commands.iter().any(|c| c.action() == "check_updates"),
-        widget_outdated: false,
+        widget_outdated,
         state,
     }
 }
@@ -1117,12 +1177,14 @@ pub(super) fn inspect_hint(target: &str) -> CommandHint {
 /// have a command), (2) `reinstall` (E3), (3) `update`, one for all targets with
 /// updates or `-t` when only one has them, (4) `adopt` (E5.3), (5) `check_updates`
 /// when `check_due`, then `check_errors` when a target's Lua errors are stale or
-/// unchecked (M3), (6) `remove_orphans` (C6), (7) the attention fixes (target order,
-/// then item order); then a look at unmanaged folders. Also the first attention item's
+/// unchecked, each target's backup hints, and `reinstall_widget` for an outdated bar
+/// widget (M3), (6) `remove_orphans` (C6), (7) the attention fixes (target order, then
+/// item order); then a look at unmanaged folders. Also the first attention item's
 /// message and fix, for `--check`.
 fn recommendations(
     targets: &[StatusTarget],
     check_due: bool,
+    widget_outdated: bool,
 ) -> (Vec<CommandHint>, Option<(String, Suggestion)>) {
     let (fixes, first) = attention_fixes(targets);
     let mut commands: Vec<CommandHint> = targets
@@ -1170,6 +1232,9 @@ fn recommendations(
         if let Some(backups) = &t.backups {
             commands.extend(backups_status::hints(&t.id, backups));
         }
+    }
+    if widget_outdated {
+        commands.push(omarchy_status::reinstall_hint());
     }
     for t in targets.iter().filter(|t| !t.orphan_names.is_empty()) {
         let argv = ["omaddons", "remove"]
@@ -1377,7 +1442,7 @@ mod tests {
         retail.running = Some(true);
         let classic = target("classic", 1, &[], 0);
         let check = CommandHint::new("check_updates", ["omaddons", "outdated"], false);
-        let s = summary(&[classic, gone, retail], &[check]);
+        let s = summary(&[classic, gone, retail], &[], &[check], false);
         assert_eq!(s.targets, 3);
         assert_eq!(s.running, ["retail"]);
         assert_eq!(
@@ -1392,7 +1457,7 @@ mod tests {
             "3 updates on 2 clients · 1 issue (P2) · retail running"
         );
         assert_eq!(
-            summary_line(&summary(&[target("retail", 0, &[], 0)], &[])),
+            summary_line(&summary(&[target("retail", 0, &[], 0)], &[], &[], false)),
             "Nothing needs doing"
         );
     }
@@ -1416,7 +1481,7 @@ mod tests {
         retail.errors = lua(ErrorsState::Ok, 4, 0);
         let mut classic = target("classic", 0, &[], 0);
         classic.errors = lua(ErrorsState::Ok, 0, 3);
-        let s = summary(&[classic.clone(), retail], &[]);
+        let s = summary(&[classic.clone(), retail], &[], &[], false);
         assert_eq!(
             (s.errors.new, s.errors.targets.clone()),
             (4, vec!["retail".to_owned()])
@@ -1426,7 +1491,7 @@ mod tests {
             summary_line(&s),
             "2 updates on 1 client · 4 new Lua errors on 1 client"
         );
-        let s = summary(&[classic], &[]);
+        let s = summary(&[classic], &[], &[], false);
         assert_eq!((s.errors.new, s.state), (0, SummaryState::Idle));
         assert_eq!(summary_line(&s), "Nothing needs doing");
     }
@@ -1437,7 +1502,7 @@ mod tests {
         let with = |state| {
             let mut t = target("retail", 0, &[], 0);
             t.errors = lua(state, 1, 0);
-            recommendations(&[t], true).0
+            recommendations(&[t], true, false).0
         };
         for state in [ErrorsState::Stale, ErrorsState::Unchecked] {
             let commands = with(state);
@@ -1491,7 +1556,7 @@ mod tests {
             target("gone", 0, &[Attention::TargetMissing], 0),
             target("retail", 3, &[], 1),
         ];
-        let (commands, first) = recommendations(&targets, true);
+        let (commands, first) = recommendations(&targets, true, false);
         assert_eq!(
             actions(&commands),
             [
@@ -1510,15 +1575,46 @@ mod tests {
         );
 
         // One target with updates is named; no check due, no check hint.
-        let (commands, _) = recommendations(&[target("retail", 2, &[], 0)], false);
+        let (commands, _) = recommendations(&[target("retail", 2, &[], 0)], false, false);
         assert_eq!(actions(&commands), ["update"]);
         assert_eq!(commands[0].argv(), ["omaddons", "update", "-t", "retail"]);
         assert_eq!(
             serde_json::to_value(&commands[0]).unwrap()["destructive"],
             false
         );
-        let (commands, first) = recommendations(&[target("retail", 0, &[], 0)], false);
+        let (commands, first) = recommendations(&[target("retail", 0, &[], 0)], false, false);
         assert!(commands.is_empty() && first.is_none());
+    }
+
+    #[test]
+    fn an_outdated_widget_is_recommended_after_the_checks_and_counted_once() {
+        let mut retail = target("retail", 1, &[Attention::AddonDegraded], 0);
+        retail.orphans = 1;
+        retail.orphan_names = vec!["Ace".into()];
+        let (commands, _) = recommendations(&[retail.clone()], true, true);
+        assert_eq!(
+            actions(&commands),
+            [
+                "update",
+                "check_updates",
+                "reinstall_widget",
+                "remove_orphans",
+                "inspect"
+            ]
+        );
+        let widget = omarchy_status::WidgetInfo {
+            omarchy: true,
+            installed: true,
+            enabled: true,
+            version: Some("0.0.0".into()),
+            outdated: true,
+            context_matches: Some(true),
+        };
+        let machine = machine_issues(Some(&widget));
+        let s = summary(&[retail], &machine, &commands, true);
+        assert_eq!((s.issues.p3, s.widget_outdated), (1, true));
+        assert_eq!(s.state, SummaryState::Updates, "a P3 never makes it urgent");
+        assert!(machine_issues(None).is_empty());
     }
 
     #[test]
@@ -1526,7 +1622,7 @@ mod tests {
         let mut retail = target("retail", 1, &[Attention::AddonDegraded], 0);
         retail.orphans = 2;
         retail.orphan_names = vec!["Ace".into(), "BigWigs".into()];
-        let (commands, _) = recommendations(&[retail], true);
+        let (commands, _) = recommendations(&[retail], true, false);
         assert_eq!(
             actions(&commands),
             ["update", "check_updates", "remove_orphans", "inspect"]
@@ -1540,7 +1636,7 @@ mod tests {
             true
         );
         let none = target("retail", 0, &[], 0);
-        assert!(recommendations(&[none], false).0.is_empty());
+        assert!(recommendations(&[none], false, false).0.is_empty());
     }
 
     #[test]
@@ -1556,7 +1652,7 @@ mod tests {
             .map(|i| item(&format!("A{i}"), DriftState::Modified))
             .chain([item("Z", DriftState::Unindexed)])
             .collect();
-        let (commands, first) = recommendations(&[retail], false);
+        let (commands, first) = recommendations(&[retail], false, false);
         assert_eq!(
             actions(&commands),
             [
