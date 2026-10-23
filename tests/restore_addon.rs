@@ -201,48 +201,13 @@ mod support {
         all
     }
 
-    /// `omaddons <args>` with `dir` bind-mounted over itself in a user and mount
-    /// namespace, so it is a mount point of its own; `None` where unprivileged bind mounts
-    /// are refused.
+    /// `omaddons <args> --json --progress json` with `dir` a mount point of its own
+    /// (`common::mounts::bound`), checked for privacy; `None` where unprivileged bind
+    /// mounts are refused.
     pub fn bound(home: &Home, dir: &Path, args: &[String]) -> Option<Run> {
-        let try_bind = std::process::Command::new("unshare")
-            .args(["-r", "-m", "mount", "--bind"])
-            .arg(dir)
-            .arg(dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
-        if !try_bind {
-            return None;
-        }
         let mut argv = args.to_vec();
         argv.extend(["--json", "--progress", "json"].map(str::to_owned));
-        let inner = home.std_command(&argv, &[]);
-        let mut cmd = std::process::Command::new("unshare");
-        cmd.args([
-            "-r",
-            "-m",
-            "sh",
-            "-c",
-            "mount --bind \"$0\" \"$0\" && exec \"$@\"",
-        ])
-        .arg(dir)
-        .arg(inner.get_program())
-        .args(inner.get_args());
-        for (key, value) in inner.get_envs() {
-            match value {
-                Some(value) => cmd.env(key, value),
-                None => cmd.env_remove(key),
-            };
-        }
-        let output = cmd.output().unwrap();
-        let r = Run {
-            argv,
-            code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8(output.stdout).unwrap(),
-            stderr: String::from_utf8(output.stderr).unwrap(),
-        };
+        let r = common::mounts::bound(home, dir, &argv)?;
         assert_private_all(&r.stdout, &r.stderr);
         Some(r)
     }

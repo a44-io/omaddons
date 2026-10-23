@@ -1075,6 +1075,59 @@ fn an_unreadable_addons_folder_fails_every_item() {
     assert_eq!(fs::read_to_string(&addons).unwrap(), "not a folder");
 }
 
+/// An AddOns that is a mount point of its own on the client's filesystem (a bind mount,
+/// so its device number is the stage's) cannot take the swap's rename: the install is
+/// refused while it stages, before anything reaches AddOns, and leaves no journal, no
+/// stage, no in-flight lock and no history line. Without the mount the same install
+/// succeeds.
+#[test]
+fn an_addons_folder_on_a_mount_of_its_own_is_refused_before_the_swap() {
+    let home = Home::new(&["wow"]);
+    let zip = support::foo_zip(home.env.root(), "1.0.0");
+    let args = ["install", &zip, "-t", "retail", "--json"].map(str::to_owned);
+    // Registered first, so the run under the mount has nothing to write but the install.
+    home.run(&["targets", "default", "retail"]).expect(0);
+    let addons = home.addons("_retail_");
+    let left = [
+        home.state().join("journal"),
+        home.state().join("inflight"),
+        home.client("_retail_").join("Interface/.omaddons/stage"),
+    ];
+    let lines = common::state::history(&home).len();
+
+    let Some(r) = common::mounts::bound(&home, &addons, &args) else {
+        common::checkpoint::skip(
+            "an_addons_folder_on_a_mount_of_its_own_is_refused_before_the_swap",
+            "no unprivileged bind mount here",
+        );
+        return;
+    };
+    let envelope = r.expect(1);
+    assert_eq!(envelope["error"]["code"], "io", "{}", r.context());
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Interface/AddOns are on different filesystems"),
+        "{}",
+        r.context()
+    );
+    assert_eq!(listing(&addons), "", "nothing reached AddOns");
+    for dir in &left {
+        assert_eq!(listing(dir), "", "{} is left as it was", dir.display());
+    }
+    assert_eq!(
+        common::state::history(&home).len(),
+        lines,
+        "no history line"
+    );
+
+    // The control: the same install, AddOns on its filesystem's own mount.
+    let envelope = home.exec(&args).expect(0);
+    assert_eq!(items(&envelope)[0]["status"], "installed", "{envelope:#}");
+    assert!(addons.join("Foo/Foo.toc").is_file());
+}
+
 #[test]
 fn a_pinned_addon_stays_until_a_version_moves_it() {
     let mut home = Home::new(&["wow"]);

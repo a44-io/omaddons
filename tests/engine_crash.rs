@@ -2158,19 +2158,7 @@ mod restore_support {
             ];
             let mut cmd = match bind {
                 None => Command::new(std::env::current_exe().unwrap()),
-                Some(dir) => {
-                    let mut cmd = Command::new("unshare");
-                    cmd.args([
-                        "-r",
-                        "-m",
-                        "sh",
-                        "-c",
-                        "mount --bind \"$0\" \"$0\" && exec \"$@\"",
-                    ])
-                    .arg(dir)
-                    .arg(std::env::current_exe().unwrap());
-                    cmd
-                }
+                Some(dir) => common::mounts::under_bind(dir, std::env::current_exe().unwrap()),
             };
             cmd.args(args);
             self.s.home.env.apply_to(&mut cmd);
@@ -2298,19 +2286,6 @@ mod restore_support {
         fs::read_dir(dir)
             .map(|l| l.map(|e| e.unwrap().path()).collect())
             .unwrap_or_default()
-    }
-
-    /// Whether this machine lets an unprivileged process bind-mount in a user and mount
-    /// namespace (`unshare -rm`), tried on `dir`.
-    pub fn can_bind_mount(dir: &Path) -> bool {
-        Command::new("unshare")
-            .args(["-r", "-m", "mount", "--bind"])
-            .arg(dir)
-            .arg(dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
     }
 
     /// What one restore run did.
@@ -3363,7 +3338,7 @@ fn a_wtf_mount_point_or_a_stage_on_another_mount_is_refused_before_a_copy() {
     ] {
         let r = restore_support::RestoreScene::new(true);
         let dir = r.client().join(bind);
-        if !restore_support::can_bind_mount(&dir) {
+        if !common::mounts::can_bind_mount(&dir) {
             let _ = std::io::Write::write_fmt(
                 &mut std::io::stderr(),
                 format_args!("SKIP {reason}: no unprivileged user and mount namespaces here\n"),

@@ -1,6 +1,6 @@
 //! Builders for integration tests (DEC-8): an isolated environment, synthetic WoW
 //! trees, PE stubs, `product.db`, launcher configs, a fake `/proc`, `pause` failpoint
-//! markers, addon folders, HTTP fixtures and release graphs, drift mutators, readers
+//! markers, bind mounts, addon folders, HTTP fixtures and release graphs, drift mutators, readers
 //! for state and `net.log`, and SavedVariables in both writer formats (BugGrabber's
 //! among them).
 //! Each integration test crate declares `mod common;` and uses the subset it needs.
@@ -26,6 +26,7 @@ pub mod http;
 pub mod launchers;
 pub mod lua;
 pub mod memo;
+pub mod mounts;
 pub mod netlog;
 pub mod pause;
 pub mod pe;
