@@ -5,7 +5,10 @@
 //!
 //! Every transaction a test makes is undone before it ends, and every AddOns folder it
 //! touched must hash as it did before. Target keys and markers written on the first
-//! mutation stay, by design. A test that cannot run (a variable unset, its client
+//! mutation stay, by design, and so does a client's newest backup (M3-D32: `backup
+//! prune` keeps the latest checkpoint whatever it is asked); every other backup a test
+//! makes, the automatic one before a client's first change of the day included, is
+//! pruned. A test that cannot run (a variable unset, its client
 //! running) prints a `SKIP <test>: <reason>` line and fails unless `OMADDONS_ALLOW_SKIP`
 //! names it (`common::checkpoint`).
 
@@ -20,9 +23,10 @@ use common::checkpoint;
 use common::trees::tree_hash;
 use serde_json::Value;
 use support::{
-    LIVE, MACHINE, addons_of, blizzard_hashes, clients, declares, entries, flavors_of,
-    forever_guard, hashes, install_then_undo, net_log_lines, note, omaddons, recent_tags,
-    skip_if_running, snapshot_all, target, target_where, tx_of, undo_all,
+    LIVE, MACHINE, addons_of, all_backups, blizzard_hashes, clients, declares, entries, flavors_of,
+    forever_guard, hashes, install_then_undo, names_in, net_log_lines, note, omaddons,
+    prune_new_backups, recent_tags, skip_if_running, snapshot_all, target, target_where, tx_of,
+    undo_all,
 };
 
 /// The live Classic clients: family, product, interface, version prefix.
@@ -272,6 +276,112 @@ mod support {
         }
     }
 
+    /// The backups on `id`'s client, by id.
+    pub fn backups_of(id: &str) -> Vec<String> {
+        let (code, listed) = omaddons(&["backup", "list", "-t", id]);
+        assert_eq!(code, 0, "{listed:#}");
+        listed["data"]["targets"][0]["backups"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b["id"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// `id`'s newest checkpoint: its newest qualifying capture, which `backup prune`
+    /// refuses to delete (M3-D32).
+    pub fn newest_checkpoint(id: &str) -> Option<String> {
+        let (code, listed) = omaddons(&["backup", "list", "-t", id]);
+        assert_eq!(code, 0, "{listed:#}");
+        listed["data"]["targets"][0]["backups"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|b| b["qualifying"] == true)
+            .max_by_key(|b| {
+                (
+                    b["captured_at"].as_str().unwrap_or_default().to_owned(),
+                    b["id"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .and_then(|b| b["id"].as_str().map(str::to_owned))
+    }
+
+    /// Every client's backups, by client id.
+    pub fn all_backups() -> BTreeMap<String, Vec<String>> {
+        clients()
+            .into_iter()
+            .map(|(id, ..)| {
+                let backups = backups_of(&id);
+                (id, backups)
+            })
+            .collect()
+    }
+
+    /// Prunes the backups made since `before` (the automatic checkpoint before a client's
+    /// first change of the day, and those a test takes), all but the newest checkpoint of
+    /// a client, which `backup prune` keeps whatever it is asked (M3-D32): a client gains
+    /// at most that one. Returns what is left, by client.
+    pub fn prune_new_backups(
+        before: &BTreeMap<String, Vec<String>>,
+    ) -> BTreeMap<String, Vec<String>> {
+        let new = |id: &str, now: &[String]| -> Vec<String> {
+            now.iter()
+                .filter(|b| !before.get(id).is_some_and(|kept| kept.contains(b)))
+                .cloned()
+                .collect()
+        };
+        for (id, now) in all_backups() {
+            let newest = newest_checkpoint(&id);
+            let made: Vec<String> = new(&id, &now)
+                .into_iter()
+                .filter(|b| Some(b) != newest.as_ref())
+                .collect();
+            if made.is_empty() {
+                continue;
+            }
+            let mut args = vec!["backup", "prune"];
+            args.extend(made.iter().map(String::as_str));
+            args.extend(["-t", id.as_str()]);
+            let (code, pruned) = omaddons(&args);
+            note(
+                &format!("backup prune (made by the test) -t {id}"),
+                &pruned["data"],
+            );
+            assert_eq!(code, 0, "{pruned:#}");
+        }
+        let left = all_backups();
+        for (id, now) in &left {
+            let made = new(id, now);
+            assert!(
+                made.len() <= 1,
+                "{id}: only the newest checkpoint stays, but {} backups the test made are left",
+                made.len()
+            );
+        }
+        left
+    }
+
+    /// How many of `names` (account folder names) appear in `text` as a whole token,
+    /// ignoring case; the count only, so a failure never prints a name.
+    pub fn names_in(text: &str, names: &[String]) -> usize {
+        let text = text.to_lowercase();
+        let bounded = |at: usize, len: usize| {
+            let before = text[..at].chars().next_back();
+            let after = text[at + len..].chars().next();
+            let edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '#');
+            edge(before) && edge(after)
+        };
+        names
+            .iter()
+            .filter(|name| {
+                let name = name.to_lowercase();
+                text.match_indices(&name)
+                    .any(|(at, _)| bounded(at, name.len()))
+            })
+            .count()
+    }
+
     /// The transaction an envelope committed: `data.tx`, else its only target's.
     pub fn tx_of(envelope: &Value) -> Option<String> {
         envelope["data"]["tx"]
@@ -471,7 +581,7 @@ fn keyless_installs_retail() {
         return;
     }
     let addons = addons_of("retail");
-    let before = tree_hash(&addons);
+    let (before, backups) = (tree_hash(&addons), all_backups());
     // WeakAuras 5.22 publishes no mainline build (Midnight is unsupported upstream), so
     // the only right outcome for it on retail is a refusal; it must never install wrong.
     install_then_undo(
@@ -479,6 +589,7 @@ fn keyless_installs_retail() {
         &["weakauras", "dbm", "bigwigs", "plater", "bartender4"],
         &["weakauras"],
     );
+    prune_new_backups(&backups);
     assert_eq!(tree_hash(&addons), before, "retail AddOns as before");
     let (_, after) = omaddons(&["status"]);
     let retail = target(&after, "mainline");
@@ -518,7 +629,7 @@ fn keyless_installs_classic() {
         .iter()
         .map(|a| a.parent().and_then(|i| i.parent()).unwrap().join("WTF"))
         .collect();
-    let (before, wtf_before) = (hashes(&addons), hashes(&wtf));
+    let (before, wtf_before, backups) = (hashes(&addons), hashes(&wtf), all_backups());
     let refs = [
         "weakauras",
         "dbm",
@@ -552,6 +663,7 @@ fn keyless_installs_classic() {
         undos.push(Some((code, hashes(&addons))));
     }
     undos.reverse();
+    prune_new_backups(&backups);
 
     // Now the checks.
     for (i, (code, installed, after, _)) in installs.iter().enumerate() {
@@ -733,18 +845,19 @@ fn legacy_installs_335_from_git_and_from_a_release() {
     }
     let id = wotlk["id"].as_str().unwrap_or("wotlk").to_owned();
     let addons = addons_of(&id);
-    let before = tree_hash(&addons);
+    let (before, backups) = (tree_hash(&addons), all_backups());
     let blizzard = blizzard_hashes(&addons);
     assert_eq!(blizzard.len(), 23);
     // The catalog's GroupBulletinBoard is a git ref; the same addon's GitHub release is
     // a zip-only release listed through the REST fallback.
     let from_git = install_then_undo(&id, &["gbb"], &[]);
+    install_then_undo(&id, &["gh:fondlez/GroupBulletinBoard"], &[]);
+    prune_new_backups(&backups);
     assert!(
         from_git["data"]["items"][0]["ref"]
             .as_str()
             .is_some_and(|r| r.starts_with("git:"))
     );
-    install_then_undo(&id, &["gh:fondlez/GroupBulletinBoard"], &[]);
     assert_eq!(blizzard_hashes(&addons), blizzard, "Blizzard_* untouched");
     assert_eq!(tree_hash(&addons), before, "wotlk AddOns as before");
 }
@@ -811,7 +924,7 @@ fn m2_pin_unpin_update_on_era() {
     if skip_if_running(test, &target_where(&status, "id", "era")) {
         return;
     }
-    let (guard, snapshot) = (forever_guard(), snapshot_all());
+    let (guard, snapshot, backups) = (forever_guard(), snapshot_all(), all_backups());
     let tags = recent_tags("tullamods", "Dominos");
     note("Dominos tags", &serde_json::json!(tags));
     let mut txs: Vec<String> = Vec::new();
@@ -842,6 +955,7 @@ fn m2_pin_unpin_update_on_era() {
         steps.push(updated["data"]["targets"][0]["items"][0].clone());
     }
     undo_all(&txs);
+    prune_new_backups(&backups);
     assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
     assert_eq!(forever_guard(), guard, "the Forever set untouched");
     assert!(
@@ -865,12 +979,13 @@ fn m2_dependency_install_on_retail() {
     if skip_if_running(test, &target_where(&status, "id", "retail")) {
         return;
     }
-    let (guard, snapshot) = (forever_guard(), snapshot_all());
+    let (guard, snapshot, backups) = (forever_guard(), snapshot_all(), all_backups());
     let by_hand = addons_of("retail").join("BigWigs").exists();
     let (code, installed) = omaddons(&["install", "littlewigs", "-t", "retail"]);
     note("install littlewigs -t retail", &installed);
     let txs: Vec<String> = tx_of(&installed).into_iter().collect();
     undo_all(&txs);
+    prune_new_backups(&backups);
     assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
     assert_eq!(forever_guard(), guard, "the Forever set untouched");
     assert_eq!(code, 0, "{installed:#}");
@@ -935,4 +1050,245 @@ fn m2_export_then_sync_dry_run_changes_nothing() {
     assert_eq!(net_log_lines(), requests, "sync asked nothing");
     assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
     assert_eq!(forever_guard(), guard, "the Forever set untouched");
+}
+
+// M3 (G3). The same rules, and: a restore under test is the only write under a `WTF/`,
+// undone before anything is asserted, after which that `WTF/` hashes as before; the
+// backups a test makes are pruned, all but a client's newest checkpoint, which M3 keeps
+// whatever `backup prune` is asked (M3-D32).
+
+/// `errors` on every client, plain and `-v`: no client changes, and no output names one
+/// of its real account folders.
+#[test]
+#[ignore = "real machine: OMADDONS_REAL_MACHINE=1"]
+fn errors_reads_every_client_read_only() {
+    if !checkpoint::require("errors_reads_every_client_read_only", MACHINE) {
+        return;
+    }
+    let (guard, snapshot) = (forever_guard(), snapshot_all());
+    let mut seen = Vec::new();
+    for (id, _, _, wtf) in clients() {
+        let accounts: Vec<String> = entries(&wtf.join("Account"))
+            .into_iter()
+            .filter(|a| wtf.join("Account").join(a).is_dir())
+            .collect();
+        for verbose in [false, true] {
+            let mut args = vec!["errors", "-t", id.as_str()];
+            if verbose {
+                args.push("-v");
+            }
+            let (code, read) = omaddons(&args);
+            assert_eq!(code, 0, "errors -t {id} (verbose {verbose}): {read:#}");
+            let named = names_in(&read.to_string(), &accounts);
+            assert_eq!(
+                named, 0,
+                "{id}: {named} account folder names in errors {args:?}"
+            );
+            if verbose {
+                let t = &read["data"]["targets"][0];
+                seen.push(serde_json::json!({
+                    "id": id, "capture": t["capture"], "coverage": t["coverage"],
+                    "databases": t["databases"].as_array().map_or(0, Vec::len),
+                    "accounts": accounts.len(),
+                }));
+            }
+        }
+    }
+    note("errors on every client", &Value::from(seen));
+    assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
+    assert_eq!(forever_guard(), guard, "the Forever set untouched");
+}
+
+/// On retail: two backups (the second verified at capture) listed and verified, the
+/// first pruned by id; `WTF/` and AddOns as before.
+#[test]
+#[ignore = "real machine: OMADDONS_REAL_MACHINE=1"]
+fn backup_create_list_prune_on_retail() {
+    let test = "backup_create_list_prune_on_retail";
+    if !checkpoint::require(test, MACHINE) {
+        return;
+    }
+    let (_, status) = omaddons(&["status"]);
+    if skip_if_running(test, &target_where(&status, "id", "retail")) {
+        return;
+    }
+    let (guard, snapshot, backups) = (forever_guard(), snapshot_all(), all_backups());
+    let reason = "real-machine check (G3)";
+    let started = std::time::Instant::now();
+    let (first_code, first) = omaddons(&["backup", "create", "-t", "retail", "--reason", reason]);
+    let took = started.elapsed();
+    let (second_code, second) = omaddons(&[
+        "backup", "create", "-t", "retail", "--verify", "--reason", reason,
+    ]);
+    let id_of = |created: &Value| {
+        created["data"]["targets"][0]["backup"]["id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let (first_id, second_id) = (id_of(&first), id_of(&second));
+    let (_, listed) = omaddons(&["backup", "list", "-t", "retail"]);
+    let (verify_code, verified) = omaddons(&["backup", "verify", &second_id, "-t", "retail"]);
+    let (prune_code, pruned) = omaddons(&["backup", "prune", &first_id, "-t", "retail"]);
+    let left = prune_new_backups(&backups);
+    note(
+        "backup create -t retail",
+        &serde_json::json!({
+            "took_ms": took.as_millis() as u64,
+            "first": first["data"]["targets"][0]["backup"],
+            "second": second["data"]["targets"][0]["backup"],
+        }),
+    );
+    note("backup verify", &verified["data"]);
+    note("backup prune <first>", &pruned["data"]);
+    assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
+    assert_eq!(forever_guard(), guard, "the Forever set untouched");
+    assert_eq!((first_code, second_code), (0, 0), "{first:#}\n{second:#}");
+    let listed_ids: Vec<&str> = listed["data"]["targets"][0]["backups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b["id"].as_str())
+        .collect();
+    assert!(
+        listed_ids.contains(&first_id.as_str()) && listed_ids.contains(&second_id.as_str()),
+        "{listed:#}"
+    );
+    let item = &verified["data"]["targets"][0]["backups"][0];
+    assert_eq!(verify_code, 0, "{verified:#}");
+    assert_eq!(
+        (&item["integrity"], &item["baseline"], &item["mismatched"]),
+        (
+            &Value::from("verified"),
+            &Value::from("capture"),
+            &Value::from(0)
+        ),
+        "{verified:#}"
+    );
+    assert_eq!(prune_code, 0, "{pruned:#}");
+    let after = left.get("retail").cloned().unwrap_or_default();
+    assert!(
+        !after.contains(&first_id) && after.contains(&second_id),
+        "the first pruned, the second (newest checkpoint) kept: {after:?}"
+    );
+}
+
+/// On classic: DBM installed, a backup taken, DBM's SavedVariables restored from it
+/// (`--addon`, every file of its folders), then the restore and the install undone:
+/// `WTF/` and AddOns hash as before.
+#[test]
+#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
+fn restore_addon_then_undo_on_classic() {
+    let test = "restore_addon_then_undo_on_classic";
+    if !checkpoint::require(test, LIVE) {
+        return;
+    }
+    let (_, status) = omaddons(&["status"]);
+    if skip_if_running(test, &target_where(&status, "id", "classic")) {
+        return;
+    }
+    let (guard, snapshot, backups) = (forever_guard(), snapshot_all(), all_backups());
+    let wtf = addons_of("classic")
+        .parent()
+        .and_then(|i| i.parent())
+        .unwrap()
+        .join("WTF");
+    let wtf_before = tree_hash(&wtf);
+    let mut txs: Vec<String> = Vec::new();
+    let (install_code, installed) = omaddons(&["install", "dbm", "-t", "classic"]);
+    note("install dbm -t classic", &installed["data"]["items"]);
+    txs.extend(tx_of(&installed));
+    let (create_code, created) = omaddons(&[
+        "backup",
+        "create",
+        "-t",
+        "classic",
+        "--reason",
+        "real-machine check (G3)",
+    ]);
+    let id = created["data"]["targets"][0]["backup"]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let (dry_code, preview) = omaddons(&[
+        "backup",
+        "restore",
+        &id,
+        "-t",
+        "classic",
+        "--addon",
+        "DBM",
+        "--dry-run",
+    ]);
+    let (restore_code, restored) =
+        omaddons(&["backup", "restore", &id, "-t", "classic", "--addon", "DBM"]);
+    let wtf_restored = tree_hash(&wtf);
+    txs.extend(tx_of(&restored));
+    undo_all(&txs);
+    let wtf_after = tree_hash(&wtf);
+    prune_new_backups(&backups);
+    note("restore --addon DBM --dry-run", &preview["data"]["addons"]);
+    note("restore --addon DBM", &restored["data"]);
+    assert_eq!(wtf_after, wtf_before, "classic WTF/ hashes as before");
+    assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
+    assert_eq!(forever_guard(), guard, "the Forever set untouched");
+    assert_eq!(
+        (install_code, create_code, dry_code, restore_code),
+        (0, 0, 0, 0),
+        "{installed:#}\n{created:#}\n{preview:#}\n{restored:#}"
+    );
+    assert_eq!(txs.len(), 2, "the install and the restore, each undone");
+    assert_eq!(
+        wtf_restored, wtf_before,
+        "the backup's DBM files are the bytes they replaced"
+    );
+    let files = &preview["data"]["addons"][0]["files"];
+    assert!(
+        files["replaced"].as_u64().unwrap_or(0) > 0,
+        "DBM's SavedVariables are on disk to restore: {preview:#}"
+    );
+}
+
+/// BugGrabber from WowAce, keyless: the newest tag on retail and r152 on 3.3.5a, each
+/// installed and undone; AddOns as before.
+#[test]
+#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
+fn buggrabber_installs_then_undo() {
+    let test = "buggrabber_installs_then_undo";
+    if !checkpoint::require(test, LIVE) {
+        return;
+    }
+    let (_, status) = omaddons(&["status"]);
+    for id in ["retail", "wotlk"] {
+        if skip_if_running(test, &target_where(&status, "id", id)) {
+            return;
+        }
+    }
+    let (guard, snapshot, backups) = (forever_guard(), snapshot_all(), all_backups());
+    let retail = install_then_undo("retail", &["buggrabber"], &[]);
+    let wotlk = install_then_undo("wotlk", &["buggrabber"], &[]);
+    prune_new_backups(&backups);
+    assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
+    assert_eq!(forever_guard(), guard, "the Forever set untouched");
+    let shown = |installed: &Value| {
+        let item = &installed["data"]["items"][0];
+        (
+            item["ref"].as_str().unwrap_or_default().to_owned(),
+            item["to_version"].as_str().unwrap_or_default().to_owned(),
+        )
+    };
+    let (retail_ref, retail_version) = shown(&retail);
+    let (wotlk_ref, wotlk_version) = shown(&wotlk);
+    note(
+        "buggrabber",
+        &serde_json::json!({
+            "retail": [retail_ref, retail_version],
+            "wotlk": [wotlk_ref, wotlk_version],
+        }),
+    );
+    assert!(
+        retail_ref.starts_with("wowace:bug-grabber") && retail_version.starts_with('v'),
+        "{retail:#}"
+    );
+    assert!(wotlk_ref.ends_with("#r152"), "{wotlk:#}");
 }
