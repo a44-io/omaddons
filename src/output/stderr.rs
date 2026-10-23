@@ -18,10 +18,14 @@ use crate::error::{Error, Warning};
 /// only for one write.
 pub type SharedReporter = Arc<Mutex<Reporter<Box<dyn Write + Send>>>>;
 
-/// The shared reporter for `cfg`, writing to stderr.
+/// The shared reporter for `cfg`, writing to stderr: the one progress draws through, so
+/// it measures the terminal, as [`Reporter::stderr`] does.
 pub fn shared_stderr(cfg: &OutputConfig) -> SharedReporter {
     let sink: Box<dyn Write + Send> = Box::new(std::io::stderr());
-    Arc::new(Mutex::new(Reporter::new(sink, cfg)))
+    Arc::new(Mutex::new(Reporter {
+        fit_width: true,
+        ..Reporter::new(sink, cfg)
+    }))
 }
 
 /// The reporter, locked for one write (a poisoned lock is still usable: a reporter has

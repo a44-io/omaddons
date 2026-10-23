@@ -48,6 +48,9 @@ etcetera = "0.11.0"
 insta ={ version = "1.49.0", features = ["json"] }
 predicates = "3.1.4"
 proptest = "1.12.0"
+# tests/terminal.rs: a pseudo-terminal for the binary's stderr, so human progress draws
+# as it does on a terminal. Test builds only: the binary opens none.
+rustix = { version = "1.1.5", features = ["pty"] }
 
 [lints.rust]
 unsafe_code = "forbid"
