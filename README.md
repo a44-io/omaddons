@@ -661,7 +661,7 @@ remove = true
 
 `omaddons help` lists the commands. `omaddons help <command>` or `omaddons <command> --help` shows every flag. For subcommands, use `omaddons targets add --help` or `omaddons help targets add`.
 
-A mistyped command, flag or value is a usage error. Its fix is the corrected command when that command only reads, and `omaddons help <command>` when the closest command changes something: a typo never hands you a different command that changes addons. A mistyped flag, or a mistyped value of a flag with fixed choices, of the command you typed is corrected in place (`--channel betaa` → `--channel beta`). A bad `--actor` value's fix currently drops the flag, and a bad `undo --last-by` value breaks the rule (see [Known issues](#known-issues)). Every suggested command parses.
+A mistyped command, flag or value is a usage error. Its fix is the corrected command when that command only reads, and `omaddons help <command>` when the closest command changes something: a typo never hands you a different command that changes addons. A mistyped flag, or a mistyped value of a flag with fixed choices, of the command you typed is corrected in place (`--channel betaa` → `--channel beta`). A bad value with no close match, such as `--actor robot` or `undo --last-by robot`, gets `omaddons help <command>`. Every suggested command parses.
 
 ### Global options
 
@@ -1127,7 +1127,7 @@ Per client, `bytes` is the backups' apparent size. The human view says "apparent
 $ omaddons backup list
 retail (12.1.5.70391, mainline) · 2 backups · 82.4 kB apparent, initially shared copy-on-write · 212 GB free
   01M6Q2VA00000000…  today 18:02       auto (after play)  412 files  41.2 kB  stable
-  01M5Z1KB00000000…  2026-10-18 21:15  manual             412 files  41.2 kB  stable · verified  "before the raid"
+  01M5Z1KB00000000…  2026-10-18 21:15  manual             412 files  41.2 kB  stable · verified (capture)  "before the raid"
 ```
 
 #### `backup restore`
@@ -1137,9 +1137,10 @@ Puts a client's whole `WTF/` back as a backup holds it: keybindings, macros, cha
 Every refusal comes before anything is copied, in this order:
 
 - **The backup is reserved.** A restore holds a shared lock on the backup's directory until it commits, so a `backup prune` from another process finds it `busy` and leaves it. One deleted meanwhile is `not_found`.
-- **It must be restorable.** A backup whose `backup.json` or manifest does not read, that is `damaged`, or whose tree differs from its manifest is `state_corrupt`, with `omaddons backup list` as the fix. A partial backup (the settings a crashed restore of one addon displaced) cannot replace the whole `WTF/` (`usage`); it restores with `--addon`.
+- **Not a partial backup.** A partial backup (the settings a crashed restore of one addon displaced) cannot replace the whole `WTF/` (`usage`); it restores with `--addon`.
 - **Newer state is refused** (`state_too_new`) when a newer omaddons wrote this client's record, files index or registry.
 - **Never while the game runs.** A running client, or one that may be running because the process table cannot be read, is `game_running` (`details.reason: "saved_variables"`), whatever `running_policy` or `--while-running` say. Dry runs included.
+- **It must be restorable.** A backup whose `backup.json` or manifest does not read, that is `damaged`, or whose tree differs from its manifest is `state_corrupt`, with `omaddons backup list` as the fix.
 - **The filesystem must exchange.** `WTF/` must be a plain directory on the client's own mount, and the exchange is probed where the restore will run; otherwise `filesystem_unsupported`. There is no fallback (see [Safety model](#transactions)).
 
 Then, on a real run:
@@ -1280,7 +1281,7 @@ retail: backup 01M6Q8PN00000000… damaged: 410 files, 1 files differ from their
 
 What changed, when, by whom and why, newest first (`log` is an alias).
 
-Settings changes appear too: `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write` each record a line of kind `config`, `target`, `auth` or `export`, with zero folder counts (human output shows what was run instead). `errors dismiss` records one line of kind `dismiss` per client it acknowledged, with `dismissed: {databases, errors}` (the table shows `2 errors in 1 database`), and `omarchy install` and `omarchy remove` one of kind `widget`. A dry run, or a change to nothing, records none (`auth github set` and `clear` currently record a line every time; see [Known issues](#known-issues)). Their `target` is the client for a `target` or `dismiss` line (`null` for a client not registered yet) and `null` otherwise, so `-t` shows only those lines. `undo` never reverts them and steps over them; `undo <tx>` of one is `not_found`. A line that cannot be written after the change was made warns `history_not_recorded`. Each backup `backup create` makes is a line of kind `backup` on its client, with no folder counts and the backup it made (`backup: {id, kind, files, bytes}` in JSON, `WTF/ as <id> (<files>)` in the table); `undo` steps over it too.
+Settings changes appear too: `config set`, `targets add`, `rm`, `rename` and `default`, `auth github set` and `clear`, and `export --write` each record a line of kind `config`, `target`, `auth` or `export`, with zero folder counts (human output shows what was run instead). `errors dismiss` records one line of kind `dismiss` per client it acknowledged, with `dismissed: {databases, errors}` (the table shows `2 errors in 1 database`), and `omarchy install` and `omarchy remove` one of kind `widget`. A dry run, or a change to nothing (an `auth github set` of the token already stored, a `clear` with none), records none. Their `target` is the client for a `target` or `dismiss` line (`null` for a client not registered yet) and `null` otherwise, so `-t` shows only those lines. `undo` never reverts them and steps over them; `undo <tx>` of one is `not_found`. A line that cannot be written after the change was made warns `history_not_recorded`. Each backup `backup create` makes is a line of kind `backup` on its client, with no folder counts and the backup it made (`backup: {id, kind, files, bytes}` in JSON, `WTF/ as <id> (<files>)` in the table); `undo` steps over it too.
 
 ```bash
 omaddons history
@@ -1601,7 +1602,7 @@ omaddons auth github clear                    # forget the stored token
 
 `set` writes `~/.config/omaddons/credentials/github` with mode 0600, in a 0700 directory, and refuses a terminal at once rather than wait for input. `--from-gh` is the only time omaddons asks `gh` for anything, and only when you pass it. `clear` empties the file: an empty file is no token. `status` makes one request, to `/rate_limit` (which costs none of the budget), and none with `--offline`. With `--offline` it also runs no credential command, so `configured` then says a credential is configured, not that it works; `set` and `clear` never run one. With `--dry-run`, `set` and `clear` check the token and write nothing ("would store", "would clear"), and `data` describes the token as the write would leave it. `data` is `{configured, source, rate_limit, dry_run}`, `source` one of `env`, `config`, `file` or `none` (see **Tokens** under [Network and privacy](#network-and-privacy) for the order). The token is never shown, logged or sent anywhere but `api.github.com`. A rejected token is `auth_rejected`, whose fix undoes the token's source: `omaddons auth github clear` (alternative: `set` a new one) for the stored file, unsetting `OMADDONS_GITHUB_TOKEN`, or correcting config.toml's `[sources.github] credential`, each with `clear` as an alternative. `--from-gh` goes with `set` (or bare `auth github --from-gh`); with `status` or `clear` it is a usage error.
 
-`omaddons help auth` explains `auth github`; `omaddons auth github --help` and `omaddons help auth github` currently fail (see [Known issues](#known-issues)).
+`omaddons help auth` explains `auth github`, and `omaddons auth github --help` (or `omaddons help auth github`) shows its flags.
 
 ### `net-log`
 
@@ -1661,7 +1662,7 @@ On its own, the widget looks after a play session without being asked:
 The widget keeps a few rules, and every gate checks them:
 
 - It runs omaddons only with an argv from its own command table, or one the CLI printed and the widget's classifier accepted, never through a shell or as a string.
-- Besides omaddons it runs four desktop tools: `inotifywait`, `omarchy-notification-send`, `xdg-open`, and `omarchy-launch-browser`, the last only for an `https:` link to GitHub, WoWInterface, Tukui or WowAce.
+- Besides omaddons it runs four desktop tools: `inotifywait`, `omarchy-notification-send`, `xdg-open`, and `omarchy-launch-browser`, the last only for an `https:` link to GitHub, WoWInterface, Tukui or WowAce. When Omarchy's shell offers no summon call to open the panel, it also runs `omarchy-shell shell summon` with the widget's id, as a fixed argv.
 - Every omaddons process runs under the `HOME` and XDG directories the widget was installed for.
 - It writes no file.
 - It shows the CLI's strings as plain text.
@@ -1669,6 +1670,8 @@ The widget keeps a few rules, and every gate checks them:
 - A notification carries names and counts only.
 
 `omarchy/tests/security.test.js` scans the widget's source for code that goes around any of these, and each scan must also catch a violation planted in a copy of the source.
+
+The widget also answers on the shell's IPC, under its id: `omarchy-shell a44.omaddons state` prints its state as one JSON object (`phase`, the bar's badge and urgency, `summary`, the running `action`, the last result, whether a panel is open, the binary and both versions, and what each of its lanes is running), and `refresh`, `check` and `show <view>` ask for a refresh, an update check, or the panel opened at a view.
 
 ```bash
 omaddons omarchy                          # status: installed, current, on the bar? (bare omarchy)
@@ -1810,7 +1813,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `check_failed` | 6 | no | `--check` or `--strict` |
 | `network` | 1 | yes (no for too many redirects or an undecodable encoding) | connection failure, also mid-body; more than 5 redirects; a `Content-Encoding` omaddons does not decode; a source response it cannot read; a git run that times out, or fails outside clone and fetch |
 | `rate_limited` | 1 | yes | GitHub REST budget exhausted, or any host's rate-limit answer (403/429 with no requests remaining, `Retry-After` over 60 s, a 429 that outlasts the retries); `details.reset_at` |
-| `download_failed` | 1 | no (a refused commit currently says yes; see Known issues) | the git binary could not clone or fetch a `git:` ref on another host: it needs a login (private repositories are not supported), the server refused to send the commit (fix: name a branch or tag), or another git failure |
+| `download_failed` | 1 | no | the git binary could not clone or fetch a `git:` ref on another host: it needs a login (private repositories are not supported), the server refused to send the commit (fix: name a branch or tag), or another git failure |
 | `http_status` | 1 | 5xx only | unexpected status; `details.status` |
 | `hash_mismatch` | 1 | first attempt | downloaded bytes did not match the expected hash |
 | `plan_stale` | 1 | yes (no under `--if-match`) | another run changed the target between plan and commit, a folder `adopt` hashed changed before the lock, or a `git:` branch moved between resolve and checkout; under `--if-match`, the run is no longer what its preview showed (`details.changed`, fix the `--dry-run` form; see [Previews and `--if-match`](#previews-and---if-match)) |
@@ -1968,7 +1971,7 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
 With `auto_backup` on (`daily`, the default), each client gets two kinds of checkpoint:
 
 - **Before the day's first change.** Before the first `install`, `update`, `remove`, `sync`, `copy` or `undo` of a local day that moves folders or restores SavedVariables, `WTF/` is backed up (kind `auto`, `trigger: pre_change`). It happens before the change stages anything and outside the lock, and its history line lands just before the change's. A restore's `before_restore` backup counts as that day's checkpoint. Changes that touch only records (`pin`, `adopt`), dry runs and changes with nothing to do make none. It runs even while the game runs (it writes `WTF/` only at logout and `/reload`), and records `client_running: true`.
-- **After a play session.** `omaddons backup create --auto` makes one (`trigger: post_session`) when settings changed since the last checkpoint. The widget runs it when a client stops and when it starts. It is never made while the game runs, or while omaddons cannot tell whether it does.
+- **After a play session.** `omaddons backup create --auto` makes one (`trigger: post_session`) when settings changed since the last checkpoint. The widget runs it when a client stops, and for every stopped client when the widget starts. It is never made while the game runs, or while omaddons cannot tell whether it does.
 
 Both are skipped, as a success with a reason, in these cases:
 
@@ -2038,7 +2041,7 @@ Retention runs after every commit, for the target just changed:
 - A whole restore's `WTF.previous` (the tree it replaced) is pruned with its transaction by the count and age rules above, and never counts toward the 2 GiB cap, so a few large restores never evict the snapshots undo needs for addons.
 - `WTF/` backups (`.omaddons/backups/`) are never touched by transaction retention. They have their own, below.
 
-**Backups.** After every `backup create` (and on `backup prune`), each client's backups are thinned:
+**Backups.** After every `backup create`, after a restore (its source kept whatever its age) and on `backup prune`, each client's backups are thinned:
 
 - **Always kept:** every backup younger than 24 hours (since it was made or imported here), the client's newest checkpoint (`qualifying`) whatever its age, and a backup whose `backup.json` cannot be read.
 - **Your backups** (`manual`, `imported` and `recovered`, which holds a play session an interrupted restore would have lost) are only ever deleted when you ask: by id, with `--keep` or with `--older-than`.
@@ -2240,7 +2243,7 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDON
 | `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `inflight/`, `trash/`, `git-home/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, the in-flight locks of planning and dry runs, staged deletions, git's empty home directory | Yes when no command is running; reinstalls then download again |
 | `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), failures retrying cannot change, and what downloading candidates taught (each archive's hash, and whether it loads on a client) | Yes; the next commands fetch and download again |
 | `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim, its text decoded and made safe (format 1.1; a 1.0 index is decoded once on load), refreshed after its hour | Yes; the next search or dependency lookup fetches it again |
-| `~/.cache/omaddons/doorbell.json` | A signal for the bar widget: rewritten (`{at, command, actor}`) by every change that can alter what `status --cached` reports, never by a read | Yes; the next change writes it again |
+| `~/.cache/omaddons/doorbell.json` | A signal for the bar widget: rewritten (`{at, command, actor}`) by every write that can alter what `status --cached` reports, never by `status` | Yes; the next change writes it again |
 | `~/.cache/omaddons/errors.json` | The errors memo: what `errors` last observed per client and database (file stamps, sessions, first-read baselines, counts per session and addon), so `status` can tell new errors without reading BugGrabber's files. No message, stack or locals text | Yes; but deleting it forgets which older errors were new, except what `errors dismiss` acknowledged (kept in `errors_ack.json`) |
 | `~/.cache/omaddons/history_tail.json` | The history projection: the end of `history.jsonl` that holds its newest 16 runs with something to undo (at most 1 MiB), so `status --cached` reports the last change without reading a history of any size. Believed only while the history is exactly as long as it says and ends with its last line | Yes; `--cached` says `unknown` until the next change rebuilds it |
 | `~/.cache/omaddons/export.json` | The hash of the `addons.toml` `export --write` last wrote, so a hand-edited file is not overwritten | Yes; the next `--write` then needs `--overwrite` |
@@ -2348,7 +2351,7 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `build.rs` | The digest of the widget's files, so `status` compares an installed widget with this build without hashing them on every call |
 | `tests/`, `fuzz/` | Integration, contract, crash, concurrency and live tests; cargo-fuzz targets |
 
-**One doorbell.** Every write that can change what `status --cached` reports rings `~/.cache/omaddons/doorbell.json` once, after the write: each commit window (undo's too, after its lock is released), a recovery that rolled a journal back or forward, a release memo write that changed the memo, a backup inventory write that changed it (a backup made, or a stale summary rebuilt), each backup's history line, and every settings command. Reads never ring it, so `status` stays write-free and the bar widget can watch the cache directory instead of polling. The file is a signal, never a source of state: the widget reads `status --cached` again when it rings.
+**One doorbell.** Every write that can change what `status --cached` reports rings `~/.cache/omaddons/doorbell.json` once, after the write: each commit window (undo's too, after its lock is released), a recovery that rolled a journal back or forward, a release memo write that changed the memo (`outdated` and the other fetching commands), an errors memo write that changed it (`errors`), a backup inventory write that changed it (a backup made, or a stale summary rebuilt by `backup list`), each backup's history line, and every settings command. `status` never rings it, so it stays write-free and the bar widget can watch the cache directory instead of polling. The file is a signal, never a source of state: the widget reads `status --cached` again when it rings.
 
 **Invariants the build enforces:**
 
@@ -2504,7 +2507,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 - On unknown custom clients, the `safe` running policy behaves as for legacy clients and refuses every change while they run.
 - Do not run a pre-M3 omaddons build to change state that M3 has written. Reading with it (`status`, `list`, `history`) is safe, also while an M3 restore waits to be recovered. This is what the last M2 build (`af10e34`) does, as `tests/compat_m2.rs` observes it:
   - It skips every M3 history line (backups, restores, dismissals) with `history_lines_skipped`. Its `undo` of an install older than a restore, or a bare `undo` (it picks the newest line it can read), puts that install's SavedVariables back over the restored ones with no conflict reported. Its source also shows that a newer record refuses it only at its save, after its folders moved.
-  - It recovers an interrupted M3 install, update, remove or undo of an install as its own. It never sees an interrupted restore, `--addon` restore or undo of either (their journals and stages are named `<tx>.wtf`, see [Transactions](#transactions)), and leaves `WTF/` alone. The next M3 change recovered each of those shapes, including when the M2 build ran two hours later, although its orphan sweep had by then removed that transaction's snapshot folders. Before `<tx>.wtf`, the M2 build deleted those journals unread, and the files a restore had replaced were left only in its stage until an orphan sweep deleted them.
+  - It recovers an interrupted M3 install, or undo of an install, as its own (the two folder shapes `tests/compat_m2.rs` crashes; an update and a remove go through the same engine but are not tested this way). It never sees an interrupted restore, `--addon` restore or undo of either (their journals and stages are named `<tx>.wtf`, see [Transactions](#transactions)), and leaves `WTF/` alone. The next M3 change recovered each of those shapes crashed right after its journal's first line, including when the M2 build ran two hours later, although its orphan sweep had by then removed that transaction's (still empty) snapshot folders. A restore crashed after its first rename is not covered: see [Known issues](#known-issues). Before `<tx>.wtf`, the M2 build deleted those journals unread, and the files a restore had replaced were left only in its stage until an orphan sweep deleted them.
 
   From M3 on, every build refuses what it cannot read (see [Transactions](#transactions)).
 - The download cache reuses an asset whose SHA-256 is known: from the source (GitHub REST assets carry a digest) or remembered from an earlier download of that release's asset in the release memo. A release's assets are taken to be immutable, so a publisher re-uploading different bytes under the same tag and file name is not noticed while the old blob is cached (unless the source declares a different size or hash). Within one command, the same asset is still downloaded once per target that tries it. An unchanged release is never downloaded.
@@ -2524,7 +2527,11 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 
 ### Known issues
 
-The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise. None is known at the moment.
+The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
+
+- **Retention after the day's first change** (`omad-k2ns`). The automatic backup taken before the day's first change does not run backup retention; only `backup create` (manual or `--auto`), a restore and `backup prune` do. Using only the CLI, without the widget's after-play backups, you keep one more automatic backup per day until free space runs low (they are clones on btrfs and xfs). `omaddons backup prune` thins them as described.
+- **A pre-M3 build after a crashed restore** (`omad-aepa`). The last M2 build cannot see a restore's journal, and an hour after a restore crashed past its first rename, any change it makes can delete the restore's undo snapshot, which may hold the only copy of the `WTF/` the restore replaced. Run no pre-M3 build while a restore waits to be recovered.
+- **`archive_too_large` details** (`omad-36gn`). `details.limit` is the numeric bound for archives, downloads and WowAce trees, but the constant's name for a `WTF/` backup and `backup import` (whose number is in `details.max`); WowAce adds the name as `details.constant`.
 
 ---
 
