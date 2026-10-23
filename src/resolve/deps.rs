@@ -199,6 +199,9 @@ pub trait WowiDirs {
 pub struct DepLookups<'a> {
     /// The target's record: a record that lists the folder while it is gone is reported.
     pub managed: &'a TargetRecord,
+    /// Whether its owner's work in this transaction stops shipping a folder: not lost,
+    /// so it resolves like any other.
+    pub released: &'a dyn Fn(&FolderName) -> bool,
     pub catalog: &'a dyn CatalogLookup,
     pub tukui: Option<&'a dyn TukuiDirs>,
     pub wowi: Option<&'a dyn WowiDirs>,
@@ -272,12 +275,14 @@ pub enum DepResolution {
 
 /// Where to get `missing`, a required folder no rule satisfies, for `target`.
 pub fn resolve(missing: &FolderName, target: &Target, lookups: &DepLookups<'_>) -> DepResolution {
-    // 1. A managed addon lost it: report, never repair.
+    // 1. A managed addon lost it: report, never repair. One whose update or removal in
+    // this transaction drops it lost nothing.
     if let Some(owner) = lookups
         .managed
         .addons
         .values()
         .find(|a| a.folders.contains(missing))
+        && !(lookups.released)(missing)
     {
         return DepResolution::Missing {
             reason: MissingReason::ManagedFolderMissing,
@@ -317,7 +322,8 @@ pub fn resolve(missing: &FolderName, target: &Target, lookups: &DepLookups<'_>) 
         return resolved;
     }
     // 5. The catalog's other entries of this client's generation (modern or legacy):
-    // the publisher does not declare the family, but the TOCs may still load here.
+    // the publisher does not declare the family, but the TOCs may still load here. Never
+    // a variant: a family no variant covers gets no other family's build.
     let legacy = match target.family {
         Family::Unknown => target.rules.legacy,
         family => family.is_legacy(),
@@ -325,7 +331,7 @@ pub fn resolve(missing: &FolderName, target: &Target, lookups: &DepLookups<'_>) 
     let undeclared: Vec<&Entry> = entries
         .iter()
         .copied()
-        .filter(|e| !e.declares(target.family) && e.of_generation(legacy))
+        .filter(|e| e.variant.is_none() && !e.declares(target.family) && e.of_generation(legacy))
         .collect();
     from_catalog(missing, &undeclared, true)
         .or(wowi)
@@ -685,6 +691,7 @@ mod tests {
     ) -> DepResolution {
         let lookups = DepLookups {
             managed,
+            released: &|_| false,
             catalog,
             tukui: tukui.map(|t| t as &dyn TukuiDirs),
             wowi: wowi.map(|w| w as &dyn WowiDirs),
@@ -702,6 +709,24 @@ mod tests {
             DepResolution::Missing {
                 reason: MissingReason::ManagedFolderMissing,
                 owner: Some("BigWigs".into()),
+            }
+        );
+        // An update that stops shipping it lost nothing: it resolves like any folder.
+        let lookups = DepLookups {
+            managed: &managed,
+            released: &|f| f.as_str() == "BigWigs_Core",
+            catalog: &catalog,
+            tukui: None,
+            wowi: None,
+            now: now(),
+        };
+        assert_eq!(
+            resolve(&f("BigWigs_Core"), &vanilla(), &lookups),
+            DepResolution::Resolved {
+                r#ref: "gh:o/bw".parse().unwrap(),
+                via: DepVia::Catalog,
+                name: Some("BigWigs".into()),
+                undeclared: false,
             }
         );
     }
@@ -858,6 +883,7 @@ mod tests {
         legacy.install_kind = crate::rules::InstallKind::Custom;
         let lookups = DepLookups {
             managed: &none,
+            released: &|_| false,
             catalog: &catalog,
             tukui: None,
             wowi: None,
@@ -870,6 +896,40 @@ mod tests {
         assert_eq!(
             resolve(&f("InFlight"), &legacy, &lookups),
             undeclared("gh:o/inflight", "InFlight")
+        );
+        // A variant is one family's build: a family no variant covers gets none.
+        let builds = Entries(vec![
+            Entry {
+                variant: Some("r152".into()),
+                ..entry(
+                    "BugGrabber",
+                    "gh:o/bg-r152",
+                    &["!BugGrabber"],
+                    &[Family::WrathLegacy],
+                )
+            },
+            Entry {
+                variant: Some("r130".into()),
+                ..entry(
+                    "BugGrabber",
+                    "gh:o/bg-r130",
+                    &["!BugGrabber"],
+                    &[Family::TbcLegacy],
+                )
+            },
+        ]);
+        let mut cata = legacy.clone();
+        cata.family = Family::CataLegacy;
+        let lookups = DepLookups {
+            catalog: &builds,
+            ..lookups
+        };
+        assert!(
+            matches!(
+                resolve(&f("!BugGrabber"), &cata, &lookups),
+                DepResolution::Missing { .. }
+            ),
+            "never another family's build"
         );
     }
 

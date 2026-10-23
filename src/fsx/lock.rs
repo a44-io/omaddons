@@ -229,7 +229,9 @@ impl InflightLock {
             .mode(0o644)
             .open(&path)
             .map_err(|err| io(&err))?;
-        file.try_lock().map_err(|err| io(&err.into()))?;
+        // Waits, never fails, on a holder: the file is new, so only a sweep's liveness
+        // probe can hold it, and only for a moment.
+        file.lock().map_err(|err| io(&err))?;
         Ok(Self {
             _file: file,
             tx: *tx,

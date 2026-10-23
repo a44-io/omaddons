@@ -26,7 +26,7 @@ use super::resolve_args::{aimed_at, catalog_name, for_family, parse_ref};
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
-use crate::discover::registry::{resolve_one, with_target};
+use crate::discover::registry::{resolve_one_in, with_target};
 use crate::engine::edit::EditField;
 use crate::engine::plan::{
     ChangeKind, FolderSummary, PinIntent, PlanFailure, RequestedChange, TargetPlan, Unresolved,
@@ -545,6 +545,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         &mut facts,
         &items,
         (&change_for, &resolve_for),
+        args,
     );
     let target = match chosen {
         Ok(target) => target,
@@ -792,7 +793,10 @@ type ChangeFor<'a> = &'a dyn Fn(&ParsedRef, &DiscoveredTarget) -> RequestedChang
 type ResolveFor<'a> = &'a dyn Fn(&ParsedRef, &str, &DiscoveredTarget) -> Result<ParsedRef>;
 
 /// `-t`, else the configured default, else the single live target every addon
-/// verifies on. Test clients (PTR, beta) are only ever chosen with `-t`.
+/// verifies on. Test clients (PTR, beta) are only ever chosen with `-t`. The probe plans
+/// with the run's `--force`, so what it takes over fails no client; under `--reinstall`
+/// a client the addon is not installed on is no candidate.
+#[allow(clippy::too_many_arguments)]
 fn choose_target<'w>(
     ctx: &Context,
     world: &'w World,
@@ -801,10 +805,11 @@ fn choose_target<'w>(
     facts: &mut Vec<CandidateFact>,
     items: &[Item],
     (change_for, resolve_for): (ChangeFor<'_>, ResolveFor<'_>),
+    args: &InstallArgs,
 ) -> Result<&'w DiscoveredTarget> {
     let targets = &world.resolved.targets;
     if let Some(selector) = &ctx.target {
-        return resolve_one(selector, targets, &world.table, &ctx.argv);
+        return resolve_one_in(selector, &world.resolved, &world.table, &ctx.argv);
     }
     if let Some(found) = world.default_target(&ctx.argv) {
         return found;
@@ -842,7 +847,7 @@ fn choose_target<'w>(
                 dependency_locks: BTreeMap::new(),
             })
             .collect(),
-        force: false,
+        force: args.force,
         while_running: true,
         dry_run: true,
         reason: None,
@@ -856,7 +861,8 @@ fn choose_target<'w>(
     let probed = engine.run(&probe, Some(cache))?;
     facts.extend(probed.plan.facts.iter().cloned());
     // Why an addon fails on a target, and whether that is the target's alone: a catalog
-    // name with no build for its family is, like a release that does not load there.
+    // name with no build for its family is, like a release that does not load there, and
+    // under `--reinstall` so is an addon not installed there.
     let failure = |d: &DiscoveredTarget, p: (&str, &ParsedRef)| -> Option<(Error, bool)> {
         let resolved = match on(p, d) {
             Ok(resolved) => resolved,
@@ -868,11 +874,13 @@ fn choose_target<'w>(
             .find(|f| f.target == d.target.id && f.r#ref.as_ref() == Some(&resolved.r#ref))
             .and_then(|f| f.cause.clone())
             .map(|e| {
-                let specific = client_specific(e.code);
+                let specific =
+                    client_specific(e.code) || (args.reinstall && e.code == ErrorCode::NotManaged);
                 (e, specific)
             })
     };
-    // An addon that fails on every client cannot choose one.
+    // An addon that fails on every client cannot choose one. One installed on none
+    // cannot be reinstalled: the fix installs it.
     let fails_everywhere = |p: (&str, &ParsedRef)| live.iter().all(|d| failure(d, p).is_some());
     if parsed.iter().all(|p| fails_everywhere(*p)) {
         let errors: Vec<(String, Error)> = items
@@ -880,12 +888,32 @@ fn choose_target<'w>(
             .map(|i| {
                 let error = match &i.parsed {
                     Err(e) => e.clone(),
-                    Ok(p) => live
-                        .iter()
-                        .filter_map(|d| failure(d, (&i.request, p)))
-                        .find(|(_, specific)| !specific)
-                        .map(|(e, _)| e)
-                        .unwrap_or_else(|| no_compatible(&i.request, &live)),
+                    Ok(p) => {
+                        let failed: Vec<(Error, bool)> = live
+                            .iter()
+                            .filter_map(|d| failure(d, (&i.request, p)))
+                            .collect();
+                        let general = failed.iter().find(|(_, specific)| !specific);
+                        let unmanaged = || {
+                            failed
+                                .iter()
+                                .any(|(e, _)| e.code == ErrorCode::NotManaged)
+                                .then(|| {
+                                    Error::new(
+                                        ErrorCode::NotManaged,
+                                        format!(
+                                            "{} is not installed by omaddons on any live client",
+                                            i.request
+                                        ),
+                                        Suggestion::command(["omaddons", "install", &i.request]),
+                                    )
+                                })
+                        };
+                        general
+                            .map(|(e, _)| e.clone())
+                            .or_else(|| args.reinstall.then(unmanaged).flatten())
+                            .unwrap_or_else(|| no_compatible(&i.request, &live))
+                    }
                 };
                 (i.request.clone(), error)
             })

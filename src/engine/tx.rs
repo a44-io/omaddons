@@ -909,7 +909,6 @@ pub(super) fn retain(
                 Suggestion::command(["omaddons", "status"]),
             )
         })?;
-        let pins = super::retention::pinned_blobs(ctx.paths)?;
         let report = super::retention::run(
             ctx.paths,
             scopes,
@@ -917,7 +916,7 @@ pub(super) fn retain(
             &ClientPaths::new(client_dir),
             &ctx.retention,
             Timestamp::now(),
-            &pins,
+            &|| super::retention::pinned_blobs(ctx.paths),
         )?;
         Ok(report.warnings)
     };
@@ -1261,17 +1260,31 @@ fn locked(
     })();
     let (atomic_swap, swap_warnings) = match committed {
         Ok(done) => done,
-        Err(error) => match recover_tx(&recovery, tx) {
-            // Swapped already: the payload completed it, so the transaction stands.
-            Ok(Some(Recovered {
-                action: RecoveryAction::RolledForward,
-                atomic_swap,
-                warnings,
-                ..
-            })) => super::swap::rolled_forward(atomic_swap, warnings),
-            Ok(_) => return Err(error),
-            Err(failed) => return Err(recovery_failed(error, tx, &failed)),
-        },
+        Err(error) => {
+            // Read before recovery prunes it: committed already, the transaction stands.
+            let committed_swap = journal::committed_swap(paths, tx);
+            match (recover_tx(&recovery, tx), committed_swap) {
+                // Swapped already: the payload completed it, so the transaction stands.
+                (
+                    Ok(Some(Recovered {
+                        action: RecoveryAction::RolledForward,
+                        atomic_swap,
+                        warnings,
+                        ..
+                    })),
+                    _,
+                ) => {
+                    note_undo(ctx, tx);
+                    super::swap::rolled_forward(atomic_swap, warnings)
+                }
+                (Ok(None), Some(atomic_swap)) => {
+                    note_undo(ctx, tx);
+                    super::swap::rolled_forward(atomic_swap, Vec::new())
+                }
+                (Ok(_), _) => return Err(error),
+                (Err(failed), _) => return Err(recovery_failed(error, tx, &failed)),
+            }
+        }
     };
     warnings.extend(swap_warnings);
     warnings.extend(out_of_scope_warnings(
@@ -2750,11 +2763,14 @@ mod tests {
             "engine.swapped",
             "engine.record.written",
             "engine.history.appended",
+            "engine.committed",
         ] {
             assert!(
                 rolled_forward.contains(&name),
                 "{name} did not roll forward: {rolled_forward:?}"
             );
+            // The transaction stands, so the command reports it, not a failure.
+            assert!(!failed.contains(&name), "{name} failed: {failed:?}");
         }
     }
 

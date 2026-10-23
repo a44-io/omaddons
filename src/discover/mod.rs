@@ -235,7 +235,13 @@ pub(crate) fn collect(input: &DiscoveryInput, limits: ScanLimits) -> Collected {
                     .version_by_product
                     .insert(product.clone(), version.clone());
             }
-            let route = Route::new(&prefix.qualifier, DiscoverySource::ProductDb);
+            // A prefix known only from a running process keeps that route for what its
+            // product.db names, so the root is remembered once the process exits.
+            let source = match prefix.source {
+                DiscoverySource::Process => DiscoverySource::Process,
+                _ => DiscoverySource::ProductDb,
+            };
+            let route = Route::new(&prefix.qualifier, source);
             roots.add(path, None, route, hints, Some(db.clone()), &mut diagnostics);
         }
     }

@@ -688,6 +688,10 @@ fn usage_errors_and_names_installed_nowhere() {
             &json!(["omaddons", "install", "nosuch"])
         )
     );
+    // No client at all: still `not_managed`, never "nothing to update".
+    let empty = Home::new(&[]);
+    let none = empty.run(&["update", "nosuch"]).expect(3);
+    assert_eq!(none["error"]["code"], "not_managed", "{none}");
     let mixed = home.run(&["update", "foo", "nosuch", "-v"]).expect(0);
     assert_eq!(mixed["partial"], true);
     assert!(items(&mixed).contains(&row("retail", "-", "failed", "-")));

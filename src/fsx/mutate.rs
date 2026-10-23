@@ -235,7 +235,11 @@ impl StampDigest {
                 } else {
                     "other"
                 };
-                let mtime = meta.mtime() * 1_000_000_000 + meta.mtime_nsec();
+                // Saturating: an mtime past 2262 does not fit in i64 nanoseconds.
+                let mtime = meta
+                    .mtime()
+                    .saturating_mul(1_000_000_000)
+                    .saturating_add(meta.mtime_nsec());
                 entries.push((
                     rel_child.to_string_lossy().into_owned(),
                     kind,
@@ -390,7 +394,14 @@ pub fn mutate_with(
             clone: executed.clone,
         });
     };
-    if !s.scopes.is_internal(&state.actions_log) {
+    // The table's roots are canonical, while these two are built from `Paths` as given:
+    // compared resolved, so a symlinked `~/.local` (or state home) is still inside.
+    let internal = |path: &Path| {
+        s.scopes.is_internal(
+            &super::prune::canonical_lenient(path).unwrap_or_else(|| path.to_path_buf()),
+        )
+    };
+    if !internal(&state.actions_log) {
         return Err(FsxError::ScopeDenied(format!(
             "the actions log {} is outside the state and client meta dirs",
             state.actions_log.display()
@@ -408,7 +419,7 @@ pub fn mutate_with(
 
     // 3. Verbatim backup of content the operation overwrites.
     let backup_dir = state.snapshot_roots.dir_for(&matched.side, &state.tx);
-    if !s.scopes.is_internal(&backup_dir) {
+    if !internal(&backup_dir) {
         return Err(FsxError::ScopeDenied(format!(
             "the backup dir {} is outside the state and client meta dirs",
             backup_dir.display()
@@ -485,8 +496,11 @@ pub fn ensure_dir_all(
     check_shape(path)?;
     let mut missing = Vec::new();
     let mut current = path;
+    // An existing ancestor may be a symlink to a directory (a linked `~/.config`): it is
+    // followed, as every `CreateDir` below resolves its parent anyway, and a dangling
+    // link reads as missing, whose `CreateDir` fsx refuses.
     loop {
-        match fs::symlink_metadata(current) {
+        match fs::metadata(current) {
             Ok(meta) if meta.is_dir() => break,
             Ok(_) => {
                 return Err(FsxError::Precondition(format!(
@@ -504,7 +518,7 @@ pub fn ensure_dir_all(
             Err(err) => return Err(io_err(current)(err)),
         }
     }
-    let is_dir = |dir: &Path| fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir());
+    let is_dir = |dir: &Path| fs::metadata(dir).is_ok_and(|m| m.is_dir());
     let mut created = Vec::new();
     for dir in missing.iter().rev() {
         if is_dir(dir) {
@@ -983,6 +997,16 @@ mod tests {
             }
         }
 
+        /// The same layout, reached through `<root>/home`, a symlink to the real home.
+        fn through_a_linked_home() -> Self {
+            let mut f = Self::new();
+            let root = f.client.ancestors().nth(3).unwrap().to_path_buf();
+            fs::rename(root.join("home"), root.join("real-home")).unwrap();
+            std::os::unix::fs::symlink(root.join("real-home"), root.join("home")).unwrap();
+            f.scopes = ScopeTable::new(&f.paths, std::slice::from_ref(&f.client), None).unwrap();
+            f
+        }
+
         fn tx_session(&self, writer: Writer) -> WriteSession<'_> {
             WriteSession::tx(
                 self.tx,
@@ -1019,6 +1043,26 @@ mod tests {
 
     fn sha(bytes: &[u8]) -> [u8; 32] {
         Sha256::digest(bytes).into()
+    }
+
+    /// A home reached through a symlink (a linked `~/.local`, `~/.config` or home): the
+    /// directories are created through the link, and a transaction's actions log and
+    /// backups, built from `Paths` as given, are still inside the canonical state dir.
+    #[test]
+    fn a_tx_session_works_through_a_linked_home() {
+        let f = Fixture::through_a_linked_home();
+        let mut s = f.tx_session(Writer::Mutating);
+        let record = f.paths.state_dir().join("targets/key.json");
+        ensure_dir_all(&mut s, &f.paths.state_dir().join("targets")).unwrap();
+        mutate(&mut s, &record, write(b"v1")).unwrap();
+        let second = mutate(&mut s, &record, write(b"v2")).unwrap();
+        assert!(second.backup.is_some(), "{second:?}");
+        assert_eq!(fs::read(&record).unwrap(), b"v2");
+        let ops: Vec<String> = f.actions().into_iter().map(|a| a.op).collect();
+        assert!(
+            ops.ends_with(&["write_file".to_owned(), "write_file".to_owned()]),
+            "{ops:?}"
+        );
     }
 
     #[test]

@@ -417,6 +417,39 @@ fn a_retail_only_module_on_classic_is_unloaded_and_still_exact() {
     );
 }
 
+/// A group made only of folders its release installs on other clients is refused: a
+/// record of it would hold no folder.
+#[test]
+fn a_group_this_client_loads_none_of_is_not_adopted() {
+    let home = Home::new(&["wow_classic"]);
+    catalog(&home, &[("Foo", "gh:o/foo", &["Foo", "Foo_Retail"])]);
+    let files = vec![
+        (
+            "Foo/Foo.toc".to_owned(),
+            toc("50504, 120105", &["## Title: Foo", "## Version: v3"]),
+        ),
+        (
+            "Foo_Retail/Foo_Retail.toc".to_owned(),
+            toc("120105", &["## Dependencies: Foo"]),
+        ),
+    ];
+    release(
+        &home.http,
+        FOO,
+        "v3",
+        &files,
+        &[("mists", 50_504), ("mainline", 120_105)],
+    );
+    unpack(&home.addons("_classic_"), &borrowed(&files[1..]));
+    let r = home.run(&["adopt", "Foo_Retail"]);
+    let envelope = r.expect(4);
+    assert_eq!(envelope["error"]["code"], "wrong_flavor", "{}", r.context());
+    assert_eq!(
+        envelope["error"]["details"]["unloaded_folders"],
+        json!(["Foo_Retail"])
+    );
+}
+
 #[test]
 fn an_inner_symlink_fails_its_folder_and_a_managed_refs_leftover_is_already_managed() {
     let home = foo_home();
@@ -968,6 +1001,31 @@ fn ref_reads_catalog_names_and_re_points_a_managed_addon() {
         ("gh:o/foo".to_owned(), "m1", VersionConfidence::Toc)
     );
     assert_eq!(recorded_folders(&home, "foo"), ["MyFoo"]);
+
+    // A ref the parser corrects: the fix is this adopt with the corrected `--ref`, never
+    // an install.
+    let r = home.run(&[
+        "adopt",
+        "Zed",
+        "--ref",
+        "http://github.com/o/x",
+        "--no-verify",
+    ]);
+    let envelope = r.expect(2);
+    assert_eq!(envelope["error"]["code"], "ref_invalid", "{}", r.context());
+    assert_eq!(
+        envelope["error"]["fix_argv"],
+        json!([
+            "omaddons",
+            "adopt",
+            "Zed",
+            "--ref",
+            "https://github.com/o/x",
+            "--no-verify"
+        ]),
+        "{}",
+        r.context()
+    );
 
     // Any ref for a folder nothing identifies: identified, the TOC's version.
     let r = home.run(&["adopt", "Zed", "--ref", "gh:o/x", "--no-verify"]);

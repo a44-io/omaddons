@@ -236,7 +236,8 @@ impl Outcome for OutdatedOutcome {
             .filter_map(|i| i.latest.as_ref().map(|l| l.release.shown().chars().count()))
             .max()
             .unwrap_or(0);
-        // A ref is named on its first line only.
+        // A ref is named on its first update line only: only those lines show it, so a
+        // line of another status never uses its first mention up.
         let mut named: BTreeSet<String> = BTreeSet::new();
         for (t, heading) in self.data.targets.iter().zip(&self.headings) {
             if t.items.is_empty() {
@@ -245,7 +246,7 @@ impl Outcome for OutdatedOutcome {
             writeln!(w, "{heading}")?;
             for i in &t.items {
                 let r = i.r#ref.to_string();
-                let first = named.insert(r.clone());
+                let first = i.status == StatusKind::UpdateAvailable && named.insert(r.clone());
                 let what = describe(i, latest_width, first.then_some(r.as_str()));
                 let line = format!(
                     "  {:<name_width$}  {:<installed_width$}  {what}",
@@ -567,6 +568,9 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
         });
     }
     let mut commands = hints(&out_targets);
+    if let Some(selector) = ctx.target.as_deref() {
+        super::status::scope_update(&mut commands, selector);
+    }
     commands.extend(super::status::adopt_hints(&world, &targets, &records));
     Ok(OutdatedOutcome {
         data: OutdatedData {

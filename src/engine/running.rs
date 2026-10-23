@@ -178,13 +178,17 @@ pub fn evaluate(
         let why = match reason {
             "policy_refuse" => "running_policy is refuse".to_owned(),
             "legacy_client" if rules.reload_rereads_toc => {
-                let what = if refused
+                let adds = refused
                     .iter()
-                    .all(|op| matches!(op, PolicyOp::AddFolder { .. }))
-                {
-                    "a new addon folder"
-                } else {
-                    "an addon folder added or removed"
+                    .all(|op| matches!(op, PolicyOp::AddFolder { .. }));
+                // A replacement is refused only for the loaded TOC it drops.
+                let drops = refused.iter().any(|op| op.drops_loaded_toc());
+                let what = match (adds, drops) {
+                    (true, _) => "a new addon folder",
+                    (false, false) => "an addon folder added or removed",
+                    (false, true) => {
+                        "an addon folder added or removed, or a loaded TOC removed or renamed"
+                    }
                 };
                 format!(
                     "this client needs a restart to see {what} ({folders}); a replacement that keeps its loaded TOC needs only /reload"
@@ -520,6 +524,16 @@ mod tests {
         assert!(
             err.message
                 .ends_with("this client needs a restart to pick up any addon change"),
+            "{}",
+            err.message
+        );
+        // A replacement refused beside a new folder is refused for the TOC it drops.
+        let mixed = [replace(false), add()];
+        let err = run(RunningPolicy::Safe, true, Client::Wrath, &mixed, false).unwrap_err();
+        assert!(
+            err.message.contains(
+                "to see an addon folder added or removed, or a loaded TOC removed or renamed (Foo, New)"
+            ),
             "{}",
             err.message
         );

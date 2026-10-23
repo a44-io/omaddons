@@ -35,6 +35,7 @@ use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::Freshness;
 use crate::resolve::catalog::Catalog;
 use crate::rules::TargetKind;
+use crate::sources::changelog::same_version;
 use crate::state::desired::{self, DesiredState, Entry};
 use crate::state::records::TargetRecord;
 
@@ -200,8 +201,13 @@ pub fn diff<'s, 'r>(
                         PinIntent::Unpin
                     };
                     // At another version, or (WowAce) the same one at another revision.
+                    // A version names the release as `install --version` reads it: a
+                    // leading `v` aside (`1.2.3` finds `v1.2.3`), a sha by its prefix.
                     let moved = e.revision.is_some_and(|r| a.revision != Some(r));
-                    let elsewhere = e.version.as_ref().is_some_and(|v| *v != a.version || moved);
+                    let elsewhere = e
+                        .version
+                        .as_ref()
+                        .is_some_and(|v| !same_version(v, &a.version) || moved);
                     if e.pinned && elsewhere {
                         let (r, name) = again();
                         install(r, name, e.version.clone(), PinIntent::Pin)

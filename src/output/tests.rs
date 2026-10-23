@@ -153,6 +153,37 @@ fn human() -> OutputConfig {
     }
 }
 
+/// A human progress line ends with no newline: it is erased before the result, which
+/// shares the terminal, even when no warning would have erased it.
+#[test]
+fn a_progress_line_is_erased_before_the_result() {
+    let cfg = OutputConfig {
+        output: OutputMode::Human,
+        stderr: StderrMode::Human,
+        progress: ProgressMode::Human,
+        ..OutputConfig::machine()
+    };
+    let mut stdout = Vec::new();
+    let mut reporter = Reporter::new(Vec::new(), &cfg);
+    reporter.progress("fetch", "gh:o/foo", Some(3), Some(3));
+    let quiet = Demo {
+        warnings: Vec::new(),
+        ..demo()
+    };
+    emit_to(
+        &cfg,
+        &mut stdout,
+        &mut reporter,
+        "update",
+        Instant::now(),
+        false,
+        &RunNotes::default(),
+        Ok(quiet),
+    );
+    let stderr = String::from_utf8(reporter.into_sink()).unwrap();
+    assert!(stderr.ends_with("\r\u{1b}[2K"), "{stderr:?}");
+}
+
 const SUCCESS_KEYS: [&str; 10] = [
     "ok",
     "schema_version",

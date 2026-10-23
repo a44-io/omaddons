@@ -239,7 +239,11 @@ impl GitRunner {
         ] {
             cmd.arg("-c").arg(option);
         }
+        // From `/`, never the user's working directory: git would discover a repository
+        // there and apply its config (`insteadOf`, proxies, extra headers) to `ls-remote`.
+        // A run inside a checkout names it with `-C`.
         cmd.args(args)
+            .current_dir("/")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -496,8 +500,12 @@ impl GitRunner {
             return Err(Error::internal(format!("{} is not a git ref", w.r#ref)));
         };
         let repo = self.repo_url(url)?;
+        // A commit the recorded release names (an exact reinstall's full sha, a lock's
+        // short one) agrees with the ref's own rev while that rev still points at it.
+        let commit = recorded_commit(w.version.as_deref(), rev.as_deref());
         if let (Some(rev), Some(version)) = (rev, &w.version)
             && rev != version
+            && commit.is_none()
         {
             return Err(Error::new(
                 ErrorCode::Usage,
@@ -508,13 +516,29 @@ impl GitRunner {
                 Suggestion::command(["omaddons", "help", "install"]),
             ));
         }
-        let rev = w.version.as_ref().or(rev.as_ref());
-        let resolved = match rev {
-            Some(rev) if is_sha(rev) => Resolved {
-                rev: rev.to_ascii_lowercase(),
-                sha: rev.to_ascii_lowercase(),
-                tag: false,
-            },
+        let resolved = match &commit {
+            Some(commit) => self.at_commit(w, url, &repo, rev.as_deref(), commit)?,
+            None => {
+                let asked = w.version.as_deref().or(rev.as_deref());
+                match asked {
+                    Some(rev) if is_sha(rev) => Resolved {
+                        rev: rev.to_ascii_lowercase(),
+                        sha: rev.to_ascii_lowercase(),
+                        tag: false,
+                    },
+                    _ => self
+                        .lookup(url, &repo, asked)?
+                        .ok_or_else(|| not_found(w, asked))?,
+                }
+            }
+        };
+        Ok(release_set(w, url, &repo, &resolved))
+    }
+
+    /// What `rev` (a branch or tag, or `HEAD` for none) points at now; `None` when the
+    /// remote has no such ref.
+    fn lookup(&self, url: &str, repo: &RepoUrl, rev: Option<&str>) -> Result<Option<Resolved>> {
+        match rev {
             Some(rev) => {
                 let patterns = [
                     format!("refs/heads/{rev}"),
@@ -524,9 +548,8 @@ impl GitRunner {
                 let mut args: Vec<&OsStr> =
                     vec![OsStr::new("ls-remote"), OsStr::new("--"), OsStr::new(url)];
                 args.extend(patterns.iter().map(OsStr::new));
-                let out = self.run(&args, &repo, "ls-remote", API_READ_TIMEOUT)?;
-                resolve(&parse_ls_remote(&out.stdout), Some(rev))
-                    .ok_or_else(|| not_found(w, Some(rev)))?
+                let out = self.run(&args, repo, "ls-remote", API_READ_TIMEOUT)?;
+                Ok(resolve(&parse_ls_remote(&out.stdout), Some(rev)))
             }
             None => {
                 let args = [
@@ -536,12 +559,61 @@ impl GitRunner {
                     OsStr::new(url),
                     OsStr::new("HEAD"),
                 ];
-                let out = self.run(&args, &repo, "ls-remote", API_READ_TIMEOUT)?;
-                resolve(&parse_ls_remote(&out.stdout), None).ok_or_else(|| not_found(w, None))?
+                let out = self.run(&args, repo, "ls-remote", API_READ_TIMEOUT)?;
+                Ok(resolve(&parse_ls_remote(&out.stdout), None))
             }
-        };
-        Ok(release_set(w, url, &repo, &resolved))
+        }
     }
+
+    /// The release at `commit` (lowercase hex, 7 to 40 characters): a branch or tag so
+    /// named, asked without a rev; else the ref's own rev (or `HEAD`) while it still
+    /// points there, so a tag keeps its name; else the full sha itself. A short one that
+    /// names nothing now is `not_found`.
+    fn at_commit(
+        &self,
+        w: &Wanted,
+        url: &str,
+        repo: &RepoUrl,
+        rev: Option<&str>,
+        commit: &str,
+    ) -> Result<Resolved> {
+        if rev.is_none()
+            && let Some(named) = self.lookup(url, repo, Some(commit))?
+        {
+            return Ok(named);
+        }
+        if let Some(found) = self.lookup(url, repo, rev)?
+            && found.sha.starts_with(commit)
+        {
+            return Ok(found);
+        }
+        if is_sha(commit) {
+            return Ok(Resolved {
+                rev: commit.to_owned(),
+                sha: commit.to_owned(),
+                tag: false,
+            });
+        }
+        Err(Error::new(
+            ErrorCode::NotFound,
+            format!("{} no longer points at commit {commit}", w.r#ref),
+            Suggestion::text("give the full commit sha after #, or drop the version"),
+        ))
+    }
+}
+
+/// The commit `version` names, lowercase, when it is one (7 to 40 hex digits) the ref's
+/// `rev` does not spell itself: a recorded release (an exact reinstall's full sha, a
+/// lock's short one), never a `--version` naming another branch or tag. A full sha with
+/// no rev is used as it is.
+pub(crate) fn recorded_commit(version: Option<&str>, rev: Option<&str>) -> Option<String> {
+    let version = version?;
+    let hex = (7..=40).contains(&version.len()) && version.bytes().all(|b| b.is_ascii_hexdigit());
+    let differs = match rev {
+        Some(rev) => rev != version,
+        None => !is_sha(version),
+    };
+    (hex && differs).then(|| version.to_ascii_lowercase())
 }
 
 /// What a rev resolved to.
@@ -635,8 +707,8 @@ pub fn parse_version(text: &str) -> Option<(u32, u32)> {
 
 fn not_found(w: &Wanted, rev: Option<&str>) -> Error {
     let what = rev.map_or_else(
-        || "a default branch".to_owned(),
-        |r| format!("a branch or tag named {r}"),
+        || "default branch".to_owned(),
+        |r| format!("branch or tag named {r}"),
     );
     Error::new(
         ErrorCode::NotFound,
@@ -1099,6 +1171,8 @@ mod tests {
         assert_ne!(envs["HOME"].clone(), std::env::var("HOME").ok());
         assert_eq!(envs["GIT_CONFIG_GLOBAL"].as_deref(), Some("/dev/null"));
         assert_eq!(envs["GIT_ALLOW_PROTOCOL"].as_deref(), Some("https"));
+        // No repository of the user's working directory configures it.
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/")));
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -1536,6 +1610,30 @@ mod tests {
                 sha: repo.dev.clone()
             }
         );
+
+        // The commit a recorded release names (an exact reinstall's full sha, a lock's
+        // short one) agrees with the ref's rev: never a usage error.
+        let at = |r: &str, version: &str| {
+            git.fetch(&Wanted {
+                version: Some(version.to_owned()),
+                ..wanted(r)
+            })
+            .map(|s| s.releases[0].clone())
+        };
+        let reinstall = at(&format!("{}#dev", repo.url), &repo.dev).unwrap();
+        assert!(reinstall.release_id.ends_with(&repo.dev), "{reinstall:?}");
+        let tagged = at(&format!("{}#v1", repo.url), &repo.dev).unwrap();
+        assert_eq!(tagged.version, "v1", "a tag keeps its name");
+        let locked = at(&format!("{}#dev", repo.url), &repo.dev[..7]).unwrap();
+        assert!(locked.release_id.ends_with(&repo.dev), "{locked:?}");
+        let headless = at(&repo.url, &repo.main[..7]).unwrap();
+        assert!(headless.release_id.ends_with(&repo.main), "{headless:?}");
+        // A short one the rev no longer points at is not found.
+        let moved = at(&format!("{}#dev", repo.url), &repo.main[..7]).unwrap_err();
+        assert_eq!(moved.code, ErrorCode::NotFound);
+        // A version naming another branch is still refused.
+        let other = at(&format!("{}#dev", repo.url), "v2").unwrap_err();
+        assert_eq!(other.code, ErrorCode::Usage);
     }
 
     #[test]

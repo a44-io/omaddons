@@ -19,7 +19,7 @@ use crate::app::resolve_args::{for_family, parse_ref};
 use crate::app::world::World;
 use crate::cli::{Context, fix_argv};
 use crate::discover::DiscoveredTarget;
-use crate::discover::registry::{resolve_one, with_target};
+use crate::discover::registry::{resolve_one_in, with_target};
 use crate::engine::edit::{AdoptSpec, RecordEdit};
 use crate::engine::plan::RequestedChange;
 use crate::engine::{TxRequest, TxTarget};
@@ -145,7 +145,7 @@ pub(super) fn ref_target<'w>(
 ) -> Result<&'w DiscoveredTarget> {
     let targets = &world.resolved.targets;
     if let Some(selector) = &ctx.target {
-        return resolve_one(selector, targets, &world.table, &ctx.argv);
+        return resolve_one_in(selector, &world.resolved, &world.table, &ctx.argv);
     }
     let mut having: Vec<&DiscoveredTarget> = targets
         .iter()
@@ -457,6 +457,21 @@ fn already_recorded(r: &Ref, owner: &str, id: &str) -> Error {
 
 /// `not_found` for a folder nothing identifies: the ref is the user's to name; what
 /// ships the folder is a read-only search away.
+/// `wrong_flavor`: every folder of `gw` is one its release `r` ships but this client does
+/// not load, so adopting it would record no folder.
+fn not_loaded(gw: &GroupWork, r: &Ref, id: &str) -> Error {
+    let folders: Vec<&str> = gw.group.folders.iter().map(FolderName::as_str).collect();
+    Error::new(
+        ErrorCode::WrongFlavor,
+        format!(
+            "{r} installs {} only on other clients: {id} does not load it",
+            folders.join(", ")
+        ),
+        Suggestion::command(["omaddons", "list", "-t", id, "--unmanaged"]),
+    )
+    .details(json!({ "unloaded_folders": folders }))
+}
+
 fn unknown(name: &str, id: &str) -> Error {
     Error::new(
         ErrorCode::NotFound,
@@ -646,6 +661,17 @@ pub(super) fn commit(
                         failures.push((request, unknown(gw.group.primary.as_str(), &id)));
                         continue;
                     };
+                    // Folders its release installs only on other clients: a record of
+                    // them would hold no folder.
+                    if gw
+                        .group
+                        .folders
+                        .iter()
+                        .all(|f| gw.unloaded.iter().any(|u| u.key() == f.key()))
+                    {
+                        failures.push((request, not_loaded(gw, &r, &id)));
+                        continue;
+                    }
                     let name = record_name(gw, &id, &mut taken, &mut out.warnings);
                     let record = adopted_record(gw, &r, &name, &candidates, channel);
                     let folders = record

@@ -295,6 +295,27 @@ fn an_empty_export_is_never_written_and_overwrite_needs_write() {
     );
 }
 
+/// A client of no known family gets its own section: `sync` refuses `[family.unknown]`.
+#[test]
+fn a_client_of_no_known_family_gets_its_own_section() {
+    let mut home = Home::new(&[]);
+    home.with_custom(CustomRoot::at(home.env.root().join("odd")).version(2, 6, 0, 1));
+    let targets = home.run(&["targets"]).expect(0);
+    let target = &targets["data"]["targets"][0];
+    assert_eq!(target["family"], "unknown", "{targets:#}");
+    let id = target["id"].as_str().unwrap().to_owned();
+    let toc = "## Interface: 20600\n## Title: Old\n";
+    let assets = [("a.zip", &[][..], vec![("Old/Old.toc", toc)])];
+    gh_release(&home.http, "https://github.com/o/old", "v1", &assets);
+    let r = home.run(&["install", "gh:o/old", "-t", &id]);
+    r.expect(0);
+
+    let r = home.run(&["export"]);
+    let envelope = r.expect(0);
+    let (_, state) = content(&envelope);
+    assert_eq!(layout(&state), [(id, s(&["Old"]))], "{}", r.context());
+}
+
 #[test]
 fn an_unplugged_client_is_exported_from_its_records() {
     let mut home = Home::new(&["wow"]);
@@ -313,15 +334,22 @@ fn an_unplugged_client_is_exported_from_its_records() {
     home.run(&["targets", "rename", &id, &custom]).expect(0);
     release(&home, "Foo");
     home.run(&["install", "gh:o/foo", "-t", &custom]).expect(0);
+    release(&home, "Bar");
+    home.run(&["install", "gh:o/bar", "-t", "retail"]).expect(0);
     // The drive is unplugged.
     fs::rename(&dir, home.env.root().join("unplugged")).unwrap();
 
+    // Its family is unknown now: a family section would reach it when it is back, on
+    // top of its own, so retail gets its own section too.
     let r = home.run(&["export"]);
     let envelope = r.expect(0);
     let (_, state) = content(&envelope);
     assert_eq!(
         layout(&state),
-        [(custom.clone(), s(&["Foo"]))],
+        [
+            (custom.clone(), s(&["Foo"])),
+            ("retail".to_owned(), s(&["Bar"]))
+        ],
         "{}",
         r.context()
     );

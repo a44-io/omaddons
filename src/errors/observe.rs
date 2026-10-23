@@ -111,6 +111,8 @@ pub struct Observation {
     pub coverage: Coverage,
     pub skipped: Skipped,
     pub listings: Vec<Listing>,
+    /// Account folders examined.
+    pub accounts: usize,
     pub databases: Vec<Database>,
     /// Every entry, local and received, in database order.
     pub entries: Vec<Observed>,
@@ -165,6 +167,7 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
         coverage: located.coverage,
         skipped: located.skipped,
         listings: located.listings,
+        accounts: located.accounts,
         databases: Vec::new(),
         entries: Vec::new(),
         warnings: Vec::new(),
@@ -176,9 +179,12 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
             .unwrap_or(&file.path)
             .to_string_lossy()
             .into_owned();
+        // A memo entry that never saw a session (its first read failed) baselines nothing:
+        // the first-read rule still applies, or every old error would read as new.
         let previous = cx
             .memo
-            .and_then(|m| m.databases.iter().find(|d| d.path == path));
+            .and_then(|m| m.databases.iter().find(|d| d.path == path))
+            .filter(|p| p.session.is_some());
         let (state, db) = read_db(&file.path, file.stamp, budget);
         let session = db.session.or_else(|| {
             // Not read: what the last run saw stays.
@@ -190,15 +196,23 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
             .ack
             .and_then(|a| a.databases.get(&db_key(&path)))
             .copied();
+        // A read that ends early may stop before the `session` key: its entries' newest
+        // session stands in for the first-read rule, or every old error would read as new.
+        let seen = session.or_else(|| db.entries.iter().filter_map(|e| e.session).max());
         let baseline = match previous {
-            // Reset (or replaced): the old baseline is not this database's history.
-            Some(p) if session.is_some_and(|s| s < p.baseline) => 0,
+            // Reset (or replaced): a session counter only grows, so one below the
+            // baseline or the session last seen is not this database's history.
+            Some(p)
+                if session.is_some_and(|s| s < p.baseline || p.session.is_some_and(|l| s < l)) =>
+            {
+                0
+            }
             Some(p) => p.baseline,
             // A first read starts from the dismissal when there is one, so wiping the
             // cache never resurrects dismissed errors nor hides undismissed ones.
-            None => match ack.filter(|a| session.is_none_or(|s| a.acked_session <= s)) {
+            None => match ack.filter(|a| seen.is_none_or(|s| a.acked_session <= s)) {
                 Some(a) => a.acked_session,
-                None => session.map_or(0, |s| s.saturating_sub(1)),
+                None => seen.map_or(0, |s| s.saturating_sub(1)),
             },
         };
         let written_at = std::fs::metadata(&file.path)

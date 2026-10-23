@@ -85,8 +85,14 @@ impl GithubToken {
         paths: &Paths,
         sources: &BTreeMap<String, SourceConfig>,
     ) -> Arc<Self> {
+        // A malformed variable is an error the first REST request raises, as a malformed
+        // configured credential is: never a silent run without the token.
         if let Some(token) = token_from(env) {
-            return Self::fixed(TokenSource::Env, Some(token));
+            return Self::resolved(
+                TokenSource::Env,
+                checked(&token, TokenSource::Env),
+                Vec::new(),
+            );
         }
         let configured = sources.get("github").and_then(|s| s.credential.as_ref());
         if let Some(credential) = configured {
@@ -222,14 +228,19 @@ fn checked(secret: &str, source: TokenSource) -> std::result::Result<Option<Stri
     if valid(token) {
         return Ok(Some(token.to_owned()));
     }
-    let whence = match source {
-        TokenSource::Config => "config.toml's [sources.github] credential",
-        _ => "the stored GitHub token",
+    let fix = Suggestion::command(["omaddons", "auth", "github", "set"]);
+    let (whence, fix) = match source {
+        TokenSource::Config => ("config.toml's [sources.github] credential", fix),
+        TokenSource::Env => (
+            TOKEN_VAR,
+            Suggestion::text(format!("replace or unset {TOKEN_VAR}")),
+        ),
+        _ => ("the stored GitHub token", fix),
     };
     Err(Error::new(
         ErrorCode::AuthRequired,
         format!("{whence} is empty or holds characters a token cannot have"),
-        Suggestion::command(["omaddons", "auth", "github", "set"]),
+        fix,
     ))
 }
 
@@ -328,6 +339,13 @@ mod tests {
         store(&p, "two words");
         let t = GithubToken::resolve_with(&env(&[]), &p, &BTreeMap::new());
         assert!(t.value().is_err());
+        // So is such a variable: an error, never a silent run without the token.
+        let t =
+            GithubToken::resolve_with(&env(&[(TOKEN_VAR, "ghp_abc def")]), &p, &BTreeMap::new());
+        assert_eq!(t.source(), TokenSource::Env);
+        let err = t.value().unwrap_err();
+        assert_eq!(err.code, ErrorCode::AuthRequired);
+        assert!(err.message.contains(TOKEN_VAR), "{}", err.message);
     }
 
     #[test]

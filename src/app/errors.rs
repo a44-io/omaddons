@@ -35,7 +35,7 @@ use crate::errors::observe::{
     AddonErrors, Observation, Observe, Observed, ReadState, SourceKind, group, read_target,
     shown_time,
 };
-use crate::errors::sanitize::{MessageKind, raw_details, strict_frames, strict_message};
+use crate::errors::sanitize::{MessageKind, raw_details, strict_frames, strict_message_for};
 use crate::fsx::{FileStamp, GlobalLock, ScopeTable, WriteSession, Writer, ensure_dir_all};
 use crate::inventory::{Depth, inventory_shared};
 use crate::limits::{ERRORS_MAX_TOTAL_BYTES, ERRORS_SHOWN_PER_ADDON};
@@ -216,6 +216,8 @@ pub fn dismiss(ctx: &Context) -> Result<DismissOutcome> {
     let (acks, _) = ack::load_for_write(&world.paths)?;
     let (mut memo, writable) = memo::load(&world.paths);
     let preview = preview_argv(&ctx.argv);
+    // The read's own warnings follow the read the dismissal binds to.
+    let before_read = warnings.len();
     let mut seen = observe(ctx, &world, &mut memo, &acks, now, &mut warnings)?;
     let bound = |seen: &[Seen<'_>]| {
         let parts: Vec<DismissPart<'_>> = seen
@@ -261,7 +263,8 @@ pub fn dismiss(ctx: &Context) -> Result<DismissOutcome> {
         })
     });
     if moved {
-        seen = observe(ctx, &world, &mut memo, &acks, now, &mut Vec::new())?;
+        warnings.truncate(before_read);
+        seen = observe(ctx, &world, &mut memo, &acks, now, &mut warnings)?;
         check(ctx.if_match.as_deref(), &bound(&seen), &preview)?;
     }
     // Another dismissal may have written while this one waited for the lock: add to
@@ -769,11 +772,14 @@ fn source_text(a: &AddonInfo) -> &'static str {
     let top = a.errors.first();
     match top.map(|e| e.attribution.method) {
         Some(Method::ProtectedCall) => "blocked call from",
+        // Where the error surfaced, never a caller further down: an addon's own frame
+        // there is the source even when custom code called it.
         _ if top.is_some_and(|e| {
+            let site = e.stack.iter().find(|f| !f.starts_with("… ("));
             e.location
                 .as_deref()
                 .is_some_and(|l| l.starts_with("[custom code]"))
-                || e.stack.iter().any(|f| f == "[custom code]")
+                || site.is_some_and(|f| f == "[custom code]")
         }) =>
         {
             "likely source (custom code)"
@@ -1222,23 +1228,8 @@ impl View<'_> {
                     .iter()
                     .filter(|d| d.state == ReadState::Complete)
                     .count(),
-                accounts: match observation.coverage {
-                    Coverage::Truncated { accounts, .. } => accounts,
-                    Coverage::Complete => observation
-                        .databases
-                        .iter()
-                        .map(|d| d.account)
-                        .max()
-                        .unwrap_or(0)
-                        .max(
-                            observation
-                                .listings
-                                .iter()
-                                .map(|l| l.account)
-                                .max()
-                                .unwrap_or(0),
-                        ),
-                },
+                // Every account folder examined, `SavedVariables/` or not.
+                accounts: observation.accounts,
                 partial: observation
                     .databases
                     .iter()
@@ -1274,7 +1265,9 @@ impl View<'_> {
         latest: &dyn Fn(&str) -> Option<(String, Latest)>,
         names: &WtfPathRedactor,
     ) -> AddonInfo {
-        let (version, latest) = match g.managed.then(|| latest(&g.name)).flatten() {
+        // Errors other players sent are never behind an update hint.
+        let local = g.managed && g.origin == Origin::Local;
+        let (version, latest) = match local.then(|| latest(&g.name)).flatten() {
             Some((version, latest)) => (Some(version), Some(latest)),
             None => (None, None),
         };
@@ -1297,15 +1290,20 @@ impl View<'_> {
                 .take(ERRORS_SHOWN_PER_ADDON)
                 .map(|e| {
                     let entry = &e.shown.entry;
-                    let strict = strict_message(&entry.message);
                     let db = &observation.databases[e.shown.database];
-                    // r152 keeps its frames in the message, after the first line.
-                    let stack = match (&entry.stack, db.shape) {
-                        (Some(stack), _) => stack.as_str(),
+                    let strict = strict_message_for(&entry.message, db.shape == DbShape::Legacy);
+                    // r152 keeps its frames in the message, after the first line; a
+                    // warning embeds them after `Stack:`, as attribution reads them.
+                    let own = entry.stack.as_deref().filter(|s| !s.trim().is_empty());
+                    let stack = match (own, db.shape) {
+                        (Some(stack), _) => stack,
                         (None, DbShape::Legacy) => {
                             entry.message.split_once('\n').map_or("", |(_, rest)| rest)
                         }
-                        (None, DbShape::Modern) => "",
+                        (None, DbShape::Modern) => entry
+                            .message
+                            .split_once("|cffffd200Stack:|r")
+                            .map_or("", |(_, rest)| rest),
                     };
                     ErrorInfo {
                         fingerprint: e.shown.fingerprint.clone(),
@@ -1326,7 +1324,7 @@ impl View<'_> {
                         last_seen: shown_time(e.last_seen),
                         entry_type: entry.entry_type,
                         raw: self.raw_details.then(|| {
-                            let raw = raw_details(entry, names);
+                            let raw = raw_details(entry, db.shape == DbShape::Legacy, names);
                             RawInfo {
                                 message: raw.message,
                                 stack: raw.stack,

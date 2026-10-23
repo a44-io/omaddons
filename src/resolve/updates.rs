@@ -6,8 +6,9 @@
 //!
 //! The order of the checks matters: a static install has nothing to check; a source
 //! that is off, a missing entry or a remembered failure stop early; the installed
-//! release being the newest is `current` even when pinned; a pin holds before anything
-//! is compared; the downgrade guard runs before facts; and every confidence counts as
+//! release being the newest is `current` even when pinned; the downgrade guard runs
+//! next, so a pin ahead of the newest release is `ahead` (`pinned` says a newer release
+//! exists); a pin then holds before any fact is compared; and every confidence counts as
 //! an update, because trying it and recording the verdict corrects the badge after at
 //! most one attempt.
 
@@ -240,21 +241,26 @@ pub fn evaluate(
     let mut latest = brief(best, newest);
     // 4. Installed already, unless its tag moved since: the same release id at another
     // revision (WowAce) is a re-tag, an update. A commit elsewhere moves neither.
-    if record.release_id.as_deref() == Some(best.release_id.as_str()) {
+    if record
+        .release_id
+        .as_deref()
+        .is_some_and(|id| same_release(id, &best.release_id))
+    {
         if record.revision == best.revision {
             return UpdateStatus::Current { latest };
         }
         latest.retagged = true;
     }
-    // 5. A pin holds.
+    // 5. Never a downgrade on its own, pinned or not: `pinned` says a newer release
+    // exists, and an older one is no update.
+    if installed_is_newer(record, entry, newest, best) {
+        return UpdateStatus::Ahead { latest };
+    }
+    // 6. A pin holds.
     if record.pinned {
         return UpdateStatus::Pinned {
             latest: Some(latest),
         };
-    }
-    // 6. Never a downgrade on its own.
-    if installed_is_newer(record, entry, newest, best) {
-        return UpdateStatus::Ahead { latest };
     }
     // 7. What plans learned.
     let rules = target.rules.name.as_str();
@@ -318,6 +324,24 @@ fn brief(best: &Candidate, release: Option<&Release>) -> ReleaseBrief {
     }
 }
 
+/// Whether two release ids name one release: `<ref>@<tag>` with the ref compared by its
+/// identity (a GitHub owner and repo in any case: an id keeps the spelling of whichever
+/// request fetched it, while the memo is shared by identity) and the tag exactly.
+pub fn same_release(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.rsplit_once('@'), b.rsplit_once('@')) {
+        (Some((ref_a, tag_a)), Some((ref_b, tag_b))) if tag_a == tag_b => {
+            match (ref_a.parse::<Ref>(), ref_b.parse::<Ref>()) {
+                (Ok(x), Ok(y)) => x.identity() == y.identity(),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Whether the installed release is newer than the newest one: by publication dates
 /// when both are known (the installed one from the entry's releases), else by dotted
 /// version numbers when both parse. Unknown either way: not newer.
@@ -332,12 +356,12 @@ fn installed_is_newer(
             .set
             .iter()
             .flat_map(|s| &s.releases)
-            .find(|r| r.release_id == id)
+            .find(|r| same_release(&r.release_id, id))
             .and_then(|r| r.published_at);
         let known = entry
             .known
             .iter()
-            .find(|k| k.release_id == id)
+            .find(|k| same_release(&k.release_id, id))
             .and_then(|k| k.published_at);
         in_set.or(known)
     });
@@ -646,6 +670,19 @@ mod tests {
             "current",
             "pinned at the newest"
         );
+        // A record installed through another spelling of the repository is the same
+        // release: the memo is shared by identity.
+        let mut spelled = record(Some("2.0.0"), "2.0.0");
+        spelled.release_id = Some("gh:O/Foo@2.0.0".into());
+        assert_eq!(
+            name(&eval(&spelled, Some(&e), &[])),
+            "current",
+            "{spelled:?}"
+        );
+        assert!(!same_release(
+            &format!("{FOO}@2.0.0"),
+            &format!("{FOO}@2.0.0-RC")
+        ));
 
         let behind = record(Some("1.0.0"), "1.0.0");
         assert_eq!(
@@ -750,6 +787,14 @@ mod tests {
             "ahead",
             "by versions"
         );
+        // `pinned` says a newer release exists: a pin ahead of the newest is `ahead`.
+        beta.pinned = true;
+        assert_eq!(
+            name(&eval(&beta, Some(&newest()), &[])),
+            "ahead",
+            "pinned ahead"
+        );
+        beta.pinned = false;
         let mut odd = record(Some("nightly"), "nightly-build");
         odd.channel = Channel::Stable;
         let e = entry(

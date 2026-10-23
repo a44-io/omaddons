@@ -196,8 +196,13 @@ pub fn index_live_folder(path: &Path, limits: &ArchiveLimits) -> Result<FolderIn
             let item = item.map_err(|e| unreadable(&prefix, &e))?;
             let name = item.file_name();
             let Some(name) = name.to_str() else {
-                let lossy = name.to_string_lossy().into_owned();
-                return Err(unindexable(&lossy, "has a name that is not UTF-8"));
+                let lossy = name.to_string_lossy();
+                let rel = if prefix.is_empty() {
+                    lossy.into_owned()
+                } else {
+                    format!("{prefix}/{lossy}")
+                };
+                return Err(unindexable(&rel, "has a name that is not UTF-8"));
             };
             let rel = if prefix.is_empty() {
                 name.to_owned()
@@ -234,7 +239,12 @@ pub fn index_live_folder(path: &Path, limits: &ArchiveLimits) -> Result<FolderIn
                 ));
             }
             let (read, sha256) = hash_reader(&file).map_err(|e| unreadable(&rel, &e))?;
-            if read != stat.len() {
+            // Rewritten in place at the same size shows in its mtime alone.
+            let after = file.metadata().map_err(|e| unreadable(&rel, &e))?;
+            if read != stat.len()
+                || after.len() != stat.len()
+                || mtime_ns(&after) != mtime_ns(&stat)
+            {
                 return Err(unindexable(&rel, "changed while it was read"));
             }
             total = total.saturating_add(read);

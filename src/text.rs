@@ -165,7 +165,8 @@ pub fn source_line(input: &str, max_chars: usize, entities: Entities) -> String 
 fn hides_text(c: char) -> bool {
     matches!(
         c,
-        '\u{200B}'..='\u{200F}'
+        '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
             | '\u{202A}'..='\u{202E}'
             | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{2069}'
@@ -389,13 +390,22 @@ fn truncate(text: &str, max_chars: usize) -> String {
 pub fn strip_ui_escapes(raw: &str) -> String {
     let chars: Vec<char> = raw.chars().collect();
     let mut out = String::with_capacity(raw.len());
+    // Where each closing pair last occurs: an opener past it never closes, so it is not
+    // searched for, and every search that runs succeeds and is jumped over (linear).
+    let last = |close: char| {
+        chars
+            .windows(2)
+            .rposition(|pair| pair[0] == '|' && pair[1] == close)
+    };
+    let (last_t, last_a, last_h) = (last('t'), last('a'), last('h'));
     let mut i = 0;
     while let Some(&c) = chars.get(i) {
         if c == '|' {
             let next = chars.get(i + 1).copied();
             // The end of a `|T…|t`, `|A…|a` or `|H…|h` escape, past its closing pair.
-            let closing = |close: char| {
-                (i + 2..chars.len().saturating_sub(1))
+            let closing = |close: char, last: Option<usize>| {
+                let last = last.filter(|l| *l >= i + 2)?;
+                (i + 2..=last)
                     .find(|&j| chars.get(j) == Some(&'|') && chars.get(j + 1) == Some(&close))
                     .map(|j| j + 2)
             };
@@ -408,9 +418,9 @@ pub fn strip_ui_escapes(raw: &str) -> String {
                     Some(i + 10)
                 }
                 Some('r' | 'R' | 'h') => Some(i + 2),
-                Some('T') => closing('t'),
-                Some('A') => closing('a'),
-                Some('H') => closing('h'),
+                Some('T') => closing('t', last_t),
+                Some('A') => closing('a', last_a),
+                Some('H') => closing('h', last_h),
                 Some('|') => {
                     out.push('|');
                     Some(i + 2)
@@ -510,10 +520,15 @@ fn entity(chars: &[char]) -> Option<(char, usize)> {
         "apos" | "#39" => '\'',
         "nbsp" => ' ',
         numeric => {
+            // Digits only: the integer parsers alone also take a sign (`&#+65;`).
             let digits = numeric.strip_prefix('#')?;
             let code = match digits.strip_prefix(['x', 'X']) {
-                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-                None => digits.parse::<u32>().ok()?,
+                Some(hex) if hex.chars().all(|c| c.is_ascii_hexdigit()) => {
+                    u32::from_str_radix(hex, 16).ok()?
+                }
+                Some(_) => return None,
+                None if digits.chars().all(|c| c.is_ascii_digit()) => digits.parse::<u32>().ok()?,
+                None => return None,
             };
             char::from_u32(code)?
         }
@@ -598,6 +613,11 @@ mod tests {
         assert_eq!(
             html("&lt;b&gt; &amp; &quot;q&quot; &#39;s&#39; &#65;&#x42; &bogus; &nbsp;x"),
             "&lt;b> & \"q\" 's' AB &bogus; x"
+        );
+        assert_eq!(
+            html("&#+65; &#x+41;"),
+            "&#+65; &#x+41;",
+            "a sign is no digit"
         );
         assert_eq!(html("<a href=\"x>y\" title='>'>link</a> text"), "link text");
         assert_eq!(html("<div>a</div><div>b</div>"), "a\nb");
@@ -762,6 +782,7 @@ mod tests {
             // Text that reorders or hides itself, and line breaks.
             ("evil\u{202e}gnp.exe", "evilgnp.exe"),
             ("a\u{200b}b\u{feff}", "ab"),
+            ("a\u{61c}b", "ab"),
             ("  one\r\n\ttwo\u{2028}three  ", "one two three"),
             // A `<` from an entity is text: nothing reads it again.
             ("&lt;b&gt;bold&lt;/b&gt;", "<b>bold</b>"),

@@ -129,8 +129,9 @@ fn newest_of_each_kind(backups: &[BackupRef], n: usize) -> BTreeSet<BackupId> {
 }
 
 /// The automatic backups the per-day rule keeps: for each of the newest `keep_days` local
-/// days (in `tz`) holding any automatic backup, its first pre-change backup, its last
-/// post-session backup and every before-restore backup.
+/// days (in `tz`) holding any automatic backup, its first pre-change backup (and its first
+/// qualifying one, when the first was not), its last post-session backup and every
+/// before-restore backup.
 fn by_day(backups: &[BackupRef], tz: &TimeZone, keep_days: usize) -> BTreeSet<BackupId> {
     let mut days: BTreeMap<Date, Vec<&BackupRef>> = BTreeMap::new();
     for b in backups {
@@ -152,6 +153,14 @@ fn by_day(backups: &[BackupRef], tz: &TimeZone, keep_days: usize) -> BTreeSet<Ba
         };
         let at = |b: &&&BackupRef| (b.captured_at(), b.id);
         kept.extend(auto(Trigger::PreChange).min_by_key(at).map(|b| b.id));
+        // A best-effort first one is no checkpoint, so the day's next change made a stable
+        // one: that one is the day's checkpoint, and stays too.
+        kept.extend(
+            auto(Trigger::PreChange)
+                .filter(|b| b.qualifying)
+                .min_by_key(at)
+                .map(|b| b.id),
+        );
         kept.extend(auto(Trigger::PostSession).max_by_key(at).map(|b| b.id));
         kept.extend(
             of_day
@@ -550,6 +559,28 @@ mod tests {
         expected.push("2026-10-05T10:00:00Z None".into());
         expected.sort();
         assert_eq!(kept(&backups, &victims), expected);
+    }
+
+    /// A day whose first pre-change backup was best effort made a stable one at its next
+    /// change: that is the day's checkpoint, and stays beside the first.
+    #[test]
+    fn a_days_checkpoint_stays_when_its_first_pre_change_was_best_effort() {
+        let mut shaky = pre("2026-10-04T08:00:00Z");
+        if let Some(meta) = shaky.meta.as_mut() {
+            meta.consistency = Consistency::BestEffort;
+        }
+        shaky.qualifying = false;
+        let stable = pre("2026-10-04T09:00:00Z");
+        let later = pre("2026-10-04T12:00:00Z");
+        let newest = pre("2026-10-08T08:00:00Z");
+        let backups = vec![shaky.clone(), stable.clone(), later.clone(), newest];
+        let now = at("2026-10-10T00:00:00Z");
+        let victims = select(&backups, now, &TimeZone::UTC, 7, &PruneOpts::default());
+        assert_eq!(
+            victims,
+            [later.id],
+            "the first and the first stable one stay"
+        );
     }
 
     #[test]

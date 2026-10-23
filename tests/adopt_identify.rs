@@ -223,6 +223,7 @@ mod support {
     ) -> Vec<Group> {
         let lookups = AdoptLookups {
             family: Family::Mainline,
+            legacy: false,
             catalog,
             tukui: Some(&NoTukui),
             wowi: wowi.map(|w| w as &dyn AdoptWowi),

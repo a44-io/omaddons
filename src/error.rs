@@ -185,7 +185,7 @@ error_codes! {
     Network             = "network",               Failed,      true;
     /// `details.reset_at` carries the reset time (RFC 3339).
     RateLimited         = "rate_limited",          Failed,      true;
-    DownloadFailed      = "download_failed",       Failed,      true;
+    DownloadFailed      = "download_failed",       Failed,      false;
     /// Retryable for 5xx only; see [`Error::http_status`].
     HttpStatus          = "http_status",           Failed,      false;
     /// Retryable once; see [`Error::hash_mismatch`].
@@ -745,7 +745,7 @@ mod tests {
         ("filesystem_unsupported", 4, false), ("file_exists", 4, false),
         ("locked", 5, true),
         ("check_failed", 6, false),
-        ("network", 1, true), ("rate_limited", 1, true), ("download_failed", 1, true),
+        ("network", 1, true), ("rate_limited", 1, true), ("download_failed", 1, false),
         ("http_status", 1, false), ("hash_mismatch", 1, true), ("plan_stale", 1, true),
         ("offline", 1, false), ("bad_archive", 1, false), ("distribution_disabled", 1, false),
         ("source_disabled", 1, false), ("auth_required", 1, false), ("auth_rejected", 1, false),

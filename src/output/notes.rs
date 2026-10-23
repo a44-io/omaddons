@@ -109,9 +109,12 @@ impl RunNotes {
     }
 
     /// A next step that holds even if the command then fails (the undo of a commit that
-    /// stands).
+    /// stands), once: a commit rolled forward in process notes its undo again.
     pub fn hint(&self, command: CommandHint) {
-        self.lock().commands.push(command);
+        let mut notes = self.lock();
+        if !notes.commands.contains(&command) {
+            notes.commands.push(command);
+        }
     }
 
     /// The warnings and hints so far, in the order they were found.

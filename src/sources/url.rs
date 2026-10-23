@@ -40,9 +40,17 @@ impl Source for UrlSource {
     }
 }
 
+/// `url` after its `https://`, the scheme in any case (as `url:` refs take it).
+fn after_scheme(url: &str) -> &str {
+    url.get(..8)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("https://"))
+        .and_then(|_| url.get(8..))
+        .unwrap_or(url)
+}
+
 /// The host of an https URL: no userinfo, no port, lowercase.
 pub fn url_host(url: &str) -> String {
-    let rest = url.strip_prefix("https://").unwrap_or(url);
+    let rest = after_scheme(url);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     authority
         .rsplit('@')
@@ -66,7 +74,7 @@ impl UrlSource {
         let Ref::Url { url } = r else {
             return Err(Error::internal(format!("the url source got {r}")));
         };
-        let rest = url.strip_prefix("https://").unwrap_or(url);
+        let rest = after_scheme(url);
         let host = url_host(url);
         if !self.allowlist.permits(&host) {
             return Err(Error::new(
@@ -153,6 +161,7 @@ mod tests {
             ("https://github.com/o/r/archive/x.zip", "github.com", true),
             ("https://example.com/a.zip", "example.com", false),
             ("https://user:pw@GitHub.com:443/o/r.zip", "github.com", true),
+            ("HTTPS://github.com/o/r/x.zip", "github.com", true),
             (
                 "https://evil.example@example.com/a.zip",
                 "example.com",

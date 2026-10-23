@@ -22,7 +22,7 @@ use super::precondition;
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
-use crate::discover::registry::{resolve_one, with_target};
+use crate::discover::registry::{resolve_one_in, with_target};
 use crate::engine::plan::RequestedChange;
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
@@ -165,9 +165,9 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
     let world = World::load(ctx)?;
     let records = world.records()?;
     let targets: Vec<&DiscoveredTarget> = match &ctx.target {
-        Some(selector) => vec![resolve_one(
+        Some(selector) => vec![resolve_one_in(
             selector,
-            &world.resolved.targets,
+            &world.resolved,
             &world.table,
             &ctx.argv,
         )?],

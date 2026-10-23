@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::cli::Context;
 use crate::discover::cache::{CacheStats, DiscoveryMode, discover_cached};
-use crate::discover::registry::{Resolved, reconcile, resolve, resolve_one};
+use crate::discover::registry::{Resolved, missing_named, reconcile, resolve, resolve_one_in};
 use crate::discover::running::process_prefixes;
 use crate::discover::{DiscoveredTarget, DiscoveryInput, DiscoverySource, ScanLimits};
 use crate::error::{Error, Result, Warning};
@@ -177,7 +177,7 @@ impl World {
     pub fn default_target(&self, argv: &[String]) -> Option<Result<&DiscoveredTarget>> {
         let targets = &self.resolved.targets;
         if let Some(selector) = &self.config.default_target {
-            return Some(resolve_one(selector, targets, &self.table, argv));
+            return Some(resolve_one_in(selector, &self.resolved, &self.table, argv));
         }
         let key = self.registry.default?;
         targets.iter().find(|d| d.target.key == Some(key)).map(Ok)
@@ -218,7 +218,9 @@ impl World {
         let Some(selector) = &ctx.target else {
             return Ok(None);
         };
-        match resolve_one(selector, &self.resolved.targets, &self.table, &ctx.argv) {
+        // A missing client named by key or id is refused before a later kind of selector
+        // picks another; its history is the registry entry's below.
+        match resolve_one_in(selector, &self.resolved, &self.table, &ctx.argv) {
             Ok(found) => Ok(Some(found.target.key)),
             Err(error) => {
                 let key = selector.parse::<TargetKey>().ok();
@@ -241,6 +243,9 @@ impl World {
     /// sides, `adopt --ref`, `history` and `undo`) use `resolve_one`, whose ambiguity is
     /// an error.
     pub fn select_many(&self, ctx: &Context) -> Result<Vec<&DiscoveredTarget>> {
+        if let Some(selector) = ctx.target.as_deref() {
+            missing_named(selector, &self.resolved.targets, &self.resolved.missing)?;
+        }
         select_many(ctx.target.as_deref(), &self.resolved.targets, &self.table)
     }
 }
@@ -315,6 +320,7 @@ pub fn names_addon(name: &str, addon: &AddonRecord, catalog: &Catalog) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discover::registry::resolve_one;
     use crate::error::ErrorCode;
     use crate::rules::{ClientVersion, Family, InstallKind};
 

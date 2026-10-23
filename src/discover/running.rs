@@ -184,13 +184,14 @@ pub fn process_prefixes(table: &RulesTable, home: &Path) -> Vec<ExtraPrefix> {
         .chain(PROCESS_ROUTE_EXES.map(str::to_owned))
         .collect();
     // A prefix the scan looks at anyway (a direct child of `~/Games`, `~/.wine`) keeps
-    // its scan route, running or not. The prefixes are canonical, so `home` is too.
+    // its scan route, running or not. The prefixes are canonical, so `home` is too, and
+    // `~/Games` on its own: often a symlink to another disk, which the scan follows.
     let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
-    let games = home.join("Games");
+    let games = std::fs::canonicalize(home.join("Games")).unwrap_or_else(|_| home.join("Games"));
     let scanned = |p: &Path| p.parent() == Some(games.as_path()) || p == home.join(".wine");
     running_prefixes(&root, uid, &names)
         .into_iter()
-        .filter(|path| path.starts_with(&home) && !scanned(path))
+        .filter(|path| (path.starts_with(&home) || path.starts_with(&games)) && !scanned(path))
         .map(|path| ExtraPrefix {
             qualifier: super::dir_slug(&path),
             path,

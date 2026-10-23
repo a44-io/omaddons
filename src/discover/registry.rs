@@ -359,7 +359,8 @@ impl<'l> LockedRegistry<'l> {
     }
 
     /// Registers the client at `path` (a root, a flavor folder or an AddOns path) with
-    /// origin `manual`; `name` becomes the id when exactly one target results.
+    /// origin `manual`; `name` becomes the id when exactly one target results, renaming
+    /// a client registered already (or moved) under another.
     pub fn add_manual(
         &mut self,
         s: &mut WriteSession<'_>,
@@ -373,15 +374,24 @@ impl<'l> LockedRegistry<'l> {
                 let root = found[0].target.install_root.clone();
                 return Err(name_needs_one_target(&root, &found, name));
             }
-            let already = found
-                .iter()
-                .all(|d| self.entry_at(&d.target.client_dir).is_some());
-            if !already {
+            // Free, unless this client holds it already (by its directory or marker).
+            let held = self.loaded.value.entry_by_id(name).is_some_and(|e| {
+                found.iter().any(|d| {
+                    same_dir(&e.client_dir, &d.target.client_dir)
+                        || read_marker(&d.target.client_dir) == Some(e.key)
+                })
+            });
+            if !held {
                 self.check_new_id(name, table)?;
             }
         }
         for d in &mut found {
-            let entry = self.register(s, d, Origin::Manual, name)?;
+            let mut entry = self.register(s, d, Origin::Manual, name)?;
+            if let Some(name) = name
+                && entry.id != name
+            {
+                entry = self.rename(s, table, &entry.id, name)?;
+            }
             d.target.key = Some(entry.key);
             d.target.id = entry.id;
         }
@@ -549,7 +559,7 @@ pub fn manual_targets(
     Ok((found, warnings))
 }
 
-fn name_needs_one_target(root: &Path, found: &[DiscoveredTarget], name: &str) -> Error {
+pub(crate) fn name_needs_one_target(root: &Path, found: &[DiscoveredTarget], name: &str) -> Error {
     let add = |d: &DiscoveredTarget| {
         Suggestion::command([
             "omaddons".to_owned(),
@@ -718,6 +728,59 @@ fn path_names(path: &Path, d: &DiscoveredTarget) -> bool {
     .into_iter()
     .flatten()
     .any(|p| std::fs::canonicalize(p).ok().as_deref() == Some(path))
+}
+
+/// `target_not_found` when `selector` names, by key or id, a registered client whose
+/// directory is gone (`missing`) and no discovered target by either: a later kind of
+/// selector (a family its id shadows, a mode) would pick another client.
+pub fn missing_named(
+    selector: &str,
+    targets: &[DiscoveredTarget],
+    missing: &[RegistryEntry],
+) -> Result<()> {
+    let key = selector.parse::<TargetKey>().ok();
+    let names = |k: Option<TargetKey>, id: &str| {
+        (key.is_some() && k == key) || id.eq_ignore_ascii_case(selector)
+    };
+    if targets.iter().any(|d| names(d.target.key, &d.target.id)) {
+        return Ok(());
+    }
+    match missing.iter().find(|e| names(Some(e.key), &e.id)) {
+        Some(e) => Err(Error::new(
+            ErrorCode::TargetNotFound,
+            format!(
+                "{} is registered, but {} is gone",
+                e.id,
+                e.client_dir.display()
+            ),
+            Suggestion::command(["omaddons", "targets"]),
+        )
+        .details(serde_json::json!({ "selector": selector, "key": e.key, "missing": true }))),
+        None => Ok(()),
+    }
+}
+
+/// [`resolve`] over what discovery found, a missing client named by key or id refused
+/// ([`missing_named`]).
+pub fn resolve_in<'a>(
+    selector: &str,
+    resolved: &'a Resolved,
+    table: &RulesTable,
+) -> Result<Vec<&'a DiscoveredTarget>> {
+    missing_named(selector, &resolved.targets, &resolved.missing)?;
+    resolve(selector, &resolved.targets, table)
+}
+
+/// [`resolve_one`] over what discovery found, a missing client named by key or id
+/// refused ([`missing_named`]).
+pub fn resolve_one_in<'a>(
+    selector: &str,
+    resolved: &'a Resolved,
+    table: &RulesTable,
+    argv: &[String],
+) -> Result<&'a DiscoveredTarget> {
+    missing_named(selector, &resolved.targets, &resolved.missing)?;
+    resolve_one(selector, &resolved.targets, table, argv)
 }
 
 /// The one target `selector` names; `target_ambiguous` when it names several, with
@@ -963,6 +1026,47 @@ mod tests {
                 .target
                 .id,
             "wotlk"
+        );
+    }
+
+    /// A registered client whose directory is gone, named by its id or key, is not
+    /// found, never the family its id shadows on another client.
+    #[test]
+    fn a_missing_client_is_never_resolved_to_another() {
+        let table = RulesTable::builtin();
+        let era = discovered("era", Family::Vanilla, None, None, "/g/era");
+        let gone = RegistryEntry {
+            key: TargetKey::new(),
+            id: "vanilla".into(),
+            install_root: PathBuf::from("/unplugged/vanilla"),
+            client_dir: PathBuf::from("/unplugged/vanilla"),
+            flavor_dir: None,
+            product: None,
+            qualifier: String::new(),
+            origin: Origin::Manual,
+            registered_at: Timestamp::now(),
+        };
+        let resolved = Resolved {
+            targets: vec![era],
+            warnings: Vec::new(),
+            missing: vec![gone.clone()],
+        };
+        assert_eq!(
+            resolve("vanilla", &resolved.targets, &table).unwrap()[0]
+                .target
+                .id,
+            "era",
+            "a family alone"
+        );
+        for selector in ["vanilla", &gone.key.to_string()] {
+            let err = resolve_in(selector, &resolved, &table).unwrap_err();
+            assert_eq!(err.code, ErrorCode::TargetNotFound, "{selector}");
+            let err = resolve_one_in(selector, &resolved, &table, &[]).unwrap_err();
+            assert_eq!(err.details["missing"], true, "{selector}");
+        }
+        assert_eq!(
+            resolve_in("era", &resolved, &table).unwrap()[0].target.id,
+            "era"
         );
     }
 

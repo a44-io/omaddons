@@ -89,8 +89,10 @@ fn custom_names_show_only_code_derived_text() {
         );
         // Raw output replaces the names it knows.
         for entry in &entries {
-            let raw = raw_details(entry, &names());
-            assert_private(&format!("{raw:?}"));
+            for legacy in [false, true] {
+                let raw = raw_details(entry, legacy, &names());
+                assert_private(&format!("{raw:?}"));
+            }
         }
     }
 }
@@ -103,7 +105,12 @@ fn personal_data_never_shows_not_even_raw() {
             let shown = strict(entry);
             assert_private(&shown);
             assert!(!shown.contains("Player-1234"), "{shown}");
-            let raw = format!("{:?}", raw_details(entry, &names()));
+            // As a legacy entry too: its message's later lines are its raw stack.
+            let raw = format!(
+                "{:?} {:?}",
+                raw_details(entry, false, &names()),
+                raw_details(entry, true, &names())
+            );
             assert_private(&raw);
             assert!(!raw.contains("Player-1234"), "{raw}");
             assert!(raw.contains("<player>") || !entry.message.contains("Player-"));

@@ -218,6 +218,48 @@ fn every_scenario_reads_alike_in_both_writer_formats() {
     }
 }
 
+/// `files.accounts` counts every account folder examined, one without SavedVariables
+/// (a fresh login) included.
+#[test]
+fn every_account_examined_is_counted() {
+    let r = Retail::new(&["Foo"]);
+    r.write(&[file(&sessions_db(10, &[10]))]);
+    fs::create_dir_all(r.wtf().join("Account/ZNEWACCT")).unwrap();
+    let envelope = r.errors(&[]).expect(0);
+    assert_eq!(
+        support::retail(&envelope)["files"]["accounts"],
+        2,
+        "{envelope:#}"
+    );
+}
+
+/// A warning's stack, embedded in its message, is shown as attribution reads it.
+#[test]
+fn a_warnings_embedded_stack_is_shown() {
+    let r = Retail::new(&["Baz"]);
+    r.write(&[file(&buggrabber::warnings(Writer::Modern))]);
+    let envelope = r.errors(&[]).expect(0);
+    let errors = support::retail(&envelope)["addons"][0]["errors"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let warning = errors
+        .iter()
+        .find(|e| e["type"] == "warning")
+        .cloned()
+        .unwrap_or_default();
+    let stack: Vec<&str> = warning["stack"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        stack.iter().any(|f| f.starts_with("Baz/Baz.lua:20:")),
+        "{envelope:#}"
+    );
+}
+
 #[test]
 fn attribution_names_the_likely_source_with_its_evidence() {
     let r = Retail::new(&["Questie", "AtlasLootClassic", "WeakAuras", "SomeUIPack"]);
@@ -679,6 +721,81 @@ fn new_errors_stay_new_across_reads_and_a_reset() {
     assert_eq!(support::retail(&past)["summary"]["new"], 2);
 }
 
+/// A session counter only grows: one below the session last seen is a reset even when
+/// it is above the baseline, and everything since it is new.
+#[test]
+fn a_reset_below_the_last_session_seen_is_a_reset() {
+    let r = Retail::new(&["Foo"]);
+    r.write(&[file(&sessions_db(10, &[10]))]);
+    r.errors(&[]).expect(0);
+    r.write(&[file(&sessions_db(20, &[10, 20]))]);
+    r.errors(&[]).expect(0);
+    r.write(&[file(&sessions_db(12, &[3, 12]))]);
+    let reset = r.errors(&[]).expect(0);
+    assert_eq!(support::retail(&reset)["databases"][0]["baseline"], 0);
+    assert_eq!(new_flags(&reset), [true, true], "sessions 3 and 12");
+}
+
+/// A first read cut short before the database's `session` key: its entries' newest
+/// session stands in, so only that session's errors are new, never all of history.
+#[test]
+fn a_cut_first_read_without_its_session_keeps_the_first_read_rule() {
+    let r = Retail::new(&["Foo"]);
+    let entry = |s: u32| {
+        let message = format!(
+            "{} attempt to call a nil value",
+            buggrabber::stack_era_c("Foo", "a.lua", s)
+        );
+        format!(
+            "{{\n[\"message\"] = {message:?},\n[\"session\"] = {s},\n[\"time\"] = {},\n[\"counter\"] = 1,\n}},\n",
+            NOW - 60
+        )
+    };
+    let mut cut = file(&sessions_db(10, &[8, 10]));
+    cut.bytes = format!(
+        "BugGrabberDB = {{\n[\"errors\"] = {{\n{}{}",
+        entry(8),
+        entry(10)
+    )
+    .into_bytes();
+    r.write(&[cut]);
+    let read = r.errors(&[]).expect(0);
+    let db = &support::retail(&read)["databases"][0];
+    assert_eq!(
+        (&db["state"], &db["baseline"]),
+        (&json!("partial"), &json!(9)),
+        "{read:#}"
+    );
+    assert_eq!(new_flags(&read), [true, false], "only session 10 is new");
+}
+
+/// A first read that cannot read the database (over the run's budget, mid-write) leaves
+/// a memo entry without a session: the next read that can is still a first read, whose
+/// baseline is the session before the current one, never 0 (all history new).
+#[test]
+fn a_failed_first_read_leaves_the_first_read_rule_in_place() {
+    let r = Retail::new(&["Foo"]);
+    let sv = r.wtf().join("Account/FAKEACCT/SavedVariables");
+    fs::create_dir_all(&sv).unwrap();
+    fs::File::create(sv.join("!BugGrabber.lua"))
+        .unwrap()
+        .set_len(65 << 20)
+        .unwrap();
+    let over = r.errors(&[]).expect(0);
+    assert_eq!(
+        support::retail(&over)["databases"][0]["state"],
+        "over_budget"
+    );
+    r.write(&[file(&sessions_db(10, &[8, 9, 10]))]);
+    let read = r.errors(&[]).expect(0);
+    assert_eq!(support::retail(&read)["databases"][0]["baseline"], 9);
+    assert_eq!(
+        new_flags(&read),
+        [true, false, false],
+        "only session 10 is new"
+    );
+}
+
 #[test]
 fn a_file_older_than_a_week_has_no_new_errors() {
     let r = Retail::new(&["Foo"]);
@@ -987,7 +1104,71 @@ fn an_update_that_may_fix_new_errors_is_offered_and_runs() {
             .stdout
             .contains("Update them: omaddons update Foo -t retail")
     );
+
+    // An error another player sent about Foo is never behind the update hint.
+    let sent = BugEntry::new(
+        &format!(
+            "{} attempt to call a nil value",
+            buggrabber::stack_era_c("Foo", "b.lua", 3)
+        ),
+        10,
+        (TimeKind::Unix, NOW - 60),
+    )
+    .source("Someone");
+    buggrabber::write_files(
+        &home.client("_retail_").join("WTF"),
+        &[file(&BugDb::new(Writer::Modern, 10).entry(sent))],
+    );
+    let run = home.exec_with(
+        &["errors", "--received", "--json"].map(str::to_owned),
+        &[("OMADDONS_NOW", support::CLOCK)],
+    );
+    let envelope = run.expect(0);
+    let received = support::retail(&envelope)["addons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["origin"] == "received")
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        (&received["addon"], &received["latest"]),
+        (&json!("Foo"), &Value::Null),
+        "{}",
+        run.context()
+    );
     home.run(&["update", "Foo", "-t", "retail"]).expect(0);
+}
+
+/// Custom code that only called the addon where the error surfaced is no source: the
+/// addon's own frame is.
+#[test]
+fn custom_code_below_the_error_site_is_no_source() {
+    let r = Retail::new(&["Foo", "WeakAuras"]);
+    let site = buggrabber::stack_era_c("Foo", "core.lua", 12);
+    let chunk = "[string \"--[==[ Error in 'Bar' ]==] return function(...)\"]";
+    let called = BugEntry::new(
+        &format!("{site} attempt to index a nil value (field 'db')"),
+        10,
+        (TimeKind::Unix, NOW - 60),
+    )
+    .stack(&[
+        format!("{site} in function 'Refresh'"),
+        format!("{chunk}:4: in function <{chunk}:1>"),
+        "[C]: in function 'xpcall'".to_owned(),
+    ]);
+    r.write(&[file(&BugDb::new(Writer::Modern, 10).entry(called))]);
+    let human = r.human(&[]);
+    let line = human
+        .stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("Foo "))
+        .unwrap_or_default();
+    assert!(
+        line.ends_with("likely source") && !line.contains("custom code"),
+        "{}",
+        human.stdout
+    );
 }
 
 #[test]

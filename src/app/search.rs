@@ -5,7 +5,7 @@
 //! catalog is built in, and the WoWInterface index and Tukui list are whole lists,
 //! fetched and searched here. Compatibility is a hint; `install` verifies every TOC.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use jiff::Timestamp;
@@ -319,6 +319,8 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
         .count() as u64;
     let progress = |what: &str| ctx.progress.event(Phase::Fetch, fetched, what);
     let mut hits: Vec<Hit> = Vec::new();
+    // Catalog names with a build per family: an install hint names them, not one ref.
+    let mut variants: BTreeSet<String> = BTreeSet::new();
 
     // The catalog: offline, built in (with catalog.d).
     if wants(SourceFilter::Catalog) {
@@ -332,6 +334,12 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
                 names.push(&e.name);
             }
         }
+        variants.extend(
+            names
+                .iter()
+                .filter(|name| catalog.has_variants(name))
+                .map(|name| (*name).to_owned()),
+        );
         hits.extend(names.into_iter().filter_map(|name| {
             let e = catalog.resolve(name, None)?;
             let mut families = Vec::new();
@@ -502,7 +510,7 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
             }
         })
         .collect();
-    let commands = install_hints(&results, &hint_preference(ctx, &world, &targets));
+    let commands = install_hints(&results, &hint_preference(ctx, &world, &targets), &variants);
     sources_skipped.sort_by_key(|s| s.source);
     // One memo write per command: the Tukui list it fetched, for the next run.
     let remembered = cache.remember(&[]);
@@ -584,8 +592,14 @@ fn hint_preference(ctx: &Context, world: &World, targets: &[&DiscoveredTarget]) 
 
 /// `install <ref> -t <target>` for up to three results, best first, each on the client
 /// with its best suggestible hint (`yes`, then `likely`, then `unknown`), the first in
-/// `preference` among equals ([`hint_preference`]).
-fn install_hints(results: &[SearchResult], preference: &[String]) -> Vec<CommandHint> {
+/// `preference` among equals ([`hint_preference`]). A catalog name in `variants` is
+/// installed by name, which picks the build of that client's family (its hint judged
+/// that build); its `ref` is the default build's only.
+fn install_hints(
+    results: &[SearchResult],
+    preference: &[String],
+    variants: &BTreeSet<String>,
+) -> Vec<CommandHint> {
     let rank = |id: &String| {
         preference
             .iter()
@@ -600,12 +614,17 @@ fn install_hints(results: &[SearchResult], preference: &[String]) -> Vec<Command
                 .iter()
                 .filter(|(_, c)| c.suggestible())
                 .min_by_key(|(id, c)| (**c, rank(id), (*id).clone()))?;
+            let by_name = r.source == HitSource::Catalog && variants.contains(&r.name);
             Some(CommandHint::new(
                 "install",
                 [
                     "omaddons".to_owned(),
                     "install".to_owned(),
-                    r.r#ref.to_string(),
+                    if by_name {
+                        r.name.clone()
+                    } else {
+                        r.r#ref.to_string()
+                    },
                     "-t".to_owned(),
                     target.clone(),
                 ],
@@ -639,10 +658,31 @@ mod tests {
     /// The `-t` of each hint.
     fn hinted(results: &[SearchResult], preference: &[&str]) -> Vec<String> {
         let preference: Vec<String> = preference.iter().map(|p| (*p).to_owned()).collect();
-        install_hints(results, &preference)
+        install_hints(results, &preference, &BTreeSet::new())
             .iter()
             .filter_map(|h| h.argv().last().cloned())
             .collect()
+    }
+
+    /// A catalog name with a build per family is installed by name, so the client gets
+    /// its own build, never the default build's ref.
+    #[test]
+    fn a_name_with_variants_is_hinted_by_name() {
+        let mut bg = result("wowace:buggrabber", &[("wrath", Compat::Yes)]);
+        bg.name = "BugGrabber".into();
+        let plain = result("gh:o/plain", &[("wrath", Compat::Yes)]);
+        let variants = BTreeSet::from(["BugGrabber".to_owned()]);
+        let argv: Vec<Vec<String>> = install_hints(&[bg, plain], &[], &variants)
+            .iter()
+            .map(|h| h.argv().to_vec())
+            .collect();
+        assert_eq!(
+            argv,
+            [
+                ["omaddons", "install", "BugGrabber", "-t", "wrath"],
+                ["omaddons", "install", "gh:o/plain", "-t", "wrath"],
+            ]
+        );
     }
 
     #[test]

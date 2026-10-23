@@ -159,7 +159,9 @@ pub fn plan(
     let owners = Owners::new(addons);
     let folders: Vec<FolderName> = addons.iter().flat_map(|a| a.folders.clone()).collect();
     let live = sv_candidates(&client, &folders);
-    let mut out_of_scope = live.skipped;
+    // The backup's side counted apart: one file left alone on both sides is one file,
+    // as undo counts them (each reason's larger count).
+    let mut backup_side = SvSkipped::default();
 
     // The backup's candidates by lowercase path; two spellings of one are left alone.
     let mut backed: BTreeMap<String, Option<&ManifestEntry>> = BTreeMap::new();
@@ -180,7 +182,7 @@ pub fn plan(
             }
             std::collections::btree_map::Entry::Occupied(mut slot) => {
                 let first = usize::from(slot.get().is_some());
-                out_of_scope.two_spellings += 1 + first;
+                backup_side.two_spellings += 1 + first;
                 slot.insert(None);
             }
         }
@@ -229,7 +231,7 @@ pub fn plan(
         };
         let dir = parent(&entry.path).map_or_else(|| wtf.clone(), |p| wtf.join(p));
         if let Some(skip) = sv_skip(&client, &dir) {
-            out_of_scope.count(skip, 1);
+            backup_side.count(skip, 1);
             continue;
         }
         files.push(SvFile {
@@ -259,7 +261,7 @@ pub fn plan(
         generation,
         files,
         counts,
-        out_of_scope,
+        out_of_scope: live.skipped.max(backup_side),
     })
 }
 
@@ -991,16 +993,25 @@ impl Window<'_> {
             Ok(())
         })();
         if let Err(error) = committed {
+            // Read before recovery prunes it: committed already, the restore stands.
+            let committed_swap = super::journal::committed_swap(paths, &tx);
             // In-process recovery checks running afresh (a writes_wtf journal waits).
-            match recover_tx(&recovery, &tx) {
+            match (recover_tx(&recovery, &tx), committed_swap) {
                 // Swapped already: the payload completed it, so the restore stands.
-                Ok(Some(Recovered {
-                    action: RecoveryAction::RolledForward,
-                    warnings: rolled,
-                    ..
-                })) => warnings.extend(rolled),
-                Ok(_) => return Err(error),
-                Err(failed) => return Err(recovery_failed(error, &tx, &failed)),
+                (
+                    Ok(Some(Recovered {
+                        action: RecoveryAction::RolledForward,
+                        warnings: rolled,
+                        ..
+                    })),
+                    _,
+                ) => {
+                    note_undo(ctx, &tx);
+                    warnings.extend(rolled);
+                }
+                (Ok(None), Some(_)) => note_undo(ctx, &tx),
+                (Ok(_), _) => return Err(error),
+                (Err(failed), _) => return Err(recovery_failed(error, &tx, &failed)),
             }
         }
         let held = millis(&guard);

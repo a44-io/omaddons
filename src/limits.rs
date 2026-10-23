@@ -975,16 +975,20 @@ fn retention(
     let mut retention = current;
     for (name, value) in table {
         let field = format!("{key}.{name}");
+        let too_large = || LimitOverrideError::WrongType {
+            key: field.clone(),
+            expected: "a smaller integer",
+        };
         match name.as_str() {
             "keep_last" => {
                 retention.keep_last =
-                    usize::try_from(positive_integer(&field, value)?).map_err(|_| wrong_type())?;
+                    usize::try_from(positive_integer(&field, value)?).map_err(|_| too_large())?;
             }
             "window_days" => {
                 let days = positive_integer(&field, value)?;
                 retention.window = DAY
-                    .checked_mul(u32::try_from(days).map_err(|_| wrong_type())?)
-                    .ok_or_else(wrong_type)?;
+                    .checked_mul(u32::try_from(days).map_err(|_| too_large())?)
+                    .ok_or_else(too_large)?;
             }
             _ => return Err(wrong_type()),
         }

@@ -41,7 +41,7 @@ struct Resolved {
 pub fn run(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutcome> {
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
-    let (d, backup) = named_backup(ctx, &world, &args.id, &mut warnings)?;
+    let (d, backup) = named_backup(ctx, &world, &args.id, "a restore", &mut warnings)?;
     let reservation = restore::reserve(&backup)?;
     let record = match d.target.key {
         Some(key) => Some(load_record(&world.paths, &key)?.value),

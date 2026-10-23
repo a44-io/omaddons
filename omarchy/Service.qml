@@ -364,7 +364,12 @@ Item {
     } else if (verdict.mutates) {
       mutation({ "resource": "cli:" + verdict.path, "cli": spec.cli, "label": spec.label })
     } else {
-      request({ "resource": "cli:" + verdict.path, "cli": spec.cli, "label": spec.label, "purpose": "action" })
+      // A read that asks the sources runs on the network lane, as its templates do:
+      // its deadline then follows its progress, and status refreshes never wait on it.
+      var network = verdict.path === "outdated" || verdict.path === "search"
+        || (verdict.path === "info" && argv.indexOf("--changelog") !== -1)
+      request({ "resource": "cli:" + verdict.path, "cli": spec.cli, "label": spec.label, "purpose": "action",
+        "lane": network ? "network" : "local" })
     }
     return ""
   }

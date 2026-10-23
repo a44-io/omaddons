@@ -112,7 +112,8 @@ pub struct SvCounts {
     /// Changed, but the client runs (`auto`).
     pub deferred: usize,
     pub unchanged: usize,
-    /// Changed, and `--saved-variables keep`.
+    /// Changed, and left as it is: `--saved-variables keep`, or its `SavedVariables`
+    /// directory is gone (a deleted character), which undo never creates.
     pub kept: usize,
 }
 
@@ -391,7 +392,7 @@ fn commit(
     // Before the lock (D24): the undo's own SavedVariables snapshot, the copies its
     // restore brings back (checked against the manifest), and the digests of folders the
     // files index does not give. Under the lock, what is unchanged since costs a stat.
-    let prestage = prestage_saved_variables(&mut s, &snapshot, &client, &before.folders.touched)?;
+    let prestage = prestage_saved_variables(&mut s, &snapshot, &client, &before.sv_folders)?;
     hashes.absorb(&prestage);
     let copies = prestage_restores(&mut s, &client, before, &snapshot)?;
     let predigests = predigest(&client.addons(), &before.folders.swap);
@@ -500,7 +501,14 @@ fn commit(
 
     let committed = (|| -> Result<(bool, Vec<Warning>)> {
         failpoint::hit("engine.journal.prepared").map_err(fail)?;
-        finish_saved_variables(&mut s, tx, &snapshot, &client, &touched, prestage)?;
+        finish_saved_variables(
+            &mut s,
+            tx,
+            &snapshot,
+            &client,
+            &planned.sv_folders,
+            prestage,
+        )?;
         snapshot_state(&mut s, paths, &state_snapshot, &key)?;
         let swap_ops = &planned.folders.swap;
         let report = swap(&mut s, &mut journal, swap_ops, staged, &client, &snapshot)?;
@@ -542,23 +550,35 @@ fn commit(
     })();
     let (atomic_swap, swap_warnings) = match committed {
         Ok(done) => done,
-        Err(error) => match recover_tx(&recovery, tx) {
-            Err(failed) => return Err(recovery_failed(error, tx, &failed)),
-            Ok(Some(Recovered {
-                action: RecoveryAction::RolledForward,
-                atomic_swap,
-                warnings,
-                sv_deferred,
-                ..
-            })) => {
-                // What roll-forward could not restore waits, as under a running client.
-                let counts = &mut planned.sv.counts;
-                counts.deferred += sv_deferred;
-                counts.restored = counts.restored.saturating_sub(sv_deferred);
-                super::swap::rolled_forward(atomic_swap, warnings)
+        Err(error) => {
+            // Read before recovery prunes it: committed already, the undo stands.
+            let committed_swap = super::journal::committed_swap(paths, tx);
+            match (recover_tx(&recovery, tx), committed_swap) {
+                (Err(failed), _) => return Err(recovery_failed(error, tx, &failed)),
+                (
+                    Ok(Some(Recovered {
+                        action: RecoveryAction::RolledForward,
+                        atomic_swap,
+                        warnings,
+                        sv_deferred,
+                        ..
+                    })),
+                    _,
+                ) => {
+                    super::tx::note_undo(ctx, tx);
+                    // What roll-forward could not restore waits, as under a running client.
+                    let counts = &mut planned.sv.counts;
+                    counts.deferred += sv_deferred;
+                    counts.restored = counts.restored.saturating_sub(sv_deferred);
+                    super::swap::rolled_forward(atomic_swap, warnings)
+                }
+                (Ok(None), Some(atomic_swap)) => {
+                    super::tx::note_undo(ctx, tx);
+                    super::swap::rolled_forward(atomic_swap, Vec::new())
+                }
+                (Ok(_), _) => return Err(error),
             }
-            Ok(_) => return Err(error),
-        },
+        }
     };
     let held = millis(&guard);
     drop(guard);
@@ -586,6 +606,10 @@ struct Planned {
     sv: SvPlan,
     /// The SavedVariables follow-up of a deferred undo: no folder changes.
     sv_only: bool,
+    /// The folders whose SavedVariables the undo snapshots: those of the files the
+    /// reverted transaction's manifest lists, the only ones it can write. A records-only
+    /// change (a pin) lists none, so undoing its undo rewinds no settings.
+    sv_folders: Vec<FolderName>,
     reload_required: ReloadRequired,
     warnings: Vec<Warning>,
     /// `-v` lines: where the undo's snapshot keeps a folder's only copy.
@@ -671,9 +695,12 @@ fn plan(
     let entries = &history.entries[..];
     let running = running_now.contains(&target.client_dir);
     let reverted = &entries[at];
+    // The newest undo of it, when that one deferred: a follow-up that finished since is
+    // newer, and the undo is then simply done.
     let deferred_by = entries[at + 1..]
         .iter()
-        .rposition(|e| e.kind == TxKind::Undo && e.reverts == Some(reverted.tx) && e.sv_deferred);
+        .rposition(|e| e.kind == TxKind::Undo && e.reverts == Some(reverted.tx))
+        .filter(|i| entries[at + 1 + i].sv_deferred);
     // A deferred undo already reverted the folders: only its SavedVariables are left.
     let sv_only = match deferred_by {
         Some(i) if req.sv_policy == SvPolicy::Restore => Some(at + 1 + i),
@@ -685,7 +712,27 @@ fn plan(
     // A follow-up restores SavedVariables only; an undo, when its snapshot has them.
     let snapshot = snapshot_of(&client, &reverted.tx);
     let manifest = snapshot.join("WTF.manifest.json");
-    let restores_sv = sv_only.is_some() || (req.sv_policy != SvPolicy::Keep && manifest.is_file());
+    // A manifest with files in it: a records-only change (a pin) writes an empty one, and
+    // its undo restores no settings, so it conflicts with no later restore over them.
+    // One that does not parse may have files: it counts (and fails its plan later).
+    let listed = std::fs::read(&manifest)
+        .ok()
+        .map(|bytes| serde_json::from_slice::<SvManifest>(&bytes).ok());
+    let has_sv = listed
+        .as_ref()
+        .is_some_and(|m| m.as_ref().is_none_or(|m| !m.entries.is_empty()));
+    let restores_sv = sv_only.is_some() || (req.sv_policy != SvPolicy::Keep && has_sv);
+    let mut sv_folders: Vec<FolderName> = Vec::new();
+    for folder in listed
+        .flatten()
+        .iter()
+        .flat_map(|m| &m.entries)
+        .filter_map(|e| sv_folder(&e.path))
+    {
+        if !sv_folders.iter().any(|f| f.key() == folder.key()) {
+            sv_folders.push(folder);
+        }
+    }
     check_conflicts(entries, at, sv_only, restores_sv)?;
     if !snapshot.is_dir() || !state_snapshot_of(paths, &reverted.tx).is_dir() {
         return Err(pruned(&reverted.tx));
@@ -829,6 +876,7 @@ fn plan(
         changes,
         sv,
         sv_only: sv_only.is_some(),
+        sv_folders,
         reload_required: judged.reload_required,
         warnings,
         notes,
@@ -956,7 +1004,9 @@ fn check_conflicts(
     let restored_sv_of = |e: &HistoryEntry| {
         matches!(e.kind, TxKind::Undo)
             && may_have_restored(e)
-            && e.ops.iter().any(|o| sv_keys.contains(o.folder.key()))
+            && e.ops
+                .iter()
+                .any(|o| o.edit.is_none() && sv_keys.contains(o.folder.key()))
     };
     let touches = |e: &HistoryEntry| {
         e.ops.iter().any(conflicts)
@@ -1311,7 +1361,12 @@ impl FolderPlan {
                     }
                 })
                 .collect(),
-            touched: ops().map(|o| o.folder.clone()).collect(),
+            touched: ops().fold(Vec::new(), |mut touched: Vec<FolderName>, o| {
+                if !touched.iter().any(|f| f.key() == o.folder.key()) {
+                    touched.push(o.folder.clone());
+                }
+                touched
+            }),
             ..Self::default()
         }
     }
@@ -1359,7 +1414,10 @@ impl FolderPlan {
         // reverses them on the record.
         for op in reverted.ops.iter().filter(|o| o.edit.is_none()) {
             let folder = &op.folder;
-            plan.touched.push(folder.clone());
+            // Once each: a handover names its folder in two ops.
+            if !plan.touched.iter().any(|f| f.key() == folder.key()) {
+                plan.touched.push(folder.clone());
+            }
             // A partial restore's folder (or its undo's): no folder moves, its
             // SavedVariables come back as any undo's do, and the undo's own snapshot of
             // them makes it undoable in turn (M3-D27).
@@ -1835,6 +1893,7 @@ fn plan_saved_variables(
     let mut plan = SvPlan::default();
     let mut changed = Vec::new();
     let mut skipped = SvSkipped::default();
+    let mut gone = 0;
     for entry in manifest.entries {
         let live = wtf.join(relative(&entry.path)?);
         let skip = live
@@ -1843,6 +1902,13 @@ fn plan_saved_variables(
         if let Some(skip) = skip {
             let exists = std::fs::symlink_metadata(&live).is_ok_and(|m| m.is_file());
             skipped.count(skip, usize::from(entry.sha256.is_some() || exists));
+            continue;
+        }
+        // Its `SavedVariables` directory is gone (a deleted character, a reset `WTF/`):
+        // undo never creates one, so the file is left as it is, never a restore that
+        // fails after `swapped` and waits forever.
+        if entry.sha256.is_some() && !live.parent().is_some_and(Path::is_dir) {
+            gone += 1;
             continue;
         }
         let now = hashes.present_hash(&live)?;
@@ -1856,15 +1922,18 @@ fn plan_saved_variables(
     let folders: Vec<FolderName> = reverted
         .ops
         .iter()
-        .filter(|op| op.op.is_folder() || matches!(op.op, FolderOp::SavedVariables))
+        .filter(|op| {
+            op.edit.is_none() && (op.op.is_folder() || matches!(op.op, FolderOp::SavedVariables))
+        })
         .map(|op| op.folder.clone())
         .collect();
     plan.out_of_scope = skipped.max(sv_candidates(client, &folders).skipped);
+    plan.counts.kept = gone;
     if changed.is_empty() {
         return Ok(plan);
     }
     match policy {
-        SvPolicy::Keep => plan.counts.kept = changed.len(),
+        SvPolicy::Keep => plan.counts.kept += changed.len(),
         SvPolicy::Auto if running => plan.counts.deferred = changed.len(),
         SvPolicy::Restore if running => {
             running::evaluate(
@@ -2542,7 +2611,7 @@ mod tests {
             &scene.client,
             &crate::engine::retention::RetentionLimits::default(),
             later,
-            &BTreeSet::new(),
+            &|| Ok(BTreeSet::new()),
         )
         .unwrap();
         scene.client.snapshots(tx).is_dir() && scene.paths.state_snapshot(tx).is_dir()
@@ -2684,6 +2753,31 @@ mod tests {
         // And back again.
         scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
         assert!(record(&scene).addons.is_empty());
+    }
+
+    /// The undo of a records-only change writes no settings, so it snapshots none:
+    /// undoing it in turn (the pin again) rewinds no play.
+    #[test]
+    fn undoing_the_undo_of_a_pin_rewinds_no_settings() {
+        use crate::engine::edit::RecordEdit;
+        let scene = TxScene::new();
+        saved_variables(&scene);
+        install(&scene, "v1.zip", V1);
+        scene
+            .run(vec![scene.edit("Foo", RecordEdit::SetPinned(true))])
+            .unwrap();
+        let unpinned = scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
+        assert!(!record(&scene).addons["foo"].pinned);
+        play(&scene);
+        let again = scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
+        assert_eq!(again.undoes, unpinned.outcome.tx.unwrap());
+        assert!(record(&scene).addons["foo"].pinned, "pinned again");
+        assert_eq!(again.sv.restored, 0);
+        assert_eq!(
+            read(&scene, &format!("{ACCOUNT}/Foo.lua")).as_deref(),
+            Some("-- after"),
+            "the play since stays"
+        );
     }
 
     #[test]

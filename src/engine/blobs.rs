@@ -337,52 +337,24 @@ impl BlobCache {
     }
 
     /// Evicts least-recently-used unpinned blobs until the cache is at most `cap`
-    /// bytes, and removes temp dirs of transactions that are no longer alive.
+    /// bytes, and removes temp dirs of transactions that are no longer alive. The
+    /// victims and `pins` (the blobs records name) are chosen under the global lock, so
+    /// a blob a commit records or uses meanwhile is never one of them; the lock is taken
+    /// only when something may go.
     pub fn evict(
         &self,
         scopes: &ScopeTable,
-        pins: &BTreeSet<String>,
+        pins: &dyn Fn() -> Result<BTreeSet<String>>,
         cap: u64,
     ) -> Result<EvictReport> {
-        let index = self.index();
-        let mut blobs: Vec<(String, u64, i128)> = list(&self.paths.blobs_dir())
-            .into_iter()
-            .filter(|(name, _)| is_sha256(name))
-            .map(|(name, meta)| {
-                let last = index
-                    .get(&name)
-                    .map_or_else(|| mtime_ns(&meta), |e| e.last_used_ns);
-                (name, meta.len(), last)
-            })
-            .collect();
-        blobs.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
-        let mut report = EvictReport {
-            remaining_bytes: blobs.iter().map(|b| b.1).sum(),
-            ..EvictReport::default()
-        };
-        for (name, size, _) in &blobs {
-            if report.remaining_bytes <= cap {
-                break;
-            }
-            if pins.contains(name) {
-                continue;
-            }
-            report.evicted.push(name.clone());
-            report.freed_bytes += size;
-            report.remaining_bytes -= size;
-        }
-        report.over_cap = report.remaining_bytes > cap;
-
-        let orphans: Vec<PathBuf> = list(&self.paths.cache_dir().join("tmp"))
-            .into_iter()
-            .filter_map(|(name, _)| name.parse::<TxId>().ok())
-            .filter(|tx| !InflightLock::is_live(&self.paths, tx).unwrap_or(true))
-            .map(|tx| self.paths.cache_tmp(&tx))
-            .collect();
-        if report.evicted.is_empty() && orphans.is_empty() {
-            return Ok(report);
+        // Pins only keep blobs: without them, an upper bound of what goes.
+        let quick = self.selection(&BTreeSet::new(), cap);
+        if quick.evicted.is_empty() && self.orphans().is_empty() {
+            return Ok(quick);
         }
         let lock = GlobalLock::acquire(&self.paths, "evict")?;
+        let mut report = self.selection(&pins()?, cap);
+        let orphans = self.orphans();
         if !report.evicted.is_empty() {
             let victims: Vec<PathBuf> = report
                 .evicted
@@ -411,6 +383,50 @@ impl BlobCache {
             report.orphans_removed = pruned.removed.len();
         }
         Ok(report)
+    }
+
+    /// The least-recently-used blobs but `pins` that bring the cache to at most `cap`
+    /// bytes, as the directory and the last-use index say now.
+    fn selection(&self, pins: &BTreeSet<String>, cap: u64) -> EvictReport {
+        let index = self.index();
+        let mut blobs: Vec<(String, u64, i128)> = list(&self.paths.blobs_dir())
+            .into_iter()
+            .filter(|(name, _)| is_sha256(name))
+            .map(|(name, meta)| {
+                let last = index
+                    .get(&name)
+                    .map_or_else(|| mtime_ns(&meta), |e| e.last_used_ns);
+                (name, meta.len(), last)
+            })
+            .collect();
+        blobs.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+        let mut report = EvictReport {
+            remaining_bytes: blobs.iter().map(|b| b.1).sum(),
+            ..EvictReport::default()
+        };
+        for (name, size, _) in &blobs {
+            if report.remaining_bytes <= cap {
+                break;
+            }
+            if pins.contains(name) {
+                continue;
+            }
+            report.evicted.push(name.clone());
+            report.freed_bytes += size;
+            report.remaining_bytes -= size;
+        }
+        report.over_cap = report.remaining_bytes > cap;
+        report
+    }
+
+    /// The temp dirs of transactions that are no longer alive.
+    fn orphans(&self) -> Vec<PathBuf> {
+        list(&self.paths.cache_dir().join("tmp"))
+            .into_iter()
+            .filter_map(|(name, _)| name.parse::<TxId>().ok())
+            .filter(|tx| !InflightLock::is_live(&self.paths, tx).unwrap_or(true))
+            .map(|tx| self.paths.cache_tmp(&tx))
+            .collect()
     }
 
     /// The last-use index; rebuilt from the directory (mtimes) when missing or corrupt.
@@ -1198,9 +1214,17 @@ mod tests {
             store(at_3, b"cccc"),
         );
         let cache = BlobCache::new(&f.paths);
-        let report = cache
-            .evict(&f.scopes, &BTreeSet::from([old.clone()]), 8)
-            .unwrap();
+        // The pins are read under the global lock, so no commit records a blob between
+        // them and the eviction.
+        let pins = || {
+            let held = crate::fsx::probe_global(&f.paths);
+            assert!(
+                matches!(held, Ok(crate::fsx::LockState::Held { .. })),
+                "{held:?}"
+            );
+            Ok(BTreeSet::from([old.clone()]))
+        };
+        let report = cache.evict(&f.scopes, &pins, 8).unwrap();
         assert_eq!(
             report.evicted,
             std::slice::from_ref(&mid),
@@ -1217,7 +1241,11 @@ mod tests {
         );
 
         let report = cache
-            .evict(&f.scopes, &BTreeSet::from([old.clone(), new.clone()]), 1)
+            .evict(
+                &f.scopes,
+                &|| Ok(BTreeSet::from([old.clone(), new.clone()])),
+                1,
+            )
             .unwrap();
         assert!(report.evicted.is_empty());
         assert!(report.over_cap, "pinned blobs stay even over the cap");
@@ -1243,7 +1271,10 @@ mod tests {
         assert!(cache.get(&f.scopes, &blob.sha256).unwrap().is_some());
         assert!(index.is_file());
         assert_eq!(
-            cache.evict(&f.scopes, &BTreeSet::new(), 0).unwrap().evicted,
+            cache
+                .evict(&f.scopes, &|| Ok(BTreeSet::new()), 0)
+                .unwrap()
+                .evicted,
             [blob.sha256]
         );
     }

@@ -28,6 +28,7 @@ use serde::Serialize;
 use self::apply::{Act, Mode};
 use super::engine::Engine;
 use super::outcome::{TargetRef, TargetsData};
+use super::resolve_args::aimed_at_option;
 use super::status::modes_or_family;
 use super::world::World;
 use crate::cli::Context;
@@ -476,7 +477,9 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
         Mode::Ref { folder, r#ref } => {
             let target = apply::ref_target(ctx, &world, folder)?;
             let family = target.target.family;
-            let over = apply::parse_override(&world, &records, &catalog, (r#ref, family))?;
+            // The parser's `install <ref>` fixes, aimed at this adopt's `--ref`.
+            let over = apply::parse_override(&world, &records, &catalog, (r#ref, family))
+                .map_err(|e| aimed_at_option(e, &ctx.argv, "--ref"))?;
             (vec![target], Some(over))
         }
         _ => (world.select_many(ctx)?, None),
@@ -558,6 +561,10 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
             .collect();
         let lookups = AdoptLookups {
             family: d.target.family,
+            legacy: match d.target.family {
+                crate::rules::Family::Unknown => d.target.rules.legacy,
+                family => family.is_legacy(),
+            },
             catalog: &catalog,
             tukui: tukui.as_ref().map(|t| t as &dyn AdoptTukui),
             wowi: wowi.as_ref().map(|w| w as &dyn AdoptWowi),

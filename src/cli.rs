@@ -647,16 +647,23 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
         && invalid(ContextKind::InvalidArg)
             .is_some_and(|bad| bad.split('=').next() == Some("--version"));
     if version_on_update {
+        // The verb, wherever global flags put it; `pin` takes one addon, so the
+        // alternative is offered only when it parses.
         let mut as_pin = as_install(argv);
-        if let Some(slot) = as_pin.get_mut(1) {
+        if let Some(slot) = as_pin.iter_mut().skip(1).find(|a| *a == "install") {
             "pin".clone_into(slot);
         }
-        return Error::new(
+        let error = Error::new(
             ErrorCode::Usage,
             "update installs the newest release; a given version is an install, which pins it",
             Suggestion::command(as_install(argv)),
-        )
-        .alternative(Suggestion::command(as_pin));
+        );
+        let pin = Suggestion::command(as_pin);
+        return if parses(&pin) {
+            error.alternative(pin)
+        } else {
+            error
+        };
     }
     let (fix, alternatives) = match err.kind() {
         ErrorKind::InvalidSubcommand => invalid(ContextKind::InvalidSubcommand)
@@ -1043,6 +1050,26 @@ pub fn fix_argv_replacing(argv: &[String], old: &str, new: &str) -> Option<Vec<S
     Some(fix_argv_keeping(&argv, Some(position)))
 }
 
+/// `argv` (without presentation flags) with the value of its option `flag` (`--ref X` or
+/// `--ref=X`) replaced by `new`, every other argument kept; `None` when it has no such
+/// option.
+pub fn fix_argv_with_value(argv: &[String], flag: &str, new: &str) -> Option<Vec<String>> {
+    let inline = format!("{flag}=");
+    let position = argv
+        .iter()
+        .skip(1)
+        .position(|a| a == flag || a.starts_with(&inline))?
+        + 1;
+    let mut argv = argv.to_vec();
+    let (slot, value) = if argv[position] == flag {
+        (position + 1, new.to_owned())
+    } else {
+        (position, format!("{inline}{new}"))
+    };
+    *argv.get_mut(slot)? = value;
+    Some(fix_argv_keeping(&argv, Some(slot)))
+}
+
 /// `argv` without presentation flags, except the one at `keep` (a corrected token).
 fn fix_argv_keeping(argv: &[String], keep: Option<usize>) -> Vec<String> {
     let mut out = Vec::new();
@@ -1329,6 +1356,22 @@ mod tests {
             .collect()
     }
 
+    /// An option's value is replaced where it is, never an argument spelled the same.
+    #[test]
+    fn an_options_value_is_replaced_in_either_spelling() {
+        let fixed = |args: &[&str]| fix_argv_with_value(&argv(args), "--ref", "gh:o/foo");
+        assert_eq!(
+            fixed(&["adopt", "Foo", "--ref", "Foo", "--json"]),
+            Some(argv(&["adopt", "Foo", "--ref", "gh:o/foo"]))
+        );
+        assert_eq!(
+            fixed(&["adopt", "Foo", "--ref=Foo", "-t", "retail"]),
+            Some(argv(&["adopt", "Foo", "--ref=gh:o/foo", "-t", "retail"]))
+        );
+        assert_eq!(fixed(&["adopt", "Foo"]), None);
+        assert_eq!(fixed(&["adopt", "Foo", "--ref"]), None);
+    }
+
     fn global(args: &[&str]) -> GlobalArgs {
         let raw: Vec<String> = argv(args);
         Cli::try_parse_from(&raw).unwrap().global
@@ -1374,6 +1417,37 @@ mod tests {
         let raw = argv(&["help", "--frobnicate"]);
         let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
         assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help", "help"]);
+    }
+
+    /// `update --version`: the install that pins, and `pin` when it can take the
+    /// addons given, whatever global flags come before the verb.
+    #[test]
+    fn a_version_on_update_suggests_an_install_and_a_pin_that_parse() {
+        let suggested = |args: &[&str]| {
+            let raw = argv(args);
+            let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+            let alternatives: Vec<Vec<String>> = err
+                .alternatives
+                .iter()
+                .filter_map(|a| a.argv().map(<[String]>::to_vec))
+                .collect();
+            (err.fix.argv().unwrap().to_vec(), alternatives)
+        };
+        let (fix, alternatives) = suggested(&["-t", "retail", "update", "DBM", "--version", "1"]);
+        assert_eq!(
+            fix,
+            argv(&["-t", "retail", "install", "DBM", "--version", "1"])
+        );
+        assert_eq!(
+            alternatives,
+            [argv(&["-t", "retail", "pin", "DBM", "--version", "1"])]
+        );
+        let (fix, alternatives) = suggested(&["update", "A", "B", "--version", "1"]);
+        assert_eq!(fix, argv(&["install", "A", "B", "--version", "1"]));
+        assert!(
+            alternatives.is_empty(),
+            "pin takes one addon: {alternatives:?}"
+        );
     }
 
     #[test]

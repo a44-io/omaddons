@@ -959,16 +959,25 @@ impl Window<'_> {
             Ok(())
         })();
         if let Err(error) = committed {
+            // Read before recovery prunes it: committed already, the restore stands.
+            let committed_swap = super::journal::committed_swap(paths, &tx);
             // In-process recovery checks running afresh (a writes_wtf journal waits).
-            match recover_tx(&recovery, &tx) {
+            match (recover_tx(&recovery, &tx), committed_swap) {
                 // Swapped already: the payload completed it, so the restore stands.
-                Ok(Some(Recovered {
-                    action: RecoveryAction::RolledForward,
-                    warnings: rolled,
-                    ..
-                })) => warnings.extend(rolled),
-                Ok(_) => return Err(error),
-                Err(failed) => return Err(recovery_failed(error, &tx, &failed)),
+                (
+                    Ok(Some(Recovered {
+                        action: RecoveryAction::RolledForward,
+                        warnings: rolled,
+                        ..
+                    })),
+                    _,
+                ) => {
+                    note_undo(ctx, &tx);
+                    warnings.extend(rolled);
+                }
+                (Ok(None), Some(_)) => note_undo(ctx, &tx),
+                (Ok(_), _) => return Err(error),
+                (Err(failed), _) => return Err(recovery_failed(error, &tx, &failed)),
             }
         }
         let held = millis(&guard);

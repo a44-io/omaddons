@@ -295,13 +295,16 @@ pub fn save<T: Versioned>(
     value: &T,
     loaded_as: Option<&VersionStatus>,
 ) -> Result<()> {
-    if let Some(VersionStatus::Newer) = loaded_as {
-        return Err(too_new::<T>(path, T::CURRENT));
-    }
-    if let Some(on_disk) = load::<T>(path)?
+    let on_disk = load::<T>(path)?;
+    if let Some(on_disk) = &on_disk
         && on_disk.status == VersionStatus::Newer
     {
         return Err(too_new::<T>(path, on_disk.version));
+    }
+    if let Some(VersionStatus::Newer) = loaded_as {
+        // Loaded as newer, though the file has changed since: the version it was is
+        // not known here, only that it was past this binary's.
+        return Err(too_new::<T>(path, T::CURRENT));
     }
     let json = encode(value)?;
     let op = Op::WriteFile {

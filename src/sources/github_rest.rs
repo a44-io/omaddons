@@ -166,7 +166,22 @@ impl GithubRest {
         }
         // A configured credential that cannot be resolved stops the first REST request.
         let (req, authorized) = self.authorized(req)?;
-        let resp = http.send(req)?;
+        let resp = match http.send(req) {
+            Ok(resp) => resp,
+            // The retry layer answered a spent budget for us: remember it is spent, so
+            // the run stops sending.
+            Err(error) if error.code == ErrorCode::RateLimited => {
+                if let Ok(mut b) = self.budget.lock() {
+                    b.remaining = Some(0);
+                    b.reset = error.details["reset_at"]
+                        .as_str()
+                        .and_then(|t| t.parse().ok())
+                        .or(b.reset);
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         if let Ok(mut b) = self.budget.lock() {
             b.update(&resp);
         }
@@ -203,6 +218,8 @@ impl GithubRest {
                 ]),
             ));
         }
+        // Only a beta or alpha run lists releases, so no channel helps here either: the
+        // newest are all drafts or untagged.
         let Some(release) = choose(&releases, w.channel) else {
             return Err(Error::new(
                 ErrorCode::NoCompatibleRelease,
@@ -212,11 +229,9 @@ impl GithubRest {
                     channel_name(w.channel)
                 ),
                 Suggestion::command([
-                    "omaddons",
-                    "install",
-                    &w.r#ref.to_string(),
-                    "--channel",
-                    "beta",
+                    "omaddons".to_owned(),
+                    "install".to_owned(),
+                    format!("git:https://github.com/{owner}/{repo}"),
                 ]),
             ));
         };

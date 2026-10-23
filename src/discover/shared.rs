@@ -36,29 +36,39 @@ pub fn siblings<'a>(target: &Target, all: impl IntoIterator<Item = &'a Target>) 
 /// Every group of two or more `targets` sharing an AddOns directory. A target whose
 /// AddOns directory does not exist (a never-launched client) shares nothing.
 pub fn shared_addons<'a>(targets: impl IntoIterator<Item = &'a Target>) -> Vec<SharedAddons> {
-    let mut groups: Vec<SharedAddons> = Vec::new();
-    for target in targets {
+    // Each group's outermost directory and its members, by their place in `targets`.
+    let mut groups: Vec<(PathBuf, Vec<(usize, String)>)> = Vec::new();
+    for (index, target) in targets.into_iter().enumerate() {
         let Ok(resolved) = std::fs::canonicalize(target.addons_dir()) else {
             continue;
         };
-        let overlapping = groups
-            .iter_mut()
-            .find(|g| g.path.starts_with(&resolved) || resolved.starts_with(&g.path));
-        match overlapping {
-            Some(group) => {
-                if resolved.components().count() < group.path.components().count() {
-                    group.path = resolved;
-                }
-                group.targets.push(target.id.clone());
+        let mut merged = (resolved, vec![(index, target.id.clone())]);
+        // A directory can link groups that did not overlap before (one holding two
+        // others), and a widened group can reach another: merge until none overlaps.
+        while let Some(at) = groups
+            .iter()
+            .position(|(path, _)| path.starts_with(&merged.0) || merged.0.starts_with(path))
+        {
+            let (path, members) = groups.swap_remove(at);
+            if path.components().count() < merged.0.components().count() {
+                merged.0 = path;
             }
-            None => groups.push(SharedAddons {
-                path: resolved,
-                targets: vec![target.id.clone()],
-            }),
+            merged.1.extend(members);
         }
+        groups.push(merged);
     }
-    groups.retain(|g| g.targets.len() > 1);
-    groups
+    let mut shared: Vec<(usize, SharedAddons)> = groups
+        .into_iter()
+        .filter(|(_, members)| members.len() > 1)
+        .map(|(path, mut members)| {
+            members.sort();
+            let first = members.first().map_or(0, |(index, _)| *index);
+            let targets = members.into_iter().map(|(_, id)| id).collect();
+            (first, SharedAddons { path, targets })
+        })
+        .collect();
+    shared.sort_by_key(|(first, _)| *first);
+    shared.into_iter().map(|(_, group)| group).collect()
 }
 
 #[cfg(test)]
@@ -139,6 +149,39 @@ mod tests {
         // One inside another is not one directory: no siblings.
         let all = [target("inner", &inner), target("outer", &outer)];
         assert!(siblings(&all[0], &all).is_empty());
+    }
+
+    /// A directory holding two others joins them in one group, though neither of those
+    /// overlapped the other before it came.
+    #[test]
+    fn one_directory_holding_two_others_is_one_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("s/A");
+        std::fs::create_dir_all(shared.join("X")).unwrap();
+        std::fs::create_dir_all(shared.join("Y")).unwrap();
+        let clients: Vec<_> = ["t1", "t2", "t3"]
+            .iter()
+            .map(|id| dir.path().join(id))
+            .collect();
+        for (client, to) in clients
+            .iter()
+            .zip([shared.join("X"), shared.join("Y"), shared.clone()])
+        {
+            std::fs::create_dir_all(client.join("Interface")).unwrap();
+            symlink(to, client.join("Interface/AddOns")).unwrap();
+        }
+        let targets = [
+            target("t1", &clients[0]),
+            target("t2", &clients[1]),
+            target("t3", &clients[2]),
+        ];
+        assert_eq!(
+            shared_addons(&targets),
+            [SharedAddons {
+                path: std::fs::canonicalize(&shared).unwrap(),
+                targets: vec!["t1".into(), "t2".into(), "t3".into()],
+            }]
+        );
     }
 
     #[test]

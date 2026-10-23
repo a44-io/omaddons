@@ -3,7 +3,7 @@
 //! visited directories. Each directory is listed once and classified from that listing.
 //! Symlinked directories are followed with a `(dev, ino)` loop guard. Reads only.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -112,7 +112,10 @@ fn has_client_exe(entries: &[Entry]) -> bool {
 /// One scan across several bases, sharing the visited set and the budget.
 pub(crate) struct Scanner {
     limits: ScanLimits,
-    visited: HashSet<(u64, u64)>,
+    /// Each directory visited, with the most depth any visit had left below it (`MAX`
+    /// for a root, never descended into): reached again with more left, as another
+    /// base may reach it nearer its top, it is walked again.
+    visited: HashMap<(u64, u64), usize>,
     /// Directories visited so far.
     pub count: usize,
     /// The base being walked when the budget ran out.
@@ -125,7 +128,7 @@ impl Scanner {
     pub fn new(limits: ScanLimits) -> Self {
         Self {
             limits,
-            visited: HashSet::new(),
+            visited: HashMap::new(),
             count: 0,
             truncated: None,
             diagnostics: Vec::new(),
@@ -144,14 +147,16 @@ impl Scanner {
             let Ok(meta) = std::fs::metadata(&dir) else {
                 continue;
             };
-            if self.visited.contains(&(meta.dev(), meta.ino())) {
+            let id = (meta.dev(), meta.ino());
+            let left = self.limits.max_depth.saturating_sub(depth);
+            if self.visited.get(&id).is_some_and(|&had| had >= left) {
                 continue;
             }
             if self.count >= self.limits.max_dirs {
                 self.truncated = Some(base.to_path_buf());
                 break;
             }
-            self.visited.insert((meta.dev(), meta.ino()));
+            self.visited.insert(id, left);
             self.count += 1;
             let entries = match list(&dir) {
                 Ok(entries) => entries,
@@ -162,15 +167,21 @@ impl Scanner {
                 }
             };
             // A flavor folder reached directly (e.g. an extra root) looks like a custom
-            // root; its parent is the Battle.net root.
+            // root; its parent is the Battle.net root. Reached through a link, the
+            // parent is the target's.
+            let real = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
             if has_client_exe(&entries)
-                && let Some(parent) = dir.parent()
-                && parent.join(".build.info").is_file()
+                && let Some(parent) = [dir.parent(), real.parent()]
+                    .into_iter()
+                    .flatten()
+                    .find(|p| p.join(".build.info").is_file())
             {
+                self.visited.insert(id, usize::MAX);
                 found.push((parent.to_path_buf(), RootKind::Battlenet));
                 continue;
             }
             if let Some(root) = classify(&entries) {
+                self.visited.insert(id, usize::MAX);
                 found.push((dir, root));
                 continue;
             }
@@ -265,6 +276,39 @@ mod tests {
         assert_eq!(
             (scan.count, scan.truncated.as_deref()),
             (3, Some(drive_c.as_path()))
+        );
+
+        // A directory one base reached at its depth limit is walked again from a base
+        // that reaches it nearer its top.
+        let mut scan = Scanner::new(ScanLimits::default());
+        assert_eq!(
+            scan.walk(&drive_c, Base::DriveC),
+            [(drive_c.join("a/b/c/d"), RootKind::Custom)]
+        );
+        assert_eq!(
+            scan.walk(&drive_c.join("a/b/c/d2"), Base::Root),
+            [(drive_c.join("a/b/c/d2/e"), RootKind::Custom)]
+        );
+        // A root found once is never found again.
+        assert!(scan.walk(&drive_c.join("a/b"), Base::Root).is_empty());
+    }
+
+    /// A flavor folder reached through a link belongs to the Battle.net root its target
+    /// is in, not a custom root of its own.
+    #[test]
+    fn a_linked_flavor_folder_is_its_battlenet_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let bnet = dir.path().join("World of Warcraft");
+        fs::create_dir_all(bnet.join("_retail_/Interface/AddOns")).unwrap();
+        fs::write(bnet.join("_retail_/Wow.exe"), "").unwrap();
+        fs::write(bnet.join(".build.info"), "").unwrap();
+        let games = dir.path().join("Games");
+        fs::create_dir_all(&games).unwrap();
+        std::os::unix::fs::symlink(bnet.join("_retail_"), games.join("retail")).unwrap();
+        let mut scan = Scanner::new(ScanLimits::default());
+        assert_eq!(
+            scan.walk(&games.join("retail"), Base::Root),
+            [(bnet.clone(), RootKind::Battlenet)]
         );
     }
 }

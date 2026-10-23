@@ -12,6 +12,7 @@ use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::limits::{
@@ -92,14 +93,30 @@ fn run_for(program: &str, args: &[&str], timeout: Duration) -> Result<Ran, NotRu
             std::io::ErrorKind::NotFound => NotRun::Missing,
             _ => NotRun::Failed(err.to_string()),
         })?;
+    // Each stream read in chunks into a buffer the caller can take at any time: a
+    // process the tool left running (a restarted shell) may hold the pipe open long after
+    // the tool exits, and its output is what the tool wrote, not what that process might.
     let reader = |stream: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut out = Vec::new();
-            if let Some(stream) = stream {
-                let _ = stream.take(API_RESPONSE_MAX_BYTES).read_to_end(&mut out);
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&buffer);
+        let handle = std::thread::spawn(move || {
+            let Some(mut stream) = stream.map(|s| s.take(API_RESPONSE_MAX_BYTES)) else {
+                return;
+            };
+            let mut chunk = [0u8; 8192];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => sink
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .extend_from_slice(chunk.get(..n).unwrap_or_default()),
+                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
             }
-            String::from_utf8_lossy(&out).into_owned()
-        })
+        });
+        (handle, buffer)
     };
     let stdout = reader(
         child
@@ -131,10 +148,20 @@ fn run_for(program: &str, args: &[&str], timeout: Duration) -> Result<Ran, NotRu
             }
         }
     };
+    // The rest of its output, until the pipes close or the deadline (the timeout, or a
+    // grace after the exit when the tool took nearly all of it): never unbounded.
+    let deadline = (started + timeout).max(Instant::now() + OMARCHY_KILL_GRACE);
+    while !(stdout.0.is_finished() && stderr.0.is_finished()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let text = |buffer: &Arc<Mutex<Vec<u8>>>| {
+        let bytes = buffer.lock().unwrap_or_else(PoisonError::into_inner);
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
     Ok(Ran {
         success: status.success(),
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
+        stdout: text(&stdout.1),
+        stderr: text(&stderr.1),
     })
 }
 

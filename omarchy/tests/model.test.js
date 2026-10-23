@@ -633,6 +633,9 @@ describe("the panel frame", () => {
     const undo = { action: "undo", command: "omaddons undo", argv: ["omaddons", "undo"], runnable: true }
     expect(M.resultUndo({ commands: [{ action: "update", runnable: true, argv: ["omaddons", "update"] }, undo] })).toBe(undo)
     expect(M.resultUndo({ commands: [Object.assign({}, undo, { runnable: false, argv: null })] })).toBeNull()
+    // A change on several clients: the run's undo, never one client's.
+    const run = { action: "undo_run", command: "omaddons undo --run 01M5", argv: ["omaddons", "undo", "--run", "01M5"], runnable: true }
+    expect(M.resultUndo({ commands: [run, undo] })).toBe(run)
     expect(M.resultUndo(null)).toBeNull()
     expect(M.fixText({ ok: false, error: { fix: "this needs the Omarchy desktop", fix_argv: null } })).toBe("this needs the Omarchy desktop")
     expect(M.fixText({ ok: false, error: { fix: "omaddons status", fix_argv: ["omaddons", "status"] } })).toBe("")
@@ -864,6 +867,9 @@ describe("the Backups view and the restore chooser", () => {
       .toBe("Automatic backups: daily, but this filesystem cannot clone")
     expect(M.autoLabel({ mode: "daily", capability: "supported", last: { at: "", result: "space_low" } }, now))
       .toBe("Automatic backups: skipped: low disk space")
+    // daily-copy copies where clones are not possible: it works there.
+    expect(M.autoLabel({ mode: "daily-copy", capability: "unsupported", last: { at: "2026-10-22T09:00:00Z", result: "created" } }, now))
+      .toBe("Automatic backups: daily (copies), working · last: made one 3 hours ago")
   })
 
   test("b backs up the filtered client or all; restores wait for the game to close", () => {
@@ -1030,12 +1036,28 @@ describe("the other reducers", () => {
     const reload = JSON.parse(JSON.stringify(fixture("update")))
     reload.data.targets[1].reload_required = "reload"
     expect(M.resultLine(reload)).toBe("Updated 4 addons on 2 clients · /reload in game")
+    // A read run from a fix reports no items: done, never "0 addons".
+    const read = { schema_version: "1.0", tool_version: "0.1.0", ok: true, command: "list", data: { targets: [{ target: { id: "retail" }, addons: [] }] } }
+    expect(M.resultLine(read)).toBe("Done")
   })
 
   test("an undo and a dismissal say what they did, never \"0 addons\"", () => {
     const undo = fixture("undo")
     const first = undo.data.transactions[0].target.id
     expect(M.resultLine(undo).startsWith(`Undid ${undo.data.reverted.kind} on ${first}`)).toBe(true)
+    // A partial undo says where it failed, never that it undid there.
+    const shape = { schema_version: "1.0", tool_version: "0.1.0" }
+    const partialUndo = { ...shape, ok: true, partial: true, command: "undo", data: { reverted: { kind: "update" }, transactions: [
+      { target: { id: "era" }, status: "undone", error: null },
+      { target: { id: "retail" }, status: "failed", error: { message: "a later change conflicts" } },
+    ] } }
+    expect(M.resultLine(partialUndo)).toBe("Undid update on era; not on retail: a later change conflicts")
+    // So does a partial backup.
+    const partialBackup = { ...shape, ok: true, partial: true, command: "backup create", data: { targets: [
+      { target: { id: "classic" }, backup: { id: "01M" }, error: null },
+      { target: { id: "retail" }, backup: null, error: { message: "an I/O error" } },
+    ] } }
+    expect(M.resultLine(partialBackup)).toBe("Backed up classic; retail failed: an I/O error")
     const dismissed = fixture("dismiss")
     const n = dismissed.data.targets[0].errors
     expect(M.resultLine(dismissed)).toBe(`Dismissed ${n} new error${n === 1 ? "" : "s"} on retail`)
@@ -1067,11 +1089,25 @@ describe("the other reducers", () => {
     expect(M.confirmText("remove", fixture("remove-preview"))).toBe("Remove Baz v1 from retail (1 folder)")
     expect(M.confirmText("undo", fixture("undo-preview"))).toBe("Undo update on era and retail: 2 folders restored, 0 removed")
     expect(M.staleText(fixture("remove-stale"))).toBe("Changed since you looked: command, targets, selection and observed. Nothing ran; check the new preview.")
+    // The undo of a whole restore says it reverts the play since.
+    const shape = { schema_version: "1.0", tool_version: "0.1.0", ok: true }
+    const undoRestore = { ...shape, command: "undo", data: { reverted: { kind: "restore" }, transactions: [{ target: { id: "retail" } }],
+      folders: { restored: [], removed: [] }, changed_since: 3 } }
+    expect(M.confirmText("undo", undoRestore).split("\n")[1])
+      .toBe("Also reverts every play since the restore: 3 files the game changed (kept in the undo's snapshot)")
+    const uncounted = { ...undoRestore, data: { ...undoRestore.data, changed_since: null } }
+    expect(M.confirmText("undo", uncounted).split("\n")[1])
+      .toBe("Also reverts every play since the restore (the files it changed cannot be counted)")
+    // Forgetting a client says what it does, never "0 addons".
+    const rm = { ...shape, command: "targets rm", data: { id: "wotlk", managed_addons: 2, was_default: false, dry_run: true } }
+    expect(M.confirmText("targets_rm", rm))
+      .toBe("Forget client wotlk; nothing in its directory is touched (its record of 2 managed addons is kept)")
   })
 
   test("only https links to known hosts open", () => {
     expect(M.isSafeUrl("https://github.com/o/r")).toBe(true)
     expect(M.isSafeUrl("https://www.wowinterface.com/downloads/info1.html")).toBe(true)
+    expect(M.isSafeUrl("https://tukui.org/elvui")).toBe(true)
     for (const url of ["http://github.com/o/r", "https://github.com.evil.example/x", "https://user@github.com/x",
       "https://github.com:8443/x", "javascript:alert(1)", "https://evil.example/https://github.com", "", null]) {
       expect([url, M.isSafeUrl(url)]).toEqual([url, false])

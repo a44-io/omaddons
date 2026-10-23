@@ -378,6 +378,39 @@ fn a_present_unmanaged_dependency_installs_nothing_and_hints_adopting_it() {
     assert_eq!(tree_hash(&addons.join("BigWigs")), tree);
 }
 
+/// `--force` is for the addon the user named: a dependency the resolver chose is judged
+/// without it, so its archive never replaces an unmanaged folder of the client.
+#[test]
+fn force_never_lets_a_dependency_replace_an_unmanaged_folder() {
+    let home = graph(&[
+        node(
+            "https://github.com/o/littlewigs",
+            &[folder("LittleWigs", &["BigWigs"])],
+        ),
+        node(
+            "https://github.com/o/bigwigs",
+            &[folder("BigWigs", &[]), folder("BigWigsExtra", &[])],
+        ),
+    ]);
+    let addons = home.addons("_retail_");
+    addon_folder(
+        &addons,
+        "BigWigsExtra",
+        &[("BigWigsExtra.toc", &toc(RETAIL, &["## Title: Mine"]))],
+        &[("Mine.lua", b"-- by hand")],
+    );
+    let mine = tree_hash(&addons.join("BigWigsExtra"));
+    let r = home.run(&["install", "littlewigs", "--force"]);
+    r.expect(0);
+    assert!(record_of(&home, "LittleWigs").is_some(), "{}", r.context());
+    assert!(record_of(&home, "BigWigs").is_none(), "{}", r.context());
+    assert_eq!(
+        tree_hash(&addons.join("BigWigsExtra")),
+        mine,
+        "the hand-made folder stays"
+    );
+}
+
 #[test]
 fn a_managed_dependency_folder_gone_from_disk_is_fixed_by_reinstalling_its_owner() {
     let home = wigs();
@@ -778,6 +811,37 @@ fn an_out_of_date_dependency_is_not_installed_and_warns() {
     assert_eq!(missing.len(), 1, "{}", r.context());
     assert!(missing[0].contains("out of date") && missing[0].contains("gh:o/depb"));
     assert_eq!(envelope["partial"], false);
+}
+
+/// Two required folders resolving to one project in a round: the project installs for
+/// the first, and the second, which its release does not ship here, is still checked
+/// and reported, never dropped.
+#[test]
+fn a_second_folder_of_one_project_is_checked_on_its_own() {
+    let home = graph(&[
+        node(
+            "https://github.com/o/depa",
+            &[folder("DepA", &["LibOne", "LibTwo"])],
+        ),
+        node("https://github.com/o/libpack", &[folder("LibOne", &[])]),
+    ]);
+    // The catalog says the pack holds both; its release ships only the first.
+    catalog(
+        &home,
+        &[
+            ("DepA", "depa", &["DepA"]),
+            ("LibPack", "libpack", &["LibOne", "LibTwo"]),
+        ],
+    );
+    let r = home.run(&["install", "depa"]);
+    let envelope = r.expect(0);
+    assert!(record_of(&home, "LibPack").is_some(), "{}", r.context());
+    let missing = warnings_with(&envelope, "missing_dependency");
+    assert!(
+        missing.iter().any(|m| m.contains("LibTwo")),
+        "{missing:?}\n{}",
+        r.context()
+    );
 }
 
 #[test]
@@ -1323,8 +1387,8 @@ fn a_bridge_fix_names_the_catalog_only_where_a_variant_covers_the_client() {
     write("\"vanilla\"");
     assert_eq!(
         fix_of(&home),
-        json!(["omaddons", "install", "gh:o/masque", "-t", "retail"]),
-        "no variant for mainline: the resolver's ref, never the name"
+        json!(["omaddons", "search", "Masque"]),
+        "no variant for mainline: never the name, nor another family's build"
     );
 }
 

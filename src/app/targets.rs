@@ -16,7 +16,8 @@ use super::world::World;
 use crate::cli::Context;
 use crate::discover::cache::DiscoveryMode;
 use crate::discover::registry::{
-    LockedRegistry, check_user_id, manual_targets, reconcile, registered_at, unknown_id,
+    LockedRegistry, check_user_id, manual_targets, name_needs_one_target, reconcile, registered_at,
+    resolve_one_in, unknown_id,
 };
 use crate::discover::{DiscoveredTarget, DiscoverySource};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
@@ -367,14 +368,37 @@ fn locked<T>(
 pub fn add(ctx: &Context, path: &Path, name: Option<&str>) -> Result<Done<AddData>> {
     let world = World::load(ctx)?;
     let (paths, table) = (&world.paths, &world.table);
-    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    // `..` resolved as the kernel does (a link's parent is its target's), so the client
+    // is recorded, and named, by its own directory; a path without one keeps its links.
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = if absolute
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        std::fs::canonicalize(&absolute).unwrap_or(absolute)
+    } else {
+        absolute
+    };
     let (found, warnings) = manual_targets(table, &path)?;
     let registry = load_registry(paths)?.value;
-    let changed = found
+    // As registered now (by directory, or by marker for a moved client).
+    let known = reconcile(&registry, &found).targets;
+    let unregistered = found
         .iter()
         .any(|d| registered_at(&registry, &d.target.client_dir).is_none());
+    // `--name` renames the one client when it is registered under another id.
+    let renamed = name.is_some_and(|name| {
+        matches!(known.as_slice(), [one] if one.target.key.is_some() && one.target.id != name)
+    });
+    let changed = unregistered || renamed;
+    let held = name.is_some_and(|name| {
+        known
+            .iter()
+            .any(|d| d.target.key.is_some() && d.target.id == name)
+    });
     if let Some(name) = name
         && changed
+        && !held
     {
         let own: Vec<&Path> = found
             .iter()
@@ -384,7 +408,18 @@ pub fn add(ctx: &Context, path: &Path, name: Option<&str>) -> Result<Done<AddDat
     }
     let render = render_add as fn(&AddData, &mut dyn Write, &Style) -> std::io::Result<()>;
     if ctx.dry_run {
-        let shown = reconcile(&registry, &found).targets;
+        // The preview refuses and names what the run would: `--name` takes one client,
+        // and becomes its id, registered yet or not.
+        if let Some(name) = name
+            && found.len() > 1
+        {
+            let root = found[0].target.install_root.clone();
+            return Err(name_needs_one_target(&root, &found, name));
+        }
+        let mut shown = known;
+        if let (Some(name), [one]) = (name, shown.as_mut_slice()) {
+            name.clone_into(&mut one.target.id);
+        }
         let targets = shown
             .iter()
             .map(|d| info(d, &registry, table, false))
@@ -403,12 +438,12 @@ pub fn add(ctx: &Context, path: &Path, name: Option<&str>) -> Result<Done<AddDat
     let dirs: Vec<PathBuf> = found.iter().map(|d| d.target.client_dir.clone()).collect();
     let (added, after) = locked(ctx, paths, "targets add", &dirs, |reg, s| {
         let (added, _) = reg.add_manual(s, table, &path, name)?;
-        // One line per client this registered (none when every one already was).
+        // One line per client this registered or renamed (none when nothing changed).
         for d in &added {
             let now = registered_at(reg.registry(), &d.target.client_dir).map(|e| e.key);
-            if registered_at(&registry, &d.target.client_dir).is_none()
-                && let Some(key) = now
-            {
+            let before = registered_at(&registry, &d.target.client_dir);
+            let new = before.is_none_or(|e| e.id != d.target.id);
+            if new && let Some(key) = now {
                 super::record_setting(ctx, s, paths, TxKind::Target, Some(key));
             }
         }
@@ -597,11 +632,23 @@ pub fn default(ctx: &Context, id: &str) -> Result<Done<DefaultData>> {
             Ok((Some(key), current))
         })?
     };
+    // config.toml's `default_target` is a selector (an id, key, mode, product or family):
+    // it overrides only when it names another client.
     let overridden_by_config = world
         .config
         .default_target
-        .as_ref()
-        .is_some_and(|c| *c != id);
+        .as_deref()
+        .is_some_and(|selector| match &target {
+            Named::Found(d) => {
+                // ubs:ignore — comparing target selectors and ids, not secrets
+                resolve_one_in(selector, &world.resolved, &world.table, &ctx.argv)
+                    .map_or(selector != id, |chosen| {
+                        chosen.target.client_dir != d.target.client_dir
+                    })
+            }
+            // ubs:ignore — comparing target selectors and ids, not secrets
+            Named::Missing(_) => selector != id,
+        });
     Ok(Done {
         command: "targets default",
         data: DefaultData {

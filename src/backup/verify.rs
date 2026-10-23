@@ -109,6 +109,12 @@ pub fn verify(
         .details(serde_json::json!({ "backup": b.id }))
     };
     let meta = b.meta.clone().ok_or_else(unreadable)?;
+    // A newer omaddons's description or manifest is read, never rewritten (M3-D45):
+    // refused before anything is hashed.
+    if req.record {
+        store::refuse_newer::<BackupMeta>(&meta_file(&b.dir))?;
+        store::refuse_newer::<Manifest>(&b.dir.join("manifest.json"))?;
+    }
     let manifest = store::load::<Manifest>(&b.dir.join("manifest.json"))
         .ok()
         .flatten()
@@ -226,7 +232,9 @@ pub fn damage_found(
     if error.code != ErrorCode::HashMismatch {
         return error;
     }
-    if let Some(mut meta) = backup.meta.clone() {
+    // Never over a newer omaddons's description: it is read, never rewritten.
+    let newer = store::refuse_newer::<BackupMeta>(&meta_file(&backup.dir)).is_err();
+    if let Some(mut meta) = backup.meta.clone().filter(|_| !newer) {
         meta.integrity = Integrity::Damaged;
         let mut s = WriteSession::untracked(Writer::Backup, scopes, "verify");
         if write(&mut s, &meta_file(&backup.dir), &meta).is_ok() {

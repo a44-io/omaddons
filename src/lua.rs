@@ -753,7 +753,10 @@ impl<'a> Parser<'a> {
                 self.bump(digits);
             }
             b'x' => {
-                let hex = bytes.get(self.pos + 1..self.pos + 3);
+                // Two hex digits, as Lua reads them: `from_str_radix` alone takes a sign.
+                let hex = bytes
+                    .get(self.pos + 1..self.pos + 3)
+                    .filter(|h| h.iter().all(u8::is_ascii_hexdigit));
                 let byte = hex
                     .and_then(|h| std::str::from_utf8(h).ok())
                     .and_then(|h| u8::from_str_radix(h, 16).ok());
@@ -1267,12 +1270,12 @@ mod tests {
 
     #[test]
     fn bad_escapes_are_kept_as_written() {
-        let p = parse(b"T = { \"\\q\", \"\\300\", \"\\xZZ\" }");
+        let p = parse(b"T = { \"\\q\", \"\\300\", \"\\xZZ\", \"\\x+f\" }");
         assert_eq!(
             table(global(&p, "T")).array,
-            [s(b"\\q"), s(b"\\300"), s(b"\\xZZ")]
+            [s(b"\\q"), s(b"\\300"), s(b"\\xZZ"), s(b"\\x+f")]
         );
-        assert_eq!(kinds(&p), [LuaIssueKind::BadEscape; 3]);
+        assert_eq!(kinds(&p), [LuaIssueKind::BadEscape; 4]);
         assert!(p.partial.is_empty(), "an escape cuts nothing");
     }
 

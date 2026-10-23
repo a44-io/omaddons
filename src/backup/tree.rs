@@ -449,8 +449,11 @@ fn copy_file(
     let mut kind = clone(s, src, dst, rel, opts.policy)?;
     hook(Step::Copied(rel, 1));
     let mut settled = stamp()? == before;
+    // The stamp the copy is judged against: the manifest's stats must be of it too.
+    let mut compared = before;
     if !settled && opts.settle {
         let again_before = stamp()?;
+        compared = again_before;
         let temp = dst.with_file_name(format!(
             ".omaddons-settle-{}",
             dst.file_name()
@@ -471,8 +474,19 @@ fn copy_file(
             path: rel.to_owned(),
         });
     }
+    // A write between the last stamp and these stats would put its size and mtime in the
+    // manifest beside the older bytes copied: then the copy is not settled.
+    settled &= stamp()? == compared;
+    let mut recorded = entry(rel.to_owned(), EntryKind::File, &meta, None);
+    if !settled {
+        // The bytes kept are the copy's, written before the source changed: their size is
+        // what a structure check compares, or the backup fails its own check.
+        recorded.size = std::fs::symlink_metadata(dst)
+            .map_err(|e| io_error(rel, &e))?
+            .len();
+    }
     Ok(Copied {
-        entry: entry(rel.to_owned(), EntryKind::File, &meta, None),
+        entry: recorded,
         kind,
         settled,
     })
@@ -553,7 +567,11 @@ fn entry(
         kind,
         size: meta.len(),
         mode: meta.mode() & 0o7777,
-        mtime_ns: meta.mtime() * 1_000_000_000 + meta.mtime_nsec(),
+        // Saturating: an mtime past 2262 (or before 1677) does not fit in i64 nanoseconds.
+        mtime_ns: meta
+            .mtime()
+            .saturating_mul(1_000_000_000)
+            .saturating_add(meta.mtime_nsec()),
         link,
         sha256: None,
     }
@@ -593,10 +611,20 @@ fn io_error(rel: &str, e: &io::Error) -> CloneError {
     }
 }
 
+/// What an I/O failure was, without any path: some of fsx's own errors name the
+/// absolute path in their message (`… is not a regular file`), so only the OS error, or
+/// else the kind, is said.
+pub(crate) fn io_cause(e: &io::Error) -> String {
+    e.raw_os_error().map_or_else(
+        || e.kind().to_string(),
+        |code| io::Error::from_raw_os_error(code).to_string(),
+    )
+}
+
 /// An fsx failure, without the absolute path its message carries.
 fn fsx_error(rel: &str, e: FsxError) -> CloneError {
     let cause = match e {
-        FsxError::Io { source, .. } => source.to_string(),
+        FsxError::Io { source, .. } => io_cause(&source),
         FsxError::ScopeDenied(_) | FsxError::Protected(_) => {
             "the filesystem writer refused the path".to_owned()
         }
@@ -873,6 +901,14 @@ mod tests {
             (copy.unsettled, copy.consistency),
             (1, Consistency::BestEffort)
         );
+        // Its manifest records the bytes kept, so the backup passes its own structure check.
+        let recorded = copy
+            .manifest
+            .iter()
+            .find(|e| e.path == "Config.wtf")
+            .unwrap()
+            .size;
+        assert_eq!(recorded, fs::metadata(to.join("Config.wtf")).unwrap().len());
     }
 
     /// A named change to a source tree, and what the second walk must find.

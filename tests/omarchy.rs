@@ -115,6 +115,7 @@ case "$1 $2" in
       silent) exit 0 ;;
       hang) exec /bin/sleep 5 ;;
       orphan) /bin/sleep 30 & echo $! > {root}/orphan.pid; exec /bin/sleep 5 ;;
+      daemon) /bin/sleep 30 & echo $! > {root}/orphan.pid ;;
     esac; echo ok ;;
   "shell setPluginEnabled")
     printf '{{"bar":{{"layout":{{}}}}}}' > "$XDG_CONFIG_HOME/omarchy/shell.json"; echo ok ;;
@@ -940,6 +941,23 @@ fn the_shell_is_running_only_when_ping_answers_ok() {
     assert!(took < std::time::Duration::from_secs(5), "{took:?}");
 }
 
+/// A tool that answers and exits while a process it started keeps its output pipe open
+/// (a restarted shell) is done when it exits: its answer counts, and omaddons never waits
+/// on the other process.
+#[test]
+fn a_tool_that_leaves_a_process_holding_its_output_still_answers() {
+    let desk = Desk::new();
+    desk.set("shell-mode", "daemon");
+    let started = std::time::Instant::now();
+    let shell = desk.run(&["omarchy"]).expect(0)["data"]["omarchy"]["shell_running"].clone();
+    let took = started.elapsed();
+    let pid = fs::read_to_string(desk.root().join("orphan.pid")).unwrap();
+    // The test's own cleanup: nothing stops a process a tool that finished started.
+    let _ = std::process::Command::new("kill").arg(pid.trim()).status();
+    assert_eq!(shell, true, "its `ok` counts");
+    assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+}
+
 /// A tool that times out is stopped with every process it started (its process group):
 /// a child it left running in the background is gone once omaddons returns.
 #[test]
@@ -991,6 +1009,24 @@ fn status_and_its_human_output_note_another_state() {
     );
     assert!(text.contains("it serves another omaddons state"), "{text}");
     assert!(text.contains("its shell is running"), "{text}");
+    assert!(
+        !text.contains("omaddons omarchy install"),
+        "nothing is recommended for another state's widget: {text}"
+    );
+
+    // Without its `Build.js` it serves no state: no such note, and its reinstall is
+    // recommended.
+    let (rel, _) = tree(&desk.plugin())
+        .into_iter()
+        .find(|(rel, _)| rel.ends_with("/Build.js"))
+        .unwrap();
+    fs::remove_file(desk.plugin().join(rel)).unwrap();
+    let text = human(&desk, &["omarchy"], &[]);
+    assert!(!text.contains("serves another omaddons state"), "{text}");
+    assert!(
+        text.contains("(reinstall: omaddons omarchy install)"),
+        "{text}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------

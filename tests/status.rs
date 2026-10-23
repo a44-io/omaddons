@@ -258,6 +258,18 @@ fn cached_never_scans_and_without_a_cache_lists_registered_targets() {
         r.context()
     );
     assert!(!cache.exists(), "--cached never writes the cache");
+
+    // Nothing registered and no cache yet: no client is known, and the human view still
+    // says what to run next.
+    let fresh = Machine::new();
+    let human = fresh
+        .home
+        .exec(&["status".to_owned(), "--cached".to_owned()]);
+    assert!(
+        human.stdout.contains("Next: omaddons status"),
+        "{}",
+        human.context()
+    );
 }
 
 #[test]

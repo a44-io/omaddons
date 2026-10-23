@@ -287,10 +287,17 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
             }
         }
         warnings.extend(done.warnings.iter().cloned());
-        // Whatever moved, the command pinned (or unpinned) it.
-        for item in data.targets.iter_mut().flat_map(|t| &mut t.items) {
-            if item.status.changed() {
-                item.status = mode.status();
+        // Whatever it asked for and moved, the command pinned (or unpinned); a dependency
+        // the new version brought in is installed, not pinned.
+        for t in &mut data.targets {
+            let id = t.target.id.as_str();
+            for item in &mut t.items {
+                let asked = requested
+                    .iter()
+                    .any(|r| r.target == id && r.request == item.request);
+                if asked && item.status.changed() {
+                    item.status = mode.status();
+                }
             }
         }
         data.recount();

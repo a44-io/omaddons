@@ -362,6 +362,33 @@ fn the_single_compatible_live_target_is_chosen() {
     assert_eq!(log.count_purpose("asset"), 1, "{}", log.context());
 }
 
+/// The probe that chooses a client plans with the run's `--force`: an unmanaged folder
+/// `--force` replaces fails no client, so the fix the refusal names works.
+#[test]
+fn force_reaches_the_probe_that_chooses_the_client() {
+    let home = Home::new(&["wow", "wow_classic"]);
+    foo_release(&home.http, "v1.0.0", mainline(), "120105");
+    let unmanaged = home.addons("_retail_").join("Foo");
+    fs::create_dir_all(&unmanaged).unwrap();
+    fs::write(unmanaged.join("Foo.toc"), "## Interface: 120105\n").unwrap();
+    let r = home.run(&["install", "gh:o/foo"]);
+    let envelope = r.expect(4);
+    assert_eq!(
+        envelope["error"]["code"],
+        "unmanaged_folder",
+        "{}",
+        r.context()
+    );
+    let r = home.run(&["install", "gh:o/foo", "--force"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        envelope["data"]["target"]["id"],
+        "retail",
+        "{}",
+        r.context()
+    );
+}
+
 #[test]
 fn test_clients_are_only_chosen_with_t() {
     let home = Home::new(&["wow", "wowt"]);
@@ -1689,6 +1716,38 @@ fn reinstall_needs_an_installed_addon_and_a_version_pins_it() {
     assert_eq!(
         (&record["version"], &record["pinned"]),
         (&Value::from("v2"), &Value::Bool(true))
+    );
+}
+
+/// Without `-t`, a reinstall goes to the client the addon is installed on: one it is
+/// not installed on is no candidate, and an addon installed on none is `not_managed`
+/// with the install as its fix.
+#[test]
+fn a_reinstall_without_t_finds_the_client_it_is_installed_on() {
+    let home = Home::new(&["wow", "wow_classic"]);
+    foo_release(
+        &home.http,
+        "v1.0.0",
+        &[("mainline", 120_105), ("mists", 50_504)],
+        "120105, 50504",
+    );
+    home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+    let r = home.run(&["install", "gh:o/foo", "--reinstall"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        envelope["data"]["target"]["id"],
+        "retail",
+        "{}",
+        r.context()
+    );
+    assert!(!home.addons("_classic_").join("Foo").exists());
+
+    let r = home.run(&["install", "gh:o/bar", "--reinstall"]);
+    let envelope = r.expect(3);
+    assert_eq!(envelope["error"]["code"], "not_managed", "{}", r.context());
+    assert_eq!(
+        argv_of(&envelope["error"]["fix_argv"]),
+        ["omaddons", "install", "gh:o/bar"]
     );
 }
 

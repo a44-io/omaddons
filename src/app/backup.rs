@@ -349,6 +349,9 @@ pub struct BackupListOutcome {
     commands: Vec<CommandHint>,
     /// Each target's label for human output: `retail (12.1.5, mainline)`.
     labels: Vec<String>,
+    /// One backup was asked for (`backup list <id>`): the others are not "older", and
+    /// `--limit` shows no more of them.
+    one: bool,
 }
 
 impl Outcome for BackupListOutcome {
@@ -403,7 +406,7 @@ impl Outcome for BackupListOutcome {
             for line in table(&rows).lines() {
                 writeln!(w, "  {line}")?;
             }
-            if target.shown < target.total {
+            if !self.one && target.shown < target.total {
                 writeln!(
                     w,
                     "  … {} older (--limit shows more)",
@@ -569,6 +572,7 @@ pub fn list(ctx: &Context, args: &BackupListArgs) -> Result<BackupListOutcome> {
         warnings,
         commands,
         labels,
+        one: show.is_some(),
     })
 }
 
@@ -872,9 +876,10 @@ impl Outcome for BackupCreateOutcome {
                     }
                     .to_owned(),
                 );
+                // Never "verified" alone (M3-D47): a capture's hashes are its baseline.
                 // ubs:ignore — comparing integrity states, not secrets
                 if b.integrity == Some(Integrity::Verified) {
-                    how.push("verified".to_owned());
+                    how.push("verified (capture)".to_owned());
                 }
                 writeln!(
                     w,
@@ -1799,10 +1804,12 @@ fn render_addons(
 /// What a restore says its content is proved to be (M3-D47): never "verified" for a
 /// backup whose content no hash checked.
 fn proved(integrity: Integrity, baseline: Option<Baseline>, dry_run: bool) -> String {
+    // No baseline beside hashes: a `backup verify` stopped between its two writes, so
+    // they were recorded later, as `backup list` says.
     let hashes = match baseline {
         Some(Baseline::Import) => "import-time hashes",
-        Some(Baseline::Later) => "hashes recorded later (unchanged since then)",
-        Some(Baseline::Capture) | None => "capture-time hashes",
+        Some(Baseline::Later) | None => "hashes recorded later (unchanged since then)",
+        Some(Baseline::Capture) => "capture-time hashes",
     };
     match (integrity, dry_run) {
         (Integrity::Verified, false) => format!("verified against {hashes}"),
@@ -1822,7 +1829,7 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
     }
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
-    let (d, backup) = named_backup(ctx, &world, &args.id, &mut warnings)?;
+    let (d, backup) = named_backup(ctx, &world, &args.id, "a restore", &mut warnings)?;
     let reservation = restore::reserve(&backup)?;
     if backup.meta.as_ref().is_some_and(|m| m.partial) {
         return Err(partial(&backup, &d.target.id));
@@ -1949,11 +1956,13 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
 
 /// The client and the backup `prefix` names (`restore`, `export`): on the one client `-t`
 /// selects, else on whichever has it. A backup on another client than `-t`'s is
-/// `not_found`, with a fix naming its own.
+/// `not_found`, with a fix naming its own. `what` names the command in a refusal of
+/// several clients (`a restore`).
 pub(super) fn named_backup<'w>(
     ctx: &Context,
     world: &'w World,
     prefix: &str,
+    what: &str,
     warnings: &mut Vec<Warning>,
 ) -> Result<(&'w DiscoveredTarget, BackupRef)> {
     let mut all: Vec<(&DiscoveredTarget, Vec<BackupRef>)> = Vec::new();
@@ -1982,7 +1991,7 @@ pub(super) fn named_backup<'w>(
     let selected = world.select_many(ctx)?;
     let d = match selected.as_slice() {
         [one] => *one,
-        many => return Err(several(ctx, many, "a restore")),
+        many => return Err(several(ctx, many, what)),
     };
     let on_it: Vec<(&DiscoveredTarget, Vec<BackupRef>)> = all
         .iter()
@@ -1992,14 +2001,15 @@ pub(super) fn named_backup<'w>(
         .collect();
     match found(&on_it, Some(selector)) {
         Err(error) if matches!(error.code, ErrorCode::NotFound) => match found(&all, None) {
-            Ok((owner, b)) => Err(elsewhere(&b, &d.target.id, &owner.target.id)),
+            Ok((owner, b)) => Err(elsewhere(ctx, &b, &d.target.id, &owner.target.id)),
             Err(_) => Err(error),
         },
         other => other,
     }
 }
 
-/// `target_ambiguous`: a restore changes one client, and `-t` selects `many`.
+/// `target_ambiguous`: a restore, import or export is one client's, and `-t` selects
+/// `many`.
 fn several(ctx: &Context, many: &[&DiscoveredTarget], what: &str) -> Error {
     let ids: Vec<&str> = many.iter().map(|d| d.target.id.as_str()).collect();
     let with =
@@ -2007,7 +2017,7 @@ fn several(ctx: &Context, many: &[&DiscoveredTarget], what: &str) -> Error {
     let mut error = Error::new(
         ErrorCode::TargetAmbiguous,
         format!(
-            "-t selects {} clients ({}); {what} changes one",
+            "-t selects {} clients ({}); {what} is one client's",
             ids.len(),
             ids.join(", ")
         ),
@@ -2020,13 +2030,14 @@ fn several(ctx: &Context, many: &[&DiscoveredTarget], what: &str) -> Error {
     error
 }
 
-/// `not_found`: the backup is `owner`'s, not `selected`'s.
-fn elsewhere(b: &BackupRef, selected: &str, owner: &str) -> Error {
+/// `not_found`: the backup is `owner`'s, not `selected`'s. The fix is the command given,
+/// on `owner`: an `--addon` restore or an export stays one, never a whole restore.
+fn elsewhere(ctx: &Context, b: &BackupRef, selected: &str, owner: &str) -> Error {
     let id = b.id.to_string();
     Error::new(
         ErrorCode::NotFound,
         format!("backup {id} is {owner}'s, not {selected}'s"),
-        Suggestion::command(["omaddons", "backup", "restore", id.as_str(), "-t", owner]),
+        Suggestion::command(crate::discover::registry::with_target(&ctx.argv, owner)),
     )
     .details(serde_json::json!({ "id": id, "target": selected, "owner": owner }))
 }
@@ -2537,7 +2548,7 @@ pub fn export_backup(ctx: &Context, args: &BackupExportArgs) -> Result<BackupExp
     }
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
-    let (d, backup) = named_backup(ctx, &world, &args.id, &mut warnings)?;
+    let (d, backup) = named_backup(ctx, &world, &args.id, "an export", &mut warnings)?;
     let reservation = export::reserve(&backup)?;
     let plan = export::plan(&backup)?;
     let client_dirs: Vec<std::path::PathBuf> = world

@@ -56,8 +56,12 @@ pub fn label_for(host: Option<&str>, root: &Path) -> String {
 /// `127.0.0.1`, `localhost` or `::1`, with or without a `:<port>`.
 fn is_loopback(host: &str) -> bool {
     let host = host.to_ascii_lowercase();
+    // A port follows a host without colons, or a bracketed IPv6 address (`[::1]:3724`).
     let bare = match host.rsplit_once(':') {
-        Some((name, port)) if !name.contains(':') && port.bytes().all(|b| b.is_ascii_digit()) => {
+        Some((name, port))
+            if port.bytes().all(|b| b.is_ascii_digit())
+                && (!name.contains(':') || (name.starts_with('[') && name.ends_with(']'))) =>
+        {
             name
         }
         _ => host.as_str(),
@@ -104,6 +108,8 @@ mod tests {
             (Some("LOCALHOST"), "localhost"),
             (Some("::1"), "localhost"),
             (Some("127.0.0.1:3724"), "localhost"),
+            (Some("[::1]"), "localhost"),
+            (Some("[::1]:3724"), "localhost"),
             (Some("logon.example.org"), "logon.example.org"),
             (Some("logon.example.org:3724"), "logon.example.org:3724"),
             (Some("127.0.0.2"), "127.0.0.2"),

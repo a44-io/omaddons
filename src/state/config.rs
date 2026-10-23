@@ -395,7 +395,11 @@ pub fn closest_key(key: &str) -> Option<String> {
         }
         if spec.kind == KeyKind::RulesField {
             for field in RULES_FIELDS {
-                let mut c: Vec<&str> = parts[..parts.len() - 1].to_vec();
+                let mut c: Vec<&str> = pattern[..pattern.len() - 1]
+                    .iter()
+                    .zip(&parts)
+                    .map(|(p, k)| if *p == "*" { *k } else { *p })
+                    .collect();
                 c.push(field);
                 candidates.push(c.join("."));
             }
@@ -540,10 +544,11 @@ impl Config {
     /// value is out of range.
     pub fn effective_limits(&self) -> std::result::Result<EffectiveLimits, (String, String)> {
         let mut limits = EffectiveLimits::default();
-        let mut apply = |key: &str, value: toml::Value| {
+        // `shown` is the config key a message names; `limit` the one `apply` takes.
+        let mut apply = |shown: &str, limit: &str, value: toml::Value| {
             limits
-                .apply(key, &value)
-                .map_err(|e| (format!("limits.{key}"), e.to_string()))
+                .apply(limit, &value)
+                .map_err(|e| (shown.to_owned(), limit_message(&e)))
         };
         let int = |n: u64| toml::Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
         let l = &self.limits;
@@ -555,7 +560,7 @@ impl Config {
         ];
         for (key, size) in sizes {
             if let Some(size) = size {
-                apply(key, int(size.0))?;
+                apply(&format!("limits.{key}"), key, int(size.0))?;
             }
         }
         for (key, n) in [
@@ -563,30 +568,48 @@ impl Config {
             ("archive_max_ratio", l.archive_max_ratio),
         ] {
             if let Some(n) = n {
-                apply(key, int(n))?;
+                apply(&format!("limits.{key}"), key, int(n))?;
             }
         }
-        if l.tx_retention_count.is_some() || l.tx_retention_days.is_some() {
-            let mut table = toml::Table::new();
-            if let Some(n) = l.tx_retention_count {
-                table.insert("keep_last".into(), int(n));
+        // One field at a time, so an error names the key written: `apply` starts each
+        // from the retention so far.
+        for (key, field, n) in [
+            ("tx_retention_count", "keep_last", l.tx_retention_count),
+            ("tx_retention_days", "window_days", l.tx_retention_days),
+        ] {
+            if let Some(n) = n {
+                let table = toml::Table::from_iter([(field.to_owned(), int(n))]);
+                apply(
+                    &format!("limits.{key}"),
+                    "tx_retention",
+                    toml::Value::Table(table),
+                )?;
             }
-            if let Some(n) = l.tx_retention_days {
-                table.insert("window_days".into(), int(n));
-            }
-            apply("tx_retention", toml::Value::Table(table))?;
         }
         if let Some(mb) = l.backup_min_free_mb {
-            apply("backup_min_free", int(mb.saturating_mul(1 << 20)))?;
+            apply(
+                "limits.backup_min_free_mb",
+                "backup_min_free",
+                int(mb.saturating_mul(1 << 20)),
+            )?;
         }
         if let Some(mb) = l.backup_copy_max_mb {
-            apply("backup_copy_max", int(mb.saturating_mul(1 << 20)))?;
+            apply(
+                "limits.backup_copy_max_mb",
+                "backup_copy_max",
+                int(mb.saturating_mul(1 << 20)),
+            )?;
         }
         if let Some(days) = l.backup_auto_keep_days {
-            apply("backup_auto_keep_days", int(days))?;
+            apply(
+                "limits.backup_auto_keep_days",
+                "backup_auto_keep_days",
+                int(days),
+            )?;
         }
         if let Some(hours) = self.check_interval_hours.filter(|h| *h > 0) {
             apply(
+                "check_interval_hours",
                 "default_check_interval",
                 toml::Value::String(format!("{hours}h")),
             )?;
@@ -759,6 +782,19 @@ fn corrupt(path: &Path, text: &str, err: &toml::de::Error) -> Error {
 }
 
 /// `state_corrupt` for a value out of range, citing the key's line.
+/// A `[limits]` override error without its leading `limits.<key>`: [`invalid`] names
+/// the config key itself.
+fn limit_message(err: &crate::limits::LimitOverrideError) -> String {
+    use crate::limits::LimitOverrideError as E;
+    let (E::Unknown { key }
+    | E::NotOverridable { key }
+    | E::WrongType { key, .. }
+    | E::NotPositive { key }) = err;
+    let text = err.to_string();
+    text.strip_prefix(&format!("limits.{key} "))
+        .map_or_else(|| text.clone(), str::to_owned)
+}
+
 fn invalid(path: &Path, text: &str, key: &str, message: &str) -> Error {
     let leaf = key.rsplit('.').next().unwrap_or(key);
     let line = text
@@ -1159,8 +1195,29 @@ multi_toc = true
             (ErrorCode::StateCorrupt, Some(2))
         );
         let err = parse("[limits]\narchive_max_ratio = 0\n").unwrap_err();
-        assert!(err.message.contains("archive_max_ratio"), "{}", err.message);
+        assert!(
+            err.message
+                .ends_with("line 2: limits.archive_max_ratio must be greater than zero"),
+            "{}",
+            err.message
+        );
         assert_eq!(err.fix.argv(), None);
+        // The retention keys are reported as written, on their own line.
+        let err = parse("[limits]\ntx_retention_days = 7\ntx_retention_count = 0\n").unwrap_err();
+        assert!(
+            err.message
+                .ends_with("line 3: limits.tx_retention_count must be greater than zero"),
+            "{}",
+            err.message
+        );
+        assert_eq!(err.details["key"], "limits.tx_retention_count");
+        let err = parse("[limits]\ntx_retention_days = 99999999999\n").unwrap_err();
+        assert!(
+            err.message
+                .ends_with("limits.tx_retention_days must be a smaller integer"),
+            "{}",
+            err.message
+        );
         let err = parse("[limits]\nbackup_min_free_mb = 1048577\n").unwrap_err();
         assert!(
             err.message.contains("backup_min_free_mb"),
@@ -1199,6 +1256,18 @@ multi_toc = true
             messages
                 .iter()
                 .any(|m| m.contains("did you mean sources.github.enabled?"))
+        );
+    }
+
+    /// A rules field under another section is never "corrected" to itself: only the
+    /// `*` segments of `client_rules.*.*` come from the key.
+    #[test]
+    fn a_rules_field_elsewhere_suggests_no_key_of_its_own_spelling() {
+        assert_eq!(closest_key("targets.retail.legacy"), None);
+        assert_eq!(closest_key("sources.github.multi_toc"), None);
+        assert_eq!(
+            closest_key("client_rules.vanilla.multi_tok").as_deref(),
+            Some("client_rules.vanilla.multi_toc")
         );
     }
 

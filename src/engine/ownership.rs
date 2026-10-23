@@ -108,6 +108,18 @@ impl WorkingView {
             .insert(folder.key().to_owned(), addon.to_owned());
     }
 
+    /// `addon`'s work failed: it stops shipping nothing after all, so `folder` is not
+    /// released (a release by another addon stays).
+    pub fn withdraw(&mut self, folder: &FolderName, addon: &str) {
+        if self
+            .released
+            .get(folder.key())
+            .is_some_and(|by| by == addon)
+        {
+            self.released.remove(folder.key());
+        }
+    }
+
     /// The addon whose work in this transaction installs `folder`.
     pub fn owner_of(&self, folder: &FolderName) -> Option<&str> {
         self.claimed.get(folder.key()).map(String::as_str)

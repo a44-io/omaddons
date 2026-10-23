@@ -233,9 +233,11 @@ pub fn run(req: &AutoRun<'_>, register: &dyn Fn() -> Result<Target>) -> AutoOutc
     outcome.result = match attempt(req, register, &mut outcome) {
         Ok(result) => result,
         Err(error) => {
-            if let Some(target) = &outcome.target {
-                note(req, target, "failed", None);
-            }
+            // Recorded however early it failed (before registering, too): `status`
+            // must never keep saying a failing schedule works. A client with no key
+            // records nothing.
+            let target = outcome.target.as_ref().unwrap_or(&req.target.target);
+            note(req, target, "failed", None);
             AutoResult::Failed(error)
         }
     };
@@ -341,17 +343,35 @@ fn reserve(dir: &std::path::Path) -> Result<Option<DirLock>> {
 /// [`decide`] for `req`'s target as it is now. Reads only: a dry run's answer.
 pub fn due(req: &AutoRun<'_>, client: &ClientPaths) -> Decision {
     let (backups, _) = super::list(client);
-    let capability = req.target.target.key.map_or(Capability::Unknown, |key| {
-        inventory::auto_state(req.paths, &key).capability
-    });
     let tz = TimeZone::system();
+    let now = crate::clock::now();
+    // Capability is observed, not assumed: an `unsupported` recorded on an earlier local
+    // day is tried again, as what stopped a clone (a `WTF/` linked onto another
+    // filesystem, a byte copy made under `daily-copy`) may be gone. Within its day it
+    // stands, so a clone that keeps failing is tried once a day.
+    let midnight = now
+        .to_zoned(tz.clone())
+        .start_of_day()
+        .map(|z| z.timestamp())
+        .ok();
+    let capability = req.target.target.key.map_or(Capability::Unknown, |key| {
+        let auto = inventory::auto_state(req.paths, &key);
+        let stale = auto
+            .last
+            .as_ref()
+            .is_none_or(|last| midnight.is_none_or(|m| last.at < m));
+        match auto.capability {
+            Capability::Unsupported if stale => Capability::Unknown,
+            observed => observed,
+        }
+    });
     let facts = DueFacts {
         mode: req.mode,
         trigger: req.trigger,
         wtf: client.wtf().is_dir(),
         running: req.running,
         backups: &backups,
-        now: crate::clock::now(),
+        now,
         tz: &tz,
         clones: matches!(
             super::fs::clone_hint(&client.meta_dir()),

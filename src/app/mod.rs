@@ -344,9 +344,14 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         return out.emit_as("version", Ok(help::version()));
     }
     if cli.global.help {
+        // The command as typed, as `help <path>` reads it: `backup --help` is backup's
+        // help, though its envelope name is the default action's (`backup list`).
         let result = match &cli.command {
             None => Ok(help::bare()),
-            Some(_) => help::for_command(Some(name), &ctx.argv),
+            Some(_) => {
+                let path = crate::cli::command_path(&ctx.argv).join(" ");
+                help::for_command(Some(&path), &ctx.argv)
+            }
         };
         return out.emit_as("help", result);
     }

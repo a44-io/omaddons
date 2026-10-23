@@ -356,6 +356,11 @@ impl Outcome for StatusOutcome {
             if let Some(line) = widget_line(self.data.widget.as_ref()) {
                 writeln!(w, "{line}")?;
             }
+            // Its recommendations all the same: `status --cached` without a cache yet
+            // knows no client, and its next step is a scan.
+            for c in &self.commands {
+                writeln!(w, "Next: {}", c.command())?;
+            }
             return Ok(());
         }
         writeln!(w, "{}", summary_line(&self.data.summary))?;
@@ -882,13 +887,27 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             .with_fix(Suggestion::command(["omaddons", "omarchy", "install"])),
         );
     }
-    let issues = machine_issues(widget.as_ref());
+    // A pending journal that names no client (it cannot be read) is attention too: no
+    // target carries it, and it needs manual repair.
+    let unattributed = !held && pending.iter().any(|p| p.target.is_none());
+    let issues = machine_issues(widget.as_ref(), unattributed);
 
-    let (mut commands, first_fix) = recommendations(&targets, check_due, widget_outdated);
+    let (mut commands, mut first_fix) = recommendations(&targets, check_due, widget_outdated);
+    if unattributed && first_fix.is_none() {
+        first_fix = Some((
+            "an interrupted change needs manual repair: its journal cannot be read".to_owned(),
+            Suggestion::text(
+                "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+            ),
+        ));
+    }
+    if let Some(selector) = ctx.target.as_deref() {
+        scope_update(&mut commands, selector);
+    }
     if args.cached && !world.paths.discovery_cache().exists() {
         commands.push(CommandHint::new("status", ["omaddons", "status"], false));
     }
-    let needs_attention = targets.iter().any(|t| !t.attention.is_empty());
+    let needs_attention = unattributed || targets.iter().any(|t| !t.attention.is_empty());
     let summary = summary(&targets, &issues, &commands, widget_outdated);
     let (last_change, last_change_state) = last_change(&world, args.cached);
     Ok(StatusOutcome {
@@ -1181,6 +1200,17 @@ pub(super) fn inspect_hint(target: &str) -> CommandHint {
 /// widget (M3), (6) `remove_orphans` (C6), (7) the attention fixes (target order, then
 /// item order); then a look at unmanaged folders. Also the first attention item's
 /// message and fix, for `--check`.
+/// The bare `update` hint (several clients have updates) under `-t <selector>`: a hint
+/// is never wider than the selection it answers, and bare `update` reaches every client.
+pub(super) fn scope_update(commands: &mut [CommandHint], selector: &str) {
+    for hint in commands
+        .iter_mut()
+        .filter(|h| h.action() == "update" && h.argv() == ["omaddons", "update"])
+    {
+        *hint = CommandHint::new("update", ["omaddons", "update", "-t", selector], false);
+    }
+}
+
 fn recommendations(
     targets: &[StatusTarget],
     check_due: bool,
@@ -1549,6 +1579,28 @@ mod tests {
         commands.iter().map(|c| c.action().to_owned()).collect()
     }
 
+    /// Under `-t`, the update hint for several clients names the same selector; one
+    /// already naming its client, and any other hint, is left as it is.
+    #[test]
+    fn the_update_hint_is_never_wider_than_the_selection() {
+        let mut commands = vec![
+            CommandHint::new("update", ["omaddons", "update"], false),
+            CommandHint::new("update", ["omaddons", "update", "-t", "era"], false),
+            CommandHint::new("check_updates", ["omaddons", "outdated"], false),
+        ];
+        scope_update(&mut commands, "vanilla");
+        let argvs: Vec<Vec<String>> = commands.iter().map(|c| c.argv().to_vec()).collect();
+        assert_eq!(
+            argvs,
+            [
+                vec!["omaddons", "update", "-t", "vanilla"],
+                vec!["omaddons", "update", "-t", "era"],
+                vec!["omaddons", "outdated"],
+            ]
+            .map(|argv| argv.into_iter().map(str::to_owned).collect::<Vec<_>>())
+        );
+    }
+
     #[test]
     fn recommendations_come_in_m2_order() {
         let targets = [
@@ -1610,11 +1662,16 @@ mod tests {
             outdated: true,
             context_matches: Some(true),
         };
-        let machine = machine_issues(Some(&widget));
-        let s = summary(&[retail], &machine, &commands, true);
+        let machine = machine_issues(Some(&widget), false);
+        let s = summary(std::slice::from_ref(&retail), &machine, &commands, true);
         assert_eq!((s.issues.p3, s.widget_outdated), (1, true));
         assert_eq!(s.state, SummaryState::Updates, "a P3 never makes it urgent");
-        assert!(machine_issues(None).is_empty());
+        assert!(machine_issues(None, false).is_empty());
+        // A pending journal no client can carry is the machine's, and urgent.
+        let machine = machine_issues(None, true);
+        assert_eq!(machine[0].severity, crate::app::issues::Severity::P0);
+        let s = summary(&[retail], &machine, &commands, false);
+        assert_eq!(s.state, SummaryState::Attention);
     }
 
     #[test]

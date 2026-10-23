@@ -416,7 +416,7 @@ TestCase {
     answer(preview, JSON.stringify({ "ok": false, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "backup restore",
       "exit_code": 3, "warnings": [], "commands": [], "error": { "code": "ref_ambiguous", "message": "WeakAurasOptions is another addon's now",
         "fix": "omaddons backup list -t retail -v", "fix_argv": ["omaddons", "backup", "list", "-t", "retail", "-v"], "retryable": false, "details": {},
-        "alternatives": [{ "command": "x", "argv": ["omaddons", "--actor", "widget", "--reason", "r", "--dry-run", "backup", "restore", "-t", "retail",
+        "alternatives": [{ "display": "x", "argv": ["omaddons", "--actor", "widget", "--reason", "r", "--dry-run", "backup", "restore", "-t", "retail",
           "--addon", "folder:WeakAurasOptions", "--", id] }] } }))
     compare(service.confirm, null)
     compare(service.lastError.choices[0].addon, "folder:WeakAurasOptions")

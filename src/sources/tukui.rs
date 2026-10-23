@@ -209,7 +209,8 @@ impl Source for TukuiSource {
                 text: notes_text(&String::from_utf8_lossy(&body)),
             }],
             truncated: false,
-            more_url: Some(canonical_url(slug)),
+            // The project's page (the list's `web_url`), not the API's metadata URL.
+            more_url: Some(format!("https://tukui.org/{}", slug.to_ascii_lowercase())),
         }))
     }
 

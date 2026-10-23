@@ -102,8 +102,13 @@ impl Outcome for StatusOutcome {
         let d = &self.data;
         let p = &d.plugin;
         if p.installed {
+            // Installed under other HOME or XDG directories: it serves that state, and
+            // nothing is recommended from here. One whose context cannot be read
+            // (`Build.js` missing) serves none, and its reinstall is recommended.
+            let foreign = p.context_known && !p.context_matches;
             let place = match p.section {
                 Some(section) => format!("on the bar's {} section", section.as_str()),
+                None if foreign => "not on the bar".to_owned(),
                 None => "not on the bar (enable it: omaddons omarchy install)".to_owned(),
             };
             writeln!(
@@ -115,7 +120,9 @@ impl Outcome for StatusOutcome {
             if let Some(binary) = &p.binary {
                 writeln!(w, "it runs {}", binary.display())?;
             }
-            if p.outdated {
+            if p.outdated && foreign {
+                writeln!(w, "it is outdated: this omaddons renders another widget")?;
+            } else if p.outdated {
                 writeln!(
                     w,
                     "it is outdated: this omaddons renders another widget (reinstall: omaddons omarchy install)"
@@ -123,7 +130,7 @@ impl Outcome for StatusOutcome {
             } else {
                 writeln!(w, "it is current")?;
             }
-            if !p.context_matches {
+            if foreign {
                 writeln!(
                     w,
                     "note: it serves another omaddons state (other HOME or XDG directories); installing from here would point it at this one"

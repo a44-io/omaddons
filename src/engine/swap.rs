@@ -210,7 +210,18 @@ pub fn prestage_saved_variables(
         let Some(stamp) = settled_stamp(&source) else {
             continue;
         };
-        let clone = clone_sv(s, snapshot, &rel, &source)?;
+        let clone = match clone_sv(s, snapshot, &rel, &source) {
+            Ok(clone) => clone,
+            // Gone or changed since its stamp (a `/reload` writes the file anew): left
+            // for finish_saved_variables, under the lock, with the path free.
+            Err(_) if FileStamp::read(&source).ok().flatten() != Some(stamp) => {
+                if std::fs::symlink_metadata(snapshot.join("WTF").join(&rel)).is_ok() {
+                    set_aside(s, snapshot, &rel)?;
+                }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if FileStamp::read(&source).ok().flatten() == Some(stamp) {
             let entry = Prestaged {
                 source,
@@ -392,12 +403,16 @@ pub struct SvCandidates {
 pub fn sv_candidates(client: &ClientPaths, folders: &[FolderName]) -> SvCandidates {
     let mut out = SvCandidates::default();
     let mut seen = BTreeSet::new();
+    // Each file once, whatever the case: a folder named twice (a handover's two ops on
+    // it) would be copied twice onto one snapshot path.
+    let mut unique = BTreeSet::new();
     let wanted: Vec<String> = folders
         .iter()
         .flat_map(|folder| {
             [".lua", ".lua.bak"].map(|suffix| format!("{}{suffix}", folder.as_str()))
         })
         .filter(|want| !want.to_ascii_lowercase().starts_with("savedvariables.lua"))
+        .filter(|want| unique.insert(want.to_ascii_lowercase()))
         .collect();
     for (rel, sv) in sv_dirs(client) {
         let present: BTreeMap<String, String> = files(&sv)
@@ -1597,6 +1612,9 @@ mod tests {
         // In place: 2 directories x 2 folders x .lua/.lua.bak; 4 of them exist.
         let scene = Scene::new();
         assert_eq!(candidates(&scene), (8, 4, 0));
+        // A folder named twice (a handover's two ops), in any case, is one candidate.
+        let twice = [name("Foo"), name("Gone"), name("foo")].map(MutableFolderName::into_folder);
+        assert_eq!(sv_candidates(&scene.client, &twice).files.len(), 8);
 
         // WTF/ in a sync folder: nothing is a candidate, the existing files are counted.
         let scene = Scene::new();

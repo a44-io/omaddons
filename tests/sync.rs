@@ -341,6 +341,22 @@ fn pins_follow_the_file_and_never_update() {
     let foo = record_of(&home, "retail", "Foo").unwrap();
     assert_eq!((foo.version.as_str(), foo.pinned), ("v2", true));
 
+    // The same version without its `v`, as `install --version 2` reads it: nothing to
+    // do, and no request.
+    let requests = net_log(&home).len();
+    home.write_desired(
+        "[[family.mainline.addon]]\nref = \"gh:o/foo\"\nversion = \"2\"\npinned = true\n",
+    );
+    let r = home.run(&["sync", "-v"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        statuses(&envelope, "retail"),
+        [pair("gh:o/foo", "unchanged")],
+        "{}",
+        r.context()
+    );
+    assert_eq!(net_log(&home).len(), requests, "{}", r.context());
+
     // An unpinned entry against the pinned addon: a records-only unpin, no request.
     let (requests, tree) = (net_log(&home).len(), tree_hash(&addons));
     home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
@@ -520,6 +536,9 @@ fn unresolvable_and_duplicate_entries_fail_their_items() {
                 .starts_with("keep one of the entries on lines 2 and 4"),
             "{error}"
         );
+        // Its details, as the error table promises: where, and why.
+        assert_eq!(error["details"]["reason"], "duplicate", "{error}");
+        assert!(error["details"]["line"].is_u64(), "{error}");
     }
     assert!(record_of(&home, "retail", "Foo").is_none());
 }

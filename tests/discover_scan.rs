@@ -525,6 +525,16 @@ fn a_client_found_while_it_ran_is_remembered_after_it_exits() {
             .build();
     };
     build();
+    // A real Battle.net prefix names its installs in product.db too: the root is still
+    // the process's find, not product.db's, so it is remembered.
+    ProductDb::new()
+        .install(
+            "wow_classic_era",
+            "C:/Program Files (x86)/World of Warcraft",
+            "_classic_era_",
+            "1.15.9.64520",
+        )
+        .write(nested.path());
     let runs = |home: &mut Home| {
         let proc = FakeProc::new(home.env.root().join("proc-era")).process(
             4243,

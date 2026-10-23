@@ -60,7 +60,8 @@ pub fn frames<'a>(message: &'a str, stack: Option<&'a str>, legacy: bool) -> Vec
             add(rest);
         }
     }
-    if let Some(stack) = embedded.or(stack) {
+    // The entry's own stack; an embedded one only in place of a missing (or empty) one.
+    if let Some(stack) = stack.filter(|s| !s.trim().is_empty()).or(embedded) {
         add(stack);
     }
     out
@@ -103,6 +104,14 @@ pub fn frame(raw: &str, legacy: bool) -> Frame<'_> {
                 .split_once("\"]")
                 .and_then(|(path, after)| path_frame(raw, path, after))
                 .unwrap_or(of(FrameKind::Chunk));
+        }
+        // Era B names C code and tail calls as chunks of their own: `[string "=[C]"]`,
+        // `[string "=(tail call)"]`.
+        if rest.starts_with("[string \"=[C]\"]") {
+            return of(FrameKind::CCode);
+        }
+        if rest.starts_with("[string \"=(tail call)\"]") {
+            return of(FrameKind::TailCall);
         }
         if rest.starts_with("[string \"") || rest.starts_with("[*") {
             return of(FrameKind::Chunk);
@@ -269,7 +278,9 @@ mod tests {
             ("[tail call]: ?", TailCall),
             ("(tail call): ?", TailCall),
             ("[string \"return function() FakeChar end\"]:2: in x", Chunk),
-            ("[string \"=(tail call)\"]: ?", Chunk),
+            ("[string \"=(tail call)\"]: ?", TailCall),
+            ("[string \"=[C]\"]: in function 'xpcall'", CCode),
+            ("[string \"=[C]x\"]:1: in x", Chunk),
             ("[*:Foo.xml:3]: in x", Chunk),
             ("[<code>]:1:", Chunk),
             ("in function <Interface/AddOns/Foo/x.lua:3>", Other),

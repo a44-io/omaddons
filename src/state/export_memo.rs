@@ -43,7 +43,8 @@ impl ExportMemo {
             .map(String::as_str)
     }
 
-    /// Records `sha256` for `file` and writes the memo through `s`.
+    /// Records `sha256` for `file` and writes the memo through `s`, unless a newer
+    /// omaddons wrote the memo on disk: a newer file is never written (D8).
     pub fn record(
         mut self,
         s: &mut WriteSession<'_>,
@@ -51,6 +52,11 @@ impl ExportMemo {
         file: &Path,
         sha256: &str,
     ) -> Result<()> {
+        if let Ok(Some(loaded)) = store::load::<Self>(&paths.export_memo())
+            && loaded.status == VersionStatus::Newer
+        {
+            return Ok(());
+        }
         self.written
             .insert(file.display().to_string(), sha256.to_owned());
         let json = store::encode(&self)?;

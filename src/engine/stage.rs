@@ -129,6 +129,9 @@ pub fn stage(
                 create_dir(&mut s, &dir)?;
                 dirs.insert(dir);
             }
+            // Named with its folder, as the mismatch below is: in a multi-folder archive
+            // a folder-relative path alone does not say which one.
+            let shown = format!("{}/{}", folder.name.as_str(), file.rel_path);
             let (size, sha256) = match &file.source {
                 FileSource::ZipEntry(index) => {
                     let Some(zip) = archive.as_mut() else {
@@ -136,12 +139,12 @@ pub fn stage(
                     };
                     let entry = zip
                         .by_index(*index)
-                        .map_err(|e| changed(&file.rel_path, &e.to_string()))?;
+                        .map_err(|e| changed(&shown, &e.to_string()))?;
                     write(&mut s, &dest, entry)?
                 }
                 FileSource::Disk(path) => {
-                    let source = std::fs::File::open(path)
-                        .map_err(|e| changed(&file.rel_path, &e.to_string()))?;
+                    let source =
+                        std::fs::File::open(path).map_err(|e| changed(&shown, &e.to_string()))?;
                     write(&mut s, &dest, source)?
                 }
             };
@@ -397,7 +400,9 @@ fn changed(what: &str, why: &str) -> Error {
 }
 
 /// The stage dir and AddOns (or `Interface/` when AddOns does not exist yet) must share
-/// a filesystem, or the swap could not be a rename.
+/// a mount, or the swap could not be a rename: a device number alone cannot tell two
+/// bind mounts of one filesystem apart, so the mount id decides where the kernel gives
+/// one. Each is judged where it leads (AddOns may be a link).
 fn same_filesystem(stage_dir: &Path, client: &ClientPaths) -> Result<()> {
     let addons = client.addons();
     let other = if addons.exists() {
@@ -405,13 +410,23 @@ fn same_filesystem(stage_dir: &Path, client: &ClientPaths) -> Result<()> {
     } else {
         client.interface()
     };
-    let dev = |p: &Path| {
-        std::fs::metadata(p)
-            .map(|m| m.dev())
-            .map_err(|e| Error::io(p, &e, Suggestion::command(["omaddons", "status"])))
+    let mount = |p: &Path| -> Result<(u64, Option<u64>)> {
+        let io = |e: &std::io::Error| Error::io(p, e, Suggestion::command(["omaddons", "status"]));
+        let real = std::fs::canonicalize(p).map_err(|e| io(&e))?;
+        let dev = std::fs::metadata(&real).map_err(|e| io(&e))?.dev();
+        match crate::fsx::mount_id(&real) {
+            Ok(id) => Ok((dev, Some(id))),
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Ok((dev, None)),
+            Err(e) => Err(io(&e)),
+        }
     };
-    // ubs:ignore — comparing device numbers, not secrets
-    if dev(stage_dir)? != dev(&other)? {
+    let ((stage_dev, stage_mount), (other_dev, other_mount)) = (mount(stage_dir)?, mount(&other)?);
+    let apart = match (stage_mount, other_mount) {
+        (Some(a), Some(b)) => a != b,
+        _ => false,
+    };
+    // ubs:ignore — comparing device and mount numbers, not secrets
+    if stage_dev != other_dev || apart {
         return Err(Error::new(
             ErrorCode::Io,
             format!(

@@ -536,14 +536,20 @@ fn read_line(line: &str) -> Line {
 }
 
 /// `text` as one line: a settings change by its kind (its target may be `null`), else
-/// a transaction.
+/// a transaction. A settings line cut short fails as a transaction at its `null`
+/// target, before the cut, so its own end-of-input error is the one returned: a
+/// complete line never gives one.
 fn whole(text: &str) -> std::result::Result<Line, serde_json::Error> {
-    if let Ok(setting) = serde_json::from_str::<SettingEntry>(text)
-        && setting.kind.is_setting()
-    {
-        return Ok(Line::Setting(Box::new(setting)));
-    }
-    serde_json::from_str::<HistoryEntry>(text).map(|entry| Line::Entry(Box::new(entry)))
+    let setting = match serde_json::from_str::<SettingEntry>(text) {
+        Ok(setting) if setting.kind.is_setting() => return Ok(Line::Setting(Box::new(setting))),
+        other => other.err(),
+    };
+    serde_json::from_str::<HistoryEntry>(text)
+        .map(|entry| Line::Entry(Box::new(entry)))
+        .map_err(|err| match setting {
+            Some(cut) if cut.is_eof() => cut,
+            _ => err,
+        })
 }
 
 /// What one history line is, for the history projection.
@@ -1012,6 +1018,29 @@ mod tests {
             None,
             "a closed fragment loses nothing"
         );
+    }
+
+    /// A settings line has a `null` target, which fails as a transaction before the
+    /// cut: cut short anywhere after it, it is still a torn line, never an unreadable one.
+    #[test]
+    fn a_cut_short_settings_line_is_torn() {
+        let f = fixture();
+        let setting = SettingEntry::now(
+            TxKind::Config,
+            None,
+            Actor::Human,
+            None,
+            vec!["omaddons".into(), "config".into()],
+        );
+        let line = serde_json::to_string(&setting).unwrap();
+        let cut = line.find("\"target\":null").unwrap() + "\"target\":null,".len() + 4;
+        sys::append_durable(&f.paths.history_file(), &line.as_bytes()[..cut]).unwrap();
+        let one = entry(1, Actor::Agent, TxKind::Install, "2026-10-14T21:00:00Z");
+        append_all(&f, std::slice::from_ref(&one));
+
+        let read = read(&f.paths, &HistoryFilter::default()).unwrap();
+        assert_eq!(txs(&read), [one.tx.to_string()]);
+        assert_eq!((read.torn_lines, read.skipped_lines), (1, 0));
     }
 
     #[test]

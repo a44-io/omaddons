@@ -1129,13 +1129,29 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
     let mut generations = BTreeMap::new();
     let mut prepared = Vec::with_capacity(req.targets.len());
     for tr in &req.targets {
-        let (record, index) = target_state(ctx.paths, &tr.target)?;
+        // A target whose record or files index does not read fails its own changes, each
+        // under its own ref and addon; the other targets plan on.
+        let (record, index, unreadable) = match target_state(ctx.paths, &tr.target) {
+            Ok((record, index)) => (record, index, None),
+            Err(error) => (
+                TargetRecord::empty(TargetKey::from_ulid(ulid::Ulid::nil())),
+                None,
+                Some(error),
+            ),
+        };
         let generation_key = tr
             .target
             .key
             .map_or_else(|| tr.target.id.clone(), |k| k.to_string());
         generations.insert(generation_key, record.generation);
-        let mut wants: Vec<Want> = tr.changes.iter().map(|c| want(c, &record)).collect();
+        let mut wants: Vec<Want> = tr
+            .changes
+            .iter()
+            .map(|c| match &unreadable {
+                Some(error) => unreadable_want(c, error),
+                None => want(c, &record),
+            })
+            .collect();
         // A reinstall of the recorded release whose archive is still cached needs no
         // source.
         for w in &mut wants {
@@ -1380,6 +1396,27 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         }
         // Second pass, in argument order: judge each against the working view.
         for step in steps {
+            // What the step released in the first pass, withdrawn should it fail: a
+            // failed update or remove lets go of nothing, so a later claim of one of
+            // those folders is judged as a takeover, never a silent handover.
+            let releases: Vec<(FolderName, String)> = match &step {
+                Step::Build(_, _, build) => build
+                    .existing
+                    .iter()
+                    .flat_map(|e| build.released().into_iter().map(|f| (f, e.name.clone())))
+                    .collect(),
+                Step::Remove(addon) => record
+                    .addons
+                    .get(&TargetRecord::addon_key(addon))
+                    .map(|i| {
+                        i.folders
+                            .iter()
+                            .map(|f| (f.clone(), i.name.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                Step::Ready(..) | Step::Edit(..) => Vec::new(),
+            };
             let (r, addon, result) = match step {
                 Step::Ready(r, addon, result) => (r, addon, result),
                 Step::Build(r, addon, build) => {
@@ -1394,8 +1431,15 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                     (None, Some(addon), result)
                 }
             };
-            if let Ok(Planned::Change(p)) = &result {
-                claim_work(&mut planner.view.borrow_mut(), &p.work);
+            match &result {
+                Ok(Planned::Change(p)) => claim_work(&mut planner.view.borrow_mut(), &p.work),
+                Err(_) => {
+                    let mut view = planner.view.borrow_mut();
+                    for (folder, owner) in &releases {
+                        view.withdraw(folder, owner);
+                    }
+                }
+                Ok(_) => {}
             }
             match result.and_then(|planned| planned.merge_into(&mut tp, &target.id)) {
                 Ok(()) => {}
@@ -1601,9 +1645,32 @@ struct RoundDep {
     name: Option<String>,
     folder: FolderName,
     requesters: BTreeSet<String>,
+    /// Other folders that resolved to the same ref in this round, each with who requires
+    /// it: checked against what the release ships, each reported on its own.
+    others: Vec<(FolderName, BTreeSet<String>)>,
     /// From a catalog entry not declaring this client's family: a release that does not
     /// load here is `not_shipped`, no failure.
     undeclared: bool,
+}
+
+impl RoundDep {
+    /// Every requester, of every folder.
+    fn all_requesters(&self) -> BTreeSet<String> {
+        let mut all = self.requesters.clone();
+        for (_, requesters) in &self.others {
+            all.extend(requesters.iter().cloned());
+        }
+        all
+    }
+
+    /// Each folder with its requesters, the first one's first.
+    fn needs(&self) -> impl Iterator<Item = (&FolderName, &BTreeSet<String>)> {
+        std::iter::once((&self.folder, &self.requesters)).chain(
+            self.others
+                .iter()
+                .map(|(folder, requesters)| (folder, requesters)),
+        )
+    }
 }
 
 /// What a ref the rounds met came to, for a later requester resolving to it.
@@ -1661,9 +1728,11 @@ impl TargetPlanner<'_> {
             indexes,
             ctx: self.ctx,
         });
+        let released = |f: &FolderName| self.view.borrow().released_by(f).is_some();
         let mut rounds = Rounds {
             lookups: DepLookups {
                 managed: self.record,
+                released: &released,
                 catalog: self.ctx.catalog,
                 tukui: indexes.as_ref().map(|l| l as &dyn TukuiDirs),
                 wowi: indexes.as_ref().map(|l| l as &dyn WowiDirs),
@@ -1829,7 +1898,19 @@ impl TargetPlanner<'_> {
             } => {
                 let id = r#ref.identity();
                 if let Some(wanted) = rounds.wanted.get_mut(&id) {
-                    wanted.requesters.insert(requester.to_owned());
+                    // The same ref for another folder: that folder is checked and reported
+                    // on its own once the ref is planned.
+                    if wanted.folder == dep {
+                        wanted.requesters.insert(requester.to_owned());
+                    } else if let Some((_, requesters)) =
+                        wanted.others.iter_mut().find(|(folder, _)| *folder == dep)
+                    {
+                        requesters.insert(requester.to_owned());
+                    } else {
+                        wanted
+                            .others
+                            .push((dep.clone(), BTreeSet::from([requester.to_owned()])));
+                    }
                     return;
                 }
                 match rounds.settled.get(&id) {
@@ -1852,6 +1933,7 @@ impl TargetPlanner<'_> {
                             name,
                             folder: dep.clone(),
                             requesters: BTreeSet::from([requester.to_owned()]),
+                            others: Vec::new(),
                             undeclared,
                         };
                         rounds.wanted.insert(id, wanted);
@@ -1908,11 +1990,30 @@ impl TargetPlanner<'_> {
                 Ok(Ok(planned)) => {
                     claim_work(&mut self.view.borrow_mut(), &planned.work);
                     rounds.installed += 1;
-                    for requester in &dep.requesters {
-                        let report = tp.dependencies.entry(requester.clone()).or_default();
-                        report
-                            .installs
-                            .push((dep.folder.clone(), planned.work.addon.clone()));
+                    let ships = |folder: &FolderName| {
+                        planned
+                            .work
+                            .inspected()
+                            .is_some_and(|i| i.folders.iter().any(|f| f.name == *folder))
+                    };
+                    for (folder, requesters) in dep.needs() {
+                        for requester in requesters {
+                            if ships(folder) {
+                                let report = tp.dependencies.entry(requester.clone()).or_default();
+                                report
+                                    .installs
+                                    .push((folder.clone(), planned.work.addon.clone()));
+                            } else {
+                                // The release the first folder chose does not ship this
+                                // one here.
+                                let u = Unresolved {
+                                    folder: folder.clone(),
+                                    reason: UnresolvedReason::NotShipped,
+                                    candidates: vec![dep.r#ref.clone()],
+                                };
+                                self.unresolved(tp, requester, u, None);
+                            }
+                        }
                     }
                     rounds.settled.insert(id, Settled::Planned);
                     if let Err(error) = Planned::Change(planned).merge_into(tp, &self.target.id) {
@@ -1941,7 +2042,7 @@ impl TargetPlanner<'_> {
         set: Option<Result<ReleaseSet>>,
     ) -> Result<std::result::Result<Box<PlannedAddon>, UnresolvedReason>> {
         let intent = InstallIntent {
-            required_by_add: dep.requesters.clone(),
+            required_by_add: dep.all_requesters(),
             ..InstallIntent::requested(
                 self.ctx.default_channel,
                 false,
@@ -1985,13 +2086,26 @@ impl TargetPlanner<'_> {
         {
             return Ok(Err(UnresolvedReason::NotShipped));
         }
-        if let Some(existing) = &build.existing {
+        let releases: Vec<(FolderName, String)> = build
+            .existing
+            .iter()
+            .flat_map(|e| build.released().into_iter().map(|f| (f, e.name.clone())))
+            .collect();
+        {
             let mut view = self.view.borrow_mut();
-            for folder in build.released() {
-                view.release(&folder, &existing.name);
+            for (folder, owner) in &releases {
+                view.release(folder, owner);
             }
         }
-        self.build(*build).map(Box::new).map(Ok)
+        let built = self.build(*build);
+        // Failed: it lets go of nothing after all.
+        if built.is_err() {
+            let mut view = self.view.borrow_mut();
+            for (folder, owner) in &releases {
+                view.withdraw(folder, owner);
+            }
+        }
+        built.map(Box::new).map(Ok)
     }
 
     /// `dep` is not installed, for `reason`: each of its requesters is told.
@@ -2002,13 +2116,15 @@ impl TargetPlanner<'_> {
         reason: UnresolvedReason,
         detail: Option<&str>,
     ) {
-        for requester in &dep.requesters {
-            let unresolved = Unresolved {
-                folder: dep.folder.clone(),
-                reason,
-                candidates: vec![dep.r#ref.clone()],
-            };
-            self.unresolved(tp, requester, unresolved, detail);
+        for (folder, requesters) in dep.needs() {
+            for requester in requesters {
+                let unresolved = Unresolved {
+                    folder: folder.clone(),
+                    reason,
+                    candidates: vec![dep.r#ref.clone()],
+                };
+                self.unresolved(tp, requester, unresolved, detail);
+            }
         }
     }
 
@@ -2089,8 +2205,10 @@ impl TargetPlanner<'_> {
                 indexes,
                 ctx: self.ctx,
             });
+            let released = |f: &FolderName| self.view.borrow().released_by(f).is_some();
             let lookups = DepLookups {
                 managed: self.record,
+                released: &released,
                 catalog: self.ctx.catalog,
                 tukui: indexes.as_ref().map(|l| l as &dyn TukuiDirs),
                 wowi: indexes.as_ref().map(|l| l as &dyn WowiDirs),
@@ -2236,7 +2354,7 @@ impl TargetPlanner<'_> {
         dep: &RoundDep,
         error: Error,
     ) {
-        let requesters: Vec<&String> = dep.requesters.iter().collect();
+        let requesters: Vec<String> = dep.all_requesters().into_iter().collect();
         let mut details = error.details.clone();
         match details.as_object_mut() {
             Some(map) => {
@@ -2245,12 +2363,14 @@ impl TargetPlanner<'_> {
             None => details = json!({ "required_by": requesters }),
         }
         let error = error.details(details);
-        for requester in &dep.requesters {
-            tp.dependencies
-                .entry(requester.clone())
-                .or_default()
-                .failed
-                .push((dep.folder.clone(), dep.r#ref.clone()));
+        for (folder, requesters) in dep.needs() {
+            for requester in requesters {
+                tp.dependencies
+                    .entry(requester.clone())
+                    .or_default()
+                    .failed
+                    .push((folder.clone(), dep.r#ref.clone()));
+            }
         }
         failures.push(failure(Some(dep.r#ref.clone()), None, self.target, error));
     }
@@ -2648,6 +2768,22 @@ pub fn rejudge(
 }
 
 /// A requested change with its ref resolved against the target's record.
+/// `change` failed with `error`, its target's state unreadable: under its own ref and
+/// addon, as an item failure.
+fn unreadable_want(change: &RequestedChange, error: &Error) -> Want {
+    let (r#ref, addon) = match change {
+        RequestedChange::Install { r#ref, name, .. } => (Some(r#ref.clone()), name.clone()),
+        RequestedChange::Remove { addon }
+        | RequestedChange::Update { addon, .. }
+        | RequestedChange::Edit { addon, .. } => (None, Some(addon.clone())),
+    };
+    Want::Failed {
+        r#ref,
+        addon,
+        error: error.clone(),
+    }
+}
+
 fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
     match change {
         RequestedChange::Install {
@@ -3344,7 +3480,10 @@ impl TargetPlanner<'_> {
         };
         if let (Some(existing), Some(first)) = (existing, candidates.first())
             && !intent.reinstall
-            && existing.release_id.as_deref() == Some(first.release_id.as_str())
+            && existing
+                .release_id
+                .as_deref()
+                .is_some_and(|id| crate::resolve::updates::same_release(id, &first.release_id))
             // A re-tagged WowAce tag keeps its release id at another revision.
             && existing.revision == first.revision
             && self.all_present(existing)
@@ -3745,9 +3884,12 @@ impl TargetPlanner<'_> {
             })
             .flatten()
             .filter(|a| a.r#ref != template.r#ref);
+        // `--force` is for what the user named: a dependency the resolver chose is judged
+        // without it, so its archive never replaces a folder it would otherwise refuse.
+        let force = self.req.force && !intent.from_resolver();
         let existing = match namesake {
             Some(other) if is_local(&other.r#ref) && is_local(&template.r#ref) => Some(other),
-            Some(other) if !self.req.force => {
+            Some(other) if !force => {
                 return Err(takeover_refused(
                     other,
                     &template.r#ref,
@@ -3798,7 +3940,7 @@ impl TargetPlanner<'_> {
                 .unwrap_or_default()
         };
         let new_ref = existing.is_none().then_some(&template.r#ref);
-        let judged = self.judge(&template.name, &changes, toc_after, new_ref)?;
+        let judged = self.judge(&template.name, &changes, toc_after, new_ref, force)?;
         warnings.extend(judged.warnings);
         let mut summary = FolderSummary {
             skipped: skipped.clone(),
@@ -3877,7 +4019,13 @@ impl TargetPlanner<'_> {
             .cloned()
             .map(FolderChange::Remove)
             .collect();
-        let judged = self.judge(&installed.name, &changes, |_| BTreeSet::new(), None)?;
+        let judged = self.judge(
+            &installed.name,
+            &changes,
+            |_| BTreeSet::new(),
+            None,
+            self.req.force,
+        )?;
         let mut summary = FolderSummary::default();
         let ops = self.ops(&installed.name, &judged.allowed, &mut summary);
         Ok(PlannedAddon {
@@ -3917,13 +4065,15 @@ impl TargetPlanner<'_> {
 
     /// Ownership, then the running policy.
     /// `new_ref` is the ref of an addon with no record on the target: an unmanaged folder
-    /// it ships is adopted under it rather than overwritten.
+    /// it ships is adopted under it rather than overwritten. `force` is `--force` where it
+    /// applies (never to a dependency the resolver chose).
     fn judge(
         &self,
         addon: &str,
         changes: &[FolderChange],
         toc_after: impl Fn(&FolderName) -> BTreeSet<String>,
         new_ref: Option<&Ref>,
+        force: bool,
     ) -> Result<Judged> {
         let ctx = self.ctx;
         let adopt = new_ref.map(|r| ownership::AdoptFix {
@@ -3934,7 +4084,7 @@ impl TargetPlanner<'_> {
             changes,
             self.live,
             addon,
-            self.req.force,
+            force,
             ctx.argv,
             &self.view.borrow(),
             adopt,

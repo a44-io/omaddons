@@ -174,8 +174,11 @@ fn same_version(a: &str, b: &str) -> bool {
 /// The one release `details` describes, or `not_found` when `w` pins another version:
 /// WoWInterface serves no old files.
 fn release_set(w: &Wanted, details: &WowiDetails) -> Result<ReleaseSet> {
+    // Against the version the release records (`unknown` for a file published without
+    // one), as a reinstall or a lock passes it back.
+    let current = release(details);
     if let Some(pin) = &w.version
-        && !same_version(pin, &details.version)
+        && !same_version(pin, &current.version)
     {
         return Err(Error::new(
             ErrorCode::NotFound,
@@ -197,7 +200,7 @@ fn release_set(w: &Wanted, details: &WowiDetails) -> Result<ReleaseSet> {
     }
     Ok(ReleaseSet {
         r#ref: w.r#ref.clone(),
-        releases: vec![release(details)],
+        releases: vec![current],
     })
 }
 
@@ -567,5 +570,22 @@ mod tests {
                 )
             );
         }
+    }
+
+    /// A file published without a version is recorded as `unknown`: a reinstall or a
+    /// lock passing that back pins the current file, as recorded.
+    #[test]
+    fn an_unversioned_file_pins_as_recorded() {
+        let details = WowiDetails {
+            uid: 7,
+            download: "https://cdn.wowinterface.com/downloads/getfile.php?id=7".into(),
+            ..WowiDetails::default()
+        };
+        let wanted = Wanted {
+            version: Some("unknown".into()),
+            ..w("wowi:7")
+        };
+        let set = release_set(&wanted, &details).unwrap();
+        assert_eq!(set.releases[0].version, "unknown");
     }
 }

@@ -446,8 +446,10 @@ pub fn percent_unescape(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while let Some(&b) = bytes.get(i) {
+        // Two hex digits exactly: `from_str_radix` alone also takes a sign (`%+9`).
         let hex = bytes
             .get(i + 1..i + 3)
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
             .and_then(|h| std::str::from_utf8(h).ok())
             .and_then(|h| u8::from_str_radix(h, 16).ok());
         match (b, hex) {
@@ -877,6 +879,11 @@ mod tests {
     #[test]
     fn percent_coding() {
         assert_eq!(percent_unescape("a%2Fb%2bc+d%zz%"), "a/b+c+d%zz%");
+        assert_eq!(
+            percent_unescape("a%+9b%-1"),
+            "a%+9b%-1",
+            "a sign is no digit"
+        );
         assert_eq!(encode_segment("A b+c/é"), "A%20b%2Bc%2F%C3%A9");
         assert_eq!(encode_tag("bundle/v1+2"), "bundle/v1%2B2");
         assert!(!valid_tag("a//b") && !valid_tag("..") && !valid_tag("") && valid_tag("bundle/v1"));

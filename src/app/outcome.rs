@@ -181,10 +181,13 @@ pub struct ItemError {
 }
 
 /// The details an item error with `code` carries: a within-transaction conflict's, a
-/// rate limit's `reset_at`, a dependency's `required_by`, a running client's `reason`
+/// `desired_state_invalid`'s (`{path, line, key, reason}`: a `sync` entry listed twice),
+/// a rate limit's `reset_at`, a dependency's `required_by`, a running client's `reason`
 /// and `running`; else none.
 fn item_details(code: ErrorCode, details: &serde_json::Value) -> Option<serde_json::Value> {
-    if details["within_transaction"] == true {
+    if details["within_transaction"] == true
+        || (code == ErrorCode::DesiredStateInvalid && details.is_object())
+    {
         return Some(details.clone());
     }
     let running: &[&str] = if matches!(code, ErrorCode::GameRunning) {

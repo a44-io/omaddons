@@ -48,11 +48,20 @@ pub struct StrictMessage {
     pub location: Option<String>,
 }
 
-/// A message's first line as strict output may show it.
+/// A message's first line as strict output may show it, reading every location form any
+/// client writes: an error's identity, whatever database it is in.
 pub fn strict_message(raw: &str) -> StrictMessage {
+    strict_message_for(raw, true)
+}
+
+/// [`strict_message`] for a database of one generation (`legacy`: r152's). A modern
+/// client's locations are its code's (`Interface/…`, or cut short behind `...`): a
+/// "location" an addon's own text spells (`FakeChar (FakeRealm):3:`, `[FakeChar]:3:`)
+/// is never shown.
+pub fn strict_message_for(raw: &str, legacy: bool) -> StrictMessage {
     let first = first_line(raw);
     let (location, body) = match location(first) {
-        Some(at) => (strict_location(at), first[at.len()..].trim()),
+        Some(at) => (strict_location(at, legacy), first[at.len()..].trim()),
         None => (None, first.trim()),
     };
     let chars = body.chars().count();
@@ -80,16 +89,28 @@ fn first_line(raw: &str) -> &str {
 }
 
 /// A location as strict output shows it.
-fn strict_location(at: &str) -> Option<String> {
-    let f = frame(at, true);
+fn strict_location(at: &str, legacy: bool) -> Option<String> {
+    let f = frame(at, legacy);
     match (f.kind, f.path, f.line) {
-        (FrameKind::Path, Some(path), Some(line)) => Some(format!("{}:{line}", display_path(path))),
+        (FrameKind::Path, Some(path), Some(line)) if legacy || code_path(path) => {
+            Some(format!("{}:{line}", display_path(path)))
+        }
         (FrameKind::Chunk, ..) => Some(match trailing_line(at) {
             Some(line) => format!("[custom code]:{line}"),
             None => "[custom code]".to_owned(),
         }),
         _ => None,
     }
+}
+
+/// Whether a modern client's location `path` names its code: under `Interface/` (an
+/// addon's or the client's own), or a path cut short behind `...`.
+fn code_path(path: &str) -> bool {
+    let rest = path.trim_start_matches('.');
+    let cut = rest.len() < path.len();
+    rest.get(..10).is_some_and(|head| {
+        head.eq_ignore_ascii_case("Interface/") || head.eq_ignore_ascii_case("Interface\\")
+    }) || (cut && rest.contains(['/', '\\']))
 }
 
 /// The line of a location ending `:<line>:`.
@@ -552,14 +573,19 @@ pub struct Raw {
 /// `entry`'s text for `--raw-details`: bounded and marked where cut (`…`), UI codes and
 /// control characters gone, player GUIDs and links as `<player>`, and this client's
 /// account, realm and character names (`names`) as `<account>`, `<realm>` and
-/// `<character>`. Best effort: a name it never learned stays.
-pub fn raw_details(entry: &BugEntry, names: &WtfPathRedactor) -> Raw {
+/// `<character>`. Best effort: a name it never learned stays. A `legacy` (r152) entry
+/// keeps its frames in the message, after the first line, as strict output reads them.
+pub fn raw_details(entry: &BugEntry, legacy: bool, names: &WtfPathRedactor) -> Raw {
     let safe = |text: &str, tabs: bool| names.text(&clean(&players(text), tabs));
     let message = cut(
         &safe(first_line(&entry.message), false),
         ERRORS_MESSAGE_MAX_CHARS,
     );
-    let stack_text = entry.stack.as_deref().unwrap_or_default();
+    let stack_text = match &entry.stack {
+        Some(stack) => stack.as_str(),
+        None if legacy => entry.message.split_once('\n').map_or("", |(_, rest)| rest),
+        None => "",
+    };
     let stack: Vec<String> = stack_text
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -793,6 +819,46 @@ mod tests {
         assert_eq!(strict_message("no location here").location, None);
     }
 
+    /// On a modern client, a "location" spelled by an addon's own text is never shown:
+    /// only paths under `Interface/`, or cut short behind `...`. r152's library form
+    /// stays a location on its own generation.
+    #[test]
+    fn a_modern_location_is_its_codes_never_an_addons_text() {
+        let shown = |raw: &str, legacy| strict_message_for(raw, legacy).location;
+        for raw in [
+            "FakeChar (FakeRealm):3: wiped",
+            "[FakeChar]:3: wiped",
+            "Couldn't load FakeChar from Foo.lua:12: x",
+            "...FakeChar.lua:3: x",
+        ] {
+            assert_eq!(shown(raw, false), None, "{raw}");
+        }
+        assert_eq!(
+            shown("Interface\\AddOns\\Foo\\x.lua:3: stack overflow", false).as_deref(),
+            Some("Foo/x.lua:3")
+        );
+        assert_eq!(
+            shown("Interface/FrameXML/ChatFrame.lua:9: stack overflow", false).as_deref(),
+            Some("Interface/FrameXML/ChatFrame.lua:9")
+        );
+        assert_eq!(
+            shown("...ace/AddOns/Foo/x.lua:3: stack overflow", false).as_deref(),
+            Some("Foo/x.lua:3")
+        );
+        assert_eq!(
+            shown(
+                "[string \"@Interface/AddOns/Foo/x.lua\"]:3: stack overflow",
+                false
+            )
+            .as_deref(),
+            Some("Foo/x.lua:3")
+        );
+        assert_eq!(
+            shown("CallbackHandler-1.0-6 (Details):146: stack overflow", true).as_deref(),
+            Some("CallbackHandler-1.0-6 (Details):146")
+        );
+    }
+
     #[test]
     fn strict_frames_fold_hide_and_stop() {
         let stack = [
@@ -861,6 +927,7 @@ mod tests {
                 ),
                 Some("name = \"FakeChar\"\n\tdepth = 2\x03"),
             ),
+            false,
             &redactor(),
         );
         assert_eq!(
@@ -882,12 +949,37 @@ mod tests {
         assert!(!format!("{raw:?}").contains("FakeChar"));
     }
 
+    /// r152 keeps its frames in the message after the first line, and has no stack of
+    /// its own: the raw stack is those frames, as strict output's is.
+    #[test]
+    fn a_legacy_entrys_raw_stack_is_its_messages_frames() {
+        let message = "Foo-1.2\\core.lua:12: attempt to index\nFoo-1.2\\core.lua:12: in function `Refresh'\n[C]: in function `pcall'";
+        let raw = raw_details(&entry(message, None, None), true, &redactor());
+        assert_eq!(raw.message, "Foo-1.2\\core.lua:12: attempt to index");
+        assert_eq!(
+            raw.stack,
+            [
+                "Foo-1.2\\core.lua:12: in function `Refresh'",
+                "[C]: in function `pcall'"
+            ]
+        );
+        assert!(
+            raw_details(&entry(message, None, None), false, &redactor())
+                .stack
+                .is_empty()
+        );
+    }
+
     #[test]
     fn raw_details_are_bounded_and_say_where_they_were_cut() {
         let long = "x".repeat(ERRORS_MESSAGE_MAX_CHARS + 10);
         let stack: String = (0..50).map(|n| format!("[C]: frame {n}\n")).collect();
         let locals = "y".repeat(ERRORS_LOCALS_MAX_CHARS + 1);
-        let raw = raw_details(&entry(&long, Some(&stack), Some(&locals)), &redactor());
+        let raw = raw_details(
+            &entry(&long, Some(&stack), Some(&locals)),
+            false,
+            &redactor(),
+        );
         assert_eq!(raw.message.chars().count(), ERRORS_MESSAGE_MAX_CHARS + 1);
         assert!(raw.message.ends_with('…'));
         assert_eq!(raw.stack.len(), ERRORS_STACK_LINES_VERBOSE);
@@ -955,7 +1047,7 @@ mod tests {
             for line in strict_frames(stack.as_deref().unwrap_or_default(), verbose) {
                 prop_assert!(!line.chars().any(char::is_control), "{line:?}");
             }
-            let raw = raw_details(&entry(&message, stack.as_deref(), locals.as_deref()), &redactor());
+            let raw = raw_details(&entry(&message, stack.as_deref(), locals.as_deref()), verbose, &redactor());
             prop_assert!(!raw.message.chars().any(char::is_control));
             for line in raw.stack.iter().chain(&raw.chunks) {
                 prop_assert!(!line.chars().any(char::is_control), "{line:?}");

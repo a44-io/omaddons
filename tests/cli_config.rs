@@ -120,6 +120,17 @@ fn set_changes_only_its_value() {
     assert_eq!(code, 0, "{envelope}");
     let (_, listed) = run(&env, &["config"]);
     assert_eq!(setting(&listed, "sources.github.enabled")["value"], false);
+    // A source left alone is on: its default says so.
+    let (_, got) = run(&env, &["config", "get", "sources.wowi.enabled"]);
+    assert_eq!(
+        (
+            &got["data"]["value"],
+            &got["data"]["source"],
+            &got["data"]["default"]
+        ),
+        (&json!(true), &json!("default"), &json!(true)),
+        "{got}"
+    );
 }
 
 #[test]

@@ -90,6 +90,13 @@ fn adding_a_custom_root_by_name() {
     let env = TestEnv::new();
     let pserver = machine(&env);
     let path = pserver.display().to_string();
+    // The preview names it as the run will.
+    let (code, preview) = run(
+        &env,
+        &["targets", "add", &path, "--name", "pserver", "--dry-run"],
+    );
+    assert_eq!(code, 0, "{preview}");
+    assert_eq!(preview["data"]["targets"][0]["id"], "pserver", "{preview}");
     let (code, envelope) = run(&env, &["targets", "add", &path, "--name", "pserver"]);
     assert_eq!(
         (code, &envelope["command"]),
@@ -118,6 +125,44 @@ fn adding_a_custom_root_by_name() {
         "manual",
         "manual roots feed discovery"
     );
+
+    // Added again under another name: renamed, the preview saying so first, the key kept.
+    let (code, preview) = run(
+        &env,
+        &["targets", "add", &path, "--name", "warmane", "--dry-run"],
+    );
+    assert_eq!(code, 0, "{preview}");
+    assert_eq!(
+        (
+            &preview["data"]["targets"][0]["id"],
+            &preview["data"]["changed"]
+        ),
+        (&json!("warmane"), &json!(true)),
+        "{preview}"
+    );
+    let (code, renamed) = run(&env, &["targets", "add", &path, "--name", "warmane"]);
+    assert_eq!(code, 0, "{renamed}");
+    let one = &renamed["data"]["targets"][0];
+    assert_eq!(
+        (&one["id"], &one["key"], &renamed["data"]["changed"]),
+        (&json!("warmane"), &json!(key), &json!(true)),
+        "{renamed}"
+    );
+}
+
+/// A path through `..` is the directory it leads to, and is recorded as it.
+#[test]
+fn adding_through_dot_dot_records_the_directory_itself() {
+    let env = TestEnv::new();
+    let pserver = machine(&env);
+    let path = pserver.join("Interface/..").display().to_string();
+    let (code, envelope) = run(&env, &["targets", "add", &path]);
+    assert_eq!(code, 0, "{envelope}");
+    let dir = envelope["data"]["targets"][0]["client_dir"]
+        .as_str()
+        .unwrap();
+    let real = fs::canonicalize(&pserver).unwrap();
+    assert_eq!(dir, real.display().to_string(), "{envelope}");
 }
 
 #[test]
@@ -129,6 +174,12 @@ fn adding_a_battlenet_root_registers_every_flavor() {
         .build();
     let path = root.display().to_string();
     let (code, envelope) = run(&env, &["targets", "add", &path, "--name", "main"]);
+    assert_eq!((code, &envelope["error"]["code"]), (2, &json!("usage")));
+    // So is its preview.
+    let (code, envelope) = run(
+        &env,
+        &["targets", "add", &path, "--name", "main", "--dry-run"],
+    );
     assert_eq!((code, &envelope["error"]["code"]), (2, &json!("usage")));
     let (code, envelope) = run(&env, &["targets", "add", &path]);
     assert_eq!(code, 0);
@@ -269,6 +320,13 @@ fn choosing_the_default() {
     fs::write(&config, "default_target = \"retail\"\n").unwrap();
     let (_, envelope) = run(&env, &["targets", "default", "era"]);
     assert_eq!(envelope["data"]["overridden_by_config"], true);
+    // A selector that names the same client is no override: `sod` is played in era.
+    fs::write(&config, "default_target = \"sod\"\n").unwrap();
+    let (_, envelope) = run(&env, &["targets", "default", "era"]);
+    assert_eq!(
+        envelope["data"]["overridden_by_config"], false,
+        "{envelope}"
+    );
 }
 
 #[test]

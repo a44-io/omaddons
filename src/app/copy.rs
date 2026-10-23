@@ -21,7 +21,7 @@ use super::resolve_args::catalog_name;
 use super::world::{World, names_addon};
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
-use crate::discover::registry::resolve_one;
+use crate::discover::registry::resolve_one_in;
 use crate::engine::plan::{PinIntent, RequestedChange};
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning};
@@ -371,7 +371,7 @@ fn side<'w>(
     flag: &str,
     selector: &str,
 ) -> Result<&'w DiscoveredTarget> {
-    resolve_one(selector, &world.resolved.targets, &world.table, &ctx.argv).map_err(|error| {
+    resolve_one_in(selector, &world.resolved, &world.table, &ctx.argv).map_err(|error| {
         if !matches!(error.code, ErrorCode::TargetAmbiguous) {
             return error;
         }

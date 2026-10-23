@@ -184,6 +184,27 @@ fn a_flipped_byte_in_a_verified_backup_is_damage_and_restore_refuses_it() {
     );
 }
 
+/// A backup whose `WTF/` is gone is damaged, every file missing: recorded as such and
+/// never restorable, not an I/O error to retry.
+#[test]
+fn a_backup_without_its_wtf_is_damage() {
+    let home = Home::new(&["wow"]);
+    let id = create(&home, true);
+    fs::remove_dir_all(backup_dir(&home, &id).join("WTF")).unwrap();
+    let envelope = verify(&home, &[&id], &[]).expect(0);
+    let b = item(&envelope);
+    assert_eq!(
+        (&envelope["partial"], &b["integrity"]),
+        (&json!(true), &json!("damaged")),
+        "{envelope:#}"
+    );
+    let entry = listed(&home, &id);
+    assert_eq!(
+        (&entry["integrity"], &entry["restorable"]),
+        (&json!("damaged"), &json!(false))
+    );
+}
+
 #[test]
 fn a_backup_without_hashes_gets_a_later_baseline_that_then_catches_a_change() {
     let home = Home::new(&["wow"]);

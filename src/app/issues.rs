@@ -89,10 +89,24 @@ pub struct Issue {
     pub remediation: Remediation,
 }
 
-/// The issues of no client: the machine's own, today the bar widget's (E4). `status`
-/// lists them in `data.issues`, and `summary.issues` counts each once.
-pub fn machine_issues(widget: Option<&WidgetInfo>) -> Vec<Issue> {
+/// The issues of no client: the machine's own, the bar widget's (E4) and a pending
+/// journal that names no client. `status` lists them in `data.issues`, and
+/// `summary.issues` counts each once.
+pub fn machine_issues(widget: Option<&WidgetInfo>, unattributed_journal: bool) -> Vec<Issue> {
     let mut out = Vec::new();
+    // A pending journal that names no client (it cannot be read): no target can carry it,
+    // and nothing recovers it by itself.
+    if unattributed_journal {
+        out.push(Issue {
+            id: ids::JOURNAL_PENDING,
+            severity: Severity::P0,
+            title: "An interrupted change needs manual repair".to_owned(),
+            addon: None,
+            remediation: Remediation::prose(
+                "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+            ),
+        });
+    }
     if widget.is_some_and(WidgetInfo::needs_reinstall) {
         out.push(Issue {
             id: ids::WIDGET_VERSION_DRIFT,

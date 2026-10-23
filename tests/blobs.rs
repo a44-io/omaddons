@@ -65,7 +65,7 @@ fn the_orphan_sweep_spares_live_transactions() {
     }
     let _held = InflightLock::create(&paths, &live).unwrap();
     let report = BlobCache::new(&paths)
-        .evict(&scopes, &BTreeSet::new(), u64::MAX)
+        .evict(&scopes, &|| Ok(BTreeSet::new()), u64::MAX)
         .unwrap();
     assert_eq!(report.orphans_removed, 1);
     assert!(

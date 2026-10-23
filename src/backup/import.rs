@@ -633,6 +633,20 @@ fn stage(
         )
         .details(serde_json::json!({ "reason": "changed", "path": shown(path, &names) }))
     };
+    // An fsx error names the absolute path, account, realm and character included: a
+    // write below `WTF/` fails naming its path only through the redactor.
+    let failed = |path: &str, e: fsx::FsxError| {
+        let cause = match &e {
+            fsx::FsxError::Io { source, .. } => super::tree::io_cause(source),
+            _ => "the filesystem writer refused the path".to_owned(),
+        };
+        Error::new(
+            ErrorCode::Io,
+            format!("staging the import failed: {cause}"),
+            Suggestion::text("free some space or check permissions, then import again"),
+        )
+        .details(serde_json::json!({ "path": shown(path, &names) }))
+    };
     let (reader, len) = open(file)?;
     let mut at = 0usize;
     let mut links: Vec<&Payload> = Vec::new();
@@ -652,7 +666,8 @@ fn stage(
         let target = wtf.join(&path);
         match item.kind {
             EntryKind::Dir => {
-                mutate_with(&mut s, &target, Op::CreateDir, deferred())?;
+                mutate_with(&mut s, &target, Op::CreateDir, deferred())
+                    .map_err(|e| failed(&path, e))?;
             }
             EntryKind::Symlink => links.push(expected),
             EntryKind::File => {
@@ -665,7 +680,8 @@ fn stage(
                         mode: Some(expected.mode),
                     },
                     deferred(),
-                )?;
+                )
+                .map_err(|e| failed(&path, e))?;
                 let (read, sha256) = hashed.finish();
                 if read != item.size || Some(&sha256) != expected.sha256.as_ref() {
                     return Err(changed(&path));
@@ -689,7 +705,8 @@ fn stage(
             &mut s,
             &wtf.join(&link.path),
             Op::SymlinkAtomic { target: &target },
-        )?;
+        )
+        .map_err(|e| failed(&link.path, e))?;
     }
     // Directory modes last, deepest first: stored owner-writable, as every backup's.
     for e in scanned
@@ -704,7 +721,8 @@ fn stage(
             Op::Chmod {
                 mode: (e.mode & 0o777) | 0o700,
             },
-        )?;
+        )
+        .map_err(|err| failed(&e.path, err))?;
     }
     fsx::sync_filesystem(&dir)?;
     Ok(dir)

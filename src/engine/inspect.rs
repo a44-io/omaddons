@@ -503,9 +503,13 @@ pub fn inspect_zip<R: Read + Seek>(
 /// refused, never followed.
 pub fn inspect_dir(dir: &Path, limits: &ArchiveLimits, table: &RulesTable) -> Result<Inspected> {
     let io_fix = || Suggestion::text("check the directory, then retry");
+    let given = dir;
     let dir = std::fs::canonicalize(dir).map_err(|e| Error::io(dir, &e, io_fix()))?;
-    let top = dir
+    // Named as given: a link to a checkout (`MyAddon` → `my-addon-repo`) is the addon
+    // its name says, not its target's. A path ending in `..` has no name of its own.
+    let top = given
         .file_name()
+        .or_else(|| dir.file_name())
         .and_then(|n| n.to_str())
         .ok_or_else(|| {
             malformed(
@@ -632,26 +636,65 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The entry count the end-of-central-directory record declares, read from the tail;
-/// `None` when there is no record or the count is in a zip64 record. Leaves the reader
-/// at the start.
+/// The entry count the end-of-central-directory record declares, found as the zip
+/// crate finds it; `None` when there is no record, or a zip64 one cannot be read. Leaves
+/// the reader at the start.
 fn central_directory_count<R: Read + Seek>(reader: &mut R) -> Option<u64> {
-    const EOCD_LEN: u64 = 22;
-    let len = reader.seek(SeekFrom::End(0)).ok()?;
-    let tail_len = len.min(EOCD_LEN + u64::from(u16::MAX));
-    reader.seek(SeekFrom::Start(len - tail_len)).ok()?;
-    let mut tail = vec![0u8; usize::try_from(tail_len).ok()?];
-    let read = reader.read_exact(&mut tail);
+    let count = declared_count(reader);
     reader.seek(SeekFrom::Start(0)).ok()?;
-    read.ok()?;
-    let u16_at = |at: usize| Some(u16::from_le_bytes([*tail.get(at)?, *tail.get(at + 1)?]));
-    // The record is the signature whose comment length runs exactly to the end.
-    let at = (0..tail.len().saturating_sub(21)).rev().find(|&at| {
-        tail.get(at..at + 4) == Some(b"PK\x05\x06")
-            && u16_at(at + 20).is_some_and(|comment| at + 22 + usize::from(comment) == tail.len())
-    })?;
-    let count = u16_at(at + 10)?;
-    (count != u16::MAX).then_some(u64::from(count))
+    count
+}
+
+/// [`central_directory_count`], reader anywhere. The record is the signature nearest
+/// the end whose comment fits before the end (bytes may trail it, as the zip crate
+/// allows) and whose central directory starts before it (a decoy in a comment rarely
+/// does). Both of its counts are read, as the zip crate trusts the one for this disk;
+/// either at its maximum defers to the zip64 record its locator points at.
+fn declared_count<R: Read + Seek>(reader: &mut R) -> Option<u64> {
+    const EOCD_LEN: usize = 22;
+    const LOCATOR_LEN: usize = 20;
+    let len = reader.seek(SeekFrom::End(0)).ok()?;
+    let tail_len = len.min((EOCD_LEN + usize::from(u16::MAX) + LOCATOR_LEN) as u64);
+    let tail_start = len - tail_len;
+    reader.seek(SeekFrom::Start(tail_start)).ok()?;
+    let mut tail = vec![0u8; usize::try_from(tail_len).ok()?];
+    reader.read_exact(&mut tail).ok()?;
+    // A little-endian field of `n` bytes at `at`.
+    let le = |buf: &[u8], at: usize, n: usize| -> Option<u64> {
+        let field = buf.get(at..at + n)?;
+        Some(
+            field
+                .iter()
+                .rev()
+                .fold(0, |acc, b| (acc << 8) | u64::from(*b)),
+        )
+    };
+    let at = (0..tail.len().saturating_sub(EOCD_LEN - 1))
+        .rev()
+        .find(|&at| {
+            let fits = le(&tail, at + 20, 2)
+                .is_some_and(|comment| at as u64 + EOCD_LEN as u64 + comment <= tail_len);
+            let cd_before = le(&tail, at + 16, 4).is_some_and(|cd| cd < tail_start + at as u64);
+            tail.get(at..at + 4) == Some(b"PK\x05\x06") && fits && cd_before
+        })?;
+    let (on_disk, total) = (le(&tail, at + 8, 2)?, le(&tail, at + 10, 2)?);
+    let max = u64::from(u16::MAX);
+    if on_disk != max && total != max {
+        return Some(on_disk.max(total));
+    }
+    let locator = at.checked_sub(LOCATOR_LEN)?;
+    if tail.get(locator..locator + 4) != Some(b"PK\x06\x07") {
+        return None;
+    }
+    reader
+        .seek(SeekFrom::Start(le(&tail, locator + 8, 8)?))
+        .ok()?;
+    let mut record = [0u8; 40];
+    reader.read_exact(&mut record).ok()?;
+    if record.get(..4) != Some(b"PK\x06\x06") {
+        return None;
+    }
+    Some(le(&record, 24, 8)?.max(le(&record, 32, 8)?))
 }
 
 fn zip_error(e: zip::result::ZipError) -> Error {
@@ -1147,13 +1190,48 @@ mod tests {
                 .unwrap();
             zip.write_all(b"x").unwrap();
         }
-        let mut bytes = Cursor::new(zip.finish().unwrap().into_inner());
+        let raw = zip.finish().unwrap().into_inner();
+        let mut bytes = Cursor::new(raw.clone());
         assert_eq!(central_directory_count(&mut bytes), Some(3));
         assert_eq!(bytes.position(), 0, "the reader is rewound");
         assert_eq!(
             central_directory_count(&mut Cursor::new(b"not a zip".to_vec())),
             None
         );
+
+        // Bytes after the record, which the zip crate reads past.
+        let mut trailing = raw.clone();
+        trailing.extend_from_slice(b"junk after the comment");
+        assert_eq!(central_directory_count(&mut Cursor::new(trailing)), Some(3));
+
+        // The count for this disk, which the zip crate trusts, above the total.
+        let record = |raw: &[u8]| {
+            (0..raw.len() - 21).rev().find(|&i| {
+                let comment = u16::from_le_bytes([raw[i + 20], raw[i + 21]]);
+                raw[i..i + 4] == *b"PK\x05\x06" && i + 22 + usize::from(comment) == raw.len()
+            })
+        };
+        let eocd = record(&raw).unwrap();
+        let mut on_disk = raw.clone();
+        on_disk[eocd + 8..eocd + 10].copy_from_slice(&5u16.to_le_bytes());
+        assert_eq!(central_directory_count(&mut Cursor::new(on_disk)), Some(5));
+
+        // Counts at their maximum defer to the zip64 record the locator points at.
+        let mut zip64 = raw[..eocd].to_vec();
+        let at = zip64.len() as u64;
+        zip64.extend_from_slice(b"PK\x06\x06");
+        zip64.extend_from_slice(&44u64.to_le_bytes());
+        zip64.extend_from_slice(&[45, 0, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        zip64.extend_from_slice(&7u64.to_le_bytes());
+        zip64.extend_from_slice(&7u64.to_le_bytes());
+        zip64.extend_from_slice(&[0; 16]);
+        zip64.extend_from_slice(b"PK\x06\x07\0\0\0\0");
+        zip64.extend_from_slice(&at.to_le_bytes());
+        zip64.extend_from_slice(&1u32.to_le_bytes());
+        let mut end = raw[eocd..].to_vec();
+        end[8..12].copy_from_slice(&[0xff; 4]);
+        zip64.extend_from_slice(&end);
+        assert_eq!(central_directory_count(&mut Cursor::new(zip64)), Some(7));
     }
 
     #[test]
@@ -1289,6 +1367,21 @@ mod tests {
             accepts(&p, true, &primary),
             accepts(&p, false, &primary),
         )
+    }
+
+    /// A link to a checkout is the addon its own name says, not its target's.
+    #[test]
+    fn a_linked_directory_is_named_as_given() {
+        let table = RulesTable::builtin();
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("my-addon-repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("MyAddon.toc"), "## Interface: 120105\n").unwrap();
+        let link = dir.path().join("MyAddon");
+        std::os::unix::fs::symlink(&repo, &link).unwrap();
+        let inspected = inspect_dir(&link, &ArchiveLimits::default(), &table).unwrap();
+        let names: Vec<&str> = inspected.folders.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["MyAddon"]);
     }
 
     #[test]

@@ -132,7 +132,9 @@ pub fn resolve(flags: &OutputFlags, env: &TermEnv) -> OutputConfig {
         Some(p) if p.eq_ignore_ascii_case("json") => ProgressMode::Json,
         Some(p) if p.eq_ignore_ascii_case("human") => ProgressMode::Human,
         Some(_) => ProgressMode::None,
-        None if flags.no_progress || output == OutputMode::Json || env.ci() || !env.stderr_tty => {
+        // Wherever stderr carries NDJSON (no terminal, CI, `TERM=dumb`), never a human
+        // progress line's escapes between its events.
+        None if flags.no_progress || output == OutputMode::Json || stderr == StderrMode::Ndjson => {
             ProgressMode::None
         }
         None => ProgressMode::Human,
@@ -385,6 +387,15 @@ mod tests {
                 flags(),
                 TermEnv {
                     stderr_tty: false,
+                    ..tty()
+                },
+                ProgressMode::None,
+            ),
+            // `TERM=dumb`: stderr is NDJSON, so no human progress line among its events.
+            (
+                flags(),
+                TermEnv {
+                    term: Some("dumb".into()),
                     ..tty()
                 },
                 ProgressMode::None,

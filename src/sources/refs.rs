@@ -276,7 +276,7 @@ fn url(input: &str, rest: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
     let (authority, path_and_query) = without_fragment
         .split_once('/')
         .unwrap_or((without_fragment, ""));
-    let host = authority
+    let raw_host = authority
         .rsplit('@')
         .next()
         .unwrap_or(authority)
@@ -284,7 +284,11 @@ fn url(input: &str, rest: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
         .next()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let host = host.strip_prefix("www.").unwrap_or(&host).to_owned();
+    // `www.` only for the known sites below; `git_hosts` names the host git reaches.
+    let host = raw_host
+        .strip_prefix("www.")
+        .unwrap_or(&raw_host)
+        .to_owned();
     let (path, query) = path_and_query
         .split_once('?')
         .unwrap_or((path_and_query, ""));
@@ -413,7 +417,10 @@ fn url(input: &str, rest: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
         _ => {}
     }
     let base = format!("https://{without_fragment}");
-    let git_host = ctx.git_hosts.iter().any(|h| h.eq_ignore_ascii_case(&host));
+    let git_host = ctx
+        .git_hosts
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(&raw_host));
     if git_host || path.ends_with(".git") {
         let git = match fragment {
             Some(rev) => format!("git:{base}#{rev}"),
@@ -826,6 +833,8 @@ mod tests {
         ("https://addons.wago.io/addons/plater", "source_disabled", None, None, None),
         ("http://github.com/a/b", "ref_invalid", None, None, None),
         ("https://codeberg.org/a/b", "git:https://codeberg.org/a/b", Some(MatchKind::Url), None, None),
+        // `git_hosts` names hosts exactly: `www.` is not stripped for them.
+        ("https://www.codeberg.org/a/b", "url:https://www.codeberg.org/a/b", Some(MatchKind::Url), None, None),
         ("https://example.org/repo.git#v2", "git:https://example.org/repo.git#v2", Some(MatchKind::Url), None, None),
         ("https://example.org/files/Addon-1.0.zip", "url:https://example.org/files/Addon-1.0.zip", Some(MatchKind::Url), None, None),
         ("https://example.org/dl?id=7", "url:https://example.org/dl?id=7", Some(MatchKind::Url), None, None),

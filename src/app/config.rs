@@ -152,6 +152,8 @@ fn default_value(key: &str) -> serde_json::Value {
         "limits.backup_min_free_mb" => serde_json::json!(limits.backup_min_free >> 20),
         "limits.backup_copy_max_mb" => serde_json::json!(limits.backup_copy_max >> 20),
         "limits.backup_auto_keep_days" => serde_json::json!(limits.backup_auto_keep_days),
+        // Every source is on unless turned off (README's configuration table).
+        k if k.starts_with("sources.") && k.ends_with(".enabled") => serde_json::json!(true),
         _ => serde_json::Value::Null,
     }
 }

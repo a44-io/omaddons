@@ -640,6 +640,20 @@ fn read(path: &Path) -> Result<Parsed> {
     Ok(parse(&String::from_utf8_lossy(&bytes)))
 }
 
+/// `Some(atomic_swap)` when `tx`'s journal reached `committed`, readable throughout: a
+/// failure after that line was written leaves the transaction standing, and recovery
+/// only prunes the journal. `None` for any other journal, or none.
+pub(crate) fn committed_swap(paths: &Paths, tx: &TxId) -> Option<bool> {
+    let parsed = read(&existing(paths, tx)?).ok()?;
+    // ubs:ignore — comparing a journal phase, not a secret
+    (parsed.phase == Phase::Committed && parsed.unrecoverable().is_none()).then(|| {
+        !parsed
+            .steps
+            .iter()
+            .any(|step| matches!(step.op, StepOp::Rename))
+    })
+}
+
 /// Whether `tx`'s journal is one recovery still needs: started (`prepared`) and neither
 /// committed nor recovered. One it cannot read (or read at all) counts too: recovery
 /// reports it, and leaves it.
@@ -1226,6 +1240,12 @@ fn roll_back_preserving(
         let why = super::preserve::redacted(prepared, &error.message);
         stopped(tx, prepared, Stop::PreservationIncomplete, &why)
     };
+    // Preservation appends to the journal (`preserve`, then `preserved`): after a torn
+    // last line, that line would merge with the fragment, and once not last it would be
+    // an unknown line that leaves the journal unreadable for good. The fragment never ran.
+    if parsed.torn_tail {
+        drop_torn_tail(s, journal).map_err(incomplete)?;
+    }
     let mut intents = parsed.preserve.clone();
     if intents.is_empty() {
         let live = ClientPaths::new(&prepared.client_dir).wtf();
@@ -1262,6 +1282,21 @@ fn roll_back_preserving(
         warnings.push(super::preserve::rolled_back(prepared, intent));
     }
     Ok(warnings)
+}
+
+/// Rewrites `journal` without its torn last line ([`parse`]): cut short, or closed off
+/// but not JSON. Everything before it is kept byte for byte.
+fn drop_torn_tail(s: &mut WriteSession<'_>, journal: &Path) -> Result<()> {
+    let bytes = std::fs::read(journal)
+        .map_err(|e| Error::io(journal, &e, Suggestion::command(["omaddons", "status"])))?;
+    let body = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+    let keep = body.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    let op = Op::WriteFile {
+        content: fsx::Content::Bytes(bytes.get(..keep).unwrap_or_default()),
+        mode: None,
+    };
+    mutate(s, journal, op)?;
+    Ok(())
 }
 
 /// What a `writes_wtf` rollback does with a step it finds in neither its before nor its
@@ -3437,6 +3472,32 @@ mod tests {
             );
             assert!(!w.staged().exists() && !w.journal_kept(), "{point}");
         }
+    }
+
+    /// A journal that ends in a torn line (a step cut short, which never ran) gets its
+    /// preservation lines on lines of their own: the fragment is dropped first, so the
+    /// intent reads back, a stopped preservation resumes with the same id, and no line is
+    /// ever unreadable.
+    #[test]
+    fn preservation_after_a_torn_line_resumes_and_leaves_no_unreadable_line() {
+        let w = WtfScene::new(TxKind::Restore, true, true);
+        let played = w.scene.client.wtf().join("Account/restored.txt");
+        std::fs::write(&played, "played on").unwrap();
+        let journal = existing(&w.scene.paths, &w.scene.tx).unwrap();
+        fsx::sys::append_durable(&journal, br#"{"type":"step","n":2,"op""#).unwrap();
+        assert!(read(&journal).unwrap().torn_tail);
+        let err = failpoint::with_spec("engine.preserve.intent=error", || w.recover(true, false))
+            .unwrap_err();
+        assert_eq!(err.details["reason"], "preservation_incomplete");
+        let parsed = read(&journal).unwrap();
+        assert_eq!((parsed.unknown_lines, parsed.torn_tail), (0, false));
+        assert_eq!(parsed.preserve.len(), 1, "the intent reads back");
+        let id = parsed.preserve[0].id;
+        w.recover(true, false).unwrap();
+        let kept = w.recovered();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, id, "the same id");
+        assert!(!w.journal_kept());
     }
 
     /// A tree past the backup walk's bounds is never described partially: preservation

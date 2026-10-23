@@ -131,7 +131,7 @@ pub fn select(txs: &[SnapshotTx], now: Timestamp, limits: &RetentionLimits) -> S
 }
 
 /// Retention for the target `key` (whose client dir `client` must be in `scopes`) at
-/// `now`, sparing the blobs in `pins`.
+/// `now`, sparing the blobs `pins` names (read under the lock, when eviction needs it).
 pub fn run(
     paths: &Paths,
     scopes: &ScopeTable,
@@ -139,7 +139,7 @@ pub fn run(
     client: &ClientPaths,
     limits: &RetentionLimits,
     now: Timestamp,
-    pins: &BTreeSet<String>,
+    pins: &dyn Fn() -> Result<BTreeSet<String>>,
 ) -> Result<RetentionReport> {
     // Read once: the whole history for pending restores (their conflict check spans
     // targets), the target's entries for the policy, the raw text for orphans.
@@ -359,10 +359,12 @@ fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp, text: &str) -> R
         Ok(!InflightLock::is_live(paths, tx)? && super::journal::existing(paths, tx).is_none())
     };
     let mut found = Vec::new();
+    // Age first: probing a lock takes it for a moment, which must never meet a lock file
+    // its transaction has just created and not yet locked.
     for (name, path) in listing(&client.meta_dir().join("stage")) {
         if let Some(tx) = crate::state::paths::tx_named(&name)
-            && dead(&tx)?
             && old(&path)
+            && dead(&tx)?
         {
             found.push(path);
         }
@@ -374,8 +376,8 @@ fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp, text: &str) -> R
         if let Some(tx) = name
             .strip_suffix(".lock")
             .and_then(|t| t.parse::<TxId>().ok())
-            && dead(&tx)?
             && old(&path)
+            && dead(&tx)?
         {
             found.push(path);
         }
@@ -611,7 +613,7 @@ mod tests {
                 &self.client,
                 limits,
                 self.clock,
-                pins,
+                &|| Ok(pins.clone()),
             )
             .unwrap()
         }
@@ -826,7 +828,7 @@ mod tests {
             &f.client,
             &RetentionLimits::default(),
             Timestamp::now(),
-            &BTreeSet::new(),
+            &|| Ok(BTreeSet::new()),
         )
         .unwrap();
         assert_eq!(young.orphans_swept, 0, "younger than ORPHAN_MIN_AGE");

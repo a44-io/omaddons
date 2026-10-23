@@ -160,6 +160,14 @@ pub fn discover_cached(
         .filter(|c| c.basis == basis && mode != DiscoveryMode::Rescan);
     // Roots found while their client ran stay a route, `Rescan` included; only under
     // this home, so a throwaway home sharing the cache never reaches the user's clients.
+    // The process route finds canonical paths: under home's, or `~/Games`' own when it
+    // links elsewhere.
+    let canonical = |path: PathBuf| std::fs::canonicalize(&path).unwrap_or(path);
+    let homes = [
+        input.home.clone(),
+        canonical(input.home.clone()),
+        canonical(input.home.join("Games")),
+    ];
     let remembered = cache
         .iter()
         .flat_map(|c| &c.roots)
@@ -167,7 +175,7 @@ pub fn discover_cached(
             matches!(
                 r.source,
                 DiscoverySource::Process | DiscoverySource::Remembered
-            ) && r.path.starts_with(&input.home)
+            ) && homes.iter().any(|home| r.path.starts_with(home))
         })
         .map(|r| (r.path.clone(), r.qualifier.clone()))
         .collect();

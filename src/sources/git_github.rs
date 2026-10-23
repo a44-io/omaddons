@@ -43,8 +43,12 @@ pub fn fetch(w: &Wanted, http: &dyn Http) -> Result<ReleaseSet> {
             Suggestion::command(["omaddons", "help", "install"]),
         )
     })?;
+    // A commit the recorded release names (an exact reinstall's full sha, a lock's short
+    // one) agrees with the ref's own rev while that rev still points at it.
+    let commit = super::git_hosts::recorded_commit(w.version.as_deref(), rev.as_deref());
     if let (Some(rev), Some(version)) = (rev, &w.version)
         && rev != version
+        && commit.is_none()
     {
         return Err(Error::new(
             ErrorCode::Usage,
@@ -54,6 +58,10 @@ pub fn fetch(w: &Wanted, http: &dyn Http) -> Result<ReleaseSet> {
             ),
             Suggestion::command(["omaddons", "help", "install"]),
         ));
+    }
+    if let Some(commit) = commit {
+        let resolved = at_commit(w, owner, repo, rev.as_deref(), &commit, http)?;
+        return Ok(release_set(w, url, owner, repo, &resolved));
     }
     let rev = w.version.as_ref().or(rev.as_ref());
     let resolved = match rev {
@@ -81,8 +89,12 @@ pub fn fetch(w: &Wanted, http: &dyn Http) -> Result<ReleaseSet> {
 
 /// `owner` and `repo` of `https://github.com/<owner>/<repo>[.git][/]`.
 pub fn repository(url: &str) -> Option<(&str, &str)> {
+    // Scheme and host in any case, as `git.rs` routes them here.
+    const PREFIX: &str = "https://github.com/";
     let path = url
-        .strip_prefix("https://github.com/")?
+        .get(..PREFIX.len())
+        .filter(|head| head.eq_ignore_ascii_case(PREFIX))
+        .and_then(|_| url.get(PREFIX.len()..))?
         .trim_end_matches('/');
     let (owner, repo) = path.split_once('/')?;
     let repo = repo.strip_suffix(".git").unwrap_or(repo);
@@ -157,6 +169,38 @@ pub fn changelog(
 }
 
 /// The head commit of `rev` (the default branch when `None`); `None` on a 404.
+/// The release at `commit` (lowercase hex, 7 to 40 characters): a branch or tag so
+/// named, asked without a rev; else the ref's own rev (or the default branch) while its
+/// head is still that commit; else the full sha itself. A short one that names nothing
+/// now is `not_found`.
+fn at_commit(
+    w: &Wanted,
+    owner: &str,
+    repo: &str,
+    rev: Option<&str>,
+    commit: &str,
+    http: &dyn Http,
+) -> Result<Resolved> {
+    if rev.is_none()
+        && let Some(sha) = head(owner, repo, Some(commit), http)?
+    {
+        return Ok(Resolved::Head { sha });
+    }
+    if let Some(sha) = head(owner, repo, rev, http)?
+        && sha.starts_with(commit)
+    {
+        return Ok(Resolved::Head { sha });
+    }
+    if is_sha(commit) {
+        return Ok(Resolved::Sha(commit.to_owned()));
+    }
+    Err(Error::new(
+        ErrorCode::NotFound,
+        format!("{} no longer points at commit {commit}", w.r#ref),
+        Suggestion::text("give the full commit sha after #, or drop the version"),
+    ))
+}
+
 fn head(owner: &str, repo: &str, rev: Option<&str>, http: &dyn Http) -> Result<Option<String>> {
     let url = commits_feed(owner, repo, rev);
     // Conditional: an unchanged branch whose feed carries an ETag comes back as a 304,
@@ -273,6 +317,11 @@ mod tests {
         assert_eq!(repository("https://github.com/o"), None);
         assert_eq!(repository("https://github.com/o/r/tree/main"), None);
         assert_eq!(repository("https://gitlab.com/o/r"), None);
+        assert_eq!(
+            repository("HTTPS://GitHub.com/o/r"),
+            Some(("o", "r")),
+            "the scheme and host in any case"
+        );
     }
 
     #[test]

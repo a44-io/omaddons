@@ -618,6 +618,7 @@ mod tests {
             coverage: Coverage::Complete,
             skipped: Skipped::default(),
             listings: Vec::new(),
+            accounts: 1,
             databases: Vec::new(),
             entries: Vec::new(),
             warnings: Vec::new(),

@@ -159,6 +159,11 @@ pub fn run(ctx: &Context, args: &ExportArgs) -> Result<ExportOutcome> {
         Err(error) => return Err(error),
     };
     let records = world.records()?;
+    // A family section applies to every live client of the family, so it needs them all
+    // exported. A registered client whose directory is gone may be of any family (its
+    // version is unknown): while one is, no section is a family's. `sync` refuses an
+    // `unknown` family, so a client of none gets its own.
+    let any_missing = !world.resolved.missing.is_empty();
     let shared = |d: &DiscoveredTarget| {
         let t = &d.target;
         let whole = world
@@ -168,7 +173,8 @@ pub fn run(ctx: &Context, args: &ExportArgs) -> Result<ExportOutcome> {
             .filter(|o| o.target.kind == TargetKind::Live && o.target.family == t.family)
             // ubs:ignore — comparing target ids, not secrets
             .all(|o| selected.iter().any(|s| s.target.id == o.target.id));
-        (t.kind == TargetKind::Live && whole).then_some(t.family)
+        let known = t.family != Family::Unknown;
+        (t.kind == TargetKind::Live && whole && known && !any_missing).then_some(t.family)
     };
     let mut exported: Vec<Exported> = selected
         .iter()

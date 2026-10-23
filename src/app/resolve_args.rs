@@ -32,12 +32,21 @@ pub fn parse_ref(
 /// `omaddons install <ref>` fix the parser suggests (the https form, each ambiguity
 /// candidate) aimed at the command that ran: `argv` with `request` replaced by `<ref>`,
 /// every other argument (`-t` included) kept.
-pub fn aimed_at(mut error: Error, argv: &[String], request: &str) -> Error {
+pub fn aimed_at(error: Error, argv: &[String], request: &str) -> Error {
+    aim(error, |r| crate::cli::fix_argv_replacing(argv, request, r))
+}
+
+/// [`aimed_at`] for an argument given as the value of the option `flag` (`adopt`'s
+/// `--ref`): that value replaced, never another argument spelled the same.
+pub fn aimed_at_option(error: Error, argv: &[String], flag: &str) -> Error {
+    aim(error, |r| crate::cli::fix_argv_with_value(argv, flag, r))
+}
+
+/// `error` with each `omaddons install <ref>` fix replaced by `aimed(<ref>)`.
+fn aim(mut error: Error, aimed: impl Fn(&str) -> Option<Vec<String>>) -> Error {
     let aim = |s: &mut Suggestion| {
         let aimed = s.argv().and_then(|a| match a {
-            [_, command, r] if command == "install" => {
-                crate::cli::fix_argv_replacing(argv, request, r)
-            }
+            [_, command, r] if command == "install" => aimed(r),
             _ => None,
         });
         if let Some(aimed) = aimed {

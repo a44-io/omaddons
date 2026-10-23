@@ -98,6 +98,8 @@ pub struct Located {
     pub skipped: Skipped,
     pub coverage: Coverage,
     pub listings: Vec<Listing>,
+    /// Account folders examined, with a `SavedVariables/` folder or not.
+    pub accounts: usize,
 }
 
 /// An installed folder whose loaded TOC lists `BugGrabberDB` (or BugGrabber's own).
@@ -155,15 +157,16 @@ pub fn locate_in(client: &ClientPaths, installed: bool, declared: &[Declared]) -
         }
     }
     accounts.sort();
+    let examined = accounts.len().min(ERRORS_MAX_ACCOUNTS);
     let mut located = Located {
         files: Vec::new(),
         capture: Capture::None,
         skipped: Skipped::default(),
         coverage: Coverage::Complete,
         listings: Vec::new(),
+        accounts: examined,
     };
     let mut files_cut = false;
-    let examined = accounts.len().min(ERRORS_MAX_ACCOUNTS);
     for (at, (n, _, account_dir)) in accounts.iter().take(examined).enumerate() {
         // An unlearned name sorts last, behind more than `ERRORS_MAX_ACCOUNTS` learned
         // ones, so it is never examined; its position stands in all the same.

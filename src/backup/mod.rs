@@ -485,6 +485,21 @@ pub fn check_structure(b: &BackupRef) -> Result<TreeCheck> {
             )
         })?
         .value;
+    // No `WTF/` at all is damage, every entry missing: never a walk that "changed".
+    if !std::fs::symlink_metadata(b.wtf()).is_ok_and(|m| m.is_dir()) {
+        let entries = manifest.entries.len() as u64;
+        return Ok(TreeCheck {
+            entries,
+            missing: entries.max(1),
+            first: Some(
+                manifest
+                    .entries
+                    .first()
+                    .map_or_else(String::new, |e| e.path.clone()),
+            ),
+            ..TreeCheck::default()
+        });
+    }
     let walked =
         tree::walk(&b.wtf(), BACKUP_TREE_MAX_ENTRIES, BACKUP_TREE_MAX_DEPTH).map_err(|e| {
             let names = manifest.entries.iter().map(|e| e.path.as_str());

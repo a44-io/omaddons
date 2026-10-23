@@ -322,7 +322,7 @@ pub fn rebuild_if_stale(paths: &Paths, command: &str, actor: Actor) {
         return;
     };
     // ubs:ignore — comparing projections, not secrets
-    if load(paths).as_ref() != Some(&tail) && write(paths, &tail).is_ok() {
+    if load(paths).as_ref() != Some(&tail) && write(paths, &tail).is_ok_and(|wrote| wrote) {
         super::doorbell::ring(paths, command, actor);
     }
 }
@@ -335,13 +335,13 @@ fn load(paths: &Paths) -> Option<HistoryTail> {
     }
 }
 
-/// Writes the projection unless a newer omaddons wrote it.
-fn write(paths: &Paths, tail: &HistoryTail) -> Result<()> {
+/// Writes the projection unless a newer omaddons wrote it; whether it wrote.
+fn write(paths: &Paths, tail: &HistoryTail) -> Result<bool> {
     let path = paths.history_tail();
     if let Ok(Some(loaded)) = store::load::<HistoryTail>(&path)
         && loaded.status == VersionStatus::Newer
     {
-        return Ok(());
+        return Ok(false);
     }
     let json = store::encode(tail)?;
     let scopes = ScopeTable::new(paths, &[], None)?;
@@ -352,7 +352,7 @@ fn write(paths: &Paths, tail: &HistoryTail) -> Result<()> {
         mode: Some(0o644),
     };
     mutate(&mut s, &path, op)?;
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]

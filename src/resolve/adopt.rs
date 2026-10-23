@@ -58,6 +58,9 @@ impl CandidateFolder {
 pub struct AdoptLookups<'a> {
     /// The target's family, for the catalog filter.
     pub family: Family,
+    /// The client's generation: its family's, or for `unknown` its rules row's (an
+    /// unknown custom client runs the legacy fallback row).
+    pub legacy: bool,
     pub catalog: &'a dyn AdoptCatalog,
     /// `None`: the Tukui list is unavailable (the built-in ids still work).
     pub tukui: Option<&'a dyn AdoptTukui>,
@@ -224,9 +227,10 @@ pub fn evidence(candidate: &CandidateFolder, lookups: &AdoptLookups<'_>) -> Vec<
 
         // 1. The catalog: the entries declaring the target's family, else the other
         // entries of its generation (a guess verification settles; claiming beside a
-        // declared entry they would only tie with it), never the other generation.
+        // declared entry they would only tie with it), never the other generation, and
+        // never another family's variant.
         let entries = lookups.catalog.by_folder(f);
-        let legacy = lookups.family.is_legacy();
+        let legacy = lookups.legacy;
         let declared: Vec<&Entry> = entries
             .iter()
             .copied()
@@ -236,7 +240,7 @@ pub fn evidence(candidate: &CandidateFolder, lookups: &AdoptLookups<'_>) -> Vec<
             entries
                 .iter()
                 .copied()
-                .filter(|e| e.of_generation(legacy))
+                .filter(|e| e.variant.is_none() && e.of_generation(legacy))
                 .collect()
         } else {
             declared
@@ -1214,6 +1218,7 @@ mod tests {
     ) -> AdoptLookups<'a> {
         AdoptLookups {
             family: Family::Mainline,
+            legacy: false,
             catalog,
             tukui: tukui.map(|t| t as &dyn AdoptTukui),
             wowi: wowi.map(|w| w as &dyn AdoptWowi),
@@ -1361,6 +1366,7 @@ mod tests {
         let refs = |catalog: &FakeCatalog, family| -> Vec<String> {
             let mut l = lookups(catalog, None, None);
             l.family = family;
+            l.legacy = family.is_legacy();
             evidence(&candidate("RaiderIO", None), &l)
                 .iter()
                 .filter(|c| matches!(c.evidence, Evidence::CatalogFolder))
@@ -1391,9 +1397,16 @@ mod tests {
                 .iter()
                 .all(|r| r == "gh:o/old")
         );
-        let declared = FakeCatalog(vec![rio, era, old]);
+        let declared = FakeCatalog(vec![rio, era, old.clone()]);
         assert_eq!(refs(&declared, Family::Vanilla), ["gh:o/rio-era"]);
         assert_eq!(refs(&declared, Family::Mainline), ["gh:o/rio"]);
+        // A variant is one family's build: a family no variant covers gets none.
+        let builds = FakeCatalog(vec![Entry {
+            variant: Some("r152".into()),
+            ..old
+        }]);
+        assert!(refs(&builds, Family::CataLegacy).is_empty());
+        assert_eq!(refs(&builds, Family::WrathLegacy), ["gh:o/old"]);
     }
 
     #[test]
@@ -1687,10 +1700,20 @@ mod tests {
         );
         let mut legacy = lookups(&catalog, None, None);
         legacy.family = Family::WrathLegacy;
+        legacy.legacy = true;
         assert_eq!(
             kinds(&legacy),
             [Evidence::NameMatch],
             "no catalog_folder across a generation; the name still matches"
+        );
+        // An unknown client on the legacy fallback row is of the legacy generation.
+        let mut unknown = lookups(&catalog, None, None);
+        unknown.family = Family::Unknown;
+        unknown.legacy = true;
+        assert_eq!(
+            kinds(&unknown),
+            [Evidence::NameMatch],
+            "an unknown legacy client never takes a modern entry's folder claim"
         );
     }
 

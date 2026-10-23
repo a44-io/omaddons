@@ -283,7 +283,7 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
                     by.as_str(),
                     actor.as_str()
                 ),
-                Suggestion::command(without_flag(&ctx.argv, "--actor")),
+                Suggestion::command(crate::cli::fix_argv(&without_flag(&ctx.argv, "--actor"))),
             ));
         }
         (by, actor) => by.or(actor),
@@ -306,8 +306,13 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
     let world = World::load(ctx)?;
     let run = match &args.run {
         Some(prefix) => {
-            let all = history::read(&world.paths, &HistoryFilter::default())?.entries;
-            Some(resolve_run(&all, prefix)?)
+            let all = history::read(&world.paths, &HistoryFilter::default())?;
+            let runs = all
+                .entries
+                .iter()
+                .filter_map(|e| e.run)
+                .chain(all.settings.iter().map(|s| s.run));
+            Some(resolve_run_in(runs, prefix)?)
         }
         None => None,
     };
@@ -452,6 +457,12 @@ pub fn short_id(full: &str) -> String {
 /// The run whose id is `prefix` or starts with it (8+ characters, any case), among the
 /// runs of `entries`.
 pub fn resolve_run(entries: &[HistoryEntry], prefix: &str) -> Result<RunId> {
+    resolve_run_in(entries.iter().filter_map(|e| e.run), prefix)
+}
+
+/// [`resolve_run`] among `runs`: `history` resolves over settings changes too, which
+/// carry a run of their own.
+fn resolve_run_in(runs: impl Iterator<Item = RunId>, prefix: &str) -> Result<RunId> {
     let wanted = prefix.to_ascii_uppercase();
     if wanted.len() < MIN_PREFIX {
         return Err(Error::new(
@@ -460,9 +471,7 @@ pub fn resolve_run(entries: &[HistoryEntry], prefix: &str) -> Result<RunId> {
             Suggestion::command(["omaddons", "history"]),
         ));
     }
-    let mut matching: Vec<RunId> = entries
-        .iter()
-        .filter_map(|e| e.run)
+    let mut matching: Vec<RunId> = runs
         .filter(|r| r.to_string().starts_with(&wanted))
         .collect();
     matching.sort_by_key(|r| r.ulid());

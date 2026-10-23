@@ -750,7 +750,12 @@ fn verify_hashes_every_file_it_copied() {
         "retail".into(),
         "--verify".into(),
     ]);
-    assert!(human.stdout.contains(", verified)"), "{}", human.stdout);
+    // Never "verified" alone: what its hashes were recorded at (M3-D47).
+    assert!(
+        human.stdout.contains(", verified (capture))"),
+        "{}",
+        human.stdout
+    );
     let listed = home.exec(&["backup".into(), "list".into()]);
     assert!(
         listed.stdout.contains("stable · verified"),

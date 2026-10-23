@@ -185,6 +185,69 @@ fn a_dropped_folder_is_handed_over_in_either_order_and_undone_byte_for_byte() {
     }
 }
 
+/// An update that would drop a folder, but fails, lets go of nothing: a later request
+/// in the same run shipping that folder is a takeover the owner never agreed to, refused
+/// at plan time as its own item, never a silent handover the commit then refuses.
+#[test]
+fn a_failed_update_hands_over_nothing() {
+    let mut home = Home::new(&["wow"]);
+    let (a1, a2) = (
+        Rel::new("A", "v1", &["A", "Old"]),
+        Rel::new("A", "v2", &["A", "ALocales"]),
+    );
+    home.installed_behind(A, ("v1", &a1.assets()), ("v2", &a2.assets()), &["retail"]);
+    let b = Rel::new("B", "v1", &["B", "Old"]);
+    gh_release(&home.http, B, "v1", &b.assets());
+    // A hand-made folder the update would overwrite: A's update fails.
+    let addons = home.addons("_retail_");
+    std::fs::create_dir_all(addons.join("ALocales")).unwrap();
+    std::fs::write(
+        addons.join("ALocales/ALocales.toc"),
+        "## Interface: 120105\n",
+    )
+    .unwrap();
+    let before = tree_hash(&addons);
+    // The preview says so too: B is never shown taking the folder.
+    let preview = home.run(&["install", "gh:o/a", "gh:o/b", "-t", "retail", "--dry-run"]);
+    let previewed = preview.expect(4);
+    assert_eq!(
+        previewed["error"]["details"]["items"][1]["code"],
+        "ownership_conflict",
+        "{}",
+        preview.context()
+    );
+    let r = home.run(&["install", "gh:o/a", "gh:o/b", "-t", "retail"]);
+    let envelope = r.expect(4);
+    let codes: Vec<(String, String)> = envelope["error"]["details"]["items"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .map(|i| {
+            (
+                i["request"].as_str().unwrap_or_default().to_owned(),
+                i["code"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            ("gh:o/a".to_owned(), "unmanaged_folder".to_owned()),
+            ("gh:o/b".to_owned(), "ownership_conflict".to_owned()),
+        ],
+        "{}",
+        r.context()
+    );
+    assert_eq!(tree_hash(&addons), before, "nothing moved");
+    let record = common::state::record(&home, "retail");
+    assert!(
+        record.addons["a"]
+            .folders
+            .iter()
+            .any(|f| f.as_str() == "Old")
+    );
+}
+
 #[test]
 fn a_ref_asked_for_twice_installs_once() {
     let home = Home::new(&["wow"]);

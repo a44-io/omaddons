@@ -1166,13 +1166,25 @@ function commandResultLine(command, data) {
   if (command === "undo") {
     var reverted = data.reverted && typeof data.reverted === "object" ? data.reverted : {}
     var where = []
+    // A partial undo: the clients where a transaction failed are said apart, with the
+    // first failure, never counted as undone.
+    var failedAt = []
+    var why = ""
     var txs = Array.isArray(data.transactions) ? data.transactions : []
     for (var i = 0; i < txs.length; i++) {
       var id = txs[i] && txs[i].target ? str(txs[i].target.id) : ""
+      if (txs[i] && txs[i].status === "failed") {
+        if (id && failedAt.indexOf(id) === -1) failedAt.push(id)
+        if (!why && txs[i].error) why = str(txs[i].error.message)
+        continue
+      }
       if (id && where.indexOf(id) === -1) where.push(id)
     }
-    if (where.length === 0 && reverted.target) where.push(str(reverted.target.id))
-    return "Undid " + (str(reverted.kind) || "the last change") + (where.length ? " on " + joinNames(where) : "")
+    if (txs.length === 0 && reverted.target) where.push(str(reverted.target.id))
+    var line = (where.length || failedAt.length === 0)
+      ? "Undid " + (str(reverted.kind) || "the last change") + (where.length ? " on " + joinNames(where) : "")
+      : "Undid nothing"
+    return failedAt.length ? line + "; not on " + joinNames(failedAt) + (why ? ": " + why : "") : line
   }
   if (command === "errors dismiss") {
     var targets = Array.isArray(data.targets) ? data.targets : []
@@ -1201,7 +1213,12 @@ function backupResultLine(command, data) {
   }
   if (command === "backup create") {
     var made = targets.filter(function(t) { return t && t.backup }).map(function(t) { return t.target && t.target.id ? t.target.id : "" })
-    return made.length ? "Backed up " + joinNames(made) : "No backup was needed"
+    // A client that failed is said, with its error: a partial run is not "backed up".
+    var broke = targets.filter(function(t) { return t && t.error })
+    var failure = broke.length
+      ? "; " + joinNames(broke.map(function(t) { return t.target && t.target.id ? t.target.id : "" })) + " failed: " + str(broke[0].error.message)
+      : ""
+    return (made.length ? "Backed up " + joinNames(made) : broke.length ? "No backup was made" : "No backup was needed") + failure
   }
   if (command === "backup prune") {
     var count = 0
@@ -1252,8 +1269,12 @@ function resultLine(env) {
   var targets = Array.isArray(data.targets) ? data.targets : [data]
   var changed = 0
   var touched = 0
+  // Whether the result reports items at all: a read run from a fix (`list -v`) has none,
+  // and is "Done", never "Done: 0 addons".
+  var reportsItems = false
   for (var i = 0; i < targets.length; i++) {
     var items = targets[i] && Array.isArray(targets[i].items) ? targets[i].items : []
+    if (targets[i] && Array.isArray(targets[i].items)) reportsItems = true
     var before = changed
     for (var j = 0; j < items.length; j++) if (isChange(items[j])) changed++
     if (changed > before) touched++
@@ -1262,6 +1283,7 @@ function resultLine(env) {
   var failed = failedItems(env)
   var own = commandResultLine(env.command, data)
   var line = own ? own
+    : !reportsItems && failed.length === 0 && !RESULT_VERBS[env.command] ? "Done"
     : changed === 0 && failed.length === 0 && env.command === "update" ? "Everything was up to date"
     : failed.length === 0 ? verb + " " + plural(changed, "addon") + (touched > 1 ? " on " + plural(touched, "client") : "")
     : (changed > 0 ? verb + " " + changed + " of " + (changed + failed.length) + "; " : "")
@@ -1274,7 +1296,7 @@ function resultLine(env) {
 }
 
 function isSafeHost(host) {
-  return ["github.com", "www.wowinterface.com", "www.tukui.org", "www.wowace.com"].indexOf(host) !== -1
+  return ["github.com", "www.wowinterface.com", "tukui.org", "www.tukui.org", "www.wowace.com"].indexOf(host) !== -1
 }
 
 // Whether a link from CLI output may open in a browser: https on a known host, no
@@ -1302,7 +1324,8 @@ function fixButtons(env) {
     for (var i = 0; i < error.alternatives.length; i++) {
       var alt = error.alternatives[i]
       if (!alt || !Array.isArray(alt.argv)) continue
-      var action = cliAction(alt.command || alt.argv.join(" "), alt.argv, false)
+      // An alternative is a suggestion: `{display, argv}`, its display shell-quoted.
+      var action = cliAction(alt.display || alt.argv.join(" "), alt.argv, false)
       if (action.runnable) out.push(action)
     }
   }
@@ -1351,9 +1374,19 @@ function confirmText(name, env) {
     lines.push((reverted.kind === "undo" ? "Redo " : "Undo ") + (KIND_WORDS[reverted.kind] || str(reverted.kind))
       + (where.length ? " on " + joinNames(where) : "")
       + ": " + plural(restored, "folder") + " restored, " + removed + " removed")
+    // The undo of a whole restore reverts every play since it too: `changed_since`
+    // counts the files the game changed (kept in the undo's snapshot), `null` when they
+    // cannot be counted.
     if (typeof data.changed_since === "number" && data.changed_since > 0) {
-      lines.push(plural(data.changed_since, "later change") + " touched these folders since")
+      lines.push("Also reverts every play since the restore: " + plural(data.changed_since, "file")
+        + " the game changed (kept in the undo's snapshot)")
+    } else if (data.changed_since === null) {
+      lines.push("Also reverts every play since the restore (the files it changed cannot be counted)")
     }
+  } else if (env.command === "targets rm") {
+    var managed = num(data.managed_addons)
+    lines.push("Forget client " + str(data.id) + "; nothing in its directory is touched"
+      + (managed ? " (its record of " + plural(managed, "managed addon") + " is kept)" : ""))
   } else if (env.command === "backup restore") {
     lines = lines.concat(restoreLines(data, env))
   } else if (env.command === "backup prune") {
@@ -1695,7 +1728,7 @@ function rowAction(row, which) {
 }
 
 var NOTES_MAX_CHARS = 400
-var MORE_HOSTS = { "github.com": "GitHub", "www.wowinterface.com": "WoWInterface", "www.tukui.org": "Tukui", "www.wowace.com": "WowAce" }
+var MORE_HOSTS = { "github.com": "GitHub", "www.wowinterface.com": "WoWInterface", "tukui.org": "Tukui", "www.tukui.org": "Tukui", "www.wowace.com": "WowAce" }
 
 // `i`'s release notes for `row`, from the service's view-bound changelog (`{selection,
 // data}`): null until the answer for this row arrives (a late one for another row never
@@ -1927,10 +1960,14 @@ function autoLabel(auto, nowMs) {
   if (auto.mode === "off") return "Automatic backups: off"
   var last = auto.last
   if (last && last.result === "space_low") return "Automatic backups: skipped: low disk space"
-  if (auto.capability === "unsupported") return "Automatic backups: daily, but this filesystem cannot clone"
+  // Only `daily` needs clones: `daily-copy` copies on a filesystem that cannot clone.
+  if (auto.mode === "daily" && auto.capability === "unsupported") return "Automatic backups: daily, but this filesystem cannot clone"
   var mode = auto.mode === "daily-copy" ? "daily (copies)" : "daily"
   var lastText = last ? (AUTO_RESULTS[last.result] || last.result) + (last.at ? " " + sinceText(last.at, nowMs) : "") : "not run yet"
-  return "Automatic backups: " + mode + (auto.capability === "supported" ? ", working" : "") + " · last: " + lastText
+  var copying = auto.mode === "daily-copy" && last !== null && last !== undefined
+    && ["created", "unchanged", "done_today", "running", "in_progress"].indexOf(last.result) !== -1
+  var working = auto.capability === "supported" || copying
+  return "Automatic backups: " + mode + (working ? ", working" : "") + " · last: " + lastText
 }
 
 // The Backups view, in the filter: per client, its automatic backups and space, then
@@ -2114,11 +2151,16 @@ function boundStaleText(template, env) {
 // The last result's Undo: its `undo` command when the classifier accepted it.
 function resultUndo(result) {
   if (!result || !Array.isArray(result.commands)) return null
+  // A change on several clients undoes as one run (`undo --run`); `undo <tx>` would
+  // revert one client's part only.
+  var single = null
   for (var i = 0; i < result.commands.length; i++) {
     var c = result.commands[i]
-    if (c && c.action === "undo" && c.runnable && Array.isArray(c.argv)) return c
+    if (!c || !c.runnable || !Array.isArray(c.argv)) continue
+    if (c.action === "undo_run") return c
+    if (c.action === "undo" && single === null) single = c
   }
-  return null
+  return single
 }
 
 if (typeof module !== "undefined") {

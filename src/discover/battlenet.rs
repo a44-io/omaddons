@@ -99,9 +99,11 @@ pub fn discover_root(
         let default_id = known.map_or_else(|| unknown_folder_id(&folder), |p| p.default_id.clone());
         let exe_name = exe_name(&client_dir, known.map(|p| p.exe.as_str()));
 
+        // Only a `Config.wtf` that predates the client: launching it once clears that,
+        // never a newer one (a version read from a stale hint).
         if let Some(last) = config_wtf::last_addon_version(&client_dir)
             && interface != 0
-            && last != interface
+            && last < interface
         {
             warnings.push(
                 Warning::new(
@@ -565,6 +567,12 @@ mod tests {
         write(
             root.join("_retail_").join("WTF").join("Config.wtf"),
             "SET lastAddonVersion \"120105\"\n",
+        );
+        assert!(discover(root, &BattlenetHints::default()).1.is_empty());
+        // Newer than the version read: launching cannot clear that, so no warning.
+        write(
+            root.join("_retail_").join("WTF").join("Config.wtf"),
+            "SET lastAddonVersion \"120107\"\n",
         );
         assert!(discover(root, &BattlenetHints::default()).1.is_empty());
     }

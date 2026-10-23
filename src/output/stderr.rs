@@ -404,7 +404,9 @@ impl<W: Write> Reporter<W> {
         drop(self.sink.flush());
     }
 
-    fn clear_progress(&mut self) {
+    /// Erases a human progress line still on the terminal: before any other stderr line,
+    /// and before the result goes to stdout, which shares the terminal.
+    pub(super) fn clear_progress(&mut self) {
         if std::mem::take(&mut self.progress_line) {
             drop(self.sink.write_all(b"\r\x1b[2K"));
         }

@@ -1249,9 +1249,10 @@ mod runs {
             .home
             .run(&["history", "--by", "agent", "--actor", "human"]);
         let usage = r.expect(2);
+        // Suggestions carry no presentation flags: the consumer adds its own.
         assert_eq!(
             usage["error"]["fix_argv"],
-            serde_json::json!(["omaddons", "history", "--by", "agent", "--json"]),
+            serde_json::json!(["omaddons", "history", "--by", "agent"]),
             "{}",
             r.context()
         );

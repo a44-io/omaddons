@@ -314,11 +314,12 @@ fn produce(
                 if read != entry.size {
                     return Err(changed());
                 }
+                // Ignoring case, as verify does: a manifest's hex may be either.
                 // ubs:ignore — comparing a file's content hash, not a secret
                 if entry
                     .sha256
                     .as_ref()
-                    .is_some_and(|recorded| *recorded != sha256)
+                    .is_some_and(|recorded| !recorded.eq_ignore_ascii_case(&sha256))
                 {
                     return Err(Produced::Failed(damaged(backup, entry, names)));
                 }

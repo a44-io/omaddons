@@ -13,12 +13,16 @@ use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind};
 
 /// Whether `dir` is a custom client root: no `.build.info`, a client exe and an
 /// `Interface/` directory (names ignore ASCII case), and not a Battle.net flavor folder,
-/// which looks the same but whose parent holds `.build.info`.
+/// which looks the same but whose parent holds `.build.info` (the target's parent, for
+/// a flavor folder reached through a link).
 pub fn is_custom_root(dir: &Path) -> bool {
+    let real = std::fs::canonicalize(dir).ok();
+    let flavor = [dir.parent(), real.as_deref().and_then(Path::parent)]
+        .into_iter()
+        .flatten()
+        .any(super::battlenet::is_battlenet_root);
     find_child(dir, ".build.info").is_none()
-        && !dir
-            .parent()
-            .is_some_and(super::battlenet::is_battlenet_root)
+        && !flavor
         && client_exe(dir).is_some()
         && find_child(dir, "Interface").is_some_and(|p| p.is_dir())
 }
@@ -183,6 +187,16 @@ mod tests {
         fs::remove_dir(root.join("interface")).unwrap();
         fs::write(root.join("Interface"), "a file").unwrap();
         assert!(!is_custom_root(root), "Interface must be a directory");
+
+        // A Battle.net flavor folder reached through a link is no custom root.
+        let bnet = dir.path().join("bnet");
+        fs::create_dir_all(bnet.join("_retail_/Interface")).unwrap();
+        fs::write(bnet.join("_retail_/Wow.exe"), "").unwrap();
+        fs::write(bnet.join(".build.info"), "Branch!STRING:0\n").unwrap();
+        let link = dir.path().join("retail");
+        std::os::unix::fs::symlink(bnet.join("_retail_"), &link).unwrap();
+        assert!(!is_custom_root(&bnet.join("_retail_")));
+        assert!(!is_custom_root(&link), "a linked flavor folder");
     }
 
     #[test]

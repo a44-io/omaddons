@@ -198,6 +198,48 @@ fn pin_version_installs_and_pins_or_only_records_the_pin() {
     assert_eq!(tree_hash(&home.addons("_retail_")), addons);
 }
 
+/// A dependency the pinned version brings in is installed, not pinned: only what the
+/// command named is relabelled.
+#[test]
+fn a_dependency_pin_version_brings_in_is_not_reported_pinned() {
+    let mut home = Home::new(&["wow"]);
+    let v1 = Rel::retail("v1");
+    let toc = common::addons::toc("120105", &["## Title: Foo", "## Dependencies: LibFoo"]);
+    let v2 = [(
+        "Foo.zip",
+        support::MAINLINE,
+        vec![("Foo/Foo.toc", toc.as_str())],
+    )];
+    home.installed_behind(FOO, ("v1", &v1.assets()), ("v2", &v2), &["retail"]);
+    let dir = home.env.config().join("omaddons/catalog.d");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("50-lib.toml"),
+        "schema_version = \"1.0\"\n\n[[addon]]\nname = \"LibFoo\"\nref = \"gh:o/libfoo\"\nfolders = [\"LibFoo\"]\n",
+    )
+    .unwrap();
+    let lib = common::addons::toc("120105", &["## Title: LibFoo"]);
+    let assets = [(
+        "LibFoo.zip",
+        support::MAINLINE,
+        vec![("LibFoo/LibFoo.toc", lib.as_str())],
+    )];
+    gh_release(&home.http, "https://github.com/o/libfoo", "v1", &assets);
+
+    let r = home.run(&["pin", "foo", "--version", "v2"]);
+    let envelope = r.expect(0);
+    let mut statuses = items(&envelope);
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [pair("retail", "installed"), pair("retail", "pinned")],
+        "{}",
+        r.context()
+    );
+    let record = common::state::record(&home, "retail");
+    assert!(record.addons["foo"].pinned && !record.addons["libfoo"].pinned);
+}
+
 #[test]
 fn pinning_a_pinned_addon_or_unpinning_an_unpinned_one_does_nothing() {
     let home = behind();

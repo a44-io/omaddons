@@ -206,6 +206,13 @@ fn help_for_a_command() {
 
 #[test]
 fn help_walks_a_nested_path() {
+    // A command whose bare form runs a default action is still the command's help.
+    for command in ["backup", "omarchy"] {
+        let via_help = run(&["help", command]);
+        let flag = run(&[command, "--help"]);
+        assert_eq!(via_help.code, 0, "{}", via_help.context());
+        assert_eq!(via_help.stdout, flag.stdout, "{command}");
+    }
     for path in [
         &["targets", "add"][..],
         &["targets", "rm"],

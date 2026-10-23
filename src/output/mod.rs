@@ -110,6 +110,8 @@ pub fn emit_to<O: Outcome, W: Write>(
     result: Result<O, Error>,
 ) -> Exit {
     let meta = meta(started, offline);
+    // A progress line ends with no newline: the result must not start on it.
+    reporter.clear_progress();
     let (mut warnings, _) = notes.snapshot();
     let exit = match result {
         Ok(outcome) => {

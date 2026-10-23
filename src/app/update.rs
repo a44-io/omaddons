@@ -136,6 +136,17 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
     targets.sort_by(|a, b| a.target.id.cmp(&b.target.id));
     let records = world.records()?;
     let (scope, unknown) = in_scope(&targets, &records, &catalog, &args.addons);
+    // A named addon with no client to be on is `not_managed`, as on clients without it:
+    // never dropped for a "nothing to update".
+    if targets.is_empty()
+        && let Some(name) = unknown.first()
+    {
+        return Err(Error::new(
+            ErrorCode::NotManaged,
+            format!("{name} is not installed on any client"),
+            Suggestion::command(["omaddons", "install", name.as_str()]),
+        ));
+    }
 
     let engine = Engine::new(ctx, &world, "update")?;
     let enabled = engine.enabled_sources();
@@ -349,6 +360,9 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
     for (target, item) in pushed {
         data.push_item(target, item);
     }
+    // Each unknown name's own error: an item keeps no alternatives, so one that is the
+    // command's only failure is returned whole, its other clients' adopt fixes included.
+    let mut unknown_errors: Vec<Error> = Vec::new();
     if let Some(first) = targets.first() {
         for name in &unknown {
             let checked: Vec<&str> = targets.iter().map(|d| d.target.id.as_str()).collect();
@@ -360,6 +374,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
                 ),
                 adopt_fixes(&world, &records, &targets, name),
             );
+            unknown_errors.push(error.clone());
             data.push_item(
                 TargetRef {
                     id: first.target.id.clone(),
@@ -412,6 +427,9 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
         }
     }
     if let Some(error) = data.all_failed() {
+        if let ([only], 1) = (unknown_errors.as_slice(), data.summary.failed) {
+            return Err(only.clone());
+        }
         return Err(error);
     }
     let locks: Vec<(TxId, u64)> = done

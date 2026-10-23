@@ -427,7 +427,7 @@ fn unfinished(path: &Path) -> bool {
 }
 
 /// Canonicalizes `dir` through its deepest existing ancestor, appending the missing rest.
-fn canonical_lenient(dir: &Path) -> Option<PathBuf> {
+pub(super) fn canonical_lenient(dir: &Path) -> Option<PathBuf> {
     let mut existing = dir;
     let mut missing = Vec::new();
     loop {
