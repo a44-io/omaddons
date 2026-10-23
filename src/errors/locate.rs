@@ -8,7 +8,8 @@
 //! files), and a bound hit is [`Coverage::Truncated`], never a clean result. A
 //! `SavedVariables/` folder undo leaves alone (outside the client, or spelled two ways)
 //! is skipped here too and counted. Account folder names are personal data: accounts are
-//! numbered in the order of their names, and no type here prints or serializes a name.
+//! numbered as the privacy redactor numbers them (their names folded to lower case, in
+//! order), and no type here prints or serializes a name.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ use crate::engine::swap::{SvSkip, sv_skip};
 use crate::fsx::FileStamp;
 use crate::inventory::{FolderClass, Inventory};
 use crate::limits::{ERRORS_MAX_ACCOUNTS, ERRORS_MAX_FILES};
+use crate::privacy::WtfPathRedactor;
 use crate::state::paths::ClientPaths;
 
 /// The global BugGrabber keeps its database in.
@@ -30,8 +32,8 @@ pub const FOLDER: &str = "!BugGrabber";
 /// One file that may hold a `BugGrabberDB`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DbFile {
-    /// The account's 1-based ordinal in the sorted account folder names (never the
-    /// name).
+    /// The account's ordinal (never the name): the `N` the privacy redactor writes as
+    /// `account N` for its folder, in `-v` paths too.
     pub account: usize,
     /// `!BugGrabber`, or the folder of the addon that embeds the database.
     pub folder: String,
@@ -139,11 +141,16 @@ pub fn locate_in(client: &ClientPaths, installed: bool, declared: &[Declared]) -
             stems.push(&d.folder);
         }
     }
-    let mut accounts: Vec<(String, PathBuf)> = Vec::new();
+    // Numbered as the redactor numbers them, so a database's `account N` and its `-v`
+    // path always agree; in that order, so the accounts examined are the first ones.
+    let names = WtfPathRedactor::for_client(client);
+    let mut accounts: Vec<(usize, String, PathBuf)> = Vec::new();
     for wtf in find_children(client.client_dir(), "WTF") {
         for root in find_children(&wtf, "Account") {
             for (name, dir) in dirs(&root) {
-                accounts.push((name, dir));
+                // Every name is learned below `REDACTOR_MAX_NAMES` account folders.
+                let n = names.account(&name).unwrap_or(usize::MAX);
+                accounts.push((n, name, dir));
             }
         }
     }
@@ -157,8 +164,10 @@ pub fn locate_in(client: &ClientPaths, installed: bool, declared: &[Declared]) -
     };
     let mut files_cut = false;
     let examined = accounts.len().min(ERRORS_MAX_ACCOUNTS);
-    for (at, (_, account_dir)) in accounts.iter().take(examined).enumerate() {
-        let account = at + 1;
+    for (at, (n, _, account_dir)) in accounts.iter().take(examined).enumerate() {
+        // An unlearned name sorts last, behind more than `ERRORS_MAX_ACCOUNTS` learned
+        // ones, so it is never examined; its position stands in all the same.
+        let account = if *n == usize::MAX { at + 1 } else { *n };
         for sv in find_children(account_dir, "SavedVariables") {
             match sv_skip(client, &sv) {
                 Some(SvSkip::Symlinked) => {

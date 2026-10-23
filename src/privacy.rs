@@ -102,14 +102,21 @@ impl WtfPathRedactor {
         learner.finish()
     }
 
+    /// Every spelling of `WTF/Account/` is read, as `errors` reads them. Account names are
+    /// learned first, so realms and characters never crowd one out of the bound.
     fn listing(client: &ClientPaths, max: usize) -> Self {
         let mut learner = Learner::new(max);
-        let Some(accounts) = crate::discover::find_child(&client.wtf(), "Account") else {
-            return learner.finish();
-        };
-        for (account, account_dir) in folders(&accounts) {
-            learner.learn(Kind::Account, &account);
-            for (realm, realm_dir) in folders(&account_dir) {
+        let accounts: Vec<(String, std::path::PathBuf)> =
+            crate::discover::find_children(client.client_dir(), "WTF")
+                .iter()
+                .flat_map(|wtf| crate::discover::find_children(wtf, "Account"))
+                .flat_map(|root| folders(&root))
+                .collect();
+        for (account, _) in &accounts {
+            learner.learn(Kind::Account, account);
+        }
+        for (_, account_dir) in &accounts {
+            for (realm, realm_dir) in folders(account_dir) {
                 if realm.eq_ignore_ascii_case("SavedVariables") {
                     continue;
                 }
@@ -183,6 +190,12 @@ impl WtfPathRedactor {
             }
         }
         out
+    }
+
+    /// The `N` of `account N` that [`Self::rel`] writes for the account folder `name`:
+    /// `None` for a name not learned (`account ?`).
+    pub fn account(&self, name: &str) -> Option<usize> {
+        self.ordinal(Kind::Account, name)
     }
 
     fn ordinal(&self, kind: Kind, name: &str) -> Option<usize> {
@@ -340,6 +353,23 @@ mod tests {
         }
         let client = ClientPaths::new(dir.path());
         (dir, client)
+    }
+
+    /// Every spelling of `WTF/Account/` is read, as `errors` reads them, and
+    /// [`WtfPathRedactor::account`] gives the ordinal `rel` writes.
+    #[test]
+    fn every_spelling_of_the_account_folder_is_learned() {
+        let (dir, c) = client(&["FAKEACCT/FakeRealm"]);
+        fs::create_dir_all(dir.path().join("wtf/account/OTHERACCT/OtherRealm")).unwrap();
+        let r = WtfPathRedactor::for_client(&c);
+        assert_eq!(
+            (r.account("FAKEACCT"), r.account("otheracct")),
+            (Some(1), Some(2))
+        );
+        assert_eq!(
+            r.rel("account/OTHERACCT/OtherRealm"),
+            "account/account 2/realm 2"
+        );
     }
 
     #[test]
@@ -500,13 +530,19 @@ mod tests {
             "Account/account 1/realm ?/character 1"
         );
 
-        // Past the bound: the first two names learned (depth first), the rest not.
+        // Past the bound: every account first (`errors` numbers its databases by them),
+        // then realms and characters while the bound lasts.
         let r = WtfPathRedactor::listing(&c, 2);
         assert!(format!("{r:?}").contains("truncated: true"), "{r:?}");
         assert_eq!(
             r.rel("Account/NEWACCT/NewRealm/NewChar"),
-            "Account/account ?/realm ?/character ?"
+            "Account/account 2/realm ?/character ?"
         );
+        assert_eq!(
+            r.rel("Account/FAKEACCT/FakeRealm/FakeChar"),
+            "Account/account 1/realm ?/character ?"
+        );
+        let r = WtfPathRedactor::listing(&c, 3);
         assert_eq!(
             r.rel("Account/FAKEACCT/FakeRealm/FakeChar"),
             "Account/account 1/realm 1/character ?"

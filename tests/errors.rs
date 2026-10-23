@@ -570,6 +570,52 @@ fn each_database_keeps_its_own_sessions_and_baseline() {
     assert_private(&envelope.to_string());
 }
 
+/// One numbering for accounts (omad-in4u): a database's `account N` is the one its `-v`
+/// path shows. These two folder names sort one way as written and the other way folded
+/// to lower case.
+#[test]
+fn a_databases_account_is_the_one_its_path_names() {
+    let r = Retail::new(&["Foo", "Bar", "Baz"]);
+    let files: Vec<SvFile> = buggrabber::two_accounts(Writer::Modern)
+        .into_iter()
+        .map(|f| SvFile {
+            rel: f.rel.replace("FAKEACCT", "fakeacct"),
+            bytes: f.bytes,
+        })
+        .collect();
+    r.write(&files);
+    let envelope = r.errors(&["-v"]).expect(0);
+    let dbs: Vec<(String, String, u64)> = support::retail(&envelope)["databases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            let path = d["path"].as_str().unwrap();
+            let named = path
+                .split('/')
+                .skip_while(|part| !part.eq_ignore_ascii_case("Account"))
+                .nth(1)
+                .unwrap()
+                .to_owned();
+            (
+                d["account"].as_str().unwrap().to_owned(),
+                named,
+                d["session"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let mut dbs = dbs;
+    dbs.sort();
+    assert_eq!(
+        dbs,
+        [
+            ("account 1".to_owned(), "account 1".to_owned(), 120),
+            ("account 2".to_owned(), "account 2".to_owned(), 7)
+        ],
+        "fakeacct is account 1 in both fields, SECONDACCT account 2"
+    );
+}
+
 /// A database of `session` with one error per session in `sessions`.
 fn sessions_db(session: u32, sessions: &[u32]) -> BugDb {
     sessions
