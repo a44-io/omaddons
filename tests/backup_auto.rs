@@ -165,6 +165,56 @@ fn a_checkpoint_before_the_days_first_change_once_a_day_and_only_when_changed() 
     );
 }
 
+/// Nine days of one change a day, settings changed each day: each change's pre-change
+/// backup runs backup retention (M3-D32), so the newest 7 days' backups remain. When the
+/// pass fails, the change still commits, with `retention_failed`.
+#[test]
+fn pre_change_backups_are_thinned_by_day_as_they_are_made() {
+    let home = client("daily-copy");
+    for day in 1..=9 {
+        fs::write(support::settings(&home), format!("Foo = {{ day = {day} }}")).unwrap();
+        let now = format!("2026-10-0{day}T10:00:00Z");
+        install(&home, &now, &format!("Day{day}"), &[]).expect(0);
+    }
+    let kept: Vec<String> =
+        run(&home, DAY3, &["backup", "list", "-t", "retail"], &[]).expect(0)["data"]["targets"][0]
+            ["backups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["captured_at"].as_str().unwrap()[..10].to_owned())
+            .collect();
+    let days: BTreeSet<&str> = kept.iter().map(String::as_str).collect();
+    assert_eq!(
+        days,
+        BTreeSet::from([
+            "2026-10-03",
+            "2026-10-04",
+            "2026-10-05",
+            "2026-10-06",
+            "2026-10-07",
+            "2026-10-08",
+            "2026-10-09"
+        ]),
+        "{kept:?}"
+    );
+
+    // A pass that cannot delete: the trash is a file. The change commits anyway.
+    let trash = home.client("_retail_").join("Interface/.omaddons/trash");
+    fs::remove_dir_all(&trash).unwrap();
+    fs::write(&trash, "").unwrap();
+    fs::write(support::settings(&home), "Foo = { day = 10 }").unwrap();
+    let r = install(&home, "2026-10-10T10:00:00Z", "Day10", &[]).expect(0);
+    let codes: Vec<&str> = r["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["code"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"retention_failed"), "{r}");
+    assert_eq!(r["data"]["items"][0]["status"], "installed", "{r}");
+}
+
 #[test]
 fn the_after_play_checkpoint_is_made_when_due_and_skipped_with_its_reason() {
     let mut home = client("daily-copy");

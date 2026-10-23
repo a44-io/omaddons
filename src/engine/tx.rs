@@ -41,10 +41,14 @@ use super::swap::{
 use crate::backup::Trigger;
 use crate::backup::auto::{self, AutoResult, AutoRun};
 use crate::backup::create::Created;
+use crate::backup::inventory::Ring;
+use crate::backup::prune::{self, PruneOpts};
 use crate::discover::registry::{LockedRegistry, same_dir};
 use crate::discover::running::{RunningScan, detect_running, running_unknown};
 use crate::discover::target::DiscoveredTarget;
-use crate::error::{Error, ErrorBody, ErrorCode, PlanStaleSource, Result, Suggestion, Warning};
+use crate::error::{
+    Error, ErrorBody, ErrorCode, PlanStaleSource, Result, Suggestion, Warning, WarningCode,
+};
 use crate::fsx::{
     self, GlobalLock, GlobalLockGuard, InflightLock, LockUse, PruneReason, ScopeTable,
     SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint,
@@ -668,15 +672,70 @@ pub(super) fn pre_change(
         record_skips: false,
     };
     let mut outcome = auto::run(&auto, &|| register_early(ctx, scopes, discovered));
-    let line = match &outcome.result {
-        AutoResult::Created(created) => Some(backup_line(ctx, created, reason, run)),
-        AutoResult::Skipped(_) => None,
-        AutoResult::Failed(error) => {
-            outcome.warnings.push(auto::failed(&target.id, error));
-            None
-        }
+    let (line, warning) = match &outcome.result {
+        AutoResult::Created(created) => (
+            Some(backup_line(ctx, created, reason, run)),
+            retain_backups(
+                ctx,
+                scopes,
+                discovered,
+                created,
+                policy.limits.backup_auto_keep_days,
+            ),
+        ),
+        AutoResult::Skipped(_) => (None, None),
+        AutoResult::Failed(error) => (None, Some(auto::failed(&target.id, error))),
     };
+    outcome.warnings.extend(warning);
     (line, outcome.warnings)
+}
+
+/// Backup retention after the pre-change backup (M3-D32), as after every backup: outside
+/// the lock, the new backup pinned. A failure is only `retention_failed`: the backup and
+/// the change stand.
+fn retain_backups(
+    ctx: &EngineCtx<'_>,
+    scopes: &ScopeTable,
+    discovered: &DiscoveredTarget,
+    created: &Created,
+    keep_days: usize,
+) -> Option<Warning> {
+    let target = &discovered.target;
+    let opts = PruneOpts {
+        pins: BTreeSet::from([created.meta.id]),
+        ..PruneOpts::default()
+    };
+    let ring = Ring {
+        command: ctx.command,
+        actor: ctx.actor,
+    };
+    let client = ClientPaths::new(&target.client_dir);
+    let pass = prune::retain(
+        ctx.paths,
+        scopes,
+        &client,
+        Some(&created.meta.target),
+        keep_days,
+        &opts,
+        ring,
+    );
+    let error = pass.err()?;
+    Some(
+        Warning::new(
+            WarningCode::RetentionFailed,
+            format!(
+                "{}: pruning old backups after the automatic backup failed: {}",
+                target.id, error.message
+            ),
+        )
+        .with_fix(Suggestion::command([
+            "omaddons",
+            "backup",
+            "prune",
+            "-t",
+            target.id.as_str(),
+        ])),
+    )
 }
 
 /// `discovered` registered before its change's commit window, for an automatic backup

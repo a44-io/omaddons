@@ -2041,7 +2041,7 @@ Retention runs after every commit, for the target just changed:
 - A whole restore's `WTF.previous` (the tree it replaced) is pruned with its transaction by the count and age rules above, and never counts toward the 2 GiB cap, so a few large restores never evict the snapshots undo needs for addons.
 - `WTF/` backups (`.omaddons/backups/`) are never touched by transaction retention. They have their own, below.
 
-**Backups.** After every `backup create`, after a restore (its source kept whatever its age) and on `backup prune`, each client's backups are thinned:
+**Backups.** After every backup (by `backup create` or automatic), after a restore (its source kept whatever its age) and on `backup prune`, each client's backups are thinned:
 
 - **Always kept:** every backup younger than 24 hours (since it was made or imported here), the client's newest checkpoint (`qualifying`) whatever its age, and a backup whose `backup.json` cannot be read.
 - **Your backups** (`manual`, `imported` and `recovered`, which holds a play session an interrupted restore would have lost) are only ever deleted when you ask: by id, with `--keep` or with `--older-than`.
@@ -2529,7 +2529,6 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 
 The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
 
-- **Retention after the day's first change** (`omad-k2ns`). The automatic backup taken before the day's first change does not run backup retention; only `backup create` (manual or `--auto`), a restore and `backup prune` do. Using only the CLI, without the widget's after-play backups, you keep one more automatic backup per day until free space runs low (they are clones on btrfs and xfs). `omaddons backup prune` thins them as described.
 - **A pre-M3 build after a crashed restore** (`omad-aepa`). The last M2 build cannot see a restore's journal, and an hour after a restore crashed past its first rename, any change it makes can delete the restore's undo snapshot, which may hold the only copy of the `WTF/` the restore replaced. Run no pre-M3 build while a restore waits to be recovered.
 - **`archive_too_large` details** (`omad-36gn`). `details.limit` is the numeric bound for archives, downloads and WowAce trees, but the constant's name for a `WTF/` backup and `backup import` (whose number is in `details.max`); WowAce adds the name as `details.constant`.
 
