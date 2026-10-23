@@ -248,6 +248,13 @@ pub fn load<T: Versioned>(path: &Path) -> Result<Option<Loaded<T>>> {
 /// [`load`] of `bytes` already read from `path`: for a caller that keeps the bytes too
 /// (the release memo compares them with what it would write).
 pub fn load_bytes<T: Versioned>(path: &Path, bytes: &[u8]) -> Result<Loaded<T>> {
+    if let Some(value) = current::<T>(bytes) {
+        return Ok(Loaded {
+            value,
+            version: T::CURRENT,
+            status: VersionStatus::Current,
+        });
+    }
     let (version, raw) = parse(path, bytes)?;
     let (status, raw) = match version.cmp(&T::CURRENT) {
         Ordering::Equal => (VersionStatus::Current, raw),
@@ -321,6 +328,26 @@ pub fn encode<T: Versioned>(value: &T) -> Result<Vec<u8>> {
     .map_err(|err| Error::internal(format!("serializing {}: {err}", T::KIND)))?;
     json.push(b'\n');
     Ok(json)
+}
+
+/// A document at `T::CURRENT`, decoded straight from its bytes, without the JSON value
+/// [`parse`] builds first: the common case, and `status --cached` reads a dozen of these
+/// on every widget refresh. `None` for anything else (another version, a document that
+/// does not decode, duplicate keys), which [`load_bytes`] then reads the general way, so
+/// its result and its errors are what they always were. The `schema_version` key is
+/// ignored as an unknown field: no stored type has a field of that name or keeps unknown
+/// keys.
+fn current<T: Versioned>(bytes: &[u8]) -> Option<T> {
+    #[derive(Deserialize)]
+    struct Version<'a> {
+        #[serde(borrow)]
+        schema_version: &'a str,
+    }
+    let version = serde_json::from_slice::<Version<'_>>(bytes).ok()?;
+    let current = version.schema_version.parse::<SchemaVersion>().ok()? == T::CURRENT;
+    current
+        .then(|| serde_json::from_slice::<T>(bytes).ok())
+        .flatten()
 }
 
 /// The version and the rest of the document.
@@ -622,6 +649,37 @@ mod tests {
                 err.code,
                 ErrorCode::StateCorrupt,
                 "saving over a corrupt file: {content:?}"
+            );
+        }
+    }
+
+    /// A current document decodes straight from its bytes to what the general path gives;
+    /// any other (older, newer, duplicate keys, not a document) is left to that path.
+    #[test]
+    fn a_current_document_decodes_directly_and_anything_else_the_general_way() {
+        let general = |bytes: &[u8]| {
+            let (version, raw) = parse(Path::new("doc.json"), bytes).unwrap();
+            assert_eq!(version, TestDoc::CURRENT);
+            serde_json::from_value::<TestDoc>(raw).unwrap()
+        };
+        let saved = encode(&doc()).unwrap();
+        assert_eq!(current::<TestDoc>(&saved), Some(general(&saved)));
+        assert_eq!(current::<TestDoc>(&saved), Some(doc()));
+        let compact = br#"{"items":{"a":1},"schema_version":"1.1","name":"x"}"#;
+        assert_eq!(current::<TestDoc>(compact), Some(general(compact)));
+        for other in [
+            &br#"{"schema_version":"1.0","name":"x","items":{}}"#[..],
+            br#"{"schema_version":"9.0","name":"x","items":{}}"#,
+            br#"{"schema_version":"1.1","name":"x","name":"y","items":{}}"#,
+            br#"{"schema_version":"1.1","name":3,"items":{}}"#,
+            b"[1,2]",
+            b"",
+        ] {
+            assert_eq!(
+                current::<TestDoc>(other),
+                None,
+                "{}",
+                String::from_utf8_lossy(other)
             );
         }
     }

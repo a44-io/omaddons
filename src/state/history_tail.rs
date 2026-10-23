@@ -76,10 +76,31 @@ pub enum Answer {
 }
 
 impl HistoryTail {
-    /// What bare `undo` would revert, from the lines held.
+    /// What bare `undo` would revert, from the lines held. The newest undoable line is
+    /// found by each line's facts (its ops skipped) and only its run's lines are read
+    /// whole: what [`history::newest_run`] over every line gives, without building the
+    /// ops of every run held. A line whose facts read but which does not read whole is
+    /// skipped, as reading every line would skip it.
     pub fn answer(&self) -> Answer {
-        let entries: Vec<HistoryEntry> =
-            history::parse(&self.text(), &history::HistoryFilter::default()).entries;
+        let facts = facts_of(&self.lines);
+        // The run of an undoable line.
+        let undoable =
+            |fact: &Option<LineFacts>| fact.as_ref().filter(|f| f.undoable).map(|f| f.run);
+        let key = self
+            .lines
+            .iter()
+            .zip(&facts)
+            .rev()
+            .filter_map(|(line, fact)| Some((line, undoable(fact)?)))
+            .find(|(line, _)| !whole(std::iter::once(*line)).is_empty())
+            .map(|(_, run)| run);
+        let run_lines = self
+            .lines
+            .iter()
+            .zip(&facts)
+            .filter(|(_, fact)| key.is_some() && undoable(fact) == key)
+            .map(|(line, _)| line);
+        let entries = whole(run_lines);
         let Some(found) = history::newest_run(&entries, None, None) else {
             return Answer::Nothing {
                 complete: self.covers.from == 0,
@@ -92,16 +113,6 @@ impl HistoryTail {
             return Answer::NeedsOlder;
         }
         Answer::Found(found.entries.into_iter().cloned().collect())
-    }
-
-    /// The lines held, as history text.
-    fn text(&self) -> String {
-        let mut text = String::new();
-        for line in &self.lines {
-            text.push_str(line);
-            text.push('\n');
-        }
-        text
     }
 
     /// The history length it covers when complete: `from` plus every line and its newline.
@@ -195,6 +206,16 @@ fn follow(tail: &mut HistoryTail, line: &str) {
 /// Every line's facts, in order.
 fn facts_of(lines: &[String]) -> Vec<Option<LineFacts>> {
     lines.iter().map(|l| line_facts(l)).collect()
+}
+
+/// The transactions `lines` (without their newlines, in file order) read whole.
+fn whole<'l>(lines: impl Iterator<Item = &'l String>) -> Vec<HistoryEntry> {
+    let mut text = String::new();
+    for line in lines {
+        text.push_str(line);
+        text.push('\n');
+    }
+    history::parse(&text, &history::HistoryFilter::default()).entries
 }
 
 /// Drops `tail`'s lines (whose `facts` these are) before the first line of the oldest of
@@ -703,6 +724,33 @@ mod tests {
             needs_older * 20 < found,
             "{found} found, {needs_older} needing older lines"
         );
+    }
+
+    /// The newest undoable line reads by its facts but not whole (a folder name the format
+    /// refuses): skipped, as reading every line skips it, so the run before it is chosen.
+    #[test]
+    fn a_line_that_reads_only_by_its_facts_is_skipped_as_reading_every_line_skips_it() {
+        let (older, newer) = (RunId::new(), RunId::new());
+        let good = line_at(TxKind::Install, older, 1_790_000_000_000);
+        let mut broken: serde_json::Value =
+            serde_json::from_str(&line_at(TxKind::Update, newer, 1_790_000_001_000)).unwrap();
+        broken["ops"][0]["folder"] = serde_json::json!("../Escape");
+        let broken = broken.to_string();
+        assert!(
+            line_facts(&broken).is_some_and(|f| f.undoable),
+            "its facts read"
+        );
+        let text = format!("{good}\n{broken}\n");
+        let entries = history::parse(&text, &HistoryFilter::default()).entries;
+        assert_eq!(entries.len(), 1, "it does not read whole");
+        let full = newest_run(&entries, None, None)
+            .map(|r| r.entries.iter().map(|e| e.tx).collect::<Vec<TxId>>());
+        let projected = match HistoryTail::from_text(&text).answer() {
+            Answer::Found(run) => Some(run.iter().map(|e| e.tx).collect()),
+            _ => None,
+        };
+        assert!(full.is_some());
+        assert_eq!(projected, full);
     }
 
     #[test]
