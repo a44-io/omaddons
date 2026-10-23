@@ -782,7 +782,8 @@ Item {
 
           BorderSurface {
             objectName: "errorCard"
-            visible: !!root.lastError && !root.cardMode
+            // Like the result row: an earlier failure is not shown while another runs.
+            visible: !!root.lastError && !root.cardMode && !root.busy
             width: parent.width
             implicitHeight: errorColumn.implicitHeight + Style.spacing.lg * 2
             color: root.alpha(root.urgent, 0.10)

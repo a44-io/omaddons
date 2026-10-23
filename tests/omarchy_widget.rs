@@ -1101,6 +1101,15 @@ fn errors_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     );
     let stale = write_fixture(dir, "dismiss-stale", &home.exec_with(&stale, &now), 1);
     assert_eq!(stale["error"]["code"], "plan_stale", "{stale}");
+    // A dismissal that ran: its result line counts the errors it cleared.
+    let dismiss = fill(t, "dismiss_errors", &[("target", "retail")]);
+    let dismissed = write_fixture(dir, "dismiss", &home.exec_with(&dismiss, &now), 0);
+    assert!(
+        dismissed["data"]["targets"][0]["errors"]
+            .as_u64()
+            .is_some_and(|n| n > 0),
+        "{dismissed}"
+    );
     // The game still writing: a file cut short.
     let cut = file.bytes.len() - 20;
     file.bytes.truncate(cut);
@@ -1206,7 +1215,7 @@ fn write_widget_fixtures() {
         .collect();
     let mut preview = support::standard(true);
     preview.push("--dry-run".to_owned());
-    preview.extend(undo);
+    preview.extend(undo.iter().cloned());
     let preview = write_fixture(&dir, "undo-preview", &home.exec(&preview), 0);
     assert!(preview["data"]["precondition"].is_string(), "{preview}");
     let failure = write_fixture(
@@ -1216,6 +1225,11 @@ fn write_widget_fixtures() {
         3,
     );
     assert_eq!(failure["error"]["code"], "target_not_found", "{failure}");
+    // The same undo, run: its result line names what it reverted.
+    let mut run = support::standard(true);
+    run.extend(undo);
+    let undone = write_fixture(&dir, "undo", &home.exec(&run), 0);
+    assert!(undone["data"]["reverted"]["kind"].is_string(), "{undone}");
 
     // The Installed view's markers: Foo edited by hand, Bar's folder gone, Baz pinned
     // behind its latest; and Foo's release notes, which the Updates view's `i` reads.

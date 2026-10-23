@@ -476,6 +476,13 @@ describe("reduceStatus", () => {
     expect(model.summary.state).toBe("idle")
   })
 
+  test("no clients: the tooltip says so, never \"up to date\"", () => {
+    const none = JSON.parse(JSON.stringify(fixture("status-idle")))
+    none.data.targets = []
+    none.data.summary.targets = 0
+    expect(M.reduceStatus(none, NOW).bar.tooltip).toEqual(["No World of Warcraft clients found"])
+  })
+
   test("attention", () => {
     const model = M.reduceStatus(fixture("status-attention"))
     expect(model.bar.urgent).toBe(true)
@@ -1010,6 +1017,18 @@ describe("the other reducers", () => {
     const reload = JSON.parse(JSON.stringify(fixture("update")))
     reload.data.targets[1].reload_required = "reload"
     expect(M.resultLine(reload)).toBe("Updated 4 addons on 2 clients · /reload in game")
+  })
+
+  test("an undo and a dismissal say what they did, never \"0 addons\"", () => {
+    const undo = fixture("undo")
+    const first = undo.data.transactions[0].target.id
+    expect(M.resultLine(undo).startsWith(`Undid ${undo.data.reverted.kind} on ${first}`)).toBe(true)
+    const dismissed = fixture("dismiss")
+    const n = dismissed.data.targets[0].errors
+    expect(M.resultLine(dismissed)).toBe(`Dismissed ${n} new error${n === 1 ? "" : "s"} on retail`)
+    const nothing = JSON.parse(JSON.stringify(dismissed))
+    nothing.data.targets[0].errors = 0
+    expect(M.resultLine(nothing)).toBe("No new errors to dismiss")
   })
 
   test("a partial result names what failed, with its fix as a button", () => {

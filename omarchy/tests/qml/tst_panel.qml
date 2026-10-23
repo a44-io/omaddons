@@ -437,6 +437,12 @@ TestCase {
     svc.lastError = { "message": "Omarchy is not installed here", "code": "not_found", "fixes": [],
       "fixText": "this needs the Omarchy desktop (omarchy.org); everything else works without it" }
     compare(child("fixText").text, "this needs the Omarchy desktop (omarchy.org); everything else works without it")
+    // The next change runs: the earlier failure is not shown under its progress.
+    verify(child("errorCard").visible)
+    svc.action = { "label": "Remove Foo", "current": 1, "total": 1, "message": "stage 1/1 · era" }
+    verify(!child("errorCard").visible, "no earlier error while a change runs")
+    svc.action = null
+    verify(child("errorCard").visible)
   }
 
   function test_a_partial_result_offers_each_failed_items_fix() {

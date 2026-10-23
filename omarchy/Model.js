@@ -806,6 +806,7 @@ function ageText(iso, nowMs) {
 
 function tooltipOf(summary, targets, nowMs) {
   if (!summary) return ["omaddons has not answered yet"]
+  if (targets.length === 0 && num(summary.targets) === 0) return ["No World of Warcraft clients found"]
   var lines = []
   if (summary.updates.available > 0) {
     var per = []
@@ -1158,6 +1159,36 @@ function isChange(item) {
 // `targets[]`; install and remove carry one target's `items`.
 // The result line of a backup command: what it backed up, restored or deleted; "" for
 // any other command.
+// The result line of a command whose envelope reports no items: what it did. An undo
+// names the change it reverted and where; a dismissal counts the errors that stopped
+// being new. "" for any other command.
+function commandResultLine(command, data) {
+  if (command === "undo") {
+    var reverted = data.reverted && typeof data.reverted === "object" ? data.reverted : {}
+    var where = []
+    var txs = Array.isArray(data.transactions) ? data.transactions : []
+    for (var i = 0; i < txs.length; i++) {
+      var id = txs[i] && txs[i].target ? str(txs[i].target.id) : ""
+      if (id && where.indexOf(id) === -1) where.push(id)
+    }
+    if (where.length === 0 && reverted.target) where.push(str(reverted.target.id))
+    return "Undid " + (str(reverted.kind) || "the last change") + (where.length ? " on " + joinNames(where) : "")
+  }
+  if (command === "errors dismiss") {
+    var targets = Array.isArray(data.targets) ? data.targets : []
+    var count = 0
+    var names = []
+    for (var t = 0; t < targets.length; t++) {
+      var n = targets[t] ? num(targets[t].errors) : 0
+      count += n
+      if (n > 0 && targets[t].target) names.push(str(targets[t].target.id))
+    }
+    return count === 0 ? "No new errors to dismiss"
+      : "Dismissed " + plural(count, "new error") + " on " + joinNames(names)
+  }
+  return backupResultLine(command, data)
+}
+
 function backupResultLine(command, data) {
   var targets = Array.isArray(data.targets) ? data.targets : [data]
   if (command === "backup restore") {
@@ -1229,8 +1260,8 @@ function resultLine(env) {
   }
   var verb = RESULT_VERBS[env.command] || "Done:"
   var failed = failedItems(env)
-  var backup = backupResultLine(env.command, data)
-  var line = backup ? backup
+  var own = commandResultLine(env.command, data)
+  var line = own ? own
     : changed === 0 && failed.length === 0 && env.command === "update" ? "Everything was up to date"
     : failed.length === 0 ? verb + " " + plural(changed, "addon") + (touched > 1 ? " on " + plural(touched, "client") : "")
     : (changed > 0 ? verb + " " + changed + " of " + (changed + failed.length) + "; " : "")
