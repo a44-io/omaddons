@@ -24,7 +24,7 @@ use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::drift::{DriftMode, DriftState};
-use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
+use crate::error::{Error, ErrorCode, Result, Warning};
 use crate::model::{
     AddonReason, AddonState, Channel, FolderName, Ref, ReleaseSet, Target, TxId, VersionConfidence,
 };
@@ -352,11 +352,20 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
         &args.query,
     )
     .map_err(|e| {
-        if matches!(e.code, ErrorCode::NotFound) {
-            not_found(&args.query)
-        } else {
-            aimed_at(e, &ctx.argv, &args.query)
+        let mut e = aimed_at(e, &ctx.argv, &args.query);
+        // A name nothing knows, said as `info` reads it (an installed name counts too),
+        // with the parser's fix (`search`); a path that does not exist says so itself.
+        let unknown_name = e
+            .fix
+            .argv()
+            .is_some_and(|a| a.get(1).is_some_and(|c| c == "search"));
+        if e.code == ErrorCode::NotFound && unknown_name {
+            e.message = format!(
+                "{} is not installed, not in the catalog, and not a ref",
+                args.query
+            );
         }
+        e
     })?;
     let targets: Vec<&DiscoveredTarget> = world.select_many(ctx)?;
     // A catalog name with variants means the selected client's (one `-t`, else the
@@ -368,11 +377,27 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
             .and_then(Result::ok)
             .map(|d| d.target.family),
     };
+    // The one client asked about without a build is `not_found`, as `install` says; the
+    // default target's family without one shows the default build.
+    let one_client = matches!(targets.as_slice(), [_]);
     let parsed = match family {
-        Some(family) => for_family(&parsed, &catalog, family, &args.query)?,
+        Some(family) => match for_family(&parsed, &catalog, family, &args.query) {
+            Ok(own) => own,
+            Err(_) if !one_client => parsed,
+            Err(error) => return Err(error),
+        },
         None => parsed,
     };
     let r = parsed.r#ref.clone();
+    // Every installed build of a name with variants is this addon, on every target.
+    let refs: Vec<Ref> = match &parsed.catalog_variants {
+        Some(name) => catalog
+            .variants(name)
+            .iter()
+            .map(|e| e.r#ref.clone())
+            .collect(),
+        None => vec![r.clone()],
+    };
 
     let mut installed = Vec::new();
     // Each installed release, for the changelog's oldest.
@@ -383,8 +408,9 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
         };
         let Some(key) = d.target.key else { continue };
         let mut report = None;
-        for a in record.addons.values().filter(|a| a.r#ref == r) {
-            if let Some(release_id) = &a.release_id {
+        for a in record.addons.values().filter(|a| refs.contains(&a.r#ref)) {
+            // The changelog is the shown build's: another build's release is no `since`.
+            if let Some(release_id) = a.release_id.as_ref().filter(|_| a.r#ref == r) {
                 releases.push(Installed {
                     release_id,
                     version: &a.version,
@@ -458,7 +484,7 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
                 .get(&i.target.id)?
                 .addons
                 .values()
-                .find(|a| a.r#ref == r)
+                .find(|a| refs.contains(&a.r#ref))
                 .map(|a| a.name.clone())
         })
         .or_else(|| catalog_info.as_ref().map(|c| c.name.clone()));
@@ -607,13 +633,4 @@ fn latest(
         compat,
         asset_urls: urls,
     })
-}
-
-/// A query that matches nothing anywhere.
-fn not_found(query: &str) -> Error {
-    Error::new(
-        ErrorCode::NotFound,
-        format!("{query} is not installed, not in the catalog, and not a ref"),
-        Suggestion::command(["omaddons", "list"]),
-    )
 }

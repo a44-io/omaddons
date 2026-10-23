@@ -78,10 +78,10 @@ pub(crate) fn sources(dir: &Path) -> Vec<(PathBuf, String)> {
     out
 }
 
-/// Words that start an item: a top-level `,` ends no item that starts with one (the
-/// commas of `impl<A, B>` or `fn f<A, B>`), but ends a variant, a field or an arm.
+/// Words that start an item (after any `pub` or `pub(…)`): a top-level `,` ends no item
+/// that starts with one (the commas of `impl<A, B>` or `fn f<A, B>`), but ends a
+/// variant, a field (`pub hook: T,` included) or an arm.
 const ITEM_WORDS: &[&str] = &[
-    "pub",
     "fn",
     "mod",
     "use",
@@ -270,7 +270,13 @@ fn item_end(code: &[char], from: usize) -> usize {
     while i < code.len() {
         let c = code[i];
         if first_word.is_none() && is_ident(c) {
-            first_word = Some(code[i..].iter().take_while(|c| is_ident(**c)).collect());
+            let word: String = code[i..].iter().take_while(|c| is_ident(**c)).collect();
+            // Visibility is no item word: what follows it (and its `(…)`) is.
+            if word == "pub" {
+                i += word.len();
+                continue;
+            }
+            first_word = Some(word);
         }
         match c {
             ';' => return i + 1,
@@ -377,6 +383,16 @@ pub struct After;
         // Char for char: every line keeps its number.
         assert_eq!(blank.lines().count(), PROBE.lines().count());
         assert_eq!(keep.chars().count(), PROBE.chars().count());
+    }
+
+    /// A test-only `pub` field ends at its comma: the production fields after it stay.
+    #[test]
+    fn a_test_only_pub_field_hides_nothing_after_it() {
+        let text = "pub struct S {\n    #[cfg(test)]\n    pub hook: u8,\n    pub file: std::fs::File,\n    pub(crate) at: SystemTime,\n}\n";
+        let keep = production_code(text, Literals::Keep).unwrap();
+        assert!(!keep.contains("hook"), "{keep}");
+        assert!(keep.contains("pub file: std::fs::File"), "{keep}");
+        assert!(keep.contains("pub(crate) at: SystemTime"), "{keep}");
     }
 
     #[test]

@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
@@ -223,11 +224,45 @@ pub struct Reporter<W: Write> {
     color: bool,
     /// A human progress line is on screen and must be cleared before other output.
     progress_line: bool,
+    /// Measures the terminal so a progress line fits one row (clearing erases only the
+    /// row the cursor is on): the real stderr only.
+    fit_width: bool,
 }
+
+/// The width in columns of the terminal stderr is, when it says.
+fn terminal_width() -> Option<usize> {
+    rustix::termios::tcgetwinsize(std::io::stderr())
+        .ok()
+        .map(|size| usize::from(size.ws_col))
+        .filter(|columns| *columns > 0)
+}
+
+/// `message` cut so `{phase}: {message}{count}` fits in `columns - 1` characters, with
+/// `…` where it was cut.
+fn fit(phase: &str, message: &str, count: &str, columns: usize) -> String {
+    let room = columns.saturating_sub(1 + phase.chars().count() + 2 + count.chars().count());
+    if message.chars().count() <= room {
+        return message.to_owned();
+    }
+    let kept: String = message.chars().take(room.saturating_sub(1)).collect();
+    if room == 0 {
+        String::new()
+    } else {
+        format!("{kept}…")
+    }
+}
+
+/// A human progress line is on the terminal, whichever reporter wrote it: a reporter made
+/// afresh (the panic path, after the run's own was dropped while unwinding) clears it.
+static PROGRESS_ON_SCREEN: AtomicBool = AtomicBool::new(false);
 
 impl Reporter<std::io::Stderr> {
     pub fn stderr(cfg: &OutputConfig) -> Self {
-        Self::new(std::io::stderr(), cfg)
+        Self {
+            progress_line: PROGRESS_ON_SCREEN.load(Ordering::Relaxed),
+            fit_width: true,
+            ..Self::new(std::io::stderr(), cfg)
+        }
     }
 }
 
@@ -241,6 +276,7 @@ impl<W: Write> Reporter<W> {
             verbose: cfg.style.verbose,
             color: cfg.stderr_color,
             progress_line: false,
+            fit_width: false,
         }
     }
 
@@ -382,9 +418,16 @@ impl<W: Write> Reporter<W> {
                     (Some(c), None) => format!(" {c}"),
                     _ => String::new(),
                 };
+                // A line wider than the terminal wraps, and clearing erases only its
+                // last row: cut to fit.
+                let message = match self.fit_width.then(terminal_width).flatten() {
+                    Some(columns) => fit(phase, message, &count, columns),
+                    None => message.to_owned(),
+                };
                 drop(write!(self.sink, "\r\u{1b}[2K{phase}: {message}{count}"));
                 drop(self.sink.flush());
                 self.progress_line = true;
+                PROGRESS_ON_SCREEN.store(true, Ordering::Relaxed);
             }
         }
     }
@@ -409,6 +452,7 @@ impl<W: Write> Reporter<W> {
     pub(super) fn clear_progress(&mut self) {
         if std::mem::take(&mut self.progress_line) {
             drop(self.sink.write_all(b"\r\x1b[2K"));
+            PROGRESS_ON_SCREEN.store(false, Ordering::Relaxed);
         }
     }
 
@@ -426,6 +470,18 @@ mod tests {
     use super::*;
     use crate::error::{ErrorCode, Suggestion, WarningCode};
     use crate::output::term::Style;
+
+    /// A progress line fits one row: its message is cut, never its phase or count.
+    #[test]
+    fn a_progress_message_is_cut_to_the_terminal() {
+        let long = "file:/tmp/a/very/long/path/to/an/archive.zip on retail";
+        let line = |columns| format!("fetch: {} 1/2", fit("fetch", long, " 1/2", columns));
+        assert_eq!(line(200), format!("fetch: {long} 1/2"));
+        let cut = line(40);
+        assert_eq!(cut.chars().count(), 39, "{cut}");
+        assert!(cut.ends_with("… 1/2"), "{cut}");
+        assert_eq!(fit("fetch", long, " 1/2", 5), "");
+    }
 
     fn cfg(mode: StderrMode, progress: ProgressMode, quiet: bool) -> OutputConfig {
         OutputConfig {

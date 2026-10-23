@@ -357,18 +357,8 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
     // even when choosing then fails (`undo <tx>` of such a transaction).
     ctx.notes.warn_all(read.skipped_warning().as_slice());
     // A settings change is in the history, but undo never reverts it.
-    if let Some(prefix) = args.tx.as_deref()
-        && let Some(setting) = setting_by_prefix(&read.settings, prefix)
-    {
-        let kind = crate::app::history::kind_name(setting.kind);
-        return Err(Error::new(
-            ErrorCode::NotFound,
-            format!(
-                "transaction {} is a {kind} change, which undo does not revert",
-                setting.tx
-            ),
-            Suggestion::command(["omaddons", "history"]),
-        ));
+    if let Some(prefix) = args.tx.as_deref() {
+        settings_prefix(&read.settings, &read.entries, prefix)?;
     }
     let entries = read.entries;
     let selection = select(
@@ -518,18 +508,53 @@ fn select<'e>(entries: &'e [HistoryEntry], s: &Selector<'_>) -> Result<Selection
     })
 }
 
-/// The one settings change whose id is `prefix` or starts with it (8+ characters).
-fn setting_by_prefix<'e>(settings: &'e [SettingEntry], prefix: &str) -> Option<&'e SettingEntry> {
+/// `not_found` when `prefix` (8+ characters) names exactly one history line and it is a
+/// settings change, which undo never reverts; the ambiguity error when it names several,
+/// settings changes and transactions together. A prefix unique among transactions is
+/// [`by_prefix`]'s to resolve.
+fn settings_prefix(
+    settings: &[SettingEntry],
+    entries: &[HistoryEntry],
+    prefix: &str,
+) -> Result<()> {
     let wanted = prefix.to_ascii_uppercase();
     if wanted.len() < MIN_PREFIX {
-        return None;
+        return Ok(());
     }
-    let mut matching = settings
+    let named = |tx: &TxId| tx.to_string().starts_with(&wanted);
+    let matching: Vec<&SettingEntry> = settings.iter().filter(|e| named(&e.tx)).collect();
+    let txs: Vec<String> = entries
         .iter()
-        .filter(|e| e.tx.to_string().starts_with(&wanted));
-    match (matching.next(), matching.next()) {
-        (Some(one), None) => Some(one),
-        _ => None,
+        .filter(|e| named(&e.tx))
+        .map(|e| e.tx.to_string())
+        .collect();
+    match (matching.as_slice(), txs.len()) {
+        ([], _) => Ok(()),
+        ([setting], 0) => {
+            let kind = crate::app::history::kind_name(setting.kind);
+            Err(Error::new(
+                ErrorCode::NotFound,
+                format!(
+                    "transaction {} is a {kind} change, which undo does not revert",
+                    setting.tx
+                ),
+                Suggestion::command(["omaddons", "history"]),
+            ))
+        }
+        (many, _) => {
+            let mut candidates: Vec<String> = many.iter().map(|e| e.tx.to_string()).collect();
+            candidates.extend(txs);
+            candidates.sort();
+            Err(Error::new(
+                ErrorCode::NotFound,
+                format!(
+                    "{prefix} matches {} transactions; give more of the id",
+                    candidates.len()
+                ),
+                Suggestion::command(["omaddons", "history"]),
+            )
+            .details(serde_json::json!({ "candidates": candidates })))
+        }
     }
 }
 
@@ -780,6 +805,47 @@ mod tests {
         select(entries, &selector)
             .map(|s| s.entries.iter().map(|e| e.tx.to_string()).collect())
             .map_err(|e| e.code)
+    }
+
+    /// A prefix is matched against settings changes and transactions together: unique
+    /// to a settings change it is refused as one, shared it is ambiguous.
+    #[test]
+    fn a_settings_prefix_is_matched_with_the_transactions() {
+        let key = TargetKey::new();
+        let setting = |tx: &str| SettingEntry {
+            tx: tx.parse().unwrap(),
+            ..SettingEntry::now(TxKind::Config, None, Actor::Human, None, Vec::new())
+        };
+        let txs = vec![entry(
+            "01JB8Q2VA00000000000000001",
+            Actor::Human,
+            key,
+            TxKind::Install,
+        )];
+        let settings = vec![
+            setting("01JB8Q2VA00000000000000002"),
+            setting("01JB8Q2VB00000000000000003"),
+        ];
+        let code = |prefix: &str| {
+            settings_prefix(&settings, &txs, prefix)
+                .map_err(|e| (e.code, e.details["candidates"].as_array().map(Vec::len)))
+        };
+        assert_eq!(
+            code("01JB8Q2VB"),
+            Err((ErrorCode::NotFound, None)),
+            "one setting"
+        );
+        assert_eq!(
+            code("01JB8Q2VA"),
+            Err((ErrorCode::NotFound, Some(2))),
+            "a setting and a transaction"
+        );
+        assert_eq!(code("01JB8Q2V"), Err((ErrorCode::NotFound, Some(3))));
+        assert_eq!(
+            code("01JB8Q2VA00000000000000001"),
+            Ok(()),
+            "the transaction"
+        );
     }
 
     #[test]

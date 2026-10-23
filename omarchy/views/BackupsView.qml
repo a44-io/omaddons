@@ -17,7 +17,8 @@ Item {
   property var frame: null
   readonly property var svc: frame ? frame.svc : null
   readonly property string filter: frame ? frame.filter : ""
-  readonly property var sections: Model.backupSections(svc ? svc.backups : null, filter, frame ? frame.nowMs : Date.now())
+  readonly property var sections: Model.backupSections(svc ? svc.backups : null, filter, frame ? frame.nowMs : Date.now(),
+    svc && Array.isArray(svc.targets) ? svc.targets : [])
   readonly property var rows: {
     var out = []
     for (var i = 0; i < sections.length; i++) out = out.concat(sections[i].rows)

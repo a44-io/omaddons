@@ -19,7 +19,8 @@ Item {
   readonly property var svc: frame ? frame.svc : null
   readonly property string filter: frame ? frame.filter : ""
   readonly property var sections: Model.issueSections(svc && Array.isArray(svc.targets) ? svc.targets : [],
-    svc ? svc.errors : null, svc && Array.isArray(svc.statusWarnings) ? svc.statusWarnings : [], filter)
+    svc ? svc.errors : null, svc && Array.isArray(svc.statusWarnings) ? svc.statusWarnings : [], filter,
+    svc && Array.isArray(svc.machineIssues) ? svc.machineIssues : [])
   readonly property var rows: Model.issueRows(sections)
   readonly property int rowCount: rows.length
   readonly property bool typing: false

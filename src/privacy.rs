@@ -320,9 +320,19 @@ fn folders(dir: &std::path::Path) -> Vec<(String, std::path::PathBuf)> {
 }
 
 /// A name's key: lower case, so `FakeRealm` and `fakerealm` are one name, as Wine sees
-/// them.
+/// them. Folded one character to one character, as [`matches_at`] reads text: never
+/// by context (a final `Σ` is `σ` like any other) nor into two (`İ` stays itself).
 fn fold(name: &str) -> String {
-    name.to_lowercase()
+    name.chars().map(fold_char).collect()
+}
+
+/// `c` in lower case when that is one character, else `c`.
+fn fold_char(c: char) -> char {
+    let mut lower = c.to_lowercase();
+    match (lower.next(), lower.next()) {
+        (Some(one), None) => one,
+        _ => c,
+    }
 }
 
 fn is_word(c: char) -> bool {
@@ -335,7 +345,7 @@ fn matches_at(chars: &[char], at: usize, word: &[char]) -> bool {
         && chars[at..at + word.len()]
             .iter()
             .zip(word)
-            .all(|(c, w)| c == w || c.to_lowercase().eq(std::iter::once(*w)))
+            .all(|(c, w)| fold_char(*c) == *w)
 }
 
 #[cfg(test)]
@@ -477,6 +487,14 @@ mod tests {
             "longest first"
         );
         assert_eq!(r.text(""), "");
+
+        // A name whose lower case depends on context or is two characters long.
+        let (_dir, c) = client(&["ΟΔΥΣΣΕΑΣ/İSTANBUL/Char"]);
+        let r = WtfPathRedactor::for_client(&c);
+        assert_eq!(
+            r.text("ΟΔΥΣΣΕΑΣ on İSTANBUL, οδυσσεασ"),
+            "<account> on <realm>, <account>"
+        );
     }
 
     #[test]

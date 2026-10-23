@@ -413,6 +413,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         .map(|request| Item {
             request: request.clone(),
             parsed: parse_ref(&world.config.git_hosts, &records, &catalog, &cwd, request)
+                .map(|p| with_wowace_path(p, args.version.as_deref()))
                 .map_err(|e| aimed_at(e, &ctx.argv, request)),
         })
         .collect();
@@ -784,6 +785,21 @@ fn recorded<'r>(
         .addons
         .values()
         .find(|a| a.r#ref == *r)
+}
+
+/// `parsed` with a directory `--version` (`r43:<path>`) of a bare `wowace:` ref folded
+/// into the ref, as the catalog and pasted links name one: a directory's release reads
+/// `r43` like a trunk peg, so only the ref keeps which tree a reinstall, an export and
+/// a sync fetch.
+fn with_wowace_path(mut parsed: ParsedRef, version: Option<&str>) -> ParsedRef {
+    if let Ref::WowAce {
+        rev: rev @ None, ..
+    } = &mut parsed.r#ref
+        && let Some(path @ WowAceRev::Path { .. }) = version.and_then(WowAceRev::parse)
+    {
+        *rev = Some(path);
+    }
+    parsed
 }
 
 /// The change an install asks of a target for one parsed argument.

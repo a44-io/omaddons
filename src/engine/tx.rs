@@ -543,14 +543,26 @@ impl RunningNow {
     }
 }
 
-/// The client dirs whose game runs now, or every target's when that cannot be told.
+/// The client dirs whose game runs now, or every target's when that cannot be told. A
+/// client sharing a target's AddOns directory sees its folders change too, so it is
+/// looked for as well.
 pub(super) fn running_now(ctx: &EngineCtx<'_>, targets: &[Target]) -> RunningNow {
     match ctx.running {
         Some(running) => RunningNow {
             dirs: running.clone(),
             unknown: None,
         },
-        None => RunningNow::from_scan(detect_running(targets), targets),
+        None => {
+            let mut scanned: Vec<Target> = targets.to_vec();
+            for target in targets {
+                for sibling in crate::discover::shared::siblings(target, ctx.known_targets) {
+                    if !scanned.iter().any(|t| t.client_dir == sibling.client_dir) {
+                        scanned.push(sibling.clone());
+                    }
+                }
+            }
+            RunningNow::from_scan(detect_running(&scanned), &scanned)
+        }
     }
 }
 

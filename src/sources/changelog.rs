@@ -158,8 +158,22 @@ pub fn changelog_for(
             ..Notes::unavailable(ChangelogUnavailable::FetchFailed)
         },
         Some(Ok(mut changelog)) => {
-            if let Some(at) = changelog.entries.iter().position(|e| is_latest(&e.version)) {
-                changelog.entries.drain(..at);
+            match changelog.entries.iter().position(|e| is_latest(&e.version)) {
+                Some(at) => {
+                    changelog.entries.drain(..at);
+                }
+                // `latest` is not in the feed (a stable record's feed full of newer
+                // prereleases): what is dated after it goes; with no date to tell, no
+                // entry is known to be at most `latest`.
+                None => match latest.published_at {
+                    Some(at) => changelog
+                        .entries
+                        .retain(|e| e.published_at.is_some_and(|p| p <= at)),
+                    None => {
+                        changelog.truncated = !changelog.entries.is_empty();
+                        changelog.entries.clear();
+                    }
+                },
             }
             if changelog.entries.len() > limit {
                 changelog.entries.truncate(limit);
@@ -397,6 +411,17 @@ mod tests {
         );
         assert_eq!(versions(&notes), Vec::<&str>::new());
         assert!(notes.unavailable.is_none());
+        // The latest beyond the feed's window (newer prereleases fill it): no entry is
+        // known to be at most it, so no prerelease is shown as its changelog.
+        let betas = Fake(Ok(vec!["v4.0-beta3", "v4.0-beta2", "v4.0-beta1"]));
+        let notes = run(betas, &release("3.0", None), Some("1.0"));
+        assert_eq!(versions(&notes), Vec::<&str>::new());
+        assert!(
+            notes.changelog.is_some_and(|c| c.truncated),
+            "the page links the rest"
+        );
+        let notes = run(Fake(Ok(vec!["v4.0-beta1"])), &release("3.0", None), None);
+        assert!(versions(&notes).is_empty());
     }
 
     #[test]

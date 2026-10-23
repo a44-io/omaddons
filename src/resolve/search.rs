@@ -221,16 +221,23 @@ pub fn rank(query: &str, hits: Vec<Hit>) -> Vec<Ranked> {
         .chain(kept)
         .filter_map(|(hit, tier)| Some(Ranked { hit, tier: tier? }))
         .collect();
-    let max: BTreeMap<HitSource, u64> = ranked.iter().fold(BTreeMap::new(), |mut max, r| {
-        if let Some(p) = r.hit.popularity {
-            let m = max.entry(r.hit.source).or_insert(0);
-            *m = (*m).max(p.count());
-        }
-        max
-    });
+    // Per source and unit: a catalog hit may carry WoWInterface downloads or GitHub
+    // stars, which never measure against each other.
+    let stars = |p: Popularity| matches!(p, Popularity::Stars(_));
+    let max: BTreeMap<(HitSource, bool), u64> =
+        ranked.iter().fold(BTreeMap::new(), |mut max, r| {
+            if let Some(p) = r.hit.popularity {
+                let m = max.entry((r.hit.source, stars(p))).or_insert(0);
+                *m = (*m).max(p.count());
+            }
+            max
+        });
     // Per-source popularity in [0, 1], in thousandths so the sort is total.
     let score = |r: &Ranked| -> u64 {
-        let (Some(p), Some(&m)) = (r.hit.popularity, max.get(&r.hit.source)) else {
+        let Some(p) = r.hit.popularity else {
+            return 0;
+        };
+        let Some(&m) = max.get(&(r.hit.source, stars(p))) else {
             return 0;
         };
         if m == 0 {
@@ -374,6 +381,16 @@ mod tests {
             ],
             "catalog, then 1.0 popularity by recency (C newer than A), then B"
         );
+        // Stars and downloads never measure against each other, even in one source:
+        // each catalog entry tops its unit, so recency decides.
+        let mut downloads = hit("Meter X", "wowi:3", HitSource::Catalog);
+        downloads.popularity = Some(Popularity::Downloads(2_000_000));
+        downloads.updated_at = Some(at("2020-01-01T00:00:00Z"));
+        let mut stars = hit("Meter Y", "gh:o/y", HitSource::Catalog);
+        stars.popularity = Some(Popularity::Stars(3_000));
+        stars.updated_at = Some(at("2026-10-01T00:00:00Z"));
+        let ranked = rank("meter", vec![downloads, stars]);
+        assert_eq!(names(&ranked), [("Meter Y", 1), ("Meter X", 1)]);
         // Ties fall back to name, then ref.
         let ranked = rank(
             "x",

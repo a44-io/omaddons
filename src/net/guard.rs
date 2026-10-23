@@ -366,19 +366,40 @@ impl Http for Redirecting {
 
 /// Resolves a `Location` header against the URL that returned it.
 pub(crate) fn resolve(base: &str, location: &str) -> String {
-    if location.contains("://") {
+    // Absolute when it starts with a scheme (RFC 3986: a letter, then letters, digits,
+    // `+`, `-` or `.`, then `:` before any `/`, `?` or `#`), never because `://` shows up
+    // in a relative reference's query.
+    let scheme_end = location.find([':', '/', '?', '#']);
+    let absolute = scheme_end.is_some_and(|end| {
+        let scheme = &location[..end];
+        location[end..].starts_with(':')
+            && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    });
+    if absolute {
         return location.to_owned();
     }
     let Some((scheme, rest)) = base.split_once("://") else {
         return location.to_owned();
     };
-    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, path) = rest.split_at(authority_end);
     if let Some(network_path) = location.strip_prefix("//") {
         return format!("{scheme}://{network_path}");
     }
     if location.starts_with('/') {
         return format!("{scheme}://{authority}{location}");
+    }
+    // A query keeps the base's path, a fragment its path and query.
+    if location.starts_with('?') {
+        let path = path.split(['?', '#']).next().unwrap_or("");
+        return format!("{scheme}://{authority}{path}{location}");
+    }
+    if location.starts_with('#') {
+        let path = path.split('#').next().unwrap_or("");
+        return format!("{scheme}://{authority}{path}{location}");
     }
     let path = path.split(['?', '#']).next().unwrap_or("");
     let dir = path

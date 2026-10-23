@@ -53,6 +53,48 @@ mod support {
     }
 }
 
+/// A running client sharing the target's AddOns directory sees the folder go too: its
+/// loaded TOC is refused like the target's own.
+#[test]
+fn a_running_client_sharing_the_addons_directory_holds_its_loaded_folders() {
+    let mut home = Home::new(&["wow_classic_era", "wow_anniversary"]);
+    let era = home.addons("_classic_era_");
+    let anniversary = home.addons("_anniversary_");
+    fs::create_dir_all(&era).unwrap();
+    if anniversary.exists() {
+        fs::remove_dir_all(&anniversary).unwrap();
+    }
+    fs::create_dir_all(anniversary.parent().unwrap()).unwrap();
+    symlink(&era, &anniversary).unwrap();
+    let zip = home.env.root().join("Both.zip");
+    let text = toc("11509, 20506", &["## Version: 1"]);
+    fs::write(&zip, zip_text(&[("Both/Both.toc", text.as_str())])).unwrap();
+    let path = zip.display().to_string();
+    home.run(&["install", "gh:o/both", "--file", &path, "-t", "era"])
+        .expect(0);
+
+    home.client_running("_anniversary_", "WowClassic.exe");
+    let r = home.run(&["remove", "Both", "-t", "era"]);
+    let envelope = r.expect(4);
+    assert_eq!(
+        (
+            &envelope["error"]["code"],
+            &envelope["error"]["details"]["reason"]
+        ),
+        (&Value::from("game_running"), &Value::from("loaded_toc")),
+        "{}",
+        r.context()
+    );
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("anniversary's game client is running")),
+        "{}",
+        r.context()
+    );
+    assert!(era.join("Both").is_dir(), "nothing removed");
+}
+
 #[test]
 fn remove_moves_folders_into_the_snapshot_and_undo_puts_them_back() {
     let home = Home::new(&["wow"]);

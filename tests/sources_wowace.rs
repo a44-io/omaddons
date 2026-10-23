@@ -421,6 +421,99 @@ fn wotlk_installs_the_r152_peg_and_refuses_the_newest_tag() {
     );
 }
 
+/// A catalog name with a build per family is copied as the destination's own build.
+#[test]
+fn copy_installs_the_destinations_own_build() {
+    let mut home = Home::new(&["wow"]);
+    let wotlk = with_wotlk(&mut home);
+    serve_recorded(&home);
+    home.run(&["install", "buggrabber", "-t", "retail"])
+        .expect(0);
+    let r = home.run(&["copy", "--from", "retail", "--to", &wotlk]);
+    let item = &r.expect(0)["data"]["targets"][0]["items"][0];
+    assert_eq!(
+        (&item["status"], &item["ref"]),
+        (
+            &Value::from("installed"),
+            &Value::from("wowace:bug-grabber#r152")
+        ),
+        "{}",
+        r.context()
+    );
+    // There already: nothing to do.
+    let r = home.run(&["copy", "--from", "retail", "--to", &wotlk]);
+    let item = &r.expect(0)["data"]["targets"][0]["items"][0];
+    assert_eq!(item["skip_reason"], "already_installed", "{}", r.context());
+    // `info` lists the name's installed records of every build, on every target.
+    let r = home.run(&["info", "buggrabber", "--offline"]);
+    let envelope = r.expect(0);
+    let mut on: Vec<&str> = envelope["data"]["installed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["target"]["id"].as_str())
+        .collect();
+    on.sort_unstable();
+    let mut expected = vec!["retail", wotlk.as_str()];
+    expected.sort_unstable();
+    assert_eq!(on, expected, "{}", r.context());
+}
+
+/// A directory given with `--version` on the bare ref is recorded in the ref, as the
+/// catalog's variant names it: a reinstall from the release fetches that tree again,
+/// never trunk.
+#[test]
+fn a_directory_version_is_kept_in_the_ref() {
+    let mut home = Home::new(&[]);
+    home.with_custom(
+        common::trees::CustomRoot::at(home.env.root().join("wow-1121")).version(1, 12, 1, 5875),
+    );
+    let targets = home.run(&["targets"]).expect(0);
+    let id = targets["data"]["targets"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    serve_recorded(&home);
+    let path = "r43:tmp/trunk/!BugGrabber";
+    let r = home.run(&[
+        "install",
+        "wowace:bug-grabber",
+        "--version",
+        path,
+        "-t",
+        &id,
+    ]);
+    let item = &r.expect(0)["data"]["items"][0];
+    assert_eq!(
+        item["ref"],
+        "wowace:bug-grabber#r43:tmp/trunk/!BugGrabber",
+        "{}",
+        r.context()
+    );
+    let addon = record(&home, &id).addons.into_values().next().unwrap();
+    assert_eq!(
+        (addon.release_id.as_deref(), addon.pinned),
+        (Some("wowace:bug-grabber@r43:tmp/trunk/!BugGrabber"), true)
+    );
+    // Without its archive, the reinstall builds the recorded tree from the record.
+    fs::remove_dir_all(home.env.cache().join("omaddons/blobs")).unwrap();
+    let r = home.run(&["install", "buggrabber", "-t", &id, "--reinstall"]);
+    let item = &r.expect(0)["data"]["items"][0];
+    assert_eq!(
+        (&item["status"], &item["to_version"]),
+        (&Value::from("updated"), &Value::from("r43")),
+        "{}",
+        r.context()
+    );
+    let toc = fs::read_to_string(
+        home.env
+            .root()
+            .join("wow-1121/Interface/AddOns/!BugGrabber/!BugGrabber.toc"),
+    )
+    .unwrap();
+    assert!(toc.contains("## Interface: 11200"), "{toc}");
+}
+
 /// The live tag path serves other bytes; nothing ever asks for it, so the install is the
 /// pinned tree's.
 #[test]

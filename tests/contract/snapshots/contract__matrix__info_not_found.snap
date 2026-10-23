@@ -6,13 +6,23 @@ expression: s.stable(&c.envelope)
   "command": "info",
   "commands": [],
   "error": {
-    "alternatives": [],
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "help",
+          "install"
+        ],
+        "display": "omaddons help install"
+      }
+    ],
     "code": "not_found",
     "details": {},
-    "fix": "omaddons list",
+    "fix": "omaddons search nosuchaddon",
     "fix_argv": [
       "omaddons",
-      "list"
+      "search",
+      "nosuchaddon"
     ],
     "message": "nosuchaddon is not installed, not in the catalog, and not a ref",
     "retryable": false

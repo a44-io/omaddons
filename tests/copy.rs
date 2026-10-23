@@ -188,6 +188,45 @@ mod support {
     }
 }
 
+/// `copy` takes no `--force`: a refusal the engine would retry with it is fixed by the
+/// install of that addon on `--to`, which runs.
+#[test]
+fn a_takeover_refusal_names_an_install_that_runs() {
+    let home = Home::new(&["wow_classic_era", "wow_anniversary"]);
+    publish(&home.http, "foo", "Foo", "v1", BOTH);
+    publish(&home.http, "fork", "Foo", "v1", BOTH);
+    home.run(&["install", "gh:o/foo", "-t", "era"]).expect(0);
+    home.run(&["install", "gh:o/fork", "-t", "anniversary"])
+        .expect(0);
+    let r = home.run(&["copy", "--from", "era", "--to", "anniversary"]);
+    let envelope = r.expect(4);
+    assert_eq!(
+        (&envelope["error"]["code"], &envelope["error"]["fix_argv"]),
+        (
+            &json!("ownership_conflict"),
+            &json!([
+                "omaddons",
+                "install",
+                "gh:o/foo",
+                "--force",
+                "-t",
+                "anniversary"
+            ])
+        ),
+        "{}",
+        r.context()
+    );
+    let fix: Vec<String> = envelope["error"]["fix_argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|a| a.as_str().unwrap().to_owned())
+        .collect();
+    let r = home.exec(&[fix, vec!["--json".to_owned()]].concat());
+    r.expect(0);
+}
+
 #[test]
 fn copies_what_loads_skips_the_rest_and_undoes_byte_for_byte() {
     let home = era_and_anniversary();

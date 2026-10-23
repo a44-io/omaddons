@@ -33,7 +33,9 @@ use crate::model::{
     Asset, AssetLocation, Candidate, Channel, FolderName, RankReason, Ref, Release, ReleaseSet,
     WowAceRev, is_wowace_slug, is_wowace_tree_path,
 };
+use crate::net::retry::{RealSleeper, Rng, Sleeper, XorShift, backoff_delay};
 use crate::net::{Http, Request, Response};
+use crate::politeness::MAX_RETRIES;
 
 /// Where every project's repository is.
 const REPOS: &str = "https://repos.wowace.com/wow";
@@ -405,10 +407,19 @@ impl Walk<'_> {
                 ));
             }
             listed += 1;
-            let body = self
-                .get(&dir, "wowace-tree", false)?
-                .error_for_status("a WowAce listing")?
-                .bytes()?;
+            let resp = self.get(&dir, "wowace-tree", false)?;
+            // Nothing at the pinned root (a revision past the newest, a mistyped slug or
+            // directory): a release that does not exist, never a question of flavor.
+            if dir.is_empty() && resp.status == 404 {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    format!("WowAce has nothing at {}", self.base),
+                    Suggestion::text(
+                        "check the project's slug, revision and directory on repos.wowace.com",
+                    ),
+                ));
+            }
+            let body = resp.error_for_status("a WowAce listing")?.bytes()?;
             let entries = parse_listing(&body).map_err(|e| match e {
                 ListingError::DuplicateName { name } => collision(&format!("{dir}{name}")),
                 e => unreadable(&e, &format!("the listing of /{dir}")),
@@ -453,20 +464,36 @@ impl Walk<'_> {
         Ok(Some((".pkgmeta".to_owned(), body)))
     }
 
-    /// The file at `path`, at most the `remaining` of the tree's `max_bytes`.
+    /// The file at `path`, at most the `remaining` of the tree's `max_bytes`. A
+    /// connection that fails while it arrives is fetched again from the first byte, as
+    /// any download is (each attempt counts toward `WOWACE_TREE_MAX_REQUESTS`).
     fn file(&mut self, path: &str, remaining: u64, max_bytes: u64) -> Result<Vec<u8>> {
-        let resp = self
-            .get(path, "wowace-file", true)?
-            .error_for_status("a WowAce file")?;
-        let mut body = Vec::new();
-        resp.into_reader()
-            .take(remaining.saturating_add(1))
-            .read_to_end(&mut body)
-            .map_err(crate::net::body_error)?;
-        if u64::try_from(body.len()).unwrap_or(u64::MAX) > remaining {
-            return Err(crate::net::download_too_large(max_bytes));
+        let mut restarts = 0u32;
+        let mut rng = XorShift::seeded();
+        loop {
+            let resp = self
+                .get(path, "wowace-file", true)?
+                .error_for_status("a WowAce file")?;
+            let mut body = Vec::new();
+            let read = resp
+                .into_reader()
+                .take(remaining.saturating_add(1))
+                .read_to_end(&mut body)
+                .map_err(crate::net::body_error);
+            match read {
+                Ok(_) => {}
+                Err(e) if e.code == ErrorCode::Network && e.retryable && restarts < MAX_RETRIES => {
+                    RealSleeper.sleep(backoff_delay(restarts, rng.next_u64()));
+                    restarts += 1;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+            if u64::try_from(body.len()).unwrap_or(u64::MAX) > remaining {
+                return Err(crate::net::download_too_large(max_bytes));
+            }
+            return Ok(body);
         }
-        Ok(body)
     }
 }
 
@@ -732,6 +759,67 @@ mod tests {
         assert_eq!(first.last_modified(), Some(zip::DateTime::default()));
         assert_eq!(first.unix_mode().map(|m| m & 0o777), Some(0o644));
         assert_eq!(first.compression(), zip::CompressionMethod::Deflated);
+    }
+
+    /// Nothing at the pinned root (a revision past the newest, a mistyped directory) is
+    /// a release that does not exist.
+    #[test]
+    fn nothing_at_the_root_is_not_found() {
+        let err = assemble(&Canned::default(), BASE, 401, 1 << 20).unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound, "{err:?}");
+        // A directory below it that is gone is the tree's problem, as before.
+        let http = Canned::default().with(BASE, 200, &index(&["Libs/"]));
+        let err = assemble(&http, BASE, 401, 1 << 20).unwrap_err();
+        assert_ne!(err.code, ErrorCode::NotFound, "{err:?}");
+    }
+
+    /// A file whose connection drops partway is fetched again from the first byte.
+    #[test]
+    fn a_file_cut_off_midway_is_fetched_again() {
+        struct Cut;
+        impl Read for Cut {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "reset",
+                ))
+            }
+        }
+        struct Flaky {
+            inner: Canned,
+            cut: String,
+            done: Mutex<bool>,
+        }
+        impl Http for Flaky {
+            fn send(&self, req: Request) -> Result<Response> {
+                let mut done = self.done.lock().unwrap();
+                if req.url == self.cut && !*done {
+                    *done = true;
+                    self.inner
+                        .seen
+                        .lock()
+                        .unwrap()
+                        .push(format!("GET {}", req.url));
+                    return Ok(Response::new(200, Vec::new(), req.url, Box::new(Cut)));
+                }
+                drop(done);
+                self.inner.send(req)
+            }
+        }
+        let http = Flaky {
+            inner: bug_grabber(),
+            cut: format!("{BASE}BugGrabber.lua"),
+            done: Mutex::new(false),
+        };
+        let files = entries(&assemble(&http, BASE, 401, 1 << 20).unwrap());
+        assert_eq!(files["!BugGrabber/BugGrabber.lua"], "local x = 1\n");
+        let lua = http
+            .inner
+            .seen()
+            .iter()
+            .filter(|s| s.ends_with("BugGrabber.lua"))
+            .count();
+        assert_eq!(lua, 2, "requested again");
     }
 
     #[test]

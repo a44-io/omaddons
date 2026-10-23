@@ -337,6 +337,20 @@ mod tests {
         )
     }
 
+    /// Polls `free` for up to 5 s. A lock this process released can stay held for a
+    /// moment: a child another test spawns holds a copy of every descriptor until it
+    /// execs, and a flock lasts until the last copy of its open file description closes.
+    fn freed(mut free: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !free() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        true
+    }
+
     #[test]
     fn holder_info_round_trips() {
         let info = HolderInfo {
@@ -377,7 +391,7 @@ mod tests {
         ));
         assert!(guard.held_for() < Duration::from_secs(5));
         guard.release();
-        assert_eq!(probe_global(&p).unwrap(), LockState::Free);
+        assert!(freed(|| probe_global(&p).unwrap() == LockState::Free));
     }
 
     #[test]
@@ -394,7 +408,7 @@ mod tests {
             "a tx lock is created once"
         );
         drop(lock);
-        assert!(!InflightLock::is_live(&p, &tx).unwrap());
+        assert!(freed(|| !InflightLock::is_live(&p, &tx).unwrap()));
     }
 
     #[test]
@@ -452,10 +466,14 @@ mod tests {
             "the second reader still holds it"
         );
         drop(second);
-        let held = DirLock::try_exclusive(&backup).unwrap().unwrap();
+        let mut held = None;
+        assert!(freed(|| {
+            held = DirLock::try_exclusive(&backup).unwrap();
+            held.is_some()
+        }));
         assert!(DirLock::try_exclusive(&backup).unwrap().is_none());
         drop(held);
-        assert!(DirLock::try_exclusive(&backup).unwrap().is_some());
+        assert!(freed(|| DirLock::try_exclusive(&backup).unwrap().is_some()));
         let names: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(names.len(), 1, "no lock file");
         assert_eq!(fs::read_dir(&backup).unwrap().count(), 0);

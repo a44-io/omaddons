@@ -159,7 +159,11 @@ impl Http for Retrying {
                     if let Some(err) = primary_limit(&resp, now) {
                         return Err(err);
                     }
-                    if resp.status != 429 && !(500..600).contains(&resp.status) {
+                    // A 403 asking to come back later (GitHub's secondary limits) is a
+                    // rate-limit answer, as a 429 is.
+                    let limit = resp.status == 429
+                        || (resp.status == 403 && resp.header("retry-after").is_some());
+                    if !limit && !(500..600).contains(&resp.status) {
                         // A connection that fails mid-body is retried from the start, as
                         // one that fails before the headers.
                         match buffer_api_body(&req, &mut resp) {
@@ -167,7 +171,7 @@ impl Http for Retrying {
                                 resp.attempts = attempt + 1;
                                 return Ok(resp);
                             }
-                            Err(err) if err.code == ErrorCode::Network && attempt < MAX_RETRIES => {
+                            Err(err) if retries(&err) && attempt < MAX_RETRIES => {
                                 drop(resp);
                                 self.sleeper.sleep(self.backoff(attempt));
                                 attempt += 1;
@@ -183,7 +187,7 @@ impl Http for Retrying {
                         return Err(limited(&resp, now, wait));
                     }
                     if attempt >= MAX_RETRIES {
-                        return Err(if resp.status == 429 {
+                        return Err(if limit {
                             limited(&resp, now, wait.unwrap_or_default())
                         } else {
                             Error::http_status(
@@ -202,7 +206,7 @@ impl Http for Retrying {
                     self.sleeper
                         .sleep(wait.unwrap_or_else(|| self.backoff(attempt)));
                 }
-                Err(err) if err.code == ErrorCode::Network && attempt < MAX_RETRIES => {
+                Err(err) if retries(&err) && attempt < MAX_RETRIES => {
                     self.sleeper.sleep(self.backoff(attempt));
                 }
                 Err(err) => return Err(err),
@@ -210,6 +214,12 @@ impl Http for Retrying {
             attempt += 1;
         }
     }
+}
+
+/// A connection that failed, timed out or was reset; never one said to be final (too
+/// many redirects, an encoding omaddons does not decode), which fails alike again.
+fn retries(err: &Error) -> bool {
+    err.code == ErrorCode::Network && err.retryable
 }
 
 /// `rate_limited` for a 403/429 carrying `X-RateLimit-Remaining: 0`, reset from
@@ -401,6 +411,48 @@ mod tests {
             (result.unwrap_err().code, attempts),
             (ErrorCode::RateLimited, 4)
         );
+
+        // A 403 asking to come back later (GitHub's secondary limits) is a rate limit.
+        let (result, sleeps, _) = run(vec![
+            Ok((403, vec![("Retry-After", "2")])),
+            Ok((200, vec![])),
+        ]);
+        assert_eq!(
+            (result.unwrap().status, sleeps),
+            (200, vec![Duration::from_secs(2)])
+        );
+        let (result, _, attempts) = run(vec![Ok((
+            403,
+            vec![("Retry-After", "120"), ("X-RateLimit-Remaining", "4000")],
+        ))]);
+        assert_eq!(
+            (result.unwrap_err().code, attempts),
+            (ErrorCode::RateLimited, 1)
+        );
+    }
+
+    /// A network error said to be final (too many redirects) fails alike again: never
+    /// retried.
+    #[test]
+    fn a_final_network_error_is_never_retried() {
+        struct Final(Arc<Mutex<usize>>);
+        impl Http for Final {
+            fn send(&self, _: Request) -> Result<Response> {
+                *self.0.lock().unwrap() += 1;
+                Err(Error::new(ErrorCode::Network, "loop", Suggestion::text("x")).retryable(false))
+            }
+        }
+        let sent = Arc::new(Mutex::new(0));
+        let retrying = Retrying::with(
+            Box::new(Final(Arc::clone(&sent))),
+            Box::new(Recorder(Arc::new(Mutex::new(Vec::new())))),
+            Box::new(Fixed(NOW.parse().unwrap())),
+            Box::new(XorShift::new(42)),
+        );
+        let err = retrying
+            .send(Request::get("https://example.org/x", "test"))
+            .unwrap_err();
+        assert_eq!((err.code, *sent.lock().unwrap()), (ErrorCode::Network, 1));
     }
 
     #[test]

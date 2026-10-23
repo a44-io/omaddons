@@ -346,15 +346,46 @@ fn elements<'a>(text: &'a str, local: &str) -> Vec<&'a str> {
 
 /// The newest stable tag: `v?N(.N)*` with an optional suffix, where `alpha`, `beta`, `rc`
 /// and `pre` (any case) make a pre-release, compared number by number (`v12.1.0` is newer
-/// than `v9.9.9`); between equal versions (`v12.1`, `v12.1.0`), the shorter tag. The
-/// revision never decides: a re-tag of an old version can have a high one.
+/// than `v9.9.9`); between equal numbers, a suffixed tag follows the bare one
+/// (`v2.5.0-hotfix1`, `v2.5.0a` after `v2.5.0`, ordered by word then number), and
+/// between equal versions (`v12.1`, `v12.1.0`), the shorter tag. The revision never
+/// decides: a re-tag of an old version can have a high one.
 pub fn newest_stable_tag(tags: &[TagRev]) -> Option<&TagRev> {
     tags.iter()
-        .filter_map(|t| stable_version(&t.tag).map(|v| (v, t)))
-        .max_by(|(a, ta), (b, tb)| {
-            compare_versions(a, b).then_with(|| tb.tag.len().cmp(&ta.tag.len()))
+        .filter_map(|t| stable_version(&t.tag).map(|v| (v, suffix_of(&t.tag), t)))
+        .max_by(|(a, sa, ta), (b, sb, tb)| {
+            compare_versions(a, b)
+                .then_with(|| compare_suffixes(sa.as_ref(), sb.as_ref()))
+                .then_with(|| tb.tag.len().cmp(&ta.tag.len()))
         })
-        .map(|(_, t)| t)
+        .map(|(_, _, t)| t)
+}
+
+/// A stable tag's suffix after its numbers, as (word lowercased, digits): `-hotfix2` is
+/// `("hotfix", "2")`; `None` for a bare tag.
+fn suffix_of(tag: &str) -> Option<(String, String)> {
+    let rest = tag.strip_prefix('v').unwrap_or(tag);
+    let at = rest.find(|c: char| !(c.is_ascii_digit() || c == '.'))?;
+    let suffix = rest[at..]
+        .strip_prefix(['-', '_', '+'])
+        .unwrap_or(&rest[at..]);
+    let letters = suffix
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(suffix.len());
+    let (word, digits) = suffix.split_at(letters);
+    Some((word.to_ascii_lowercase(), digits.to_owned()))
+}
+
+/// No suffix before any; then by word, then by number (digit strings of any length).
+fn compare_suffixes(a: Option<&(String, String)>, b: Option<&(String, String)>) -> Ordering {
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (Some((wa, da)), Some((wb, db))) => wa
+            .cmp(wb)
+            .then_with(|| compare_versions(&[da.as_str()], &[db.as_str()])),
+    }
 }
 
 /// A stable tag's numeric components, `None` for a pre-release or a tag that is not
@@ -769,6 +800,15 @@ mod tests {
             newest_stable_tag(&[tag("v1.0-hotfix2", 1)]).map(|t| t.rev),
             Some(1)
         );
+        // A hotfix follows its base version, the later hotfix the earlier.
+        let tags = [
+            tag("v2.5.0", 10),
+            tag("v2.5.0-hotfix2", 12),
+            tag("v2.5.0-hotfix10", 11),
+        ];
+        assert_eq!(newest_stable_tag(&tags), Some(&tags[2]));
+        let tags = [tag("1.2.3a", 1), tag("1.2.3", 2)];
+        assert_eq!(newest_stable_tag(&tags), Some(&tags[0]));
         let huge = tag(&format!("v{}", "9".repeat(40)), 1);
         assert_eq!(
             newest_stable_tag(&[tag("v12.0", 2), huge.clone()]),

@@ -719,6 +719,9 @@ describe("the Updates and Installed views", () => {
     expect(notes).toEqual({ version: "v2", text: "Fixes the pull timer.", url: "https://github.com/o/foo/releases", link: "more on GitHub" })
     expect(M.notesFor({ selection: { target: "retail", addon: "Bar" }, data: data }, row)).toBeNull()
     expect(M.notesFor(null, row)).toBeNull()
+    // A read that failed says so in the row, which would otherwise wait forever.
+    const failed = M.notesFor({ selection: { target: "retail", addon: "Foo" }, data: null, failed: "timeout" }, row)
+    expect([failed.text, failed.url]).toEqual(["The release notes could not be read: timeout", ""])
     const hostile = JSON.parse(JSON.stringify(data))
     hostile.changelog.more_url = "http://github.com/o/foo"
     hostile.changelog.entries[0].text = "x".repeat(900)
@@ -767,6 +770,18 @@ describe("the Issues and Search views", () => {
     expect(sections[2].lines).toEqual(["1 error received from another player (not counted)"])
     const retailOnly = M.issueSections(status.targets, ERRORS(), [], "era")
     expect(retailOnly.map((s) => s.title)).toEqual(["Lua errors (era)"])
+  })
+
+  test("a problem of no client is listed first among the problems, unless narrowed", () => {
+    const env = JSON.parse(JSON.stringify(fixture("status-attention")))
+    env.data.issues = [{ id: "fm-journal-pending", severity: "P0", title: "An interrupted change needs manual repair",
+      remediation: { command: "omaddons status", argv: ["omaddons", "status"], destructive: false } }]
+    const status = M.reduceStatus(env, NOW)
+    expect(status.issues.map((i) => [i.severity, i.urgent])).toEqual([["P0", true]])
+    const rows = M.issueRows(M.issueSections(status.targets, null, [], "", status.issues))
+    expect([rows[0].target, rows[0].title]).toEqual(["", "An interrupted change needs manual repair"])
+    const narrowed = M.issueRows(M.issueSections(status.targets, null, [], "retail", status.issues))
+    expect(narrowed.every((r) => r.target !== "")).toBe(true)
   })
 
   test("a remediation the classifier refuses is text", () => {
@@ -856,6 +871,16 @@ describe("the Backups view and the restore chooser", () => {
     expect(v.line).toContain("best effort · verified (capture) · in use")
     expect(v.busy).toBe(true)
     expect(M.backupSections(listed, "era", at)).toEqual([])
+    // A client with no backups (which `backup list` omits) still has its header, from
+    // status: where automatic backups cannot work, it says so.
+    const era = { id: "era", backups: { count: 0, auto: { mode: "daily", capability: "unsupported", last: null }, freeBytes: 2 ** 30 } }
+    const withEra = M.backupSections(listed, "", at, [era])
+    expect(withEra.map((s) => s.title)).toEqual(["era", "retail"])
+    expect(withEra[0].lines[0]).toBe("Automatic backups: daily, but this filesystem cannot clone")
+    expect(withEra[0].lines[withEra[0].lines.length - 1]).toBe("No backups yet")
+    expect(withEra[0].rows).toEqual([])
+    // A header alone takes no cursor row: the first backup row is still row 0.
+    expect(withEra[1].rows[0].index).toBe(0)
   })
 
   test("the automatic backups' four labels", () => {

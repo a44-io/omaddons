@@ -147,10 +147,14 @@ fn info_errors_and_a_failing_fetch() {
     let r = home.run(&["info", "nosuchaddon"]);
     let envelope = r.expect(3);
     assert_eq!(envelope["error"]["code"], "not_found", "{}", r.context());
+    // An unknown name: `search` is the fix (README, refs), sending no request.
     assert_eq!(
         envelope["error"]["fix_argv"],
-        serde_json::json!(["omaddons", "list"])
+        serde_json::json!(["omaddons", "search", "nosuchaddon"]),
+        "{}",
+        r.context()
     );
+    assert_eq!(net_log(&home), "", "no request");
 
     // A github.com link that names no repository: refused before any request.
     for args in [

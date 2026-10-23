@@ -344,6 +344,11 @@ TestCase {
     svc.targets = []
     verify(child("noTargets").visible)
     verify(!child("filterRow").visible)
+    // A status that failed lists no client either: it is no "no clients found".
+    var kept = svc.summary
+    svc.summary = null
+    verify(!child("noTargets").visible)
+    svc.summary = kept
   }
 
   // ------------------------------------------------------------- the confirm dialog

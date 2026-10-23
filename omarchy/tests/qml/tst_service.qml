@@ -186,6 +186,19 @@ TestCase {
     compare(service.outcomes.status, "malformed")
   }
 
+  // A failed status says why (here a broken config.toml), never "no clients found";
+  // the next status that answers takes the card away.
+  function test_a_failed_status_shows_its_error_until_one_answers() {
+    answer(lastRun("status"), failure("status", "state_corrupt", "config.toml does not parse"))
+    compare(service.phase, "ok")
+    compare(service.summary, null)
+    verify(service.lastError !== null)
+    compare(service.lastError.message, "config.toml does not parse")
+    service.refresh()
+    answer(lastRun("status"), statusEnvelope(0))
+    compare(service.lastError, null)
+  }
+
   function test_an_oversized_stdout_is_discarded() {
     var launch = lastRun("status")
     launch.process.finish(0, "x".repeat(Model.WIDGET_OUTPUT_MAX_BYTES + 1))

@@ -756,7 +756,10 @@ function targetOf(target) {
       "latest": backups.latest && typeof backups.latest === "object" ? {
         "id": str(backups.latest.id), "capturedAt": str(backups.latest.captured_at),
         "kind": str(backups.latest.kind), "trigger": strOrNull(backups.latest.trigger)
-      } : null
+      } : null,
+      // For the Backups view's header of a client `backup list` names no backup of.
+      "auto": autoOf(backups.auto),
+      "freeBytes": typeof backups.free_bytes === "number" ? backups.free_bytes : null
     } : null
   }
 }
@@ -860,7 +863,7 @@ function reduceStatus(env, nowMs) {
     var message = env && env.error && typeof env.error.message === "string" ? env.error.message : "omaddons did not answer"
     return {
       "bar": { "badge": 0, "urgent": false, "dimmed": true, "spinning": false, "tooltip": [message] },
-      "targets": [], "summary": null, "lastChange": null, "widget": null, "commands": [], "warnings": []
+      "targets": [], "summary": null, "lastChange": null, "widget": null, "commands": [], "warnings": [], "issues": []
     }
   }
   var data = env.data
@@ -889,7 +892,10 @@ function reduceStatus(env, nowMs) {
     // Absent until the binary reports it.
     "widget": data.widget && typeof data.widget === "object" ? data.widget : null,
     "commands": commands,
-    "warnings": warningsOf(env)
+    "warnings": warningsOf(env),
+    // The problems of no client (a pending journal naming none): counted in the summary,
+    // so listed too.
+    "issues": Array.isArray(data.issues) ? data.issues.map(issueOf) : []
   }
 }
 
@@ -1086,6 +1092,14 @@ function reduceErrors(env) {
   }
 }
 
+// An `auto` object (`{mode, capability, last}`), as `backup list` and `status` give it.
+function autoOf(auto) {
+  if (!auto || typeof auto !== "object") return null
+  var last = auto.last && typeof auto.last === "object" ? auto.last : null
+  return { "mode": str(auto.mode), "capability": str(auto.capability),
+    "last": last ? { "at": str(last.at), "result": str(last.result) } : null }
+}
+
 // `backup list`: per target, newest first as the CLI lists them.
 function reduceBackups(env) {
   if (!envelopeOk(env) || !env.ok || !env.data || !Array.isArray(env.data.targets)) return { "targets": [] }
@@ -1093,16 +1107,13 @@ function reduceBackups(env) {
     "targets": env.data.targets.map(function(t) {
       var target = t.target && typeof t.target === "object" ? t.target : {}
       var backups = Array.isArray(t.backups) ? t.backups : []
-      var auto = t.auto && typeof t.auto === "object" ? t.auto : null
-      var last = auto && auto.last && typeof auto.last === "object" ? auto.last : null
       return {
         "id": str(target.id),
         "total": num(t.total),
         "shown": num(t.shown),
         "bytes": typeof t.bytes === "number" ? t.bytes : null,
         "freeBytes": typeof t.free_bytes === "number" ? t.free_bytes : null,
-        "auto": auto ? { "mode": str(auto.mode), "capability": str(auto.capability),
-          "last": last ? { "at": str(last.at), "result": str(last.result) } : null } : null,
+        "auto": autoOf(t.auto),
         "backups": backups.map(function(b) {
           var addons = Array.isArray(b.addons) ? b.addons : null
           return {
@@ -1737,6 +1748,8 @@ var MORE_HOSTS = { "github.com": "GitHub", "www.wowinterface.com": "WoWInterface
 function notesFor(changelog, row) {
   if (!changelog || !changelog.selection || !row) return null
   if (changelog.selection.target !== row.target || changelog.selection.addon !== row.name) return null
+  // A read that failed: said in the row, which would otherwise wait for it forever.
+  if (changelog.failed) return { "version": "", "text": "The release notes could not be read: " + str(changelog.failed), "url": "", "link": "" }
   var log = changelog.data && changelog.data.changelog && typeof changelog.data.changelog === "object" ? changelog.data.changelog : {}
   var entries = Array.isArray(log.entries) ? log.entries : []
   var first = entries.length ? entries[0] : null
@@ -1772,9 +1785,20 @@ function errorLine(e) {
 // reports and an incomplete read as lines); the run warnings. A row's `action` is the
 // CLI argv Enter runs (the classifier accepted it), its `text` the command it shows
 // instead.
-function issueSections(statusTargets, errors, warnings, filter) {
+function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
   var sections = []
   var problems = []
+  // The problems of no client, unless the view is narrowed to one.
+  var machine = !filter && Array.isArray(machineIssues) ? machineIssues : []
+  for (var n = 0; n < machine.length; n++) {
+    var mi = machine[n]
+    var mr = mi.remediation || {}
+    problems.push({
+      "kind": "problem", "key": "p//" + n, "target": "", "severity": mi.severity,
+      "urgent": mi.urgent, "title": mi.title,
+      "action": mr.runnable ? mr : null, "text": mr.runnable ? "" : str(mr.command)
+    })
+  }
   var targets = Array.isArray(statusTargets) ? statusTargets : []
   for (var i = 0; i < targets.length; i++) {
     var t = targets[i]
@@ -1972,8 +1996,20 @@ function autoLabel(auto, nowMs) {
 
 // The Backups view, in the filter: per client, its automatic backups and space, then
 // its backups (newest first, as listed), walked by one cursor (`index`).
-function backupSections(backups, filter, nowMs) {
-  var targets = backups && Array.isArray(backups.targets) ? backups.targets : []
+function backupSections(backups, filter, nowMs, statusTargets) {
+  var listed = backups && Array.isArray(backups.targets) ? backups.targets : []
+  // `backup list` names only clients with backups: every other client `status` knows
+  // gets its header (automatic backups, free space), so "daily, but this filesystem
+  // cannot clone" shows exactly where none is ever made.
+  var targets = listed.slice()
+  var known = Array.isArray(statusTargets) ? statusTargets : []
+  for (var s = 0; s < known.length; s++) {
+    var st = known[s]
+    if (!st.backups || targetById(listed, st.id)) continue
+    targets.push({ "id": st.id, "total": 0, "shown": 0, "bytes": null, "freeBytes": st.backups.freeBytes,
+      "auto": st.backups.auto, "backups": [] })
+  }
+  targets.sort(function(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0 })
   var sections = []
   var index = 0
   for (var i = 0; i < targets.length; i++) {
@@ -1982,6 +2018,7 @@ function backupSections(backups, filter, nowMs) {
     var space = (t.freeBytes !== null ? bytesText(t.freeBytes) + " free · " : "") + (t.bytes !== null ? bytesText(t.bytes) + " apparent" : "")
     var lines = [autoLabel(t.auto, nowMs), space].filter(function(l) { return l !== "" })
     if (t.total > t.shown) lines.push(t.shown + " of " + t.total + " backups shown")
+    if (t.total === 0) lines.push("No backups yet")
     var rows = t.backups.map(function(b) {
       var parts = [sinceText(b.capturedAt, nowMs) || dateText(b.capturedAt), kindText(b), plural(b.files, "file"), bytesText(b.bytes),
         b.consistency === "stable" ? "stable" : "best effort", integrityText(b)]

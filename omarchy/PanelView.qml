@@ -522,7 +522,8 @@ Item {
         // ---------- First run and the widget's own issues ----------
         Column {
           objectName: "noTargets"
-          visible: root.phase === "ok" && root.targets.length === 0
+          // Only an answer that lists no client; a failed status shows its error instead.
+          visible: root.phase === "ok" && root.targets.length === 0 && root.summary !== null
           width: parent.width
           spacing: Style.spacing.sm
 

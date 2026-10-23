@@ -193,6 +193,31 @@ pub fn apply_edits(
     Ok(record)
 }
 
+/// `edits` without a `required_by` edit that changes nothing on `record` (another
+/// transaction made it already): history logs what this one changes, so undo never
+/// takes back a requester someone else added.
+pub fn effective_edits(
+    mut record: Option<AddonRecord>,
+    edits: &[RecordEdit],
+    addon: &str,
+    target: &str,
+) -> crate::error::Result<Vec<RecordEdit>> {
+    let mut kept = Vec::new();
+    for edit in edits {
+        let next = apply_edit(record.clone(), edit, addon, target)?;
+        let required_by = |r: &Option<AddonRecord>| r.as_ref().map(|r| r.required_by.clone());
+        let idle = matches!(
+            edit,
+            RecordEdit::AddRequiredBy(_) | RecordEdit::RemoveRequiredBy(_)
+        ) && required_by(&next) == required_by(&record);
+        if !idle {
+            kept.push(edit.clone());
+        }
+        record = next;
+    }
+    Ok(kept)
+}
+
 /// `not_managed` for an edit of an addon with no record.
 pub fn not_managed(addon: &str, target: &str) -> Error {
     Error::new(
@@ -280,9 +305,16 @@ impl RecordGuard {
                 Suggestion::command(["omaddons", "list", "-t", target]),
             )));
         }
+        // A forget needs every folder gone: the planned ones, and those the record holds
+        // now (an update meanwhile may have installed others).
+        let now = record
+            .filter(|_| !self.absent.is_empty())
+            .map(|r| r.folders.as_slice())
+            .unwrap_or_default();
         if let Some(back) = self
             .absent
             .iter()
+            .chain(now)
             .find(|f| live.folders.iter().any(|e| e.key == f.key()))
         {
             return Err(fail(Error::new(
@@ -429,6 +461,27 @@ mod tests {
                 FolderIndex::new("Baz", Vec::new()),
             )],
         }))
+    }
+
+    /// A requester another commit added (or dropped) meanwhile is not this edit list's:
+    /// history logs only what changes, so undo never takes it back.
+    #[test]
+    fn a_required_by_edit_made_already_is_not_effective() {
+        let mut foo = record("Foo", &["Foo"]);
+        foo.required_by = vec!["Bar".into()];
+        let edits = [
+            RecordEdit::AddRequiredBy("bar".into()),
+            RecordEdit::AddRequiredBy("Zed".into()),
+            RecordEdit::RemoveRequiredBy("Gone".into()),
+            RecordEdit::SetPinned(true),
+        ];
+        assert_eq!(
+            effective_edits(Some(foo), &edits, "Foo", "retail").unwrap(),
+            [
+                RecordEdit::AddRequiredBy("Zed".into()),
+                RecordEdit::SetPinned(true)
+            ]
+        );
     }
 
     #[test]
@@ -642,6 +695,14 @@ mod tests {
             check(&forget, Some(&foo), &live),
             Err((false, ErrorCode::UnmanagedFolder)),
             "a forgotten folder put back by hand"
+        );
+        // An update meanwhile moved it to a folder that is there: nothing to forget.
+        let renamed = record("Foo", &["Foo"]);
+        let forget = RecordEdit::Forget.guard(Some(&record("Foo", &["FooOld"])));
+        assert_eq!(
+            check(&forget, Some(&renamed), &live),
+            Err((false, ErrorCode::UnmanagedFolder)),
+            "the record's folders as they are now"
         );
     }
 }

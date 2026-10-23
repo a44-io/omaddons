@@ -952,6 +952,13 @@ mod tests {
             .unwrap_or(0);
         assert_eq!(state_before, state_after, "no state trash");
         drop(lock);
+        // A child another test spawns holds a copy of the lock's descriptor until it execs.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while super::super::lock::InflightLock::is_live(&f.paths, &scratch).unwrap()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert!(!super::super::lock::InflightLock::is_live(&f.paths, &scratch).unwrap());
     }
 

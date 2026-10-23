@@ -209,7 +209,24 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
     let mut pushed: Vec<ItemResult> = Vec::new();
     for s in &scope {
         let a = s.record;
-        let there = destination.and_then(|d| d.addons.values().find(|b| b.r#ref == a.r#ref));
+        // A catalog name with a build per family: the destination's own build, as
+        // `install <name>` picks it; none where no variant covers its family.
+        let variant = catalog
+            .entries()
+            .iter()
+            .find(|e| e.variant.is_some() && e.r#ref == a.r#ref)
+            .map(|e| e.name.clone());
+        let wanted = match &variant {
+            Some(name) => match catalog.resolve(name, Some(to.target.family)) {
+                Some(entry) => entry.r#ref.clone(),
+                None => {
+                    pushed.push(skipped(s, SkipReason::NoBuildForTarget));
+                    continue;
+                }
+            },
+            None => a.r#ref.clone(),
+        };
+        let there = destination.and_then(|d| d.addons.values().find(|b| b.r#ref == wanted));
         if let Some(there) = there {
             pushed.push(ItemResult {
                 from_version: Some(there.version.clone()),
@@ -223,12 +240,12 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             continue;
         }
         changes.push(RequestedChange::Install {
-            r#ref: a.r#ref.clone(),
+            r#ref: wanted.clone(),
             channel: a.channel,
             channel_explicit: false,
             version: None,
             file: None,
-            name: catalog_name(&catalog, &a.r#ref),
+            name: catalog_name(&catalog, &wanted),
             // Pins are not copied: versions are flavor-specific.
             pin: PinIntent::Keep,
             reason: AddonReason::Explicit,
@@ -241,7 +258,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             request: s.request.clone(),
             target: to.target.id.clone(),
             addon: Some(a.name.clone()),
-            r#ref: Some(a.r#ref.clone()),
+            r#ref: Some(wanted),
             version: None,
         });
     }
@@ -302,6 +319,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
         Some(done) => {
             let mut data = TargetsData::build(done, run, &requested);
             no_build_is_a_skip(&mut data, done);
+            install_fixes(&mut data, &ctx.argv);
             for o in &done.outcomes {
                 warnings.extend(o.warnings.iter().cloned());
                 notes.extend(o.notes.iter().cloned());
@@ -491,6 +509,41 @@ fn skipped(s: &InScope<'_>, reason: SkipReason) -> ItemResult {
         r#ref: Some(s.record.r#ref.clone()),
         skip_reason: Some(reason),
         ..bare(&s.request, ItemStatus::Skipped)
+    }
+}
+
+/// The engine words its retries as this command with more arguments (`--force`, `-t
+/// <sibling>`), which `copy` takes none of: each becomes the install of that item with
+/// them, on `--to` unless they name another client.
+fn install_fixes(data: &mut TargetsData, argv: &[String]) {
+    let argv = crate::cli::fix_argv(argv);
+    for t in &mut data.targets {
+        let id = t.target.id.clone();
+        for i in &mut t.items {
+            let Some(error) = &mut i.error else {
+                continue;
+            };
+            let Some(extra) = error
+                .fix_argv
+                .as_ref()
+                .and_then(|fix| fix.strip_prefix(argv.as_slice()))
+                .filter(|extra| !extra.is_empty())
+            else {
+                continue;
+            };
+            let what = i.r#ref.as_ref().map_or_else(
+                || i.name.clone().unwrap_or_else(|| i.request.clone()),
+                ToString::to_string,
+            );
+            let mut install = vec!["omaddons".to_owned(), "install".to_owned(), what];
+            install.extend(extra.iter().cloned());
+            if !extra.iter().any(|a| a == "-t" || a == "--target") {
+                install.extend(["-t".to_owned(), id.clone()]);
+            }
+            let fix = Suggestion::command(install);
+            error.fix = fix.display().to_owned();
+            error.fix_argv = fix.argv().map(<[String]>::to_vec);
+        }
     }
 }
 

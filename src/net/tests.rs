@@ -595,6 +595,15 @@ fn locations_resolve_against_the_request_url() {
         "https://codeload.github.com/q"
     );
     assert_eq!(resolve("https://github.com", "x"), "https://github.com/x");
+    // A URL in a relative reference's query does not make it absolute.
+    assert_eq!(
+        resolve(base, "/dl?next=https://github.com/x"),
+        "https://github.com/dl?next=https://github.com/x"
+    );
+    // A query keeps the path, a fragment the path and query.
+    assert_eq!(resolve(base, "?page=2"), "https://github.com/a/b/c?page=2");
+    assert_eq!(resolve(base, "#top"), "https://github.com/a/b/c?x=1#top");
+    assert_eq!(resolve("https://github.com?q", "x"), "https://github.com/x");
 }
 
 #[test]

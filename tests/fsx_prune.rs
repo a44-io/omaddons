@@ -135,6 +135,13 @@ fn a_killed_prune_leaves_trash_that_the_next_prune_sweeps() {
         0,
         "the crashed prune's leftovers are swept"
     );
+    // The prune released the lock here; a child another test spawns holds a copy of its
+    // descriptor until it execs.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while probe_global(&l.paths).unwrap() != LockState::Free && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert_eq!(probe_global(&l.paths).unwrap(), LockState::Free);
 }
 

@@ -24,7 +24,8 @@ use serde_json::{Value, json};
 
 use super::blobs::{BlobCache, BlobRef, DownloadTarget, Fetched, Storage};
 use super::edit::{
-    EditField, RecordEdit, RecordGuard, apply_edit, apply_edits, changed_fields, sorted_names,
+    EditField, RecordEdit, RecordGuard, apply_edit, apply_edits, changed_fields, effective_edits,
+    sorted_names,
 };
 use super::indexes::{DepIndexes, IndexLookups};
 use super::inspect::{
@@ -3815,13 +3816,14 @@ impl TargetPlanner<'_> {
             Err(failure) if changed => Err(failure.cause),
             Err(_) => Ok(Planned::nothing()),
             Ok(()) => {
-                let after = apply_edits(current.cloned(), &work.edits, addon, target)?;
+                // Only what still changes the record as it is now: an edit another
+                // commit made meanwhile is not this transaction's to log or undo.
+                let edits = effective_edits(current.cloned(), &work.edits, addon, target)?;
+                let after = apply_edits(current.cloned(), &edits, addon, target)?;
                 let before = current.cloned();
                 let guard = work.guard.clone();
-                Ok(
-                    records_change(addon, before, after, work.edits.clone(), guard)
-                        .map_or_else(Planned::nothing, Planned::change),
-                )
+                Ok(records_change(addon, before, after, edits, guard)
+                    .map_or_else(Planned::nothing, Planned::change))
             }
         }
     }
@@ -4090,51 +4092,68 @@ impl TargetPlanner<'_> {
             adopt,
         )?;
         let addons_dir = self.target.addons_dir();
-        let loaded = |live: &MutableFolderName| {
-            DiskFolder::new(addons_dir.join(live.as_str()))
-                .ok()
-                .and_then(|view| loaded_toc(&view, &self.target.rules).ok().flatten())
-                .map(|l| l.file)
-        };
-        let policy_ops: Vec<PolicyOp> = owned
-            .allowed
-            .iter()
-            .map(|op| match op {
-                AllowedOp::Add { name } => PolicyOp::AddFolder {
-                    folder: name.as_folder().clone(),
-                },
-                AllowedOp::Replace { name, live, .. } => PolicyOp::ReplaceFolder {
-                    folder: live.as_folder().clone(),
-                    loaded_toc_before: loaded(live),
-                    toc_names_after: toc_after(name.as_folder()),
-                },
-                AllowedOp::Remove { live } => PolicyOp::RemoveFolder {
-                    folder: live.as_folder().clone(),
-                    loaded_toc_before: loaded(live),
-                },
-            })
-            .collect();
-        let running = ctx.running.contains(&self.target.client_dir);
-        let policy_ctx = PolicyContext {
-            target_id: &self.target.id,
-            argv: ctx.argv,
-            running_unknown: ctx.running_unknown,
-        };
-        let policy = running::evaluate(
-            &policy_ctx,
-            ctx.policy,
-            running,
-            &self.target.rules,
-            &policy_ops,
-            self.req.while_running,
-        )?;
+        // Every client that sees these folders judges them: this one, and each running
+        // client sharing its AddOns directory (a symlink between Classic clients), by
+        // the TOCs it loads itself.
+        let mut clients: Vec<&Target> = vec![self.target];
+        clients.extend(
+            crate::discover::shared::siblings(self.target, ctx.known_targets.iter())
+                .into_iter()
+                .filter(|t| ctx.running.contains(&t.client_dir)),
+        );
+        let mut reload_required = ReloadRequired::None;
         let mut warnings = owned.warnings;
-        warnings.extend(policy.warnings);
+        for client in clients {
+            let loaded = |live: &MutableFolderName| {
+                DiskFolder::new(addons_dir.join(live.as_str()))
+                    .ok()
+                    .and_then(|view| loaded_toc(&view, &client.rules).ok().flatten())
+                    .map(|l| l.file)
+            };
+            let policy_ops: Vec<PolicyOp> = owned
+                .allowed
+                .iter()
+                .map(|op| match op {
+                    AllowedOp::Add { name } => PolicyOp::AddFolder {
+                        folder: name.as_folder().clone(),
+                    },
+                    AllowedOp::Replace { name, live, .. } => PolicyOp::ReplaceFolder {
+                        folder: live.as_folder().clone(),
+                        loaded_toc_before: loaded(live),
+                        toc_names_after: toc_after(name.as_folder()),
+                    },
+                    AllowedOp::Remove { live } => PolicyOp::RemoveFolder {
+                        folder: live.as_folder().clone(),
+                        loaded_toc_before: loaded(live),
+                    },
+                })
+                .collect();
+            let running = ctx.running.contains(&client.client_dir);
+            let policy_ctx = PolicyContext {
+                target_id: &client.id,
+                argv: ctx.argv,
+                running_unknown: ctx.running_unknown,
+            };
+            let policy = running::evaluate(
+                &policy_ctx,
+                ctx.policy,
+                running,
+                &client.rules,
+                &policy_ops,
+                self.req.while_running,
+            )?;
+            reload_required = reload_required.max(policy.reload_required);
+            for warning in policy.warnings {
+                if !warnings.contains(&warning) {
+                    warnings.push(warning);
+                }
+            }
+        }
         Ok(Judged {
             allowed: owned.allowed,
             transfers: owned.transfers,
             degraded: owned.degraded,
-            reload_required: policy.reload_required,
+            reload_required,
             warnings,
         })
     }

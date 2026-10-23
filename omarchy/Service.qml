@@ -49,6 +49,9 @@ Item {
   property var lastResult: null
   // The last failure: {message, code, fixes}.
   property var lastError: null
+  // The read whose failure `lastError` is ("" for an action's): a later success of that
+  // same read takes the card away.
+  property string lastErrorResource: ""
   // The open confirmation: {text, stale}.
   property var confirm: null
   property string incompatibleText: ""
@@ -64,6 +67,8 @@ Item {
   property var staleReads: ({})
   // `status`'s run warnings, with their fixes (the Issues view's third section).
   property var statusWarnings: []
+  // `status`'s problems of no client (`data.issues`), with the clients' in Problems.
+  property var machineIssues: []
   // The raw details `s` asked for, view-bound: `{selection, data}`.
   property var rawErrors: null
   property var rawSelection: null
@@ -530,15 +535,28 @@ Item {
   }
 
   function apply(r, outcome, env, tail) {
+    var read = r.resource !== "status" && r.kind !== "mutation" && r.purpose !== "action"
+    // A read that failed before and answers now: its failure card goes.
+    if (read && outcome === "ok" && lastError !== null && lastErrorResource === r.resource) {
+      lastError = null
+      lastErrorResource = ""
+    }
     if (r.resource === "status") {
       applyStatus(outcome, env, tail)
     } else if (r.kind === "mutation" || r.purpose === "action") {
+      var before = lastError
       applyAction(r, outcome, env, tail)
+      if (lastError !== before) lastErrorResource = ""
     } else if (outcome !== "ok") {
       // A background read's failure stays out of the panel; the next status says how
       // the read went.
       if (r.priority === "background") console.warn("omaddons:", r.label + ":", outcome)
-      else lastError = errorOf(env, r.label + ": " + outcome)
+      else {
+        lastError = errorOf(env, r.label + ": " + outcome)
+        lastErrorResource = r.resource
+        // A row waiting for its notes says they could not be read, never "Reading…".
+        if (r.resource === "changelog") changelog = { "selection": r.selection, "data": null, "failed": lastError.message }
+      }
     } else if (r.resource === "list") {
       lists = Model.reduceList(env)
       listsAt = Date.now()
@@ -573,10 +591,20 @@ Item {
       widgetInfo = model.widget
       commands = model.commands
       statusWarnings = model.warnings
+      machineIssues = model.issues
       phase = "ok"
       incompatibleText = ""
       unreachableText = ""
       lastRefreshMs = Date.now()
+      // A failed status says why (a broken config.toml, a corrupt state file), never
+      // "no clients found"; the next one that answers takes it away.
+      if (outcome === "failed") {
+        lastError = errorOf(env, "omaddons status failed")
+        lastErrorResource = "status"
+      } else if (lastErrorResource === "status") {
+        lastError = null
+        lastErrorResource = ""
+      }
       if (outcome === "ok") statusApplied()
       return
     }

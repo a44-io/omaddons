@@ -203,7 +203,9 @@ impl Listing {
     }
 
     /// Where `folder` is on disk: the index's spelling when it is there, else the first
-    /// spelling with its key.
+    /// spelling with its key that is a real directory (a stray file or link spelled
+    /// another way beside it never decides, whatever order the directory lists them in),
+    /// else the first.
     fn path(
         &self,
         addons_dir: &Path,
@@ -213,6 +215,7 @@ impl Listing {
         let names = self.0.as_ref()?.get(folder.key())?;
         let name = entry
             .and_then(|e| names.iter().find(|n| **n == e.name))
+            .or_else(|| names.iter().find(|n| is_real_dir(&addons_dir.join(n))))
             .or_else(|| names.first())?;
         Some(addons_dir.join(name))
     }
@@ -410,6 +413,25 @@ mod tests {
         let live = index_live_folder(&addons.join(name), &Default::default()).unwrap();
         let newest = live.files.iter().map(|e| e.mtime_ns).max().unwrap_or(0);
         live.stamped(at.unwrap_or(newest + 10_000_000_000))
+    }
+
+    /// Without an index, the spelling that is a real directory is the folder, whatever
+    /// order the directory lists a stray file spelled another way in.
+    #[test]
+    fn a_stray_file_spelled_another_way_never_hides_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let addons = dir.path();
+        folder(addons, "Foo", &[("Foo.toc", "## Interface: 120105\n")]);
+        fs::write(addons.join("foo"), "stray").unwrap();
+        for order in [["foo", "Foo"], ["Foo", "foo"]] {
+            let names = order.iter().map(|n| (*n).to_owned()).collect();
+            let listing = Listing(Some(BTreeMap::from([("foo".to_owned(), names)])));
+            assert_eq!(
+                listing.path(addons, &f("Foo"), None),
+                Some(addons.join("Foo")),
+                "{order:?}"
+            );
+        }
     }
 
     fn run(addons: &Path, name: &str, entry: &FolderIndex, mode: DriftMode) -> Walked {

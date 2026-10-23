@@ -653,10 +653,17 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
         if let Some(slot) = as_pin.iter_mut().skip(1).find(|a| *a == "install") {
             "pin".clone_into(slot);
         }
+        // The install parses only with an addon and a version given: else the help.
+        let install = Suggestion::command(as_install(argv));
+        let fix = if parses(&install) {
+            install
+        } else {
+            Suggestion::command(["omaddons", "help", "install"])
+        };
         let error = Error::new(
             ErrorCode::Usage,
             "update installs the newest release; a given version is an install, which pins it",
-            Suggestion::command(as_install(argv)),
+            fix,
         );
         let pin = Suggestion::command(as_pin);
         return if parses(&pin) {
@@ -716,10 +723,20 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
                     .map(|l| (levenshtein(&bad_flag, l), l))
                     .filter(|(d, _)| *d <= 2)
                     .min();
-                if closest.is_some_and(|(_, l)| is_presentation(l)) {
-                    let without: Vec<String> =
-                        argv.iter().filter(|a| **a != bad).cloned().collect();
-                    return Some((Suggestion::command(fix_argv(&without)), Vec::new()));
+                // Corrected in place first (`--formt json` reads `--format json`), so the
+                // flag goes with its value, never leaving it behind as an argument.
+                if let Some((_, flag)) = closest.filter(|(_, l)| is_presentation(l)) {
+                    let fixed: Vec<String> = argv
+                        .iter()
+                        .map(|a| match a.split_once('=') {
+                            // ubs:ignore — comparing a flag name, not a secret
+                            _ if *a == bad_flag => flag.clone(),
+                            // ubs:ignore — comparing a flag name, not a secret
+                            Some((name, value)) if name == bad_flag => format!("{flag}={value}"),
+                            _ => a.clone(),
+                        })
+                        .collect();
+                    return Some((Suggestion::command(fix_argv(&fixed)), Vec::new()));
                 }
                 suggest(argv, &bad_flag, &longs)
             })
@@ -1448,6 +1465,30 @@ mod tests {
             alternatives.is_empty(),
             "pin takes one addon: {alternatives:?}"
         );
+        // No addon named, or no version: an install would not parse, so the help.
+        for args in [&["update", "--version", "1"][..], &["update", "--version"]] {
+            let (fix, _) = suggested(args);
+            assert_eq!(fix, ["omaddons", "help", "install"], "{args:?}");
+        }
+    }
+
+    /// A misspelled presentation flag that takes a value goes with its value: it is
+    /// corrected, then dropped, never leaving the value as an argument.
+    #[test]
+    fn a_misspelled_presentation_flag_takes_its_value_along() {
+        for args in [
+            &["install", "dbm", "--formt", "json"][..],
+            &["install", "dbm", "--formt=json"],
+            &["install", "dbm", "--progres", "json"],
+        ] {
+            let raw = argv(args);
+            let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+            assert_eq!(
+                err.fix.argv().unwrap(),
+                ["omaddons", "install", "dbm"],
+                "{args:?}"
+            );
+        }
     }
 
     #[test]
