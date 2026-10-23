@@ -10,17 +10,18 @@ use std::fs;
 use common::buggrabber::{self, NOW};
 use common::home::{Home, Run, wait};
 use common::pause::Pause;
-use common::privacy::{assert_private, assert_private_all};
+use common::privacy::{ACCOUNT2_NAME, assert_private, assert_private_all};
 use serde_json::{Value, json};
-use support::{Client, db};
+use support::{Client, cut, db, dismiss_while, warning_codes};
 
 #[cfg(test)]
 mod support {
     use serde_json::Value;
 
     use super::common::addons::{addon_folder, toc};
-    use super::common::buggrabber::{self, BugDb, BugEntry, TimeKind, Writer, write_files};
-    use super::common::home::{Home, Run};
+    use super::common::buggrabber::{self, BugDb, BugEntry, SvFile, TimeKind, Writer, write_files};
+    use super::common::home::{Home, Run, wait};
+    use super::common::pause::Pause;
 
     /// The frozen clock (`buggrabber::NOW`): a dismissal is made then.
     pub const CLOCK: &str = "2026-10-15T18:30:00Z";
@@ -101,6 +102,49 @@ mod support {
             .as_str()
             .unwrap()
             .to_owned()
+    }
+
+    /// `db`'s file under `account`, its end cut off, as a file the game is still writing
+    /// reads.
+    pub fn cut(account: &str, db: &BugDb) -> SvFile {
+        let mut file = SvFile::account(account, buggrabber::FILE, db.render());
+        let at = file.bytes.len() - 20;
+        file.bytes.truncate(at);
+        file
+    }
+
+    /// The codes of an envelope's warnings, in order.
+    pub fn warning_codes(envelope: &Value) -> Vec<&str> {
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|w| w["code"].as_str())
+            .collect()
+    }
+
+    /// `errors dismiss <args>` with the clock frozen, stopped after its first read (and
+    /// its `--if-match` check) until `meanwhile` has run, before it takes the lock;
+    /// private on both streams.
+    pub fn dismiss_while(home: &Home, args: &[&str], meanwhile: impl FnOnce()) -> Run {
+        const STEP: &str = "errors.dismiss.observed";
+        let pause = Pause::new(home.env.root());
+        let argv: Vec<&str> = ["errors", "dismiss"].iter().chain(args).copied().collect();
+        let failpoints = format!("{STEP}=pause");
+        let child = home.spawn(
+            &argv,
+            &[
+                ("OMADDONS_FAILPOINTS", failpoints.as_str()),
+                pause.env(),
+                ("OMADDONS_NOW", CLOCK),
+            ],
+        );
+        pause.reached(STEP);
+        meanwhile();
+        pause.resume(STEP);
+        let run = wait(child, &argv);
+        super::assert_private_all(&run.stdout, &run.stderr);
+        run
     }
 }
 
@@ -389,10 +433,8 @@ fn two_dismissers_take_turns_and_both_are_kept() {
 fn a_database_read_in_part_is_never_acknowledged() {
     let home = Home::new(&["wow"]);
     retail(&home);
-    let mut cut = db(10, &[(10, NOW - 60)]).file();
-    let at = cut.bytes.len() - 20;
-    cut.bytes.truncate(at);
-    buggrabber::write_files(&home.client("_retail_").join("WTF"), &[cut]);
+    let file = cut("FAKEACCT", &db(10, &[(10, NOW - 60)]));
+    buggrabber::write_files(&home.client("_retail_").join("WTF"), &[file]);
     let run = support::run(&home, &["errors", "dismiss", "-t", "retail"]);
     let envelope = run.expect(0);
     assert_eq!(envelope["partial"], true, "{}", run.context());
@@ -402,6 +444,95 @@ fn a_database_read_in_part_is_never_acknowledged() {
     );
     assert!(!ack_file(&home).exists());
     assert!(history_lines(&home).iter().all(|l| l["kind"] != "dismiss"));
+}
+
+/// A session that ends while a dismissal waits for the lock is read again under it: a
+/// token from the first read no longer matches, and without one the dismissal binds to
+/// the second read, reporting each of its warnings (a second account's database the
+/// game is still writing) once.
+#[test]
+fn a_session_ending_while_a_dismissal_waits_is_read_again() {
+    let home = Home::new(&["wow"]);
+    let c = retail(&home);
+    c.write(&db(10, &[(10, NOW - 60)]));
+    let wtf = home.client("_retail_").join("WTF");
+    buggrabber::write_files(&wtf, &[cut(ACCOUNT2_NAME, &db(3, &[(3, NOW - 90)]))]);
+    let token = support::token(&home, "retail");
+
+    let stale = dismiss_while(&home, &["-t", "retail", "--if-match", &token], || {
+        c.write(&db(11, &[(10, NOW - 60), (11, NOW - 30)]));
+    });
+    let error = &stale.expect(1)["error"];
+    assert_eq!(error["code"], "plan_stale", "{}", stale.context());
+    assert!(
+        error["details"]["changed"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("observed")),
+        "{}",
+        stale.context()
+    );
+    assert!(!ack_file(&home).exists(), "nothing acknowledged");
+
+    let run = dismiss_while(&home, &["-t", "retail"], || {
+        c.write(&db(12, &[(10, NOW - 60), (11, NOW - 30), (12, NOW - 10)]));
+    });
+    let envelope = run.expect(0);
+    let t = support::first(&envelope);
+    // Sessions 10 to 12 are new since the read that took the token: three errors, where
+    // the first look (session 11) had two.
+    assert_eq!(
+        (
+            &envelope["partial"],
+            &t["acknowledged"],
+            &t["skipped"],
+            &t["errors"]
+        ),
+        (
+            &json!(true),
+            &json!([{"database": "db-1", "session": 12}]),
+            &json!([{"database": "db-2", "reason": "partial"}]),
+            &json!(3)
+        ),
+        "{}",
+        run.context()
+    );
+    let codes = warning_codes(&envelope);
+    let read = codes.iter().filter(|c| **c == "errors_partial").count();
+    assert_eq!(read, 1, "{}", run.context());
+}
+
+/// A database the game was still writing at a dismissal's first look, and finished before
+/// the lock, is acknowledged whole, and the first look's warning about it is not
+/// reported: a dismissal reports the read it binds to.
+#[test]
+fn a_database_finished_while_a_dismissal_waits_is_acknowledged_without_a_stale_warning() {
+    let home = Home::new(&["wow"]);
+    let c = retail(&home);
+    let whole = db(10, &[(10, NOW - 60)]);
+    let wtf = home.client("_retail_").join("WTF");
+    buggrabber::write_files(&wtf, &[cut("FAKEACCT", &whole)]);
+
+    let run = dismiss_while(&home, &["-t", "retail"], || c.write(&whole));
+    let envelope = run.expect(0);
+    let t = support::first(&envelope);
+    assert_eq!(
+        (&envelope["partial"], &t["acknowledged"], &t["skipped"]),
+        (
+            &json!(false),
+            &json!([{"database": "db-1", "session": 10}]),
+            &json!([])
+        ),
+        "{}",
+        run.context()
+    );
+    assert_eq!(
+        warning_codes(&envelope),
+        Vec::<&str>::new(),
+        "{}",
+        run.context()
+    );
+    assert_eq!(support::new_errors(&home, "retail"), 0);
 }
 
 #[test]

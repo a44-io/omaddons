@@ -244,6 +244,13 @@ pub fn dismiss(ctx: &Context) -> Result<DismissOutcome> {
         });
     }
     check(ctx.if_match.as_deref(), &bound(&seen), &preview)?;
+    crate::fsx::failpoint::hit("errors.dismiss.observed").map_err(|e| {
+        Error::io(
+            world.paths.state_dir(),
+            &e,
+            Suggestion::command(["omaddons", "status"]),
+        )
+    })?;
     let guard = GlobalLock::acquire(&world.paths, "errors dismiss")?;
     ctx.notes.warn_all(&recover_under(
         &guard,
@@ -263,6 +270,15 @@ pub fn dismiss(ctx: &Context) -> Result<DismissOutcome> {
         })
     });
     if moved {
+        // The first read's warnings no longer describe the run, in the notes either; the
+        // run's own from before it stay.
+        let (kept, first) = warnings.split_at(before_read);
+        let superseded: Vec<Warning> = first
+            .iter()
+            .filter(|w| !kept.contains(w))
+            .cloned()
+            .collect();
+        ctx.notes.withdraw(&superseded);
         warnings.truncate(before_read);
         seen = observe(ctx, &world, &mut memo, &acks, now, &mut warnings)?;
         check(ctx.if_match.as_deref(), &bound(&seen), &preview)?;

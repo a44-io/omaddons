@@ -50,6 +50,12 @@ impl RunNotes {
         }
     }
 
+    /// Takes back warnings a step found and then superseded (a read made again): they no
+    /// longer describe the run. The others keep their order.
+    pub fn withdraw(&self, warnings: &[Warning]) {
+        self.lock().warnings.retain(|w| !warnings.contains(w));
+    }
+
     /// The journal warnings found at the start of the run (`journal_pending`,
     /// `tx_in_progress`), added like any other, and how to read them again when it
     /// ends: a command that recovered a journal on its way no longer reports it as
@@ -169,5 +175,17 @@ mod tests {
         let mut warnings = vec![other.clone()];
         quiet.settle_journal(&mut warnings);
         assert_eq!(warnings, [other]);
+    }
+
+    #[test]
+    fn a_withdrawn_warning_leaves_the_others_in_order() {
+        let notes = RunNotes::default();
+        let [a, b, c] = ["a", "b", "c"].map(|m| Warning::new(WarningCode::ErrorsPartial, m));
+        notes.warn_all(&[a.clone(), b.clone(), c.clone()]);
+        notes.withdraw(&[b.clone(), pending("never noted")]);
+        assert_eq!(notes.snapshot().0, [a.clone(), c.clone()]);
+        // Found again later, it is noted again, last.
+        notes.warn(b.clone());
+        assert_eq!(notes.snapshot().0, [a, c, b]);
     }
 }
