@@ -209,21 +209,9 @@ impl GithubSource {
             .take(LOOK_BACK_MAX_RELEASES);
         for tag in older {
             if looks_prerelease(tag) {
-                ruled_out.push((tag.clone(), "named like a prerelease".to_owned()));
+                ruled_out.push((tag.clone(), NAMED_PRERELEASE.to_owned()));
                 continue;
             }
-            let manifest = match release_json(&base, tag, http)? {
-                Ok(manifest) => manifest,
-                Err(None) => {
-                    ruled_out.push((tag.clone(), "publishes no release.json".to_owned()));
-                    continue;
-                }
-                Err(Some(why)) => {
-                    ruled_out.push((tag.clone(), format!("has an unusable release.json ({why})")));
-                    continue;
-                }
-            };
-            let mut set = release_set(w, &base, tag, &manifest);
             // The feed dates each release; `release.json` does not.
             let published = feed
                 .tags
@@ -231,25 +219,18 @@ impl GithubSource {
                 .find(|t| t.tag == *tag)
                 .and_then(|t| t.updated.as_deref())
                 .and_then(|u| u.parse().ok());
-            for release in &mut set.releases {
-                release.published_at = published;
-            }
-            let declares = set
-                .releases
-                .iter()
-                .flat_map(|r| &r.assets)
-                .flat_map(|a| &a.flavors)
-                .any(names_client);
-            if !declares {
-                let mut flavors: Vec<String> = set
-                    .releases
-                    .iter()
-                    .flat_map(|r| &r.assets)
-                    .flat_map(|a| &a.flavors)
-                    .map(|f| f.flavor.clone())
-                    .collect();
-                flavors.sort();
-                flavors.dedup();
+            let (why, flavors) =
+                match self.read_release(w, &base, tag, published, names_client, http)? {
+                    Read::Found(set) => {
+                        return Ok(LookBack {
+                            found: Some(set),
+                            ruled_out,
+                            order,
+                        });
+                    }
+                    Read::RuledOut(why, flavors) => (why, flavors),
+                };
+            if let Some(flavors) = flavors {
                 track = if track.0 == flavors {
                     (flavors, track.1 + 1)
                 } else {
@@ -259,51 +240,108 @@ impl GithubSource {
                     ruled_out.push((
                         tag.clone(),
                         format!(
-                            "its release.json declares no build for this client, nor did the {} before it (only {}): one track, so the look-back stops",
+                            "{why}, nor did the {} before it (only {}): one track, so the look-back stops",
                             track.1 - 1,
                             track.0.join(", ")
                         ),
                     ));
                     break;
                 }
-                ruled_out.push((
-                    tag.clone(),
-                    "its release.json declares no build for this client".to_owned(),
-                ));
-                continue;
             }
-            // The one REST request: whether GitHub marks it a prerelease.
-            let Some(rest) = &self.rest else {
-                return Err(Error::new(
-                    ErrorCode::NoCompatibleRelease,
-                    format!(
-                        "{}: whether {tag} is a prerelease needs GitHub's release API",
-                        w.r#ref
-                    ),
-                    Suggestion::command([
-                        "omaddons",
-                        "install",
-                        &w.r#ref.to_string(),
-                        "--version",
-                        tag,
-                    ]),
-                ));
-            };
-            if rest.is_prerelease(w, tag, http)? {
-                ruled_out.push((tag.clone(), "a prerelease".to_owned()));
-                continue;
+            ruled_out.push((tag.clone(), why));
+        }
+        // Every older release the feed holds is named like a prerelease, so it cannot
+        // reach this repository's stable releases (VuhDo during an alpha series): probe
+        // the newest stable tag's per-client siblings instead.
+        let blind =
+            !ruled_out.is_empty() && ruled_out.iter().all(|(_, why)| why == NAMED_PRERELEASE);
+        if blind {
+            for tag in siblings(newest, &order)
+                .into_iter()
+                .take(LOOK_BACK_MAX_RELEASES)
+            {
+                match self.read_release(w, &base, &tag, None, names_client, http)? {
+                    Read::Found(set) => {
+                        return Ok(LookBack {
+                            found: Some(set),
+                            ruled_out,
+                            order,
+                        });
+                    }
+                    Read::RuledOut(why, _) => {
+                        ruled_out.push((tag, format!("probed as a sibling of {newest}: {why}")));
+                    }
+                }
             }
-            return Ok(LookBack {
-                found: Some(set),
-                ruled_out,
-                order,
-            });
         }
         Ok(LookBack {
             found: None,
             ruled_out,
             order,
         })
+    }
+
+    /// One older release of a look-back, `tag` of `base`: its `release.json` (github.com,
+    /// no REST), and when that declares a build `names_client` accepts, whether GitHub
+    /// marks it a prerelease (the one REST request).
+    fn read_release(
+        &self,
+        w: &Wanted,
+        base: &str,
+        tag: &str,
+        published: Option<jiff::Timestamp>,
+        names_client: &(dyn Fn(&crate::model::AssetFlavor) -> bool + Sync),
+        http: &dyn Http,
+    ) -> Result<Read> {
+        let manifest = match release_json(base, tag, http)? {
+            Ok(manifest) => manifest,
+            Err(None) => return Ok(Read::RuledOut("publishes no release.json".to_owned(), None)),
+            Err(Some(why)) => {
+                return Ok(Read::RuledOut(
+                    format!("has an unusable release.json ({why})"),
+                    None,
+                ));
+            }
+        };
+        let mut set = release_set(w, base, tag, &manifest);
+        for release in &mut set.releases {
+            release.published_at = published;
+        }
+        let flavors = || {
+            set.releases
+                .iter()
+                .flat_map(|r| &r.assets)
+                .flat_map(|a| &a.flavors)
+        };
+        if !flavors().any(names_client) {
+            let mut declared: Vec<String> = flavors().map(|f| f.flavor.clone()).collect();
+            declared.sort();
+            declared.dedup();
+            return Ok(Read::RuledOut(
+                "its release.json declares no build for this client".to_owned(),
+                Some(declared),
+            ));
+        }
+        let Some(rest) = &self.rest else {
+            return Err(Error::new(
+                ErrorCode::NoCompatibleRelease,
+                format!(
+                    "{}: whether {tag} is a prerelease needs GitHub's release API",
+                    w.r#ref
+                ),
+                Suggestion::command([
+                    "omaddons",
+                    "install",
+                    &w.r#ref.to_string(),
+                    "--version",
+                    tag,
+                ]),
+            ));
+        };
+        if rest.is_prerelease(w, tag, http)? {
+            return Ok(Read::RuledOut("a prerelease".to_owned(), None));
+        }
+        Ok(Read::Found(set))
     }
 
     pub fn new() -> Self {
@@ -530,14 +568,80 @@ fn release_json(
 /// word of it is `alpha`, `beta`, `rc` or `pre`, digits allowed after, as WowAce's tags
 /// are read. A look-back passes it over without asking the REST API.
 fn looks_prerelease(tag: &str) -> bool {
-    let lower = tag.to_ascii_lowercase();
-    lower
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|word| {
-            ["alpha", "beta", "pre", "rc"].iter().any(|mark| {
-                word.starts_with(mark) && word[mark.len()..].bytes().all(|b| b.is_ascii_digit())
-            })
-        })
+    tag.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(prerelease_word)
+}
+
+/// `alpha`, `beta`, `rc` or `pre`, in any case, digits allowed after (`beta2`).
+fn prerelease_word(word: &str) -> bool {
+    let lower = word.to_ascii_lowercase();
+    ["alpha", "beta", "pre", "rc"].iter().any(|mark| {
+        lower.starts_with(mark) && lower[mark.len()..].bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
+/// Why a look-back passes over a tag named like a prerelease.
+const NAMED_PRERELEASE: &str = "named like a prerelease";
+
+/// One older release a look-back read.
+enum Read {
+    /// Its `release.json` declares a build for this client, and GitHub marks it stable.
+    Found(ReleaseSet),
+    /// Passed over, and why; with the clients its `release.json` declares, when it has
+    /// one and declares none for this client.
+    RuledOut(String, Option<Vec<String>>),
+}
+
+/// The tags of the newest stable release's per-client siblings, for a feed that holds
+/// only prereleases: its version with each suffix the feed's tags use, a prerelease
+/// mark taken off. `v3.218-catac` and `v3.219-mopc-beta-3`, `v3.219-beta-3` give
+/// `v3.218-mopc` and `v3.218`. None of the newest's own, or of a tag the feed holds.
+fn siblings(newest: &str, feed: &[String]) -> Vec<String> {
+    let Some((version, own)) = split_tag(newest) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for tag in feed {
+        let Some((_, rest)) = split_tag(tag) else {
+            continue;
+        };
+        let suffix = strip_prerelease(rest);
+        let sibling = format!("{version}{suffix}");
+        if suffix != own && !feed.contains(&sibling) && !out.contains(&sibling) {
+            out.push(sibling);
+        }
+    }
+    out
+}
+
+/// A tag as its version and the rest: `v3.218-catac` is `v3.218` and `-catac`,
+/// `2.8.3` is `2.8.3` and nothing. `None` for a tag that does not start with one
+/// (`DetailsRetail.v9.1.0`).
+fn split_tag(tag: &str) -> Option<(&str, &str)> {
+    let start = usize::from(tag.starts_with(['v', 'V']));
+    if !tag[start..].starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let end = tag[start..]
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .map_or(tag.len(), |i| start + i);
+    let version = tag[..end].trim_end_matches('.');
+    Some((version, &tag[version.len()..]))
+}
+
+/// `rest` up to its first prerelease mark: `-mopc-beta-3` is `-mopc`, `-alpha-18` is
+/// empty, `-catac` stays.
+fn strip_prerelease(rest: &str) -> &str {
+    let cut = rest.char_indices().find(|&(i, c)| {
+        matches!(c, '-' | '_' | '.')
+            && prerelease_word(
+                rest[i + 1..]
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .next()
+                    .unwrap_or_default(),
+            )
+    });
+    cut.map_or(rest, |(i, _)| &rest[..i])
 }
 
 /// One stable release with an asset per manifest entry.
@@ -1045,6 +1149,45 @@ mod tests {
         ] {
             assert!(!looks_prerelease(tag), "{tag}");
         }
+    }
+
+    #[test]
+    fn tags_split_into_version_and_suffix() {
+        assert_eq!(split_tag("v3.218-catac"), Some(("v3.218", "-catac")));
+        assert_eq!(split_tag("v3.218"), Some(("v3.218", "")));
+        assert_eq!(split_tag("2.8.3"), Some(("2.8.3", "")));
+        assert_eq!(split_tag("1.47.11-classic"), Some(("1.47.11", "-classic")));
+        assert_eq!(split_tag("v3."), Some(("v3", ".")));
+        assert_eq!(split_tag("DetailsRetail.v9.1.0"), None);
+        assert_eq!(split_tag("Plater-v661"), None);
+        assert_eq!(strip_prerelease("-mopc-beta-3"), "-mopc");
+        assert_eq!(strip_prerelease("-alpha-18"), "");
+        assert_eq!(strip_prerelease("-catac"), "-catac");
+        assert_eq!(strip_prerelease("-RC1"), "");
+        assert_eq!(strip_prerelease("-precise"), "-precise");
+    }
+
+    /// VuhDo on 2026-10-24: `releases/latest` is `v3.218-catac`, and the feed holds only
+    /// v3.219 alphas and betas, five per build.
+    #[test]
+    fn siblings_of_the_newest_stable_tag_from_the_feeds_suffixes() {
+        let feed: Vec<String> = [
+            "v3.219-vanilla-beta-3",
+            "v3.219-vanilla-alpha-18",
+            "v3.219-tbcc-beta-3",
+            "v3.219-mopc-beta-3",
+            "v3.219-catac-beta-3",
+            "v3.219-beta-3",
+            "v3.219-alpha-18",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            siblings("v3.218-catac", &feed),
+            ["v3.218-vanilla", "v3.218-tbcc", "v3.218-mopc", "v3.218"]
+        );
+        // A newest tag with no version to build on probes nothing.
+        assert!(siblings("Plater-v661", &feed).is_empty());
     }
 
     #[test]

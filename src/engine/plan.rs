@@ -4962,8 +4962,9 @@ impl TargetPlanner<'_> {
     }
 
     /// The second pass of a look-back: `found`, older than `newest`, installs unless the
-    /// installed release is it or newer by `order` (the feed's tags, newest first), or
-    /// is not in the feed at all: a look-back never downgrades.
+    /// installed release is it or newer, by `order` (the feed's tags, newest first) or
+    /// else by dotted version, or the two cannot be ordered at all: a look-back never
+    /// downgrades ([`crate::resolve::updates::older_than_found`]).
     #[expect(
         clippy::too_many_arguments,
         reason = "what the look-back found, with the request of the first pass"
@@ -4982,20 +4983,17 @@ impl TargetPlanner<'_> {
         let found_tag = release.and_then(|r| tag_of(wanted, &r.release_id));
         let published = release.and_then(|r| r.published_at);
         if let Some(existing) = existing {
-            let at = |tag: &str| {
-                order
-                    .iter()
-                    .position(|t| crate::sources::changelog::same_version(t, tag))
-            };
             let installed = existing
                 .release_id
                 .as_deref()
                 .and_then(|id| tag_of(wanted, id));
-            let older = installed
-                .as_deref()
-                .and_then(at)
-                .zip(found_tag.as_deref().and_then(at))
-                .is_some_and(|(installed, found)| installed > found);
+            let older =
+                installed
+                    .as_deref()
+                    .zip(found_tag.as_deref())
+                    .is_some_and(|(installed, found)| {
+                        crate::resolve::updates::older_than_found(order, installed, found)
+                    });
             if !older {
                 return self.current(existing, intent).map(Prepared::Done);
             }

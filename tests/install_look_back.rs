@@ -12,7 +12,7 @@ mod common;
 use common::home::Home;
 use common::netlog::net_log;
 use serde_json::Value;
-use support::{BCC, MISTS, REF, Rel, TITAN, codes, listed, serve};
+use support::{BCC, MISTS, REF, Rel, TITAN, alpha_series, codes, listed, serve};
 
 #[cfg(test)]
 mod support {
@@ -39,39 +39,82 @@ mod support {
     /// `release.json` and `VuhDo-<tag>.zip`, the API's answer for each tag (a prerelease
     /// when named in `prereleases`), and `releases.atom` listing them all.
     pub fn serve(scenario: &Path, releases: &[Rel], prereleases: &[&str]) {
-        for &(tag, flavor, interface) in releases {
-            let files = [
-                (
-                    "VuhDo/VuhDo.toc".to_owned(),
-                    toc(&interface.to_string(), &[&format!("## Version: {tag}")]),
-                ),
-                ("VuhDo/VuhDo.lua".to_owned(), "-- VuhDo\n".to_owned()),
-            ];
-            let entries: Vec<(&str, &str)> = files
-                .iter()
-                .map(|(p, t)| (p.as_str(), t.as_str()))
-                .collect();
-            let file = format!("VuhDo-{tag}.zip");
-            let flavors = [(flavor, interface)];
-            let assets: [Asset<'_>; 1] = [(file.as_str(), &flavors, entries)];
-            gh_release_v(scenario, VUHDO, tag, &assets);
-            let api = json!({
-                "tag_name": tag,
-                "prerelease": prereleases.contains(&tag),
-                "draft": false,
-                "assets": [],
-            });
-            fixture(
-                scenario,
-                &format!("rest-{tag}"),
-                &format!("https://api.github.com/repos/o/vuhdo/releases/tags/{tag}"),
-                200,
-                &[("x-ratelimit-remaining", "59")],
-                Some(&api.to_string()),
-            );
+        for &release in releases {
+            publish(scenario, release, prereleases.contains(&release.0));
         }
         gh_latest(scenario, VUHDO, releases[0].0);
         let feed: Vec<(&str, &str)> = releases.iter().map(|r| (r.0, "notes")).collect();
+        gh_feed(scenario, VUHDO, &feed, None);
+    }
+
+    /// One release's `release.json`, `VuhDo-<tag>.zip` and the API's answer for its tag,
+    /// without touching `releases/latest` or the feed.
+    pub fn publish(scenario: &Path, (tag, flavor, interface): Rel, prerelease: bool) {
+        let files = [
+            (
+                "VuhDo/VuhDo.toc".to_owned(),
+                toc(&interface.to_string(), &[&format!("## Version: {tag}")]),
+            ),
+            ("VuhDo/VuhDo.lua".to_owned(), "-- VuhDo\n".to_owned()),
+        ];
+        let entries: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(p, t)| (p.as_str(), t.as_str()))
+            .collect();
+        let file = format!("VuhDo-{tag}.zip");
+        let flavors = [(flavor, interface)];
+        let assets: [Asset<'_>; 1] = [(file.as_str(), &flavors, entries)];
+        gh_release_v(scenario, VUHDO, tag, &assets);
+        let api = json!({
+            "tag_name": tag,
+            "prerelease": prerelease,
+            "draft": false,
+            "assets": [],
+        });
+        fixture(
+            scenario,
+            &format!("rest-{tag}"),
+            &format!("https://api.github.com/repos/o/vuhdo/releases/tags/{tag}"),
+            200,
+            &[("x-ratelimit-remaining", "59")],
+            Some(&api.to_string()),
+        );
+    }
+
+    /// VuhDo on 2026-10-24: `releases/latest` is `v3.218-catac`, the feed holds only
+    /// v3.219 alphas and betas, and the stable siblings in `stable` are published. A
+    /// sibling named in `missing` answers 404, as GitHub does for no such release.
+    pub fn alpha_series(scenario: &Path, stable: &[Rel], missing: &[&str]) {
+        publish(scenario, ("v3.218-catac", "cata", 40_402), false);
+        for &release in stable {
+            publish(scenario, release, false);
+        }
+        for tag in missing {
+            fixture(
+                scenario,
+                &format!("missing-{tag}"),
+                &format!("{VUHDO}/releases/download/{tag}/release.json"),
+                404,
+                &[],
+                Some("Not Found"),
+            );
+        }
+        gh_latest(scenario, VUHDO, "v3.218-catac");
+        let feed: Vec<(&str, &str)> = [
+            "v3.219-vanilla-beta-3",
+            "v3.219-vanilla-alpha-18",
+            "v3.219-tbcc-beta-3",
+            "v3.219-tbcc-alpha-18",
+            "v3.219-mopc-beta-3",
+            "v3.219-mopc-alpha-18",
+            "v3.219-catac-beta-3",
+            "v3.219-catac-alpha-18",
+            "v3.219-beta-3",
+            "v3.219-alpha-18",
+        ]
+        .iter()
+        .map(|t| (*t, "notes"))
+        .collect();
         gh_feed(scenario, VUHDO, &feed, None);
     }
 
@@ -559,6 +602,85 @@ fn another_clients_release_resets_the_track() {
         r.context()
     );
     assert_eq!(listed(&home, "classic")["version"], "v1", "{}", r.context());
+}
+
+/// A feed of prereleases only cannot reach the stable releases, so the newest stable
+/// tag's siblings are probed: VuhDo's shape on 2026-10-24. Each client installs its own
+/// `v3.218-<suffix>` with one API request; a sibling never published (`-tbcc` here) is
+/// passed over by its 404, and that client is refused naming each probe.
+#[test]
+fn an_alpha_series_probes_the_newest_stable_tags_siblings() {
+    let home = Home::new(&["wow_classic", "wow_classic_era", "wow_anniversary"]);
+    alpha_series(
+        &home.http,
+        &[
+            ("v3.218-mopc", "mists", 50_504),
+            ("v3.218-vanilla", "classic", 11_509),
+            ("v3.218", "mainline", 120_105),
+        ],
+        &["v3.218-tbcc"],
+    );
+
+    for (id, tag) in [("classic", "v3.218-mopc"), ("era", "v3.218-vanilla")] {
+        let before = rest_requests(&home);
+        let r = home.run(&["install", REF, "-t", id]);
+        let envelope = r.expect(0);
+        assert!(
+            codes(&envelope).contains(&"older_release_for_client".to_owned()),
+            "{id}: {}",
+            r.context()
+        );
+        assert_eq!(listed(&home, id)["version"], tag, "{}", r.context());
+        assert_eq!(
+            rest_requests(&home),
+            before + 1,
+            "{}",
+            net_log(&home).context()
+        );
+    }
+    // No `release.json` of a prerelease in the feed was fetched.
+    assert_eq!(manifest_requests(&home, "v3.219-mopc-beta-3"), 0);
+
+    let r = home.run(&["install", REF, "-t", "anniversary"]);
+    let error = &r.expect(3)["error"];
+    assert_eq!(error["code"], "no_compatible_release", "{}", r.context());
+    let tried = error["details"]["tried"].to_string();
+    assert!(
+        tried.contains("v3.218-tbcc/release.json")
+            && tried.contains("probed as a sibling of v3.218-catac: publishes no release.json"),
+        "{tried}"
+    );
+}
+
+/// An installed sibling the feed does not hold is placed by its version: `v3.217-mopc`
+/// updates to `v3.218-mopc`, and `v3.218-mopc` stays when the probe finds it again.
+#[test]
+fn a_probed_sibling_updates_by_version() {
+    let mut home = Home::new(&["wow_classic"]);
+    serve(&home.http, &[("v3.217-mopc", "mists", 50_504)], &[]);
+    home.run(&["install", REF, "-t", "classic"]).expect(0);
+    assert_eq!(listed(&home, "classic")["version"], "v3.217-mopc");
+
+    let later = home.scenario("later");
+    alpha_series(
+        &later,
+        &[
+            ("v3.218-mopc", "mists", 50_504),
+            ("v3.218-vanilla", "classic", 11_509),
+        ],
+        &["v3.218-tbcc", "v3.218"],
+    );
+    let r = home.run(&["update", "-t", "classic", "--refresh"]);
+    r.expect(0);
+    assert_eq!(
+        listed(&home, "classic")["version"],
+        "v3.218-mopc",
+        "{}",
+        r.context()
+    );
+    let r = home.run(&["outdated", "-t", "classic"]);
+    let envelope = r.expect(0);
+    assert_eq!(envelope["data"]["summary"]["current"], 1, "{}", r.context());
 }
 
 /// `--version` and a pasted asset link name one release: no look-back.

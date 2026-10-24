@@ -321,19 +321,12 @@ fn looked_back_status(
         .next()?;
     let latest = brief(&best, Some(release));
     let tag = |id: &str| id.rsplit_once('@').map(|(_, tag)| tag.to_owned());
-    let at = |id: &str| {
-        let tag = tag(id)?;
-        found
-            .order
-            .iter()
-            .position(|t| crate::sources::changelog::same_version(t, &tag))
-    };
     let older = record
         .release_id
         .as_deref()
-        .and_then(at)
-        .zip(at(&release.release_id))
-        .is_some_and(|(installed, found)| installed > found);
+        .and_then(tag)
+        .zip(tag(&release.release_id))
+        .is_some_and(|(installed, answer)| older_than_found(&found.order, &installed, &answer));
     Some(if older {
         UpdateStatus::UpdateAvailable {
             latest,
@@ -448,6 +441,22 @@ pub fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
             .find(|o| o.is_ne())
             .unwrap_or(Ordering::Equal),
     )
+}
+
+/// Whether the release tagged `installed` is older than `found`, a look-back's answer:
+/// by their places in `order` (the feed's tags, newest first) when it holds both, else
+/// by their dotted versions (a sibling probed outside the feed: `v3.217-mopc` before
+/// `v3.218-mopc`). Unknown is never older, so a look-back never downgrades.
+pub fn older_than_found(order: &[String], installed: &str, found: &str) -> bool {
+    let at = |tag: &str| {
+        order
+            .iter()
+            .position(|t| crate::sources::changelog::same_version(t, tag))
+    };
+    match (at(installed), at(found)) {
+        (Some(installed), Some(found)) => installed > found,
+        _ => compare_versions(installed, found) == Some(Ordering::Less),
+    }
 }
 
 /// One addon's status on one target.
@@ -965,9 +974,17 @@ mod tests {
             matches!(&status, UpdateStatus::Current { latest } if latest.version == "1.5.0"),
             "{status:?}"
         );
-        // Out of the feed's reach: never a downgrade.
+        // Out of the feed's reach: placed by version when it has one, else never moved.
         let (status, _) = with(&record(Some("0.9.0"), "0.9.0"), Some(&found));
-        assert_eq!(name(&status), "current", "{status:?}");
+        assert_eq!(name(&status), "update_available", "{status:?}");
+        let (status, _) = with(&record(Some("2.5.0"), "2.5.0"), Some(&found));
+        assert_eq!(
+            name(&status),
+            "ahead",
+            "newer than the newest itself: {status:?}"
+        );
+        let (status, _) = with(&record(Some("hotfix"), "hotfix"), Some(&found));
+        assert_eq!(name(&status), "current", "unordered: {status:?}");
         // Nothing found, or no look-back: blocked as before.
         let none = LookBack {
             found: None,
