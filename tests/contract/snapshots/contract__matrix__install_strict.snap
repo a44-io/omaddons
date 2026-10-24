@@ -52,7 +52,7 @@ expression: s.stable(&c.envelope)
           "code": "no_compatible_release",
           "fix": "check that the addon supports this client, or pin another release with --version",
           "fix_argv": null,
-          "message": "gh:o/bar: no candidate loads on this client (retail on mainline)"
+          "message": "gh:o/bar: no candidate loads on this client: Bar.zip: Bar has no TOC this client loads (retail on mainline)"
         },
         "folders": {
           "added": [],
@@ -100,7 +100,7 @@ expression: s.stable(&c.envelope)
       "code": "no_compatible_release",
       "fix": "check that the addon supports this client, or pin another release with --version",
       "fix_argv": null,
-      "message": "gh:o/bar: no candidate loads on this client (retail on mainline)"
+      "message": "gh:o/bar: no candidate loads on this client: Bar.zip: Bar has no TOC this client loads (retail on mainline)"
     }
   ]
 }

@@ -12,13 +12,15 @@ use std::fs;
 use std::path::Path;
 
 use common::addons::toc;
+use common::archives::zip_text;
 use common::home::Home;
-use common::http::{Asset, gh_release};
-use common::trees::{listing, tree_hash};
+use common::http::{Asset, fixture, fixture_bytes, gh_latest, gh_release};
+use common::netlog::net_log;
+use common::trees::{CustomRoot, listing, tree_hash};
 use serde_json::Value;
 use support::{
-    folder, gated, mentions, on_disk, release, serve_boss_mods, skipped, sorted, status_folders,
-    strings,
+    folder, gated, left_out, mentions, on_disk, release, rest_release, serve_boss_mods, skipped,
+    sorted, status_folders, strings,
 };
 
 const DBM: &str = "https://github.com/DeadlyBossMods/DeadlyBossMods";
@@ -162,6 +164,68 @@ mod support {
             ));
         }
         files
+    }
+
+    /// Serves `base`'s release `tag` without a `release.json`, so the REST fallback lists
+    /// its zips (`assets`: file name, files), whose names then carry flavor hints.
+    pub fn rest_release(
+        scenario: &Path,
+        base: &str,
+        tag: &str,
+        assets: &[(&str, Vec<(String, String)>)],
+    ) {
+        let repo = base.trim_start_matches("https://github.com/");
+        gh_latest(scenario, base, tag);
+        fixture(
+            scenario,
+            &format!("manifest-{tag}"),
+            &format!("{base}/releases/download/{tag}/release.json"),
+            404,
+            &[],
+            Some("Not Found"),
+        );
+        let listed: Vec<Value> = assets
+            .iter()
+            .map(|(file, _)| {
+                serde_json::json!({
+                    "name": file,
+                    "browser_download_url": format!("{base}/releases/download/{tag}/{file}"),
+                })
+            })
+            .collect();
+        fixture(
+            scenario,
+            &format!("rest-{tag}"),
+            &format!("https://api.github.com/repos/{repo}/releases/tags/{tag}"),
+            200,
+            &[("x-ratelimit-remaining", "59")],
+            Some(&serde_json::json!({ "tag_name": tag, "assets": listed }).to_string()),
+        );
+        for (file, files) in assets {
+            let entries: Vec<(&str, &str)> = files
+                .iter()
+                .map(|(p, t)| (p.as_str(), t.as_str()))
+                .collect();
+            fixture_bytes(
+                scenario,
+                &format!("asset-{tag}-{file}"),
+                &format!("{base}/releases/download/{tag}/{file}"),
+                200,
+                &[],
+                Some(&zip_text(&entries)),
+            );
+        }
+    }
+
+    /// The `folder_left_out` warnings of an envelope.
+    pub fn left_out(envelope: &Value) -> Vec<String> {
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == "folder_left_out")
+            .map(|w| w["message"].as_str().unwrap().to_owned())
+            .collect()
     }
 
     /// Serves `files` as the only asset of `base`'s release `tag`.
@@ -417,13 +481,37 @@ fn without_metadata_only_gated_folders_are_skipped() {
         serde_json::json!(["omaddons", "info", "gh:o/foo", "-t", "era"])
     );
 
-    // A sibling that merely lists retail's interfaces marks a retail build.
+    // A sibling that merely lists retail's interfaces is built for other clients: the
+    // addon installs, and the sibling is left out and said so.
     let scenario = home.scenario("ungated-sibling");
     let mut files = folder("Foo", EVERY, &[]);
     files.extend(folder("FooRetail", RETAIL, &[]));
     release(&scenario, FOO, "v3", "Foo.zip", &[], &files);
     let r = home.run(&["install", "gh:o/foo", "-t", "era", "--dry-run"]);
-    assert_eq!(r.expect(3)["error"]["code"], "no_compatible_release");
+    let envelope = r.expect(0);
+    let folders = &envelope["data"]["items"][0]["folders"];
+    assert_eq!(strings(&folders["added"]), ["Foo"], "{}", r.context());
+    assert_eq!(
+        folders["skipped"][0]["reason"],
+        "interface_not_in_family",
+        "{}",
+        r.context()
+    );
+    let left_out: Vec<&Value> = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "folder_left_out")
+        .collect();
+    assert_eq!(left_out.len(), 1, "{}", r.context());
+    assert!(
+        left_out[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("FooRetail lists only interfaces 120100, 120105 (mainline)"),
+        "{}",
+        r.context()
+    );
 
     // Gated siblings, and what requires them, are skipped.
     let scenario = home.scenario("gated-sibling");
@@ -624,5 +712,414 @@ fn an_update_that_newly_skips_a_folder_removes_it_and_undo_restores_it() {
         after_v1,
         "{}",
         r.context()
+    );
+}
+
+// ---- Choosing a download by evidence (omad-mixed-archive-single-file-skk1) ---------------
+// Shapes of real releases, with the TOC lines that decide kept verbatim: a folder built
+// for other clients only is left out and said so, a clean candidate beats one that leaves
+// folders out, and a file its publisher labels for other clients only is refused.
+
+/// ArkInventory 3.12.17 (`wowi:6488`): four folders with plain (retail), `_Mists`,
+/// `_Vanilla`, `_BCC` and `_Camelot` TOCs, and a disabled example module whose only TOC
+/// lists 120105.
+fn ark_files() -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    for name in ARK {
+        files.push((
+            format!("{name}/{name}.toc"),
+            toc("120105", &[&format!("## Title: {name}")]),
+        ));
+        for (suffix, interface) in [
+            ("Mists", "50504"),
+            ("Vanilla", "11509"),
+            ("BCC", "20506"),
+            ("Camelot", "16001"),
+        ] {
+            files.push((
+                format!("{name}/{name}_{suffix}.toc"),
+                toc(interface, &[&format!("## Title: {name}")]),
+            ));
+        }
+        files.push((format!("{name}/{name}.lua"), format!("-- {name}\n")));
+    }
+    files.extend(folder(
+        "ArkInventoryRules_Example",
+        "120105",
+        &[
+            "## DefaultState: Disabled",
+            "## RequiredDeps: ArkInventoryRules",
+        ],
+    ));
+    files
+}
+
+const ARK: [&str; 4] = [
+    "ArkInventory",
+    "ArkInventoryConfig",
+    "ArkInventoryRules",
+    "ArkInventorySearch",
+];
+
+#[test]
+fn arkinventory_leaves_out_its_retail_only_example_on_classic_clients() {
+    const BASE: &str = "https://github.com/o/arkinventory";
+    let home = Home::new(&["wow", "wow_classic_era", "wow_classic", "wowf"]);
+    release(
+        &home.http,
+        BASE,
+        "3.12.17",
+        "ArkInventory-3.12.17.zip",
+        &[],
+        &ark_files(),
+    );
+    for (id, dir) in [
+        ("classic", "_classic_"),
+        ("era", "_classic_era_"),
+        ("forever", "_forever_"),
+    ] {
+        let r = home.run(&["install", "gh:o/arkinventory", "-t", id]);
+        let envelope = r.expect(0);
+        let folders = &envelope["data"]["items"][0]["folders"];
+        assert_eq!(strings(&folders["added"]), ARK, "{id}: {}", r.context());
+        assert_eq!(
+            skipped(folders),
+            ["ArkInventoryRules_Example=interface_not_in_family"],
+            "{id}: {}",
+            r.context()
+        );
+        let warnings = left_out(&envelope);
+        assert_eq!(warnings.len(), 1, "{id}: {}", r.context());
+        assert!(
+            warnings[0]
+                .contains("ArkInventoryRules_Example lists only interface 120105 (mainline)"),
+            "{id}: {warnings:?}"
+        );
+        assert_eq!(on_disk(&home, dir), ARK, "{id}");
+    }
+    let r = home.run(&["install", "gh:o/arkinventory", "-t", "retail"]);
+    let envelope = r.expect(0);
+    let folders = &envelope["data"]["items"][0]["folders"];
+    let mut every = ARK.to_vec();
+    every.insert(3, "ArkInventoryRules_Example");
+    assert_eq!(strings(&folders["added"]), every, "{}", r.context());
+    assert!(left_out(&envelope).is_empty(), "{}", r.context());
+}
+
+/// Titan Panel 9.3.5 (`wowi:8092`): TitanAmmo, verbatim, lists 205056 (a typo for 2.5.x)
+/// under `AllowLoadGameType: camelot, tbc, vanilla`. On Anniversary it is the author's
+/// build for this client, out of date: every folder installs, nothing is left out.
+#[test]
+fn titan_panel_installs_whole_on_anniversary_with_titan_ammo_out_of_date() {
+    const BASE: &str = "https://github.com/o/titan";
+    let home = Home::new(&["wow_anniversary"]);
+    let every = "11509, 16001, 20506, 50504, 120105";
+    let mut files = folder("Titan", every, &["## Title: Titan Panel"]);
+    files.extend(folder("TitanBag", every, &["## Dependencies: Titan"]));
+    files.push((
+        "TitanAmmo/TitanAmmo.toc".to_owned(),
+        "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan\nTitanAmmo.lua\n".to_owned(),
+    ));
+    files.push((
+        "TitanAmmo/TitanAmmo.lua".to_owned(),
+        "-- TitanAmmo\n".to_owned(),
+    ));
+    release(&home.http, BASE, "9.3.5", "Titan-9.3.5.zip", &[], &files);
+    let r = home.run(&["install", "gh:o/titan", "-t", "anniversary"]);
+    let envelope = r.expect(0);
+    let folders = &envelope["data"]["items"][0]["folders"];
+    assert_eq!(
+        strings(&folders["added"]),
+        ["Titan", "TitanAmmo", "TitanBag"],
+        "{}",
+        r.context()
+    );
+    assert!(skipped(folders).is_empty(), "{}", r.context());
+    assert!(left_out(&envelope).is_empty(), "{}", r.context());
+    let out_of_date: Vec<&Value> = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "out_of_date")
+        .collect();
+    assert_eq!(out_of_date.len(), 1, "{}", r.context());
+    assert!(
+        out_of_date[0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("TitanAmmo:"),
+        "{}",
+        r.context()
+    );
+}
+
+/// Carbonite All-in-One on retail (`Carbonite.Info` lists only classic and Forever
+/// interfaces) and BlizzMove 3.8.5 on Forever (`BlizzMove_Debug` omits 16001): the stray
+/// folder is left out, the rest installs.
+#[test]
+fn carbonite_and_blizzmove_leave_out_their_stray_folder() {
+    let home = Home::new(&["wow", "wowf"]);
+    let mut carbonite = folder("Carbonite", "11509, 16001, 120105", &[]);
+    carbonite.extend(folder("Carbonite.Info", "11509, 16001", &[]));
+    release(
+        &home.http,
+        "https://github.com/o/carbonite",
+        "v1",
+        "Carbonite.zip",
+        &[],
+        &carbonite,
+    );
+    let mut blizzmove = folder("BlizzMove", "11509, 16001, 20506, 50504, 120105", &[]);
+    blizzmove.extend(folder(
+        "BlizzMove_Debug",
+        "11509, 20506, 50504, 120105",
+        &[],
+    ));
+    release(
+        &home.http,
+        "https://github.com/o/blizzmove",
+        "3.8.5",
+        "BlizzMove-3.8.5.zip",
+        &[],
+        &blizzmove,
+    );
+    for (r#ref, id, dir, kept, stray) in [
+        (
+            "gh:o/carbonite",
+            "retail",
+            "_retail_",
+            "Carbonite",
+            "Carbonite.Info",
+        ),
+        (
+            "gh:o/blizzmove",
+            "forever",
+            "_forever_",
+            "BlizzMove",
+            "BlizzMove_Debug",
+        ),
+    ] {
+        let r = home.run(&["install", r#ref, "-t", id]);
+        let envelope = r.expect(0);
+        let folders = &envelope["data"]["items"][0]["folders"];
+        assert_eq!(strings(&folders["added"]), [kept], "{}", r.context());
+        assert_eq!(
+            skipped(folders),
+            [format!("{stray}=interface_not_in_family")],
+            "{}",
+            r.context()
+        );
+        assert_eq!(left_out(&envelope).len(), 1, "{}", r.context());
+        assert!(on_disk(&home, dir).contains(&kept.to_owned()));
+        assert!(!on_disk(&home, dir).contains(&stray.to_owned()));
+    }
+}
+
+/// A clean candidate beats one that leaves folders out, whatever their rank: on Classic
+/// Era `Foo-classic.zip` ranks first by its name but carries a retail-only folder, and
+/// the unannotated `Foo.zip` installs.
+#[test]
+fn a_clean_candidate_beats_one_that_leaves_folders_out_whatever_the_rank() {
+    let home = Home::new(&["wow_classic_era"]);
+    let mut classic = folder("Foo", "11509, 120105", &[]);
+    classic.extend(folder("FooRetail", "120105", &[]));
+    let plain = folder("Foo", "11509, 120105", &[]);
+    rest_release(
+        &home.http,
+        FOO,
+        "v1",
+        &[("Foo-classic.zip", classic), ("Foo.zip", plain)],
+    );
+    let r = home.run(&["install", "gh:o/foo", "-t", "era", "-v"]);
+    let envelope = r.expect(0);
+    let item = &envelope["data"]["items"][0];
+    assert!(
+        item["asset_url"].as_str().unwrap().ends_with("/Foo.zip"),
+        "{}",
+        r.context()
+    );
+    assert!(skipped(&item["folders"]).is_empty(), "{}", r.context());
+    assert!(left_out(&envelope).is_empty(), "{}", r.context());
+}
+
+/// A file its publisher labels for other clients only is refused, even with clean TOCs,
+/// and the message says by what: its `release.json` entry, or its file name.
+#[test]
+fn a_file_labelled_for_other_clients_only_is_refused_naming_the_evidence() {
+    let mut home = Home::new(&["wow_classic", "wow_classic_era"]);
+    release(
+        &home.http,
+        FOO,
+        "v1",
+        "Foo.zip",
+        &[("mainline", 120_105)],
+        &folder("Foo", "120105, 50504", &[]),
+    );
+    let said = "release.json lists Foo.zip for mainline only";
+    let r = home.run(&["install", "gh:o/foo", "-t", "classic"]);
+    let error = &r.expect(3)["error"];
+    assert_eq!(error["code"], "no_compatible_release", "{}", r.context());
+    assert!(
+        error["message"].as_str().unwrap().contains(said),
+        "{}",
+        r.context()
+    );
+    assert!(
+        error["details"]["tried"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains(said),
+        "{}",
+        r.context()
+    );
+    let human = home.exec(&[
+        "install".into(),
+        "gh:o/foo".into(),
+        "-t".into(),
+        "classic".into(),
+    ]);
+    assert!(human.stderr.contains(said), "{}", human.stderr);
+    assert!(!home.addons("_classic_").join("Foo").exists());
+
+    let scenario = home.scenario("named-for-retail");
+    rest_release(
+        &scenario,
+        FOO,
+        "v2",
+        &[("Foo-1.0-retail.zip", folder("Foo", "11509, 120105", &[]))],
+    );
+    let said = "its file name Foo-1.0-retail.zip names mainline only";
+    let r = home.run(&["install", "gh:o/foo", "-t", "era"]);
+    let error = &r.expect(3)["error"];
+    assert_eq!(error["code"], "no_compatible_release", "{}", r.context());
+    assert!(
+        error["message"].as_str().unwrap().contains(said),
+        "{}",
+        r.context()
+    );
+    assert!(!home.addons("_classic_era_").join("Foo").exists());
+}
+
+/// On a legacy client a `release.json` cannot name the client, so its entries say
+/// nothing: the TOCs decide, as before.
+#[test]
+fn a_legacy_client_ignores_release_json() {
+    let mut home = Home::new(&["wow"]);
+    let client =
+        home.with_custom(CustomRoot::at(home.env.root().join("wow-335")).version(3, 3, 5, 12_340));
+    release(
+        &home.http,
+        FOO,
+        "v1",
+        "Foo.zip",
+        &[("mainline", 120_105)],
+        &folder("Foo", "30300", &[]),
+    );
+    let targets = home.run(&["targets"]).expect(0);
+    let id = targets["data"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| {
+            t["client_dir"]
+                .as_str()
+                .is_some_and(|d| Path::new(d) == client)
+        })
+        .and_then(|t| t["id"].as_str())
+        .unwrap()
+        .to_owned();
+    let r = home.run(&["install", "gh:o/foo", "-t", &id]);
+    r.expect(0);
+    assert!(
+        client.join("Interface/AddOns/Foo").is_dir(),
+        "{}",
+        r.context()
+    );
+}
+
+/// The update check chooses as install does: an update whose only winning build leaves
+/// a folder out is an update, verified, and `info` says it loads.
+#[test]
+fn the_update_check_counts_a_build_that_leaves_folders_out() {
+    let mut home = Home::new(&["wow_classic_era"]);
+    let v1 = folder("Foo", "11509", &["## Version: v1"]);
+    let mut v2 = folder("Foo", "11509", &["## Version: v2"]);
+    v2.extend(folder("FooRetail", "120105", &[]));
+    fn entries(files: &[(String, String)]) -> Vec<(&str, &str)> {
+        files
+            .iter()
+            .map(|(p, t)| (p.as_str(), t.as_str()))
+            .collect()
+    }
+    let unannotated: &[(&str, u32)] = &[];
+    let old: [Asset<'_>; 1] = [("Foo.zip", unannotated, entries(&v1))];
+    let new: [Asset<'_>; 1] = [("Foo.zip", unannotated, entries(&v2))];
+    home.installed_behind(FOO, ("v1", &old), ("v2", &new), &["era"]);
+    let r = home.run(&["outdated", "-t", "era", "--verify"]);
+    let envelope = r.expect(0);
+    let item = &envelope["data"]["targets"][0]["items"][0];
+    assert_eq!(
+        (&item["status"], &item["confidence"]),
+        (&Value::from("update_available"), &Value::from("verified")),
+        "{}",
+        r.context()
+    );
+    let r = home.run(&["info", "gh:o/foo", "-t", "era"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        envelope["data"]["latest"]["compat"]["era"],
+        "verified",
+        "{}",
+        r.context()
+    );
+}
+
+/// A reinstall's cached archive carries no rank, so one that leaves a folder out never
+/// wins by itself: the source is asked for the release, and the same folders install.
+#[test]
+fn a_reinstall_of_a_build_that_leaves_folders_out_asks_the_source() {
+    let home = Home::new(&["wow_classic_era"]);
+    let mut files = folder("Foo", "11509", &[]);
+    files.extend(folder("FooRetail", "120105", &[]));
+    release(&home.http, FOO, "v1", "Foo.zip", &[], &files);
+    home.run(&["install", "gh:o/foo", "-t", "era"]).expect(0);
+    let before = net_log(&home).len();
+    let r = home.run(&["install", "gh:o/foo", "-t", "era", "--reinstall"]);
+    let envelope = r.expect(0);
+    assert!(
+        net_log(&home).len() > before,
+        "{}",
+        net_log(&home).context()
+    );
+    let folders = &envelope["data"]["items"][0]["folders"];
+    assert_eq!(strings(&folders["replaced"]), ["Foo"], "{}", r.context());
+    assert_eq!(on_disk(&home, "_classic_era_"), ["Foo"]);
+}
+
+/// A human refusal names the folder that decided it and what it lists.
+#[test]
+fn a_human_refusal_names_the_folder_and_what_it_lists() {
+    let home = Home::new(&["wow_classic_era"]);
+    release(
+        &home.http,
+        FOO,
+        "v1",
+        "Foo.zip",
+        &[],
+        &folder("Foo", "120105", &[]),
+    );
+    let human = home.exec(&[
+        "install".into(),
+        "gh:o/foo".into(),
+        "-t".into(),
+        "era".into(),
+    ]);
+    assert_eq!(human.code, 3, "{}", human.stderr);
+    assert!(
+        human.stderr.contains(
+            "no candidate loads on this client: Foo.zip: Foo lists only interface 120105 (mainline)"
+        ),
+        "{}",
+        human.stderr
     );
 }

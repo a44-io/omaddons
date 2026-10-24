@@ -997,29 +997,73 @@ pub fn partition(verdicts: &[FolderVerdict]) -> Partition {
     }
 }
 
-/// Whether the target installs an archive split as `partition`. Some folder must load.
-/// When the publisher's metadata declares this client (`declared`), the archive is
-/// meant for it and the folders it does not load are simply skipped. Without that
-/// promise the addon's own folder (`primary`) must load, and every skipped folder must
-/// be gated away by its own TOCs (`AllowLoadGameType`/`ExcludeLoadGameType`, or TOCs
-/// only for other clients), be an old build of this client's family below the floor it
-/// never loads under, or require such a folder: a folder that merely lists other
-/// clients' interfaces marks a build for another client, which is refused whole.
-pub fn accepts(partition: &Partition, declared: bool, primary: &FolderName) -> bool {
-    if partition.install.is_empty() {
-        return false;
+/// How the target takes an archive split as a [`Partition`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grade {
+    /// Nothing installs, or the addon's own folder does not.
+    Refused,
+    /// The publisher's metadata declares this client, or every skipped folder rules
+    /// itself out by its own TOCs: a game-type gate, TOCs only for other clients, or a
+    /// dependency on such a folder.
+    Clean,
+    /// The addon's own folder installs, and some skipped folders are built for other
+    /// clients only: an interface outside the client's family, none it reads, or one
+    /// below its floor (with what requires them). They are left out, and said so.
+    LeftOut,
+}
+
+impl WrongFlavorReason {
+    /// The folder rules itself out for this client by its own TOCs.
+    pub fn rules_itself_out(&self) -> bool {
+        matches!(
+            self,
+            Self::GameTypeExcluded | Self::NoLoadableToc | Self::DependencySkipped { .. }
+        )
     }
-    declared
-        || (partition.install.contains(primary)
-            && partition.skip.iter().all(|s| {
-                matches!(
-                    s.reason,
-                    WrongFlavorReason::GameTypeExcluded
-                        | WrongFlavorReason::NoLoadableToc
-                        | WrongFlavorReason::BelowClientFloor { .. }
-                        | WrongFlavorReason::DependencySkipped { .. }
-                )
-            }))
+
+    /// The folder is built for other clients only, by its TOCs' interfaces: a folder an
+    /// install may leave out.
+    pub fn built_for_others(&self) -> bool {
+        matches!(
+            self,
+            Self::InterfaceNotInFamily { .. } | Self::NoInterface | Self::BelowClientFloor { .. }
+        )
+    }
+}
+
+/// How the target takes an archive split as `partition`. Some folder must load. When
+/// the publisher's metadata declares this client (`declared`), the archive is meant for
+/// it and the folders it does not load are simply skipped. Without that promise the
+/// addon's own folder (`primary`) must load: the archive is [`Grade::Clean`] when every
+/// skipped folder rules itself out, [`Grade::LeftOut`] when the rest are built for other
+/// clients only, and refused otherwise.
+pub fn grade(partition: &Partition, declared: bool, primary: &FolderName) -> Grade {
+    if partition.install.is_empty() {
+        return Grade::Refused;
+    }
+    if declared {
+        return Grade::Clean;
+    }
+    if !partition.install.contains(primary) {
+        return Grade::Refused;
+    }
+    let skip = &partition.skip;
+    if skip.iter().all(|s| s.reason.rules_itself_out()) {
+        Grade::Clean
+    } else if skip
+        .iter()
+        .all(|s| s.reason.rules_itself_out() || s.reason.built_for_others())
+    {
+        Grade::LeftOut
+    } else {
+        Grade::Refused
+    }
+}
+
+/// Whether the target installs an archive split as `partition` with nothing left out
+/// ([`grade`] is [`Grade::Clean`]).
+pub fn accepts(partition: &Partition, declared: bool, primary: &FolderName) -> bool {
+    grade(partition, declared, primary) == Grade::Clean
 }
 
 #[cfg(test)]

@@ -29,7 +29,7 @@ use super::edit::{
 };
 use super::indexes::{DepIndexes, IndexLookups};
 use super::inspect::{
-    ArchiveLimits, FolderVerdict, Inspected, SkippedFolder, accepts, inspect, inspect_dir,
+    ArchiveLimits, FolderVerdict, Grade, Inspected, SkippedFolder, grade, inspect, inspect_dir,
     partition, verify,
 };
 use super::ownership::{self, AllowedOp, FolderChange, Transfer, WorkingView};
@@ -42,8 +42,8 @@ use crate::inventory::{Depth, FolderClass, Inventory, inventory_shared, sibling_
 use crate::limits::{DEPENDENCY_MAX_ADDONS, DEPENDENCY_MAX_DEPTH};
 use crate::model::{
     Actor, AddonReason, AddonRecord, AddonState, AssetLocation, Candidate, Channel, ExpectedHash,
-    FolderName, MutableFolderName, RankReason, Ref, ReleaseSet, ReloadRequired, Target, TargetKey,
-    TxId, TxKind, VersionConfidence,
+    FlavorHint, FolderName, MutableFolderName, RankReason, Ref, ReleaseSet, ReloadRequired, Target,
+    TargetKey, TxId, TxKind, VersionConfidence,
 };
 use crate::net::Http;
 use crate::output::{Phase, ProgressSink};
@@ -54,9 +54,10 @@ use crate::resolve::deps::{
     Satisfier, TukuiDirs, ViewFolder, WowiDirs, bridge_dependencies, is_satisfied, needed_folders,
     resolve,
 };
-use crate::resolve::select::{EmptyReason, select};
+use crate::resolve::select::{EmptyReason, NameEvidence, name_evidence, select};
 use crate::resolve::updates::is_static;
-use crate::rules::RulesTable;
+use crate::rules::{Family, RulesTable};
+use crate::sources::github_rest::evidence_hints;
 use crate::sources::{SourceId, SourceRegistry, Wanted, wowace};
 use crate::state::config::RunningPolicy;
 use crate::state::files_index::{FilesIndex, FolderIndex};
@@ -2598,23 +2599,18 @@ pub fn check_release(
         None => {
             let mut refused: Vec<String> = Vec::new();
             let mut unreadable: Option<Error> = None;
-            let mut found = None;
+            // As install chooses: the first clean candidate, else the first that leaves
+            // out folders built for other clients.
+            let mut clean = None;
+            let mut left_out = None;
             for candidate in &selection.candidates {
                 match planner.try_candidate(&wanted.r#ref, candidate, name_hint, None) {
-                    Ok(Ok(winner)) => {
-                        let unverified = winner
-                            .warnings
-                            .iter()
-                            .filter(|w| matches!(w.code, WarningCode::DownloadUnverified));
-                        push_new(&mut out.warnings, unverified.cloned().collect());
-                        found = Some(ReleaseCheck {
-                            release_id: winner.candidate.release_id,
-                            version: winner.candidate.version,
-                            blob_sha256: winner.loadable.inspected.blob_sha256,
-                            install: winner.loadable.inspected.folders,
-                            skipped: winner.loadable.skipped,
-                        });
+                    Ok(Ok(winner)) if winner.grade == Grade::Clean => {
+                        clean = Some(winner);
                         break;
+                    }
+                    Ok(Ok(winner)) => {
+                        left_out.get_or_insert(winner);
                     }
                     Ok(Err(refusal)) => {
                         refused.push(format!("{}: {}", candidate.asset.filename, refusal.reason))
@@ -2624,6 +2620,20 @@ pub fn check_release(
                     }
                 }
             }
+            let found = clean.or(left_out).map(|winner| {
+                let unverified = winner
+                    .warnings
+                    .iter()
+                    .filter(|w| matches!(w.code, WarningCode::DownloadUnverified));
+                push_new(&mut out.warnings, unverified.cloned().collect());
+                ReleaseCheck {
+                    release_id: winner.candidate.release_id,
+                    version: winner.candidate.version,
+                    blob_sha256: winner.loadable.inspected.blob_sha256,
+                    install: winner.loadable.inspected.folders,
+                    skipped: winner.loadable.skipped,
+                }
+            });
             match (found, unreadable) {
                 (Some(check), _) => Ok(Checked::Loads(check)),
                 (None, Some(error)) if refused.is_empty() => Err(error),
@@ -3311,6 +3321,9 @@ struct Judged {
 /// A candidate that verified.
 struct Winner {
     candidate: Candidate,
+    /// [`Grade::Clean`], or [`Grade::LeftOut`] with a `folder_left_out` warning per
+    /// folder left out.
+    grade: Grade,
     loadable: Loadable,
     /// The name a new addon takes from the archive.
     name: String,
@@ -3325,16 +3338,18 @@ struct Winner {
 struct Refusal {
     /// Its `tried[]` reason.
     reason: String,
-    /// The client's interface floor, when the addon's own folder fell below it.
-    floor: Option<u32>,
+    /// Why, in words, for the refusal's message.
+    why: String,
 }
 
 impl Refusal {
+    /// A refusal whose `tried[]` reason (`<code>: <text>`) also says it in words.
     fn new(reason: String) -> Self {
-        Self {
-            reason,
-            floor: None,
-        }
+        let why = reason
+            .split_once(": ")
+            .map_or(reason.as_str(), |(_, text)| text)
+            .to_owned();
+        Self { reason, why }
     }
 }
 
@@ -3511,6 +3526,7 @@ impl TargetPlanner<'_> {
         // A locked install whose recorded archive the cache still holds: the selected
         // release from there first, with no download (its candidates follow).
         let mut candidates = candidates;
+        let mut cached_first = false;
         if let (None, None, Some(sha), Some(first)) = (file, local, cached, candidates.first())
             && let Some(from_cache) = local_blob_candidate(
                 self.ctx.blobs,
@@ -3523,27 +3539,43 @@ impl TargetPlanner<'_> {
             )
         {
             candidates.insert(0, from_cache);
+            cached_first = true;
         }
+        // A WowAce release recorded at a revision is that tree whatever its rank: the
+        // source could only answer the tag as it is now.
+        let recorded_tree = matches!(wanted.r#ref, Ref::WowAce { .. })
+            && local.is_some_and(|l| l.revision.is_some());
+        // A cached archive carries no rank (a reinstall's, a locked sync's): it wins only
+        // clean, so the source's metadata weighs a build that leaves folders out.
+        let rankless = |at: usize| (local.is_some() && !recorded_tree) || (cached_first && at == 0);
 
         let user_supplied =
             file.is_some() || matches!(wanted.r#ref, Ref::File { .. } | Ref::Url { .. });
         let mut tried: Vec<Value> = Vec::new();
         let mut winner = None;
+        // The first candidate that leaves out folders built for other clients: it wins
+        // when no clean candidate follows.
+        let mut left_out = None;
         let mut unreadable: Option<Error> = None;
         // Some candidate was judged and does not load (as opposed to failing to arrive).
         let mut refused = false;
-        // The client's interface floor, when some candidate's addon folder fell below it.
-        let mut below_floor = None;
+        // Why the best-ranked candidate judged did not install: (its file, why).
+        let mut first_why: Option<(String, String)> = None;
         let hint = name.or(source_name.as_deref());
-        for candidate in candidates {
+        for (at, candidate) in candidates.into_iter().enumerate() {
             match self.try_candidate(&wanted.r#ref, &candidate, hint, intent.floor_interface) {
-                Ok(Ok(won)) => {
+                Ok(Ok(won)) if won.grade == Grade::Clean => {
                     winner = Some(won);
                     break;
                 }
+                Ok(Ok(won)) => {
+                    if !rankless(at) && left_out.is_none() {
+                        left_out = Some(won);
+                    }
+                }
                 Ok(Err(refusal)) => {
                     refused = true;
-                    below_floor = below_floor.or(refusal.floor);
+                    first_why.get_or_insert((candidate.asset.filename.clone(), refusal.why));
                     tried.push(
                         json!({ "asset": candidate.asset.filename, "reason": refusal.reason }),
                     );
@@ -3555,15 +3587,11 @@ impl TargetPlanner<'_> {
                 }
             }
         }
-        let Some(winner) = winner else {
+        let Some(winner) = winner.or(left_out) else {
             // A reinstall's cached archive carries no rank, so a release that loads only
-            // as its publisher declares it is refused: ask the source for the exact
-            // release (its blob is still found through the facts). Offline, the memo
-            // answers or the refusal stands as `offline`. A WowAce release recorded at a
-            // revision is that tree whatever its rank: the source could only answer the
-            // tag as it is now.
-            let recorded_tree = matches!(wanted.r#ref, Ref::WowAce { .. })
-                && local.is_some_and(|l| l.revision.is_some());
+            // as its publisher declares it, or only leaving folders out, is refused: ask
+            // the source for the exact release (its blob is still found through the
+            // facts). Offline, the memo answers or the refusal stands as `offline`.
             if local.is_some() && !recorded_tree {
                 let fetched = self.ctx.cache.get(std::slice::from_ref(wanted));
                 let source = CandidateSource {
@@ -3579,12 +3607,13 @@ impl TargetPlanner<'_> {
                 if let Some(error) = unreadable {
                     return Err(error);
                 }
-                let floor = below_floor
-                    .map(|f| format!(": {}", self.floor_note(f)))
+                let why = first_why
+                    .as_ref()
+                    .map(|(_, why)| format!(": {why}"))
                     .unwrap_or_default();
                 return Err(Error::new(
                     ErrorCode::WrongFlavor,
-                    format!("{} does not load on {} ({:?}){floor}", wanted.r#ref, self.target.id, self.target.family),
+                    format!("{} does not load on {} ({:?}){why}", wanted.r#ref, self.target.id, self.target.family),
                     Suggestion::text("use an archive built for this client"),
                 )
                 .details(json!({ "ref": wanted.r#ref.to_string(), "target": self.target.id, "tried": tried })));
@@ -3613,11 +3642,8 @@ impl TargetPlanner<'_> {
             }) {
                 return Err(error);
             }
-            let why = match below_floor {
-                Some(floor) => format!(
-                    "no candidate loads on this client; {}",
-                    self.floor_note(floor)
-                ),
+            let why = match first_why {
+                Some((file, why)) => format!("no candidate loads on this client: {file}: {why}"),
                 None => "no candidate loads on this client".to_owned(),
             };
             return Err(self.no_release(wanted, &tried, &why));
@@ -4318,13 +4344,19 @@ impl TargetPlanner<'_> {
             .flavors
             .iter()
             .any(|f| f.source.is_release_json());
-        let loads = primary.is_some_and(|p| accepts(&split, declared, p));
+        let grade = primary.map_or(Grade::Refused, |p| grade(&split, declared, p));
+        // The publisher labelled this very file for other clients only.
+        let against = (grade != Grade::Refused)
+            .then(|| self.evidence_against(r#ref, candidate, &all))
+            .flatten();
+        // What install would do with it here, for the next checks to know.
+        let wins = grade != Grade::Refused && against.is_none();
         if let Some(blob) = &downloaded {
             let verdict = verdicts.iter().find(|v| Some(&v.folder) == primary);
-            self.learn(candidate, blob, unverified.is_some(), loads, verdict);
+            self.learn(candidate, blob, unverified.is_some(), wins, verdict);
         }
-        if !loads {
-            let why: Vec<String> = verdicts
+        if grade == Grade::Refused {
+            let reasons: Vec<String> = verdicts
                 .iter()
                 .map(|v| {
                     // ubs:ignore — comparing folder names, not secrets
@@ -4341,18 +4373,32 @@ impl TargetPlanner<'_> {
                     )
                 })
                 .collect();
-            let floor = verdicts
+            // The addon's own folder when it is skipped, else the folder that refuses.
+            let deciding = split
+                .skip
                 .iter()
-                .find(|v| Some(&v.folder) == primary)
-                .and_then(|v| match &v.report.verdict {
-                    Verdict::WrongFlavor {
-                        reason: WrongFlavorReason::BelowClientFloor { floor, .. },
-                    } => Some(*floor),
-                    _ => None,
-                });
+                // ubs:ignore — comparing folder names, not secrets
+                .find(|s| Some(&s.name) == primary)
+                .or_else(|| {
+                    split
+                        .skip
+                        .iter()
+                        .find(|s| !s.reason.rules_itself_out() && !s.reason.built_for_others())
+                })
+                .or_else(|| split.skip.first());
+            let why = deciding.map_or_else(
+                || "no folder loads on this client".to_owned(),
+                |s| self.describe(&s.name, &s.reason),
+            );
             return Ok(Err(Refusal {
-                reason: format!("wrong_flavor: {}", why.join("; ")),
-                floor,
+                reason: format!("wrong_flavor: {}", reasons.join("; ")),
+                why,
+            }));
+        }
+        if let Some(evidence) = against {
+            return Ok(Err(Refusal {
+                reason: format!("wrong_flavor: {evidence}"),
+                why: evidence,
             }));
         }
         // M2-D42: an adopted build is never replaced by an older one. The fact above is
@@ -4428,6 +4474,11 @@ impl TargetPlanner<'_> {
             .filter(|v| split.install.contains(&v.folder))
             .flat_map(|v| v.report.warnings)
             .collect();
+        if grade == Grade::LeftOut {
+            for left in split.skip.iter().filter(|s| s.reason.built_for_others()) {
+                warnings.push(self.left_out(&name, left));
+            }
+        }
         // TLS protected the transfer and the TOCs verified, but not the source's hash.
         if let Some(reason) = unverified {
             warnings.push(Warning::new(
@@ -4440,6 +4491,7 @@ impl TargetPlanner<'_> {
         }
         Ok(Ok(Winner {
             candidate: candidate.clone(),
+            grade,
             loadable: Loadable {
                 inspected,
                 skipped: split.skip,
@@ -4668,6 +4720,134 @@ impl TargetPlanner<'_> {
         )
     }
 
+    /// The publisher's word that `candidate` was built for other clients only, in words:
+    /// its `release.json` entries name no client of this family (said only on a client a
+    /// `release.json` can name), else its file name's evidence ([`evidence_hints`],
+    /// without the words of the archive's `folders` or the repository's name) names only
+    /// other clients. A source's own list (Tukui's patches) is never evidence, and a file
+    /// name only where the source gives it meaning (a GitHub asset's).
+    fn evidence_against(
+        &self,
+        r#ref: &Ref,
+        candidate: &Candidate,
+        folders: &[FolderName],
+    ) -> Option<String> {
+        let asset = &candidate.asset;
+        let family = self.target.family;
+        let listed: Vec<_> = asset
+            .flavors
+            .iter()
+            .filter(|f| f.source.is_release_json())
+            .collect();
+        if !listed.is_empty() {
+            family.release_flavor()?;
+            let range = self.ctx.table.family_range(family);
+            let names_client = listed.iter().any(|f| {
+                Family::from_release_flavor(&f.flavor) == Some(family)
+                    || f.interface
+                        .is_some_and(|i| range.is_some_and(|r| r.contains(i)))
+            });
+            if names_client {
+                return None;
+            }
+            let mut flavors: Vec<&str> = Vec::new();
+            for f in &listed {
+                if !flavors.contains(&f.flavor.as_str()) {
+                    flavors.push(&f.flavor);
+                }
+            }
+            return Some(format!(
+                "release.json lists {} for {} only",
+                asset.filename,
+                flavors.join(", ")
+            ));
+        }
+        if asset.name_flavors.is_empty() {
+            return None;
+        }
+        let mut own: Vec<&str> = folders.iter().map(FolderName::as_str).collect();
+        if let Ref::GitHub { repo, .. } = r#ref {
+            own.push(repo);
+        }
+        let hints = evidence_hints(&asset.filename, &own);
+        if name_evidence(&hints, family) != NameEvidence::Against {
+            return None;
+        }
+        let named: Vec<&str> = hints.iter().map(|h| hint_label(*h)).collect();
+        Some(format!(
+            "its file name {} names {} only",
+            asset.filename,
+            named.join(", ")
+        ))
+    }
+
+    /// One folder's verdict on this client, in words.
+    fn describe(&self, folder: &FolderName, reason: &WrongFlavorReason) -> String {
+        let f = folder.as_str();
+        match reason {
+            WrongFlavorReason::GameTypeExcluded => {
+                format!("{f} is gated to other game types (AllowLoadGameType, ExcludeLoadGameType)")
+            }
+            WrongFlavorReason::NoInterface => {
+                format!("{f}'s TOC has no Interface this client reads")
+            }
+            WrongFlavorReason::InterfaceNotInFamily { interfaces, .. } => format!(
+                "{f} lists only {} ({})",
+                interface_list(interfaces),
+                self.families_of(interfaces)
+            ),
+            WrongFlavorReason::BelowClientFloor { interfaces, floor } => format!(
+                "{f} targets {}, and {}",
+                interface_list(interfaces),
+                self.floor_note(*floor)
+            ),
+            WrongFlavorReason::TargetInterfaceUnknown => {
+                format!("{f} cannot be judged: this client's interface is unknown")
+            }
+            WrongFlavorReason::NoLoadableToc => format!("{f} has no TOC this client loads"),
+            WrongFlavorReason::DependencySkipped { folder: needed } => format!(
+                "{f} requires {}, which this client does not load",
+                needed.as_str()
+            ),
+        }
+    }
+
+    /// The families whose range holds `interfaces`, by name, each once.
+    fn families_of(&self, interfaces: &[u32]) -> String {
+        let mut names: Vec<&str> = Vec::new();
+        for i in interfaces {
+            let family = Family::ALL.into_iter().find(|f| {
+                self.ctx
+                    .table
+                    .family_range(*f)
+                    .is_some_and(|r| r.contains(*i))
+            });
+            let name = family.map_or("no known client", Family::as_str);
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names.join(", ")
+    }
+
+    /// The `folder_left_out` warning for `left`, a folder of `addon` built for other
+    /// clients only, which the install leaves out.
+    fn left_out(&self, addon: &str, left: &SkippedFolder) -> Warning {
+        let tail = match left.reason {
+            WrongFlavorReason::InterfaceNotInFamily { .. } => {
+                format!(" ({} would list it as out of date)", self.target.id)
+            }
+            _ => String::new(),
+        };
+        Warning::new(
+            WarningCode::FolderLeftOut,
+            format!(
+                "{addon}: {}, built for other clients, so it is left out{tail}",
+                self.describe(&left.name, &left.reason)
+            ),
+        )
+    }
+
     fn no_release(&self, wanted: &Wanted, tried: &[Value], why: &str) -> Error {
         Error::new(
             ErrorCode::NoCompatibleRelease,
@@ -4755,6 +4935,35 @@ fn missing_git_rev(err: Error, candidate: &Candidate, url: &str) -> Error {
         Suggestion::text("check the name after #, or give a commit sha"),
     )
     .details(json!({ "repository": repo, "rev": rev }))
+}
+
+/// `interface 120105`, or `interfaces 11509, 16001`.
+fn interface_list(interfaces: &[u32]) -> String {
+    let listed: Vec<String> = interfaces.iter().map(u32::to_string).collect();
+    match listed.len() {
+        1 => format!("interface {}", listed.join("")),
+        _ => format!("interfaces {}", listed.join(", ")),
+    }
+}
+
+/// A file-name flavor hint as messages name it: the family, or the legacy version.
+const fn hint_label(hint: FlavorHint) -> &'static str {
+    match hint {
+        FlavorHint::Mainline => "mainline",
+        FlavorHint::Classic => "vanilla",
+        FlavorHint::Bcc => "tbc",
+        FlavorHint::Wrath => "wrath",
+        FlavorHint::Cata => "cata",
+        FlavorHint::Mists => "mists",
+        FlavorHint::Titan => "titan",
+        FlavorHint::Forever => "forever",
+        FlavorHint::ClassicAny => "classic",
+        FlavorHint::VanillaLegacy => "1.12",
+        FlavorHint::TbcLegacy => "2.4.3",
+        FlavorHint::WrathLegacy => "3.3.5",
+        FlavorHint::CataLegacy => "4.3.4",
+        FlavorHint::MistsLegacy => "5.4.8",
+    }
 }
 
 fn family_name(target: &Target) -> String {

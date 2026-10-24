@@ -259,6 +259,9 @@ warning_codes! {
     /// Retention after a commit failed; the transaction itself stands.
     RetentionFailed             = "retention_failed";
     OutOfDate                   = "out_of_date";
+    /// An archive's folder built for other clients only was left out of an install
+    /// whose addon is built for this client.
+    FolderLeftOut               = "folder_left_out";
     MissingDependency           = "missing_dependency";
     TocCommaOnLegacy            = "toc_comma_on_legacy";
     ClientNotLaunchedSincePatch = "client_not_launched_since_patch";
@@ -835,7 +838,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 49);
+        assert_eq!(WarningCode::ALL.len(), 50);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

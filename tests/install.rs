@@ -2395,6 +2395,16 @@ fn a_side_folder_below_the_floor_is_left_out() {
         "{}",
         r.context()
     );
+    let left_out = warnings_of(&envelope, "folder_left_out");
+    assert_eq!(left_out.len(), 1, "{}", r.context());
+    assert!(
+        left_out[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("retail never loads an addon whose interface is below 120000"),
+        "{}",
+        r.context()
+    );
     assert!(!home.addons("_retail_").join("Foo_Old").exists());
 }
 
