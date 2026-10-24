@@ -362,9 +362,9 @@ notes = "HealBot Continued"
 [[addon]]
 name = "TitanPanel"
 ref = "wowi:8092"
-families = ["mainline", "vanilla", "mists", "forever"]
+families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["Titan", "TitanAlts", "TitanAmmo", "TitanBag", "TitanClassic", "TitanClock", "TitanGold", "TitanLocation", "TitanLootType", "TitanPerformance", "TitanPost", "TitanRegen", "TitanRepair", "TitanUI", "TitanVolume", "TitanXP"]
-notes = "9.3.5: Anniversary is refused because TitanAmmo's TOC lists 205056 beside the other clients' interfaces"
+notes = "9.3.5: TitanAmmo's TOC lists 205056 (a typo for a 2.5.x interface) under AllowLoadGameType tbc, so Anniversary installs it out of date (checked 2026-10-24)"
 
 [[addon]]
 name = "Clique"

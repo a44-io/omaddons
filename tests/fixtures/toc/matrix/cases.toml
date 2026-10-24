@@ -721,11 +721,25 @@ expect_file = "Foo_Wrath.toc"
 expect_verdict = "wrong_flavor"
 expect_reason = "game_type_excluded"
 
+# Wrath Classic shares the game type `wrath` with Titan, so a Titan build gated to it
+# passes the gate there and is listed as out of date, as the client lists it; without a
+# gate naming the client, Titan's interface alone is another family's.
+
+[[case]]
+group = "game_types"
+name = "wrath-lists-a-titan-build-gated-to-wrath-as-out-of-date"
+target = { version = "3.4.3", kind = "battlenet" }
+files = [["Foo_Wrath.toc", "## Interface: 38002\n## AllowLoadGameType: wrath, titan"]]
+expect_file = "Foo_Wrath.toc"
+expect_verdict = "compatible"
+expect_out_of_date = true
+expect_warnings = ["out_of_date"]
+
 [[case]]
 group = "game_types"
 name = "wrath-rejects-titan-interface"
 target = { version = "3.4.3", kind = "battlenet" }
-files = [["Foo_Wrath.toc", "## Interface: 38002\n## AllowLoadGameType: wrath, titan"]]
+files = [["Foo_Wrath.toc", "## Interface: 38002"]]
 expect_file = "Foo_Wrath.toc"
 expect_verdict = "wrong_flavor"
 expect_reason = "interface_not_in_family"
@@ -772,6 +786,139 @@ target = { version = "3.3.5", kind = "custom" }
 files = [["Foo.toc", "## Interface: 30300\n## ExcludeLoadGameType: wrath"]]
 expect_file = "Foo.toc"
 expect_verdict = "compatible"
+
+# Titan Panel 9.3.5's TitanAmmo TOC, verbatim (205056 is a typo for a 2.5.x interface):
+# an AllowLoadGameType naming the client's own game type makes the folder its build, out
+# of date when no interface is in its range. Family-level names (classic, mainline) do
+# not admit.
+
+[[case]]
+group = "game_types"
+name = "titan-ammo-on-anniversary-is-out-of-date"
+target = { product = "wow_anniversary" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+expect_out_of_date = true
+expect_warnings = ["out_of_date"]
+
+[[case]]
+group = "game_types"
+name = "titan-ammo-on-the-era-ptr-is-out-of-date"
+target = { product = "wow_classic_era_ptr" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+expect_out_of_date = true
+expect_warnings = ["out_of_date"]
+
+[[case]]
+group = "game_types"
+name = "titan-ammo-on-era-is-current"
+target = { product = "wow_classic_era" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "game_types"
+name = "titan-ammo-on-forever-is-current"
+target = { product = "wowf" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "game_types"
+name = "titan-ammo-on-retail-is-gated"
+target = { product = "wow" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "titan-ammo-on-mists-is-gated"
+target = { product = "wow_classic" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "titan-ammo-on-titan-is-gated"
+target = { product = "wow_classic_titan" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "titan-ammo-on-wrath-classic-is-gated"
+target = { version = "3.4.3", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "titan-ammo-on-cata-classic-is-gated"
+target = { version = "4.4.2", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "titan-ammo-on-legacy-243-ignores-game-types"
+target = { version = "2.4.3", kind = "custom" }
+files = [["Foo.toc", "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "interface_not_in_family"
+expect_warnings = ["toc_comma_on_legacy"]
+
+[[case]]
+group = "game_types"
+name = "a-family-level-gate-does-not-admit"
+target = { product = "wow_classic_era" }
+files = [["Foo.toc", "## Interface: 120105\n## AllowLoadGameType: classic"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "interface_not_in_family"
+
+[[case]]
+group = "game_types"
+name = "an-exclude-naming-the-client-wins-over-its-allow"
+target = { product = "wow_anniversary" }
+files = [["Foo.toc", "## Interface: 205056\n## AllowLoadGameType: tbc\n## ExcludeLoadGameType: tbc"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "game_type_excluded"
+
+[[case]]
+group = "game_types"
+name = "an-inline-gate-admits-on-anniversary"
+target = { product = "wow_anniversary" }
+files = [["Foo.toc", "## Interface: 205056\n## AllowLoadGameType: tbc [AllowLoadGameType tbc]"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+expect_out_of_date = true
+expect_warnings = ["out_of_date"]
+
+[[case]]
+group = "game_types"
+name = "an-inline-gate-admits-nothing-where-it-does-not-apply"
+target = { product = "wow_classic_era" }
+files = [["Foo.toc", "## Interface: 205056\n## AllowLoadGameType: tbc [AllowLoadGameType tbc]"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "interface_not_in_family"
 
 # ---- 10. Unknown family ----------------------------------------------------------------
 

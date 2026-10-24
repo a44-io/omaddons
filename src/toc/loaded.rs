@@ -266,8 +266,9 @@ pub fn effective_interfaces(toc: &Toc, rules: &ClientRules) -> (Vec<u32>, bool) 
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum Verdict {
     Compatible {
-        /// The best Interface is below the client's: it loads only with out-of-date
-        /// addons enabled.
+        /// The client lists it as out of date, so it loads only with out-of-date addons
+        /// enabled: its best Interface is below the client's, or its game type admits it
+        /// and none of its Interface values lies in the client's range.
         out_of_date: bool,
     },
     WrongFlavor {
@@ -423,6 +424,20 @@ pub fn judge(
             break 'v wrong(WrongFlavorReason::TargetInterfaceUnknown);
         }
         let Some(best) = highest_in_family(&interfaces, family, target_interface, table) else {
+            // An `AllowLoadGameType` naming one of this client's own game types is the
+            // author building the folder for it: the client lists it as out of date.
+            if !rules.legacy && names_own_game_type(&loaded.toc, rules) {
+                if let Some(floor) = rules.floor_for(target_interface) {
+                    break 'v wrong(WrongFlavorReason::BelowClientFloor { interfaces, floor });
+                }
+                warnings.push(off_range_warning(
+                    folder,
+                    loaded,
+                    &interfaces,
+                    target_interface,
+                ));
+                break 'v Verdict::Compatible { out_of_date: true };
+            }
             break 'v wrong(WrongFlavorReason::InterfaceNotInFamily { interfaces, family });
         };
         if let Some(floor) = rules.floor_for(target_interface)
@@ -474,6 +489,41 @@ pub(crate) fn client_names(rules: &ClientRules) -> Vec<String> {
         .chain(&rules.family_suffixes)
         .map(|n| n.to_ascii_lowercase())
         .collect()
+}
+
+/// `AllowLoadGameType` names one of the client's own game types (its row's `game_types`:
+/// `tbc`, `camelot`), never a family-level name: `classic` or `mainline` is too broad to
+/// show the author meant this client.
+fn names_own_game_type(toc: &Toc, rules: &ClientRules) -> bool {
+    toc.allow_load_game_type
+        .iter()
+        .any(|v| rules.game_types.iter().any(|t| t.eq_ignore_ascii_case(v)))
+}
+
+/// The `out_of_date` warning of a folder whose game type admits it although none of its
+/// `interfaces` is the client's.
+fn off_range_warning(
+    folder: &str,
+    loaded: &LoadedToc,
+    interfaces: &[u32],
+    target_interface: u32,
+) -> Warning {
+    let listed: Vec<String> = interfaces.iter().map(u32::to_string).collect();
+    let (noun, none) = match listed.len() {
+        1 => ("interface", "not"),
+        _ => ("interfaces", "none of them"),
+    };
+    Warning::new(
+        WarningCode::OutOfDate,
+        format!(
+            "{folder}: {} targets {noun} {}, {none} this client's {target_interface}; the client lists it as out of date and loads it only with out-of-date addons enabled",
+            loaded.file,
+            listed.join(", ")
+        ),
+    )
+    .with_fix(Suggestion::text(
+        "update the addon, or enable \"Load out of date AddOns\" in the client",
+    ))
 }
 
 /// `AllowLoadGameType` names none of the client's game types or family-level names, or
@@ -912,6 +962,112 @@ mod tests {
         let view = Memory::new("Foo", &[("Foo.toc", "## Interface: 110207\n")]);
         let report = verdict(&view, rules, Family::Mainline, 120_105, &table).unwrap();
         assert_eq!(report.verdict, Verdict::Compatible { out_of_date: true });
+    }
+
+    /// Titan Panel 9.3.5's TitanAmmo, verbatim: 205056 is a typo for a 2.5.x interface,
+    /// and the author says the folder is for TBC (and Era, and Forever).
+    const TITAN_AMMO: &str = "## Interface: 11509, 16001, 205056\n## AllowLoadGameType: camelot, tbc, vanilla\n## Notes: Adds an ammo monitor to Titan Panel - Classic versions only\n## Dependencies: Titan\n";
+
+    /// An `AllowLoadGameType` naming the client's own game type makes the folder its
+    /// build, out of date when no interface is in its range; elsewhere the verdict is as
+    /// before.
+    #[test]
+    fn a_game_type_naming_the_client_admits_an_off_range_interface() {
+        let ammo = Memory::new("TitanAmmo", &[("TitanAmmo.toc", TITAN_AMMO)]);
+        let anniversary = judge(&ammo, &bnet("2.5.6"));
+        assert_eq!(
+            anniversary.verdict,
+            Verdict::Compatible { out_of_date: true }
+        );
+        assert_eq!(anniversary.warnings.len(), 1, "{:?}", anniversary.warnings);
+        let warning = &anniversary.warnings[0];
+        assert_eq!(warning.code, WarningCode::OutOfDate);
+        assert!(warning.message.contains("205056"), "{}", warning.message);
+        assert!(
+            !warning.message.contains("older than"),
+            "{}",
+            warning.message
+        );
+        // In range on Era and Forever: judged by those values, current.
+        for c in [bnet("1.15.9"), bnet("1.60.1")] {
+            let report = judge(&ammo, &c);
+            assert_eq!(
+                (report.verdict, report.warnings.len()),
+                (Verdict::Compatible { out_of_date: false }, 0),
+                "{}",
+                c.rules.name
+            );
+        }
+        // Not named: gated away.
+        for c in [bnet("12.1.5"), bnet("5.5.4")] {
+            assert_eq!(
+                reason(&judge(&ammo, &c))["reason"],
+                "game_type_excluded",
+                "{}",
+                c.rules.name
+            );
+        }
+        // A legacy client ignores game types and reads the leading 11509.
+        assert_eq!(
+            reason(&judge(&ammo, &legacy("2.4.3")))["reason"],
+            "interface_not_in_family"
+        );
+    }
+
+    /// Only the row's own game types admit: a family-level name is too broad, an
+    /// `ExcludeLoadGameType` naming the client still wins, and a game type reached
+    /// through an inline directive admits only where the directive applies.
+    #[test]
+    fn only_the_clients_own_game_type_admits() {
+        let classic_gate = Memory::new(
+            "Foo",
+            &[(
+                "Foo.toc",
+                "## Interface: 120105\n## AllowLoadGameType: classic\n",
+            )],
+        );
+        assert_eq!(
+            reason(&judge(&classic_gate, &bnet("1.15.9")))["reason"],
+            "interface_not_in_family"
+        );
+        let excluded = Memory::new(
+            "Foo",
+            &[(
+                "Foo.toc",
+                "## Interface: 205056\n## AllowLoadGameType: tbc\n## ExcludeLoadGameType: tbc\n",
+            )],
+        );
+        assert_eq!(
+            reason(&judge(&excluded, &bnet("2.5.6")))["reason"],
+            "game_type_excluded"
+        );
+        let inline = Memory::new(
+            "Foo",
+            &[(
+                "Foo.toc",
+                "## Interface: 205056\n## AllowLoadGameType: tbc [AllowLoadGameType tbc]\n",
+            )],
+        );
+        assert_eq!(
+            judge(&inline, &bnet("2.5.6")).verdict,
+            Verdict::Compatible { out_of_date: true }
+        );
+        assert_eq!(
+            reason(&judge(&inline, &bnet("1.15.9")))["reason"],
+            "interface_not_in_family"
+        );
+        // Retail's floor still holds: no player setting loads 11509 there.
+        let standard = Memory::new(
+            "Foo",
+            &[(
+                "Foo.toc",
+                "## Interface: 11509\n## AllowLoadGameType: standard\n",
+            )],
+        );
+        assert_eq!(
+            reason(&judge(&standard, &bnet("12.1.5")))["reason"],
+            "below_client_floor"
+        );
     }
 
     #[test]
