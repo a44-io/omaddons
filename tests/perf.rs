@@ -24,6 +24,7 @@ use common::env::TestEnv;
 use common::home::Home;
 use common::http::{Asset, paths, replay, scenario};
 use common::netlog::net_log;
+use common::trees::CustomRoot;
 use jiff::Timestamp;
 use omaddons::drift::DriftMode;
 use omaddons::model::{Channel, FolderName, Ref, RunId};
@@ -270,6 +271,35 @@ fn live_home() {
     let home = Home::at(&dir, CLIENTS);
     let lines = home.env.env_lines();
     fs::write(dir.join("live.env"), lines.join("\n") + "\n").unwrap();
+}
+
+/// The keyless coverage study's home (omad-m2-audit-yegz.7.7, re-measured by
+/// omad-author-built-loading-5po6.6) at `$COVERAGE_HOME` (read by this test alone): one
+/// client per live family (retail, Mists Classic, Anniversary, Classic Era, Forever and
+/// Titan) and a custom 3.3.5a client, with no addon and no fixtures, and
+/// `coverage.env`, its environment. A release binary then dry-runs installs from the
+/// real sources into it; it never touches a real client.
+#[test]
+#[ignore = "the coverage study's home: COVERAGE_HOME=<dir> cargo test --test perf coverage_home -- --ignored"]
+fn coverage_home() {
+    // A builder for the study, not a budget: without its directory it builds nothing.
+    let Some(dir) = std::env::var_os("COVERAGE_HOME").map(PathBuf::from) else {
+        return;
+    };
+    assert!(!dir.exists(), "{} exists", dir.display());
+    let products = [
+        "wow",
+        "wow_classic",
+        "wow_anniversary",
+        "wow_classic_era",
+        "wowf",
+        "wow_classic_titan",
+    ];
+    let mut home = Home::at(&dir, &products);
+    let legacy = CustomRoot::at(home.env.root().join("wow-335")).version(3, 3, 5, 12_340);
+    home.with_custom(legacy);
+    let lines = home.env.env_lines();
+    fs::write(dir.join("coverage.env"), lines.join("\n") + "\n").unwrap();
 }
 
 /// The budget: 5,000 files in 20 folders, installed through the engine, checked by Stat
