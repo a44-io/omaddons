@@ -3540,8 +3540,11 @@ impl TargetPlanner<'_> {
         // The source's name for the addon (WoWInterface's `UIName`), when no catalog
         // name applies.
         let mut source_name: Option<String> = None;
-        // The tag of the release the candidates come from, for a look-back.
+        // The tag of the release the candidates come from, for a look-back, and whether
+        // its own `release.json` declares a build for this client (then a refusal is of
+        // that build, and an older release would only fail the same way).
         let mut newest_tag: Option<String> = None;
+        let mut newest_declares = false;
         let candidates = match (file, local, set) {
             (Some(file), _, _) => vec![file_candidate(file, wanted)],
             (None, Some(local), _) => vec![local.clone()],
@@ -3577,6 +3580,14 @@ impl TargetPlanner<'_> {
                         });
                         source_name = release.and_then(|r| r.name_hint.clone());
                         newest_tag = release.and_then(|r| tag_of(wanted, &r.release_id));
+                        let family = self.target.family;
+                        let range = self.ctx.table.family_range(family);
+                        newest_declares = release.is_some_and(|r| {
+                            r.assets
+                                .iter()
+                                .flat_map(|a| &a.flavors)
+                                .any(|f| declares_client(f, family, range))
+                        });
                         let mut candidates = selection.candidates;
                         // A named asset (a pasted asset link): that one or nothing; the
                         // TOCs still judge whether it loads here.
@@ -3719,8 +3730,10 @@ impl TargetPlanner<'_> {
                 return Err(self.offer_any_flavor(error, wanted, overridable));
             }
             // A repository that publishes one release per client: its newest may be
-            // another client's, so look back for the newest that declares this one.
+            // another client's, so look back for the newest that declares this one. Not
+            // when the newest declares this client already: its build does not load.
             if wrong_flavor
+                && !newest_declares
                 && intent.looked_back.is_none()
                 && intent.asset.is_none()
                 && wanted.version.is_none()

@@ -470,6 +470,35 @@ fn a_spent_api_budget_stops_the_look_back() {
     assert!(!memo.contains("look_backs"), "{memo}");
 }
 
+/// A newest release whose own `release.json` declares the client has a build for it,
+/// one that does not load: no look-back, and the refusal names that build. (OmniCC on
+/// retail 12.1.5, 2026-10-24: 11.2.8 and 11.2.7 both declare mainline below the floor.)
+#[test]
+fn a_newest_release_declaring_the_client_never_looks_back() {
+    const NEWER: Rel = ("v2", "mainline", 110_207);
+    const OLDER: Rel = ("v1", "mainline", 110_205);
+    let home = Home::new(&["wow"]);
+    serve(&home.http, &[NEWER, OLDER], &[]);
+
+    let r = home.run(&["install", REF, "-t", "retail"]);
+    let error = &r.expect(3)["error"];
+    assert_eq!(error["code"], "no_compatible_release", "{}", r.context());
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("VuhDo-v2.zip"), "{message}");
+    let tried = error["details"]["tried"].to_string();
+    assert!(tried.contains("below_client_floor"), "{tried}");
+    assert!(!tried.contains("look_back"), "{tried}");
+    let log = net_log(&home);
+    assert_eq!(
+        log.count("github.com", "releases-atom"),
+        0,
+        "{}",
+        log.context()
+    );
+    assert_eq!(manifest_requests(&home, OLDER.0), 0, "{}", log.context());
+    assert_eq!(rest_requests(&home), 0, "{}", log.context());
+}
+
 /// `--version` and a pasted asset link name one release: no look-back.
 #[test]
 fn a_named_release_never_looks_back() {
