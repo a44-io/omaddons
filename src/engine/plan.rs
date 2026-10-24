@@ -4757,6 +4757,7 @@ impl TargetPlanner<'_> {
                 out_of_date: loads && out_of_date,
                 primary_interface: verdict.and_then(|v| v.interface),
                 at: Timestamp::now(),
+                judge: Some(self.target.judge.clone()),
             }],
             unverified,
         };

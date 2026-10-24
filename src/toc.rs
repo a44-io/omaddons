@@ -20,9 +20,9 @@ mod loaded;
 use std::collections::BTreeMap;
 
 pub use loaded::{
-    DiskFolder, FolderView, LoadedToc, LoadedTocSummary, TocLevel, Verdict, VerdictReport,
-    WrongFlavorReason, best_in_family, effective_interfaces, judge, loaded_toc, primary_interface,
-    read_bounded, verdict, verify_target,
+    DiskFolder, FolderView, JUDGE_VERSION, LoadedToc, LoadedTocSummary, TocLevel, Verdict,
+    VerdictReport, WrongFlavorReason, best_in_family, effective_interfaces, judge, judge_digest,
+    loaded_toc, primary_interface, read_bounded, verdict, verify_target,
 };
 
 use schemars::JsonSchema;

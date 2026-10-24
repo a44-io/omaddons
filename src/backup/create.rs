@@ -543,6 +543,7 @@ mod tests {
                 exe_name: Some("WoW.exe".into()),
                 label: None,
                 rules: ClientRules::default(),
+                judge: String::new(),
             };
             target.refresh_rules(&RulesTable::builtin());
             Self {

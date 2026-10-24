@@ -617,7 +617,7 @@ fn two_outdated_runs_at_once_leave_a_valid_memo() {
         assert_eq!(r.code, 0, "{}", r.context());
     }
     let memo: Value = serde_json::from_slice(&fs::read(s.home.memo()).unwrap()).unwrap();
-    assert_eq!(memo["schema_version"], "1.0", "{memo}");
+    assert_eq!(memo["schema_version"], "1.1", "{memo}");
     let (_, problem) = omaddons::state::memo::load(&common::http::paths(&s.home.env));
     assert!(problem.is_none(), "{problem:?}");
 }

@@ -21,7 +21,7 @@ use super::store::{self, SchemaVersion, VersionStatus, Versioned};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::fsx::{Content, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate};
 use crate::limits::MEMO_KNOWN_RELEASES;
-use crate::model::{Actor, Channel, Ref, Release, ReleaseSet};
+use crate::model::{Actor, Channel, Ref, Release, ReleaseSet, Target};
 use crate::resolve::select::newest;
 
 /// The memo.
@@ -76,7 +76,9 @@ impl ReleaseMemo {
 
 impl Versioned for ReleaseMemo {
     const KIND: &'static str = "release_memo";
-    const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
+    /// 1.1: each verdict records the judge it was made under (`judge`), and GitHub
+    /// look-backs are remembered (`look_backs`). A 1.0 reader ignores both.
+    const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
 }
 
 /// What one fetch of one ref on one channel learned.
@@ -156,6 +158,10 @@ pub struct VerdictFact {
     pub primary_interface: Option<u32>,
     #[schemars(with = "String")]
     pub at: Timestamp,
+    /// The [`crate::toc::judge_digest`] it was judged under: believed only while the
+    /// client's is the same. `None` (written before 1.1) is another judge's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge: Option<String>,
 }
 
 /// The Tukui index: version metadata only, never URLs.
@@ -412,22 +418,19 @@ impl FactIndex {
             .map(|((release_id, _), _)| release_id.as_str())
     }
 
-    /// Whether `asset` of `release_id` loads on the rules row `rules` at `interface`, when
-    /// a plan verified it there.
-    pub fn verdict(
-        &self,
-        release_id: &str,
-        asset: &str,
-        rules: &str,
-        interface: u32,
-    ) -> Option<&VerdictFact> {
+    /// Whether `asset` of `release_id` loads on `target` (its rules row and interface),
+    /// when a plan verified it there under the judge `target` has now: a verdict an
+    /// older judge made, or another `[client_rules]` patch, says nothing.
+    pub fn verdict(&self, release_id: &str, asset: &str, target: &Target) -> Option<&VerdictFact> {
         let key = (
             release_id.to_owned(),
             asset.to_owned(),
-            rules.to_owned(),
-            interface,
+            target.rules.name.clone(),
+            target.interface,
         );
-        self.verdicts.get(&key)
+        self.verdicts
+            .get(&key)
+            .filter(|v| v.judge.as_deref() == Some(target.judge.as_str()))
     }
 }
 
@@ -725,6 +728,7 @@ mod tests {
             out_of_date: false,
             primary_interface: None,
             at: at(when),
+            judge: None,
         };
         let fact = |verdicts| CandidateFact {
             release_id: "gh:o/foo@1".into(),
@@ -783,8 +787,14 @@ mod tests {
         );
     }
 
+    /// Retail 12.1.5, judged by the builtin rules.
+    fn retail() -> Target {
+        crate::engine::testing::target(std::path::Path::new("/nonexistent/_retail_"))
+    }
+
     #[test]
     fn facts_merge_per_asset_and_the_index_finds_hashes_and_verdicts() {
+        let retail = retail();
         let verdict = |rules: &str, interface, loads, when| VerdictFact {
             rules: rules.into(),
             interface,
@@ -792,7 +802,9 @@ mod tests {
             out_of_date: false,
             primary_interface: Some(interface),
             at: at(when),
+            judge: Some(retail.judge.clone()),
         };
+        let mainline = retail.rules.name.as_str();
         let fact = |asset: &str, sha: &str, verdicts| CandidateFact {
             release_id: "gh:o/foo@1".into(),
             asset: asset.into(),
@@ -807,7 +819,7 @@ mod tests {
             fact(
                 "Foo.zip",
                 "aa",
-                vec![verdict("mainline", 120_105, true, "2026-10-15T10:00:00Z")],
+                vec![verdict(mainline, 120_105, true, "2026-10-15T10:00:00Z")],
             ),
         );
         merge_fact(
@@ -816,8 +828,8 @@ mod tests {
                 "Foo.zip",
                 "bb",
                 vec![
-                    verdict("mainline", 120_105, false, "2026-10-15T11:00:00Z"),
-                    verdict("mainline", 120_200, true, "2026-10-15T11:00:00Z"),
+                    verdict(mainline, 120_105, false, "2026-10-15T11:00:00Z"),
+                    verdict(mainline, 120_200, true, "2026-10-15T11:00:00Z"),
                 ],
             ),
         );
@@ -833,12 +845,14 @@ mod tests {
         assert_eq!(index.hash("gh:o/foo@1", "Foo.zip"), Some(("bb", 7)));
         assert_eq!(index.hash("gh:o/foo@1", "Foo-nolib.zip"), Some(("cc", 7)));
         assert_eq!(index.hash("gh:o/foo@2", "Foo.zip"), None);
-        let found = index.verdict("gh:o/foo@1", "Foo.zip", "mainline", 120_105);
+        let found = index.verdict("gh:o/foo@1", "Foo.zip", &retail);
         assert_eq!(found.map(|v| v.loads), Some(false), "the later verdict");
+        let other = Target {
+            interface: 120_000,
+            ..retail.clone()
+        };
         assert!(
-            index
-                .verdict("gh:o/foo@1", "Foo.zip", "mainline", 120_000)
-                .is_none(),
+            index.verdict("gh:o/foo@1", "Foo.zip", &other).is_none(),
             "another interface is another verdict"
         );
 
@@ -874,6 +888,66 @@ mod tests {
         );
     }
 
+    /// A verdict is believed only under the judge it was made under: one recorded by
+    /// another judge (an older omaddons, another `[client_rules]` patch) or by none
+    /// (before 1.1) says nothing, and stays until a new verdict replaces it.
+    #[test]
+    fn a_verdict_from_another_judge_is_not_believed() {
+        let retail = retail();
+        let fact = |judge: Option<&str>| CandidateFact {
+            release_id: "gh:o/foo@2".into(),
+            asset: "Foo.zip".into(),
+            sha256: "aa".into(),
+            size: 1,
+            verdicts: vec![VerdictFact {
+                rules: retail.rules.name.clone(),
+                interface: retail.interface,
+                loads: true,
+                out_of_date: true,
+                primary_interface: Some(110_207),
+                at: at("2026-10-15T10:00:00Z"),
+                judge: judge.map(str::to_owned),
+            }],
+            unverified: false,
+        };
+        let believed = |judge: Option<&str>| {
+            FactIndex::new(&[fact(judge)])
+                .verdict("gh:o/foo@2", "Foo.zip", &retail)
+                .is_some()
+        };
+        assert!(believed(Some(&retail.judge)), "the current judge");
+        assert!(!believed(None), "no judge recorded");
+        assert!(!believed(Some("0".repeat(64).as_str())), "another judge");
+        // The hash is still known whatever judged it: the download cache keeps it.
+        assert_eq!(
+            FactIndex::new(&[fact(None)]).hash("gh:o/foo@2", "Foo.zip"),
+            Some(("aa", 1))
+        );
+
+        // A patch that changes how the row judges is another judge; one that changes
+        // nothing judging reads (a product) is not.
+        let floor: crate::rules::RulesOverrides =
+            toml::from_str("[client_rules.mainline]\ninterface_floor = 0\n").unwrap();
+        let table = crate::rules::RulesTable::builtin()
+            .with_overrides(&floor)
+            .unwrap();
+        let mut patched = retail.clone();
+        patched.refresh_rules(&table);
+        assert_ne!(patched.judge, retail.judge);
+        let product: crate::rules::RulesOverrides = toml::from_str(
+            "[[products]]\ncode = \"wow_newflavor\"\nfolder = \"_newflavor_\"\nexe = \"WowNew.exe\"\nkind = \"live\"\ndefault_id = \"newflavor\"\n",
+        )
+        .unwrap();
+        let table = crate::rules::RulesTable::builtin()
+            .with_overrides(&product)
+            .unwrap();
+        let mut unrelated = retail.clone();
+        unrelated.refresh_rules(&table);
+        assert_eq!(unrelated.judge, retail.judge);
+        // The digest is the version's too.
+        assert_eq!(crate::toc::JUDGE_VERSION, 1);
+    }
+
     #[test]
     fn the_cap_drops_the_oldest() {
         let mut memo = ReleaseMemo::default();
@@ -897,6 +971,7 @@ mod tests {
                     out_of_date: false,
                     primary_interface: None,
                     at: at(when),
+                    judge: None,
                 }],
             });
         }

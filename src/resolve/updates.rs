@@ -263,10 +263,8 @@ pub fn evaluate(
             latest: Some(latest),
         };
     }
-    // 7. What plans learned.
-    let rules = target.rules.name.as_str();
-    let verdict =
-        |c: &Candidate| facts.verdict(&c.release_id, &c.asset.filename, rules, target.interface);
+    // 7. What plans learned, under the judge the client has now.
+    let verdict = |c: &Candidate| facts.verdict(&c.release_id, &c.asset.filename, target);
     let verdicts: Vec<_> = candidates.iter().map(verdict).collect();
     // Facts judge by the client's own rules; `--any-flavor` installs what they refuse.
     if !record.any_flavor && verdicts.iter().all(|v| v.is_some_and(|v| !v.loads)) {
@@ -673,6 +671,7 @@ mod tests {
                 out_of_date,
                 primary_interface: Some(primary),
                 at: at("2026-10-15T00:00:00Z"),
+                judge: Some(retail().judge),
             }],
             unverified: false,
         }

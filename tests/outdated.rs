@@ -621,6 +621,67 @@ fn verify_downloads_unverified_updates_only_and_remembers_the_verdicts() {
     assert_eq!(net_log(&home).len(), before);
 }
 
+/// A verdict remembered under another judge says nothing (omad-fxma). A build before
+/// retail 12's interface floor recorded v2, whose TOC is below it, as loading out of
+/// date on retail 12.1.5: `outdated` must not call v2 a verified update, and `--verify`
+/// judges it again and records the refusal.
+#[test]
+fn a_verdict_from_another_judge_is_not_believed() {
+    let mut home = Home::new(&["wow"]);
+    let below: &'static [(&'static str, u32)] = &[("mainline", 110_207)];
+    let (old, new) = (
+        Rel::new("Foo", "v1", "120105", MAINLINE),
+        Rel::new("Foo", "v2", "110207", below),
+    );
+    home.installed_behind(
+        FOO,
+        ("v1", &old.assets()),
+        ("v2", &new.assets()),
+        &["retail"],
+    );
+    let item = |e: &Value| e["data"]["targets"][0]["items"][0].clone();
+    let r = home.run(&["outdated", "--verify"]);
+    let verified = item(&r.expect(0));
+    assert_eq!(verified["status"], "blocked", "{}", r.context());
+
+    // Rewrite that verdict as the older build left it: no judge, loads out of date.
+    let paths = common::http::paths(&home.env);
+    let (mut memo, _) = omaddons::state::memo::load(&paths);
+    let fact = memo
+        .candidates
+        .iter_mut()
+        .find(|f| f.release_id == "gh:o/foo@v2")
+        .unwrap();
+    for verdict in &mut fact.verdicts {
+        assert!(verdict.judge.is_some(), "a verdict records its judge");
+        verdict.judge = None;
+        verdict.loads = true;
+        verdict.out_of_date = true;
+    }
+    home.seed_memo(&memo);
+
+    let r = home.run(&["outdated"]);
+    let plain = item(&r.expect(0));
+    assert_eq!(plain["status"], "update_available", "{}", r.context());
+    assert_ne!(plain["confidence"], "verified", "{}", r.context());
+
+    // --verify judges it again, under the judge this build has, and remembers that.
+    let r = home.run(&["outdated", "--verify"]);
+    let again = item(&r.expect(0));
+    assert_eq!(again["status"], "blocked", "{}", r.context());
+    let (memo, _) = omaddons::state::memo::load(&paths);
+    let fact = memo
+        .candidates
+        .iter()
+        .find(|f| f.release_id == "gh:o/foo@v2")
+        .unwrap();
+    assert!(
+        fact.verdicts.iter().all(|v| v.judge.is_some() && !v.loads),
+        "{:?}",
+        fact.verdicts
+    );
+}
+
 #[test]
 fn outdated_changes_nothing_but_the_memo_and_net_log() {
     let home = three_clients();

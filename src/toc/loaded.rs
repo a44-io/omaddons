@@ -384,6 +384,33 @@ pub fn primary_interface(
     best_in_family(&interfaces, rules, family, target_interface, table)
 }
 
+/// The revision of how [`judge`] and the verdicts built on it decide: bumped whenever a
+/// change can turn a verdict, so verdicts remembered under the old rules
+/// (`VerdictFact.judge`) are no longer believed. 1: retail 12's interface floor, the
+/// `AllowLoadGameType` admission and folders left out.
+pub const JUDGE_VERSION: u32 = 1;
+
+/// SHA-256 of what judging a folder for a client of `family` under `rules` reads:
+/// [`JUDGE_VERSION`], the row as applied (with any `[client_rules]` patch) and every
+/// family's interface range in `table`. Equal digests give equal verdicts; anything
+/// else in the table (products, other rows) leaves it unchanged.
+pub fn judge_digest(rules: &ClientRules, family: Family, table: &RulesTable) -> String {
+    use sha2::{Digest, Sha256};
+    let ranges: Vec<_> = Family::ALL
+        .iter()
+        .map(|f| (f.as_str(), table.family_range(*f)))
+        .collect();
+    let mut hash = Sha256::new();
+    hash.update(JUDGE_VERSION.to_le_bytes());
+    hash.update(family.as_str().as_bytes());
+    hash.update([0]);
+    // Rows and ranges always encode; one that did not would still yield a digest.
+    hash.update(serde_json::to_vec(rules).unwrap_or_default());
+    hash.update([0]);
+    hash.update(serde_json::to_vec(&ranges).unwrap_or_default());
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// [`verdict`] on a TOC already loaded from `folder` (`None`: there is none), for
 /// callers that also keep the TOC.
 pub fn judge(

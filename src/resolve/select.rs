@@ -267,6 +267,7 @@ mod tests {
             exe_name: None,
             label: None,
             rules: ClientRules::default(),
+            judge: String::new(),
         };
         target.refresh_rules(&table);
         target

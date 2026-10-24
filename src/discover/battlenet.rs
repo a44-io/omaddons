@@ -131,6 +131,7 @@ pub fn discover_root(
                 interface,
                 exe_name,
                 label: Some(format!("{default_id} ({qualifier})")),
+                judge: crate::toc::judge_digest(&rules, family, table),
                 rules,
             },
             default_id,

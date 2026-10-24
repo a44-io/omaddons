@@ -893,6 +893,7 @@ mod tests {
                 exe_name: None,
                 label: None,
                 rules: Default::default(),
+                judge: String::new(),
             },
             default_id: id.to_owned(),
             qualifier: "battlenet".to_owned(),

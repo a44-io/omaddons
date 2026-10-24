@@ -50,6 +50,7 @@ pub fn target(client_dir: &Path) -> Target {
         exe_name: None,
         label: None,
         rules: ClientRules::default(),
+        judge: String::new(),
     };
     target.refresh_rules(&RulesTable::builtin());
     target

@@ -182,10 +182,9 @@ fn judge(set: &ReleaseSet, target: &Target, facts: &FactIndex, families: &[Famil
     let Some(best) = candidates.first() else {
         return LoadHint::Unlikely;
     };
-    let rules = target.rules.name.as_str();
     let verdicts: Vec<_> = candidates
         .iter()
-        .map(|c| facts.verdict(&c.release_id, &c.asset.filename, rules, target.interface))
+        .map(|c| facts.verdict(&c.release_id, &c.asset.filename, target))
         .collect();
     if verdicts.iter().flatten().any(|v| v.loads) {
         return LoadHint::Verified;

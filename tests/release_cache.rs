@@ -102,7 +102,7 @@ fn info_inside_the_window_makes_no_request_and_refresh_does() {
     r.expect(0);
     assert_eq!(requests(&home), 2 * once, "--refresh fetches again");
     let memo: Value = serde_json::from_slice(&fs::read(home.memo()).unwrap()).unwrap();
-    assert_eq!(memo["schema_version"], "1.0");
+    assert_eq!(memo["schema_version"], "1.1");
     assert!(memo["entries"]["gh:o/foo|stable"].is_object(), "{memo}");
 }
 

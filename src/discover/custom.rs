@@ -107,6 +107,7 @@ pub fn discover_custom_root(
         interface,
         exe_name: Some(exe),
         label: Some(label),
+        judge: crate::toc::judge_digest(&rules, family, table),
         rules,
     };
     let discovered = DiscoveredTarget {

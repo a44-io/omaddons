@@ -543,6 +543,11 @@ pub struct Target {
     /// Not on the wire. After deserializing, call [`Target::refresh_rules`].
     #[serde(skip)]
     pub rules: ClientRules,
+    /// [`crate::toc::judge_digest`] of `rules`, set with them: remembered verdicts are
+    /// believed only under it. Empty until [`Target::refresh_rules`] runs, which no
+    /// remembered verdict matches.
+    #[serde(skip)]
+    pub judge: String,
 }
 
 impl Target {
@@ -558,6 +563,7 @@ impl Target {
         self.rules = table
             .rules_for_family(self.family, &self.version, self.install_kind)
             .clone();
+        self.judge = crate::toc::judge_digest(&self.rules, self.family, table);
     }
 }
 
@@ -1752,6 +1758,7 @@ mod tests {
             exe_name: Some("WoW.exe".into()),
             label: None,
             rules: ClientRules::default(),
+            judge: String::new(),
         };
         target.refresh_rules(&table);
         target
