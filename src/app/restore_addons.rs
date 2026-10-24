@@ -566,6 +566,7 @@ mod tests {
                     state: AddonState::Ok,
                     blob_sha256: None,
                     revision: None,
+                    left_out: Vec::new(),
                     installed_at: "2026-10-14T00:00:00Z".parse().unwrap(),
                     tx_id: TxId::new(),
                 },

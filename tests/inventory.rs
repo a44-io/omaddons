@@ -47,6 +47,7 @@ mod support {
             tx_id: "01JB8Q2VA00000000000000000".parse().unwrap(),
             blob_sha256: None,
             revision: None,
+            left_out: Vec::new(),
         }
     }
 

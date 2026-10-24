@@ -949,6 +949,26 @@ pub struct SkippedFolder {
     pub reason: WrongFlavorReason,
 }
 
+impl SkippedFolder {
+    /// As the addon's record keeps it ([`crate::model::AddonRecord::left_out`]): the
+    /// same wire form as `folders.skipped`.
+    pub fn left_out(&self) -> crate::model::LeftOutFolder {
+        let mut details = match serde_json::to_value(&self.reason) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        let reason = details
+            .remove("reason")
+            .and_then(|r| r.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        crate::model::LeftOutFolder {
+            name: self.name.clone(),
+            reason,
+            details,
+        }
+    }
+}
+
 /// An archive's folders split by whether the target's client loads them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Partition {

@@ -2,7 +2,8 @@
 //! shared folders whose TOCs list every client's interface, and retail-only boss modules
 //! gated by `## AllowLoadGameType: standard`. Each client installs the folders it loads
 //! and lists the rest in `folders.skipped`; skipped folders never reach
-//! `Interface/AddOns`, the record, the files index or a snapshot. Releases are replayed
+//! `Interface/AddOns`, the files index or a snapshot of folders, and the record keeps them
+//! only as what the install left out (`left_out`). Releases are replayed
 //! from synthetic fixtures shaped like the real releases (layouts verified 2026-10-15:
 //! DBM-Core 12.1.14, BigWigs v427.6).
 
@@ -19,8 +20,8 @@ use common::netlog::net_log;
 use common::trees::{CustomRoot, listing, tree_hash};
 use serde_json::Value;
 use support::{
-    folder, gated, left_out, mentions, on_disk, release, rest_release, serve_boss_mods, skipped,
-    sorted, status_folders, strings,
+    by_name, folder, gated, left_out, left_out_names, mentions, on_disk, release, rest_release,
+    serve_boss_mods, skipped, sorted, status_folders, strings,
 };
 
 const DBM: &str = "https://github.com/DeadlyBossMods/DeadlyBossMods";
@@ -217,6 +218,27 @@ mod support {
         }
     }
 
+    /// The record of `r#ref` on `id`, as `info` shows it: the folders it left out.
+    pub fn left_out_names(home: &Home, r#ref: &str, id: &str) -> Vec<String> {
+        let r = home.run(&["info", r#ref, "-t", id, "--offline"]);
+        let envelope = r.expect(0);
+        let left_out = &envelope["data"]["installed"][0]["left_out"];
+        assert!(left_out.is_array(), "{}", r.context());
+        left_out
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// Sorted by folder name, to compare lists whose order differs.
+    pub fn by_name(list: &Value) -> Value {
+        let mut items = list.as_array().unwrap().clone();
+        items.sort_by_key(|f| f["name"].as_str().unwrap().to_ascii_lowercase());
+        Value::from(items)
+    }
+
     /// The `folder_left_out` warnings of an envelope.
     pub fn left_out(envelope: &Value) -> Vec<String> {
         envelope["warnings"]
@@ -399,14 +421,26 @@ fn dbm_and_bigwigs_install_what_each_client_loads() {
             "{id}: {folders}"
         );
 
-        // Skipped folders are nowhere: not in the client, the records, the files index,
-        // history or snapshots.
+        // Skipped folders are nowhere in the client, the files index, history or
+        // journals; only target records (and undo's copies of them) name them, as what
+        // the install left out.
+        let is_record = |path: &str| {
+            let text = fs::read_to_string(home.state().join(path)).unwrap_or_default();
+            serde_json::from_str::<Value>(&text).is_ok_and(|v| v["addons"].is_object())
+        };
         for needle in ["DBM-Midnight", "BigWigs_TheVoidspire"]
             .iter()
             .filter(|_| !retail)
         {
             assert_eq!(mentions(&home.client(dir), needle), Vec::<String>::new());
-            assert_eq!(mentions(&home.state(), needle), Vec::<String>::new());
+            let state = mentions(&home.state(), needle);
+            assert!(
+                state.iter().any(|p| p.starts_with("targets/"))
+                    && state
+                        .iter()
+                        .all(|p| !p.ends_with(".files.json") && is_record(p)),
+                "{id}: {needle} in {state:?}"
+            );
         }
 
         let r = home.run(&["undo"]);
@@ -1122,4 +1156,132 @@ fn a_human_refusal_names_the_folder_and_what_it_lists() {
         "{}",
         human.stderr
     );
+}
+
+// ---- What an install left out, on the record (omad-author-built-loading-5po6.3) ----------
+
+/// After a DBM install on Classic Era the record keeps the retail-only modules it left
+/// out, with the reasons `folders.skipped` gave, and `info` and `list -v` show them.
+#[test]
+fn the_record_keeps_what_an_install_left_out_and_info_and_list_show_it() {
+    const REF: &str = "gh:DeadlyBossMods/DeadlyBossMods";
+    let home = Home::new(&["wow_classic_era"]);
+    serve_boss_mods(&home.http);
+    let r = home.run(&["install", REF, "-t", "era"]);
+    let envelope = r.expect(0);
+    let item = &envelope["data"]["items"][0];
+    let name = item["name"].as_str().unwrap().to_owned();
+    let skipped_json = by_name(&item["folders"]["skipped"]);
+    assert_eq!(
+        skipped(&item["folders"]),
+        gated(DBM_RETAIL),
+        "{}",
+        r.context()
+    );
+
+    let r = home.run(&["info", REF, "-t", "era", "--offline"]);
+    let info = r.expect(0);
+    assert_eq!(
+        by_name(&info["data"]["installed"][0]["left_out"]),
+        skipped_json,
+        "{}",
+        r.context()
+    );
+    let human = home.exec(&[
+        "info".into(),
+        REF.into(),
+        "-t".into(),
+        "era".into(),
+        "--offline".into(),
+    ]);
+    assert!(
+        human
+            .stdout
+            .contains("left out: DBM-Brawlers (gated to other game types)"),
+        "{}",
+        human.stdout
+    );
+
+    let r = home.run(&["list", "-t", "era", "-v"]);
+    let list = r.expect(0);
+    let addon = &list["data"]["targets"][0]["addons"][0];
+    assert_eq!(by_name(&addon["left_out"]), skipped_json, "{}", r.context());
+    let plain = home.run(&["list", "-t", "era"]).expect(0);
+    assert!(plain["data"]["targets"][0]["addons"][0]["left_out"].is_null());
+    let human = home.exec(&["list".into(), "-t".into(), "era".into(), "-v".into()]);
+    assert!(
+        human.stdout.contains(&format!(
+            "{name} left out: DBM-Brawlers (gated to other game types)"
+        )),
+        "{}",
+        human.stdout
+    );
+
+    // `export` writes requests, not what a client left out.
+    let exported = home.run(&["export"]).expect(0);
+    let content = exported["data"]["content"].as_str().unwrap();
+    assert!(
+        !content.contains("left_out") && !content.contains("DBM-Brawlers"),
+        "{content}"
+    );
+}
+
+/// An update whose release loads a folder left out before installs it and drops it from
+/// the record; undoing the update brings the record back with it.
+#[test]
+fn an_update_that_loads_a_left_out_folder_records_it_and_undo_restores_the_record() {
+    let mut home = Home::new(&["wow_classic_era"]);
+    let mut v1 = folder("Foo", EVERY, &["## Version: 1"]);
+    v1.extend(folder(
+        "FooModule",
+        RETAIL,
+        &["## AllowLoadGameType: standard", "## Dependencies: Foo"],
+    ));
+    release(&home.http, FOO, "v1", "Foo.zip", &[], &v1);
+    home.run(&["install", "gh:o/foo", "-t", "era"]).expect(0);
+    assert_eq!(left_out_names(&home, "gh:o/foo", "era"), ["FooModule"]);
+
+    let scenario = home.scenario("v2");
+    let mut v2 = folder("Foo", EVERY, &["## Version: 2"]);
+    v2.extend(folder("FooModule", EVERY, &["## Dependencies: Foo"]));
+    release(&scenario, FOO, "v2", "Foo.zip", &[], &v2);
+    let r = home.run(&["install", "gh:o/foo", "-t", "era"]);
+    let envelope = r.expect(0);
+    let item = &envelope["data"]["items"][0];
+    assert_eq!(item["status"], "updated", "{}", r.context());
+    assert_eq!(
+        strings(&item["folders"]["added"]),
+        ["FooModule"],
+        "{}",
+        r.context()
+    );
+    assert!(left_out_names(&home, "gh:o/foo", "era").is_empty());
+
+    home.run(&["undo"]).expect(0);
+    assert_eq!(left_out_names(&home, "gh:o/foo", "era"), ["FooModule"]);
+}
+
+/// `copy` installs each addon from its ref on the other client, judged there: a folder
+/// Classic Era left out, which Anniversary loads, is installed on Anniversary and never
+/// recorded as left out there.
+#[test]
+fn copy_judges_the_other_client_and_carries_no_left_out() {
+    let home = Home::new(&["wow_classic_era", "wow_anniversary"]);
+    let mut files = folder("Foo", EVERY, &[]);
+    files.extend(folder(
+        "FooTbc",
+        EVERY,
+        &["## AllowLoadGameType: tbc", "## Dependencies: Foo"],
+    ));
+    release(&home.http, FOO, "v1", "Foo.zip", &[], &files);
+    home.run(&["install", "gh:o/foo", "-t", "era"]).expect(0);
+    assert_eq!(left_out_names(&home, "gh:o/foo", "era"), ["FooTbc"]);
+    let r = home.run(&["copy", "--from", "era", "--to", "anniversary"]);
+    r.expect(0);
+    assert!(
+        left_out_names(&home, "gh:o/foo", "anniversary").is_empty(),
+        "{}",
+        r.context()
+    );
+    assert!(on_disk(&home, "_anniversary_").contains(&"FooTbc".to_owned()));
 }

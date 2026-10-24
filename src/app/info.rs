@@ -26,7 +26,8 @@ use crate::discover::DiscoveredTarget;
 use crate::drift::{DriftMode, DriftState};
 use crate::error::{Error, ErrorCode, Result, Warning};
 use crate::model::{
-    AddonReason, AddonState, Channel, FolderName, Ref, ReleaseSet, Target, TxId, VersionConfidence,
+    AddonReason, AddonState, Channel, FolderName, LeftOutFolder, Ref, ReleaseSet, Target, TxId,
+    VersionConfidence,
 };
 use crate::net::{NetConfig, NetLog, stack};
 use crate::output::{Outcome, Style};
@@ -116,6 +117,9 @@ pub struct InstalledInfo {
     /// A dependency nothing requires any more.
     pub orphan: bool,
     pub folders: Vec<FolderName>,
+    /// The release's folders this client does not load, left out of the install, with
+    /// why (as `folders.skipped` showed them).
+    pub left_out: Vec<LeftOutFolder>,
     /// Whether its files changed on disk (stat-first, local), with paths under `-v`.
     pub drift: DriftSummary,
     #[schemars(with = "String")]
@@ -292,6 +296,10 @@ impl Outcome for InfoOutcome {
                 i.version,
                 super::history::local_time(i.installed_at)
             )?;
+            if !i.left_out.is_empty() {
+                let left: Vec<String> = i.left_out.iter().map(LeftOutFolder::describe).collect();
+                writeln!(w, "    left out: {}", left.join(", "))?;
+            }
         }
         match (&d.latest, d.offline) {
             (Some(l), _) => {
@@ -446,6 +454,7 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
                 required_by: a.required_by.clone(),
                 orphan: a.is_orphan(),
                 folders: a.folders.clone(),
+                left_out: a.left_out.clone(),
                 drift,
                 installed_at: a.installed_at,
                 tx: a.tx_id,

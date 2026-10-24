@@ -17,7 +17,9 @@ use crate::discover::DiscoveredTarget;
 use crate::drift::{DriftMode, DriftState};
 use crate::error::{Result, Warning};
 use crate::inventory::{Depth, FolderClass, FolderEntry, Inventory, OwnedOn, inventory_shared};
-use crate::model::{AddonReason, AddonRecord, AddonState, Channel, TargetKey, VersionConfidence};
+use crate::model::{
+    AddonReason, AddonRecord, AddonState, Channel, LeftOutFolder, TargetKey, VersionConfidence,
+};
 use crate::output::{Outcome, Style, table};
 use crate::resolve::updates::{StatusKind, StatusRow, UpdateStatus};
 use crate::rules::{ClientVersion, Family, RulesTable};
@@ -99,6 +101,10 @@ pub struct ListAddon {
     /// `-v`: each folder's TOC.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folder_tocs: Option<Vec<FolderInfo>>,
+    /// `-v`: the release's folders this client does not load, left out of the install,
+    /// with why (as `folders.skipped` showed them).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub left_out: Option<Vec<LeftOutFolder>>,
 }
 
 /// What the release memo says is newest for an addon.
@@ -318,6 +324,7 @@ fn list_target(
                 drift: None,
                 folder_tocs: verbose
                     .then(|| keys.iter().filter_map(|k| on_disk(k)).map(info).collect()),
+                left_out: verbose.then(|| a.left_out.clone()),
             }
         })
         .collect();
@@ -463,6 +470,12 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
         })
         .collect();
     w.write_all(table(&rows).as_bytes())?;
+    for a in &t.addons {
+        if let Some(left) = a.left_out.as_ref().filter(|l| !l.is_empty()) {
+            let left: Vec<String> = left.iter().map(LeftOutFolder::describe).collect();
+            writeln!(w, "  {} left out: {}", a.name, left.join(", "))?;
+        }
+    }
     if let Some(folders) = &t.unmanaged {
         let rows: Vec<Vec<String>> = folders
             .iter()

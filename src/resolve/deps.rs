@@ -510,6 +510,7 @@ mod tests {
                 tx_id: TxId::new(),
                 blob_sha256: None,
                 revision: None,
+                left_out: Vec::new(),
             },
         );
         record

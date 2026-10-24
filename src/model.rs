@@ -598,6 +598,62 @@ pub struct AddonRecord {
     /// update (a re-tag), and `sync --locked` fetches this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<u32>,
+    /// The installed release's folders this client does not load, left out of the
+    /// install, with why, as its `folders.skipped` showed them: what explains a missing
+    /// module after the run's output is gone. Every install or update replaces it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_out: Vec<LeftOutFolder>,
+}
+
+/// A folder of an addon's release that an install left out, as `folders.skipped`
+/// showed it: `reason` is its wire name (`game_type_excluded`), and `details` holds the
+/// reason's other fields (`interfaces`, `family`, `floor`, `folder`). Kept as written,
+/// so a reason a newer omaddons wrote still reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LeftOutFolder {
+    pub name: FolderName,
+    pub reason: String,
+    #[serde(flatten)]
+    pub details: serde_json::Map<String, serde_json::Value>,
+}
+
+impl LeftOutFolder {
+    /// Why it was left out, in words: `DBM-Midnight (gated to other game types)`.
+    pub fn describe(&self) -> String {
+        let numbers = |key: &str| -> Vec<String> {
+            self.details
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .map(|values| values.iter().map(ToString::to_string).collect())
+                .unwrap_or_default()
+        };
+        let text = |key: &str| {
+            self.details
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?")
+                .to_owned()
+        };
+        let why = match self.reason.as_str() {
+            "game_type_excluded" => "gated to other game types".to_owned(),
+            "no_loadable_toc" => "no TOC this client loads".to_owned(),
+            "no_interface" => "no Interface this client reads".to_owned(),
+            "target_interface_unknown" => "the client's interface is unknown".to_owned(),
+            "dependency_skipped" => format!("requires {}", text("folder")),
+            "interface_not_in_family" => {
+                format!("lists only interface {}", numbers("interfaces").join(", "))
+            }
+            "below_client_floor" => format!(
+                "interface {}, below the client's floor {}",
+                numbers("interfaces").join(", "),
+                self.details
+                    .get("floor")
+                    .map_or_else(|| "?".to_owned(), ToString::to_string)
+            ),
+            other => other.to_owned(),
+        };
+        format!("{} ({why})", self.name.as_str())
+    }
 }
 
 impl AddonRecord {
@@ -1712,7 +1768,36 @@ mod tests {
             tx_id: "01JB8Q2VA00000000000000000".parse().unwrap(),
             blob_sha256: None,
             revision: None,
+            left_out: Vec::new(),
         }
+    }
+
+    /// A record written before `left_out` existed reads as leaving nothing out, and an
+    /// empty one is not written; a left-out folder keeps the wire form of
+    /// `folders.skipped`, also for a reason this build does not know.
+    #[test]
+    fn left_out_folders_read_old_records_and_unknown_reasons() {
+        let record = sample_record();
+        let mut json = serde_json::to_value(&record).unwrap();
+        assert!(json.get("left_out").is_none(), "{json}");
+        let back: AddonRecord = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back, record);
+        json["left_out"] = serde_json::json!([
+            {"name": "FooRetail", "reason": "interface_not_in_family", "interfaces": [120105], "family": "vanilla"},
+            {"name": "FooNew", "reason": "a_reason_from_a_newer_build", "extra": 1},
+        ]);
+        let read: AddonRecord = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            read.left_out
+                .iter()
+                .map(LeftOutFolder::describe)
+                .collect::<Vec<_>>(),
+            [
+                "FooRetail (lists only interface 120105)",
+                "FooNew (a_reason_from_a_newer_build)"
+            ]
+        );
+        assert_eq!(serde_json::to_value(&read).unwrap(), json, "round-trips");
     }
 
     #[test]

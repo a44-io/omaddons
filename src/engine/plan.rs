@@ -3685,6 +3685,12 @@ impl TargetPlanner<'_> {
                 .and_then(|b| b.file_name())
                 .map(|n| n.to_string_lossy().into_owned()),
             revision: winner.candidate.revision,
+            left_out: winner
+                .loadable
+                .skipped
+                .iter()
+                .map(SkippedFolder::left_out)
+                .collect(),
         };
         // A deferred asset's token URL is never stored: the plan shows its canonical URL.
         let (url, expected_hash) = match &winner.candidate.asset.location {
@@ -5353,6 +5359,7 @@ mod tests {
             tx_id: TxId::new(),
             blob_sha256: Some("aa".into()),
             revision: None,
+            left_out: Vec::new(),
         }
     }
 

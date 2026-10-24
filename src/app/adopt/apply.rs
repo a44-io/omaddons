@@ -871,6 +871,7 @@ fn adopted_record(
         tx_id: TxId::new(),
         blob_sha256,
         revision: None,
+        left_out: Vec::new(),
     }
 }
 
