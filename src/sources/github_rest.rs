@@ -13,13 +13,14 @@
 //! - `OMADDONS_GITHUB_TOKEN`, when set, is sent as a bearer token to the API host only;
 //!   `GITHUB_TOKEN` is never read (D12). The net layer logs no headers.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use jiff::Timestamp;
 use serde::Deserialize;
 
 use super::Wanted;
-use super::github::{GithubRestFallback, RestReason, encode_segment, release_set};
+use super::github::{GithubRestFallback, ListedRelease, RestReason, encode_segment, release_set};
 use super::github_token::{GithubToken, TokenSource};
 use super::release_json;
 use crate::error::{Error, ErrorCode, Result, Suggestion};
@@ -46,6 +47,9 @@ pub struct GithubRest {
     gate: Mutex<()>,
     /// `--offline`: every request is refused before the token is resolved.
     offline: bool,
+    /// This command's release listings, by ref identity: a beta or alpha look-back
+    /// walks the listing the fetch already made, with no second request.
+    listed: Mutex<BTreeMap<String, Vec<ApiRelease>>>,
 }
 
 impl std::fmt::Debug for GithubRest {
@@ -105,6 +109,7 @@ impl GithubRest {
             budget: Mutex::new(Budget::default()),
             gate: Mutex::new(()),
             offline: false,
+            listed: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -191,7 +196,15 @@ impl GithubRest {
         Ok(resp)
     }
 
-    fn list(&self, w: &Wanted, owner: &str, repo: &str, http: &dyn Http) -> Result<ReleaseSet> {
+    /// The repository's [`PER_PAGE`] newest releases (one conditional request), kept for
+    /// the command's look-backs.
+    fn listing(
+        &self,
+        w: &Wanted,
+        owner: &str,
+        repo: &str,
+        http: &dyn Http,
+    ) -> Result<Vec<ApiRelease>> {
         let mut req = self.api_request(&format!(
             "/repos/{owner}/{repo}/releases?per_page={PER_PAGE}"
         ));
@@ -206,6 +219,14 @@ impl GithubRest {
         }
         let body = resp.error_for_status("GitHub's releases API")?.bytes()?;
         let releases: Vec<ApiRelease> = from_json(&body, &w.r#ref)?;
+        if let Ok(mut listed) = self.listed.lock() {
+            listed.insert(w.r#ref.identity(), releases.clone());
+        }
+        Ok(releases)
+    }
+
+    fn list(&self, w: &Wanted, owner: &str, repo: &str, http: &dyn Http) -> Result<ReleaseSet> {
+        let releases = self.listing(w, owner, repo, http)?;
         // No channel helps an empty list: the repository publishes no releases.
         if releases.is_empty() {
             return Err(Error::new(
@@ -356,6 +377,41 @@ impl GithubRestFallback for GithubRest {
         };
         let release = self.api_tagged(w, owner, repo, tag, http)?;
         Ok(release.prerelease || release.draft)
+    }
+
+    fn recent_releases(&self, w: &Wanted, http: &dyn Http) -> Result<Vec<ListedRelease>> {
+        let Ref::GitHub { owner, repo } = &w.r#ref else {
+            return Err(Error::internal(format!("the GitHub API got {}", w.r#ref)));
+        };
+        let kept = self
+            .listed
+            .lock()
+            .ok()
+            .and_then(|listed| listed.get(&w.r#ref.identity()).cloned());
+        let releases = match kept {
+            Some(releases) => releases,
+            None => self.listing(w, owner, repo, http)?,
+        };
+        let when = |r: &ApiRelease| {
+            r.published_at
+                .as_deref()
+                .and_then(|s| s.parse::<Timestamp>().ok())
+        };
+        let mut listed: Vec<&ApiRelease> = releases
+            .iter()
+            .filter(|r| !r.draft && !r.tag_name.is_empty())
+            .collect();
+        // Newest first, as `choose` picks the newest (undated last, in listing order).
+        listed.sort_by_key(|r| std::cmp::Reverse(when(r)));
+        Ok(listed
+            .into_iter()
+            .map(|r| ListedRelease {
+                tag: r.tag_name.clone(),
+                prerelease: r.prerelease,
+                published_at: when(r),
+                release_json: r.assets.iter().any(|a| a.name.eq("release.json")),
+            })
+            .collect())
     }
 }
 

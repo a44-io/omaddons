@@ -4948,10 +4948,11 @@ impl TargetPlanner<'_> {
         .details(json!({ "ref": wanted.r#ref.to_string(), "reason": "not_cached" }))
     }
 
-    /// A GitHub look-back for this client, from `newest` (a tag): only on the stable
-    /// channel, and only on a client a `release.json` can name.
+    /// A GitHub look-back for this client, from `newest` (a tag), on any channel: the
+    /// feed on stable, the REST listing on beta and alpha. Only on a client a
+    /// `release.json` can name.
     fn look_back(&self, wanted: &Wanted, newest: &str) -> Option<Result<crate::sources::LookBack>> {
-        if !matches!(wanted.r#ref, Ref::GitHub { .. }) || wanted.channel != Channel::Stable {
+        if !matches!(wanted.r#ref, Ref::GitHub { .. }) {
             return None;
         }
         let family = self.target.family;

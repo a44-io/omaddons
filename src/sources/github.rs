@@ -43,6 +43,21 @@ pub trait GithubRestFallback: Send + Sync {
 
     /// Whether GitHub marks release `tag` a prerelease (or a draft): one request.
     fn is_prerelease(&self, wanted: &Wanted, tag: &str, http: &dyn Http) -> Result<bool>;
+
+    /// The repository's newest releases as the API lists them, newest first, drafts
+    /// left out: what a beta or alpha look-back walks. The listing this command's fetch
+    /// made is reused, so it costs no request then.
+    fn recent_releases(&self, wanted: &Wanted, http: &dyn Http) -> Result<Vec<ListedRelease>>;
+}
+
+/// One release of a REST listing, for a look-back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedRelease {
+    pub tag: String,
+    pub prerelease: bool,
+    pub published_at: Option<jiff::Timestamp>,
+    /// It has a `release.json` asset.
+    pub release_json: bool,
 }
 
 /// The `gh:` source.
@@ -176,15 +191,30 @@ impl Source for GithubSource {
         let Ref::GitHub { owner, repo } = &wanted.r#ref else {
             return None;
         };
-        if wanted.channel != Channel::Stable || wanted.version.is_some() {
+        if wanted.version.is_some() {
             return None;
         }
-        Some(self.look_back_in(wanted, owner, repo, newest, names_client, http))
+        Some(match wanted.channel {
+            Channel::Stable => self.look_back_in(wanted, owner, repo, newest, names_client, http),
+            Channel::Beta | Channel::Alpha => {
+                let rest = self.rest.as_ref()?;
+                self.look_back_listed(
+                    wanted,
+                    rest.as_ref(),
+                    owner,
+                    repo,
+                    newest,
+                    names_client,
+                    http,
+                )
+            }
+        })
     }
 }
 
 impl GithubSource {
-    /// [`Source::look_back`] for `owner/repo`.
+    /// [`Source::look_back`] for `owner/repo` on the stable channel: through
+    /// `releases.atom`.
     fn look_back_in(
         &self,
         w: &Wanted,
@@ -198,57 +228,25 @@ impl GithubSource {
         let feed = Self::recent_tags(owner, repo, http)?;
         let order: Vec<String> = feed.tags.iter().map(|t| t.tag.clone()).collect();
         let mut ruled_out = Vec::new();
-        // The clients the last releases ruled out declare, and how many in a row did:
-        // [`LOOK_BACK_SAME_TRACK`] of them is a repository with one track, which no
-        // older release will leave. Prerelease names and missing release.json files
-        // neither count nor break the run.
-        let mut track: (Vec<String>, usize) = (Vec::new(), 0);
-        let older = order
+        let older: Vec<Older> = feed
+            .tags
             .iter()
-            .filter(|t| !same_version(t, newest))
-            .take(LOOK_BACK_MAX_RELEASES);
-        for tag in older {
-            if looks_prerelease(tag) {
-                ruled_out.push((tag.clone(), NAMED_PRERELEASE.to_owned()));
-                continue;
-            }
-            // The feed dates each release; `release.json` does not.
-            let published = feed
-                .tags
-                .iter()
-                .find(|t| t.tag == *tag)
-                .and_then(|t| t.updated.as_deref())
-                .and_then(|u| u.parse().ok());
-            let (why, flavors) =
-                match self.read_release(w, &base, tag, published, names_client, http)? {
-                    Read::Found(set) => {
-                        return Ok(LookBack {
-                            found: Some(set),
-                            ruled_out,
-                            order,
-                        });
-                    }
-                    Read::RuledOut(why, flavors) => (why, flavors),
-                };
-            if let Some(flavors) = flavors {
-                track = if track.0 == flavors {
-                    (flavors, track.1 + 1)
-                } else {
-                    (flavors, 1)
-                };
-                if track.1 >= LOOK_BACK_SAME_TRACK {
-                    ruled_out.push((
-                        tag.clone(),
-                        format!(
-                            "{why}, nor did the {} before it (only {}): one track, so the look-back stops",
-                            track.1 - 1,
-                            track.0.join(", ")
-                        ),
-                    ));
-                    break;
-                }
-            }
-            ruled_out.push((tag.clone(), why));
+            .filter(|t| !same_version(&t.tag, newest))
+            .map(|t| Older {
+                tag: t.tag.clone(),
+                // The feed dates each release; `release.json` does not.
+                published: t.updated.as_deref().and_then(|u| u.parse().ok()),
+                prerelease: None,
+                release_json: true,
+                skip: looks_prerelease(&t.tag).then(|| NAMED_PRERELEASE.to_owned()),
+            })
+            .collect();
+        if let Some(set) = self.walk(w, &base, &older, names_client, http, &mut ruled_out)? {
+            return Ok(LookBack {
+                found: Some(set),
+                ruled_out,
+                order,
+            });
         }
         // Every older release the feed holds is named like a prerelease, so it cannot
         // reach this repository's stable releases (VuhDo during an alpha series): probe
@@ -260,7 +258,7 @@ impl GithubSource {
                 .into_iter()
                 .take(LOOK_BACK_MAX_RELEASES)
             {
-                match self.read_release(w, &base, &tag, None, names_client, http)? {
+                match self.read_release(w, &base, &tag, None, None, names_client, http)? {
                     Read::Found(set) => {
                         return Ok(LookBack {
                             found: Some(set),
@@ -281,15 +279,120 @@ impl GithubSource {
         })
     }
 
+    /// [`Source::look_back`] on the beta and alpha channels: through the REST listing
+    /// their fetch already made (no further request), newest first. Prereleases count,
+    /// as these channels admit them, and the listing says which are.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the look-back's request and its REST client"
+    )]
+    fn look_back_listed(
+        &self,
+        w: &Wanted,
+        rest: &dyn GithubRestFallback,
+        owner: &str,
+        repo: &str,
+        newest: &str,
+        names_client: &(dyn Fn(&crate::model::AssetFlavor) -> bool + Sync),
+        http: &dyn Http,
+    ) -> Result<LookBack> {
+        let base = format!("https://github.com/{owner}/{repo}");
+        let listed = rest.recent_releases(w, http)?;
+        let order: Vec<String> = listed.iter().map(|r| r.tag.clone()).collect();
+        let older: Vec<Older> = listed
+            .into_iter()
+            .filter(|r| !same_version(&r.tag, newest))
+            .map(|r| Older {
+                tag: r.tag,
+                published: r.published_at,
+                prerelease: Some(r.prerelease),
+                release_json: r.release_json,
+                skip: None,
+            })
+            .collect();
+        let mut ruled_out = Vec::new();
+        let found = self.walk(w, &base, &older, names_client, http, &mut ruled_out)?;
+        Ok(LookBack {
+            found,
+            ruled_out,
+            order,
+        })
+    }
+
+    /// Reads `older` in order, at most [`LOOK_BACK_MAX_RELEASES`], until one declares a
+    /// build for this client, noting each passed over in `ruled_out`. It stops early on
+    /// a repository with one track: [`LOOK_BACK_SAME_TRACK`] releases in a row declaring
+    /// the same clients, none of them this one. Skipped releases and missing
+    /// `release.json` files neither count nor break the run.
+    fn walk(
+        &self,
+        w: &Wanted,
+        base: &str,
+        older: &[Older],
+        names_client: &(dyn Fn(&crate::model::AssetFlavor) -> bool + Sync),
+        http: &dyn Http,
+        ruled_out: &mut Vec<(String, String)>,
+    ) -> Result<Option<ReleaseSet>> {
+        let mut track: (Vec<String>, usize) = (Vec::new(), 0);
+        for o in older.iter().take(LOOK_BACK_MAX_RELEASES) {
+            if let Some(why) = &o.skip {
+                ruled_out.push((o.tag.clone(), why.clone()));
+                continue;
+            }
+            if !o.release_json {
+                ruled_out.push((o.tag.clone(), "publishes no release.json".to_owned()));
+                continue;
+            }
+            let read = self.read_release(
+                w,
+                base,
+                &o.tag,
+                o.published,
+                o.prerelease,
+                names_client,
+                http,
+            )?;
+            let (why, flavors) = match read {
+                Read::Found(set) => return Ok(Some(set)),
+                Read::RuledOut(why, flavors) => (why, flavors),
+            };
+            if let Some(flavors) = flavors {
+                track = if track.0 == flavors {
+                    (flavors, track.1 + 1)
+                } else {
+                    (flavors, 1)
+                };
+                if track.1 >= LOOK_BACK_SAME_TRACK {
+                    ruled_out.push((
+                        o.tag.clone(),
+                        format!(
+                            "{why}, nor did the {} before it (only {}): one track, so the look-back stops",
+                            track.1 - 1,
+                            track.0.join(", ")
+                        ),
+                    ));
+                    break;
+                }
+            }
+            ruled_out.push((o.tag.clone(), why));
+        }
+        Ok(None)
+    }
+
     /// One older release of a look-back, `tag` of `base`: its `release.json` (github.com,
     /// no REST), and when that declares a build `names_client` accepts, whether GitHub
     /// marks it a prerelease (the one REST request).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one release and what is known of it"
+    )]
     fn read_release(
         &self,
         w: &Wanted,
         base: &str,
         tag: &str,
         published: Option<jiff::Timestamp>,
+        prerelease: Option<bool>,
         names_client: &(dyn Fn(&crate::model::AssetFlavor) -> bool + Sync),
         http: &dyn Http,
     ) -> Result<Read> {
@@ -321,6 +424,17 @@ impl GithubSource {
                 "its release.json declares no build for this client".to_owned(),
                 Some(declared),
             ));
+        }
+        // A REST listing says it already: the beta and alpha channels admit both.
+        if let Some(flagged) = prerelease {
+            for release in &mut set.releases {
+                release.channel = if flagged {
+                    Channel::Beta
+                } else {
+                    Channel::Stable
+                };
+            }
+            return Ok(Read::Found(set));
         }
         let Some(rest) = &self.rest else {
             return Err(Error::new(
@@ -582,6 +696,19 @@ fn prerelease_word(word: &str) -> bool {
 
 /// Why a look-back passes over a tag named like a prerelease.
 const NAMED_PRERELEASE: &str = "named like a prerelease";
+
+/// One older release a look-back may read.
+struct Older {
+    tag: String,
+    published: Option<jiff::Timestamp>,
+    /// GitHub's flag, from a REST listing; `None` from the feed, which does not say,
+    /// so the release found is confirmed through the API.
+    prerelease: Option<bool>,
+    /// It has a `release.json`; the feed cannot tell, so it is read to find out.
+    release_json: bool,
+    /// Passed over without a request, and why (a tag named like a prerelease).
+    skip: Option<String>,
+}
 
 /// One older release a look-back read.
 enum Read {
@@ -1115,6 +1242,10 @@ mod tests {
             }
 
             fn is_prerelease(&self, _: &Wanted, _: &str, _: &dyn Http) -> Result<bool> {
+                unreachable!("no look-back here")
+            }
+
+            fn recent_releases(&self, _: &Wanted, _: &dyn Http) -> Result<Vec<ListedRelease>> {
                 unreachable!("no look-back here")
             }
         }

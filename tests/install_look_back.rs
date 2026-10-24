@@ -12,7 +12,7 @@ mod common;
 use common::home::Home;
 use common::netlog::net_log;
 use serde_json::Value;
-use support::{BCC, MISTS, REF, Rel, TITAN, alpha_series, codes, listed, serve};
+use support::{BCC, MISTS, REF, Rel, TITAN, alpha_series, codes, listed, listing, serve};
 
 #[cfg(test)]
 mod support {
@@ -78,6 +78,36 @@ mod support {
             200,
             &[("x-ratelimit-remaining", "59")],
             Some(&api.to_string()),
+        );
+    }
+
+    /// The REST listing a beta or alpha fetch reads (`releases?per_page=20`): each of
+    /// `releases` (published `minutes` after midnight, prerelease or not) with its
+    /// `release.json` and zip, as [`publish`] serves them.
+    pub fn listing(scenario: &Path, releases: &[(Rel, bool, u32)]) {
+        let mut listed = Vec::new();
+        for &(release, prerelease, minutes) in releases {
+            publish(scenario, release, prerelease);
+            let tag = release.0;
+            let download = format!("{VUHDO}/releases/download/{tag}");
+            listed.push(json!({
+                "tag_name": tag,
+                "prerelease": prerelease,
+                "draft": false,
+                "published_at": format!("2026-10-23T{:02}:{:02}:00Z", minutes / 60, minutes % 60),
+                "assets": [
+                    {"name": "release.json", "browser_download_url": format!("{download}/release.json")},
+                    {"name": format!("VuhDo-{tag}.zip"), "browser_download_url": format!("{download}/VuhDo-{tag}.zip")},
+                ],
+            }));
+        }
+        fixture(
+            scenario,
+            "rest-listing",
+            "https://api.github.com/repos/o/vuhdo/releases?per_page=20",
+            200,
+            &[("x-ratelimit-remaining", "59")],
+            Some(&Value::from(listed).to_string()),
         );
     }
 
@@ -681,6 +711,49 @@ fn a_probed_sibling_updates_by_version() {
     let r = home.run(&["outdated", "-t", "classic"]);
     let envelope = r.expect(0);
     assert_eq!(envelope["data"]["summary"]["current"], 1, "{}", r.context());
+}
+
+/// On the beta channel the look-back walks the REST listing the fetch already made:
+/// VuhDo's five prereleases a build. Mists Classic installs its own prerelease with no
+/// second API request; Classic Era, which none declares, is refused naming each.
+#[test]
+fn the_beta_channel_looks_back_through_its_listing() {
+    let home = Home::new(&["wow_classic", "wow_classic_era"]);
+    listing(
+        &home.http,
+        &[
+            (("v3.219-catac-beta-3", "cata", 40_402), true, 307),
+            (("v3.219-mopc-beta-3", "mists", 50_504), true, 306),
+            (("v3.219-tbcc-beta-3", "bcc", 20_506), true, 305),
+            (("v3.218-mopc", "mists", 50_504), false, 60),
+        ],
+    );
+    let r = home.run(&["install", REF, "-t", "classic", "--channel", "beta"]);
+    let envelope = r.expect(0);
+    assert!(
+        codes(&envelope).contains(&"older_release_for_client".to_owned()),
+        "{}",
+        r.context()
+    );
+    assert_eq!(
+        listed(&home, "classic")["version"],
+        "v3.219-mopc-beta-3",
+        "{}",
+        r.context()
+    );
+    assert_eq!(rest_requests(&home), 1, "{}", net_log(&home).context());
+    assert_eq!(net_log(&home).count("github.com", "releases-atom"), 0);
+
+    let r = home.run(&["install", REF, "-t", "era", "--channel", "beta"]);
+    let error = &r.expect(3)["error"];
+    assert_eq!(error["code"], "no_compatible_release", "{}", r.context());
+    let tried = error["details"]["tried"].to_string();
+    for tag in ["v3.219-mopc-beta-3", "v3.219-tbcc-beta-3", "v3.218-mopc"] {
+        assert!(
+            tried.contains(&format!("{tag}/release.json")),
+            "{tag}: {tried}"
+        );
+    }
 }
 
 /// `--version` and a pasted asset link name one release: no look-back.
