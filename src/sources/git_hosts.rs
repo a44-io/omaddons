@@ -989,9 +989,9 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+    use crate::test_exec::write_executable;
 
     const A: &str = "1111111111111111111111111111111111111111";
     const B: &str = "2222222222222222222222222222222222222222";
@@ -1029,8 +1029,7 @@ mod tests {
     /// A stand-in for git at `<dir>/git` running `script`.
     fn stand_in(dir: &Path, script: &str) -> OsString {
         let fake = dir.join("git");
-        fs::write(&fake, format!("#!/bin/sh\n{script}")).unwrap();
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&fake, &format!("#!/bin/sh\n{script}"));
         fake.into_os_string()
     }
 
@@ -1201,8 +1200,7 @@ mod tests {
         // A script stands in for git and prints the environment it received.
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("git");
-        fs::write(&fake, "#!/bin/sh\nexec env\n").unwrap();
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&fake, "#!/bin/sh\nexec env\n");
         let mut git = runner(ProtocolPolicy::Https, &[]);
         git.program = fake.into_os_string();
         let paths = paths_in(dir.path());
@@ -1376,8 +1374,7 @@ mod tests {
     fn a_slow_git_is_killed_with_its_children() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("git");
-        fs::write(&fake, "#!/bin/sh\nsleep 30 &\nwait\n").unwrap();
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&fake, "#!/bin/sh\nsleep 30 &\nwait\n");
         let mut git = runner(ProtocolPolicy::Https, &[]);
         git.program = fake.into_os_string();
         let started = Instant::now();

@@ -309,10 +309,8 @@ mod tests {
 
     /// A stub `omarchy-bar` at an absolute path: `body` is its shell script, `$2` the id.
     fn stub(dir: &Path, body: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
         let path = dir.join("omarchy-bar");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_exec::write_executable(&path, &format!("#!/bin/sh\n{body}\n"));
         path.to_string_lossy().into_owned()
     }
 
@@ -378,10 +376,8 @@ echo "$2 is on the bar""#,
     fn the_shell_runs_only_when_ping_says_ok() {
         let dir = tempfile::tempdir().unwrap();
         let shell = |body: &str| {
-            use std::os::unix::fs::PermissionsExt;
             let path = dir.path().join("omarchy-shell");
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::test_exec::write_executable(&path, &format!("#!/bin/sh\n{body}\n"));
             path.to_string_lossy().into_owned()
         };
         let ok = shell(r#"[ "$1 $2" = "shell ping" ] && echo ok"#);

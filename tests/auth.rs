@@ -9,6 +9,7 @@ mod common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
+use common::exec::write_executable;
 use common::home::Home;
 use common::http::fixture;
 use common::netlog::net_log;
@@ -26,6 +27,7 @@ mod support {
 
     use serde_json::Value;
 
+    use super::common::exec::write_executable;
     use super::common::home::{Home, Run};
 
     pub fn argv(args: &[&str]) -> Vec<String> {
@@ -54,15 +56,13 @@ mod support {
         let dir = home.env.root().join("fake-bin");
         fs::create_dir_all(&dir).unwrap();
         let gh = dir.join("gh");
-        fs::write(
+        write_executable(
             &gh,
-            format!(
+            &format!(
                 "#!/bin/sh\necho \"$@\" >> \"{}\"\nprintf '%s\\n' '{token}'\n",
                 dir.join("argv.log").display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         dir
     }
 
@@ -253,12 +253,10 @@ fn a_credential_command_never_runs_offline_or_for_set_and_clear() {
     let home = Home::new(&["wow"]);
     let ran = home.env.root().join("cred-ran.log");
     let cred = home.env.root().join("cred");
-    fs::write(
+    write_executable(
         &cred,
-        format!("#!/bin/sh\necho x >> '{}'\necho {TOKEN}\n", ran.display()),
-    )
-    .unwrap();
-    fs::set_permissions(&cred, fs::Permissions::from_mode(0o755)).unwrap();
+        &format!("#!/bin/sh\necho x >> '{}'\necho {TOKEN}\n", ran.display()),
+    );
     fs::create_dir_all(home.env.config().join("omaddons")).unwrap();
     fs::write(
         home.env.config().join("omaddons/config.toml"),

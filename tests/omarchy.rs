@@ -9,10 +9,10 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use common::env::TestEnv;
+use common::exec::write_executable;
 use common::home::{Run, wait};
 use common::pause::Pause;
 use common::privacy::assert_private_all;
@@ -130,8 +130,7 @@ echo "Disabled $1""#
             _ => String::new(),
         };
         let path = self.root().join("bin").join(name);
-        fs::write(&path, format!("#!/bin/sh\n{log}\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&path, &format!("#!/bin/sh\n{log}\n{body}\n"));
     }
 
     fn set(&self, file: &str, value: &str) {

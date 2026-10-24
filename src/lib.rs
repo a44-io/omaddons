@@ -36,3 +36,5 @@ pub mod toc;
 
 #[cfg(test)]
 mod source_scan;
+#[cfg(test)]
+mod test_exec;

@@ -103,16 +103,10 @@ fn a_panic_after_commit_offers_undo() {
 fn a_recovered_panic_prints_one_envelope() {
     let s = Scene::new();
     let cred = s.home.env.root().join("cred");
-    fs::write(
+    crate::common::exec::write_executable(
         &cred,
         "#!/bin/sh\necho ghp_0123456789abcdefghijklmnopqrstuvwxyzAB\n",
-    )
-    .unwrap();
-    fs::set_permissions(
-        &cred,
-        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
-    )
-    .unwrap();
+    );
     fs::create_dir_all(s.home.env.config().join("omaddons")).unwrap();
     fs::write(
         s.home.env.config().join("omaddons/config.toml"),

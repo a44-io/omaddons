@@ -2102,23 +2102,19 @@ fn forcing_over_an_unmanaged_folder_says_the_snapshot_holds_its_only_copy() {
 /// on its hop.
 #[test]
 fn git_and_http_reach_disjoint_hosts() {
-    use std::os::unix::fs::PermissionsExt;
-
     // A stand-in git first on PATH records any run.
     let home = Home::new(&["wow"]);
     let bin = home.env.root().join("bin");
     fs::create_dir_all(&bin).unwrap();
     let ran = home.env.root().join("git-ran");
     let git = bin.join("git");
-    fs::write(
+    common::exec::write_executable(
         &git,
-        format!(
+        &format!(
             "#!/bin/sh\necho \"$@\" >> '{}'\n[ \"$1\" = --version ] && echo 'git version 2.51.0'\nexit 128\n",
             ran.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let path = format!(
         "{}:{}",
         bin.display(),

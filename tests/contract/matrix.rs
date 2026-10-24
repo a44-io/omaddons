@@ -1159,16 +1159,13 @@ fn errors_dismiss() {
 
 #[test]
 fn omarchy() {
-    use std::os::unix::fs::PermissionsExt;
-
     let s = Scene::new();
     let root = s.home.env.root().to_path_buf();
     // `PATH` holds a stub `omarchy-shell` alone: no real Omarchy tool is reachable.
     let bin = root.join("omarchy-bin");
     fs::create_dir_all(&bin).unwrap();
     let shell = bin.join("omarchy-shell");
-    fs::write(&shell, "#!/bin/sh\n").unwrap();
-    fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::common::exec::write_executable(&shell, "#!/bin/sh\n");
     let (bin, omarchy) = (
         bin.display().to_string(),
         root.join("omarchy").display().to_string(),
