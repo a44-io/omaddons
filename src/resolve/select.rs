@@ -166,6 +166,42 @@ fn tier(asset: &Asset, target: &Target) -> Tier {
     }
 }
 
+/// What a file's evidence hints ([`crate::sources::github_rest::evidence_hints`]) say
+/// about a client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameEvidence {
+    /// A hint names this client's family.
+    For,
+    /// Hints name only other clients.
+    Against,
+    /// Nothing to go by: no hints, only a bare `classic` on a classic client, or a
+    /// client of unknown family.
+    Neutral,
+}
+
+/// What `hints` say about a client of `family`. A bare `classic` (`ClassicAny`) is
+/// evidence only against mainline and Forever clients: in packager names it means
+/// Classic Era, so on another classic client it says neither yes nor no.
+pub fn name_evidence(hints: &[FlavorHint], family: Family) -> NameEvidence {
+    if hints.is_empty() || (family.release_flavor().is_none() && !family.is_legacy()) {
+        return NameEvidence::Neutral;
+    }
+    let specific: Vec<FlavorHint> = hints
+        .iter()
+        .copied()
+        .filter(|h| *h != FlavorHint::ClassicAny)
+        .collect();
+    if specific.iter().any(|h| hint_matches(*h, family)) {
+        return NameEvidence::For;
+    }
+    // Only a bare `classic` is left: against mainline and Forever, neutral elsewhere
+    // (legacy 1.12 addons call themselves classic too).
+    if specific.is_empty() && !matches!(family, Family::Mainline | Family::Forever) {
+        return NameEvidence::Neutral;
+    }
+    NameEvidence::Against
+}
+
 /// Whether a file-name flavor guess fits `family`; `ClassicAny` fits every modern
 /// classic family, a legacy version hint only its legacy family, and `unknown` no hint.
 fn hint_matches(hint: FlavorHint, family: Family) -> bool {
@@ -528,6 +564,45 @@ mod tests {
             ["Foo-3.3.5.zip", "Foo-classic.zip", "Foo-mainline.zip"],
             "hints never match legacy"
         );
+    }
+
+    /// What file-name evidence says per client. A bare `classic` (the packager's
+    /// Classic Era suffix) is against retail and Forever only.
+    #[test]
+    fn name_evidence_per_client() {
+        use FlavorHint::*;
+        use NameEvidence::{Against, For, Neutral};
+        let (retail, era, anniversary, mists, forever) = (
+            Family::Mainline,
+            Family::Vanilla,
+            Family::Tbc,
+            Family::Mists,
+            Family::Forever,
+        );
+        let cases: &[(&[FlavorHint], Family, NameEvidence)] = &[
+            (&[], retail, Neutral),
+            (&[Mainline], retail, For),
+            (&[Mainline], era, Against),
+            (&[ClassicAny], retail, Against),
+            (&[ClassicAny], forever, Against),
+            (&[ClassicAny], mists, Neutral),
+            (&[ClassicAny], anniversary, Neutral),
+            (&[ClassicAny], era, Neutral),
+            (&[ClassicAny], Family::VanillaLegacy, Neutral),
+            (&[Cata], mists, Against),
+            (&[Mists], mists, For),
+            (&[Wrath, WrathLegacy], Family::WrathLegacy, For),
+            (&[Wrath, WrathLegacy], retail, Against),
+            (&[Mainline], Family::WrathLegacy, Against),
+            (&[Mainline], Family::Unknown, Neutral),
+        ];
+        for (hints, family, expected) in cases {
+            assert_eq!(
+                name_evidence(hints, *family),
+                *expected,
+                "{hints:?} on {family}"
+            );
+        }
     }
 
     #[test]

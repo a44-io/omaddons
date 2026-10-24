@@ -435,39 +435,77 @@ fn zip_asset(a: &ApiAsset) -> Option<Asset> {
     })
 }
 
+/// The words that name a flavor in a file name, matched whole. The packager's own
+/// suffixes (`-classic`, `-bcc`, `-wrath`, `-cata`, `-mists`, `-titan`, `-forever`;
+/// BigWigsMods/packager `release.sh`) and the names publishers spell out or tag with:
+/// Pawn's `BurningCrusade`, `Cataclysm` and `Pandaria`, VuhDo's `catac` (its tag already
+/// held `-cata`, so the packager added no suffix), `tbcc`, `mopc`, Forever's `camelot`.
+const FLAVOR_WORDS: &[(FlavorHint, &[&str])] = &[
+    (FlavorHint::Mainline, &["mainline", "retail"]),
+    (FlavorHint::Classic, &["vanilla", "era"]),
+    (FlavorHint::Bcc, &["bcc", "tbc", "tbcc", "burningcrusade"]),
+    (FlavorHint::Wrath, &["wrath", "wotlk"]),
+    (FlavorHint::Cata, &["cata", "catac", "cataclysm"]),
+    (FlavorHint::Mists, &["mists", "mop", "mopc", "pandaria"]),
+    (FlavorHint::Titan, &["titan"]),
+    (FlavorHint::Forever, &["forever", "camelot"]),
+];
+
+/// Legacy client versions a file name may carry, as `version_in` finds them.
+const LEGACY_VERSIONS: &[(FlavorHint, &str)] = &[
+    (FlavorHint::VanillaLegacy, "1.12"),
+    (FlavorHint::TbcLegacy, "2.4.3"),
+    (FlavorHint::WrathLegacy, "3.3.5"),
+    (FlavorHint::CataLegacy, "4.3.4"),
+    (FlavorHint::MistsLegacy, "5.4.8"),
+];
+
 /// Flavor hints and the nolib flag from an asset's file name. Words are matched whole
 /// (`Foo-classic`, `Foo_tbc`, `Foo-nolib`); client versions (`3.3.5`, `335`, `1.12`) map
 /// to legacy families. `classic` alone, without a more specific word, is any classic.
 pub fn name_hints(file_name: &str) -> (Vec<FlavorHint>, bool) {
-    let lower = file_name.to_ascii_lowercase();
-    let stem = lower.strip_suffix(".zip").unwrap_or(&lower);
-    let words: Vec<&str> = stem
+    hints_of(file_name, &[])
+}
+
+/// The hints of `file_name` that are evidence of which clients it was built for: its
+/// [`name_hints`], leaving out every word (and legacy version) that is also part of
+/// one of the addon's `own_names` (its top-level folders, its repository or project).
+/// `Foo_Classic-1.0.zip` shipping `Foo_Classic`, or `Titan-Panel-9.3.5.zip` shipping
+/// `Titan`, says nothing about the client. Ranking keeps the raw hints.
+pub fn evidence_hints(file_name: &str, own_names: &[&str]) -> Vec<FlavorHint> {
+    let own: Vec<String> = own_names.iter().map(|n| n.to_ascii_lowercase()).collect();
+    hints_of(file_name, &own).0
+}
+
+/// The words of a lowercase name, split as file names are.
+fn words_of(lower: &str) -> impl Iterator<Item = &str> {
+    lower
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|w| !w.is_empty())
-        .collect();
+}
+
+/// [`name_hints`] of `file_name`, ignoring the words and versions found in `own`
+/// (lowercase names).
+fn hints_of(file_name: &str, own: &[String]) -> (Vec<FlavorHint>, bool) {
+    let lower = file_name.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".zip").unwrap_or(&lower);
+    let own_words: Vec<&str> = own.iter().flat_map(|n| words_of(n)).collect();
+    let words: Vec<&str> = words_of(stem).filter(|w| !own_words.contains(w)).collect();
     let has = |names: &[&str]| words.iter().any(|w| names.contains(w));
+    let version = |v: &str| version_in(stem, &[v]) && !own.iter().any(|n| version_in(n, &[v]));
     let mut hints = Vec::new();
     let mut add = |hint: FlavorHint, yes: bool| {
         if yes && !hints.contains(&hint) {
             hints.push(hint);
         }
     };
-    add(FlavorHint::Mainline, has(&["mainline", "retail"]));
-    add(FlavorHint::Classic, has(&["vanilla", "era"]));
-    add(FlavorHint::Bcc, has(&["bcc", "tbc"]));
-    add(FlavorHint::Wrath, has(&["wrath", "wotlk"]));
-    add(FlavorHint::Cata, has(&["cata"]));
-    add(FlavorHint::Mists, has(&["mists", "mop"]));
-    add(FlavorHint::Titan, has(&["titan"]));
-    add(FlavorHint::Forever, has(&["forever"]));
-    add(FlavorHint::VanillaLegacy, version_in(stem, &["1.12"]));
-    add(FlavorHint::TbcLegacy, version_in(stem, &["2.4.3"]));
-    add(
-        FlavorHint::WrathLegacy,
-        version_in(stem, &["3.3.5"]) || has(&["335", "335a"]),
-    );
-    add(FlavorHint::CataLegacy, version_in(stem, &["4.3.4"]));
-    add(FlavorHint::MistsLegacy, version_in(stem, &["5.4.8"]));
+    for (hint, names) in FLAVOR_WORDS {
+        add(*hint, has(names));
+    }
+    for (hint, v) in LEGACY_VERSIONS {
+        let word = *hint == FlavorHint::WrathLegacy && has(&["335", "335a"]);
+        add(*hint, version(v) || word);
+    }
     let specific_classic = hints.iter().any(|h| {
         matches!(
             h,
@@ -682,6 +720,59 @@ mod tests {
         }
     }
 
+    /// The flavor words publishers spell out or tag with, from real per-flavor releases
+    /// (Pawn, HearKitty, VuhDo), matched whole: a project named with one inside a
+    /// longer word gives none.
+    #[test]
+    fn spelled_out_and_tagged_flavor_words() {
+        use FlavorHint::*;
+        #[rustfmt::skip]
+        let cases: &[(&str, &[FlavorHint])] = &[
+            ("VuhDo-v3.218-catac.zip",          &[Cata]),
+            ("Pawn-2.9.0-Pandaria.zip",         &[Mists]),
+            ("Pawn-2.9.0-BurningCrusade.zip",   &[Bcc]),
+            ("Pawn-2.9.0-Cataclysm.zip",        &[Cata]),
+            ("Foo-mopc.zip",                    &[Mists]),
+            ("Foo-tbcc.zip",                    &[Bcc]),
+            ("Foo-camelot.zip",                 &[Forever]),
+            ("ClassicCastbars-1.0.zip",         &[]),
+            ("TitanPanel-9.3.5.zip",            &[]),
+        ];
+        for (name, hints) in cases {
+            assert_eq!(name_hints(name), (hints.to_vec(), false), "{name}");
+        }
+    }
+
+    /// Evidence leaves out the words of the addon's own names: its folders, its
+    /// repository or project.
+    #[test]
+    fn evidence_leaves_out_the_addons_own_names() {
+        assert_eq!(evidence_hints("Foo_Classic-1.0.zip", &["Foo_Classic"]), []);
+        assert_eq!(evidence_hints("Titan-Panel-9.3.5.zip", &["Titan"]), []);
+        assert_eq!(
+            evidence_hints("classic-foo-1.0.zip", &["classic-foo", "ClassicFoo"]),
+            []
+        );
+        assert_eq!(
+            evidence_hints("Foo-1.0-retail.zip", &["Foo"]),
+            [FlavorHint::Mainline]
+        );
+        assert_eq!(
+            evidence_hints("Foo_Classic-1.0-tbc.zip", &["Foo_Classic"]),
+            [FlavorHint::Bcc],
+            "the folder's word goes, the file's own flavor stays"
+        );
+        assert_eq!(
+            evidence_hints("ElvUI-3.3.5.zip", &["ElvUI"]),
+            [FlavorHint::WrathLegacy]
+        );
+        assert_eq!(
+            evidence_hints("Foo-3.3.5-1.0.zip", &["Foo-3.3.5"]),
+            [],
+            "a version in the addon's own name"
+        );
+    }
+
     #[test]
     fn only_zips_become_candidates_with_their_digests() {
         let digest = format!("sha256:{}", "AB".repeat(32));
@@ -740,6 +831,7 @@ mod tests {
             move |name: &str| {
                 pairs
                     .iter()
+                    // ubs:ignore — comparing variable names, not secrets
                     .find(|(k, _)| *k == name)
                     .map(|(_, v)| (*v).to_owned())
             }
@@ -783,5 +875,41 @@ mod tests {
         fn any_name_gives_hints(name in ".{0,64}") {
             let _ = name_hints(&name);
         }
+
+        /// A word of the addon's own folder names, added to its file name, never adds
+        /// evidence.
+        #[test]
+        fn a_folder_word_never_adds_evidence(
+            base in prop::collection::vec(word(), 1..4),
+            folder in prop::collection::vec(word(), 1..3),
+            pick in any::<prop::sample::Index>(),
+        ) {
+            let folder = folder.join("_");
+            let added = pick.get(&folder.split('_').collect::<Vec<_>>()).to_owned();
+            let name = format!("{}.zip", base.join("-"));
+            let with = format!("{}-{added}.zip", base.join("-"));
+            let before = evidence_hints(&name, &[&folder]);
+            let after = evidence_hints(&with, &[&folder]);
+            prop_assert!(
+                after.iter().all(|h| before.contains(h)),
+                "{name} {before:?} -> {with} {after:?} (folder {folder})"
+            );
+        }
+    }
+
+    /// File-name words: flavor words, version-like numbers and plain names.
+    fn word() -> impl Strategy<Value = String> {
+        prop_oneof![
+            prop::sample::select(
+                FLAVOR_WORDS
+                    .iter()
+                    .flat_map(|(_, w)| w.iter())
+                    .chain(&["classic", "nolib", "335", "335a", "foo", "panel"])
+                    .map(|w| (*w).to_owned())
+                    .collect::<Vec<_>>()
+            ),
+            "[a-z]{1,8}",
+            "[0-9]{1,3}",
+        ]
     }
 }
