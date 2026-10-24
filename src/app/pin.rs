@@ -19,7 +19,7 @@ use super::world::{World, names_addon};
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::engine::edit::RecordEdit;
-use crate::engine::plan::{PinIntent, RequestedChange};
+use crate::engine::plan::{AnyFlavorIntent, PinIntent, RequestedChange};
 use crate::engine::{TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{AddonRecord, Ref, RunId, TxId, TxKind};
@@ -203,6 +203,7 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
                 blob_sha256: None,
                 asset: None,
                 revision: None,
+                any_flavor: AnyFlavorIntent::Keep,
             }),
         };
         match change {

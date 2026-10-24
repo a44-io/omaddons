@@ -116,6 +116,8 @@ pub struct InstalledInfo {
     pub required_by: Vec<String>,
     /// A dependency nothing requires any more.
     pub orphan: bool,
+    /// Installed under `--any-flavor` on this client.
+    pub any_flavor: bool,
     pub folders: Vec<FolderName>,
     /// The release's folders this client does not load, left out of the install, with
     /// why (as `folders.skipped` showed them).
@@ -289,9 +291,14 @@ impl Outcome for InfoOutcome {
             } else {
                 String::new()
             };
+            let any_flavor = if i.any_flavor {
+                " · any flavor (--any-flavor)"
+            } else {
+                ""
+            };
             writeln!(
                 w,
-                "  {}: {} ({confidence}, {channel}) installed {}{drift}{dependency}",
+                "  {}: {} ({confidence}, {channel}) installed {}{drift}{dependency}{any_flavor}",
                 i.target.id,
                 i.version,
                 super::history::local_time(i.installed_at)
@@ -453,6 +460,7 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
                 reason: a.reason,
                 required_by: a.required_by.clone(),
                 orphan: a.is_orphan(),
+                any_flavor: a.any_flavor,
                 folders: a.folders.clone(),
                 left_out: a.left_out.clone(),
                 drift,

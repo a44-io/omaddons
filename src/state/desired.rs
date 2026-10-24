@@ -20,7 +20,8 @@
 //!
 //! A string is a name or a ref, read the way `install` reads its arguments. A table has
 //! `name` (unless `ref` is given), `ref`, `channel` (absent is `stable`, whatever
-//! `default_channel` says), `version`, `pinned`, `dependency`, `sha256` and `revision`.
+//! `default_channel` says), `version`, `pinned`, `dependency`, `sha256`, `revision` and
+//! `any_flavor`.
 //!
 //! [`parse`] is pure: no I/O, registry or catalog. Unknown keys warn, bad values are
 //! `desired_state_invalid` with the line, and names and refs are resolved per target later
@@ -95,6 +96,9 @@ pub struct Entry {
     /// The release's source revision (WowAce: the tag's revision), installed with its
     /// `version`, so a locked install fetches exactly that tree.
     pub revision: Option<u32>,
+    /// `install --any-flavor` on this client: builds the publisher did not make for it
+    /// install anyway.
+    pub any_flavor: bool,
     /// Its line in the file (1-based); 0 when it was not read from one.
     pub line: usize,
 }
@@ -111,6 +115,7 @@ impl Entry {
             dependency: false,
             sha256: None,
             revision: None,
+            any_flavor: false,
             line: 0,
         }
     }
@@ -488,6 +493,7 @@ impl Parser<'_> {
                     entry.sha256 = Some(hash);
                 }
                 "revision" => entry.revision = Some(self.revision(v, &at)?),
+                "any_flavor" => entry.any_flavor = self.boolean(v, &at)?,
                 _ => self.unknown_key(key, &format!("an [[{label}]] table")),
             }
         }
@@ -706,6 +712,9 @@ fn render_section(out: &mut String, header: &str, section: &Section) {
         }
         if let Some(revision) = e.revision {
             line("revision", revision.to_string());
+        }
+        if e.any_flavor {
+            line("any_flavor", toml::Value::Boolean(true).to_string());
         }
     }
 }
@@ -1123,6 +1132,28 @@ addons = ["DBM"]
         assert!(!rendered.contains("pinned") && !rendered.contains("dependency"));
     }
 
+    /// `any_flavor = true` reads on a table entry and renders back unchanged; absent, it
+    /// is false and not written.
+    #[test]
+    fn any_flavor_round_trips_on_a_table_entry() {
+        let text = format!(
+            "{HEADER}\nschema_version = \"1.0\"\n\n[[family.mists.addon]]\nname = \"Foo\"\nany_flavor = true\n"
+        );
+        let (state, warnings) = ok(&text);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let entry = &state.families[&Family::Mists].entries[0];
+        assert!(entry.any_flavor);
+        assert_eq!(render(&state), text);
+        assert!(
+            !ok(EXAMPLE)
+                .0
+                .families
+                .values()
+                .flat_map(|s| &s.entries)
+                .any(|e| e.any_flavor)
+        );
+    }
+
     fn entry_strategy() -> impl Strategy<Value = Entry> {
         (
             proptest::option::of("\\PC{1,12}"),
@@ -1137,22 +1168,26 @@ addons = ["DBM"]
             any::<bool>(),
             proptest::option::of("[0-9a-f]{64}"),
             proptest::option::of(1u32..),
+            any::<bool>(),
         )
             .prop_filter("a name or a ref", |(n, r, ..)| {
                 n.as_ref().is_some_and(|n| !n.trim().is_empty())
                     || r.as_ref().is_some_and(|r| !r.trim().is_empty())
             })
             .prop_map(
-                |(name, r, channel, version, pinned, dependency, sha256, revision)| Entry {
-                    name: name.filter(|n| !n.trim().is_empty()),
-                    r#ref: r,
-                    channel,
-                    version: version.filter(|v| !v.trim().is_empty()),
-                    pinned,
-                    dependency,
-                    sha256,
-                    revision,
-                    line: 0,
+                |(name, r, channel, version, pinned, dependency, sha256, revision, any_flavor)| {
+                    Entry {
+                        name: name.filter(|n| !n.trim().is_empty()),
+                        r#ref: r,
+                        channel,
+                        version: version.filter(|v| !v.trim().is_empty()),
+                        pinned,
+                        dependency,
+                        sha256,
+                        revision,
+                        any_flavor,
+                        line: 0,
+                    }
                 },
             )
     }

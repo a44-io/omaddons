@@ -1654,6 +1654,7 @@ mod tests {
             blob_sha256: None,
             asset: None,
             revision: None,
+            any_flavor: crate::engine::plan::AnyFlavorIntent::Keep,
         };
         let done = scene.run(vec![change]).unwrap();
         assert!(done.failures.is_empty(), "{:?}", done.failures);
@@ -1699,6 +1700,7 @@ mod tests {
             blob_sha256: None,
             asset: None,
             revision: None,
+            any_flavor: crate::engine::plan::AnyFlavorIntent::Keep,
         };
         let done = scene.run(vec![change]).unwrap();
         assert_eq!(done.failures.len(), 1, "{:?}", done.failures);

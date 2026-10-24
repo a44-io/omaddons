@@ -48,6 +48,7 @@ mod support {
             blob_sha256: None,
             revision: None,
             left_out: Vec::new(),
+            any_flavor: false,
         }
     }
 

@@ -29,6 +29,7 @@ expression: s.stable(&c.envelope)
       {
         "addons": [
           {
+            "any_flavor": false,
             "channel": "stable",
             "folders": 1,
             "latest": {

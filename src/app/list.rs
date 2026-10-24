@@ -89,6 +89,8 @@ pub struct ListAddon {
     pub required_by: Vec<String>,
     /// A dependency nothing requires any more.
     pub orphan: bool,
+    /// Installed under `--any-flavor` on this client.
+    pub any_flavor: bool,
     /// The newest release the release memo knows, as `outdated` judges it (no request).
     pub latest: Latest,
     /// A count; with `-v` the folder names.
@@ -309,6 +311,7 @@ fn list_target(
                 reason: a.reason,
                 required_by: a.required_by.clone(),
                 orphan: a.is_orphan(),
+                any_flavor: a.any_flavor,
                 latest: latest(a),
                 folders: if verbose {
                     Folders::Names(a.folders.iter().map(|f| f.as_str().to_owned()).collect())
@@ -435,6 +438,9 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
             let mut flags = vec![wire(&a.channel)];
             if a.pinned {
                 flags.push("pinned".into());
+            }
+            if a.any_flavor {
+                flags.push(style.warn("any-flavor"));
             }
             if a.orphan {
                 flags.push(style.warn("orphan"));

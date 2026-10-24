@@ -265,6 +265,7 @@ pub fn install_change(
         blob_sha256: None,
         asset: None,
         revision: None,
+        any_flavor: super::plan::AnyFlavorIntent::Keep,
     }
 }
 
@@ -557,6 +558,7 @@ impl TxScene {
             blob_sha256: None,
             revision: None,
             left_out: Vec::new(),
+            any_flavor: false,
         };
         let spec = super::edit::AdoptSpec {
             record,

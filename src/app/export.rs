@@ -116,9 +116,9 @@ struct Exported {
 #[derive(Debug, Clone)]
 struct Item {
     entry: Entry,
-    /// The ref's identity, channel, pin, written version and revision: equal items are
-    /// one entry.
-    key: (String, Channel, bool, Option<String>, Option<u32>),
+    /// The ref's identity, channel, pin, written version, revision and `any_flavor`:
+    /// equal items are one entry.
+    key: (String, Channel, bool, Option<String>, Option<u32>, bool),
     dependency: bool,
     required_by: Vec<String>,
 }
@@ -372,6 +372,7 @@ fn item(a: &AddonRecord, blob_exists: &dyn Fn(&str) -> bool) -> Item {
             a.pinned,
             version.clone(),
             revision,
+            a.any_flavor,
         ),
         entry: Entry {
             name: Some(a.name.clone()),
@@ -382,6 +383,7 @@ fn item(a: &AddonRecord, blob_exists: &dyn Fn(&str) -> bool) -> Item {
             dependency,
             sha256: a.blob_sha256.clone().filter(|sha| blob_exists(sha)),
             revision,
+            any_flavor: a.any_flavor,
             line: 0,
         },
         dependency,
@@ -527,6 +529,7 @@ mod tests {
             blob_sha256: None,
             revision: None,
             left_out: Vec::new(),
+            any_flavor: false,
         }
     }
 

@@ -1714,6 +1714,7 @@ mod engine_api {
             blob_sha256: None,
             asset: None,
             revision: None,
+            any_flavor: omaddons::engine::plan::AnyFlavorIntent::Keep,
         }
     }
 

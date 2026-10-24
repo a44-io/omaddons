@@ -227,6 +227,10 @@ pub struct StatusTarget {
     /// Their names, sorted ignoring case, for the `remove_orphans` recommendation.
     #[serde(skip)]
     pub orphan_names: Vec<String>,
+    /// Addons installed here under `--any-flavor` (builds their publisher did not make
+    /// for this client), sorted ignoring case. A standing choice, never attention, so
+    /// `status --check` stays a health check.
+    pub any_flavor: Vec<String>,
     pub attention: Vec<Attention>,
     /// The attention as ranked findings (M3-D37): vision D20 failure-mode ids, P0–P3
     /// severities and a remediation each. `--cached` checks drift by presence only, so a
@@ -423,6 +427,13 @@ impl Outcome for StatusOutcome {
             }
             if let Some(backups) = &t.backups {
                 writeln!(w, "{}", backups_status::human_line(backups, now))?;
+            }
+            if !t.any_flavor.is_empty() {
+                writeln!(
+                    w,
+                    "  any flavor: {} (builds not made for this client, by --any-flavor)",
+                    t.any_flavor.join(", ")
+                )?;
             }
         }
         for line in &self.drift_lines {
@@ -812,6 +823,10 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             adoptable,
             orphans: orphan_names.len(),
             orphan_names,
+            any_flavor: record
+                .as_ref()
+                .map(|l| any_flavor(&l.value))
+                .unwrap_or_default(),
             attention,
             issues: Vec::new(),
             errors,
@@ -855,6 +870,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             adoptable: 0,
             orphans: 0,
             orphan_names: Vec::new(),
+            any_flavor: any_flavor(&record),
             attention,
             issues: Vec::new(),
             // Nothing to read: the directory is gone.
@@ -1358,6 +1374,12 @@ fn orphans(record: &TargetRecord) -> Vec<String> {
     crate::engine::edit::sorted_names(names.map(|a| a.name.clone()))
 }
 
+/// The addons installed under `--any-flavor`, sorted ignoring case.
+fn any_flavor(record: &TargetRecord) -> Vec<String> {
+    let names = record.addons.values().filter(|a| a.any_flavor);
+    crate::engine::edit::sorted_names(names.map(|a| a.name.clone()))
+}
+
 fn counts(record: &TargetRecord) -> AddonCounts {
     AddonCounts {
         total: record.addons.len(),
@@ -1427,6 +1449,7 @@ pub(crate) fn test_target(
         adoptable: 0,
         orphans: 0,
         orphan_names: Vec::new(),
+        any_flavor: Vec::new(),
         attention: attention.to_vec(),
         issues: Vec::new(),
         errors: TargetErrors::uncaptured(CoverageState::Complete),

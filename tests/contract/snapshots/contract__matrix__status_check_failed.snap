@@ -68,6 +68,7 @@ expression: s.stable(&c.envelope)
           "total": 0
         },
         "adoptable": 0,
+        "any_flavor": [],
         "attention": [],
         "backups": {
           "auto": {
@@ -141,6 +142,7 @@ expression: s.stable(&c.envelope)
           "total": 1
         },
         "adoptable": 0,
+        "any_flavor": [],
         "attention": [
           "journal_pending"
         ],

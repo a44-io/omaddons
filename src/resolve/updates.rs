@@ -267,7 +267,8 @@ pub fn evaluate(
     let verdict =
         |c: &Candidate| facts.verdict(&c.release_id, &c.asset.filename, rules, target.interface);
     let verdicts: Vec<_> = candidates.iter().map(verdict).collect();
-    if verdicts.iter().all(|v| v.is_some_and(|v| !v.loads)) {
+    // Facts judge by the client's own rules; `--any-flavor` installs what they refuse.
+    if !record.any_flavor && verdicts.iter().all(|v| v.is_some_and(|v| !v.loads)) {
         return UpdateStatus::Blocked {
             latest,
             reason: BlockedReason::VerifiedNotLoading,
@@ -525,6 +526,7 @@ mod tests {
             blob_sha256: None,
             revision: None,
             left_out: Vec::new(),
+            any_flavor: false,
         }
     }
 

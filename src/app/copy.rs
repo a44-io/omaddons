@@ -22,7 +22,7 @@ use super::world::{World, names_addon};
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::resolve_one_in;
-use crate::engine::plan::{PinIntent, RequestedChange};
+use crate::engine::plan::{AnyFlavorIntent, PinIntent, RequestedChange};
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{AddonReason, AddonRecord, Ref, RunId, TxId, TxKind};
@@ -253,6 +253,8 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             blob_sha256: None,
             asset: None,
             revision: None,
+            // A per-client decision: never copied.
+            any_flavor: AnyFlavorIntent::Keep,
         });
         requested.push(ItemRequest {
             request: s.request.clone(),

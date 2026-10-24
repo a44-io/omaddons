@@ -21,7 +21,7 @@ use super::outcome::{
 use super::world::{World, names_addon};
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
-use crate::engine::plan::{PinIntent, RequestedChange, addon_pinned};
+use crate::engine::plan::{AnyFlavorIntent, PinIntent, RequestedChange, addon_pinned};
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{AddonRecord, Channel, Ref, RunId, TxId, TxKind};
@@ -244,6 +244,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
                 blob_sha256: None,
                 asset: None,
                 revision: None,
+                any_flavor: AnyFlavorIntent::Keep,
             })
         } else if let Some(error) = unanswered.get(&(a.r#ref.clone(), a.channel)) {
             pushed.push((target_ref, failed(s, ItemError::from(error))));

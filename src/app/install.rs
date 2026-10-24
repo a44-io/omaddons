@@ -29,8 +29,8 @@ use crate::discover::DiscoveredTarget;
 use crate::discover::registry::{resolve_one_in, with_target};
 use crate::engine::edit::EditField;
 use crate::engine::plan::{
-    ChangeKind, FolderSummary, PinIntent, PlanFailure, RequestedChange, TargetPlan, Unresolved,
-    UnresolvedReason,
+    AnyFlavorIntent, ChangeKind, FolderSummary, PinIntent, PlanFailure, RequestedChange,
+    TargetPlan, Unresolved, UnresolvedReason,
 };
 use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
@@ -81,6 +81,13 @@ pub struct InstallArgs {
     /// Fetch every release from its source, never from remembered metadata
     #[arg(long)]
     pub refresh: bool,
+    /// On this client, install builds the publisher did not make for it (kept by every
+    /// later update and sync until --no-any-flavor)
+    #[arg(long, conflicts_with = "no_any_flavor")]
+    pub any_flavor: bool,
+    /// Clear --any-flavor for these addons on this client
+    #[arg(long)]
+    pub no_any_flavor: bool,
 }
 
 /// `install`'s data.
@@ -504,6 +511,13 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             // A pasted release-asset link names its one asset.
             asset: p.asset_hint.clone(),
             revision: None,
+            any_flavor: if args.any_flavor {
+                AnyFlavorIntent::Set
+            } else if args.no_any_flavor {
+                AnyFlavorIntent::Clear
+            } else {
+                AnyFlavorIntent::Keep
+            },
         }
     };
     let parsed: Vec<&ParsedRef> = items

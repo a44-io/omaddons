@@ -26,7 +26,7 @@ use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::engine::edit::RecordEdit;
-use crate::engine::plan::{PinIntent, RequestedChange};
+use crate::engine::plan::{AnyFlavorIntent, PinIntent, RequestedChange};
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::model::{AddonReason, AddonRecord, Ref, RunId, Target, TxId, TxKind};
@@ -161,6 +161,13 @@ pub fn diff<'s, 'r>(
                     .values()
                     .find(|a| a.r#ref.identity() == w.r#ref.identity())
             });
+            // The entry's `any_flavor` against the record: set or cleared to match.
+            let any_flavor = match installed {
+                Some(a) if a.any_flavor == e.any_flavor => AnyFlavorIntent::Keep,
+                _ if e.any_flavor => AnyFlavorIntent::Set,
+                Some(_) => AnyFlavorIntent::Clear,
+                None => AnyFlavorIntent::Keep,
+            };
             let install = |r#ref: Ref, name: Option<String>, version: Option<String>, pin| {
                 let blob_sha256 = e.sha256.clone().filter(|_| locked && version.is_some());
                 // The recorded revision goes with the recorded version.
@@ -178,6 +185,7 @@ pub fn diff<'s, 'r>(
                     blob_sha256,
                     asset: None,
                     revision,
+                    any_flavor,
                 })
             };
             // The version an install takes: pinned ones always, every one when locked.
@@ -217,10 +225,19 @@ pub fn diff<'s, 'r>(
                     } else if e.channel != a.channel {
                         let (r, name) = again();
                         install(r, name, pinned_version(), pin)
+                    } else if e.pinned != a.pinned && any_flavor != AnyFlavorIntent::Keep {
+                        // Both settings at once: an install that keeps its release.
+                        let (r, name) = again();
+                        install(r, name, None, pin)
                     } else if e.pinned != a.pinned {
                         Some(RequestedChange::Edit {
                             addon: a.name.clone(),
                             edit: RecordEdit::SetPinned(e.pinned),
+                        })
+                    } else if any_flavor != AnyFlavorIntent::Keep {
+                        Some(RequestedChange::Edit {
+                            addon: a.name.clone(),
+                            edit: RecordEdit::SetAnyFlavor(e.any_flavor),
                         })
                     } else {
                         None
@@ -888,6 +905,7 @@ mod tests {
                 blob_sha256: None,
                 revision: None,
                 left_out: Vec::new(),
+                any_flavor: false,
             };
             record.addons.insert(TargetRecord::addon_key(name), a);
         }

@@ -262,6 +262,9 @@ warning_codes! {
     /// An archive's folder built for other clients only was left out of an install
     /// whose addon is built for this client.
     FolderLeftOut               = "folder_left_out";
+    /// An addon installed under `--any-flavor` although its publisher labelled the file
+    /// for other clients, or its folders target other clients; the message names what.
+    AnyFlavor                   = "any_flavor";
     MissingDependency           = "missing_dependency";
     TocCommaOnLegacy            = "toc_comma_on_legacy";
     ClientNotLaunchedSincePatch = "client_not_launched_since_patch";
@@ -838,7 +841,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 50);
+        assert_eq!(WarningCode::ALL.len(), 51);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

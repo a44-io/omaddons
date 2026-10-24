@@ -603,6 +603,12 @@ pub struct AddonRecord {
     /// module after the run's output is gone. Every install or update replaces it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left_out: Vec<LeftOutFolder>,
+    /// `install --any-flavor`: on this client, builds its publisher did not make for it
+    /// install anyway (evidence against is ignored, and off-range interfaces install as
+    /// out of date), until `--no-any-flavor`. Kept by every install, update and sync,
+    /// like the channel; never by a dependency of it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub any_flavor: bool,
 }
 
 /// A folder of an addon's release that an install left out, as `folders.skipped`
@@ -1769,6 +1775,7 @@ mod tests {
             blob_sha256: None,
             revision: None,
             left_out: Vec::new(),
+            any_flavor: false,
         }
     }
 

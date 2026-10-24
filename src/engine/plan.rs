@@ -130,6 +130,8 @@ pub enum RequestedChange {
         /// With `version`: the release's source revision the desired state recorded
         /// (WowAce), so exactly that tree is installed, whatever the tag says now.
         revision: Option<u32>,
+        /// `--any-flavor` / `--no-any-flavor`, or a desired-state entry's `any_flavor`.
+        any_flavor: AnyFlavorIntent,
     },
     Remove {
         addon: String,
@@ -162,6 +164,29 @@ pub enum PinIntent {
     Unpin,
 }
 
+/// What a change does to an installed addon's `--any-flavor` setting
+/// ([`AddonRecord::any_flavor`]): kept as recorded unless a request sets or clears it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AnyFlavorIntent {
+    /// The recorded setting stays; a new addon has none.
+    #[default]
+    Keep,
+    Set,
+    Clear,
+}
+
+impl AnyFlavorIntent {
+    /// Whether an install under this intent judges builds with the setting, given the
+    /// installed record.
+    pub fn applies(self, existing: Option<&AddonRecord>) -> bool {
+        match self {
+            Self::Keep => existing.is_some_and(|e| e.any_flavor),
+            Self::Set => true,
+            Self::Clear => false,
+        }
+    }
+}
+
 /// The intent of an install, kept on its work so that [`carry_over`] runs again under
 /// the lock against the record as it is then: a pin committed between planning and the
 /// lock survives.
@@ -186,6 +211,8 @@ pub struct InstallIntent {
     /// The one asset to install, by file name (a pasted release-asset link): never
     /// another asset of the release.
     pub asset: Option<String>,
+    /// `--any-flavor` / `--no-any-flavor`; the resolver's installs always `Keep`.
+    pub any_flavor: AnyFlavorIntent,
 }
 
 impl InstallIntent {
@@ -210,6 +237,7 @@ impl InstallIntent {
             floor_interface: None,
             reinstall_of: None,
             asset: None,
+            any_flavor: AnyFlavorIntent::Keep,
         }
     }
 
@@ -223,7 +251,21 @@ impl InstallIntent {
     /// Leaves the pinned `existing` where it is: no version moves it, and nothing asks
     /// for a reinstall.
     pub fn pinned_noop(&self, existing: &AddonRecord) -> bool {
-        existing.pinned && self.pin == PinIntent::Keep && self.version.is_none() && !self.reinstall
+        existing.pinned
+            && self.pin == PinIntent::Keep
+            && self.version.is_none()
+            && !self.reinstall
+            && self.any_flavor == AnyFlavorIntent::Keep
+    }
+
+    /// Sets or clears `--any-flavor` on the pinned `existing` without moving it: its
+    /// release stays, and only the record changes.
+    pub fn pinned_setting_only(&self, existing: &AddonRecord) -> bool {
+        existing.pinned
+            && self.pin == PinIntent::Keep
+            && self.version.is_none()
+            && !self.reinstall
+            && self.any_flavor != AnyFlavorIntent::Keep
     }
 
     /// Never selects another release for an installed addon: a pin intent without a
@@ -240,6 +282,7 @@ impl InstallIntent {
 /// | Field | New addon | Installed, user request | Installed, resolver |
 /// |---|---|---|---|
 /// | `pinned` | `Pin` | `Pin` true, `Unpin` false, `Keep` as recorded | as recorded |
+/// | `any_flavor` | `Set` | `Set` true, `Clear` false, `Keep` as recorded | as recorded |
 /// | `channel` | as passed | as passed | as recorded |
 /// | `reason` | as passed | as passed | as recorded |
 /// | `required_by` | additions | recorded ∪ additions − removals | recorded ∪ additions − removals |
@@ -263,6 +306,7 @@ pub fn carry_over(
         .into_iter()
         .filter(|n| !removed.contains(&TargetRecord::addon_key(n)))
         .collect();
+    record.any_flavor = intent.any_flavor.applies(existing);
     match existing {
         None => {
             record.pinned = matches!(intent.pin, PinIntent::Pin);
@@ -275,6 +319,7 @@ pub fn carry_over(
                 record.pinned = existing.pinned;
                 record.channel = existing.channel;
                 record.reason = existing.reason;
+                record.any_flavor = existing.any_flavor;
             } else {
                 record.pinned = match intent.pin {
                     PinIntent::Keep => existing.pinned,
@@ -298,7 +343,7 @@ pub fn record_differences(existing: &AddonRecord, carried: &AddonRecord) -> Vec<
         .filter(|f| {
             matches!(
                 f,
-                EditField::Pinned | EditField::Channel | EditField::Reason
+                EditField::Pinned | EditField::Channel | EditField::Reason | EditField::AnyFlavor
             )
         })
         .collect()
@@ -313,6 +358,7 @@ pub fn record_edits(existing: &AddonRecord, carried: &AddonRecord) -> Vec<Record
             EditField::Pinned => Some(RecordEdit::SetPinned(carried.pinned)),
             EditField::Channel => Some(RecordEdit::SetChannel(carried.channel)),
             EditField::Reason => Some(RecordEdit::SetReason(carried.reason)),
+            EditField::AnyFlavor => Some(RecordEdit::SetAnyFlavor(carried.any_flavor)),
             EditField::Ref | EditField::RequiredBy => None,
         })
         .collect()
@@ -2604,7 +2650,7 @@ pub fn check_release(
             let mut clean = None;
             let mut left_out = None;
             for candidate in &selection.candidates {
-                match planner.try_candidate(&wanted.r#ref, candidate, name_hint, None) {
+                match planner.try_candidate(&wanted.r#ref, candidate, name_hint, None, false) {
                     Ok(Ok(winner)) if winner.grade == Grade::Clean => {
                         clean = Some(winner);
                         break;
@@ -2810,6 +2856,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
             blob_sha256,
             asset,
             revision,
+            any_flavor,
         } => {
             // A reinstall without a version asks for the recorded release exactly; the
             // intent keeps no version, so the pin stays as recorded.
@@ -2830,6 +2877,7 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
                 file: file.clone(),
                 intent: Box::new(InstallIntent {
                     asset: asset.clone(),
+                    any_flavor: *any_flavor,
                     ..InstallIntent::requested(
                         *channel,
                         *channel_explicit,
@@ -2897,7 +2945,9 @@ fn keeps_installed(record: &TargetRecord, r#ref: &Ref, intent: &InstallIntent) -
         .addons
         .values()
         .find(|a| a.r#ref == *r#ref)
-        .is_some_and(|e| intent.pinned_noop(e) || intent.keeps_release())
+        .is_some_and(|e| {
+            intent.pinned_noop(e) || intent.keeps_release() || intent.pinned_setting_only(e)
+        })
 }
 
 /// A local archive or directory (`file:`): a newer one of the same addon replaces it.
@@ -3340,6 +3390,9 @@ struct Refusal {
     reason: String,
     /// Why, in words, for the refusal's message.
     why: String,
+    /// `--any-flavor` would lift it: evidence against, or folders built for other clients
+    /// only (never a game-type gate, TOCs the client never reads, or the floor).
+    overridable: bool,
 }
 
 impl Refusal {
@@ -3349,7 +3402,19 @@ impl Refusal {
             .split_once(": ")
             .map_or(reason.as_str(), |(_, text)| text)
             .to_owned();
-        Self { reason, why }
+        Self {
+            reason,
+            why,
+            overridable: false,
+        }
+    }
+}
+
+impl WrongFlavorReason {
+    /// A folder `--any-flavor` installs anyway, as out of date: one whose TOC the client
+    /// reads but whose interfaces are off its range or missing.
+    fn admitted_by_any_flavor(&self) -> bool {
+        matches!(self, Self::InterfaceNotInFamily { .. } | Self::NoInterface)
     }
 }
 
@@ -3437,7 +3502,7 @@ impl TargetPlanner<'_> {
                 if intent.pinned_noop(existing) {
                     return Ok(Prepared::Done(Planned::pinned(existing, &self.target.id)));
                 }
-                if intent.keeps_release() {
+                if intent.keeps_release() || intent.pinned_setting_only(existing) {
                     return self.current(existing, intent).map(Prepared::Done);
                 }
             }
@@ -3562,8 +3627,19 @@ impl TargetPlanner<'_> {
         // Why the best-ranked candidate judged did not install: (its file, why).
         let mut first_why: Option<(String, String)> = None;
         let hint = name.or(source_name.as_deref());
+        // `--any-flavor` on this addon here (a dependency is judged without it).
+        let any_flavor = intent.any_flavor.applies(existing) && !intent.from_resolver();
+        // A refusal the setting would lift, so the error can offer it.
+        let mut overridable = false;
         for (at, candidate) in candidates.into_iter().enumerate() {
-            match self.try_candidate(&wanted.r#ref, &candidate, hint, intent.floor_interface) {
+            let tried_here = self.try_candidate(
+                &wanted.r#ref,
+                &candidate,
+                hint,
+                intent.floor_interface,
+                any_flavor,
+            );
+            match tried_here {
                 Ok(Ok(won)) if won.grade == Grade::Clean => {
                     winner = Some(won);
                     break;
@@ -3575,6 +3651,7 @@ impl TargetPlanner<'_> {
                 }
                 Ok(Err(refusal)) => {
                     refused = true;
+                    overridable |= refusal.overridable;
                     first_why.get_or_insert((candidate.asset.filename.clone(), refusal.why));
                     tried.push(
                         json!({ "asset": candidate.asset.filename, "reason": refusal.reason }),
@@ -3611,12 +3688,13 @@ impl TargetPlanner<'_> {
                     .as_ref()
                     .map(|(_, why)| format!(": {why}"))
                     .unwrap_or_default();
-                return Err(Error::new(
+                let error = Error::new(
                     ErrorCode::WrongFlavor,
                     format!("{} does not load on {} ({:?}){why}", wanted.r#ref, self.target.id, self.target.family),
                     Suggestion::text("use an archive built for this client"),
                 )
-                .details(json!({ "ref": wanted.r#ref.to_string(), "target": self.target.id, "tried": tried })));
+                .details(json!({ "ref": wanted.r#ref.to_string(), "target": self.target.id, "tried": tried }));
+                return Err(self.offer_any_flavor(error, wanted, overridable));
             }
             // Every candidate failed its published hash and none was judged: the
             // download is the problem, not the client (retryable as the download left it).
@@ -3646,7 +3724,8 @@ impl TargetPlanner<'_> {
                 Some((file, why)) => format!("no candidate loads on this client: {file}: {why}"),
                 None => "no candidate loads on this client".to_owned(),
             };
-            return Err(self.no_release(wanted, &tried, &why));
+            let error = self.no_release(wanted, &tried, &why);
+            return Err(self.offer_any_flavor(error, wanted, overridable));
         };
 
         // An installed addon keeps its name: it is the record's identity. A hint that
@@ -3691,6 +3770,7 @@ impl TargetPlanner<'_> {
                 .iter()
                 .map(SkippedFolder::left_out)
                 .collect(),
+            any_flavor: false,
         };
         // A deferred asset's token URL is never stored: the plan shows its canonical URL.
         let (url, expected_hash) = match &winner.candidate.asset.location {
@@ -4282,14 +4362,17 @@ impl TargetPlanner<'_> {
     /// Downloads, inspects and verifies one candidate of `r#ref`: `Ok(Err(reason))` when
     /// it does not load on this client, or (with a `floor`) is older than the installed
     /// build; `Err` when it cannot even be read (download, archive). A winner keeps only
-    /// the folders this client loads (see [`accepts`]). `name_hint` names the primary
-    /// folder (see [`primary_folder`]).
+    /// the folders this client loads (see [`grade`]). `name_hint` names the primary
+    /// folder (see [`primary_folder`]). Under `any_flavor` the publisher's word is
+    /// ignored and folders built for other clients install as out of date; what the
+    /// candidate teaches the memo is still judged by the client's own rules.
     fn try_candidate(
         &self,
         r#ref: &Ref,
         candidate: &Candidate,
         name_hint: Option<&str>,
         floor: Option<u32>,
+        any_flavor: bool,
     ) -> Result<std::result::Result<Winner, Refusal>> {
         let ctx = self.ctx;
         let mut downloaded = None;
@@ -4361,6 +4444,33 @@ impl TargetPlanner<'_> {
             let verdict = verdicts.iter().find(|v| Some(&v.folder) == primary);
             self.learn(candidate, blob, unverified.is_some(), wins, verdict);
         }
+        // `--any-flavor`: the publisher's word is ignored, and a folder whose TOC the
+        // client reads, off its range, installs as out of date, as the client lists it.
+        let mut allowed: Vec<String> = Vec::new();
+        let (verdicts, split, grade, against) = if any_flavor {
+            allowed.extend(against);
+            let admitted: Vec<FolderVerdict> = verdicts
+                .into_iter()
+                .map(|mut v| {
+                    if let Verdict::WrongFlavor { reason } = &v.report.verdict
+                        && reason.admitted_by_any_flavor()
+                    {
+                        let said = self.describe(&v.folder, reason);
+                        v.report.warnings.push(self.admitted_out_of_date(&said));
+                        allowed.push(said);
+                        v.report.verdict = Verdict::Compatible { out_of_date: true };
+                    }
+                    v
+                })
+                .collect();
+            let split = partition(&admitted);
+            let grade = primary.map_or(Grade::Refused, |p| {
+                super::inspect::grade(&split, declared, p)
+            });
+            (admitted, split, grade, None)
+        } else {
+            (verdicts, split, grade, against)
+        };
         if grade == Grade::Refused {
             let reasons: Vec<String> = verdicts
                 .iter()
@@ -4399,12 +4509,15 @@ impl TargetPlanner<'_> {
             return Ok(Err(Refusal {
                 reason: format!("wrong_flavor: {}", reasons.join("; ")),
                 why,
+                overridable: !any_flavor
+                    && deciding.is_some_and(|s| s.reason.admitted_by_any_flavor()),
             }));
         }
         if let Some(evidence) = against {
             return Ok(Err(Refusal {
                 reason: format!("wrong_flavor: {evidence}"),
                 why: evidence,
+                overridable: true,
             }));
         }
         // M2-D42: an adopted build is never replaced by an older one. The fact above is
@@ -4484,6 +4597,16 @@ impl TargetPlanner<'_> {
             for left in split.skip.iter().filter(|s| s.reason.built_for_others()) {
                 warnings.push(self.left_out(&name, left));
             }
+        }
+        if !allowed.is_empty() {
+            warnings.push(Warning::new(
+                WarningCode::AnyFlavor,
+                format!(
+                    "{name}: installed under --any-flavor on {}, although {}",
+                    self.target.id,
+                    allowed.join("; ")
+                ),
+            ));
         }
         // TLS protected the transfer and the TOCs verified, but not the source's hash.
         if let Some(reason) = unverified {
@@ -4718,6 +4841,22 @@ impl TargetPlanner<'_> {
         .details(json!({ "ref": wanted.r#ref.to_string(), "reason": "not_cached" }))
     }
 
+    /// `error` with the `--any-flavor` retry among its alternatives when the setting would
+    /// lift the refusal (`overridable`): never its fix, which an agent may run unread.
+    fn offer_any_flavor(&self, error: Error, wanted: &Wanted, overridable: bool) -> Error {
+        if !overridable {
+            return error;
+        }
+        error.alternative(Suggestion::command([
+            "omaddons".to_owned(),
+            "install".to_owned(),
+            wanted.r#ref.to_string(),
+            "-t".to_owned(),
+            self.target.id.clone(),
+            "--any-flavor".to_owned(),
+        ]))
+    }
+
     /// Why a candidate below the client's interface `floor` never loads, for refusals.
     fn floor_note(&self, floor: u32) -> String {
         format!(
@@ -4834,6 +4973,21 @@ impl TargetPlanner<'_> {
             }
         }
         names.join(", ")
+    }
+
+    /// The `out_of_date` warning of a folder `--any-flavor` installs anyway (`said`: its
+    /// verdict in words), as the client lists it.
+    fn admitted_out_of_date(&self, said: &str) -> Warning {
+        Warning::new(
+            WarningCode::OutOfDate,
+            format!(
+                "{said}: installed under --any-flavor; {} lists it as out of date and loads it only with out-of-date addons enabled",
+                self.target.id
+            ),
+        )
+        .with_fix(Suggestion::text(
+            "update the addon, or enable \"Load out of date AddOns\" in the client",
+        ))
     }
 
     /// The `folder_left_out` warning for `left`, a folder of `addon` built for other
@@ -5360,6 +5514,7 @@ mod tests {
             blob_sha256: Some("aa".into()),
             revision: None,
             left_out: Vec::new(),
+            any_flavor: false,
         }
     }
 

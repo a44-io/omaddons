@@ -162,6 +162,7 @@ mod support {
                             blob_sha256: None,
                             asset: None,
                             revision: None,
+                            any_flavor: omaddons::engine::plan::AnyFlavorIntent::Keep,
                         }],
                         default_kind: TxKind::Install,
                         dependency_locks: std::collections::BTreeMap::new(),

@@ -23,6 +23,8 @@ pub enum RecordEdit {
     SetPinned(bool),
     SetChannel(Channel),
     SetReason(AddonReason),
+    /// `--any-flavor` set or cleared ([`AddonRecord::any_flavor`]).
+    SetAnyFlavor(bool),
     /// Another addon requires this one.
     AddRequiredBy(String),
     RemoveRequiredBy(String),
@@ -39,13 +41,15 @@ impl RecordEdit {
     /// The guard this edit needs (see [`RecordGuard`]).
     pub fn guard(&self, before: Option<&AddonRecord>) -> RecordGuard {
         match self {
-            Self::SetPinned(_) | Self::SetChannel(_) | Self::SetReason(_) | Self::Repoint(_) => {
-                RecordGuard {
-                    recorded: true,
-                    release: Some(before.and_then(|r| r.release_id.clone())),
-                    ..RecordGuard::default()
-                }
-            }
+            Self::SetPinned(_)
+            | Self::SetChannel(_)
+            | Self::SetReason(_)
+            | Self::SetAnyFlavor(_)
+            | Self::Repoint(_) => RecordGuard {
+                recorded: true,
+                release: Some(before.and_then(|r| r.release_id.clone())),
+                ..RecordGuard::default()
+            },
             Self::AddRequiredBy(_) | Self::RemoveRequiredBy(_) => RecordGuard {
                 recorded: true,
                 ..RecordGuard::default()
@@ -84,6 +88,7 @@ pub enum EditField {
     Reason,
     Ref,
     RequiredBy,
+    AnyFlavor,
 }
 
 impl EditField {
@@ -94,6 +99,7 @@ impl EditField {
             Self::Reason => "reason",
             Self::Ref => "ref",
             Self::RequiredBy => "required_by",
+            Self::AnyFlavor => "any_flavor",
         }
     }
 }
@@ -119,6 +125,9 @@ pub fn changed_fields(before: Option<&AddonRecord>, after: Option<&AddonRecord>)
     }
     if before.required_by != after.required_by {
         fields.push(EditField::RequiredBy);
+    }
+    if before.any_flavor != after.any_flavor {
+        fields.push(EditField::AnyFlavor);
     }
     fields
 }
@@ -158,6 +167,7 @@ pub fn apply_edit(
         RecordEdit::SetPinned(pinned) => record.pinned = *pinned,
         RecordEdit::SetChannel(channel) => record.channel = *channel,
         RecordEdit::SetReason(reason) => record.reason = *reason,
+        RecordEdit::SetAnyFlavor(any) => record.any_flavor = *any,
         RecordEdit::AddRequiredBy(name) => {
             let names = record.required_by.iter().cloned().chain([name.clone()]);
             record.required_by = sorted_names(names);
@@ -444,6 +454,7 @@ mod tests {
             blob_sha256: None,
             revision: None,
             left_out: Vec::new(),
+            any_flavor: false,
         }
     }
 

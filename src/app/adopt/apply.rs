@@ -872,6 +872,7 @@ fn adopted_record(
         blob_sha256,
         revision: None,
         left_out: Vec::new(),
+        any_flavor: false,
     }
 }
 

@@ -186,6 +186,7 @@ mod support {
                     blob_sha256: None,
                     revision: None,
                     left_out: Vec::new(),
+                    any_flavor: false,
                 };
                 edit(&mut addon);
                 record.addons.insert(TargetRecord::addon_key(name), addon);
@@ -235,6 +236,7 @@ mod support {
             blob_sha256: None,
             asset: None,
             revision: None,
+            any_flavor: omaddons::engine::plan::AnyFlavorIntent::Keep,
         }
     }
 
