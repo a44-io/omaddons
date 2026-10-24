@@ -213,6 +213,16 @@ pub struct InstallIntent {
     pub asset: Option<String>,
     /// `--any-flavor` / `--no-any-flavor`; the resolver's installs always `Keep`.
     pub any_flavor: AnyFlavorIntent,
+    /// Set on the second pass of a GitHub look-back. A look-back never looks back again.
+    pub looked_back: Option<LookedBack>,
+}
+
+/// The second pass of a GitHub look-back: the newest release's tag, which had no build
+/// for this client, and when the release found was published (from the feed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookedBack {
+    pub newest: String,
+    pub published: Option<Timestamp>,
 }
 
 impl InstallIntent {
@@ -238,6 +248,7 @@ impl InstallIntent {
             reinstall_of: None,
             asset: None,
             any_flavor: AnyFlavorIntent::Keep,
+            looked_back: None,
         }
     }
 
@@ -3393,6 +3404,9 @@ struct Refusal {
     /// `--any-flavor` would lift it: evidence against, or folders built for other clients
     /// only (never a game-type gate, TOCs the client never reads, or the floor).
     overridable: bool,
+    /// It does not load on this client (`wrong_flavor`), so an older release may: what a
+    /// GitHub look-back needs. Never for a packaging refusal or an adopted build's floor.
+    wrong_flavor: bool,
 }
 
 impl Refusal {
@@ -3406,6 +3420,7 @@ impl Refusal {
             reason,
             why,
             overridable: false,
+            wrong_flavor: false,
         }
     }
 }
@@ -3525,6 +3540,8 @@ impl TargetPlanner<'_> {
         // The source's name for the addon (WoWInterface's `UIName`), when no catalog
         // name applies.
         let mut source_name: Option<String> = None;
+        // The tag of the release the candidates come from, for a look-back.
+        let mut newest_tag: Option<String> = None;
         let candidates = match (file, local, set) {
             (Some(file), _, _) => vec![file_candidate(file, wanted)],
             (None, Some(local), _) => vec![local.clone()],
@@ -3559,6 +3576,7 @@ impl TargetPlanner<'_> {
                             set.releases.iter().find(|r| r.release_id == c.release_id)
                         });
                         source_name = release.and_then(|r| r.name_hint.clone());
+                        newest_tag = release.and_then(|r| tag_of(wanted, &r.release_id));
                         let mut candidates = selection.candidates;
                         // A named asset (a pasted asset link): that one or nothing; the
                         // TOCs still judge whether it loads here.
@@ -3624,6 +3642,9 @@ impl TargetPlanner<'_> {
         let mut unreadable: Option<Error> = None;
         // Some candidate was judged and does not load (as opposed to failing to arrive).
         let mut refused = false;
+        // Some candidate does not load on this client at all (not merely older than an
+        // adopted build): an older release may, so a GitHub look-back is worth it.
+        let mut wrong_flavor = false;
         // Why the best-ranked candidate judged did not install: (its file, why).
         let mut first_why: Option<(String, String)> = None;
         let hint = name.or(source_name.as_deref());
@@ -3652,6 +3673,7 @@ impl TargetPlanner<'_> {
                 Ok(Err(refusal)) => {
                     refused = true;
                     overridable |= refusal.overridable;
+                    wrong_flavor |= refusal.wrong_flavor;
                     first_why.get_or_insert((candidate.asset.filename.clone(), refusal.why));
                     tried.push(
                         json!({ "asset": candidate.asset.filename, "reason": refusal.reason }),
@@ -3696,6 +3718,39 @@ impl TargetPlanner<'_> {
                 .details(json!({ "ref": wanted.r#ref.to_string(), "target": self.target.id, "tried": tried }));
                 return Err(self.offer_any_flavor(error, wanted, overridable));
             }
+            // A repository that publishes one release per client: its newest may be
+            // another client's, so look back for the newest that declares this one.
+            if wrong_flavor
+                && intent.looked_back.is_none()
+                && intent.asset.is_none()
+                && wanted.version.is_none()
+                && let Some(newest) = &newest_tag
+                && let Some(looked) = self.look_back(wanted, newest)
+            {
+                match looked {
+                    Ok(look_back) => match look_back.found {
+                        Some(found) => {
+                            return self.install_looked_back(
+                                name,
+                                wanted,
+                                existing,
+                                found,
+                                &look_back.order,
+                                newest,
+                                intent,
+                            );
+                        }
+                        None => tried.extend(look_back.ruled_out.iter().map(|(tag, why)| {
+                            json!({ "asset": format!("{tag}/release.json"), "reason": format!("look_back: {why}") })
+                        })),
+                    },
+                    // A look-back that could not be made, as a download that failed is.
+                    Err(error) => tried.push(json!({
+                        "asset": "look_back",
+                        "reason": format!("{}: {}", error.code.wire(), error.message),
+                    })),
+                }
+            }
             // Every candidate failed its published hash and none was judged: the
             // download is the problem, not the client (retryable as the download left it).
             if !refused
@@ -3728,6 +3783,25 @@ impl TargetPlanner<'_> {
             return Err(self.offer_any_flavor(error, wanted, overridable));
         };
 
+        let mut winner = winner;
+        if let Some(looked) = &intent.looked_back {
+            let tag = tag_of(wanted, &winner.candidate.release_id)
+                .unwrap_or_else(|| winner.candidate.version.clone());
+            let date = looked
+                .published
+                .map(|at| format!(" ({})", at.strftime("%Y-%m-%d")))
+                .unwrap_or_default();
+            winner.warnings.push(Warning::new(
+                WarningCode::OlderReleaseForClient,
+                format!(
+                    "{}: the newest release {} has no build for {} ({}); installed {tag}{date}, the newest that has",
+                    name.unwrap_or(&winner.name),
+                    looked.newest,
+                    self.target.id,
+                    family_name(self.target)
+                ),
+            ));
+        }
         // An installed addon keeps its name: it is the record's identity. A hint that
         // names another ref's addon is ignored (a folder-derived name that clashes
         // shares a folder too, which ownership refuses).
@@ -4511,6 +4585,7 @@ impl TargetPlanner<'_> {
                 why,
                 overridable: !any_flavor
                     && deciding.is_some_and(|s| s.reason.admitted_by_any_flavor()),
+                wrong_flavor: true,
             }));
         }
         if let Some(evidence) = against {
@@ -4518,6 +4593,7 @@ impl TargetPlanner<'_> {
                 reason: format!("wrong_flavor: {evidence}"),
                 why: evidence,
                 overridable: true,
+                wrong_flavor: true,
             }));
         }
         // M2-D42: an adopted build is never replaced by an older one. The fact above is
@@ -4841,6 +4917,74 @@ impl TargetPlanner<'_> {
         .details(json!({ "ref": wanted.r#ref.to_string(), "reason": "not_cached" }))
     }
 
+    /// A GitHub look-back for this client, from `newest` (a tag): only on the stable
+    /// channel, and only on a client a `release.json` can name.
+    fn look_back(&self, wanted: &Wanted, newest: &str) -> Option<Result<crate::sources::LookBack>> {
+        if !matches!(wanted.r#ref, Ref::GitHub { .. }) || wanted.channel != Channel::Stable {
+            return None;
+        }
+        let family = self.target.family;
+        family.release_flavor()?;
+        let range = self.ctx.table.family_range(family);
+        let names = move |f: &crate::model::AssetFlavor| declares_client(f, family, range);
+        self.ctx.cache.look_back(wanted, newest, family, &names)
+    }
+
+    /// The second pass of a look-back: `found`, older than `newest`, installs unless the
+    /// installed release is it or newer by `order` (the feed's tags, newest first), or
+    /// is not in the feed at all: a look-back never downgrades.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "what the look-back found, with the request of the first pass"
+    )]
+    fn install_looked_back(
+        &self,
+        name: Option<&str>,
+        wanted: &Wanted,
+        existing: Option<&AddonRecord>,
+        found: ReleaseSet,
+        order: &[String],
+        newest: &str,
+        intent: &InstallIntent,
+    ) -> Result<Prepared> {
+        let release = found.releases.first();
+        let found_tag = release.and_then(|r| tag_of(wanted, &r.release_id));
+        let published = release.and_then(|r| r.published_at);
+        if let Some(existing) = existing {
+            let at = |tag: &str| {
+                order
+                    .iter()
+                    .position(|t| crate::sources::changelog::same_version(t, tag))
+            };
+            let installed = existing
+                .release_id
+                .as_deref()
+                .and_then(|id| tag_of(wanted, id));
+            let older = installed
+                .as_deref()
+                .and_then(at)
+                .zip(found_tag.as_deref().and_then(at))
+                .is_some_and(|(installed, found)| installed > found);
+            if !older {
+                return self.current(existing, intent).map(Prepared::Done);
+            }
+        }
+        let intent = InstallIntent {
+            looked_back: Some(LookedBack {
+                newest: newest.to_owned(),
+                published,
+            }),
+            ..intent.clone()
+        };
+        let source = CandidateSource {
+            file: None,
+            local: None,
+            set: Some(Ok(found)),
+            cached: None,
+        };
+        self.prepare_install(name, wanted, source, &intent)
+    }
+
     /// `error` with the `--any-flavor` retry among its alternatives when the setting would
     /// lift the refusal (`overridable`): never its fix, which an agent may run unread.
     fn offer_any_flavor(&self, error: Error, wanted: &Wanted, overridable: bool) -> Error {
@@ -4887,12 +5031,7 @@ impl TargetPlanner<'_> {
         if !listed.is_empty() {
             family.release_flavor()?;
             let range = self.ctx.table.family_range(family);
-            let names_client = listed.iter().any(|f| {
-                Family::from_release_flavor(&f.flavor) == Some(family)
-                    || f.interface
-                        .is_some_and(|i| range.is_some_and(|r| r.contains(i)))
-            });
-            if names_client {
+            if listed.iter().any(|f| declares_client(f, family, range)) {
                 return None;
             }
             let mut flavors: Vec<&str> = Vec::new();
@@ -5095,6 +5234,27 @@ fn missing_git_rev(err: Error, candidate: &Candidate, url: &str) -> Error {
         Suggestion::text("check the name after #, or give a commit sha"),
     )
     .details(json!({ "repository": repo, "rev": rev }))
+}
+
+/// The tag of a GitHub `release_id` (`gh:o/r@<tag>`).
+fn tag_of(wanted: &Wanted, release_id: &str) -> Option<String> {
+    release_id
+        .strip_prefix(&format!("{}@", wanted.r#ref))
+        .map(str::to_owned)
+}
+
+/// Whether a release's flavor entry names a client of `family` (whose interfaces lie in
+/// `range`): a `release.json` entry whose interface is in the range, or, failing that,
+/// whose flavor names the family (Questie's `wrath:38002` names Titan).
+fn declares_client(
+    f: &crate::model::AssetFlavor,
+    family: Family,
+    range: Option<crate::rules::NumRange>,
+) -> bool {
+    f.source.is_release_json()
+        && (Family::from_release_flavor(&f.flavor) == Some(family)
+            || f.interface
+                .is_some_and(|i| range.is_some_and(|r| r.contains(i))))
 }
 
 /// `interface 120105`, or `interfaces 11509, 16001`.

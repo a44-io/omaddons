@@ -419,6 +419,54 @@ impl<'a> ReleaseCache<'a> {
 
     /// The memo entry of `r` on `channel` as this run knows it: fetched in this run,
     /// else remembered.
+    /// The release a look-back finds for `family`'s clients among `wanted`'s releases
+    /// older than `newest` (a tag): the memo's answer while it was made against `newest`,
+    /// whatever its age, else the source's, remembered. `None` when the source has no
+    /// look-back.
+    pub fn look_back(
+        &self,
+        wanted: &Wanted,
+        newest: &str,
+        family: crate::rules::Family,
+        names_client: &(dyn Fn(&crate::model::AssetFlavor) -> bool + Sync),
+    ) -> Option<Result<crate::sources::LookBack>> {
+        if let Some(remembered) =
+            self.remembered_look_back(&wanted.r#ref, wanted.channel, family, newest)
+        {
+            return Some(Ok(remembered));
+        }
+        let source = self
+            .registry
+            .get(crate::sources::SourceId::of(&wanted.r#ref))?;
+        let found = source.look_back(wanted, newest, names_client, self.http)?;
+        if let Ok(look_back) = &found {
+            let key = memo::look_back_key(&wanted.r#ref, wanted.channel, family);
+            lock(&self.learned).look_backs.insert(
+                key,
+                memo::LookBackMemo {
+                    newest: newest.to_owned(),
+                    look_back: look_back.clone(),
+                    at: self.now,
+                },
+            );
+        }
+        Some(found)
+    }
+
+    /// The look-back remembered for `family`'s clients, made against `newest`: what
+    /// update statuses read, with no request.
+    pub fn remembered_look_back(
+        &self,
+        r: &Ref,
+        channel: Channel,
+        family: crate::rules::Family,
+        newest: &str,
+    ) -> Option<crate::sources::LookBack> {
+        lock(&self.learned)
+            .look_back(r, channel, family, newest)
+            .or_else(|| self.memo.look_back(r, channel, family, newest))
+    }
+
     pub fn entry(&self, r: &Ref, channel: Channel) -> Option<MemoEntry> {
         let key = memo::key(r, channel);
         lock(&self.learned)

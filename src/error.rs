@@ -265,6 +265,9 @@ warning_codes! {
     /// An addon installed under `--any-flavor` although its publisher labelled the file
     /// for other clients, or its folders target other clients; the message names what.
     AnyFlavor                   = "any_flavor";
+    /// A GitHub repository's newest release had no build for this client, so an older
+    /// one, the newest that declares it, was installed.
+    OlderReleaseForClient       = "older_release_for_client";
     MissingDependency           = "missing_dependency";
     TocCommaOnLegacy            = "toc_comma_on_legacy";
     ClientNotLaunchedSincePatch = "client_not_launched_since_patch";
@@ -841,7 +844,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 51);
+        assert_eq!(WarningCode::ALL.len(), 52);
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

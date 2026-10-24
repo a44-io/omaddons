@@ -376,8 +376,12 @@ fn unpin_hints(
         let floor = update_floor(&d.target, a, &world.table);
         let id = &d.target.id;
         let name = &a.name;
+        let look_back = |newest: &str| {
+            let tag = newest.rsplit_once('@').map(|(_, tag)| tag)?;
+            memo.look_back(&a.r#ref, a.channel, d.target.family, tag)
+        };
         hints.push(
-            match evaluate(&record, entry, &facts, &d.target, floor, true) {
+            match evaluate(&record, entry, &facts, &d.target, floor, true, &look_back) {
                 UpdateStatus::UpdateAvailable { latest, .. } => format!(
                     "{id}: `omaddons update {name} -t {id}` installs {}",
                     latest.version

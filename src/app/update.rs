@@ -216,6 +216,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
         cache.facts(),
         &enabled,
         &|target, record| installed_primary_interface(target, record, &world.table),
+        &|r, c, family, newest| cache.remembered_look_back(r, c, family, newest),
     );
 
     // Plan the updates; say what is left alone.
@@ -633,16 +634,23 @@ fn settle_failures(data: &mut TargetsData, done: &TxOutcomes) {
 }
 
 /// A verification refusal: the release exists but no build of it loads here (or none
-/// is as new as an adopted build). A download or read failure is not one.
+/// is as new as an adopted build), nor does a release a GitHub look-back passed over
+/// (`look_back: …`). A download or read failure is not one. A look-back that could not
+/// be made (`asset: "look_back"`) changes nothing: the newest release is refused all
+/// the same.
 fn blocked(error: &ErrorBody) -> bool {
     let refusal = |reason: &str| {
-        reason.starts_with("wrong_flavor") || reason.starts_with("older_than_installed")
+        reason.starts_with("wrong_flavor")
+            || reason.starts_with("older_than_installed")
+            || reason.starts_with("look_back: ")
     };
     match error.code {
         ErrorCode::WrongFlavor => true,
         ErrorCode::NoCompatibleRelease => error.details["tried"].as_array().is_some_and(|tried| {
-            !tried.is_empty()
-                && tried
+            let judged: Vec<&serde_json::Value> =
+                tried.iter().filter(|t| t["asset"] != "look_back").collect();
+            !judged.is_empty()
+                && judged
                     .iter()
                     .all(|t| t["reason"].as_str().is_some_and(refusal))
         }),
@@ -678,6 +686,29 @@ mod tests {
         assert!(!blocked(&body(
             ErrorCode::NoCompatibleRelease,
             reasons(&["wrong_flavor: …", "network: connection reset"])
+        )));
+        // A look-back that passed over each older release, and one that failed.
+        assert!(blocked(&body(
+            ErrorCode::NoCompatibleRelease,
+            reasons(&[
+                "wrong_flavor: …",
+                "look_back: its release.json declares no build for this client"
+            ])
+        )));
+        let failed_look_back = serde_json::json!([
+            {"asset": "Foo.zip", "reason": "wrong_flavor: …"},
+            {"asset": "look_back", "reason": "rate_limited: GitHub's API allows 5 more requests"},
+        ]);
+        assert!(blocked(&body(
+            ErrorCode::NoCompatibleRelease,
+            failed_look_back
+        )));
+        let only_look_back = serde_json::json!([
+            {"asset": "look_back", "reason": "network: connection reset"},
+        ]);
+        assert!(!blocked(&body(
+            ErrorCode::NoCompatibleRelease,
+            only_look_back
         )));
         assert!(!blocked(&body(
             ErrorCode::NoCompatibleRelease,

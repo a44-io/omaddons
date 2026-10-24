@@ -24,8 +24,8 @@ use crate::model::{
     AddonRecord, Candidate, Channel, RankReason, Ref, Release, Target, VersionConfidence,
 };
 use crate::resolve::select::select;
-use crate::rules::RulesTable;
-use crate::sources::SourceId;
+use crate::rules::{Family, RulesTable};
+use crate::sources::{LookBack, SourceId};
 use crate::state::memo::{FactIndex, MemoEntry};
 use crate::state::records::TargetRecord;
 use crate::toc::{DiskFolder, loaded_toc, primary_interface};
@@ -186,6 +186,7 @@ pub fn evaluate(
     target: &Target,
     installed_primary_interface: Option<u32>,
     source_enabled: bool,
+    look_back: &dyn Fn(&str) -> Option<LookBack>,
 ) -> UpdateStatus {
     // 1. Nothing to check: a local or URL install, or one from a given archive.
     if is_static(record) {
@@ -269,6 +270,13 @@ pub fn evaluate(
     let verdicts: Vec<_> = candidates.iter().map(verdict).collect();
     // Facts judge by the client's own rules; `--any-flavor` installs what they refuse.
     if !record.any_flavor && verdicts.iter().all(|v| v.is_some_and(|v| !v.loads)) {
+        // A repository with one release per client: the look-back remembered against
+        // this newest release says which is this client's latest.
+        if let Some(status) =
+            look_back(&best.release_id).and_then(|found| looked_back_status(record, target, &found))
+        {
+            return status;
+        }
         return UpdateStatus::Blocked {
             latest,
             reason: BlockedReason::VerifiedNotLoading,
@@ -297,6 +305,45 @@ pub fn evaluate(
         (None, confidence) => confidence,
     };
     UpdateStatus::UpdateAvailable { latest, confidence }
+}
+
+/// The status of `record` against a look-back's answer for its client: `current` when it
+/// is the release found, or newer, or out of the feed's reach (a look-back never
+/// downgrades), else an update to it, which its `release.json` declares for the client.
+fn looked_back_status(
+    record: &AddonRecord,
+    target: &Target,
+    found: &LookBack,
+) -> Option<UpdateStatus> {
+    let set = found.found.as_ref()?;
+    let release = set.releases.first()?;
+    let best = select(set, target, record.channel, None)
+        .candidates
+        .into_iter()
+        .next()?;
+    let latest = brief(&best, Some(release));
+    let tag = |id: &str| id.rsplit_once('@').map(|(_, tag)| tag.to_owned());
+    let at = |id: &str| {
+        let tag = tag(id)?;
+        found
+            .order
+            .iter()
+            .position(|t| crate::sources::changelog::same_version(t, &tag))
+    };
+    let older = record
+        .release_id
+        .as_deref()
+        .and_then(at)
+        .zip(at(&release.release_id))
+        .is_some_and(|(installed, found)| installed > found);
+    Some(if older {
+        UpdateStatus::UpdateAvailable {
+            latest,
+            confidence: Confidence::Declared,
+        }
+    } else {
+        UpdateStatus::Current { latest }
+    })
 }
 
 /// How likely a release is to load on a client from its best candidate's rank alone (no
@@ -425,6 +472,7 @@ pub fn statuses(
     facts: &FactIndex,
     enabled: &BTreeSet<SourceId>,
     read_primary_interface: &dyn Fn(&Target, &AddonRecord) -> Option<u32>,
+    look_back: &dyn Fn(&Ref, Channel, Family, &str) -> Option<LookBack>,
 ) -> Vec<StatusRow> {
     let mut rows = Vec::new();
     for (target, record) in targets {
@@ -435,6 +483,11 @@ pub fn statuses(
             };
             let remembered = entry(&addon.r#ref, addon.channel);
             let source_enabled = enabled.contains(&SourceId::of(&addon.r#ref));
+            // The newest release's tag (`gh:o/r@<tag>`) the look-back was made against.
+            let looked_back = |newest: &str| {
+                let tag = newest.rsplit_once('@').map(|(_, tag)| tag)?;
+                look_back(&addon.r#ref, addon.channel, target.family, tag)
+            };
             rows.push(StatusRow {
                 target: target.id.clone(),
                 addon: addon.name.clone(),
@@ -445,6 +498,7 @@ pub fn statuses(
                     target,
                     installed,
                     source_enabled,
+                    &looked_back,
                 ),
             });
         }
@@ -636,6 +690,7 @@ mod tests {
             &retail(),
             Some(120_105),
             true,
+            &|_| None,
         )
     }
 
@@ -865,6 +920,75 @@ mod tests {
         }
     }
 
+    /// A newest release proven not to load here, with a look-back remembered against it:
+    /// the release found is this client's latest, an update only from older in the feed.
+    #[test]
+    fn a_look_back_names_this_clients_latest() {
+        let e = newest();
+        let refused = [fact("2.0.0", "Foo.zip", false, false, 11_509)];
+        let found = LookBack {
+            found: Some(ReleaseSet {
+                r#ref: FOO.parse().unwrap(),
+                releases: vec![release(
+                    "1.5.0",
+                    Channel::Stable,
+                    None,
+                    vec![asset("Foo.zip", Confidence::Declared)],
+                )],
+            }),
+            ruled_out: Vec::new(),
+            order: ["2.0.0", "1.5.0", "1.0.0"].map(String::from).to_vec(),
+        };
+        let with = |installed: &AddonRecord, look_back: Option<&LookBack>| {
+            let seen = std::cell::RefCell::new(None);
+            let status = evaluate(
+                installed,
+                Some(&e),
+                &FactIndex::new(&refused),
+                &retail(),
+                Some(120_105),
+                true,
+                &|newest| {
+                    seen.replace(Some(newest.to_owned()));
+                    look_back.cloned()
+                },
+            );
+            (status, seen.into_inner())
+        };
+        let (status, asked) = with(&record(Some("1.0.0"), "1.0.0"), Some(&found));
+        assert_eq!(asked.as_deref(), Some(format!("{FOO}@2.0.0").as_str()));
+        assert!(
+            matches!(&status, UpdateStatus::UpdateAvailable { latest, confidence: Confidence::Declared } if latest.version == "1.5.0"),
+            "{status:?}"
+        );
+        let (status, _) = with(&record(Some("1.5.0"), "1.5.0"), Some(&found));
+        assert!(
+            matches!(&status, UpdateStatus::Current { latest } if latest.version == "1.5.0"),
+            "{status:?}"
+        );
+        // Out of the feed's reach: never a downgrade.
+        let (status, _) = with(&record(Some("0.9.0"), "0.9.0"), Some(&found));
+        assert_eq!(name(&status), "current", "{status:?}");
+        // Nothing found, or no look-back: blocked as before.
+        let none = LookBack {
+            found: None,
+            ..found.clone()
+        };
+        for look_back in [Some(&none), None] {
+            let (status, _) = with(&record(Some("1.0.0"), "1.0.0"), look_back);
+            assert!(
+                matches!(
+                    status,
+                    UpdateStatus::Blocked {
+                        reason: BlockedReason::VerifiedNotLoading,
+                        ..
+                    }
+                ),
+                "{status:?}"
+            );
+        }
+    }
+
     #[test]
     fn static_unchecked_and_failed() {
         let e = newest();
@@ -890,6 +1014,7 @@ mod tests {
             &retail(),
             None,
             false,
+            &|_| None,
         );
         assert_eq!(
             off,
@@ -1000,6 +1125,7 @@ mod tests {
                 read.borrow_mut().push(addon.name.clone());
                 Some(120_105)
             },
+            &|_, _, _, _| None,
         );
         let order: Vec<(&str, &str)> = rows
             .iter()

@@ -20,12 +20,12 @@ use std::sync::{Mutex, PoisonError};
 
 use super::changelog::{Changelog, ChangelogEntry, same_version};
 use super::release_json::{self, Manifest};
-use super::{Source, SourceId, Wanted, atom};
+use super::{LookBack, Source, SourceId, Wanted, atom};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::limits::CHANGELOG_MAX_CHARS;
 use crate::model::{Asset, AssetLocation, Channel, Ref, Release, ReleaseSet};
 use crate::net::{CacheState, Http, Request, run_bounded};
-use crate::politeness::MAX_CONCURRENT_REQUESTS;
+use crate::politeness::{LOOK_BACK_MAX_RELEASES, MAX_CONCURRENT_REQUESTS};
 
 /// Why the web path handed a ref to the fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +40,9 @@ pub enum RestReason {
 /// The GitHub API path (source-github-rest): asset listings and prereleases.
 pub trait GithubRestFallback: Send + Sync {
     fn fetch(&self, wanted: &Wanted, reason: &RestReason, http: &dyn Http) -> Result<ReleaseSet>;
+
+    /// Whether GitHub marks release `tag` a prerelease (or a draft): one request.
+    fn is_prerelease(&self, wanted: &Wanted, tag: &str, http: &dyn Http) -> Result<bool>;
 }
 
 /// The `gh:` source.
@@ -156,9 +159,123 @@ impl Source for GithubSource {
             token
         }))
     }
+
+    /// Through `releases.atom` (one conditional request), newest first and skipping
+    /// `newest`, at most [`LOOK_BACK_MAX_RELEASES`]: each tag's `release.json` (github.com,
+    /// no REST) until one declares a build `names_client` accepts. The feed does not mark
+    /// prereleases, so the one found is confirmed through the REST API (one request);
+    /// a prerelease, or a tag named like one, is passed over. Releases without a usable
+    /// `release.json` are passed over too: their assets need the REST API to be listed.
+    fn look_back(
+        &self,
+        wanted: &Wanted,
+        newest: &str,
+        names_client: &(dyn Fn(&crate::model::AssetFlavor) -> bool + Sync),
+        http: &dyn Http,
+    ) -> Option<Result<LookBack>> {
+        let Ref::GitHub { owner, repo } = &wanted.r#ref else {
+            return None;
+        };
+        if wanted.channel != Channel::Stable || wanted.version.is_some() {
+            return None;
+        }
+        Some(self.look_back_in(wanted, owner, repo, newest, names_client, http))
+    }
 }
 
 impl GithubSource {
+    /// [`Source::look_back`] for `owner/repo`.
+    fn look_back_in(
+        &self,
+        w: &Wanted,
+        owner: &str,
+        repo: &str,
+        newest: &str,
+        names_client: &(dyn Fn(&crate::model::AssetFlavor) -> bool + Sync),
+        http: &dyn Http,
+    ) -> Result<LookBack> {
+        let base = format!("https://github.com/{owner}/{repo}");
+        let feed = Self::recent_tags(owner, repo, http)?;
+        let order: Vec<String> = feed.tags.iter().map(|t| t.tag.clone()).collect();
+        let mut ruled_out = Vec::new();
+        let older = order
+            .iter()
+            .filter(|t| !same_version(t, newest))
+            .take(LOOK_BACK_MAX_RELEASES);
+        for tag in older {
+            if looks_prerelease(tag) {
+                ruled_out.push((tag.clone(), "named like a prerelease".to_owned()));
+                continue;
+            }
+            let manifest = match release_json(&base, tag, http)? {
+                Ok(manifest) => manifest,
+                Err(None) => {
+                    ruled_out.push((tag.clone(), "publishes no release.json".to_owned()));
+                    continue;
+                }
+                Err(Some(why)) => {
+                    ruled_out.push((tag.clone(), format!("has an unusable release.json ({why})")));
+                    continue;
+                }
+            };
+            let mut set = release_set(w, &base, tag, &manifest);
+            // The feed dates each release; `release.json` does not.
+            let published = feed
+                .tags
+                .iter()
+                .find(|t| t.tag == *tag)
+                .and_then(|t| t.updated.as_deref())
+                .and_then(|u| u.parse().ok());
+            for release in &mut set.releases {
+                release.published_at = published;
+            }
+            let declares = set
+                .releases
+                .iter()
+                .flat_map(|r| &r.assets)
+                .flat_map(|a| &a.flavors)
+                .any(names_client);
+            if !declares {
+                ruled_out.push((
+                    tag.clone(),
+                    "its release.json declares no build for this client".to_owned(),
+                ));
+                continue;
+            }
+            // The one REST request: whether GitHub marks it a prerelease.
+            let Some(rest) = &self.rest else {
+                return Err(Error::new(
+                    ErrorCode::NoCompatibleRelease,
+                    format!(
+                        "{}: whether {tag} is a prerelease needs GitHub's release API",
+                        w.r#ref
+                    ),
+                    Suggestion::command([
+                        "omaddons",
+                        "install",
+                        &w.r#ref.to_string(),
+                        "--version",
+                        tag,
+                    ]),
+                ));
+            };
+            if rest.is_prerelease(w, tag, http)? {
+                ruled_out.push((tag.clone(), "a prerelease".to_owned()));
+                continue;
+            }
+            return Ok(LookBack {
+                found: Some(set),
+                ruled_out,
+                order,
+            });
+        }
+        Ok(LookBack {
+            found: None,
+            ruled_out,
+            order,
+        })
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -377,6 +494,20 @@ fn release_json(
     }
     let body = resp.error_for_status("release.json")?.bytes()?;
     Ok(release_json::parse(&body).map_err(Some))
+}
+
+/// A tag named like a prerelease (`v1.2-beta`, `2.0.0-rc1`, `v3-alpha`, `1.0-pre`): a
+/// word of it is `alpha`, `beta`, `rc` or `pre`, digits allowed after, as WowAce's tags
+/// are read. A look-back passes it over without asking the REST API.
+fn looks_prerelease(tag: &str) -> bool {
+    let lower = tag.to_ascii_lowercase();
+    lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| {
+            ["alpha", "beta", "pre", "rc"].iter().any(|mark| {
+                word.starts_with(mark) && word[mark.len()..].bytes().all(|b| b.is_ascii_digit())
+            })
+        })
 }
 
 /// One stable release with an asset per manifest entry.
@@ -848,6 +979,10 @@ mod tests {
                     releases: Vec::new(),
                 })
             }
+
+            fn is_prerelease(&self, _: &Wanted, _: &str, _: &dyn Http) -> Result<bool> {
+                unreachable!("no look-back here")
+            }
         }
         let source = GithubSource::with_rest(Box::new(Fallback));
         let w = Wanted {
@@ -855,6 +990,31 @@ mod tests {
             ..wanted("gh:o/a")
         };
         assert!(source.fetch(&[w], &http).pop().unwrap().is_ok());
+    }
+
+    #[test]
+    fn tags_named_like_prereleases() {
+        for tag in [
+            "v1.2-beta",
+            "2.0.0-rc1",
+            "v3-alpha",
+            "1.0-pre",
+            "v4.0.0-BETA2",
+            "v3.216-mists-rc1",
+        ] {
+            assert!(looks_prerelease(tag), "{tag}");
+        }
+        for tag in [
+            "v3.218-titan",
+            "v3.216-bcc",
+            "v12.1.1",
+            "v2-precise",
+            "release-candidate",
+            "v1.0-arc",
+            "alphabet-1",
+        ] {
+            assert!(!looks_prerelease(tag), "{tag}");
+        }
     }
 
     #[test]

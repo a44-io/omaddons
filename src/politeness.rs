@@ -58,6 +58,10 @@ pub const DISCOVERY_MAX_DIRS: usize = 50_000;
 pub const MAX_REDIRECTS: usize = 5;
 /// Repositories one `search` asks GitHub's search API for (one request per run).
 pub const GITHUB_SEARCH_PER_PAGE: usize = 20;
+/// Releases a GitHub look-back reads, newest first, for one whose `release.json` declares
+/// the client: what `releases.atom` holds. One `release.json` request each, sequential,
+/// stopping at the first match.
+pub const LOOK_BACK_MAX_RELEASES: usize = 10;
 
 /// Every politeness constant, in table order.
 pub const REGISTRY: &[LimitInfo] = &[
@@ -207,6 +211,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "count",
         None,
         "Repositories one search asks GitHub's search API for (10 requests a minute unauthenticated)",
+    ),
+    limit(
+        "LOOK_BACK_MAX_RELEASES",
+        LimitValue::Count(LOOK_BACK_MAX_RELEASES as u64),
+        "count",
+        None,
+        "Releases a GitHub look-back reads for this client's newest build (one release.json request each, stopping at the first)",
     ),
 ];
 

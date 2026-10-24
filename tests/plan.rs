@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use common::archives::zip_text;
 use common::env::TestEnv;
-use common::http::{Asset, gh_release, paths, replay};
+use common::http::{Asset, gh_feed, gh_release, paths, replay};
 use common::netlog::{assert_each_url_once, read_net_log};
 use common::targets::battlenet;
 use common::trees::tree_hash;
@@ -393,6 +393,8 @@ fn a_wrong_flavor_candidate_falls_back_and_none_fails_listing_every_try() {
             ("Foo-b.zip", &[], vec![("Foo/Foo_Mists.toc", &toc("50504"))]),
         ],
     );
+    // Its only release: a look-back finds nothing older to read.
+    gh_feed(&env.scenario, BASE, &[("v1", "")], None);
     let plan = env.plan(vec![install(&env.retail)], false);
     let failure = &plan.failures[0];
     let error = failure.cause.as_ref().unwrap();

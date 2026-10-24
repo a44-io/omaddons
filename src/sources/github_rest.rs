@@ -246,6 +246,20 @@ impl GithubRest {
         tag: &str,
         http: &dyn Http,
     ) -> Result<ReleaseSet> {
+        let release = self.api_tagged(w, owner, repo, tag, http)?;
+        // The web path already found no usable release.json for this tag.
+        self.release(w, owner, repo, &release, false, http)
+    }
+
+    /// The API's release tagged `tag` (one request).
+    fn api_tagged(
+        &self,
+        w: &Wanted,
+        owner: &str,
+        repo: &str,
+        tag: &str,
+        http: &dyn Http,
+    ) -> Result<ApiRelease> {
         let path = format!("/repos/{owner}/{repo}/releases/tags/{}", encode_path(tag));
         let resp = self.send(self.api_request(&path), http)?;
         if resp.status == 404 {
@@ -256,9 +270,7 @@ impl GithubRest {
             ));
         }
         let body = resp.error_for_status("GitHub's releases API")?.bytes()?;
-        let release: ApiRelease = from_json(&body, &w.r#ref)?;
-        // The web path already found no usable release.json for this tag.
-        self.release(w, owner, repo, &release, false, http)
+        from_json(&body, &w.r#ref)
     }
 
     /// One release: from its `release.json` when it has one (and `manifest` allows),
@@ -336,6 +348,14 @@ impl GithubRestFallback for GithubRest {
             RestReason::Prerelease => self.list(w, owner, repo, http),
             RestReason::NoReleaseJson { tag, .. } => self.tagged(w, owner, repo, tag, http),
         }
+    }
+
+    fn is_prerelease(&self, w: &Wanted, tag: &str, http: &dyn Http) -> Result<bool> {
+        let Ref::GitHub { owner, repo } = &w.r#ref else {
+            return Err(Error::internal(format!("the GitHub API got {}", w.r#ref)));
+        };
+        let release = self.api_tagged(w, owner, repo, tag, http)?;
+        Ok(release.prerelease || release.draft)
     }
 }
 

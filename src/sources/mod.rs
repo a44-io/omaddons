@@ -271,6 +271,21 @@ pub trait Source: Send + Sync {
         )))
     }
 
+    /// The newest release older than `newest` (a tag) whose own metadata declares a build
+    /// for the client `names_client` accepts: GitHub's look-back through its recent
+    /// releases, for repositories that publish one release per client. `None` when the
+    /// source has no look-back.
+    fn look_back(
+        &self,
+        wanted: &Wanted,
+        newest: &str,
+        names_client: &(dyn Fn(&crate::model::AssetFlavor) -> bool + Sync),
+        http: &dyn Http,
+    ) -> Option<Result<LookBack>> {
+        let _ = (wanted, newest, names_client, http);
+        None
+    }
+
     /// [`Source::fetch`], calling `answered` as each wish is answered (fetch progress).
     /// By default every wish is reported once the batch is back; a source that answers
     /// wishes one at a time reports each as it comes.
@@ -341,6 +356,16 @@ impl<S: Source> Source for std::sync::Arc<S> {
     ) -> Option<Result<changelog::Changelog>> {
         S::changelog(self, r, latest, since, limit, http)
     }
+}
+
+/// What a [`Source::look_back`] found: the release declared for the client, as a set of
+/// its own, the releases ruled out on the way (tag, why), and every recent tag, newest
+/// first, so an installed release can be placed before or after the one found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LookBack {
+    pub found: Option<ReleaseSet>,
+    pub ruled_out: Vec<(String, String)>,
+    pub order: Vec<String>,
 }
 
 /// Where a `Deferred` asset's bytes are now. Used for one download attempt and never

@@ -36,6 +36,42 @@ pub struct ReleaseMemo {
     /// The Tukui index, for dependencies and search.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tukui_list: Option<TukuiList>,
+    /// What GitHub look-backs found, by [`look_back_key`]: believed while the newest
+    /// release is the one they were made against.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub look_backs: BTreeMap<String, LookBackMemo>,
+}
+
+/// One look-back's answer for a ref, channel and client family.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LookBackMemo {
+    /// The newest release's tag it was made against.
+    pub newest: String,
+    #[serde(flatten)]
+    pub look_back: crate::sources::LookBack,
+    #[schemars(with = "String")]
+    pub at: Timestamp,
+}
+
+/// The memo key of a look-back for `family`'s clients.
+pub fn look_back_key(r: &Ref, channel: Channel, family: crate::rules::Family) -> String {
+    format!("{}|{}", key(r, channel), family.as_str())
+}
+
+impl ReleaseMemo {
+    /// The look-back remembered for `family`'s clients, made against `newest` (a tag).
+    pub fn look_back(
+        &self,
+        r: &Ref,
+        channel: Channel,
+        family: crate::rules::Family,
+        newest: &str,
+    ) -> Option<crate::sources::LookBack> {
+        self.look_backs
+            .get(&look_back_key(r, channel, family))
+            .filter(|m| m.newest == newest)
+            .map(|m| m.look_back.clone())
+    }
 }
 
 impl Versioned for ReleaseMemo {
@@ -419,6 +455,14 @@ impl ReleaseMemo {
         {
             self.tukui_list = Some(list);
         }
+        for (key, look_back) in newer.look_backs {
+            match self.look_backs.get(&key) {
+                Some(kept) if kept.at > look_back.at => {}
+                _ => {
+                    self.look_backs.insert(key, look_back);
+                }
+            }
+        }
     }
 
     /// Keeps at most `max` entries and `max` candidate facts, dropping the oldest.
@@ -439,6 +483,18 @@ impl ReleaseMemo {
             self.candidates
                 .sort_by_key(|f| std::cmp::Reverse(f.learned()));
             self.candidates.truncate(max);
+        }
+        if self.look_backs.len() > max {
+            let mut by_age: Vec<(Timestamp, String)> = self
+                .look_backs
+                .iter()
+                .map(|(key, l)| (l.at, key.clone()))
+                .collect();
+            by_age.sort();
+            let excess = self.look_backs.len() - max;
+            for (_, key) in by_age.into_iter().take(excess) {
+                self.look_backs.remove(&key);
+            }
         }
     }
 }
@@ -852,6 +908,73 @@ mod tests {
             .map(|f| f.release_id.as_str())
             .collect();
         assert_eq!(kept, ["b", "d"]);
+    }
+
+    fn look_back(newest: &str, found: &str, when: &str) -> LookBackMemo {
+        LookBackMemo {
+            newest: newest.into(),
+            look_back: crate::sources::LookBack {
+                found: Some(set(vec![release(found, Channel::Stable, None)])),
+                ruled_out: vec![("v3".into(), "a prerelease".into())],
+                order: vec![newest.into(), "v3".into(), found.into()],
+            },
+            at: at(when),
+        }
+    }
+
+    #[test]
+    fn look_backs_are_believed_against_their_newest_tag_and_the_later_wins() {
+        use crate::rules::Family;
+        let r: Ref = "gh:O/Foo".parse().unwrap();
+        let k = look_back_key(&r, Channel::Stable, Family::Mists);
+        assert_eq!(k, "gh:o/foo|stable|mists");
+        assert_ne!(k, look_back_key(&r, Channel::Stable, Family::Tbc));
+        let mut memo = ReleaseMemo::default();
+        memo.look_backs
+            .insert(k.clone(), look_back("v4", "v2", "2026-10-15T10:00:00Z"));
+        let found = memo
+            .look_back(&r, Channel::Stable, Family::Mists, "v4")
+            .unwrap();
+        assert_eq!(found.found.unwrap().releases[0].version, "v2");
+        // A newer release asks again, and another family has its own.
+        assert!(
+            memo.look_back(&r, Channel::Stable, Family::Mists, "v5")
+                .is_none()
+        );
+        assert!(
+            memo.look_back(&r, Channel::Stable, Family::Tbc, "v4")
+                .is_none()
+        );
+
+        let mut older = ReleaseMemo::default();
+        older
+            .look_backs
+            .insert(k.clone(), look_back("v3", "v1", "2026-10-14T10:00:00Z"));
+        memo.merge(older);
+        assert_eq!(memo.look_backs[&k].newest, "v4");
+        let mut later = ReleaseMemo::default();
+        later
+            .look_backs
+            .insert(k.clone(), look_back("v5", "v2", "2026-10-16T10:00:00Z"));
+        memo.merge(later);
+        assert_eq!(memo.look_backs[&k].newest, "v5");
+
+        // It round-trips, and the cap drops the oldest.
+        let text = serde_json::to_string(&memo).unwrap();
+        let back: ReleaseMemo = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.look_backs, memo.look_backs);
+        for (family, when) in [
+            (Family::Tbc, "2026-10-17T10:00:00Z"),
+            (Family::Vanilla, "2026-10-13T10:00:00Z"),
+        ] {
+            memo.look_backs.insert(
+                look_back_key(&r, Channel::Stable, family),
+                look_back("v5", "v2", when),
+            );
+        }
+        memo.cap(2);
+        let kept: Vec<&str> = memo.look_backs.keys().map(String::as_str).collect();
+        assert_eq!(kept, ["gh:o/foo|stable|mists", "gh:o/foo|stable|tbc"]);
     }
 
     #[test]

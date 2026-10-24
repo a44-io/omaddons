@@ -196,6 +196,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Repositories one search asks GitHub's search API for (10 requests a minute unauthenticated)"
+    },
+    {
+      "name": "LOOK_BACK_MAX_RELEASES",
+      "value": {
+        "count": 10
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Releases a GitHub look-back reads for this client's newest build (one release.json request each, stopping at the first)"
     }
   ],
   [

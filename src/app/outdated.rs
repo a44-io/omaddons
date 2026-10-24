@@ -464,6 +464,7 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
             facts,
             &enabled,
             &|target, record| installed_primary_interface(target, record, &world.table),
+            &|r, c, family, newest| cache.remembered_look_back(r, c, family, newest),
         )
     };
     let mut facts = cache.facts().clone();
