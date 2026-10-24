@@ -25,7 +25,7 @@ use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::limits::CHANGELOG_MAX_CHARS;
 use crate::model::{Asset, AssetLocation, Channel, Ref, Release, ReleaseSet};
 use crate::net::{CacheState, Http, Request, run_bounded};
-use crate::politeness::{LOOK_BACK_MAX_RELEASES, MAX_CONCURRENT_REQUESTS};
+use crate::politeness::{LOOK_BACK_MAX_RELEASES, LOOK_BACK_SAME_TRACK, MAX_CONCURRENT_REQUESTS};
 
 /// Why the web path handed a ref to the fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +198,11 @@ impl GithubSource {
         let feed = Self::recent_tags(owner, repo, http)?;
         let order: Vec<String> = feed.tags.iter().map(|t| t.tag.clone()).collect();
         let mut ruled_out = Vec::new();
+        // The clients the last releases ruled out declare, and how many in a row did:
+        // [`LOOK_BACK_SAME_TRACK`] of them is a repository with one track, which no
+        // older release will leave. Prerelease names and missing release.json files
+        // neither count nor break the run.
+        let mut track: (Vec<String>, usize) = (Vec::new(), 0);
         let older = order
             .iter()
             .filter(|t| !same_version(t, newest))
@@ -236,6 +241,31 @@ impl GithubSource {
                 .flat_map(|a| &a.flavors)
                 .any(names_client);
             if !declares {
+                let mut flavors: Vec<String> = set
+                    .releases
+                    .iter()
+                    .flat_map(|r| &r.assets)
+                    .flat_map(|a| &a.flavors)
+                    .map(|f| f.flavor.clone())
+                    .collect();
+                flavors.sort();
+                flavors.dedup();
+                track = if track.0 == flavors {
+                    (flavors, track.1 + 1)
+                } else {
+                    (flavors, 1)
+                };
+                if track.1 >= LOOK_BACK_SAME_TRACK {
+                    ruled_out.push((
+                        tag.clone(),
+                        format!(
+                            "its release.json declares no build for this client, nor did the {} before it (only {}): one track, so the look-back stops",
+                            track.1 - 1,
+                            track.0.join(", ")
+                        ),
+                    ));
+                    break;
+                }
                 ruled_out.push((
                     tag.clone(),
                     "its release.json declares no build for this client".to_owned(),

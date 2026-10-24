@@ -205,6 +205,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Releases a GitHub look-back reads for this client's newest build (one release.json request each, stopping at the first)"
+    },
+    {
+      "name": "LOOK_BACK_SAME_TRACK",
+      "value": {
+        "count": 3
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Consecutive releases declaring the same other clients after which a look-back stops (one track)"
     }
   ],
   [

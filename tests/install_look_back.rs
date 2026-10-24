@@ -499,6 +499,68 @@ fn a_newest_release_declaring_the_client_never_looks_back() {
     assert_eq!(rest_requests(&home), 0, "{}", log.context());
 }
 
+/// A repository with one track (every release retail-only) is not read to the end of
+/// its feed: after three older releases declaring the same other clients the
+/// look-back stops, and the refusal says why.
+#[test]
+fn a_single_track_repository_stops_the_look_back_early() {
+    const TRACK: [Rel; 6] = [
+        ("v6", "mainline", 120_105),
+        ("v5", "mainline", 120_105),
+        ("v4", "mainline", 120_105),
+        ("v3", "mainline", 120_105),
+        ("v2", "mainline", 120_105),
+        ("v1", "mainline", 120_105),
+    ];
+    let home = Home::new(&["wow_classic"]);
+    serve(&home.http, &TRACK, &[]);
+    let r = home.run(&["install", REF, "-t", "classic"]);
+    let error = &r.expect(3)["error"];
+    assert_eq!(error["code"], "no_compatible_release", "{}", r.context());
+    let reasons: Vec<String> = error["details"]["tried"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["reason"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        reasons.last().is_some_and(|r| r.contains("one track")),
+        "{reasons:?}"
+    );
+    for (tag, reads) in [("v5", 1), ("v4", 1), ("v3", 1), ("v2", 0), ("v1", 0)] {
+        assert_eq!(
+            manifest_requests(&home, tag),
+            reads,
+            "{tag}: {}",
+            net_log(&home).context()
+        );
+    }
+}
+
+/// Another client's release in between breaks the run, so a per-client release behind
+/// more than three others is still found when the track changes on the way.
+#[test]
+fn another_clients_release_resets_the_track() {
+    const MIXED: [Rel; 6] = [
+        ("v6", "mainline", 120_105),
+        ("v5", "mainline", 120_105),
+        ("v4", "mainline", 120_105),
+        ("v3", "bcc", 20_506),
+        ("v2", "mainline", 120_105),
+        ("v1", "mists", 50_504),
+    ];
+    let home = Home::new(&["wow_classic"]);
+    serve(&home.http, &MIXED, &[]);
+    let r = home.run(&["install", REF, "-t", "classic"]);
+    let envelope = r.expect(0);
+    assert!(
+        codes(&envelope).contains(&"older_release_for_client".to_owned()),
+        "{}",
+        r.context()
+    );
+    assert_eq!(listed(&home, "classic")["version"], "v1", "{}", r.context());
+}
+
 /// `--version` and a pasted asset link name one release: no look-back.
 #[test]
 fn a_named_release_never_looks_back() {

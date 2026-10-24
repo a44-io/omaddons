@@ -62,6 +62,9 @@ pub const GITHUB_SEARCH_PER_PAGE: usize = 20;
 /// the client: what `releases.atom` holds. One `release.json` request each, sequential,
 /// stopping at the first match.
 pub const LOOK_BACK_MAX_RELEASES: usize = 10;
+/// Consecutive older releases whose `release.json` declares the same clients, none of
+/// them this one, after which a look-back stops: the repository publishes one track.
+pub const LOOK_BACK_SAME_TRACK: usize = 3;
 
 /// Every politeness constant, in table order.
 pub const REGISTRY: &[LimitInfo] = &[
@@ -218,6 +221,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "count",
         None,
         "Releases a GitHub look-back reads for this client's newest build (one release.json request each, stopping at the first)",
+    ),
+    limit(
+        "LOOK_BACK_SAME_TRACK",
+        LimitValue::Count(LOOK_BACK_SAME_TRACK as u64),
+        "count",
+        None,
+        "Consecutive releases declaring the same other clients after which a look-back stops (one track)",
     ),
 ];
 
