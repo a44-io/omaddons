@@ -1034,6 +1034,57 @@ fn a_file_labelled_for_other_clients_only_is_refused_naming_the_evidence() {
     assert!(!home.addons("_classic_era_").join("Foo").exists());
 }
 
+/// The addon's own folder carrying a TOC named for this client, at an in-range
+/// interface, is the author building for it: metadata naming other clients only is no
+/// evidence against it. Raider.IO's shape (2026-10-24): `release.json` lists mainline
+/// only, and `RaiderIO/` ships `_Classic` (50504) and `_Vanilla` (11509) TOCs. A
+/// client whose own TOC is out of range (Anniversary reads `_Classic` at 50504) is
+/// still refused.
+#[test]
+fn the_addons_own_toc_for_this_client_outweighs_metadata_for_others() {
+    let home = Home::new(&["wow", "wow_classic", "wow_classic_era", "wow_anniversary"]);
+    let files = vec![
+        (
+            "RaiderIO/RaiderIO.toc".to_owned(),
+            toc("120100, 120105", &[]),
+        ),
+        (
+            "RaiderIO/RaiderIO_Classic.toc".to_owned(),
+            toc("50504", &[]),
+        ),
+        (
+            "RaiderIO/RaiderIO_Vanilla.toc".to_owned(),
+            toc("11509", &[]),
+        ),
+        ("RaiderIO/core.lua".to_owned(), "-- RaiderIO\n".to_owned()),
+    ];
+    release(
+        &home.http,
+        FOO,
+        "v1",
+        "RaiderIO.zip",
+        &[("mainline", 120_100), ("mainline", 120_105)],
+        &files,
+    );
+    for (id, dir) in [
+        ("retail", "_retail_"),
+        ("classic", "_classic_"),
+        ("era", "_classic_era_"),
+    ] {
+        let r = home.run(&["install", "gh:o/foo", "-t", id]);
+        r.expect(0);
+        assert!(
+            home.addons(dir).join("RaiderIO/RaiderIO.toc").is_file(),
+            "{id}: {}",
+            r.context()
+        );
+    }
+    let r = home.run(&["install", "gh:o/foo", "-t", "anniversary"]);
+    let error = &r.expect(3)["error"];
+    assert_eq!(error["code"], "no_compatible_release", "{}", r.context());
+    assert!(!home.addons("_anniversary_").join("RaiderIO").exists());
+}
+
 /// On a legacy client a `release.json` cannot name the client, so its entries say
 /// nothing: the TOCs decide, as before.
 #[test]

@@ -65,7 +65,7 @@ use crate::state::memo::{CandidateFact, VerdictFact, merge_fact};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::store;
-use crate::toc::{DiskFolder, Verdict, WrongFlavorReason, loaded_toc};
+use crate::toc::{DiskFolder, TocLevel, Verdict, WrongFlavorReason, loaded_toc};
 
 /// The plan format's version.
 pub const SCHEMA_VERSION: &str = "1.0";
@@ -4521,8 +4521,25 @@ impl TargetPlanner<'_> {
             .iter()
             .any(|f| f.source.is_release_json());
         let grade = primary.map_or(Grade::Refused, |p| grade(&split, declared, p));
+        // The addon's own folder carries a TOC named for this client (a game or family
+        // suffix of its row) at an in-range interface: the author built it for this
+        // client, whatever the metadata says (Raider.IO's `_Classic` and `_Vanilla`
+        // TOCs under a release.json naming mainline only).
+        let range = ctx.table.family_range(self.target.family);
+        let own_toc = verdicts
+            .iter()
+            .find(|v| Some(&v.folder) == primary)
+            .is_some_and(|v| {
+                matches!(v.report.verdict, Verdict::Compatible { .. })
+                    && v.report
+                        .loaded
+                        .as_ref()
+                        .is_some_and(|l| l.level != TocLevel::Plain)
+                    && v.interface
+                        .is_some_and(|i| range.is_some_and(|r| r.contains(i)))
+            });
         // The publisher labelled this very file for other clients only.
-        let against = (grade != Grade::Refused)
+        let against = (grade != Grade::Refused && !own_toc)
             .then(|| self.evidence_against(r#ref, candidate, &all))
             .flatten();
         // What install would do with it here, for the next checks to know.
