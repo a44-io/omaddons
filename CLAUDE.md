@@ -189,6 +189,10 @@ Work happens on `main`. Do not create feature branches unless the user explicitl
 
 Coordinate with the `SendMessage` and `ListAgents` tools in multi-agent sessions. Treat unrecognized working-tree changes as peer work. Do not revert or overwrite them.
 
+## Interactive Terminal
+
+If an interactive terminal is needed for sending keys, use the multiplexer `herdr`. Run `herdr --skill` for help.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below.
