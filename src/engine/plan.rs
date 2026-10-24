@@ -64,7 +64,7 @@ use crate::state::memo::{CandidateFact, VerdictFact, merge_fact};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::store;
-use crate::toc::{DiskFolder, Verdict, loaded_toc};
+use crate::toc::{DiskFolder, Verdict, WrongFlavorReason, loaded_toc};
 
 /// The plan format's version.
 pub const SCHEMA_VERSION: &str = "1.0";
@@ -2616,8 +2616,8 @@ pub fn check_release(
                         });
                         break;
                     }
-                    Ok(Err(reason)) => {
-                        refused.push(format!("{}: {reason}", candidate.asset.filename))
+                    Ok(Err(refusal)) => {
+                        refused.push(format!("{}: {}", candidate.asset.filename, refusal.reason))
                     }
                     Err(error) => {
                         unreadable.get_or_insert(error);
@@ -3321,6 +3321,23 @@ struct Winner {
     deps: DepFacts,
 }
 
+/// A candidate that does not install here.
+struct Refusal {
+    /// Its `tried[]` reason.
+    reason: String,
+    /// The client's interface floor, when the addon's own folder fell below it.
+    floor: Option<u32>,
+}
+
+impl Refusal {
+    fn new(reason: String) -> Self {
+        Self {
+            reason,
+            floor: None,
+        }
+    }
+}
+
 /// An inspected archive cut down to the folders the target's client loads, and the
 /// folders left out.
 struct Loadable {
@@ -3515,6 +3532,8 @@ impl TargetPlanner<'_> {
         let mut unreadable: Option<Error> = None;
         // Some candidate was judged and does not load (as opposed to failing to arrive).
         let mut refused = false;
+        // The client's interface floor, when some candidate's addon folder fell below it.
+        let mut below_floor = None;
         let hint = name.or(source_name.as_deref());
         for candidate in candidates {
             match self.try_candidate(&wanted.r#ref, &candidate, hint, intent.floor_interface) {
@@ -3522,9 +3541,12 @@ impl TargetPlanner<'_> {
                     winner = Some(won);
                     break;
                 }
-                Ok(Err(reason)) => {
+                Ok(Err(refusal)) => {
                     refused = true;
-                    tried.push(json!({ "asset": candidate.asset.filename, "reason": reason }));
+                    below_floor = below_floor.or(refusal.floor);
+                    tried.push(
+                        json!({ "asset": candidate.asset.filename, "reason": refusal.reason }),
+                    );
                 }
                 Err(error) => {
                     let reason = format!("{}: {}", error.code.wire(), error.message);
@@ -3557,9 +3579,12 @@ impl TargetPlanner<'_> {
                 if let Some(error) = unreadable {
                     return Err(error);
                 }
+                let floor = below_floor
+                    .map(|f| format!(": {}", self.floor_note(f)))
+                    .unwrap_or_default();
                 return Err(Error::new(
                     ErrorCode::WrongFlavor,
-                    format!("{} does not load on {} ({:?})", wanted.r#ref, self.target.id, self.target.family),
+                    format!("{} does not load on {} ({:?}){floor}", wanted.r#ref, self.target.id, self.target.family),
                     Suggestion::text("use an archive built for this client"),
                 )
                 .details(json!({ "ref": wanted.r#ref.to_string(), "target": self.target.id, "tried": tried })));
@@ -3588,7 +3613,14 @@ impl TargetPlanner<'_> {
             }) {
                 return Err(error);
             }
-            return Err(self.no_release(wanted, &tried, "no candidate loads on this client"));
+            let why = match below_floor {
+                Some(floor) => format!(
+                    "no candidate loads on this client; {}",
+                    self.floor_note(floor)
+                ),
+                None => "no candidate loads on this client".to_owned(),
+            };
+            return Err(self.no_release(wanted, &tried, &why));
         };
 
         // An installed addon keeps its name: it is the record's identity. A hint that
@@ -4226,7 +4258,7 @@ impl TargetPlanner<'_> {
         candidate: &Candidate,
         name_hint: Option<&str>,
         floor: Option<u32>,
-    ) -> Result<std::result::Result<Winner, String>> {
+    ) -> Result<std::result::Result<Winner, Refusal>> {
         let ctx = self.ctx;
         let mut downloaded = None;
         let mut canonical_url = None;
@@ -4240,7 +4272,7 @@ impl TargetPlanner<'_> {
                     // A WowAce project that needs the packager is refused by name, as
                     // one that does not load here is.
                     Err(e) if let Some(reason) = wowace::packaging_refusal(&e) => {
-                        return Ok(Err(reason));
+                        return Ok(Err(Refusal::new(reason)));
                     }
                     Err(e) => {
                         return Err(match &candidate.asset.location {
@@ -4309,7 +4341,19 @@ impl TargetPlanner<'_> {
                     )
                 })
                 .collect();
-            return Ok(Err(format!("wrong_flavor: {}", why.join("; "))));
+            let floor = verdicts
+                .iter()
+                .find(|v| Some(&v.folder) == primary)
+                .and_then(|v| match &v.report.verdict {
+                    Verdict::WrongFlavor {
+                        reason: WrongFlavorReason::BelowClientFloor { floor, .. },
+                    } => Some(*floor),
+                    _ => None,
+                });
+            return Ok(Err(Refusal {
+                reason: format!("wrong_flavor: {}", why.join("; ")),
+                floor,
+            }));
         }
         // M2-D42: an adopted build is never replaced by an older one. The fact above is
         // kept, so the next check shows the candidate blocked.
@@ -4324,7 +4368,7 @@ impl TargetPlanner<'_> {
                     || "it is out of date on this client".to_owned(),
                     |i| format!("its interface {i} is below the installed {floor}"),
                 );
-                return Ok(Err(format!("older_than_installed: {why}")));
+                return Ok(Err(Refusal::new(format!("older_than_installed: {why}"))));
             }
         }
         let mut inspected = inspected;
@@ -4614,6 +4658,14 @@ impl TargetPlanner<'_> {
             Suggestion::text("run without --offline and with OMADDONS_OFFLINE unset"),
         )
         .details(json!({ "ref": wanted.r#ref.to_string(), "reason": "not_cached" }))
+    }
+
+    /// Why a candidate below the client's interface `floor` never loads, for refusals.
+    fn floor_note(&self, floor: u32) -> String {
+        format!(
+            "{} never loads an addon whose interface is below {floor}, whatever the player enables",
+            self.target.id
+        )
     }
 
     fn no_release(&self, wanted: &Wanted, tried: &[Value], why: &str) -> Error {

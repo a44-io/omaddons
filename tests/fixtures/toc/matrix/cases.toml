@@ -8,7 +8,7 @@
 # takes the family, rules row and interface straight from the builtin tables.
 #
 # Client interfaces (from the rules tables): retail 12.1.5 120105, 12.1.0 120100,
-# 10.2.6 100206, Mists Classic 5.5.4 50504, Classic Era 1.15.9 11509, Anniversary/TBC
+# 12.0.5 120005, 12.0.1 120001, 11.2.7 110207, 10.2.6 100206, Mists Classic 5.5.4 50504, Classic Era 1.15.9 11509, Anniversary/TBC
 # 2.5.6 20506, Wrath 3.4.3 30403, Titan 3.80.2 38002, Cata 4.4.2 40402, Forever 1.60.1
 # 16001; legacy 1.12.1 11200, 2.4.3 20400, 3.3.5a 30300, 4.3.4 40300, 5.4.8 50400; a
 # custom 1.16-1.49 build of the 1.12 client (Turtle WoW 1.18.1) pinned at 11200; an
@@ -464,9 +464,17 @@ expect_warnings = ["out_of_date"]
 
 [[case]]
 group = "out_of_date"
-name = "retail-previous-expansion-is-out-of-date-not-wrong-flavor"
+name = "retail-current"
 target = { version = "12.1.5", kind = "battlenet" }
-files = [["Foo.toc", "## Interface: 110200"]]
+files = [["Foo.toc", "## Interface: 120105"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "out_of_date"
+name = "pre-12-retail-previous-expansion-is-out-of-date-not-wrong-flavor"
+target = { version = "11.2.7", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 100207"]]
 expect_file = "Foo.toc"
 expect_verdict = "compatible"
 expect_out_of_date = true
@@ -474,11 +482,128 @@ expect_warnings = ["out_of_date"]
 
 [[case]]
 group = "out_of_date"
-name = "retail-current"
-target = { version = "12.1.5", kind = "battlenet" }
-files = [["Foo.toc", "## Interface: 120105"]]
+name = "pre-12-custom-retail-previous-expansion-is-out-of-date"
+target = { version = "11.2.7", kind = "custom" }
+files = [["Foo.toc", "## Interface: 100207"]]
 expect_file = "Foo.toc"
 expect_verdict = "compatible"
+expect_out_of_date = true
+expect_warnings = ["out_of_date"]
+
+# ---- 8b. The interface floor -----------------------------------------------------------
+# Retail 12.0 and later load no Mainline TOC below 120000, with no player override. The
+# floor is keyed on the client's interface: 12.1.0 is `mainline-12.0.7`, and 12.0.1 (the
+# beta) and 12.0.5 fall in `mainline-10.2.7` beside 11.x builds.
+
+[[case]]
+group = "interface_floor"
+name = "retail-previous-expansion-is-below-the-floor"
+target = { version = "12.1.5", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 110207"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "below_client_floor"
+
+[[case]]
+group = "interface_floor"
+name = "retail-at-the-floor-is-out-of-date"
+target = { version = "12.1.5", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 120000"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+expect_out_of_date = true
+expect_warnings = ["out_of_date"]
+
+[[case]]
+group = "interface_floor"
+name = "retail-list-with-a-current-value-loads"
+target = { version = "12.1.5", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 110207, 120105"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+
+[[case]]
+group = "interface_floor"
+name = "retail-list-of-another-family-and-below-the-floor"
+target = { version = "12.1.5", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 11509, 110207"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "below_client_floor"
+
+[[case]]
+group = "interface_floor"
+name = "mainline-suffixed-toc-below-the-floor"
+target = { version = "12.1.5", kind = "battlenet" }
+files = [["Foo_Mainline.toc", "## Interface: 110207"], ["Foo_Vanilla.toc", "## Interface: 11509"]]
+expect_file = "Foo_Mainline.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "below_client_floor"
+
+[[case]]
+group = "interface_floor"
+name = "ptr-12-1-0-row-12-0-7-is-held-to-the-floor"
+target = { version = "12.1.0", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 110207"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "below_client_floor"
+
+[[case]]
+group = "interface_floor"
+name = "beta-12-0-1-row-10-2-7-is-held-to-the-floor"
+target = { version = "12.0.1", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 110207"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "below_client_floor"
+
+[[case]]
+group = "interface_floor"
+name = "retail-12-0-5-row-10-2-7-is-held-to-the-floor"
+target = { version = "12.0.5", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 110207"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "below_client_floor"
+
+[[case]]
+group = "interface_floor"
+name = "retail-12-0-5-at-the-floor-is-out-of-date"
+target = { version = "12.0.5", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 120000"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+expect_out_of_date = true
+expect_warnings = ["out_of_date"]
+
+[[case]]
+group = "interface_floor"
+name = "pre-12-client-in-the-same-row-is-not-held-to-it"
+target = { version = "11.2.7", kind = "battlenet" }
+files = [["Foo.toc", "## Interface: 110200"]]
+expect_file = "Foo.toc"
+expect_verdict = "compatible"
+expect_out_of_date = true
+expect_warnings = ["out_of_date"]
+
+[[case]]
+group = "interface_floor"
+name = "custom-12-x-client-is-held-to-the-floor"
+target = { version = "12.1.5", kind = "custom" }
+files = [["Foo.toc", "## Interface: 110207"]]
+expect_file = "Foo.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "below_client_floor"
+
+[[case]]
+group = "interface_floor"
+name = "forever-reads-mainline-but-its-range-decides"
+target = { version = "1.60.1", kind = "battlenet" }
+files = [["Foo_Mainline.toc", "## Interface: 110207"]]
+expect_file = "Foo_Mainline.toc"
+expect_verdict = "wrong_flavor"
+expect_reason = "interface_not_in_family"
 
 # ---- 9. Game type directives -----------------------------------------------------------
 

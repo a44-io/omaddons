@@ -291,6 +291,10 @@ pub enum WrongFlavorReason {
         interfaces: Vec<u32>,
         family: Family,
     },
+    /// Every Interface value in the client's family is below the floor the client holds
+    /// each TOC to ([`ClientRules::interface_floor`]), which no player setting lifts:
+    /// retail 12.0 and later load no Mainline TOC below 120000.
+    BelowClientFloor { interfaces: Vec<u32>, floor: u32 },
     /// The client's own interface is unknown (0), so nothing can be proven compatible.
     TargetInterfaceUnknown,
     /// An addon folder whose TOCs are all for other clients (archive verification; on
@@ -330,9 +334,24 @@ pub fn verdict(
 }
 
 /// The highest of `interfaces` that lies in `family`'s range or, for a family without
-/// one, in the client's own `major.minor` (from `target_interface`; unknown when 0).
+/// one, in the client's own `major.minor` (from `target_interface`; unknown when 0), and
+/// is not below the floor `rules` holds that client to ([`ClientRules::floor_for`]).
 /// `None` when none does. The interface a verdict judges by.
 pub fn best_in_family(
+    interfaces: &[u32],
+    rules: &ClientRules,
+    family: Family,
+    target_interface: u32,
+    table: &RulesTable,
+) -> Option<u32> {
+    // The highest in-family value clears the floor exactly when some value does.
+    let floor = rules.floor_for(target_interface);
+    highest_in_family(interfaces, family, target_interface, table)
+        .filter(|&best| floor.is_none_or(|floor| best >= floor))
+}
+
+/// [`best_in_family`] without the floor.
+fn highest_in_family(
     interfaces: &[u32],
     family: Family,
     target_interface: u32,
@@ -361,7 +380,7 @@ pub fn primary_interface(
     table: &RulesTable,
 ) -> Option<u32> {
     let (interfaces, _) = effective_interfaces(&loaded.toc, rules);
-    best_in_family(&interfaces, family, target_interface, table)
+    best_in_family(&interfaces, rules, family, target_interface, table)
 }
 
 /// [`verdict`] on a TOC already loaded from `folder` (`None`: there is none), for
@@ -403,9 +422,14 @@ pub fn judge(
         if table.family_range(family).is_none() && target_interface == 0 {
             break 'v wrong(WrongFlavorReason::TargetInterfaceUnknown);
         }
-        let Some(best) = best_in_family(&interfaces, family, target_interface, table) else {
+        let Some(best) = highest_in_family(&interfaces, family, target_interface, table) else {
             break 'v wrong(WrongFlavorReason::InterfaceNotInFamily { interfaces, family });
         };
+        if let Some(floor) = rules.floor_for(target_interface)
+            && best < floor
+        {
+            break 'v wrong(WrongFlavorReason::BelowClientFloor { interfaces, floor });
+        }
         let out_of_date = best < target_interface;
         if out_of_date {
             warnings.push(
@@ -624,11 +648,15 @@ mod tests {
         assert!(matches!(verdict, Verdict::WrongFlavor { .. }));
         assert_eq!(interface, None);
         // A family without a range compares major.minor, and an unknown client none.
+        let unknown = table.fallback(InstallKind::Battlenet);
         assert_eq!(
-            best_in_family(&[30_405, 30_300], Family::Unknown, 30_400, &table),
+            best_in_family(&[30_405, 30_300], unknown, Family::Unknown, 30_400, &table),
             Some(30_405)
         );
-        assert_eq!(best_in_family(&[30_405], Family::Unknown, 0, &table), None);
+        assert_eq!(
+            best_in_family(&[30_405], unknown, Family::Unknown, 0, &table),
+            None
+        );
     }
 
     #[test]
@@ -797,6 +825,93 @@ mod tests {
             (report.verdict, report.warnings.len()),
             (Verdict::Compatible { out_of_date: false }, 0)
         );
+    }
+
+    /// Retail 12.0 and later load no Mainline TOC below 120000, whatever the player
+    /// enables: such a folder is wrong flavor with the floor, never out of date, and
+    /// nothing suggests enabling out-of-date addons for it. The floor binds by the
+    /// client's interface across rows; older clients keep out-of-date as before.
+    #[test]
+    fn retail_twelve_holds_every_toc_to_its_floor() {
+        let foo = |i: &str| Memory::new("Foo", &[("Foo.toc", &format!("## Interface: {i}\n"))]);
+        let below = |interfaces: &[u32]| {
+            serde_json::json!({
+                "verdict": "wrong_flavor",
+                "reason": "below_client_floor",
+                "interfaces": interfaces,
+                "floor": 120_000,
+            })
+        };
+        let retail = bnet("12.1.5");
+        let report = judge(&foo("110207"), &retail);
+        assert_eq!(reason(&report), below(&[110_207]));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert_eq!(
+            reason(&judge(&foo("11509, 110207"), &retail)),
+            below(&[11_509, 110_207]),
+            "another family's value beside it changes nothing"
+        );
+        let at_floor = judge(&foo("120000"), &retail);
+        assert_eq!(at_floor.verdict, Verdict::Compatible { out_of_date: true });
+        assert_eq!(at_floor.warnings[0].code, WarningCode::OutOfDate);
+        assert_eq!(
+            judge(&foo("110207, 120105"), &retail).verdict,
+            Verdict::Compatible { out_of_date: false }
+        );
+        // PTR (`mainline-12.0.7`), beta and 12.0.5 (`mainline-10.2.7`), and a custom 12.x
+        // client are held to it.
+        for c in [
+            bnet("12.1.0"),
+            bnet("12.0.1"),
+            bnet("12.0.5"),
+            client("12.1.5", InstallKind::Custom),
+        ] {
+            assert_eq!(
+                reason(&judge(&foo("110207"), &c)),
+                below(&[110_207]),
+                "{}",
+                c.rules.name
+            );
+        }
+        // Clients before 12.0, the same `mainline-10.2.7` row included, are not.
+        for c in [bnet("11.2.7"), client("11.2.7", InstallKind::Custom)] {
+            let report = judge(&foo("100207"), &c);
+            assert_eq!(
+                report.verdict,
+                Verdict::Compatible { out_of_date: true },
+                "{}",
+                c.rules.name
+            );
+            assert_eq!(report.warnings[0].code, WarningCode::OutOfDate);
+        }
+        // The interface a below-floor folder is judged by is none.
+        let view = foo("110207");
+        let loaded = loaded_toc(&view, &retail.rules).unwrap().unwrap();
+        let table = RulesTable::builtin();
+        assert_eq!(
+            primary_interface(
+                &loaded,
+                &retail.rules,
+                retail.family,
+                retail.interface,
+                &table
+            ),
+            None
+        );
+    }
+
+    /// The floor alone refuses 110207 on 12.1.5: with the row's floor patched away, the
+    /// same folder is out of date again.
+    #[test]
+    fn without_its_floor_retail_calls_the_old_toc_out_of_date() {
+        let overrides: crate::rules::RulesOverrides =
+            toml::from_str("[client_rules.mainline]\ninterface_floor = 0\n").unwrap();
+        let table = RulesTable::builtin().with_overrides(&overrides).unwrap();
+        let v: ClientVersion = "12.1.5".parse().unwrap();
+        let rules = table.rules_for(&v, InstallKind::Battlenet);
+        let view = Memory::new("Foo", &[("Foo.toc", "## Interface: 110207\n")]);
+        let report = verdict(&view, rules, Family::Mainline, 120_105, &table).unwrap();
+        assert_eq!(report.verdict, Verdict::Compatible { out_of_date: true });
     }
 
     #[test]

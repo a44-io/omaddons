@@ -327,6 +327,7 @@ fn every_group_and_every_builtin_row_are_covered() {
         "cross_family",
         "case_naming",
         "out_of_date",
+        "interface_floor",
         "game_types",
         "unknown_family",
         "inline_directives",

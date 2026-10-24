@@ -134,7 +134,7 @@ mod support {
             "OldAddon",
             &[(
                 "OldAddon.toc",
-                &toc("110200", &["## Title: Old Addon", "## Version: 0.9"]),
+                &toc("120000", &["## Title: Old Addon", "## Version: 0.9"]),
             )],
             &[],
         );
@@ -228,13 +228,53 @@ fn unmanaged_folders_carry_their_toc() {
             &Value::from("unmanaged"),
             &Value::from("Old Addon"),
             &Value::from("0.9"),
-            &Value::from(110_200),
+            &Value::from(120_000),
             &Value::from("out_of_date")
         )
     );
     let linked = unmanaged.iter().find(|f| f["folder"] == "MyAddon").unwrap();
     assert_eq!(linked["class"], "linked");
     assert!(linked["verdict"].is_null(), "links are never read");
+}
+
+/// Retail 12.0 and later load no Mainline TOC below 120000, whatever the player
+/// enables: such a folder on disk does not load, and nothing suggests enabling
+/// out-of-date addons for it.
+#[test]
+fn an_unmanaged_folder_below_the_client_floor_does_not_load() {
+    let env = TestEnv::new();
+    let addons = retail(&env);
+    addon_folder(
+        &addons,
+        "Ancient",
+        &[("Ancient.toc", &toc("110207", &["## Title: Ancient"]))],
+        &[],
+    );
+    let (code, envelope) = list(&env, &["--unmanaged"]);
+    assert_eq!(code, 0, "{envelope}");
+    let ancient = target(&envelope, "retail")["unmanaged"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["folder"] == "Ancient")
+        .cloned()
+        .unwrap();
+    assert_eq!(ancient["verdict"], "wrong_flavor", "{ancient}");
+    assert!(
+        !envelope.to_string().contains("Load out of date"),
+        "{envelope}"
+    );
+    let human = env
+        .command()
+        .args(["list", "--unmanaged"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(human.stdout).unwrap();
+    assert!(
+        text.lines()
+            .any(|l| l.contains("Ancient") && l.contains("wrong_flavor")),
+        "{text}"
+    );
 }
 
 #[test]

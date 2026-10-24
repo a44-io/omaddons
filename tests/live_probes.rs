@@ -19,7 +19,7 @@ use omaddons::limits::DOWNLOAD_MAX_BYTES;
 use omaddons::model::{AssetLocation, Ref};
 use omaddons::net::{CacheState, Http, NetConfig, NetLog, Request, stack};
 use omaddons::resolve::catalog::Catalog;
-use omaddons::rules::{Family, RulesTable};
+use omaddons::rules::{ClientVersion, Family, InstallKind, RulesTable};
 use omaddons::sources::git::GitSource;
 use omaddons::sources::git_hosts::GitRunner;
 use omaddons::sources::github::GithubSource;
@@ -50,19 +50,30 @@ mod support {
 
     /// The family a release.json entry `(flavor, interface)` declares: by the rules
     /// table's interface ranges first (Questie declares `wrath:38002` for Titan), then by
-    /// the flavor name; `None` when neither names one.
+    /// the flavor name; `None` when neither names one, or when the interface is below the
+    /// floor its family's current client holds every TOC to (`mainline:110207`: retail
+    /// 12.0 and later load nothing below 120000), which declares no client here.
     pub fn declared_family(
         table: &RulesTable,
         flavor: &str,
         interface: Option<u32>,
     ) -> Option<Family> {
-        interface
-            .and_then(|i| {
-                Family::ALL
-                    .into_iter()
-                    .find(|f| table.family_range(*f).is_some_and(|r| r.contains(i)))
-            })
-            .or_else(|| Family::from_release_flavor(flavor))
+        let by_range = interface.and_then(|i| {
+            Family::ALL
+                .into_iter()
+                .find(|f| table.family_range(*f).is_some_and(|r| r.contains(i)))
+                .map(|f| (f, i))
+        });
+        let Some((family, i)) = by_range else {
+            return Family::from_release_flavor(flavor);
+        };
+        // With no version, a family's first row: its current client's.
+        let current =
+            table.rules_for_family(family, &ClientVersion::new(0, 0, 0), InstallKind::Battlenet);
+        current
+            .interface_floor
+            .is_none_or(|floor| i >= floor)
+            .then_some(family)
     }
 
     /// Each item of an install envelope by request: `Ok(folders)` when installed,

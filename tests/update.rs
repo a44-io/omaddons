@@ -345,7 +345,7 @@ fn an_update_warns_what_its_new_tocs_say_as_its_dry_run_does() {
     ));
     let (foo1, foo2) = (
         Rel::new("Foo", "v1", "120105", MAINLINE),
-        Rel::new("Foo", "v2", "110207", &[("mainline", 110_207)]),
+        Rel::new("Foo", "v2", "120000", &[("mainline", 120_000)]),
     );
     home.installed_behind(
         FOO,
@@ -399,12 +399,55 @@ fn an_update_warns_what_its_new_tocs_say_as_its_dry_run_does() {
     assert_eq!(read_warnings(&envelope), planned, "{}", r.context());
 }
 
+/// A newer release whose TOC falls below retail 12's 120000 floor never loads there,
+/// whatever the player enables: `update` leaves the installed build alone (`blocked`)
+/// and `outdated` says it does not load, never that it loads out of date.
+#[test]
+fn a_release_below_retails_floor_is_blocked_not_installed() {
+    let mut home = Home::new(&["wow"]);
+    let (v1, v2) = (
+        Rel::new("Foo", "v1", "120105", MAINLINE),
+        Rel::new("Foo", "v2", "110207", &[]),
+    );
+    home.installed_behind(FOO, ("v1", &v1.assets()), ("v2", &v2.assets()), &["retail"]);
+    let before = tree_hash(&home.addons("_retail_"));
+
+    let r = home.run(&["update"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        items(&envelope),
+        [row("retail", "Foo", "skipped", "blocked")],
+        "{}",
+        r.context()
+    );
+    assert!(
+        !envelope.to_string().contains("out_of_date"),
+        "{}",
+        r.context()
+    );
+    assert_eq!(tree_hash(&home.addons("_retail_")), before);
+    let r = home.run(&["outdated", "-t", "retail"]);
+    let outdated = r.expect(0);
+    let item = &outdated["data"]["targets"][0]["items"][0];
+    assert_eq!(
+        (&item["status"], &item["blocked_reason"]),
+        (&json!("blocked"), &json!("verified_not_loading")),
+        "{}",
+        r.context()
+    );
+    assert!(
+        !outdated.to_string().contains("Load out of date"),
+        "{}",
+        r.context()
+    );
+}
+
 #[test]
 fn an_adopted_build_is_never_replaced_by_an_older_one() {
     let mut home = Home::new(&["wow"]);
     let old = Rel::new("Foo", "v1", "120105", MAINLINE);
     // Newer by tag, but built for an older interface: out of date on this client.
-    let new = Rel::new("Foo", "v2", "110207", &[]);
+    let new = Rel::new("Foo", "v2", "120000", &[]);
     home.installed_behind(
         FOO,
         ("v1", &old.assets()),

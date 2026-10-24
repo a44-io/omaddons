@@ -370,6 +370,7 @@ const RULES_FIELDS: &[&str] = &[
     "interface_includes_patch",
     "legacy",
     "reload_rereads_toc",
+    "interface_floor",
 ];
 
 /// The spec a dotted key matches.
@@ -1348,6 +1349,7 @@ maks = 11_599
                 "family" => "family = \"vanilla\"\n".to_owned(),
                 "install_kind" => "install_kind = \"battlenet\"\n".to_owned(),
                 "version_min" | "version_max" => format!("{f} = \"1.15.0\"\n"),
+                "interface_floor" => format!("{f} = 11_500\n"),
                 "game_types" | "game_suffixes" | "family_suffixes" | "legacy_suffixes" => {
                     format!("{f} = [\"Vanilla\"]\n")
                 }

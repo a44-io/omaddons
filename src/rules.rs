@@ -455,6 +455,13 @@ pub struct ClientRules {
     /// (2026-10-20), and a legacy client still needs a restart to see a new folder.
     #[serde(default)]
     pub reload_rereads_toc: bool,
+    /// The lowest Interface a client whose own interface has reached it loads at all,
+    /// with no player override ("Load out of date AddOns" does not lift it). Keyed on
+    /// the client's interface rather than the row, because rows split where TOC features
+    /// arrived: 12.0.0–12.0.6 builds share `mainline-10.2.7` with 11.x ones. `None` (or
+    /// 0) is no floor.
+    #[serde(default)]
+    pub interface_floor: Option<u32>,
 }
 
 /// The conservative `fallback-custom` row. A deserialized `Target` carries it until
@@ -478,6 +485,13 @@ impl ClientRules {
             && self
                 .version_max
                 .is_none_or(|max| version <= max.without_build())
+    }
+
+    /// The floor a client at `interface` is held to: [`ClientRules::interface_floor`]
+    /// once the client's interface has reached it.
+    pub fn floor_for(&self, interface: u32) -> Option<u32> {
+        self.interface_floor
+            .filter(|&floor| floor != 0 && interface >= floor)
     }
 
     fn suffixes(&self) -> impl Iterator<Item = &str> {
@@ -914,6 +928,8 @@ pub struct ClientRulesOverride {
     pub interface_includes_patch: Option<bool>,
     pub legacy: Option<bool>,
     pub reload_rereads_toc: Option<bool>,
+    /// 0 removes the row's floor.
+    pub interface_floor: Option<u32>,
 }
 
 impl ClientRulesOverride {
@@ -947,6 +963,9 @@ impl ClientRulesOverride {
         );
         set(&mut row.legacy, &self.legacy);
         set(&mut row.reload_rereads_toc, &self.reload_rereads_toc);
+        if let Some(floor) = self.interface_floor {
+            row.interface_floor = (floor != 0).then_some(floor);
+        }
     }
 
     fn new_row(&self, name: &str) -> Result<ClientRules, RulesError> {
@@ -980,6 +999,7 @@ impl ClientRulesOverride {
             )?,
             legacy: required(&self.legacy, name, "legacy")?,
             reload_rereads_toc: self.reload_rereads_toc.unwrap_or(false),
+            interface_floor: self.interface_floor.filter(|&floor| floor != 0),
         })
     }
 }
@@ -1130,7 +1150,8 @@ fn builtin_version_families() -> Vec<VersionFamilyRule> {
 /// family, interface range, custom-client default id.
 ///
 /// The ranges separate families, not expansions: an older-expansion retail TOC is out of
-/// date, not wrong flavor. The vanilla floor is 11300 because Battle.net Classic Era
+/// date, not wrong flavor, except below a row's `interface_floor` (retail 12.0 and later
+/// load nothing below 120000). The vanilla floor is 11300 because Battle.net Classic Era
 /// starts at 1.13; 11200–11299 is the 1.12 private-server generation (`vanilla-legacy`).
 /// Each legacy family is one minor generation wide.
 #[rustfmt::skip]
@@ -1192,6 +1213,7 @@ fn modern_row(
         interface_includes_patch: true,
         legacy: false,
         reload_rereads_toc: true,
+        interface_floor: None,
     }
 }
 
@@ -1214,8 +1236,14 @@ fn legacy_row(name: &str, family: Family, version_min: ClientVersion) -> ClientR
         interface_includes_patch: false,
         legacy: true,
         reload_rereads_toc: false,
+        interface_floor: None,
     }
 }
+
+/// Retail 12.0.0 and later load no Mainline TOC below 120000, "at all (with no player
+/// override)": warcraft.wiki.gg `Patch_12.0.0/API_changes/notes`, "Forced interface
+/// matching for 12.0.0" (Midnight beta 2 and later; fetched 2026-10-24).
+const MAINLINE_INTERFACE_FLOOR: u32 = 120_000;
 
 /// Rows of one family are tried in order. Mainline is split where clients gained
 /// `_Standard` (12.1.5), directive conditionals (12.0.7), comma lists (10.2.7) and
@@ -1228,21 +1256,29 @@ fn legacy_row(name: &str, family: Family, version_min: ClientVersion) -> ClientR
 /// 12.1.5), so every current client reads them. Wrath and Cata Classic have no live
 /// product and their last builds predate 12.0.7, as do older mainline builds.
 ///
+/// The interface floor ([`MAINLINE_INTERFACE_FLOOR`]) is on every mainline row a 12.x
+/// build can fall in; it binds only clients at 120000 or later.
+///
 /// UNVERIFIED, so table values only: the first classic builds with multi-TOC and comma
 /// lists. Titan's game type and suffix come from publishers' archives (see its row).
 fn builtin_client_rules() -> Vec<ClientRules> {
     let standard = ["standard"];
+    let floor = Some(MAINLINE_INTERFACE_FLOOR);
     vec![
-        modern_row(
-            "mainline",
-            Family::Mainline,
-            ClientVersion::new(12, 1, 5),
-            &standard,
-            &["Standard"],
-            "Mainline",
-        ),
+        ClientRules {
+            interface_floor: floor,
+            ..modern_row(
+                "mainline",
+                Family::Mainline,
+                ClientVersion::new(12, 1, 5),
+                &standard,
+                &["Standard"],
+                "Mainline",
+            )
+        },
         ClientRules {
             version_max: Some(ClientVersion::new(12, 1, 4)),
+            interface_floor: floor,
             ..modern_row(
                 "mainline-12.0.7",
                 Family::Mainline,
@@ -1255,6 +1291,7 @@ fn builtin_client_rules() -> Vec<ClientRules> {
         ClientRules {
             version_max: Some(ClientVersion::new(12, 0, 6)),
             directive_conditionals: false,
+            interface_floor: floor,
             ..modern_row(
                 "mainline-10.2.7",
                 Family::Mainline,
@@ -1798,6 +1835,76 @@ mod tests {
                 "fallback-battlenet"
             ]
         );
+    }
+
+    /// Retail 12.0 and later load nothing below 120000. The floor is on every mainline row
+    /// a 12.x build can fall in and binds by the client's interface, so the 12.0.x builds
+    /// that share `mainline-10.2.7` with 11.x are held to it and the 11.x ones are not.
+    #[test]
+    fn the_mainline_floor_binds_twelve_x_clients_only() {
+        let table = table();
+        let floored: Vec<&str> = table
+            .client_rules()
+            .iter()
+            .chain([&table.fallback_battlenet, &table.fallback_custom])
+            .filter(|row| row.interface_floor.is_some())
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(floored, ["mainline", "mainline-12.0.7", "mainline-10.2.7"]);
+        for (version, kind, floor) in [
+            ("12.1.5", InstallKind::Battlenet, Some(120_000)),
+            ("12.1.0", InstallKind::Battlenet, Some(120_000)),
+            ("12.0.5", InstallKind::Battlenet, Some(120_000)),
+            ("12.0.1", InstallKind::Battlenet, Some(120_000)),
+            ("12.0.0", InstallKind::Battlenet, Some(120_000)),
+            ("11.2.7", InstallKind::Battlenet, None),
+            ("10.2.6", InstallKind::Battlenet, None),
+            ("12.1.5", InstallKind::Custom, Some(120_000)),
+            ("11.2.7", InstallKind::Custom, None),
+            ("1.60.1", InstallKind::Battlenet, None),
+            ("3.3.5", InstallKind::Custom, None),
+        ] {
+            let version = v(version);
+            let rules = table.rules_for(&version, kind);
+            let interface = table.interface_for_client(&version, kind, rules);
+            assert_eq!(
+                rules.floor_for(interface),
+                floor,
+                "{version} ({kind:?}, {})",
+                rules.name
+            );
+        }
+    }
+
+    /// `[client_rules.<row>] interface_floor` moves a row's floor, and 0 removes it; a new
+    /// row has none unless it sets one.
+    #[test]
+    fn the_interface_floor_is_patchable() {
+        let overrides: RulesOverrides = toml::from_str(
+            r#"
+            [client_rules.mainline]
+            interface_floor = 0
+            [client_rules."mainline-12.0.7"]
+            interface_floor = 120100
+            [client_rules.legion]
+            family = "mainline"
+            version_min = "7.3.0"
+            version_max = "7.3.5"
+            multi_toc = true
+            comma_interface = false
+            interface_includes_patch = true
+            legacy = false
+            "#,
+        )
+        .unwrap();
+        let table = table().with_overrides(&overrides).unwrap();
+        let rules = |version: &str| table.rules_for(&v(version), InstallKind::Battlenet);
+        assert_eq!(rules("12.1.5").interface_floor, None);
+        assert_eq!(rules("12.1.5").floor_for(120_105), None);
+        assert_eq!(rules("12.1.0").floor_for(120_100), Some(120_100));
+        assert_eq!(rules("12.1.0").floor_for(120_005), None);
+        assert_eq!(rules("12.0.5").floor_for(120_005), Some(120_000));
+        assert_eq!(rules("7.3.5").interface_floor, None);
     }
 
     #[test]

@@ -827,7 +827,7 @@ fn an_adopted_build_newer_than_the_release_is_blocked_not_replaced() {
     let setup = || {
         let home = Home::new(&["wow"]);
         catalog(&home, &[("Foo", "gh:o/foo", &["Foo"])]);
-        release(&home.http, FOO, "v2", &build("110207", "v2"), &[]);
+        release(&home.http, FOO, "v2", &build("120000", "v2"), &[]);
         unpack(&home.addons("_retail_"), &borrowed(&build("120105", "v1")));
         home
     };

@@ -416,7 +416,7 @@ fn mixed_inventory_snapshot() {
     addon_folder(
         &addons,
         "OldThing",
-        &[("OldThing.toc", &toc("110200", &["## Title: Old"]))],
+        &[("OldThing.toc", &toc("120000", &["## Title: Old"]))],
         &[],
     );
     addon_folder(&addons, "NoToc", &[], &[("readme.txt", b"hi")]);

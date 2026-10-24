@@ -1002,7 +1002,8 @@ pub fn partition(verdicts: &[FolderVerdict]) -> Partition {
 /// meant for it and the folders it does not load are simply skipped. Without that
 /// promise the addon's own folder (`primary`) must load, and every skipped folder must
 /// be gated away by its own TOCs (`AllowLoadGameType`/`ExcludeLoadGameType`, or TOCs
-/// only for other clients) or require such a folder: a folder that merely lists other
+/// only for other clients), be an old build of this client's family below the floor it
+/// never loads under, or require such a folder: a folder that merely lists other
 /// clients' interfaces marks a build for another client, which is refused whole.
 pub fn accepts(partition: &Partition, declared: bool, primary: &FolderName) -> bool {
     if partition.install.is_empty() {
@@ -1015,6 +1016,7 @@ pub fn accepts(partition: &Partition, declared: bool, primary: &FolderName) -> b
                     s.reason,
                     WrongFlavorReason::GameTypeExcluded
                         | WrongFlavorReason::NoLoadableToc
+                        | WrongFlavorReason::BelowClientFloor { .. }
                         | WrongFlavorReason::DependencySkipped { .. }
                 )
             }))

@@ -86,9 +86,9 @@ notes = "release.json entries carry no name or version; the tag is the version"
 [[addon]]
 name = "OmniCC"
 ref = "gh:tullamods/OmniCC"
-families = ["mainline", "vanilla", "tbc", "titan", "mists"]
+families = ["vanilla", "tbc", "titan", "mists"]
 folders = ["OmniCC", "OmniCC_Config"]
-notes = "11.2.8: OmniCC.toc carries Interface 110207, 50503, 38000, 20505, 11508, so 12.x clients load it only as out of date"
+notes = "11.2.8: OmniCC.toc carries Interface 110207, 50503, 38000, 20505, 11508; its release.json declares mainline, but retail 12.0 and later load nothing below 120000"
 
 [[addon]]
 name = "Dominos"
@@ -165,9 +165,9 @@ folders = ["IceHUD", "IceHUD_Options"]
 [[addon]]
 name = "Quartz"
 ref = "gh:Nevcairiel/Quartz"
-families = ["mainline", "vanilla", "tbc", "mists"]
+families = ["vanilla", "tbc", "mists"]
 folders = ["Quartz"]
-notes = "3.7.17: Quartz.toc carries Interface 11508, 20505, 50503, 110207, so 12.x clients load it only as out of date"
+notes = "3.7.17: Quartz.toc carries Interface 11508, 20505, 50503, 110207; its release.json declares mainline, but retail 12.0 and later load nothing below 120000"
 
 [[addon]]
 name = "Mapster"
@@ -230,9 +230,9 @@ folders = ["PremadeGroupsFilter"]
 [[addon]]
 name = "Rarity"
 ref = "gh:WowRarity/Rarity"
-families = ["mainline", "vanilla", "mists"]
+families = ["vanilla", "mists"]
 folders = ["Rarity", "Rarity_Options"]
-notes = "r751: Rarity.toc carries Interface 110207, 50503, 11508, so 12.x clients load it only as out of date"
+notes = "r751: Rarity.toc carries Interface 110207, 50503, 11508; its release.json declares mainline, but retail 12.0 and later load nothing below 120000"
 
 [[addon]]
 name = "SavedInstances"
@@ -270,16 +270,16 @@ notes = "v68: its newest mainline interface is 120001, so 12.1 clients load it o
 [[addon]]
 name = "OmniBar"
 ref = "gh:jordonwow/omnibar"
-families = ["mainline", "vanilla", "tbc", "wrath", "cata", "mists"]
+families = ["vanilla", "tbc", "wrath", "cata", "mists"]
 folders = ["OmniBar"]
-notes = "v34: OmniBar.toc carries Interface 110200, so 12.x clients load it only as out of date"
+notes = "v34: OmniBar.toc carries Interface 110200; its release.json declares mainline, but retail 12.0 and later load nothing below 120000"
 
 [[addon]]
 name = "Cell"
 ref = "gh:enderneko/Cell"
-families = ["mainline", "vanilla", "tbc", "titan", "cata", "mists"]
+families = ["vanilla", "tbc", "titan", "cata", "mists"]
 folders = ["Cell"]
-notes = "r274-release: Cell.toc carries Interface 110207, so 12.x clients load it only as out of date"
+notes = "r274-release: Cell.toc carries Interface 110207; its release.json declares mainline, but retail 12.0 and later load nothing below 120000"
 
 [[addon]]
 name = "LiteMount"
@@ -410,9 +410,9 @@ notes = "16.00: one zip for every client; each TOC carries Interface 11509, 1600
 [[addon]]
 name = "Tukui"
 ref = "tukui:tukui"
-families = ["mainline", "vanilla", "mists"]
+families = ["vanilla", "mists"]
 folders = ["Tukui"]
-notes = "20.463: Tukui-Mainline.toc carries Interface 110207, Tukui-Classic.toc 11507, Tukui-Mists.toc 50501"
+notes = "20.463: Tukui-Mainline.toc carries Interface 110207 (retail 12.0 and later load nothing below 120000), Tukui-Classic.toc 11507, Tukui-Mists.toc 50501"
 
 # ---- WowAce: one name, a build per set of families (variants, M3-D16) ------------------
 

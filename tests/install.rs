@@ -2290,13 +2290,121 @@ fn an_http_ref_never_suggests_a_url_that_is_then_blocked() {
     );
 }
 
-/// A TOC older than the client loads only with out-of-date addons enabled (the real
-/// retail client did not load OmniCC 11.2.8's), so a committed install says so as its
-/// dry run does: once per folder it adds, in the envelope and in a human run's stderr.
+/// Retail 12.0 and later load no Mainline TOC below 120000, whatever the player
+/// enables: an archive built for 11.x is refused naming the floor, with nothing written
+/// and no word of out-of-date addons, and a release of it finds no candidate, saying
+/// the same.
+#[test]
+fn retail_twelve_refuses_an_addon_below_its_interface_floor() {
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let zip = dl.join("Foo.zip");
+    fs::write(
+        &zip,
+        zip_text(&[("Foo/Foo.toc", &toc("110207", &["## Title: Foo"]))]),
+    )
+    .unwrap();
+    let zip = zip.display().to_string();
+    let client = tree_hash(&home.client("_retail_"));
+    let state = state_files(&home);
+    let floor = "retail never loads an addon whose interface is below 120000";
+
+    let r = home.run(&["install", &zip, "-t", "retail"]);
+    let envelope = r.expect(4);
+    let error = &envelope["error"];
+    assert_eq!(error["code"], "wrong_flavor", "{}", r.context());
+    assert!(
+        error["message"].as_str().unwrap().contains(floor),
+        "{}",
+        r.context()
+    );
+    let tried = &error["details"]["tried"][0]["reason"];
+    assert!(
+        tried.as_str().unwrap().contains("\"below_client_floor\""),
+        "{}",
+        r.context()
+    );
+    assert!(
+        !envelope.to_string().contains("Load out of date"),
+        "{}",
+        r.context()
+    );
+    assert_eq!(
+        tree_hash(&home.client("_retail_")),
+        client,
+        "nothing written"
+    );
+    assert_eq!(state_files(&home), state, "{}", listing(&home.state()));
+
+    foo_release(&home.http, "v1.0.0", &[("mainline", 110_207)], "110207");
+    let r = home.run(&["install", "gh:o/foo", "-t", "retail"]);
+    let envelope = r.expect(3);
+    let error = &envelope["error"];
+    assert_eq!(error["code"], "no_compatible_release", "{}", r.context());
+    assert!(
+        error["message"].as_str().unwrap().contains(floor),
+        "{}",
+        r.context()
+    );
+    assert_eq!(
+        tree_hash(&home.client("_retail_")),
+        client,
+        "nothing written"
+    );
+}
+
+/// A side folder below retail's floor is an old build of this client's own family,
+/// not another client's: the addon installs and the folder is left out, saying why.
+#[test]
+fn a_side_folder_below_the_floor_is_left_out() {
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    fs::create_dir_all(&dl).unwrap();
+    let zip = dl.join("Foo.zip");
+    fs::write(
+        &zip,
+        zip_text(&[
+            ("Foo/Foo.toc", &toc("120105", &["## Title: Foo"])),
+            (
+                "Foo_Old/Foo_Old.toc",
+                &toc("110207", &["## Title: Foo Old"]),
+            ),
+        ]),
+    )
+    .unwrap();
+    let zip = zip.display().to_string();
+    let r = home.run(&["install", &zip, "-t", "retail"]);
+    let envelope = r.expect(0);
+    let item = &items(&envelope)[0];
+    assert_eq!(item["status"], "installed", "{}", r.context());
+    assert_eq!(item["folders"]["added"], serde_json::json!(["Foo"]));
+    assert_eq!(
+        item["folders"]["skipped"],
+        serde_json::json!([{
+            "name": "Foo_Old",
+            "reason": "below_client_floor",
+            "interfaces": [110_207],
+            "floor": 120_000,
+        }]),
+        "{}",
+        r.context()
+    );
+    assert!(
+        !warning_codes(&envelope).contains(&"out_of_date"),
+        "{}",
+        r.context()
+    );
+    assert!(!home.addons("_retail_").join("Foo_Old").exists());
+}
+
+/// A TOC older than the client (above its 120000 floor) loads only with out-of-date
+/// addons enabled, so a committed install says so as its dry run does: once per folder
+/// it adds, in the envelope and in a human run's stderr.
 #[test]
 fn a_committed_install_warns_out_of_date_as_its_dry_run_does() {
     let home = Home::new(&["wow"]);
-    foo_release(&home.http, "v1.0.0", &[("mainline", 110_207)], "110207");
+    foo_release(&home.http, "v1.0.0", &[("mainline", 120_000)], "120000");
     let dry = home.run(&["install", "gh:o/foo", "-t", "retail", "--dry-run"]);
     let planned = warnings_of(&dry.expect(0), "out_of_date");
     assert_eq!(planned.len(), 2, "Foo and FooOptions\n{}", dry.context());

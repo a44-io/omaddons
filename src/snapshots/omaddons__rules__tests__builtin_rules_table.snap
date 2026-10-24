@@ -467,7 +467,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": 120000
     },
     {
       "name": "mainline-12.0.7",
@@ -488,7 +489,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": 120000
     },
     {
       "name": "mainline-10.2.7",
@@ -509,7 +511,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": false,
       "interface_includes_patch": true,
       "legacy": false,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": 120000
     },
     {
       "name": "mainline-9.1",
@@ -530,7 +533,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": false,
       "interface_includes_patch": true,
       "legacy": false,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": null
     },
     {
       "name": "forever",
@@ -555,7 +559,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": null
     },
     {
       "name": "vanilla",
@@ -578,7 +583,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": null
     },
     {
       "name": "tbc",
@@ -601,7 +607,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": null
     },
     {
       "name": "wrath",
@@ -624,7 +631,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": false,
       "interface_includes_patch": true,
       "legacy": false,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": null
     },
     {
       "name": "titan",
@@ -648,7 +656,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": null
     },
     {
       "name": "cata",
@@ -671,7 +680,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": false,
       "interface_includes_patch": true,
       "legacy": false,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": null
     },
     {
       "name": "mists",
@@ -694,7 +704,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": true,
       "interface_includes_patch": true,
       "legacy": false,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": null
     },
     {
       "name": "vanilla-legacy",
@@ -711,7 +722,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": false,
       "interface_includes_patch": false,
       "legacy": true,
-      "reload_rereads_toc": false
+      "reload_rereads_toc": false,
+      "interface_floor": null
     },
     {
       "name": "tbc-legacy",
@@ -728,7 +740,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": false,
       "interface_includes_patch": false,
       "legacy": true,
-      "reload_rereads_toc": false
+      "reload_rereads_toc": false,
+      "interface_floor": null
     },
     {
       "name": "wrath-legacy",
@@ -745,7 +758,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": false,
       "interface_includes_patch": false,
       "legacy": true,
-      "reload_rereads_toc": true
+      "reload_rereads_toc": true,
+      "interface_floor": null
     },
     {
       "name": "cata-legacy",
@@ -762,7 +776,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": false,
       "interface_includes_patch": false,
       "legacy": true,
-      "reload_rereads_toc": false
+      "reload_rereads_toc": false,
+      "interface_floor": null
     },
     {
       "name": "mists-legacy",
@@ -779,7 +794,8 @@ expression: "RulesTable::builtin()"
       "directive_conditionals": false,
       "interface_includes_patch": false,
       "legacy": true,
-      "reload_rereads_toc": false
+      "reload_rereads_toc": false,
+      "interface_floor": null
     }
   ],
   "fallback_battlenet": {
@@ -800,7 +816,8 @@ expression: "RulesTable::builtin()"
     "directive_conditionals": true,
     "interface_includes_patch": true,
     "legacy": false,
-    "reload_rereads_toc": true
+    "reload_rereads_toc": true,
+    "interface_floor": null
   },
   "fallback_custom": {
     "name": "fallback-custom",
@@ -817,6 +834,7 @@ expression: "RulesTable::builtin()"
     "directive_conditionals": false,
     "interface_includes_patch": false,
     "legacy": true,
-    "reload_rereads_toc": false
+    "reload_rereads_toc": false,
+    "interface_floor": null
   }
 }

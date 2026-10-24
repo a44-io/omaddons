@@ -300,7 +300,7 @@ fn a_work_dropped_at_revalidation_reports_none_of_its_plan_warnings() {
     s.install("gh:o/bar", "bar"); // registers the target and creates the lock file
     fs::write(
         s.dl.join("old.zip"),
-        zip_text(&[("Old/Old.toc", "## Interface: 110207\n## Version: 1\n")]),
+        zip_text(&[("Old/Old.toc", "## Interface: 120000\n## Version: 1\n")]),
     )
     .unwrap();
     let (a, b) = concurrently(&s, ("gh:o/old", "old"), ("gh:o/old", "old"));

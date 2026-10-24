@@ -118,7 +118,7 @@ expression: inv
         "version": null,
         "author": null,
         "interfaces": [
-          110200
+          120000
         ],
         "x_ids": {},
         "website": null,
@@ -132,7 +132,7 @@ expression: inv
           "level": "plain",
           "suffix": null,
           "case_ambiguous": false,
-          "interface_raw": "110200"
+          "interface_raw": "120000"
         },
         "verdict": {
           "verdict": "compatible",
@@ -141,7 +141,7 @@ expression: inv
         "warnings": [
           {
             "code": "out_of_date",
-            "message": "OldThing: OldThing.toc targets interface 110200, older than the client's 120105; it loads only with out-of-date addons enabled",
+            "message": "OldThing: OldThing.toc targets interface 120000, older than the client's 120105; it loads only with out-of-date addons enabled",
             "fix": "update the addon, or enable \"Load out of date AddOns\" in the client",
             "fix_argv": null
           }
