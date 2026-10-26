@@ -22,6 +22,7 @@ use super::outcome::{
     DepItem, ItemDeps, addon_identity, dependency_items, dependency_suffix, sorted,
 };
 pub use super::outcome::{ItemError, ItemStatus, ModeNote, SkipReason, TargetRef};
+use super::precondition::{self, PlanBinding, PlanExtras};
 use super::resolve_args::{aimed_at, catalog_name, for_family, parse_ref};
 use super::world::World;
 use crate::cli::Context;
@@ -32,7 +33,7 @@ use crate::engine::plan::{
     AnyFlavorIntent, ChangeKind, FolderSummary, PinIntent, PlanFailure, RequestedChange,
     TargetPlan, Unresolved, UnresolvedReason,
 };
-use crate::engine::{TxOutcome, TxOutcomes, TxRequest, TxTarget};
+use crate::engine::{Binding, TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::model::{
     AddonReason, AddonRecord, Channel, FolderName, Ref, ReloadRequired, RunId, TxId, TxKind,
@@ -106,6 +107,9 @@ pub struct InstallData {
     /// The client has no `Interface/AddOns` yet (it creates one on its first launch), so
     /// this install creates it (under `--dry-run`: would create it).
     pub creates_addons_dir: bool,
+    /// `--dry-run`: the token `--if-match` takes to bind the real run to this preview
+    /// (M4-D19); `null` on a real run.
+    pub precondition: Option<String>,
     /// `-v` only: the target's client dir.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_dir: Option<PathBuf>,
@@ -266,7 +270,7 @@ impl Outcome for InstallOutcome {
         })
     }
 
-    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
+    fn render_human(&self, w: &mut dyn Write, style: &Style) -> std::io::Result<()> {
         let d = &self.data;
         let id = &d.target.id;
         if let Some(mode) = d.target.mode.as_ref().filter(|m| !m.shared_with.is_empty()) {
@@ -387,6 +391,10 @@ impl Outcome for InstallOutcome {
         }
         if !tail.is_empty() {
             writeln!(w, "{}", tail.join(" · "))?;
+        }
+        // Behind `-v`: D4's stored plan makes its `apply` line the default hint.
+        if let Some(token) = d.precondition.as_deref().filter(|_| style.verbose > 0) {
+            writeln!(w, "Run it bound to this preview: --if-match {token}")?;
         }
         Ok(())
     }
@@ -617,9 +625,16 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         kind: None,
         run: RunId::new(),
         no_deps: args.no_deps,
-        witness: None,
+        // The run the token describes: a dry run's, or a bound run's to compare.
+        witness: precondition::witnessing(ctx),
     };
-    let done = engine.run(&req, Some(&cache));
+    let extras = PlanExtras::default();
+    let binding = PlanBinding::of_run(ctx, "install", extras.clone());
+    let done = engine.run_bound(
+        &req,
+        Some(&cache),
+        binding.as_ref().map(|b| b as &dyn Binding),
+    );
     // The command's last engine run: remember what it fetched, even when it failed.
     if let Ok(done) = &done {
         facts.extend(done.plan.facts.iter().cloned());
@@ -780,6 +795,9 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             reload_required: outcome.map_or(ReloadRequired::None, |o| o.reload_required),
             atomic_swap: swapped.then(|| outcome.is_none_or(|o| o.atomic_swap)),
             creates_addons_dir: outcome.is_some_and(|o| o.creates_addons_dir),
+            precondition: ctx
+                .dry_run
+                .then(|| precondition::plan_token("install", &done.plan, &extras)),
             client_dir: verbose.then(|| target.target.client_dir.clone()),
         },
         warnings: unique,
@@ -1443,6 +1461,7 @@ mod tests {
                 reload_required: ReloadRequired::Reload,
                 atomic_swap: None,
                 creates_addons_dir: false,
+                precondition: None,
                 client_dir: None,
             },
             warnings: Vec::new(),
@@ -1456,14 +1475,82 @@ mod tests {
     }
 
     fn human(o: &InstallOutcome) -> String {
+        human_at(o, 0)
+    }
+
+    fn human_at(o: &InstallOutcome, verbose: u8) -> String {
         let mut out = Vec::new();
         let style = Style {
             color: false,
-            verbose: 0,
+            verbose,
             quiet: false,
         };
         o.render_human(&mut out, &style).unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    /// A well-formed token, as a dry run returns one.
+    fn token() -> String {
+        format!("pc1:{}", "0123456789abcdef".repeat(4))
+    }
+
+    #[test]
+    fn install_data_always_carries_precondition() {
+        let token = token();
+        assert!(precondition::is_token(&token));
+        for (precondition, expected) in [(None, json!(null)), (Some(&token), json!(token))] {
+            let mut o = outcome(Vec::new(), None, precondition.is_some(), false);
+            o.data.precondition = precondition.cloned();
+            let data = serde_json::to_value(&o.data).unwrap();
+            assert_eq!(data.get("precondition"), Some(&expected), "{data}");
+            // Field order is rendering order: right after `creates_addons_dir`.
+            let text = serde_json::to_string(&o.data).unwrap();
+            assert!(
+                text.contains(&format!(
+                    r#""creates_addons_dir":false,"precondition":{expected}"#
+                )),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_token_line_is_shown_only_under_verbose() {
+        let token = token();
+        let line = format!("Run it bound to this preview: --if-match {token}\n");
+        let mut dry = outcome(
+            vec![item("Foo", ItemStatus::Updated, Some("2.0"))],
+            None,
+            true,
+            false,
+        );
+        dry.data.precondition = Some(token);
+        for (case, o, verbose, shown) in [
+            ("a dry run, without -v", &dry, 0, false),
+            ("a dry run, with -v", &dry, 1, true),
+        ] {
+            let text = human_at(o, verbose);
+            assert_eq!(text.ends_with(&line), shown, "{case}: {text}");
+            assert_eq!(
+                text.matches("--if-match").count(),
+                usize::from(shown),
+                "{case}: {text}"
+            );
+        }
+        assert_eq!(
+            human_at(&dry, 0),
+            "retail: would update Foo 2.0 (1 folder)\n/reload in game\n",
+            "without -v the human output is unchanged"
+        );
+        let tx: TxId = "01JB8Q2VA00000000000000000".parse().unwrap();
+        let real = outcome(
+            vec![item("Foo", ItemStatus::Updated, Some("2.0"))],
+            Some(tx),
+            false,
+            false,
+        );
+        let text = human_at(&real, 1);
+        assert!(!text.contains("--if-match"), "a real run, with -v: {text}");
     }
 
     #[test]

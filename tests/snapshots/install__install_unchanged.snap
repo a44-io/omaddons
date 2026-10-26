@@ -34,6 +34,7 @@ expression: "support::stable(&envelope)"
       }
     ],
     "kind": null,
+    "precondition": null,
     "reload_required": "none",
     "target": {
       "id": "retail",

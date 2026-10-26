@@ -1,6 +1,5 @@
 ---
 source: tests/deps.rs
-assertion_line: 1133
 expression: "support::stable(&envelope)"
 ---
 {
@@ -66,6 +65,7 @@ expression: "support::stable(&envelope)"
       }
     ],
     "kind": "install",
+    "precondition": null,
     "reload_required": "none",
     "target": {
       "id": "retail",

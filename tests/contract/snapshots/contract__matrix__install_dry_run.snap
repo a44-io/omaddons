@@ -1,0 +1,60 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "data": {
+    "atomic_swap": null,
+    "creates_addons_dir": false,
+    "dry_run": true,
+    "items": [
+      {
+        "bridge_dependencies": [],
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [],
+          "recorded": [],
+          "removed": [],
+          "replaced": [
+            "Foo"
+          ],
+          "skipped": []
+        },
+        "from_version": "1",
+        "name": "Foo",
+        "reason": "explicit",
+        "ref": "gh:o/foo",
+        "request": "gh:o/foo",
+        "required_by": [],
+        "status": "updated",
+        "to_version": "2",
+        "unresolved": [],
+        "version_confidence": "toc"
+      }
+    ],
+    "kind": "update",
+    "precondition": "<precondition>",
+    "reload_required": "none",
+    "target": {
+      "id": "retail",
+      "key": "<ulid>"
+    },
+    "tx": null
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "snapshot_only_copy",
+      "fix": "nothing is moved under --dry-run; after the run, its snapshot holds the only copy until retention prunes it",
+      "fix_argv": null,
+      "message": "On retail, the transaction's snapshot will hold the only copy of Foo: undo brings them back until retention prunes it (kept at least 24 hours; then pruned once 10 newer transactions on this client exist, after 7 days, or past the 2 GiB snapshot cap)"
+    }
+  ]
+}

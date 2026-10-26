@@ -74,6 +74,7 @@ expression: s.stable(&c.envelope)
       }
     ],
     "kind": "update",
+    "precondition": null,
     "reload_required": "none",
     "target": {
       "id": "retail",

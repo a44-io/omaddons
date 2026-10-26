@@ -165,12 +165,14 @@ mod support {
             .collect()
     }
 
-    /// `install`'s envelope with its volatile values replaced, for snapshots.
+    /// `install`'s envelope with its volatile values replaced, for snapshots. A dry run's
+    /// token holds the build id, so it is never snapshotted raw.
     pub fn stable(envelope: &Value) -> Value {
         let mut text = envelope.to_string();
         for (value, placeholder) in [
             (&envelope["data"]["tx"], "<tx>"),
             (&envelope["data"]["target"]["key"], "<key>"),
+            (&envelope["data"]["precondition"], "<precondition>"),
         ] {
             if let Some(v) = value.as_str() {
                 text = text.replace(v, placeholder);

@@ -47,6 +47,7 @@ expression: s.stable(&c.envelope)
       }
     ],
     "kind": "install",
+    "precondition": null,
     "reload_required": "none",
     "target": {
       "id": "classic",

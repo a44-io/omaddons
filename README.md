@@ -746,7 +746,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters); others accept and ignore it |
 | `--offline` | Fail any network access (`OMADDONS_OFFLINE=1`) |
 | `--while-running` | Allow folder changes while the client runs (never SavedVariables) |
-| `--if-match <TOKEN>` | Change nothing unless the plan is still the one the `--dry-run` that returned this token showed (`data.precondition`); see [Previews and `--if-match`](#previews-and---if-match). Only `remove`, `undo`, `backup restore`, `backup prune` and `errors dismiss` take it; on any other command it is a usage error |
+| `--if-match <TOKEN>` | Change nothing unless the plan is still the one the `--dry-run` that returned this token showed (`data.precondition`); see [Previews and `--if-match`](#previews-and---if-match). Only `remove`, `undo`, `backup restore`, `backup prune`, `errors dismiss` and `install` take it; on any other command it is a usage error |
 | `--no-color` | No ANSI color (also `NO_COLOR`). Color is also off with `--json`, in CI, with `TERM=dumb` and when stderr is not a terminal |
 | `--quiet` | Only errors on stderr |
 | `-v, --verbose` | More detail: paths, and debug `log` events on stderr (repeatable) |
@@ -855,6 +855,8 @@ omaddons install Plater -t retail --reinstall   # put back modified or deleted f
 ```
 
 Each item's `status` is `installed`, `updated`, `unchanged`, `skipped` (the same addon requested twice: `skip_reason: "duplicate"`, with `duplicate_of`) or `failed`, or, when only its record changed, `pinned`, `unpinned` or `edited` (with `fields`). A partial result (some addons failed) is still exit 0, with `partial: true` and each failure in `data.items[].error`. With `--strict` it is exit 6. When every addon fails, the command fails with the first item's error, and `error.details.items` lists them all. `-v` adds each item's `asset_url`. Never-launched clients have no `Interface/AddOns` yet: the first install creates it inside its transaction and reports `creates_addons_dir: true`.
+
+`--dry-run` returns `data.precondition`, and `--if-match <it>` installs exactly what that preview showed, or nothing (`plan_stale`). `install` asks its sources again, so a release published since the preview makes the bound run stale; see [Previews and `--if-match`](#previews-and---if-match). Without `-t`, `install` chooses the client as it always does, and the token binds that choice: a run that would now choose another client is stale. With `-v`, a dry run's human output ends with the `--if-match` it takes.
 
 **Reinstalling.** `--reinstall` installs the recorded release again, even when it is current, and replaces the addon's folders: files modified by hand come back as released, and deleted folders come back. The archive comes from the download cache when it is still there, with no request (offline too). Otherwise that exact release is fetched again, never a newer one. A pinned addon stays pinned, and a dependency stays a dependency. The item is `updated` from and to the same version, in an `update` transaction, so `undo` brings the replaced files back. Only an installed addon can be reinstalled (`not_managed`, fix `omaddons install <addon> -t <id>`). `omaddons reinstall X` is a usage error whose fix is `omaddons install X --reinstall`.
 
@@ -1989,7 +1991,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 
 ### Previews and `--if-match`
 
-A confirm dialog, or an agent that previews before it acts, must not run something other than what it showed. A `--dry-run` of a destructive command returns `data.precondition`, a token describing exactly what the run would do, and the real run with `--if-match <token>` does that or nothing. `remove`, `undo`, `backup restore`, `backup prune` and `errors dismiss` bind. An `errors` read carries its own token for each client (`dismiss.precondition`), so a dismissal can be bound to the read the user saw, not to a later preview.
+A confirm dialog, or an agent that previews before it acts, must not run something other than what it showed. A `--dry-run` of a destructive command, or of `install`, returns `data.precondition`, a token describing exactly what the run would do, and the real run with `--if-match <token>` does that or nothing. `remove`, `undo`, `backup restore`, `backup prune`, `errors dismiss` and `install` bind. An `errors` read carries its own token for each client (`dismiss.precondition`), so a dismissal can be bound to the read the user saw, not to a later preview.
 
 ```bash
 omaddons remove Foo -t retail --dry-run --json     # data.precondition: "pc1:…"
@@ -2000,9 +2002,9 @@ omaddons remove Foo -t retail --if-match pc1:…     # exactly that removal, or 
 - A difference is `plan_stale`, not retryable (the same token can only fail again), and nothing is changed. `details.changed` names the parts that differ: `command`, `targets` (a target's records changed, with their generation), `selection` (what it would change) and `observed` (what it saw, such as the SavedVariables an undo would restore, or whether a transaction can be undone). `fix_argv` is the same command with `--dry-run` in place of `--if-match <token>`: preview again.
 - `remove`'s token covers the folders it moves out and the records it changes. `undo`'s covers the transactions it reverts, their folder operations, the SavedVariables files each restores and those files' state now. `backup prune`'s covers the clients (by key, without generations: an install between preview and run does not change which backups go), the exact backups it would delete, and each one's `backup.json` as it read it. `backup restore`'s covers the client's records (with their generation), the backup, the mode and the counts, the backup's `backup.json`, and the live `WTF/`'s stamps (each entry's path, kind, size, mode and time), because the game changes `WTF/` without touching any record.
 - The token is `pc1:` and 64 hex digits. Nothing is stored: it holds as long as what it describes is unchanged, and it is no credential.
-- `--if-match` is opt-in: commands without it behave as before. On a command that does not bind it is a usage error, and so is a malformed token. A `--dry-run` that is given one previews afresh and returns the current token.
+- `--if-match` is opt-in: commands without it behave as before. On a command that does not bind it is a usage error, and so is a malformed token. On `remove`, `undo`, `backup restore`, `backup prune` and `errors dismiss`, a `--dry-run` that is given one previews afresh and returns the current token. On `install` it compares: a matching token returns the same preview and token, and a stale one is `plan_stale`; either way it writes nothing.
 - Real runs carry `precondition: null`.
-- `install`, `update`, `pin`, `unpin`, `adopt`, `sync` and `copy` carry `data.precondition` too, `null` until they bind (milestone 4).
+- `update`, `pin`, `unpin`, `adopt`, `sync` and `copy` carry `data.precondition` too, `null` until they bind (milestone 4).
 
 ### stderr events
 

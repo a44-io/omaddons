@@ -1,6 +1,5 @@
 ---
 source: tests/deps.rs
-assertion_line: 1014
 expression: "support::stable(&r.expect(0))"
 ---
 {
@@ -74,6 +73,7 @@ expression: "support::stable(&r.expect(0))"
       }
     ],
     "kind": "install",
+    "precondition": null,
     "reload_required": "none",
     "target": {
       "id": "retail",

@@ -1,6 +1,5 @@
 ---
 source: tests/contract/matrix.rs
-assertion_line: 322
 expression: s.stable(&c.envelope)
 ---
 {
@@ -80,6 +79,7 @@ expression: s.stable(&c.envelope)
       }
     ],
     "kind": "install",
+    "precondition": null,
     "reload_required": "none",
     "target": {
       "id": "retail",

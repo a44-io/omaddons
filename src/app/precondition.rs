@@ -32,6 +32,7 @@ pub const BINDING_COMMANDS: &[&str] = &[
     "backup restore",
     "backup prune",
     "errors dismiss",
+    "install",
 ];
 
 /// The token format's version and separator.
@@ -1799,7 +1800,7 @@ mod tests {
     }
 
     #[test]
-    fn the_binding_commands_are_the_five_of_m3_d46() {
+    fn the_binding_commands_are_m3s_five_then_the_engine_commands() {
         assert_eq!(
             BINDING_COMMANDS,
             [
@@ -1807,7 +1808,8 @@ mod tests {
                 "undo",
                 "backup restore",
                 "backup prune",
-                "errors dismiss"
+                "errors dismiss",
+                "install",
             ]
         );
         assert_eq!(

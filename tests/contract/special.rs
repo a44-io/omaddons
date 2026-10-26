@@ -287,16 +287,24 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
     ]);
     // With an install to change, remove, update and undo.
     let tx = s.install_foo();
+    let update = [
+        "install",
+        "gh:o/foo",
+        "--file",
+        foo2.as_str(),
+        "-t",
+        "retail",
+        "--dry-run",
+    ];
+    let token = s.json(&update, 0).envelope["data"]["precondition"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A bound dry run compares its token, and writes nothing either.
+    let bound = [&update[..], &["--if-match", token.as_str()]].concat();
     dry_runs(&[
-        &[
-            "install",
-            "gh:o/foo",
-            "--file",
-            &foo2,
-            "-t",
-            "retail",
-            "--dry-run",
-        ],
+        &update,
+        &bound,
         &["remove", "Foo", "-t", "retail", "--dry-run"],
         &["update", "--all", "--dry-run"],
         &["undo", &tx, "--dry-run"],

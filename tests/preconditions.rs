@@ -1,10 +1,13 @@
-//! Preview binding (M3-D46) end to end: a `--dry-run` of `remove`, `undo` or `backup
-//! prune` returns `data.precondition`, and the real run with `--if-match <it>` does
-//! exactly what the preview showed or nothing. Each scenario changes the world between
-//! preview and run (a commit on the target, before the run plans or between its plan and
-//! the lock; a SavedVariables file the undo would restore; a new backup, or a victim's
-//! metadata rewritten) and checks the refusal (`plan_stale`, not retryable,
-//! `details.changed`, the preview as `fix_argv`) and that nothing moved.
+//! e2e suite: previews bound by `--if-match`, M3's five commands and `install` (D2).
+//!
+//! Preview binding (M3-D46, M4-D19) end to end: a `--dry-run` of `remove`, `undo`,
+//! `backup prune` or `install` returns `data.precondition`, and the real run with
+//! `--if-match <it>` does exactly what the preview showed or nothing. Each scenario
+//! changes the world between preview and run (a commit on the target, before the run
+//! plans or between its plan and the lock; a SavedVariables file the undo would restore;
+//! a new backup, or a victim's metadata rewritten) and checks the refusal (`plan_stale`,
+//! not retryable, `details.changed`, the preview as `fix_argv`) and that nothing moved.
+//! The `install` scenarios log through `TestLog`.
 
 mod common;
 
@@ -289,6 +292,304 @@ fn a_dry_run_with_if_match_previews_afresh() {
     assert_ne!(fresh, stale);
     assert_eq!(fresh, preview(&scene, REMOVE));
     assert!(scene.addons().join("Foo").is_dir());
+}
+
+// ---- `install` (D2): an engine command's token ----------------------------------------
+
+/// The update to Foo 2, offline: `install gh:o/foo --file <v2.zip> -t retail --offline`.
+fn install_v2(scene: &Scene) -> Vec<String> {
+    let v2 = scene.zip("v2");
+    argv(&[
+        "install",
+        "gh:o/foo",
+        "--file",
+        &v2,
+        "-t",
+        "retail",
+        "--offline",
+    ])
+}
+
+/// `run` with `extra`, then `--json`.
+fn with(run: &[String], extra: &[&str]) -> Vec<String> {
+    let mut run = run.to_vec();
+    run.extend(extra.iter().map(|a| (*a).to_owned()));
+    run.push("--json".to_owned());
+    run
+}
+
+/// The fix of a refused `run`: its preview, `--dry-run` last.
+fn preview_of(run: &[String]) -> Vec<String> {
+    let mut preview = argv(&["omaddons"]);
+    preview.extend(run.iter().cloned());
+    preview.push("--dry-run".to_owned());
+    preview
+}
+
+fn strs(argv: &[String]) -> Vec<&str> {
+    argv.iter().map(String::as_str).collect()
+}
+
+#[test]
+fn an_install_binds_to_its_preview() {
+    let log = common::tlog::tlog!();
+    let scene = Scene::new();
+    log.env(&scene);
+    let state = scene.home.state();
+    log.step("install Foo 1");
+    log.run(&scene, &scene.install_args("gh:o/foo", "v1")).ok();
+    let install = install_v2(&scene);
+    let fix = preview_of(&install);
+
+    log.step("preview");
+    let dry = log.run(&scene, &with(&install, &["--dry-run"]));
+    let previewed = token(dry.ok().envelope());
+    log.json("token", &previewed);
+
+    log.step("preview again");
+    let again = log.run(&scene, &with(&install, &["--dry-run"]));
+    log.assert_eq(
+        "an unchanged home, the same token",
+        &token(again.ok().envelope()),
+        &previewed,
+    );
+
+    log.step("another install commits on the client");
+    log.run(&scene, &scene.install_args("gh:o/bar", "bar")).ok();
+    log.tree("addons", &scene.addons());
+    log.tree("state", &state);
+
+    log.step("bound run, stale");
+    let stale = log.run(&scene, &with(&install, &["--if-match", &previewed]));
+    assert_stale(
+        stale.fails(1, "plan_stale").envelope(),
+        &["targets"],
+        &strs(&fix),
+    );
+    log.assert_unchanged("addons", &scene.addons());
+    log.assert_unchanged("state", &state);
+
+    log.step("preview again, then the bound run");
+    let dry = log.run(&scene, &with(&install, &["--dry-run"]));
+    let fresh = token(dry.ok().envelope());
+    log.json("token", &fresh);
+    let ran = log.run(&scene, &with(&install, &["--if-match", &fresh]));
+    ran.ok();
+    log.assert_eq(
+        "a real run's precondition",
+        &ran.data()["precondition"],
+        &Value::Null,
+    );
+    log.assert_eq(
+        "the items the preview showed",
+        &ran.data()["items"],
+        &dry.data()["items"],
+    );
+    let expected = Scene::new();
+    expected.install("gh:o/foo", "v1");
+    expected.install("gh:o/foo", "v2");
+    log.assert_eq(
+        "Foo's folders, as an unbound update leaves them",
+        &scene.folders(),
+        &expected.folders(),
+    );
+
+    log.step("the same token again");
+    log.tree("addons", &scene.addons());
+    log.tree("state", &state);
+    let again = log.run(&scene, &with(&install, &["--if-match", &fresh]));
+    assert_stale(
+        again.fails(1, "plan_stale").envelope(),
+        &["targets", "selection", "observed"],
+        &strs(&fix),
+    );
+    log.assert_unchanged("addons", &scene.addons());
+    log.assert_unchanged("state", &state);
+}
+
+#[test]
+fn a_bound_install_dry_run_compares() {
+    let log = common::tlog::tlog!();
+    let scene = Scene::new();
+    log.env(&scene);
+    let state = scene.home.state();
+    log.step("install Foo 1");
+    log.run(&scene, &scene.install_args("gh:o/foo", "v1")).ok();
+    let install = install_v2(&scene);
+    let dry_run = with(&install, &["--dry-run"]);
+
+    log.step("preview");
+    let previewed = token(log.run(&scene, &dry_run).ok().envelope());
+    log.json("token", &previewed);
+    log.tree("addons", &scene.addons());
+    log.tree("state", &state);
+
+    log.step("the human preview names the token under -v only");
+    let human = [install.as_slice(), &argv(&["--dry-run"])].concat();
+    let plain = log.run(&scene, &human);
+    let verbose = log.run(&scene, &[human.as_slice(), &argv(&["-v"])].concat());
+    let line = format!("Run it bound to this preview: --if-match {previewed}\n");
+    log.assert_eq(
+        "(without -v, with -v) ends with the token line",
+        &(
+            plain.ok().stdout().ends_with(&line),
+            verbose.ok().stdout().ends_with(&line),
+        ),
+        &(false, true),
+    );
+
+    log.step("bound dry run, matching");
+    let bound_dry = [dry_run.as_slice(), &argv(&["--if-match", &previewed])].concat();
+    let matching = log.run(&scene, &bound_dry);
+    log.assert_eq(
+        "the same token",
+        &token(matching.ok().envelope()),
+        &previewed,
+    );
+    log.assert_unchanged("addons", &scene.addons());
+    log.assert_unchanged("state", &state);
+
+    log.step("another install commits on the client");
+    log.run(&scene, &scene.install_args("gh:o/bar", "bar")).ok();
+    log.tree("addons", &scene.addons());
+    log.tree("state", &state);
+
+    log.step("bound dry run, stale");
+    let stale = log.run(&scene, &bound_dry);
+    assert_stale(
+        stale.fails(1, "plan_stale").envelope(),
+        &["targets"],
+        &strs(&preview_of(&install)),
+    );
+    log.assert_unchanged("addons", &scene.addons());
+    log.assert_unchanged("state", &state);
+}
+
+/// `install` asks its sources again (M4-D20): a release published after the preview
+/// makes the bound run stale, and the preview that fix runs shows the new release.
+#[test]
+fn a_release_published_after_an_install_preview_makes_it_stale() {
+    use common::home::Home;
+    use common::http::{Asset, gh_release};
+
+    let log = common::tlog::tlog!();
+    let home = Home::new(&["wow"]);
+    log.env(&home);
+    let release = |tag: &str, version: &str| {
+        let toc = format!("## Interface: 120105\n## Version: {version}\n");
+        let foo: [Asset<'_>; 1] = [(
+            "Foo.zip",
+            &[("mainline", 120_105)],
+            vec![("Foo/Foo.toc", toc.as_str())],
+        )];
+        gh_release(&home.http, "https://github.com/o/foo", tag, &foo);
+    };
+    let install = argv(&["install", "gh:o/foo", "-t", "retail"]);
+    log.step("v1 is the latest release");
+    release("v1", "1");
+
+    log.step("preview");
+    let dry = log.run(&home, &with(&install, &["--dry-run"]));
+    let previewed = token(dry.ok().envelope());
+    log.json("token", &previewed);
+    log.assert_eq(
+        "the preview installs v1",
+        &dry.data()["items"][0]["to_version"],
+        &json!("v1"),
+    );
+
+    log.step("v2 is published");
+    release("v2", "2");
+    let addons = home.addons("_retail_");
+    log.tree("addons", &addons);
+
+    log.step("bound run, stale");
+    let stale = log.run(&home, &with(&install, &["--if-match", &previewed]));
+    let changed = &stale.fails(1, "plan_stale").envelope()["error"]["details"]["changed"];
+    log.assert_eq(
+        "the release changed the selection",
+        &changed
+            .as_array()
+            .is_some_and(|c| c.contains(&json!("selection"))),
+        &true,
+    );
+    log.assert_unchanged("addons", &addons);
+
+    log.step("the fix previews v2");
+    let dry = log.run(&home, &with(&install, &["--dry-run"]));
+    log.assert_eq(
+        "the new preview installs v2",
+        &dry.ok().data()["items"][0]["to_version"],
+        &json!("v2"),
+    );
+}
+
+#[test]
+fn a_bound_install_without_a_client_binds_the_client_the_probe_chose() {
+    use common::home::Home;
+    use common::http::{Asset, gh_release};
+
+    let log = common::tlog::tlog!();
+    let home = Home::new(&["wow", "wow_classic"]);
+    log.env(&home);
+    log.step("seed a retail-only release");
+    let foo: [Asset<'_>; 1] = [(
+        "Foo.zip",
+        &[("mainline", 120_105)],
+        vec![("Foo/Foo.toc", "## Interface: 120105\n## Version: 1\n")],
+    )];
+    gh_release(&home.http, "https://github.com/o/foo", "v1", &foo);
+    let classic = home.addons("_classic_");
+    log.tree("classic addons", &classic);
+
+    log.step("preview without -t");
+    let dry = log.run(&home, &["install", "gh:o/foo", "--dry-run", "--json"]);
+    let previewed = token(dry.ok().envelope());
+    log.json("token", &previewed);
+    log.assert_eq(
+        "the probe chose retail",
+        &dry.data()["target"]["id"],
+        &json!("retail"),
+    );
+
+    log.step("bound run without -t");
+    let ran = log.run(
+        &home,
+        &["install", "gh:o/foo", "--if-match", &previewed, "--json"],
+    );
+    ran.ok();
+    log.assert_eq(
+        "installed on retail",
+        &(
+            &ran.data()["target"]["id"],
+            &ran.data()["items"][0]["status"],
+        ),
+        &(&json!("retail"), &json!("installed")),
+    );
+    log.assert_eq(
+        "Foo on retail",
+        &home.addons("_retail_").join("Foo/Foo.toc").is_file(),
+        &true,
+    );
+    log.assert_unchanged("classic addons", &classic);
+
+    log.step("the same token again: the run compared it");
+    let retail = home.addons("_retail_");
+    log.tree("retail addons", &retail);
+    let again = log.run(
+        &home,
+        &["install", "gh:o/foo", "--if-match", &previewed, "--json"],
+    );
+    let changed = &again.fails(1, "plan_stale").envelope()["error"]["details"]["changed"];
+    log.assert_eq(
+        "the target moved since the preview",
+        &changed
+            .as_array()
+            .is_some_and(|c| c.contains(&json!("targets"))),
+        &true,
+    );
+    log.assert_unchanged("retail addons", &retail);
+    log.assert_unchanged("classic addons", &classic);
 }
 
 const PRUNE: &[&str] = &["backup", "prune", "-t", "retail", "--keep", "2"];

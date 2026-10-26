@@ -142,7 +142,7 @@ var CLI_PATHS = {
   "export":          { "mutates": true,  "destructive": false, "binds": false },
   "history":         { "mutates": false, "destructive": false, "binds": false },
   "net-log":         { "mutates": false, "destructive": false, "binds": false },
-  "install":         { "mutates": true,  "destructive": false, "binds": false },
+  "install":         { "mutates": true,  "destructive": false, "binds": true },
   "update":          { "mutates": true,  "destructive": false, "binds": false },
   "pin":             { "mutates": true,  "destructive": false, "binds": false },
   "unpin":           { "mutates": true,  "destructive": false, "binds": false },

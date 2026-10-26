@@ -1,0 +1,35 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "plan_stale",
+    "details": {
+      "changed": [
+        "targets"
+      ]
+    },
+    "fix": "omaddons install gh:o/foo --file <root>/dl/foo2.zip -t retail --dry-run",
+    "fix_argv": [
+      "omaddons",
+      "install",
+      "gh:o/foo",
+      "--file",
+      "<root>/dl/foo2.zip",
+      "-t",
+      "retail",
+      "--dry-run"
+    ],
+    "message": "this install is no longer what its preview showed (targets changed); nothing was changed: preview it again",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

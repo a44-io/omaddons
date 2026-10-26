@@ -48,6 +48,7 @@ expression: "support::stable(&envelope)"
       }
     ],
     "kind": "install",
+    "precondition": null,
     "reload_required": "none",
     "target": {
       "id": "retail",

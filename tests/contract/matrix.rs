@@ -850,6 +850,41 @@ fn preview_binding() {
     insta::assert_json_snapshot!("if_match_unbound_command", s.stable(&c.envelope));
 }
 
+/// `install` binds to its preview (M4-D19): a dry run's token, a bound run refused after
+/// another commit on the client, and one that runs exactly what a fresh preview showed.
+#[test]
+fn install_binding() {
+    let s = Scene::new();
+    s.install_foo();
+    let foo2 = s.zip("foo2");
+    let install = [
+        "install",
+        "gh:o/foo",
+        "--file",
+        foo2.as_str(),
+        "-t",
+        "retail",
+    ];
+    let preview = |snapshot: Option<&str>| {
+        let c = s.json(&[&install[..], &["--dry-run"]].concat(), 0);
+        if let Some(name) = snapshot {
+            insta::assert_json_snapshot!(name, s.stable(&c.envelope));
+        }
+        c.envelope["data"]["precondition"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let token = preview(Some("install_dry_run"));
+    // Another install commits on the client between the preview and the run.
+    s.json(&["install", &s.zip("both"), "-t", "retail"], 0);
+    let c = s.json(&[&install[..], &["--if-match", &token]].concat(), 1);
+    insta::assert_json_snapshot!("install_if_match_stale", s.stable(&c.envelope));
+    let token = preview(None);
+    let c = s.json(&[&install[..], &["--if-match", &token]].concat(), 0);
+    insta::assert_json_snapshot!("install_if_match_ok", s.stable(&c.envelope));
+}
+
 #[test]
 fn backup_create() {
     let s = Scene::new();
