@@ -425,6 +425,13 @@ fn every_binding_path_carries_its_precondition() {
                 s.json(&["install", "weakauras", "-t", "retail"], 0);
                 (argv(&["update", "--dry-run"]), &[])
             }
+            "pin" | "unpin" => {
+                s.install_foo();
+                if *path == "unpin" {
+                    s.json(&["pin", "Foo", "-t", "retail"], 0);
+                }
+                (argv(&[path, "Foo", "-t", "retail", "--dry-run"]), &[])
+            }
             "sync" => {
                 s.home
                     .write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");

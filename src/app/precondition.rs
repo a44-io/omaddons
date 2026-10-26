@@ -34,6 +34,8 @@ pub const BINDING_COMMANDS: &[&str] = &[
     "errors dismiss",
     "install",
     "update",
+    "pin",
+    "unpin",
     "sync",
     "copy",
 ];
@@ -1803,7 +1805,7 @@ mod tests {
     }
 
     #[test]
-    fn the_binding_commands_are_m3s_five_then_the_engine_commands() {
+    fn the_binding_commands_are_m3s_then_m4s() {
         assert_eq!(
             BINDING_COMMANDS,
             [
@@ -1814,6 +1816,8 @@ mod tests {
                 "errors dismiss",
                 "install",
                 "update",
+                "pin",
+                "unpin",
                 "sync",
                 "copy",
             ]
