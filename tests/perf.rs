@@ -97,7 +97,8 @@ mod support {
             tx: TxId::new(),
             kind: TxKind::Update,
             at: jiff::Timestamp::now(),
-            target: key,
+            target: Some(key),
+            targets: Vec::new(),
             actor: Actor::Human,
             reason: None,
             argv: ["omaddons", "update"].map(str::to_owned).to_vec(),
@@ -119,6 +120,8 @@ mod support {
             created_addons_dir: false,
             run: Some(run),
             backup: None,
+            doctor_run_id: None,
+            repairs: Vec::new(),
         }
     }
 

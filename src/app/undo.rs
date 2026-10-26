@@ -386,19 +386,19 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
     // staged unless that is what the preview showed (M3-D46).
     let binding = match ctx.if_match.as_deref() {
         Some(token) if !ctx.dry_run => {
-            let previewed: Vec<(&HistoryEntry, Result<EngineUndo>)> = selection
+            let previewed: Vec<(Selected<'_>, Result<EngineUndo>)> = selection
                 .entries
                 .iter()
-                .map(|entry| (*entry, engine.undo(&request(entry, true))))
+                .map(|chosen| (*chosen, engine.undo(&request(chosen.entry, true))))
                 .collect();
             let preview = precondition::preview_argv(&ctx.argv);
             precondition::check(Some(token), &undo_precondition(&previewed), &preview)?;
             let tokens = previewed
                 .iter()
-                .filter_map(|(entry, result)| {
+                .filter_map(|(chosen, result)| {
                     let undo = result.as_ref().ok()?;
-                    let one = precondition::of_undo(&[(entry.tx, entry.target, Ok(undo))]);
-                    Some((entry.tx, one.token()))
+                    let one = precondition::of_undo(&[(chosen.entry.tx, chosen.key, Ok(undo))]);
+                    Some((chosen.entry.tx, one.token()))
                 })
                 .collect();
             Some(precondition::UndoBinding { tokens, preview })
@@ -407,24 +407,22 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
     };
     let mut done = Vec::new();
     // Each in its own lock window; a failure does not stop the rest.
-    for entry in &selection.entries {
+    for chosen in &selection.entries {
         let result = engine.undo_bound(
-            &request(entry, ctx.dry_run),
+            &request(chosen.entry, ctx.dry_run),
             binding.as_ref().map(|b| b as &dyn crate::engine::Binding),
         );
-        done.push((*entry, result));
+        done.push((*chosen, result));
     }
     let token = ctx.dry_run.then(|| undo_precondition(&done).token());
     outcome(ctx, &world, &selection, run, sv_policy, done, token)
 }
 
 /// The precondition of the undos `planned`, each of a selected transaction.
-fn undo_precondition(
-    planned: &[(&HistoryEntry, Result<EngineUndo>)],
-) -> precondition::Precondition {
+fn undo_precondition(planned: &[(Selected<'_>, Result<EngineUndo>)]) -> precondition::Precondition {
     let planned: Vec<precondition::UndoPlanned<'_>> = planned
         .iter()
-        .map(|(entry, result)| (entry.tx, entry.target, result.as_ref()))
+        .map(|(chosen, result)| (chosen.entry.tx, chosen.key, result.as_ref()))
         .collect();
     precondition::of_undo(&planned)
 }
@@ -442,8 +440,29 @@ struct Selector<'a> {
 /// The transactions to revert, newest first, and the run they make up.
 #[derive(Debug)]
 struct Selection<'e> {
-    entries: Vec<&'e HistoryEntry>,
+    entries: Vec<Selected<'e>>,
     reverted_run: Option<RunId>,
+}
+
+/// One transaction to revert, and the client it changed.
+#[derive(Debug, Clone, Copy)]
+struct Selected<'e> {
+    entry: &'e HistoryEntry,
+    key: TargetKey,
+}
+
+/// `entries` with the client each changed; `not_found` for a target-less line (a
+/// repair), which this build cannot undo yet, before anything is planned.
+fn selected(entries: Vec<&HistoryEntry>) -> Result<Vec<Selected<'_>>> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            Ok(Selected {
+                key: crate::engine::undo::target_of(entry)?,
+                entry,
+            })
+        })
+        .collect()
 }
 
 /// `<tx>`: that transaction. `--run`: that run's transactions (on the `-t` target when
@@ -457,8 +476,11 @@ fn select<'e>(entries: &'e [HistoryEntry], s: &Selector<'_>) -> Result<Selection
             Suggestion::command(["omaddons", "history"]),
         )
     };
+    // A target never registered (`Some(None)`) matches nothing; a target-less line (a
+    // repair) is on each target it touches.
     let on_target = |e: &HistoryEntry| match s.target {
-        Some(key) => Some(e.target) == key,
+        Some(Some(key)) => e.touches_target(key),
+        Some(None) => false,
         None => true,
     };
     if let Some(prefix) = s.tx {
@@ -474,7 +496,7 @@ fn select<'e>(entries: &'e [HistoryEntry], s: &Selector<'_>) -> Result<Selection
             ));
         }
         return Ok(Selection {
-            entries: vec![entry],
+            entries: selected(vec![entry])?,
             reverted_run: None,
         });
     }
@@ -489,7 +511,7 @@ fn select<'e>(entries: &'e [HistoryEntry], s: &Selector<'_>) -> Result<Selection
             return Err(none(format!("run {run} has nothing to undo here")));
         }
         return Ok(Selection {
-            entries: of_run,
+            entries: selected(of_run)?,
             reverted_run: Some(run),
         });
     }
@@ -503,7 +525,7 @@ fn select<'e>(entries: &'e [HistoryEntry], s: &Selector<'_>) -> Result<Selection
         });
     };
     Ok(Selection {
-        entries: found.entries,
+        entries: selected(found.entries)?,
         reverted_run: found.run,
     })
 }
@@ -605,7 +627,7 @@ fn outcome(
     selection: &Selection<'_>,
     run: RunId,
     policy: SvPolicy,
-    done: Vec<(&HistoryEntry, Result<EngineUndo>)>,
+    done: Vec<(Selected<'_>, Result<EngineUndo>)>,
     precondition: Option<String>,
 ) -> Result<UndoOutcome> {
     let verbose = ctx.output.style.verbose > 0;
@@ -614,8 +636,9 @@ fn outcome(
     let mut warnings: Vec<Warning> = Vec::new();
     let mut locks = Vec::new();
     let mut first_error = None;
-    for (entry, result) in done {
-        let reverted = reverted(world, entry, verbose);
+    for (chosen, result) in done {
+        let entry = chosen.entry;
+        let reverted = reverted(world, chosen, verbose);
         match result {
             Ok(undo) => {
                 warnings.extend(undo.outcome.warnings.iter().cloned());
@@ -716,14 +739,15 @@ fn outcome(
 }
 
 /// How the history names the transaction reverted.
-fn reverted(world: &World, entry: &HistoryEntry, verbose: bool) -> Reverted {
+fn reverted(world: &World, chosen: Selected<'_>, verbose: bool) -> Reverted {
+    let entry = chosen.entry;
     Reverted {
         tx: entry.tx,
         kind: entry.kind,
         at: entry.at,
         target: TargetRef {
-            id: world.target_id(entry.target),
-            key: entry.target,
+            id: world.target_id(chosen.key),
+            key: chosen.key,
         },
         actor: entry.actor,
         argv: entry.argv.clone(),
@@ -775,7 +799,8 @@ mod tests {
             tx: tx.parse().unwrap(),
             kind,
             at: "2026-10-14T12:00:00Z".parse().unwrap(),
-            target,
+            target: Some(target),
+            targets: Vec::new(),
             actor,
             reason: None,
             argv: vec!["omaddons".into()],
@@ -787,6 +812,8 @@ mod tests {
             created_addons_dir: false,
             run: None,
             backup: None,
+            doctor_run_id: None,
+            repairs: Vec::new(),
         }
     }
 
@@ -803,7 +830,7 @@ mod tests {
             target,
         };
         select(entries, &selector)
-            .map(|s| s.entries.iter().map(|e| e.tx.to_string()).collect())
+            .map(|s| s.entries.iter().map(|e| e.entry.tx.to_string()).collect())
             .map_err(|e| e.code)
     }
 
@@ -964,7 +991,7 @@ mod tests {
                 (
                     sel.entries
                         .iter()
-                        .map(|e| e.tx.to_string())
+                        .map(|e| e.entry.tx.to_string())
                         .collect::<Vec<_>>(),
                     sel.reverted_run,
                 )
@@ -1030,5 +1057,98 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(short.code, ErrorCode::Usage);
+    }
+
+    /// A repair (target-less, M4-D31) is the newest change: every selector that reaches
+    /// it refuses it, never stepping over it to an older transaction; a target it did not
+    /// touch still selects its own.
+    #[test]
+    fn select_refuses_a_target_less_line() {
+        let a = TargetKey::new();
+        let c = TargetKey::new();
+        let run = RunId::new();
+        let on_a = entry(
+            "01JB8Q2VA00000000000000001",
+            Actor::Agent,
+            a,
+            TxKind::Install,
+        );
+        let on_c = entry(
+            "01JB8Q2VA00000000000000002",
+            Actor::Agent,
+            c,
+            TxKind::Install,
+        );
+        let repair = HistoryEntry {
+            target: None,
+            targets: vec![a],
+            run: Some(run),
+            ..entry(
+                "01JB8Q2VA00000000000000003",
+                Actor::Human,
+                a,
+                TxKind::Repair,
+            )
+        };
+        let entries = vec![on_a, on_c.clone(), repair.clone()];
+        let tx_prefix = repair.tx.to_string();
+        let run_prefix = run.to_string();
+        let bare = Selector {
+            tx: None,
+            run: None,
+            last_by: None,
+            target: None,
+        };
+        let cases = [
+            (
+                "tx_prefix",
+                Selector {
+                    tx: Some(&tx_prefix),
+                    ..bare
+                },
+            ),
+            (
+                "run",
+                Selector {
+                    run: Some(&run_prefix),
+                    ..bare
+                },
+            ),
+            (
+                "on_a",
+                Selector {
+                    target: Some(Some(a)),
+                    ..bare
+                },
+            ),
+            (
+                "last_by",
+                Selector {
+                    last_by: Some(Actor::Human),
+                    ..bare
+                },
+            ),
+            ("bare", bare),
+        ];
+        for (name, selector) in cases {
+            let output = select(&entries, &selector).map(|s| s.entries.len());
+            let err = output.as_ref().unwrap_err();
+            assert_eq!(err.code, ErrorCode::NotFound, "{name}: gave {output:?}");
+            assert!(
+                err.message.contains("cannot undo yet"),
+                "{name}: {}",
+                err.message
+            );
+        }
+        let on_c_only = select(
+            &entries,
+            &Selector {
+                target: Some(Some(c)),
+                ..bare
+            },
+        )
+        .unwrap();
+        let txs: Vec<TxId> = on_c_only.entries.iter().map(|s| s.entry.tx).collect();
+        assert_eq!(txs, [on_c.tx], "-t C: its own install");
     }
 }

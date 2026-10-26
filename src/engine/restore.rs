@@ -1013,7 +1013,8 @@ impl Window<'_> {
             tx: self.tx,
             kind,
             at,
-            target: key,
+            target: Some(key),
+            targets: Vec::new(),
             actor: self.ctx.actor,
             reason: self.reason.clone(),
             argv: self.ctx.argv.to_vec(),
@@ -1025,6 +1026,8 @@ impl Window<'_> {
             created_addons_dir: false,
             run: Some(self.run),
             backup: None,
+            doctor_run_id: None,
+            repairs: Vec::new(),
         })
     }
 }
@@ -1136,13 +1139,14 @@ pub(super) fn undo_whole(
     let wtf = WtfUndo {
         changed_since: changed_since(&client, reverted),
     };
-    let generation = load_record(ctx.paths, &reverted.target)?.value.generation;
+    let key = super::undo::target_of(reverted)?;
+    let generation = load_record(ctx.paths, &key)?.value.generation;
     let outcome = |generation: u64, tx: Option<TxId>, warnings: Vec<Warning>, held: Option<u64>| {
         UndoOutcome {
             undoes: reverted.tx,
             outcome: TxOutcome {
                 target: target.id.clone(),
-                key: Some(reverted.target),
+                key: Some(key),
                 tx,
                 kind: Some(TxKind::Undo),
                 dry_run: tx.is_none(),
@@ -1624,7 +1628,8 @@ mod tests {
                 tx: TxId::new(),
                 kind: TxKind::Backup,
                 at: Timestamp::now(),
-                target: self.key(),
+                target: Some(self.key()),
+                targets: Vec::new(),
                 actor: Actor::Agent,
                 reason: None,
                 argv: Vec::new(),
@@ -1641,6 +1646,8 @@ mod tests {
                     files: 4,
                     bytes: 24,
                 }),
+                doctor_run_id: None,
+                repairs: Vec::new(),
             }
         }
 

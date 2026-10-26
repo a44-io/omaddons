@@ -1047,7 +1047,8 @@ impl Window<'_> {
             tx: self.tx,
             kind: TxKind::Restore,
             at,
-            target: key,
+            target: Some(key),
+            targets: Vec::new(),
             actor: self.ctx.actor,
             reason: self.reason.clone(),
             argv: self.ctx.argv.to_vec(),
@@ -1059,6 +1060,8 @@ impl Window<'_> {
             created_addons_dir: false,
             run: Some(self.run),
             backup: None,
+            doctor_run_id: None,
+            repairs: Vec::new(),
         }
     }
 }

@@ -146,12 +146,14 @@ pub fn run(
     let text = history::text(paths)?;
     let all = history::parse(&text, &HistoryFilter::default()).entries;
     let pinned = super::undo::pending_sv_restores(&all);
-    let entries: Vec<&HistoryEntry> = all.iter().filter(|e| e.target == key).collect();
+    let entries: Vec<&HistoryEntry> = all.iter().filter(|e| e.touches_target(key)).collect();
     // A backup line has no snapshot: the most recent transaction is the last other one.
+    // Nor has a target-less line (a repair): it keeps its halves as `<tx>.repair`, which
+    // retention never prunes, so it has no `<tx>` snapshot to protect.
     let latest = entries
         .iter()
         .rev()
-        .find(|e| e.kind != TxKind::Backup)
+        .find(|e| e.kind != TxKind::Backup && e.target.is_some())
         .map(|e| e.tx);
     let txs: Vec<SnapshotTx> = entries
         .iter()
@@ -580,7 +582,8 @@ mod tests {
                 tx,
                 kind: TxKind::Install,
                 at: Timestamp::from_second(self.clock.as_second() - age).unwrap(),
-                target: key,
+                target: Some(key),
+                targets: Vec::new(),
                 actor: Actor::Agent,
                 reason: None,
                 argv: vec!["omaddons".into()],
@@ -592,6 +595,8 @@ mod tests {
                 created_addons_dir: false,
                 run: None,
                 backup: None,
+                doctor_run_id: None,
+                repairs: Vec::new(),
             };
             let mut s = WriteSession::untracked(Writer::Mutating, &self.scopes, "test");
             history::append(&mut s, &self.paths, &entry).unwrap();
@@ -658,7 +663,8 @@ mod tests {
             tx: TxId::new(),
             kind: TxKind::Backup,
             at: Timestamp::from_second(f.clock.as_second() - HOUR).unwrap(),
-            target: f.key,
+            target: Some(f.key),
+            targets: Vec::new(),
             actor: Actor::Human,
             reason: None,
             argv: vec!["omaddons".into(), "backup".into(), "create".into()],
@@ -675,6 +681,8 @@ mod tests {
                 files: 1,
                 bytes: 1,
             }),
+            doctor_run_id: None,
+            repairs: Vec::new(),
         };
         let mut s = WriteSession::untracked(Writer::Backup, &f.scopes, "test");
         history::append(&mut s, &f.paths, &entry).unwrap();
@@ -686,6 +694,60 @@ mod tests {
             (true, true),
             "the last install stays the most recent"
         );
+    }
+
+    /// A repair line (M4-D31): target-less, its client in `targets`.
+    fn repair_line(key: TargetKey, at: Timestamp) -> HistoryEntry {
+        HistoryEntry {
+            schema_version: history::CURRENT,
+            tx: TxId::new(),
+            kind: TxKind::Repair,
+            at,
+            target: None,
+            targets: vec![key],
+            actor: Actor::Human,
+            reason: None,
+            argv: vec!["omaddons".into(), "doctor".into(), "fix".into()],
+            ops: Vec::new(),
+            result: TxResult::Committed,
+            reverts: None,
+            sv_deferred: false,
+            sv_restored: None,
+            created_addons_dir: false,
+            run: Some(crate::model::RunId::new()),
+            backup: None,
+            doctor_run_id: Some("2026-10-25T12:00:00Z__01M9Z00000000000000000000".into()),
+            repairs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_repair_line_never_takes_most_recent_protection() {
+        let f = fixture();
+        let old = f.commit(10 * DAY, 10);
+        let last = f.commit(9 * DAY, 10);
+        // A repair after the last install: on this target, with no `<tx>` snapshot.
+        let at = Timestamp::from_second(f.clock.as_second() - HOUR).unwrap();
+        let mut s = WriteSession::untracked(Writer::Mutating, &f.scopes, "test");
+        history::append(&mut s, &f.paths, &repair_line(f.key, at)).unwrap();
+        let report = f.run(&RetentionLimits::default(), &BTreeSet::new());
+        assert_eq!((report.pruned_tx, report.kept_tx), (1, 1), "{report:?}");
+        assert_eq!(f.has_snapshot(&old), (false, false));
+        assert_eq!(
+            f.has_snapshot(&last),
+            (true, true),
+            "the last install stays the most recent"
+        );
+    }
+
+    #[test]
+    fn a_repair_lines_tx_counts_as_in_history() {
+        let f = fixture();
+        let repair = repair_line(f.key, Timestamp::now());
+        let mut s = WriteSession::untracked(Writer::Mutating, &f.scopes, "test");
+        history::append(&mut s, &f.paths, &repair).unwrap();
+        let text = history::text(&f.paths).unwrap();
+        assert!(in_history(&text, &repair.tx), "{text}");
     }
 
     #[test]

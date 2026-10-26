@@ -324,7 +324,8 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
                 tx,
                 kind: TxKind::Install,
                 at: Timestamp::now(),
-                target: key,
+                target: Some(key),
+                targets: Vec::new(),
                 actor: Actor::Agent,
                 reason: None,
                 argv: vec!["omaddons".into()],
@@ -336,6 +337,8 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
                 created_addons_dir: false,
                 run: None,
                 backup: None,
+                doctor_run_id: None,
+                repairs: Vec::new(),
             },
             stage_dir: m
                 .home

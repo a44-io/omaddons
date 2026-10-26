@@ -55,7 +55,7 @@ use crate::politeness::DEFAULT_CHECK_INTERVAL;
 use crate::resolve::catalog::Catalog;
 use crate::resolve::updates::{StatusKind, UncheckedReason, UpdateStatus};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
-use crate::state::history::{self, HistoryEntry, HistoryFilter};
+use crate::state::history::{self, HistoryEntry, HistoryFilter, Reach};
 use crate::state::history_tail::{self, Answer};
 use crate::state::paths::ClientPaths;
 use crate::state::records::{TargetRecord, load_record};
@@ -446,6 +446,15 @@ impl Outcome for StatusOutcome {
             (_, LastChangeState::Unknown) => {
                 writeln!(w, "last change: unknown (run omaddons status for it)")?
             }
+            // A repair outside every client names no target.
+            (Some(c), LastChangeState::Ok) if c.targets.is_empty() => writeln!(
+                w,
+                "last change: {} by {} ({}) · undo: {}",
+                wire(c.kind),
+                c.actor.as_str(),
+                super::history::local_time(c.at),
+                c.undo.command
+            )?,
             (Some(c), LastChangeState::Ok) => writeln!(
                 w,
                 "last change: {} on {} by {} ({}) · undo: {}",
@@ -1166,9 +1175,21 @@ fn change_of(world: &World, entries: &[&HistoryEntry]) -> LastChange {
         changes.removed += c.removed;
         changes.recorded += c.recorded;
         changes.restored += c.restored;
-        let id = world.target_id(e.target);
-        if !targets.contains(&id) {
-            targets.push(id);
+        // A repair names the clients it touched, or, having touched a client's files
+        // without naming it, every registered one.
+        let ids: Vec<String> = match e.reach() {
+            Reach::Targets(keys) => keys.into_iter().map(|key| world.target_id(key)).collect(),
+            Reach::Every => world
+                .registry
+                .targets
+                .iter()
+                .map(|t| t.id.clone())
+                .collect(),
+        };
+        for id in ids {
+            if !targets.contains(&id) {
+                targets.push(id);
+            }
         }
     }
     targets.sort();

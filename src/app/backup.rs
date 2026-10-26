@@ -1462,7 +1462,8 @@ fn backup_line(ctx: &Context, created: &Created, run: RunId) -> HistoryEntry {
         tx: created.tx,
         kind: TxKind::Backup,
         at: crate::clock::now(),
-        target: meta.target,
+        target: Some(meta.target),
+        targets: Vec::new(),
         actor: ctx.actor,
         reason: ctx.reason.clone(),
         argv: ctx.argv.clone(),
@@ -1479,6 +1480,8 @@ fn backup_line(ctx: &Context, created: &Created, run: RunId) -> HistoryEntry {
             files: meta.files,
             bytes: meta.bytes,
         }),
+        doctor_run_id: None,
+        repairs: Vec::new(),
     }
 }
 

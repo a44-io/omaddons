@@ -795,7 +795,8 @@ fn backup_line(
         tx: created.tx,
         kind: TxKind::Backup,
         at: crate::clock::now(),
-        target: meta.target,
+        target: Some(meta.target),
+        targets: Vec::new(),
         actor: ctx.actor,
         reason: reason.cloned(),
         argv: ctx.argv.to_vec(),
@@ -812,6 +813,8 @@ fn backup_line(
             files: meta.files,
             bytes: meta.bytes,
         }),
+        doctor_run_id: None,
+        repairs: Vec::new(),
     }
 }
 
@@ -1185,7 +1188,8 @@ fn locked(
         tx: *tx,
         kind,
         at: now,
-        target: key,
+        target: Some(key),
+        targets: Vec::new(),
         actor: ctx.actor,
         reason: req.reason.clone(),
         argv: ctx.argv.to_vec(),
@@ -1197,6 +1201,8 @@ fn locked(
         created_addons_dir: creates_addons_dir,
         run: Some(req.run),
         backup: None,
+        doctor_run_id: None,
+        repairs: Vec::new(),
     };
     let prepared = Prepared {
         schema_version: journal::CURRENT,

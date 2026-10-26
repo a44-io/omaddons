@@ -407,9 +407,10 @@ fn line(world: &World, e: &HistoryEntry, verbose: bool) -> HistoryLine {
         run: e.run,
         kind: e.kind,
         at: e.at,
-        target: Some(TargetRef {
-            id: world.target_id(e.target),
-            key: e.target,
+        // A repair names no single target (subtask 3 renders its `targets`).
+        target: e.target.map(|key| TargetRef {
+            id: world.target_id(key),
+            key,
         }),
         actor: e.actor,
         reason: e.reason.clone(),

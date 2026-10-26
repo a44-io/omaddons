@@ -190,6 +190,28 @@ pub(super) fn sv_folder(path: &str) -> Option<FolderName> {
 // ---------------------------------------------------------------------------------------
 // The undo.
 
+/// The client the transaction `entry` changed. A target-less line (a repair, or the undo
+/// of one) is refused with `not_found` here, before anything is planned, locked or
+/// written: it is the newest change, never stepped over (M4-D46), and this build cannot
+/// undo it yet.
+pub(crate) fn target_of(entry: &HistoryEntry) -> Result<TargetKey> {
+    entry.target.ok_or_else(|| {
+        let what = if entry.kind == TxKind::Undo {
+            "undid a repair"
+        } else {
+            "is a repair"
+        };
+        Error::new(
+            ErrorCode::NotFound,
+            format!(
+                "transaction {} {what}, which this omaddons cannot undo yet",
+                entry.tx
+            ),
+            Suggestion::command(["omaddons", "history"]),
+        )
+    })
+}
+
 /// Reverts the selected transaction (vision §5.5): plan without the lock, stage the
 /// snapshot's folders, then the commit window under the global lock, planned again.
 pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
@@ -197,16 +219,17 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     let entries = &read.entries;
     let at = select(entries, req.selector)?;
     let reverted = entries[at].clone();
+    let key = target_of(&reverted)?;
     let discovered = req
         .targets
         .iter()
-        .find(|d| d.target.key == Some(reverted.target))
+        .find(|d| d.target.key == Some(key))
         .ok_or_else(|| {
             Error::new(
                 ErrorCode::TargetNotFound,
                 format!(
-                    "transaction {} changed target {}, which is not on this machine now",
-                    reverted.tx, reverted.target
+                    "transaction {} changed target {key}, which is not on this machine now",
+                    reverted.tx
                 ),
                 Suggestion::command(["omaddons", "targets"]),
             )
@@ -452,7 +475,8 @@ fn commit(
         tx: *tx,
         kind: TxKind::Undo,
         at: now,
-        target: key,
+        target: Some(key),
+        targets: Vec::new(),
         actor: ctx.actor,
         reason: req.reason.clone(),
         argv: ctx.argv.to_vec(),
@@ -465,6 +489,8 @@ fn commit(
         created_addons_dir: false,
         run: Some(req.run),
         backup: None,
+        doctor_run_id: None,
+        repairs: Vec::new(),
     };
     let sv_restore = (!planned.sv.restore.is_empty()).then(|| SvRestore {
         from: reverts,
@@ -737,7 +763,7 @@ fn plan(
     if !snapshot.is_dir() || !state_snapshot_of(paths, &reverted.tx).is_dir() {
         return Err(pruned(&reverted.tx));
     }
-    let key = reverted.target;
+    let key = target_of(reverted)?;
     let current = load_record(paths, &key)?.value;
     let mut folders = match sv_only {
         Some(_) => FolderPlan::record_only(reverted),
@@ -934,6 +960,8 @@ pub(super) fn pending_sv_restores(entries: &[HistoryEntry]) -> BTreeSet<TxId> {
         .iter()
         .enumerate()
         .filter_map(|(at, e)| {
+            // A target-less line (a repair) never defers a SavedVariables restore.
+            e.target?;
             let by = *deferred.get(&e.tx)?;
             (by > at && check_conflicts(entries, at, Some(by), true).is_ok()).then_some(e.tx)
         })
@@ -985,10 +1013,12 @@ fn check_conflicts(
         })
         .map(|o| o.folder.key())
         .collect();
+    let key = target_of(reverted)?;
     let after = sv_only.unwrap_or(at) + 1;
+    // Every later line on its target, a repair that touched it included.
     let later: Vec<&HistoryEntry> = entries[after..]
         .iter()
-        .filter(|e| e.target == reverted.target)
+        .filter(|e| e.touches_target(key))
         .collect();
     let cancelled = cancelled_after(&entries[after..], reverted.tx);
     let conflicts = |o: &HistoryOp| {
@@ -1189,10 +1219,11 @@ fn check_unreadable(
     reverted: &HistoryEntry,
     restores: bool,
 ) -> Result<()> {
+    let key = target_of(reverted)?;
     let newer: Vec<Touched> = unreadable
         .iter()
         .filter(|line| line.after > at)
-        .map(|line| touched_by(line, reverted.target))
+        .map(|line| touched_by(line, key))
         .filter(|touched| *touched != Touched::Nothing)
         .collect();
     if newer.is_empty() {
@@ -1613,7 +1644,7 @@ fn restored_state(
     folders: &FolderPlan,
 ) -> Result<Restored> {
     let reverted = &entries[at];
-    let key = reverted.target;
+    let key = target_of(reverted)?;
     let snapshot = state_snapshot_of(paths, &reverted.tx);
     let named = |path: PathBuf| path.file_name().map(|n| snapshot.join(n));
     let before = match named(paths.target_record(&key)) {
@@ -1835,11 +1866,16 @@ fn replay_later_edits(
     at: usize,
 ) {
     let reverted = &entries[at];
+    // Undo selects no target-less line (`target_of`), so this never returns early.
+    let Some(key) = reverted.target else {
+        return;
+    };
     let later = &entries[at + 1..];
     let cancelled = cancelled_after(later, reverted.tx);
+    // Lines on the same target only: a target-less line carries no record edits.
     let edits = later
         .iter()
-        .filter(|e| e.target == reverted.target && !cancelled.contains(&e.tx))
+        .filter(|e| e.target == Some(key) && !cancelled.contains(&e.tx))
         .flat_map(|e| &e.ops)
         .filter_map(|op| Some((TargetRecord::addon_key(&op.addon), op.edit.as_ref()?)));
     for (key, edit) in edits {
@@ -2308,7 +2344,8 @@ mod tests {
             tx: TxId::new(),
             kind: TxKind::Restore,
             at: Timestamp::now(),
-            target,
+            target: Some(target),
+            targets: Vec::new(),
             actor: Actor::Human,
             reason: None,
             argv: vec!["omaddons".into(), "backup".into(), "restore".into()],
@@ -2328,6 +2365,8 @@ mod tests {
             created_addons_dir: false,
             run: None,
             backup: None,
+            doctor_run_id: None,
+            repairs: Vec::new(),
         }
     }
 
@@ -3930,5 +3969,118 @@ mod tests {
             let after = record(&scene);
             assert!(!after.addons.contains_key("dep") && after.addons.contains_key("req"));
         }
+    }
+
+    /// A repair line (M4-D31) on `key`: target-less, its client in `targets`.
+    fn repair_line(key: TargetKey) -> HistoryEntry {
+        HistoryEntry {
+            kind: TxKind::Repair,
+            target: None,
+            targets: vec![key],
+            ops: Vec::new(),
+            argv: vec!["omaddons".into(), "doctor".into(), "fix".into()],
+            run: Some(RunId::new()),
+            doctor_run_id: Some("2026-10-25T12:00:00Z__01M9Z00000000000000000000".into()),
+            ..restore_line(key)
+        }
+    }
+
+    fn plant(scene: &TxScene, line: &HistoryEntry) {
+        let mut bytes = serde_json::to_vec(line).unwrap();
+        bytes.push(b'\n');
+        crate::fsx::sys::append_durable(&scene.paths.history_file(), &bytes).unwrap();
+    }
+
+    #[test]
+    fn undo_refuses_a_target_less_line_before_anything_moves() {
+        let scene = TxScene::new();
+        install(&scene, "v1.zip", V1);
+        let repair = repair_line(scene.record().key);
+        plant(&scene, &repair);
+        let before = crate::engine::testing::tree_snapshot(scene.client.client_dir());
+        for (name, selector) in [
+            ("latest", UndoSelector::Latest),
+            ("tx", UndoSelector::Tx(repair.tx)),
+            ("last_by", UndoSelector::LastBy(Actor::Human)),
+        ] {
+            let err = scene.undo(selector, SvPolicy::Auto).unwrap_err();
+            assert_eq!(err.code, ErrorCode::NotFound, "{name}: {err:?}");
+            assert!(
+                err.message.contains(&repair.tx.to_string())
+                    && err.message.contains("cannot undo yet"),
+                "{name}: {}",
+                err.message
+            );
+            assert_eq!(
+                err.fix.argv(),
+                Some(&["omaddons".to_owned(), "history".to_owned()][..])
+            );
+            let journals = std::fs::read_dir(scene.paths.journal_dir())
+                .map(|dir| dir.count())
+                .unwrap_or(0);
+            assert_eq!(journals, 0, "{name}: no journal was started");
+            assert_eq!(
+                crate::engine::testing::tree_snapshot(scene.client.client_dir()),
+                before,
+                "{name}: nothing moved"
+            );
+        }
+    }
+
+    #[test]
+    fn a_target_less_line_is_never_a_pending_saved_variables_restore() {
+        let key = TargetKey::new();
+        let repair = repair_line(key);
+        // A synthetic undo naming the repair, as if it had deferred a restore.
+        let undo = HistoryEntry {
+            sv_deferred: true,
+            ..undo_line(key, repair.tx, Some(0))
+        };
+        let pending = pending_sv_restores(&[repair.clone(), undo]);
+        assert!(!pending.contains(&repair.tx), "{pending:?}");
+    }
+
+    #[test]
+    fn later_edits_replay_only_from_lines_on_the_same_target() {
+        let scene = TxScene::new();
+        install(&scene, "v1.zip", V1);
+        let mut record = scene.record();
+        let key = record.key;
+        let (addon_key, name) = record
+            .addons
+            .iter()
+            .next()
+            .map(|(k, a)| (k.clone(), a.name.clone()))
+            .unwrap();
+        let edit = |requester: &str| HistoryOp {
+            op: FolderOp::Record,
+            folder: FolderName::new("Foo").unwrap(),
+            addon: name.clone(),
+            edit: Some(HistoryEdit::RequiredByAdd(requester.into())),
+            backup: None,
+            from: None,
+            files: None,
+        };
+        let reverted = line(key, TxKind::Install, &[(FolderOp::Add, "Foo")]);
+        // A target-less line carrying a record edit anyway (built in memory only).
+        let target_less = HistoryEntry {
+            ops: vec![edit("Req")],
+            ..repair_line(key)
+        };
+        let on_target = HistoryEntry {
+            ops: vec![edit("Other")],
+            ..line(key, TxKind::Install, &[])
+        };
+        replay_later_edits(
+            &mut record,
+            std::slice::from_ref(&addon_key),
+            &[reverted, target_less, on_target],
+            0,
+        );
+        let required_by = &record.addons[&addon_key].required_by;
+        assert!(
+            required_by.iter().any(|r| r == "Other") && !required_by.iter().any(|r| r == "Req"),
+            "only the line on the target replays: {required_by:?}"
+        );
     }
 }

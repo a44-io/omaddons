@@ -7,9 +7,14 @@
 //! The next write closes it off first, so a new line never merges with it, and the
 //! reader salvages lines an older omaddons merged. Lines that still do not read are
 //! counted, and `history` and `undo` warn about them.
+//!
+//! A repair (M4) and the undo of one name no single target: `target` is `null`,
+//! `targets` lists the clients they touched, and `repairs` their filesystem operations.
 
+use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use schemars::JsonSchema;
@@ -34,7 +39,14 @@ pub struct HistoryEntry {
     pub kind: TxKind,
     #[schemars(with = "String")]
     pub at: Timestamp,
-    pub target: TargetKey,
+    /// The client the transaction changed; `null` on a repair and on the undo of one,
+    /// which name the clients they touched in `targets`. Always written; a line without
+    /// the key reads as `null`.
+    pub target: Option<TargetKey>,
+    /// The clients a target-less line touched; omitted when empty, so every line with a
+    /// target is written as before M4.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<TargetKey>,
     pub actor: Actor,
     /// `--reason`, verbatim; omitted when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -65,6 +77,164 @@ pub struct HistoryEntry {
     /// The backup a `backup` line published (M3-D33); absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<BackupNote>,
+    /// A repair's doctor run directory, named `<UTC time>Z__<ULID>` (never a run id);
+    /// absent on every other line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doctor_run_id: Option<String>,
+    /// A repair's filesystem operations (and an undo's of a repair), in order; absent on
+    /// every other line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repairs: Vec<RepairEntry>,
+}
+
+/// One filesystem operation of a repair (M4-D31), as its history line records it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RepairEntry {
+    pub seq: u32,
+    /// The fix of the doctor run it belongs to.
+    pub fix: u32,
+    /// The failure mode the fix repairs, `fm-<subsystem>-<name>`.
+    pub fm: String,
+    pub op: RepairOp,
+    /// The absolute path it acts on.
+    pub path: PathBuf,
+    /// A rename's destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<PathBuf>,
+    /// The mode it sets, as octal digits (`"0600"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// What its paths held before it ran.
+    pub pre: RepairEndpoints,
+    /// What they hold after it.
+    pub post: RepairEndpoints,
+    /// The backup an overwriting write reserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<PathBuf>,
+    /// The operation that activates the fix.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub activation: bool,
+    /// The client whose files it touches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TargetKey>,
+    /// The AddOns folder its path is or is in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<FolderName>,
+}
+
+/// What a repair operation does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairOp {
+    WriteFile,
+    Chmod,
+    #[serde(rename = "rename_noreplace")]
+    RenameNoReplace,
+}
+
+/// What a repair operation's paths hold: a rename's source and destination, or the one
+/// path of any other operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum RepairEndpoints {
+    Rename {
+        path: RepairPredicate,
+        to: RepairPredicate,
+    },
+    Path(RepairPredicate),
+}
+
+/// What one path holds, as a repair checks it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RepairPredicate {
+    pub kind: PredicateKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<RepairIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// The mode, as octal digits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// A directory's stamp digest (`stamp:sha256:…`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamp: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_target: Option<PathBuf>,
+}
+
+/// A file's identity: its inode and birth time, as decimal strings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RepairIdentity {
+    pub ino: String,
+    pub born_ns: String,
+}
+
+/// What kind of entry a path holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PredicateKind {
+    Absent,
+    File,
+    Dir,
+    Symlink,
+}
+
+/// The clients a history line touched: these, or, for a target-less line that touched a
+/// client's files without naming the client, every one (which fails closed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reach {
+    Targets(BTreeSet<TargetKey>),
+    Every,
+}
+
+impl RepairEntry {
+    /// Whether it acts on a client's files: it names a client or an AddOns folder, or a
+    /// path of it lies under a client's `Interface/AddOns` or `Interface/.omaddons`.
+    pub fn client_side(&self) -> bool {
+        self.target.is_some()
+            || self.folder.is_some()
+            || self.paths().any(|path| {
+                consecutive(path, "AddOns").is_some() || consecutive(path, ".omaddons").is_some()
+            })
+    }
+
+    /// The AddOns folders it touches: its `folder`, and the component of each path right
+    /// after `Interface/AddOns` when that is a folder name.
+    pub fn addon_folders(&self) -> BTreeSet<FolderName> {
+        let mut folders: BTreeSet<FolderName> = self.folder.iter().cloned().collect();
+        for path in self.paths() {
+            if let Some(name) = consecutive(path, "AddOns")
+                .and_then(OsStr::to_str)
+                .and_then(|name| FolderName::new(name).ok())
+            {
+                folders.insert(name);
+            }
+        }
+        folders
+    }
+
+    fn paths(&self) -> impl Iterator<Item = &Path> {
+        std::iter::once(self.path.as_path()).chain(self.to.as_deref())
+    }
+}
+
+/// Where `path` has a component `Interface` followed by one named `next` (both ignoring
+/// ASCII case): the component after those two, or an empty name when the path ends there.
+/// One pass, no allocation: `touches_target` runs on every line `status` reads.
+fn consecutive<'p>(path: &'p Path, next: &str) -> Option<&'p OsStr> {
+    let named = |name: &OsStr, want: &str| {
+        name.to_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case(want))
+    };
+    let mut parts = path.iter();
+    let mut interface = false;
+    while let Some(part) = parts.next() {
+        if interface && named(part, next) {
+            return Some(parts.next().unwrap_or_default());
+        }
+        interface = named(part, "Interface");
+    }
+    None
 }
 
 /// What a `backup` history line says about the backup it published.
@@ -81,6 +251,47 @@ impl HistoryEntry {
     /// The run this transaction belongs to: its own `run`, or the transaction alone.
     pub fn run_key(&self) -> RunKey {
         self.run.map_or(RunKey::Single(self.tx), RunKey::Run)
+    }
+
+    /// Whether this build reads the line: one with a target, or a target-less repair
+    /// (or undo of a repair, which carries its inverse operations) that moved no folder
+    /// through `ops`. Any other target-less line stays unreadable, as it was before M4,
+    /// so undo still assumes it touched whatever it may have (M3-D28 rule 5).
+    pub fn well_formed(&self) -> bool {
+        self.target.is_some()
+            || (self.ops.is_empty()
+                && (self.kind == TxKind::Repair
+                    || (self.kind == TxKind::Undo && !self.repairs.is_empty())))
+    }
+
+    /// The clients the line touched: its target, its `targets` and each repair
+    /// operation's; or every client when it is target-less, names none, and a repair
+    /// operation acted on some client's files.
+    pub fn reach(&self) -> Reach {
+        if self.target.is_none()
+            && self.targets.is_empty()
+            && self.repairs.iter().any(RepairEntry::client_side)
+        {
+            return Reach::Every;
+        }
+        let mut keys: BTreeSet<TargetKey> = self.targets.iter().copied().collect();
+        keys.extend(self.target);
+        keys.extend(self.repairs.iter().filter_map(|repair| repair.target));
+        Reach::Targets(keys)
+    }
+
+    /// Whether the line touched `key`, as [`HistoryEntry::reach`] says, without
+    /// allocating.
+    pub fn touches_target(&self, key: TargetKey) -> bool {
+        if self.target == Some(key)
+            || self.targets.contains(&key)
+            || self.repairs.iter().any(|repair| repair.target == Some(key))
+        {
+            return true;
+        }
+        self.target.is_none()
+            && self.targets.is_empty()
+            && self.repairs.iter().any(RepairEntry::client_side)
     }
 }
 
@@ -346,6 +557,8 @@ fn unterminated(path: &Path) -> bool {
 /// Which entries to return.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HistoryFilter {
+    /// A transaction on this client; a target-less line (a repair) matches each client
+    /// it touches ([`HistoryEntry::touches_target`]).
     pub target: Option<TargetKey>,
     pub actor: Option<Actor>,
     pub kind: Option<TxKind>,
@@ -358,7 +571,7 @@ pub struct HistoryFilter {
 
 impl HistoryFilter {
     fn matches(&self, entry: &HistoryEntry) -> bool {
-        self.target.is_none_or(|t| t == entry.target)
+        self.target.is_none_or(|t| entry.touches_target(t))
             && self.actor.is_none_or(|a| a == entry.actor)
             && self.kind.is_none_or(|k| k == entry.kind)
             && self.since.is_none_or(|since| entry.at >= since)
@@ -536,16 +749,22 @@ fn read_line(line: &str) -> Line {
 }
 
 /// `text` as one line: a settings change by its kind (its target may be `null`), else
-/// a transaction. A settings line cut short fails as a transaction at its `null`
-/// target, before the cut, so its own end-of-input error is the one returned: a
-/// complete line never gives one.
+/// a transaction, which reads only when [`HistoryEntry::well_formed`]. A settings line
+/// cut short is torn: both parses end at the cut, and the settings parse's end-of-input
+/// error is the one returned (a complete line never gives one).
 fn whole(text: &str) -> std::result::Result<Line, serde_json::Error> {
     let setting = match serde_json::from_str::<SettingEntry>(text) {
         Ok(setting) if setting.kind.is_setting() => return Ok(Line::Setting(Box::new(setting))),
         other => other.err(),
     };
     serde_json::from_str::<HistoryEntry>(text)
-        .map(|entry| Line::Entry(Box::new(entry)))
+        .map(|entry| {
+            if entry.well_formed() {
+                Line::Entry(Box::new(entry))
+            } else {
+                Line::Unreadable
+            }
+        })
         .map_err(|err| match setting {
             Some(cut) if cut.is_eof() => cut,
             _ => err,
@@ -611,7 +830,13 @@ pub fn newest_run(
     last_by: Option<Actor>,
     target: Option<Option<TargetKey>>,
 ) -> Option<RunSelection<'_>> {
-    let on_target = |e: &HistoryEntry| target.is_none_or(|key| Some(e.target) == key);
+    // A target never registered (`Some(None)`) selects nothing; a target-less line (a
+    // repair) is on each target it touches.
+    let on_target = |e: &HistoryEntry| match target {
+        None => true,
+        Some(None) => false,
+        Some(Some(key)) => e.touches_target(key),
+    };
     let newest = entries.iter().rev().find(|e| {
         e.kind.is_undoable() && on_target(e) && last_by.is_none_or(|actor| e.actor == actor)
     })?;
@@ -680,7 +905,8 @@ mod tests {
                 .unwrap(),
             kind,
             at: at.parse().unwrap(),
-            target: TARGET.parse().unwrap(),
+            target: Some(TARGET.parse().unwrap()),
+            targets: Vec::new(),
             actor,
             reason: None,
             argv: vec!["omaddons".into(), "install".into(), "weakauras".into()],
@@ -700,6 +926,8 @@ mod tests {
             created_addons_dir: false,
             run: None,
             backup: None,
+            doctor_run_id: None,
+            repairs: Vec::new(),
         }
     }
 
@@ -707,7 +935,7 @@ mod tests {
     fn of_run(n: u8, kind: TxKind, run: Option<RunId>, target: &str) -> HistoryEntry {
         HistoryEntry {
             run,
-            target: target.parse().unwrap(),
+            target: Some(target.parse().unwrap()),
             ..entry(n, Actor::Human, kind, "2026-10-21T18:00:00Z")
         }
     }
@@ -1311,5 +1539,648 @@ mod tests {
             assert!(!kind.is_setting() && kind.is_undoable(), "{kind:?}");
         }
         assert!(!TxKind::Backup.is_undoable() && !TxKind::Backup.is_setting());
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Target-less lines (M4-D31).
+
+    const KEY_A: &str = "01JB8Q2V9W0000000000000000";
+    const KEY_B: &str = "01JB8Q2V9W0000000000000001";
+    const KEY_C: &str = "01JB8Q2V9W0000000000000002";
+
+    fn key(text: &str) -> TargetKey {
+        text.parse().unwrap()
+    }
+
+    fn file(kind: PredicateKind, mode: &str) -> RepairPredicate {
+        RepairPredicate {
+            kind,
+            identity: Some(RepairIdentity {
+                ino: "4215".into(),
+                born_ns: "1792900000000000000".into(),
+            }),
+            sha256: None,
+            mode: Some(mode.into()),
+            stamp: None,
+            link_target: None,
+        }
+    }
+
+    fn absent() -> RepairPredicate {
+        RepairPredicate {
+            kind: PredicateKind::Absent,
+            identity: None,
+            sha256: None,
+            mode: None,
+            stamp: None,
+            link_target: None,
+        }
+    }
+
+    /// The plan's chmod of a credential file: home-side, no client.
+    fn chmod() -> RepairEntry {
+        RepairEntry {
+            seq: 1,
+            fix: 1,
+            fm: "fm-secrets-credential-file-mode".into(),
+            op: RepairOp::Chmod,
+            path: "/home/u/.config/omaddons/credentials/github".into(),
+            to: None,
+            mode: None,
+            pre: RepairEndpoints::Path(file(PredicateKind::File, "0644")),
+            post: RepairEndpoints::Path(file(PredicateKind::File, "0600")),
+            backup: None,
+            activation: false,
+            target: None,
+            folder: None,
+        }
+    }
+
+    /// The plan's flatten of a nested addon folder: a rename inside a client's AddOns.
+    fn flatten() -> RepairEntry {
+        let mut dir = file(PredicateKind::Dir, "0755");
+        dir.mode = None;
+        dir.stamp = Some("stamp:sha256:ab".into());
+        let mut moved = dir.clone();
+        moved.stamp = None;
+        RepairEntry {
+            seq: 1,
+            fix: 1,
+            fm: "fm-external_artifacts-nested-addon-folder".into(),
+            op: RepairOp::RenameNoReplace,
+            path: "/g/_retail_/Interface/AddOns/X/Y".into(),
+            to: Some("/g/_retail_/Interface/AddOns/Y".into()),
+            mode: None,
+            pre: RepairEndpoints::Rename {
+                path: dir,
+                to: absent(),
+            },
+            post: RepairEndpoints::Rename {
+                path: absent(),
+                to: moved,
+            },
+            backup: None,
+            activation: false,
+            target: None,
+            folder: None,
+        }
+    }
+
+    /// A repair line: target-less, touching `targets`, with `repairs`.
+    fn repair(n: u8, targets: &[&str], repairs: Vec<RepairEntry>) -> HistoryEntry {
+        let mut e = entry(n, Actor::Human, TxKind::Repair, "2026-10-25T12:00:00Z");
+        e.target = None;
+        e.targets = targets.iter().map(|t| key(t)).collect();
+        e.ops.clear();
+        e.argv = vec!["omaddons".into(), "doctor".into(), "fix".into()];
+        e.run = Some(RunId::new());
+        e.doctor_run_id = Some("2026-10-25T12:00:00Z__01M9Z00000000000000000000".into());
+        e.repairs = repairs;
+        e
+    }
+
+    #[test]
+    fn a_line_with_a_target_is_written_exactly_as_before() {
+        let mut e = entry(1, Actor::Agent, TxKind::Install, "2026-10-14T21:00:00Z");
+        e.reason = Some("keep raid addons current".into());
+        e.run = Some("01JB8Q2VB00000000000000000".parse().unwrap());
+        let line = serde_json::to_string(&e).unwrap();
+        assert_eq!(
+            line,
+            concat!(
+                r#"{"schema_version":"1.0","tx":"01JB8Q2VA00000000000000001","kind":"install","#,
+                r#""at":"2026-10-14T21:00:00Z","target":"01JB8Q2V9W0000000000000000","#,
+                r#""actor":"agent","reason":"keep raid addons current","#,
+                r#""argv":["omaddons","install","weakauras"],"#,
+                r#""ops":[{"op":"add","folder":"WeakAuras","addon":"WeakAuras"}],"#,
+                r#""result":"committed","reverts":null,"run":"01JB8Q2VB00000000000000000"}"#
+            )
+        );
+        for absent in ["targets", "repairs", "doctor_run_id"] {
+            assert!(!line.contains(absent), "{absent} in {line}");
+        }
+    }
+
+    #[test]
+    fn a_repair_line_round_trips_in_the_documented_shape() {
+        assert_eq!(
+            serde_json::to_string(&chmod()).unwrap(),
+            concat!(
+                r#"{"seq":1,"fix":1,"fm":"fm-secrets-credential-file-mode","op":"chmod","#,
+                r#""path":"/home/u/.config/omaddons/credentials/github","#,
+                r#""pre":{"kind":"file","identity":{"ino":"4215","born_ns":"1792900000000000000"},"mode":"0644"},"#,
+                r#""post":{"kind":"file","identity":{"ino":"4215","born_ns":"1792900000000000000"},"mode":"0600"}}"#
+            )
+        );
+        assert_eq!(
+            serde_json::to_string(&flatten()).unwrap(),
+            concat!(
+                r#"{"seq":1,"fix":1,"fm":"fm-external_artifacts-nested-addon-folder","op":"rename_noreplace","#,
+                r#""path":"/g/_retail_/Interface/AddOns/X/Y","to":"/g/_retail_/Interface/AddOns/Y","#,
+                r#""pre":{"path":{"kind":"dir","identity":{"ino":"4215","born_ns":"1792900000000000000"},"stamp":"stamp:sha256:ab"},"to":{"kind":"absent"}},"#,
+                r#""post":{"path":{"kind":"absent"},"to":{"kind":"dir","identity":{"ino":"4215","born_ns":"1792900000000000000"}}}}"#
+            )
+        );
+        let line = repair(2, &[KEY_A], vec![chmod(), flatten()]);
+        let json = serde_json::to_string(&line).unwrap();
+        assert!(json.contains(r#""target":null,"targets":["#), "{json}");
+        assert!(
+            json.contains(
+                r#""doctor_run_id":"2026-10-25T12:00:00Z__01M9Z00000000000000000000","repairs":[{"#
+            ),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<HistoryEntry>(&json).unwrap(), line);
+    }
+
+    #[test]
+    fn repair_ops_and_predicate_kinds_use_their_wire_names() {
+        for (op, wire) in [
+            (RepairOp::WriteFile, "\"write_file\""),
+            (RepairOp::Chmod, "\"chmod\""),
+            (RepairOp::RenameNoReplace, "\"rename_noreplace\""),
+        ] {
+            let json = serde_json::to_string(&op).unwrap();
+            assert_eq!(json, wire, "{op:?}");
+            assert_eq!(serde_json::from_str::<RepairOp>(&json).unwrap(), op);
+        }
+        for (kind, wire) in [
+            (PredicateKind::Absent, "\"absent\""),
+            (PredicateKind::File, "\"file\""),
+            (PredicateKind::Dir, "\"dir\""),
+            (PredicateKind::Symlink, "\"symlink\""),
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, wire, "{kind:?}");
+            assert_eq!(serde_json::from_str::<PredicateKind>(&json).unwrap(), kind);
+        }
+    }
+
+    /// `line` with its JSON edited by `edit`.
+    fn edited(line: &HistoryEntry, edit: impl FnOnce(&mut serde_json::Value)) -> String {
+        let mut value = serde_json::to_value(line).unwrap();
+        edit(&mut value);
+        serde_json::to_string(&value).unwrap()
+    }
+
+    #[test]
+    fn target_less_lines_read_only_as_repairs_or_their_undos() {
+        let good = repair(1, &[KEY_A], vec![chmod()]);
+        let mut undo = repair(2, &[KEY_A], vec![chmod()]);
+        undo.kind = TxKind::Undo;
+        undo.reverts = Some(good.tx);
+        let mut undo_bare = undo.clone();
+        undo_bare.repairs.clear();
+        let mut install = entry(3, Actor::Human, TxKind::Install, "2026-10-25T12:00:00Z");
+        install.target = None;
+        install.ops.clear();
+        let with_ops = HistoryEntry {
+            ops: entry(4, Actor::Human, TxKind::Install, "2026-10-25T12:00:00Z").ops,
+            ..good.clone()
+        };
+        let json = |e: &HistoryEntry| serde_json::to_string(e).unwrap();
+        /// What a read counted: entries, skipped, torn, unreadable, a torn tail.
+        type Counts = (usize, usize, usize, usize, bool);
+        let cases: Vec<(&str, String, Counts)> = vec![
+            (
+                "repair_with_primitives",
+                json(&good) + "\n",
+                (1, 0, 0, 0, false),
+            ),
+            (
+                "repair_without_primitives",
+                json(&repair(5, &[], Vec::new())) + "\n",
+                (1, 0, 0, 0, false),
+            ),
+            (
+                "undo_with_inverse_primitives",
+                json(&undo) + "\n",
+                (1, 0, 0, 0, false),
+            ),
+            (
+                "undo_without_primitives",
+                json(&undo_bare) + "\n",
+                (0, 1, 0, 1, false),
+            ),
+            (
+                "install_without_target",
+                json(&install) + "\n",
+                (0, 1, 0, 1, false),
+            ),
+            (
+                "repair_with_folder_ops",
+                json(&with_ops) + "\n",
+                (0, 1, 0, 1, false),
+            ),
+            (
+                "repair_with_bad_folder",
+                edited(&good, |v| v["repairs"][0]["folder"] = "../Escape".into()) + "\n",
+                (0, 1, 0, 1, false),
+            ),
+            (
+                "repair_with_unknown_op",
+                edited(&good, |v| v["repairs"][0]["op"] = "symlink".into()) + "\n",
+                (0, 1, 0, 1, false),
+            ),
+            (
+                "missing_target_key",
+                edited(&good, |v| {
+                    v.as_object_mut().unwrap().remove("target");
+                }) + "\n",
+                (1, 0, 0, 0, false),
+            ),
+            ("repair_cut_short", json(&good), (0, 0, 0, 0, true)),
+        ];
+        for (name, line, expected) in cases {
+            let f = fixture();
+            sys::append_durable(&f.paths.history_file(), line.as_bytes()).unwrap();
+            let read = read(&f.paths, &HistoryFilter::default()).unwrap();
+            let output = (
+                read.entries.len(),
+                read.skipped_lines,
+                read.torn_lines,
+                read.unreadable.len(),
+                read.torn_tail,
+            );
+            assert_eq!(output, expected, "{name}: input {line} gave {output:?}");
+            if name == "missing_target_key" {
+                assert_eq!(read.entries[0].target, None, "{name}");
+            }
+        }
+    }
+
+    /// A repair line cut short right after its `null` target, then a complete line: a
+    /// torn line, as a cut settings line is, never an unreadable one.
+    #[test]
+    fn a_cut_short_repair_line_is_torn() {
+        let f = fixture();
+        let line = serde_json::to_string(&repair(1, &[KEY_A], vec![chmod()])).unwrap();
+        let cut = line.find("\"target\":null,").unwrap() + "\"target\":null,".len();
+        sys::append_durable(&f.paths.history_file(), &line.as_bytes()[..cut]).unwrap();
+        let one = entry(2, Actor::Agent, TxKind::Install, "2026-10-25T13:00:00Z");
+        append_all(&f, std::slice::from_ref(&one));
+
+        let read = read(&f.paths, &HistoryFilter::default()).unwrap();
+        assert_eq!(txs(&read), [one.tx.to_string()]);
+        assert_eq!((read.torn_lines, read.skipped_lines), (1, 0));
+    }
+
+    /// A home-side repair operation at `path`, naming `target` and `folder` as given.
+    fn op_at(path: &str, target: Option<&str>, folder: Option<&str>) -> RepairEntry {
+        RepairEntry {
+            path: path.into(),
+            target: target.map(key),
+            folder: folder.map(|f| FolderName::new(f).unwrap()),
+            ..chmod()
+        }
+    }
+
+    fn keys(list: &[&str]) -> Reach {
+        Reach::Targets(list.iter().map(|k| key(k)).collect())
+    }
+
+    #[test]
+    fn reach_follows_targets_and_fails_closed() {
+        let home = "/home/u/.config/omaddons/credentials/github";
+        let with_target = entry(1, Actor::Human, TxKind::Install, "2026-10-25T12:00:00Z");
+        let mut with_extra = with_target.clone();
+        with_extra.targets = vec![key(KEY_B)];
+        let cases = [
+            ("with_target", with_target, keys(&[KEY_A])),
+            (
+                "with_target_and_extra_targets",
+                with_extra,
+                keys(&[KEY_A, KEY_B]),
+            ),
+            (
+                "targets_only",
+                repair(2, &[KEY_A, KEY_B], vec![op_at(home, None, None)]),
+                keys(&[KEY_A, KEY_B]),
+            ),
+            (
+                "home_side_only",
+                repair(3, &[], vec![op_at(home, None, None)]),
+                keys(&[]),
+            ),
+            (
+                "entry_with_target_no_targets",
+                repair(4, &[], vec![op_at(home, Some(KEY_A), None)]),
+                Reach::Every,
+            ),
+            (
+                "entry_with_folder_no_targets",
+                repair(5, &[], vec![op_at(home, None, Some("Foo"))]),
+                Reach::Every,
+            ),
+            (
+                "path_under_addons_no_targets",
+                repair(
+                    6,
+                    &[],
+                    vec![op_at("/g/_retail_/Interface/AddOns/Foo/x.lua", None, None)],
+                ),
+                Reach::Every,
+            ),
+            (
+                "path_under_meta_no_targets",
+                repair(
+                    7,
+                    &[],
+                    vec![op_at(
+                        "/g/_retail_/Interface/.omaddons/journal/x",
+                        None,
+                        None,
+                    )],
+                ),
+                Reach::Every,
+            ),
+            (
+                "addons_elsewhere_in_path",
+                repair(8, &[], vec![op_at("/home/u/AddOns/Foo", None, None)]),
+                keys(&[]),
+            ),
+            (
+                "targets_and_an_unnamed_client_entry",
+                repair(
+                    9,
+                    &[KEY_A],
+                    vec![op_at("/g/_retail_/Interface/AddOns/Foo", None, None)],
+                ),
+                keys(&[KEY_A]),
+            ),
+            (
+                "targets_and_entry_on_another_target",
+                repair(1, &[KEY_A], vec![op_at(home, Some(KEY_B), None)]),
+                keys(&[KEY_A, KEY_B]),
+            ),
+        ];
+        for (name, line, expected) in cases {
+            let output = line.reach();
+            assert_eq!(output, expected, "{name}: input {line:?} gave {output:?}");
+            for k in [KEY_A, KEY_B, KEY_C] {
+                let in_reach = match &output {
+                    Reach::Every => true,
+                    Reach::Targets(set) => set.contains(&key(k)),
+                };
+                assert_eq!(
+                    line.touches_target(key(k)),
+                    in_reach,
+                    "{name}: touches_target({k}) disagrees with {output:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn addon_folders_come_from_the_field_and_the_paths() {
+        let renamed = RepairEntry {
+            to: Some("/g/_retail_/Interface/AddOns/Baz".into()),
+            ..op_at("/g/_retail_/Interface/AddOns/X/Y", None, None)
+        };
+        let cases = [
+            (
+                "folder_only",
+                op_at("/home/u/x", None, Some("Qux")),
+                vec!["Qux"],
+            ),
+            (
+                "path",
+                op_at("/g/_retail_/Interface/AddOns/Foo/Bar.lua", None, None),
+                vec!["Foo"],
+            ),
+            ("rename_to", renamed, vec!["Baz", "X"]),
+            (
+                "case",
+                op_at("/g/_retail_/interface/addons/Foo", None, None),
+                vec!["Foo"],
+            ),
+            (
+                "flatten_stage",
+                op_at(
+                    "/g/_retail_/Interface/AddOns/.omaddons-flatten-01M9Z00000000000000000000",
+                    None,
+                    None,
+                ),
+                vec![],
+            ),
+            (
+                "meta",
+                op_at(
+                    "/g/_retail_/Interface/.omaddons/quarantine/x/AddOns/X",
+                    None,
+                    None,
+                ),
+                vec![],
+            ),
+        ];
+        for (name, entry, expected) in cases {
+            let output: Vec<String> = entry
+                .addon_folders()
+                .iter()
+                .map(|f| f.as_str().to_owned())
+                .collect();
+            assert_eq!(output, expected, "{name}: input {entry:?} gave {output:?}");
+        }
+    }
+
+    #[test]
+    fn filters_select_a_repair_line_on_each_target_it_touches() {
+        let f = fixture();
+        let install = entry(1, Actor::Human, TxKind::Install, "2026-10-25T11:00:00Z");
+        let on_both = repair(2, &[KEY_A, KEY_B], vec![chmod()]);
+        let home_side = repair(3, &[], vec![chmod()]);
+        let every = repair(
+            4,
+            &[],
+            vec![op_at("/g/_retail_/Interface/AddOns/Foo", None, None)],
+        );
+        append_all(
+            &f,
+            &[
+                install.clone(),
+                on_both.clone(),
+                home_side.clone(),
+                every.clone(),
+            ],
+        );
+        let tx = |e: &HistoryEntry| e.tx.to_string();
+        let cases = [
+            (
+                "all",
+                None,
+                vec![tx(&install), tx(&on_both), tx(&home_side), tx(&every)],
+            ),
+            (
+                "on_a",
+                Some(KEY_A),
+                vec![tx(&install), tx(&on_both), tx(&every)],
+            ),
+            ("on_b", Some(KEY_B), vec![tx(&on_both), tx(&every)]),
+            ("on_c", Some(KEY_C), vec![tx(&every)]),
+        ];
+        for (name, target, expected) in cases {
+            let filter = HistoryFilter {
+                target: target.map(key),
+                ..HistoryFilter::default()
+            };
+            let output = txs(&read(&f.paths, &filter).unwrap());
+            assert_eq!(
+                output, expected,
+                "{name}: target {target:?} gave {output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_newest_run_may_be_a_repair() {
+        let mut on_c = entry(1, Actor::Human, TxKind::Install, "2026-10-25T11:00:00Z");
+        on_c.target = Some(key(KEY_C));
+        let fix = repair(2, &[KEY_A], vec![chmod()]);
+        let entries = vec![on_c.clone(), fix.clone()];
+        let txs_of = |found: Option<RunSelection<'_>>| found.map(|f| selected(&f));
+        assert_eq!(
+            txs_of(newest_run(&entries, None, None)),
+            Some(vec![fix.tx.to_string()]),
+            "bare: the repair is the newest change"
+        );
+        assert_eq!(
+            txs_of(newest_run(&entries, None, Some(Some(key(KEY_A))))),
+            Some(vec![fix.tx.to_string()]),
+            "-t A: the repair touched A"
+        );
+        assert_eq!(
+            txs_of(newest_run(&entries, None, Some(Some(key(KEY_C))))),
+            Some(vec![on_c.tx.to_string()]),
+            "-t C: the older install"
+        );
+        assert_eq!(
+            txs_of(newest_run(&entries, None, Some(None))),
+            None,
+            "never registered"
+        );
+    }
+
+    /// The line format of `c0ab5e9`, before M4: a required target.
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code, reason = "fields are read only by serde")]
+    struct M3Entry {
+        schema_version: SchemaVersion,
+        tx: TxId,
+        kind: TxKind,
+        at: Timestamp,
+        target: TargetKey,
+        actor: Actor,
+        #[serde(default)]
+        reason: Option<String>,
+        argv: Vec<String>,
+        ops: Vec<HistoryOp>,
+        result: TxResult,
+        #[serde(default)]
+        reverts: Option<TxId>,
+    }
+
+    #[test]
+    fn a_build_with_a_required_target_cannot_read_a_repair_line() {
+        let line = serde_json::to_string(&repair(1, &[KEY_A], vec![chmod()])).unwrap();
+        let error = serde_json::from_str::<M3Entry>(&line).unwrap_err();
+        assert_eq!(
+            error.classify(),
+            serde_json::error::Category::Data,
+            "{error}"
+        );
+        let facts = line_facts(&line).unwrap();
+        assert!(
+            facts.undoable,
+            "the projection counts it as a change to undo"
+        );
+    }
+
+    #[test]
+    fn no_reader_unwraps_or_expects_a_history_target() {
+        use crate::source_scan::{Literals, production_code, sources};
+
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let files = sources(&src);
+        assert!(files.len() >= 100, "scanned {} files", files.len());
+        let mut found = Vec::new();
+        for (path, text) in files {
+            let code = production_code(&text, Literals::Blank).unwrap_or_default();
+            for (n, line) in code.lines().enumerate() {
+                for pattern in [
+                    ".target.unwrap()",
+                    ".target.expect(",
+                    ".target.as_ref().unwrap()",
+                    ".target.as_ref().expect(",
+                ] {
+                    if line.contains(pattern) {
+                        found.push(format!("{}:{}: {pattern}", path.display(), n + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "a history target may be null (a repair): read it through `undo::target_of` or `touches_target`\n{}",
+            found.join("\n")
+        );
+    }
+
+    mod generated {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn any_key() -> impl Strategy<Value = TargetKey> {
+            prop_oneof![Just(key(KEY_A)), Just(key(KEY_B)), Just(key(KEY_C))]
+        }
+
+        fn any_repair() -> impl Strategy<Value = RepairEntry> {
+            (
+                proptest::option::of(any_key()),
+                proptest::option::of(Just("Foo")),
+                prop_oneof![
+                    Just("/home/u/.config/omaddons/credentials/github"),
+                    Just("/g/_retail_/Interface/AddOns/Foo/x.lua"),
+                ],
+            )
+                .prop_map(|(target, folder, path)| RepairEntry {
+                    target,
+                    folder: folder.map(|f| FolderName::new(f).unwrap()),
+                    ..op_at(path, None, None)
+                })
+        }
+
+        fn any_line() -> impl Strategy<Value = HistoryEntry> {
+            (
+                proptest::option::of(any_key()),
+                proptest::collection::vec(any_key(), 0..=3),
+                proptest::collection::vec(any_repair(), 0..=4),
+            )
+                .prop_map(|(target, targets, repairs)| HistoryEntry {
+                    target,
+                    targets,
+                    ops: Vec::new(),
+                    ..repair(1, &[], repairs)
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn generated_lines_round_trip_and_reach_names_every_target(line in any_line()) {
+                prop_assume!(line.well_formed());
+                let json = serde_json::to_string(&line).unwrap();
+                prop_assert_eq!(&serde_json::from_str::<HistoryEntry>(&json).unwrap(), &line);
+                if let Reach::Targets(reached) = line.reach() {
+                    let named = line
+                        .target
+                        .iter()
+                        .chain(&line.targets)
+                        .chain(line.repairs.iter().filter_map(|r| r.target.as_ref()));
+                    for k in named {
+                        prop_assert!(reached.contains(k), "{k} missing from {reached:?}: {json}");
+                    }
+                }
+            }
+        }
     }
 }

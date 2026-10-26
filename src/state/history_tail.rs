@@ -425,7 +425,8 @@ mod tests {
             tx: TxId::new(),
             kind,
             at: crate::clock::now(),
-            target: TARGET.parse::<TargetKey>().unwrap(),
+            target: Some(TARGET.parse::<TargetKey>().unwrap()),
+            targets: Vec::new(),
             actor: Actor::Agent,
             reason: None,
             argv: vec!["omaddons".into(), "install".into()],
@@ -447,6 +448,20 @@ mod tests {
             created_addons_dir: false,
             run: Some(run),
             backup: None,
+            doctor_run_id: None,
+            repairs: Vec::new(),
+        }
+    }
+
+    /// A repair of `run` (M4-D31): target-less, its client in `targets`, no folder ops.
+    fn repair(run: RunId) -> HistoryEntry {
+        HistoryEntry {
+            kind: TxKind::Repair,
+            target: None,
+            targets: vec![TARGET.parse::<TargetKey>().unwrap()],
+            argv: vec!["omaddons".into(), "doctor".into(), "fix".into()],
+            doctor_run_id: Some("2026-10-25T12:00:00Z__01M9Z00000000000000000000".into()),
+            ..entry(TxKind::Repair, run, 0)
         }
     }
 
@@ -455,6 +470,55 @@ mod tests {
             Answer::Found(run) => Some(run.iter().map(|e| e.tx).collect()),
             _ => None,
         }
+    }
+
+    #[test]
+    fn a_repair_line_is_the_last_change_the_projection_answers() {
+        let f = fixture();
+        f.rebuild();
+        f.append(&entry(TxKind::Install, RunId::new(), 1));
+        let fix = repair(RunId::new());
+        f.append(&fix);
+        let tail = fresh(&f.paths).expect("kept current by every append");
+        assert_eq!(
+            found(&tail),
+            Some(vec![fix.tx]),
+            "the repair is the last change"
+        );
+        assert_eq!(found(&tail), f.full(), "as the whole history says");
+        let line = serde_json::to_string(&fix).unwrap();
+        assert!(
+            tail.lines.contains(&line),
+            "held verbatim: {:?}",
+            tail.lines
+        );
+    }
+
+    /// An install with a `null` target reads by its facts but not whole: skipped, as
+    /// reading every line skips it, so the run before it is chosen.
+    #[test]
+    fn a_target_less_line_of_another_kind_is_skipped_as_reading_every_line_skips_it() {
+        let (older, newer) = (RunId::new(), RunId::new());
+        let good = line_at(TxKind::Install, older, 1_790_000_000_000);
+        let mut broken: serde_json::Value =
+            serde_json::from_str(&line_at(TxKind::Install, newer, 1_790_000_001_000)).unwrap();
+        broken["target"] = serde_json::Value::Null;
+        let broken = broken.to_string();
+        assert!(
+            line_facts(&broken).is_some_and(|f| f.undoable),
+            "its facts read"
+        );
+        let text = format!("{good}\n{broken}\n");
+        let entries = history::parse(&text, &HistoryFilter::default()).entries;
+        assert_eq!(entries.len(), 1, "it does not read whole");
+        let full = newest_run(&entries, None, None)
+            .map(|r| r.entries.iter().map(|e| e.tx).collect::<Vec<TxId>>());
+        let projected = match HistoryTail::from_text(&text).answer() {
+            Answer::Found(run) => Some(run.iter().map(|e| e.tx).collect()),
+            _ => None,
+        };
+        assert!(full.is_some());
+        assert_eq!(projected, full);
     }
 
     #[test]
@@ -651,6 +715,8 @@ mod tests {
             setting.run = run;
             setting.at = at;
             serde_json::to_string(&setting).unwrap()
+        } else if kind == TxKind::Repair {
+            serde_json::to_string(&HistoryEntry { at, ..repair(run) }).unwrap()
         } else {
             serde_json::to_string(&HistoryEntry {
                 at,
@@ -669,6 +735,7 @@ mod tests {
             TxKind::Undo,
             TxKind::Backup,
             TxKind::Config,
+            TxKind::Repair,
         ];
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         let (mut found, mut needs_older) = (0, 0);
