@@ -335,13 +335,24 @@ impl Paths {
         self.state_snapshots_dir().join(format!("{tx}{WTF_SUFFIX}"))
     }
 
+    /// Stored plans (M4-D21): derived, so in the cache; a dry run never writes `<state>`.
     pub fn plans_dir(&self) -> PathBuf {
-        self.state.join("plans")
+        self.cache.join("plans")
     }
 
     /// One stored plan (M4).
     pub fn plan(&self, id: &PlanId) -> PathBuf {
         self.plans_dir().join(format!("{id}.json"))
+    }
+
+    /// A plan's apply lease (M4-D61): an flock, swept only with its expired plan.
+    pub fn plan_lease(&self, id: &PlanId) -> PathBuf {
+        self.plans_dir().join(format!("{id}.lease"))
+    }
+
+    /// The plan store's admission lock: an flock, never deleted.
+    pub fn plans_lock(&self) -> PathBuf {
+        self.plans_dir().join(".lock")
     }
 
     /// Doctor run artifacts (M4).
@@ -674,8 +685,6 @@ mod tests {
                 p.state_snapshot_wtf(&tx),
                 format!("/s/omaddons/snapshots/{TX}.wtf"),
             ),
-            (p.plans_dir(), "/s/omaddons/plans".into()),
-            (p.plan(&plan), format!("/s/omaddons/plans/{TX}.json")),
             (p.doctor_runs_dir(), "/s/omaddons/doctor/runs".into()),
             (p.net_log(), "/s/omaddons/net.log".into()),
             (p.net_log_previous(), "/s/omaddons/net.log.1".into()),
@@ -689,6 +698,10 @@ mod tests {
             (p.discovery_cache(), "/k/omaddons/discovery.json".into()),
             (p.cache_tmp(&tx), format!("/k/omaddons/tmp/{TX}")),
             (p.cache_trash(), "/k/omaddons/trash".into()),
+            (p.plans_dir(), "/k/omaddons/plans".into()),
+            (p.plan(&plan), format!("/k/omaddons/plans/{TX}.json")),
+            (p.plan_lease(&plan), format!("/k/omaddons/plans/{TX}.lease")),
+            (p.plans_lock(), "/k/omaddons/plans/.lock".into()),
         ];
         for (actual, expected) in cases {
             assert_eq!(actual, Path::new(&expected));

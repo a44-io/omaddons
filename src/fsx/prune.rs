@@ -5,19 +5,25 @@
 //! refuses the whole call before anything moves. Victims are then renamed into their
 //! side's `trash/` under the global lock, the lock is released, and the trash entries
 //! are deleted, so the lock window stays short and a crash leaves only trash. Each
-//! prune also sweeps whatever an earlier, crashed prune left in the same trash dirs.
+//! prune under the global lock also sweeps whatever an earlier, crashed prune left in
+//! the same trash dirs. Two modes take no global lock: a transaction cleaning up its own
+//! artifacts, and the plan store deleting expired plans.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{self, File, TryLockError};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
-use super::lock::{GlobalLock, GlobalLockGuard, InflightLock};
+use jiff::Timestamp;
+use serde::Deserialize;
+
+use super::lock::{GlobalLock, GlobalLockGuard, InflightLock, Lease, LeaseGuard};
 use super::scope::{ScopeTable, Writer};
 use super::session::WriteSession;
 use super::{FsxError, Op, RenameMode, ensure_dir_all, failpoint, mutate};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
+use crate::limits::PLAN_MAX_BYTES;
 use crate::model::{PlanId, TxId};
 
 /// Why something is deleted. Each reason may delete only its own locations.
@@ -28,7 +34,8 @@ pub enum PruneReason {
     /// Stage dirs, cache temp dirs, journals and released in-flight locks. Under a
     /// transaction's own lock, only a journal that is committed or never started.
     PostCommitCleanup,
-    /// Stored plans (M4).
+    /// Stored plans and their leases (M4-D24), only as expired, under
+    /// [`LockUse::Expired`].
     PlanExpiry,
     /// `WTF/` backups (M3).
     BackupPrune,
@@ -42,7 +49,8 @@ pub enum PruneReason {
 impl PruneReason {
     fn writer(self) -> Writer {
         match self {
-            Self::Retention | Self::PostCommitCleanup | Self::PlanExpiry => Writer::Mutating,
+            Self::Retention | Self::PostCommitCleanup => Writer::Mutating,
+            Self::PlanExpiry => Writer::Derived,
             Self::BackupPrune => Writer::Backup,
             Self::DoctorGc => Writer::Doctor,
             Self::WidgetStage => Writer::Omarchy,
@@ -60,6 +68,14 @@ pub enum LockUse<'a> {
     /// clean up this way, so planning and `--dry-run` never take the global lock. Trash
     /// left by crashed prunes is swept only under the global lock.
     Own(&'a InflightLock),
+    /// No global lock, for the plan store's sweeps (M4-D24): only `<cache>/plans/<id>.json`
+    /// files whose `expires_at` (read here, bounded by `PLAN_MAX_BYTES`) is not after
+    /// `now`, and `<id>.lease` files of such plans, or of plans already gone, that fsx takes
+    /// itself. Any other victim refuses the whole call with `scope_denied` before anything
+    /// moves.
+    Expired {
+        now: Timestamp,
+    },
 }
 
 /// What a prune did.
@@ -78,6 +94,7 @@ pub struct PruneReport {
 struct Planned {
     victim: PathBuf,
     trash: PathBuf,
+    kind: Kind,
     /// An in-flight lock file, deleted only while nobody holds it.
     inflight: bool,
     /// A transaction journal.
@@ -91,6 +108,16 @@ pub fn prune(
     victims: &[PathBuf],
     lock: LockUse<'_>,
 ) -> Result<PruneReport> {
+    // Plan victims go only as expired, and `Expired` deletes nothing else, so no caller
+    // can delete an unexpired plan under any lock.
+    let expired = matches!(lock, LockUse::Expired { .. });
+    if expired != (reason == PruneReason::PlanExpiry) {
+        return Err(Error::new(
+            ErrorCode::ScopeDenied,
+            "plan victims are pruned only as expired, without the global lock",
+            Suggestion::command(["omaddons", "status"]),
+        ));
+    }
     let mut report = PruneReport::default();
     let mut planned = Vec::new();
     for victim in victims {
@@ -101,10 +128,15 @@ pub fn prune(
                 .push((victim.clone(), "already gone".to_owned())),
         }
     }
+    // Held until every victim is in trash, so an applier never holds a deleted lease.
+    let _leases = match &lock {
+        LockUse::Expired { now } => only_expired(scopes, &planned, *now)?,
+        LockUse::Acquire | LockUse::Held(_) | LockUse::Own(_) => Vec::new(),
+    };
 
     let own = match &lock {
         LockUse::Own(inflight) => Some(inflight.tx().to_string()),
-        LockUse::Acquire | LockUse::Held(_) => None,
+        LockUse::Acquire | LockUse::Held(_) | LockUse::Expired { .. } => None,
     };
     if let Some(tx) = &own
         && let Some(stranger) = planned.iter().find(|p| !named_for(&p.victim, tx))
@@ -133,9 +165,11 @@ pub fn prune(
         ));
     }
     let lock_held = matches!(lock, LockUse::Held(_));
+    // Trash a crashed prune left is swept only under the global lock.
+    let sweeps = matches!(lock, LockUse::Acquire | LockUse::Held(_));
     let acquired = match lock {
         LockUse::Acquire => Some(GlobalLock::acquire(scopes.paths(), "prune")?),
-        LockUse::Held(_) | LockUse::Own(_) => None,
+        LockUse::Held(_) | LockUse::Own(_) | LockUse::Expired { .. } => None,
     };
     let prune_id = ulid::Ulid::generate();
     let mut session = WriteSession::untracked(reason.writer(), scopes, "prune");
@@ -197,7 +231,7 @@ pub fn prune(
         }
         trash_dirs.insert(trash);
     }
-    if own.is_none() {
+    if sweeps {
         for dir in &trash_dirs {
             sweep(dir);
         }
@@ -292,9 +326,92 @@ fn classify(scopes: &ScopeTable, reason: PruneReason, victim: &Path) -> Result<O
     Ok(meta.map(|_| Planned {
         victim: canonical,
         trash,
+        kind,
         inflight: kind == Kind::Inflight,
         journal: kind == Kind::Journal,
     }))
+}
+
+/// `LockUse::Expired`'s check, before anything moves: every victim is an expired plan,
+/// or the lease of one (or of a plan already gone) that nobody holds. Returns the leases,
+/// taken, for the caller to hold until its victims are in trash.
+fn only_expired(
+    scopes: &ScopeTable,
+    planned: &[Planned],
+    now: Timestamp,
+) -> Result<Vec<LeaseGuard>> {
+    let refuse = |victim: &Path, why: &str| {
+        Err(Error::new(
+            ErrorCode::ScopeDenied,
+            format!("refusing to prune {}: {why}", victim.display()),
+            Suggestion::command(["omaddons", "status"]),
+        ))
+    };
+    let plans: BTreeSet<&Path> = planned
+        .iter()
+        .filter(|p| p.kind == Kind::Plan)
+        .map(|p| p.victim.as_path())
+        .collect();
+    for p in planned {
+        match p.kind {
+            Kind::Plan if !expired_plan(&p.victim, now) => {
+                return refuse(&p.victim, "not an expired plan");
+            }
+            Kind::Plan | Kind::PlanLease => {}
+            _ => {
+                return refuse(
+                    &p.victim,
+                    "only expired plans and their leases go without the global lock",
+                );
+            }
+        }
+    }
+    let mut leases = Vec::new();
+    for p in planned.iter().filter(|p| p.kind == Kind::PlanLease) {
+        // An orphan lease guards nothing: no plan of its id exists or will again.
+        let plan = p.victim.with_extension("json");
+        if !plans.contains(plan.as_path()) && fs::symlink_metadata(&plan).is_ok() {
+            return refuse(&p.victim, "its plan is not pruned with it");
+        }
+        match Lease::try_acquire(scopes, &p.victim, "prune") {
+            Ok(Some(guard)) => leases.push(guard),
+            Ok(None) => return refuse(&p.victim, "a held lease is never unlinked"),
+            Err(err) => return refuse(&p.victim, &format!("its lease cannot be taken: {err}")),
+        }
+    }
+    Ok(leases)
+}
+
+/// Whether the stored plan at `path` has expired by `now`: a regular file, read without
+/// following a symlink and at most `PLAN_MAX_BYTES`, whose `expires_at` is not after
+/// `now`. Only that key is decoded, so fsx does not depend on the plan's type.
+fn expired_plan(path: &Path, now: Timestamp) -> bool {
+    use rustix::fs::{Mode, OFlags};
+    #[derive(Deserialize)]
+    struct Expiry {
+        expires_at: Timestamp,
+    }
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let Ok(fd) = rustix::fs::open(path, flags, Mode::empty()) else {
+        return false;
+    };
+    let file = File::from(fd);
+    if !file
+        .metadata()
+        .is_ok_and(|m| m.is_file() && m.len() <= PLAN_MAX_BYTES)
+    {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    if file
+        .take(PLAN_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > PLAN_MAX_BYTES
+    {
+        return false;
+    }
+    serde_json::from_slice::<Expiry>(&bytes).is_ok_and(|plan| plan.expires_at <= now)
 }
 
 /// The prunable kinds of entry.
@@ -306,7 +423,10 @@ enum Kind {
     StateSnapshot,
     Journal,
     Inflight,
+    /// `<cache>/plans/<id>.json`
     Plan,
+    /// `<cache>/plans/<id>.lease`
+    PlanLease,
     DoctorRun,
     Blob,
     CacheTmp,
@@ -323,7 +443,7 @@ impl Kind {
             Self::ClientStage | Self::Journal | Self::Inflight | Self::CacheTmp => {
                 PruneReason::PostCommitCleanup
             }
-            Self::Plan => PruneReason::PlanExpiry,
+            Self::Plan | Self::PlanLease => PruneReason::PlanExpiry,
             Self::ClientBackup => PruneReason::BackupPrune,
             Self::DoctorRun => PruneReason::DoctorGc,
             Self::OmarchyStage | Self::OmarchyOld => PruneReason::WidgetStage,
@@ -335,6 +455,7 @@ impl Kind {
 /// below a prunable category dir with a well-formed name.
 fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
     let is_tx = |name: &str| name.parse::<TxId>().is_ok();
+    let is_plan = |name: &str| name.parse::<PlanId>().is_ok();
     // A stage, journal or snapshot may also be named `<tx>.wtf` (`state::paths::tx_named`).
     let is_tx_named = |name: &str| crate::state::paths::tx_named(name).is_some();
     for client in scopes.client_dirs() {
@@ -365,13 +486,6 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
                 Kind::Journal
             }
             ["inflight", name] if name.strip_suffix(".lock").is_some_and(is_tx) => Kind::Inflight,
-            ["plans", name]
-                if name
-                    .strip_suffix(".json")
-                    .is_some_and(|id| id.parse::<PlanId>().is_ok()) =>
-            {
-                Kind::Plan
-            }
             ["doctor", "runs", name] if is_plain(name) => Kind::DoctorRun,
             _ => return None,
         };
@@ -385,6 +499,9 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
             }
             ["tmp", name] if is_tx(name) => Kind::CacheTmp,
             ["inflight", name] if name.strip_suffix(".lock").is_some_and(is_tx) => Kind::Inflight,
+            // The store's `.lock` and its temporary files are never victims.
+            ["plans", name] if name.strip_suffix(".json").is_some_and(is_plan) => Kind::Plan,
+            ["plans", name] if name.strip_suffix(".lease").is_some_and(is_plan) => Kind::PlanLease,
             _ => return None,
         };
         return Some((kind, scopes.cache_dir().join("trash")));
@@ -686,10 +803,6 @@ mod tests {
                 PruneReason::PostCommitCleanup,
             ),
             (
-                state.join("plans").join(format!("{TX}.json")),
-                PruneReason::PlanExpiry,
-            ),
-            (
                 state.join("doctor/runs/2026-10-14T21-00-00Z__abc123"),
                 PruneReason::DoctorGc,
             ),
@@ -698,6 +811,14 @@ mod tests {
             (
                 cache.join("inflight").join(format!("{TX}.lock")),
                 PruneReason::PostCommitCleanup,
+            ),
+            (
+                cache.join("plans").join(format!("{TX}.json")),
+                PruneReason::PlanExpiry,
+            ),
+            (
+                cache.join("plans").join(format!("{TX}.lease")),
+                PruneReason::PlanExpiry,
             ),
         ];
         let reasons = [
@@ -1061,6 +1182,370 @@ mod tests {
             &f.scopes,
             PruneReason::PostCommitCleanup,
             &[victim],
+            LockUse::Acquire,
+        )
+        .unwrap();
+        assert_eq!(fs::read_dir(&trash).unwrap().count(), 0);
+    }
+
+    // ---- Stored plans (M4-D24): only as expired, without the global lock -------------
+
+    const NOW: &str = "2026-10-24T12:00:00Z";
+    const OTHER: &str = "01JB8Q2VA00000000000000001";
+
+    fn now() -> Timestamp {
+        NOW.parse().unwrap()
+    }
+
+    /// `<cache>/plans/<id>.json` holding `text`.
+    fn plan_text(f: &Fixture, id: &str, text: &str) -> PathBuf {
+        let path = f.paths.plan(&id.parse().unwrap());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+        path
+    }
+
+    /// A stored plan of `id` that expires at `expires_at`.
+    fn plan(f: &Fixture, id: &str, expires_at: &str) -> PathBuf {
+        let text =
+            format!(r#"{{"schema_version":"1.0","plan_id":"{id}","expires_at":"{expires_at}"}}"#);
+        plan_text(f, id, &text)
+    }
+
+    /// `<cache>/plans/<id>.lease`, made as an applier makes it.
+    fn lease(f: &Fixture, id: &str) -> PathBuf {
+        let path = f.paths.plan_lease(&id.parse().unwrap());
+        Lease::acquire(&f.scopes, &path, "apply", std::time::Duration::from_secs(1))
+            .unwrap()
+            .release();
+        path
+    }
+
+    /// The lease at `path`, held by an applier.
+    fn held_lease(f: &Fixture, path: &Path) -> LeaseGuard {
+        Lease::acquire(&f.scopes, path, "apply", std::time::Duration::from_secs(1)).unwrap()
+    }
+
+    /// The entries of `paths` that exist, for messages.
+    fn listing(paths: &[PathBuf]) -> Vec<String> {
+        paths
+            .iter()
+            .filter(|p| fs::symlink_metadata(p).is_ok())
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Runs `run` once for each lock mode, each with its own lock.
+    fn each_lock_mode(f: &Fixture, mut run: impl FnMut(&str, LockUse<'_>)) {
+        run("acquire", LockUse::Acquire);
+        {
+            let guard = GlobalLock::acquire(&f.paths, "test").unwrap();
+            run("held", LockUse::Held(&guard));
+        }
+        {
+            let lock = InflightLock::create(&f.paths, &TxId::new()).unwrap();
+            run("own", LockUse::Own(&lock));
+        }
+        run("expired", LockUse::Expired { now: now() });
+    }
+
+    const REASONS: [PruneReason; 6] = [
+        PruneReason::Retention,
+        PruneReason::PostCommitCleanup,
+        PruneReason::PlanExpiry,
+        PruneReason::BackupPrune,
+        PruneReason::DoctorGc,
+        PruneReason::WidgetStage,
+    ];
+
+    #[test]
+    fn the_state_plans_dir_is_not_prunable() {
+        let f = fixture();
+        let victim = make(
+            &f.paths.state_dir().join("plans").join(format!("{TX}.json")),
+            false,
+        );
+        for reason in REASONS {
+            each_lock_mode(&f, |mode, lock| {
+                let result = prune(&f.scopes, reason, std::slice::from_ref(&victim), lock);
+                assert_eq!(
+                    result.as_ref().err().map(|e| e.code),
+                    Some(ErrorCode::ScopeDenied),
+                    "{reason:?} under {mode}: expected scope_denied, got {result:?}"
+                );
+                assert!(victim.exists(), "{reason:?} under {mode}: the file is kept");
+            });
+        }
+    }
+
+    /// What one `Expired` call must do with its victims.
+    enum Outcome {
+        Removed,
+        /// `scope_denied`, its message holding this, and every victim kept.
+        Refused(&'static str),
+    }
+
+    #[test]
+    fn expired_admits_only_expired_plans_and_free_leases() {
+        use Outcome::{Refused, Removed};
+        type Setup = fn(&Fixture) -> (Vec<PathBuf>, Vec<LeaseGuard>);
+        // A plan that would be expired, one byte past the bound.
+        let oversized: Setup = |f| {
+            let head = r#"{"expires_at":"2026-10-24T11:00:00Z","pad":""#;
+            let pad = usize::try_from(PLAN_MAX_BYTES).unwrap() + 1 - head.len() - 2;
+            let text = format!("{head}{}\"}}", "x".repeat(pad));
+            assert_eq!(text.len() as u64, PLAN_MAX_BYTES + 1);
+            (vec![plan_text(f, TX, &text)], vec![])
+        };
+        let rows: Vec<(&str, Setup, Outcome)> = vec![
+            (
+                "expired plan",
+                |f| (vec![plan(f, TX, "2026-10-24T11:00:00Z")], vec![]),
+                Removed,
+            ),
+            (
+                "expired plan with its free lease",
+                |f| {
+                    let plan = plan(f, TX, "2026-10-24T11:00:00Z");
+                    (vec![plan, lease(f, TX)], vec![])
+                },
+                Removed,
+            ),
+            (
+                "plan expiring exactly now",
+                |f| (vec![plan(f, TX, NOW)], vec![]),
+                Removed,
+            ),
+            (
+                "unexpired plan",
+                |f| (vec![plan(f, TX, "2026-10-24T13:00:00Z")], vec![]),
+                Refused("not an expired plan"),
+            ),
+            (
+                "plan without expires_at",
+                |f| {
+                    let text = format!(r#"{{"schema_version":"1.0","plan_id":"{TX}"}}"#);
+                    (vec![plan_text(f, TX, &text)], vec![])
+                },
+                Refused("not an expired plan"),
+            ),
+            (
+                "truncated plan",
+                |f| (vec![plan_text(f, TX, r#"{"plan_id":"#)], vec![]),
+                Refused("not an expired plan"),
+            ),
+            ("oversized plan", oversized, Refused("not an expired plan")),
+            (
+                "expired plan with a held lease",
+                |f| {
+                    let plan = plan(f, TX, "2026-10-24T11:00:00Z");
+                    let lease = lease(f, TX);
+                    let held = held_lease(f, &lease);
+                    (vec![plan, lease], vec![held])
+                },
+                Refused("a held lease is never unlinked"),
+            ),
+            (
+                "orphan free lease",
+                |f| (vec![lease(f, TX)], vec![]),
+                Removed,
+            ),
+            (
+                "orphan held lease",
+                |f| {
+                    let lease = lease(f, TX);
+                    let held = held_lease(f, &lease);
+                    (vec![lease], vec![held])
+                },
+                Refused("a held lease is never unlinked"),
+            ),
+            (
+                "the lease of a plan not pruned with it",
+                |f| {
+                    plan(f, TX, "2026-10-24T11:00:00Z");
+                    (vec![lease(f, TX)], vec![])
+                },
+                Refused("its plan is not pruned with it"),
+            ),
+            (
+                ".lock",
+                |f| (vec![make(&f.paths.plans_lock(), false)], vec![]),
+                Refused("not a prunable location"),
+            ),
+            (
+                "a blob",
+                |f| {
+                    let blob = f.paths.blobs_dir().join("ab".repeat(32));
+                    (vec![make(&blob, false)], vec![])
+                },
+                Refused("entries are pruned for Retention"),
+            ),
+            (
+                "a target record",
+                |f| {
+                    let record = f
+                        .paths
+                        .state_dir()
+                        .join("targets")
+                        .join(format!("{TX}.json"));
+                    (vec![make(&record, false)], vec![])
+                },
+                Refused("not a prunable location"),
+            ),
+            (
+                "a journal",
+                |f| {
+                    (
+                        vec![make(&f.paths.journal(&TX.parse().unwrap()), false)],
+                        vec![],
+                    )
+                },
+                Refused("entries are pruned for PostCommitCleanup"),
+            ),
+            (
+                "a cache in-flight lock",
+                |f| {
+                    let lock = f.paths.cache_inflight_lock(&TX.parse().unwrap());
+                    (vec![make(&lock, false)], vec![])
+                },
+                Refused("entries are pruned for PostCommitCleanup"),
+            ),
+            (
+                "an expired plan beside an unexpired one in one call",
+                |f| {
+                    let expired = plan(f, TX, "2026-10-24T11:00:00Z");
+                    (
+                        vec![expired, plan(f, OTHER, "2026-10-24T13:00:00Z")],
+                        vec![],
+                    )
+                },
+                Refused("not an expired plan"),
+            ),
+        ];
+        for (row, setup, outcome) in rows {
+            let f = fixture();
+            let (victims, _held) = setup(&f);
+            let result = prune(
+                &f.scopes,
+                PruneReason::PlanExpiry,
+                &victims,
+                LockUse::Expired { now: now() },
+            );
+            let now_there = listing(&victims);
+            match outcome {
+                Removed => {
+                    let removed = result.as_ref().ok().map(|r| &r.removed);
+                    assert_eq!(
+                        removed,
+                        Some(&victims),
+                        "{row}: expected removed, got {result:?}; victims now {now_there:?}"
+                    );
+                    assert!(
+                        now_there.is_empty(),
+                        "{row}: expected removed; victims now {now_there:?}"
+                    );
+                }
+                Refused(why) => {
+                    let refusal = result
+                        .as_ref()
+                        .err()
+                        .map(|e| (e.code, e.message.contains(why)));
+                    assert_eq!(
+                        refusal,
+                        Some((ErrorCode::ScopeDenied, true)),
+                        "{row}: expected scope_denied ({why}), got {result:?}; victims now {now_there:?}"
+                    );
+                    assert_eq!(
+                        now_there.len(),
+                        victims.len(),
+                        "{row}: expected every victim kept; victims now {now_there:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plan_expiry_pairs_only_with_expired() {
+        let f = fixture();
+        let victim = plan(&f, TX, "2026-10-24T11:00:00Z");
+        each_lock_mode(&f, |mode, lock| {
+            if mode == "expired" {
+                return;
+            }
+            let result = prune(
+                &f.scopes,
+                PruneReason::PlanExpiry,
+                std::slice::from_ref(&victim),
+                lock,
+            );
+            let refusal = result
+                .as_ref()
+                .err()
+                .map(|e| (e.code, e.message.contains("only as expired")));
+            assert_eq!(
+                refusal,
+                Some((ErrorCode::ScopeDenied, true)),
+                "{mode}: expected refused, got {result:?}"
+            );
+            assert!(victim.exists(), "{mode}: the plan is kept");
+        });
+        let blob = make(&f.paths.blobs_dir().join("ab".repeat(32)), false);
+        let err = prune(
+            &f.scopes,
+            PruneReason::Retention,
+            std::slice::from_ref(&blob),
+            LockUse::Expired { now: now() },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ScopeDenied, "{}", err.message);
+        assert!(blob.exists());
+    }
+
+    #[test]
+    fn expired_takes_no_global_lock() {
+        let f = fixture();
+        let victim = plan(&f, TX, "2026-10-24T11:00:00Z");
+        let _someone = GlobalLock::acquire(&f.paths, "someone else").unwrap();
+        let started = std::time::Instant::now();
+        let report = prune(
+            &f.scopes,
+            PruneReason::PlanExpiry,
+            std::slice::from_ref(&victim),
+            LockUse::Expired { now: now() },
+        )
+        .unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "it waited for the global lock"
+        );
+        assert_eq!(report.removed, std::slice::from_ref(&victim));
+        assert!(!victim.exists());
+    }
+
+    #[test]
+    fn expired_leaves_foreign_trash_alone() {
+        let f = fixture();
+        let trash = f.paths.cache_trash();
+        let crashed = make(&trash.join("01OLDPRUNE-0-crashed"), true);
+        let victim = plan(&f, TX, "2026-10-24T11:00:00Z");
+        prune(
+            &f.scopes,
+            PruneReason::PlanExpiry,
+            std::slice::from_ref(&victim),
+            LockUse::Expired { now: now() },
+        )
+        .unwrap();
+        assert!(!victim.exists());
+        assert!(
+            crashed.exists(),
+            "only a prune under the global lock sweeps it"
+        );
+        let tmp = make(&f.paths.cache_dir().join("tmp").join(TX), true);
+        prune(
+            &f.scopes,
+            PruneReason::PostCommitCleanup,
+            &[tmp],
             LockUse::Acquire,
         )
         .unwrap();

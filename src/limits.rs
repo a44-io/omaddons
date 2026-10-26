@@ -47,6 +47,9 @@ pub const SNAPSHOT_MAX_BYTES: u64 = 2 * GIB;
 pub const BLOB_CACHE_MAX_BYTES: u64 = GIB;
 /// How long a stored plan stays applicable.
 pub const PLAN_TTL: Duration = DAY;
+/// Largest stored plan file (M4-D24): none is written larger, and every read of one,
+/// or of a plan store lock's holder line, stops past it.
+pub const PLAN_MAX_BYTES: u64 = 256 * 1024;
 /// Retention sweeps a stage dir or in-flight lock whose transaction is dead (lock free,
 /// no journal) only once it is this old: a margin against clocks and races.
 pub const ORPHAN_MIN_AGE: Duration = Duration::from_secs(60 * 60);
@@ -355,6 +358,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "ms",
         None,
         "Stored plans",
+    ),
+    limit(
+        "PLAN_MAX_BYTES",
+        LimitValue::Bytes(PLAN_MAX_BYTES),
+        "bytes",
+        None,
+        "Largest stored plan file; reads of one stop past it",
     ),
     limit(
         "ORPHAN_MIN_AGE",
@@ -1016,7 +1026,7 @@ mod tests {
     const LIMIT_NAMES: &[&str] = &[
         "ARCHIVE_MAX_ENTRIES", "ARCHIVE_MAX_UNCOMPRESSED", "ARCHIVE_MAX_RATIO",
         "ARCHIVE_RATIO_FLOOR", "DOWNLOAD_MAX_BYTES", "LOCK_ACQUIRE_TIMEOUT", "TX_RETENTION", "SNAPSHOT_MAX_BYTES",
-        "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS",
+        "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "PLAN_MAX_BYTES", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS",
         "AUTH_TOKEN_MAX_BYTES", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",

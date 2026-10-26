@@ -8,18 +8,20 @@
 //! info written into it is for diagnosis only.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{failpoint, sys};
+use super::scope::{Access, OwnedFolders, Refusal, ScopeTable, Writer};
+use super::session::WriteSession;
+use super::{FsxError, ensure_dir_all, failpoint, sys};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
-use crate::limits::LOCK_ACQUIRE_TIMEOUT;
+use crate::limits::{LOCK_ACQUIRE_TIMEOUT, PLAN_MAX_BYTES};
 use crate::model::TxId;
 use crate::state::paths::Paths;
 
@@ -324,6 +326,196 @@ fn open_dir(dir: &Path) -> io::Result<File> {
     Ok(File::from(rustix::fs::open(dir, flags, Mode::empty())?))
 }
 
+/// A named advisory lock on a cache file: the plan store's admission lock
+/// (`<cache>/plans/.lock`) and an applier's plan lease (`<cache>/plans/<id>.lease`, D5).
+/// Never the global lock: work under it blocks no other command. The file is opened, or
+/// created when missing, never created exclusively and never truncated away, so a crashed
+/// holder leaves nothing that blocks: the kernel releases its flock. The holder writes
+/// `{pid, command, started_at}` through the locked handle, for diagnosis only; nothing
+/// trusts it unless the lock is held.
+pub struct Lease;
+
+/// Holds a lease until dropped.
+#[derive(Debug)]
+pub struct LeaseGuard {
+    _file: File,
+    path: PathBuf,
+    acquired_at: Instant,
+}
+
+/// Why a lease was not taken.
+#[derive(Debug)]
+pub enum LeaseError {
+    /// Held by another process for the whole wait.
+    Busy {
+        holder: Option<HolderInfo>,
+        waited: Duration,
+    },
+    /// Not a lease this writer may take: outside the cache scope, or a symlink.
+    Refused(String),
+    Io(io::Error),
+}
+
+impl std::fmt::Display for LeaseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy { holder, waited } => {
+                let who = holder.as_ref().map_or_else(
+                    || "another omaddons process".to_owned(),
+                    |h| format!("omaddons {} (pid {})", h.command, h.pid),
+                );
+                write!(f, "{who} held it for {} ms", waited.as_millis())
+            }
+            Self::Refused(why) => f.write_str(why),
+            Self::Io(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl Lease {
+    /// Takes the lease at `path`, waiting at most `timeout` while another holder has it.
+    pub fn acquire(
+        scopes: &ScopeTable,
+        path: &Path,
+        command: &str,
+        timeout: Duration,
+    ) -> std::result::Result<LeaseGuard, LeaseError> {
+        let (file, path) = open_lease(scopes, path)?;
+        let started = Instant::now();
+        let mut pause = Duration::from_millis(5);
+        loop {
+            match file.try_lock() {
+                Ok(()) => return hold(file, path, command),
+                Err(TryLockError::WouldBlock) => {
+                    let waited = started.elapsed();
+                    if waited >= timeout {
+                        return Err(LeaseError::Busy {
+                            holder: Self::holder(&path),
+                            waited,
+                        });
+                    }
+                    std::thread::sleep(pause.min(timeout.saturating_sub(waited)));
+                    pause = (pause * 2).min(Duration::from_millis(50));
+                }
+                Err(TryLockError::Error(err)) => return Err(LeaseError::Io(err)),
+            }
+        }
+    }
+
+    /// Takes the lease at `path` when nobody holds it; `None` when somebody does.
+    pub fn try_acquire(
+        scopes: &ScopeTable,
+        path: &Path,
+        command: &str,
+    ) -> std::result::Result<Option<LeaseGuard>, LeaseError> {
+        let (file, path) = open_lease(scopes, path)?;
+        match file.try_lock() {
+            Ok(()) => hold(file, path, command).map(Some),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(err)) => Err(LeaseError::Io(err)),
+        }
+    }
+
+    /// What the lease's last holder wrote, read without following a symlink and at most
+    /// `PLAN_MAX_BYTES`; trust it only while the lease is held, as when `acquire` reports
+    /// [`LeaseError::Busy`].
+    pub fn holder(path: &Path) -> Option<HolderInfo> {
+        use rustix::fs::{Mode, OFlags};
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let file = File::from(rustix::fs::open(path, flags, Mode::empty()).ok()?);
+        let mut bytes = Vec::new();
+        file.take(PLAN_MAX_BYTES + 1).read_to_end(&mut bytes).ok()?;
+        if bytes.len() as u64 > PLAN_MAX_BYTES {
+            return None;
+        }
+        serde_json::from_slice(bytes.trim_ascii()).ok()
+    }
+}
+
+impl LeaseGuard {
+    /// How long the lease has been held.
+    pub fn held_for(&self) -> Duration {
+        self.acquired_at.elapsed()
+    }
+
+    /// The lease file, canonical.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Releases it now (dropping does the same).
+    pub fn release(self) {}
+}
+
+/// The lease file at `path`, opened (created 0600 when missing) after its location is
+/// checked: an absolute, normalized path under the cache that a `Derived` writer may
+/// write, never through a symlink. Nothing is created for a path refused.
+fn open_lease(
+    scopes: &ScopeTable,
+    path: &Path,
+) -> std::result::Result<(File, PathBuf), LeaseError> {
+    use rustix::fs::{Mode, OFlags};
+    let refuse = |why: &str| LeaseError::Refused(format!("{}: {why}", path.display()));
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return Err(refuse("not a normalized absolute path"));
+    }
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(refuse("it names no file"));
+    };
+    let Some(parent) = super::prune::canonical_lenient(parent) else {
+        return Err(refuse("its location cannot be resolved"));
+    };
+    if !parent.starts_with(scopes.cache_dir()) {
+        return Err(refuse("a lease lives in the cache"));
+    }
+    let canonical = parent.join(name);
+    scopes
+        .check(
+            Writer::Derived,
+            &OwnedFolders::default(),
+            &canonical,
+            Access::Write,
+        )
+        .map_err(|refusal| match refusal {
+            Refusal::ScopeDenied(why) | Refusal::Protected(why) => LeaseError::Refused(why),
+        })?;
+    let mut session = WriteSession::untracked(Writer::Derived, scopes, "lease");
+    ensure_dir_all(&mut session, &parent).map_err(|err| match err {
+        FsxError::Io { source, .. } => LeaseError::Io(source),
+        other => LeaseError::Refused(other.to_string()),
+    })?;
+    // Read, write, create; never truncate, never through a symlink (ELOOP).
+    let flags = OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let file = match rustix::fs::open(&canonical, flags, Mode::RUSR | Mode::WUSR) {
+        Ok(fd) => File::from(fd),
+        Err(rustix::io::Errno::LOOP) => return Err(refuse("a symlink is never a lease")),
+        Err(err) => return Err(LeaseError::Io(err.into())),
+    };
+    if !file.metadata().map_err(LeaseError::Io)?.is_file() {
+        return Err(refuse("not a regular file"));
+    }
+    Ok((file, canonical))
+}
+
+/// The guard of a lease just locked, its holder line written.
+fn hold(
+    mut file: File,
+    path: PathBuf,
+    command: &str,
+) -> std::result::Result<LeaseGuard, LeaseError> {
+    let acquired_at = Instant::now();
+    write_holder(&mut file, command).map_err(LeaseError::Io)?;
+    Ok(LeaseGuard {
+        _file: file,
+        path,
+        acquired_at,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,5 +744,180 @@ mod tests {
         let _lock = DirLock::shared(&dir.join("backup")).unwrap();
         fs::write(dir.join("ready"), "").unwrap();
         std::thread::sleep(Duration::from_secs(60));
+    }
+
+    // ---- Leases (M4-D24, M4-D61) -------------------------------------------------------
+
+    const PLAN: &str = "01JB8Q2VA00000000000000000";
+
+    /// Paths under `dir` made canonical, and the scope table of a machine with no client.
+    fn scoped(dir: &Path) -> (Paths, ScopeTable) {
+        let p = paths(&fs::canonicalize(dir).unwrap());
+        let scopes = ScopeTable::new(&p, &[], None).unwrap();
+        (p, scopes)
+    }
+
+    #[test]
+    fn a_lease_is_created_and_reused() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let (p, scopes) = scoped(dir.path());
+        let path = p.plans_lock();
+        assert!(!path.exists());
+        let guard = Lease::acquire(&scopes, &path, "install", Duration::from_secs(1)).unwrap();
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o600,
+            "created owner-only"
+        );
+        let holder = Lease::holder(&path).unwrap();
+        assert_eq!(
+            (holder.pid, holder.command.as_str()),
+            (std::process::id(), "install")
+        );
+        assert_eq!(guard.path(), path);
+        assert!(guard.held_for() < Duration::from_secs(5));
+        guard.release();
+        let again = Lease::acquire(&scopes, &path, "update", Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().ino(),
+            meta.ino(),
+            "the same file, reused"
+        );
+        assert_eq!(Lease::holder(&path).unwrap().command, "update");
+        drop(again);
+    }
+
+    #[test]
+    fn a_held_lease_times_out_with_its_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (p, scopes) = scoped(dir.path());
+        let path = p.plan_lease(&PLAN.parse().unwrap());
+        let _held = Lease::acquire(&scopes, &path, "apply", Duration::from_secs(1)).unwrap();
+        let wait = Duration::from_millis(50);
+        let result = std::thread::scope(|s| {
+            s.spawn(|| Lease::acquire(&scopes, &path, "apply", wait))
+                .join()
+                .unwrap()
+        });
+        assert!(
+            matches!(&result, Err(LeaseError::Busy { .. })),
+            "{result:?}"
+        );
+        if let Err(LeaseError::Busy { holder, waited }) = result {
+            assert_eq!(holder.map(|h| h.pid), Some(std::process::id()));
+            assert!(waited >= wait, "{waited:?}");
+        }
+    }
+
+    #[test]
+    fn try_acquire_returns_none_while_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let (p, scopes) = scoped(dir.path());
+        let path = p.plan_lease(&PLAN.parse().unwrap());
+        let held = Lease::try_acquire(&scopes, &path, "apply").unwrap();
+        assert!(held.is_some());
+        assert!(
+            Lease::try_acquire(&scopes, &path, "apply")
+                .unwrap()
+                .is_none()
+        );
+        drop(held);
+        assert!(freed(|| Lease::try_acquire(&scopes, &path, "apply")
+            .unwrap()
+            .is_some()));
+    }
+
+    #[test]
+    fn a_lease_holder_that_dies_frees_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let (p, scopes) = scoped(&root);
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "fsx::lock::tests::child_holds_a_lease",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("OMADDONS_FSX_TEST_PATH", &root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let ready = root.join("ready");
+        let started = Instant::now();
+        while !ready.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the child never took the lease"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let path = p.plans_lock();
+        assert!(
+            Lease::try_acquire(&scopes, &path, "apply")
+                .unwrap()
+                .is_none(),
+            "held by the child"
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(
+            freed(|| Lease::try_acquire(&scopes, &path, "apply")
+                .unwrap()
+                .is_some()),
+            "freed by its death"
+        );
+    }
+
+    #[test]
+    #[ignore = "child process for a_lease_holder_that_dies_frees_it"]
+    fn child_holds_a_lease() {
+        let Some(dir) = std::env::var_os("OMADDONS_FSX_TEST_PATH").map(PathBuf::from) else {
+            return;
+        };
+        let (p, scopes) = scoped(&dir);
+        let _lease =
+            Lease::acquire(&scopes, &p.plans_lock(), "apply", Duration::from_secs(5)).unwrap();
+        fs::write(dir.join("ready"), "").unwrap();
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_lease_outside_the_cache_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let (p, scopes) = scoped(&root);
+        let plans = p.plans_dir();
+        fs::create_dir_all(&plans).unwrap();
+        let file = root.join("file");
+        fs::write(&file, "keep").unwrap();
+        let missing = root.join("missing");
+        let to_file = plans.join(format!("{PLAN}.lease"));
+        std::os::unix::fs::symlink(&file, &to_file).unwrap();
+        let to_missing = plans.join("01JB8Q2VA00000000000000001.lease");
+        std::os::unix::fs::symlink(&missing, &to_missing).unwrap();
+        let rows = [
+            ("a lock in <state>", p.state_dir().join("x.lock")),
+            ("the global lock file", p.lock_file()),
+            ("a relative path", PathBuf::from("plans/x.lease")),
+            ("a path with ..", plans.join("../x.lease")),
+            ("a symlink to a file", to_file),
+            ("a symlink to a missing file", to_missing),
+        ];
+        for (row, path) in rows {
+            let result = Lease::acquire(&scopes, &path, "apply", Duration::from_millis(10));
+            assert!(
+                matches!(&result, Err(LeaseError::Refused(_))),
+                "{row}: expected refused, got {result:?}"
+            );
+        }
+        assert!(!p.state_dir().exists(), "nothing created in <state>");
+        assert!(!p.cache_dir().join("x.lease").exists());
+        assert!(!missing.exists(), "a link's missing target is not created");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
     }
 }

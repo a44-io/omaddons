@@ -18,7 +18,8 @@ pub(crate) mod sys;
 pub use failpoint::{with_spec, with_spec_in};
 pub use identity::FileId;
 pub use lock::{
-    DirLock, GlobalLock, GlobalLockGuard, HolderInfo, InflightLock, LockState, probe_global,
+    DirLock, GlobalLock, GlobalLockGuard, HolderInfo, InflightLock, Lease, LeaseError, LeaseGuard,
+    LockState, probe_global,
 };
 pub(crate) use mutate::count_hashed;
 #[cfg(test)]
