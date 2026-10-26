@@ -43,6 +43,66 @@ test_() {
     cargo test --locked ${argc_filter:+"$argc_filter"}
 }
 
+# @cmd Run the end-to-end suites (each test crate marked `//! e2e suite:`) with verbose test logs, then print where the logs are
+# @arg filter  Only the suites whose name contains this; `all` or nothing runs every suite
+# @arg args~   Passed to the test binaries after `--` (a test name, --exact, --test-threads=1, --nocapture)
+e2e() {
+    local suites=() selected=() tests=() file name filter target root start status=0
+    while IFS= read -r file; do
+        name=${file#tests/}
+        name=${name%.rs}
+        name=${name%/main}
+        suites+=("$name")
+    done < <({ grep -l '^//! e2e suite:' tests/*.rs tests/*/main.rs 2>/dev/null || true; } | sort)
+
+    filter=${argc_filter:-all}
+    for name in ${suites[@]+"${suites[@]}"}; do
+        if [[ $filter == all || $name == *"$filter"* ]]; then
+            selected+=("$name")
+            tests+=(--test "$name")
+        fi
+    done
+    if ((${#selected[@]} == 0)); then
+        echo "e2e: no end-to-end suite matches '$filter'. The suites: ${suites[*]:-none}. To pass test arguments to every suite: argc e2e all <args>" >&2
+        exit 2
+    fi
+
+    target=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+    root="$target/tmp/test-logs"
+    # Fractional, so a log an earlier run wrote within this second is not counted.
+    start=$(date +%s.%N)
+    printf '==> e2e: %d suite(s): %s (OMADDONS_TEST_LOG=verbose)\n' "${#selected[@]}" "${selected[*]}" >&2
+    OMADDONS_TEST_LOG=verbose cargo test --locked "${tests[@]}" -- ${argc_args[@]+"${argc_args[@]}"} || status=$?
+
+    _e2e_summary "$root" "$start" "${selected[@]}"
+    exit "$status"
+}
+
+# Counts the test logs this run wrote (newer than $start) in each selected suite's
+# directory, cases included, and names each one that panicked or has no end record (a
+# killed test). Deletes nothing: each test replaces its own log.
+_e2e_summary() {
+    local root=$1 start=$2 written=0 log name
+    shift 2
+    local panicked=() incomplete=()
+    for name in "$@"; do
+        [[ -d $root/$name ]] || continue
+        while IFS= read -r log; do
+            written=$((written + 1))
+            if grep -q '"outcome":"panicked"' "$log"; then
+                panicked+=("${log%steps.jsonl}transcript.md")
+            elif ! grep -q '"kind":"end"' "$log"; then
+                incomplete+=("${log%steps.jsonl}transcript.md")
+            fi
+        done < <(find "$root/$name" -name steps.jsonl -newermt "@$start" | sort)
+    done
+    printf '==> e2e: %d test log(s) written, %d panicked, %d without an end record\n' \
+        "$written" "${#panicked[@]}" "${#incomplete[@]}" >&2
+    for log in ${panicked[@]+"${panicked[@]}"}; do printf '    panicked: %s\n' "${log#"$PWD"/}" >&2; done
+    for log in ${incomplete[@]+"${incomplete[@]}"}; do printf '    incomplete: %s\n' "${log#"$PWD"/}" >&2; done
+    printf '==> test logs: %s\n' "${root#"$PWD"/}"
+}
+
 # @cmd Fuzz one parser (vision §5.12; never part of the gate). The M1 checkpoint runs every target for the default 600 s
 # @arg target![`_choice_fuzz_target`]  The fuzz target (fuzz/fuzz_targets/<target>.rs)
 # @option --time=600  Seconds to run

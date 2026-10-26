@@ -1,8 +1,11 @@
+//! e2e suite: the test log's own self-test (both files, every field, redaction, bounds, trees, the failure output).
+//!
 //! The structured test log (`tests/common/tlog.rs`) keeps its promises: its pure
 //! helpers (secret names and values, path placeholders, caps, the test budget, names,
-//! modes) case by case, and the two files a log writes, read back after it is dropped.
-//! Subject logs are written under the suite directory `tlog_selftest_child`, which is
-//! never a real suite, so `argc e2e` never summarizes their deliberate failures.
+//! modes, runs, trees) case by case, the two files a log writes, read back after it is
+//! dropped, and the `//! e2e suite:` convention `argc e2e` relies on. Subject logs are
+//! written under the suite directory `tlog_selftest_child`, which is never a real suite,
+//! so `argc e2e` never summarizes their deliberate failures.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -1107,6 +1110,205 @@ mod run_units {
         assert!(
             !steps.contains("\"kind\":\"tree\"") && steps.contains("\"kind\":\"failure\""),
             "refused: no tree was recorded, a failure was: {steps}"
+        );
+    }
+}
+
+/// The `//! e2e suite:` marker tells `argc e2e` which test crates are end-to-end suites;
+/// these tests keep it honest, from source text alone (no build, no process).
+mod convention {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crate::common::tlog::E2E_MARKER;
+
+    /// One test crate's source: its name, its root file's text, and the texts of its
+    /// other files (a directory crate's modules).
+    struct CrateText {
+        name: String,
+        root: String,
+        others: Vec<String>,
+    }
+
+    /// A line that is not a comment calls `tlog!(` or `TestLog::`.
+    fn uses_the_log(text: &str) -> bool {
+        text.lines().any(|line| {
+            let line = line.trim();
+            !line.starts_with("//") && (line.contains("tlog!(") || line.contains("TestLog::"))
+        })
+    }
+
+    /// The root file has a line that starts with the marker.
+    fn is_marked(root: &str) -> bool {
+        root.lines().any(|line| line.starts_with(E2E_MARKER))
+    }
+
+    /// Every crate that breaks the convention, with its fix: a crate that logs through
+    /// `TestLog` carries the marker, a marked crate logs through it, and every `e2e_*`
+    /// crate is marked.
+    fn convention_offenders(crates: &[CrateText]) -> Vec<String> {
+        let mut offenders = Vec::new();
+        for krate in crates {
+            let used = uses_the_log(&krate.root) || krate.others.iter().any(|t| uses_the_log(t));
+            let marked = is_marked(&krate.root);
+            let name = &krate.name;
+            if used && !marked {
+                offenders.push(format!(
+                    "{name}: logs through TestLog without the marker: add `{E2E_MARKER} <purpose>` to its crate doc"
+                ));
+            } else if marked && !used {
+                offenders.push(format!(
+                    "{name}: carries the marker but never logs: remove the marker, or log through `TestLog`"
+                ));
+            } else if name.starts_with("e2e_") && !marked {
+                offenders.push(format!(
+                    "{name}: an e2e_ crate without the marker: add `{E2E_MARKER} <purpose>` to its crate doc"
+                ));
+            }
+        }
+        offenders
+    }
+
+    fn rs_files(dir: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(rs_files(&path));
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+        files.sort();
+        files
+    }
+
+    /// The repository's test crates: each `tests/<name>.rs`, and each
+    /// `tests/<name>/main.rs` with every other `.rs` file under `tests/<name>/`.
+    fn test_crates() -> Vec<CrateText> {
+        let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let mut crates = Vec::new();
+        for entry in fs::read_dir(&tests).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                let main = path.join("main.rs");
+                if !main.is_file() {
+                    continue;
+                }
+                let others = rs_files(&path)
+                    .into_iter()
+                    .filter(|file| *file != main)
+                    .map(|file| fs::read_to_string(file).unwrap())
+                    .collect();
+                let root = fs::read_to_string(&main).unwrap();
+                crates.push(CrateText { name, root, others });
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let root = fs::read_to_string(&path).unwrap();
+                crates.push(CrateText {
+                    name,
+                    root,
+                    others: Vec::new(),
+                });
+            }
+        }
+        crates.sort_by(|a, b| a.name.cmp(&b.name));
+        crates
+    }
+
+    #[test]
+    fn the_convention_check_finds_each_kind_of_offender() {
+        let marker = format!("{E2E_MARKER} a suite\n");
+        let crate_text = |name: &str, root: &str, others: &[&str]| CrateText {
+            name: name.to_owned(),
+            root: root.to_owned(),
+            others: others.iter().map(|text| (*text).to_owned()).collect(),
+        };
+        let cases = [
+            (
+                "marked_and_used",
+                crate_text(
+                    "suite",
+                    &format!("{marker}fn x() {{ let log = tlog!(); }}\n"),
+                    &[],
+                ),
+                None,
+            ),
+            (
+                "used_unmarked",
+                crate_text(
+                    "suite",
+                    "fn x() { let log = TestLog::new(\"a\", \"b\"); }\n",
+                    &[],
+                ),
+                Some("add `//! e2e suite: <purpose>`"),
+            ),
+            (
+                "marked_unused",
+                crate_text("suite", &marker, &[]),
+                Some("remove the marker, or log through `TestLog`"),
+            ),
+            (
+                "e2e_unmarked",
+                crate_text("e2e_slice9", "fn x() {}\n", &[]),
+                Some("an e2e_ crate without the marker"),
+            ),
+            (
+                "comment_only",
+                crate_text("suite", "// see tlog!() in tests/common\nfn x() {}\n", &[]),
+                None,
+            ),
+            (
+                "dir_crate_submodule",
+                crate_text("suite", &marker, &["fn y() { let log = tlog!(); }\n"]),
+                None,
+            ),
+            (
+                "marker_not_at_line_start",
+                crate_text(
+                    "suite",
+                    "const TEXT: &str = \"\n    //! e2e suite: inside a string\";\nfn x() { let log = tlog!(); }\n",
+                    &[],
+                ),
+                Some("add `//! e2e suite: <purpose>`"),
+            ),
+        ];
+        for (name, krate, expected) in cases {
+            let input = format!("root {:?}, others {:?}", krate.root, krate.others);
+            let output = convention_offenders(std::slice::from_ref(&krate));
+            match expected {
+                None => assert!(output.is_empty(), "{name}: input {input} gave {output:?}"),
+                Some(fix) => assert!(
+                    output.len() == 1 && output[0].contains(fix),
+                    "{name}: input {input} gave {output:?}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn every_test_log_suite_carries_the_e2e_marker() {
+        let crates = test_crates();
+        assert!(
+            crates.iter().any(|krate| krate.name == "tlog_selftest"),
+            "the scan found this crate"
+        );
+        let offenders = convention_offenders(&crates);
+        assert!(
+            offenders.is_empty(),
+            "test crates that break the e2e convention:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_runner_uses_the_marker() {
+        let argcfile = Path::new(env!("CARGO_MANIFEST_DIR")).join("Argcfile.sh");
+        let text = fs::read_to_string(&argcfile).unwrap();
+        let pattern = format!("'^{E2E_MARKER}'");
+        assert!(
+            text.contains("\ne2e() {") && text.contains(&pattern),
+            "Argcfile.sh has an e2e task that greps {pattern}, so the runner and E2E_MARKER agree"
         );
     }
 }

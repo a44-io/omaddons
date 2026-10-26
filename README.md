@@ -2262,7 +2262,7 @@ Every rules edit applies on the next command. The discovery cache records the ru
 | `XDG_DATA_HOME` | Moves the Lutris, Steam and Bottles data lookups; omaddons keeps no files there |
 | `OMARCHY_PATH` | Where `omarchy install` also looks for Omarchy's shell (`$OMARCHY_PATH/shell`) when `omarchy-shell` is not on `PATH`. Omarchy's tools get it, with the rest of the environment, unchanged |
 
-Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT`, `OMADDONS_NOW` (an RFC 3339 time that freezes the clock), `OMADDONS_FS_CLONE` (`yes` or `no`: whether the filesystem under a client clones files) and `OMADDONS_FS_FREE_MB` (the free space backups see) for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE`, `OMADDONS_LIVE`, `OMADDONS_REAL_CUSTOM_ROOT`, `OMADDONS_WRITE_SEEDS`, `BENCH_HOME` and `LIVE_HOME` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate)).
+Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT`, `OMADDONS_NOW` (an RFC 3339 time that freezes the clock), `OMADDONS_FS_CLONE` (`yes` or `no`: whether the filesystem under a client clones files) and `OMADDONS_FS_FREE_MB` (the free space backups see) for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE`, `OMADDONS_LIVE`, `OMADDONS_REAL_CUSTOM_ROOT`, `OMADDONS_WRITE_SEEDS`, `OMADDONS_TEST_LOG`, `BENCH_HOME` and `LIVE_HOME` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate) and [Test logs and `argc e2e`](#test-logs-and-argc-e2e)).
 
 ---
 
@@ -2614,7 +2614,7 @@ argc widget-test   # the widget pipeline alone, QML step included
 
 The widget pipeline (`scripts/widget-test.sh`) runs four ordered steps over a fresh temporary directory: the real binary writes the envelopes the widget reads, `bun` tests `omarchy/Model.js` over them, the binary's own argument parser checks every command line bun built, and, when anything under `omarchy/` changed, `qmltestrunner` runs the QML tests over a copy of the plugin. The first three run on every gate, because a renamed flag or a changed envelope key breaks the widget as surely as a QML edit. Nothing generated is committed.
 
-Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`, `argc fuzz <target>`, `argc fuzz-all` and `argc bench` (the last three are checkpoint tasks, below).
+Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`, `argc e2e [filter]` (the end-to-end suites with their logs turned up, below), `argc fuzz <target>`, `argc fuzz-all` and `argc bench` (the last three are checkpoint tasks, below).
 
 ### Tests
 
@@ -2636,8 +2636,38 @@ With milestone 3's features in, there are 2,279 Rust tests: 1,154 unit tests in 
 | `tests/preconditions.rs`, `tests/fail_closed.rs` | Previews bound by `--if-match` (`plan_stale` for each change between preview and run), and state a build cannot read refused, never acted on |
 | `tests/omarchy.rs`, `tests/omarchy_widget.rs`, `omarchy/tests/` | The bar widget: `omarchy install`, `status` and `remove` over stub Omarchy tools (never this machine's shell), `status`'s widget block; and the widget pipeline: envelopes from the real binary, `bun` over `Model.js` and the source's security scans, the binary's parser over every argv `bun` built, `qmltestrunner` over the QML |
 | `tests/fsx_lock.rs` | The global lock and the in-flight locks |
+| `tests/tlog_selftest.rs` | The test log itself: both files and every field, `net.log` and failpoint capture, redaction, truncation, tree differences, the failure output and the live echo (in child processes), and the e2e marker convention |
 
 Recorded HTTP fixtures live in `tests/fixtures/http/<scenario>/`. Debug builds replay them with `OMADDONS_HTTP_FIXTURES=<dir>` and re-record them with `OMADDONS_RECORD=1`. Recording never stores request headers, drops `set-cookie`, and strips secret query parameters from URLs and `location` headers.
+
+### Test logs and `argc e2e`
+
+Every M4 integration and end-to-end test that runs more than one command logs through `TestLog` (`tests/common/tlog.rs`), so a scenario that fails at its fourteenth command can be read from the thirteen before it. Each test writes two files under `target/tmp/test-logs/<suite>/<test>/`:
+
+- `steps.jsonl`: one JSON record per line, written as it happens: the steps and notes, every command with its argv, the variables it set, its working directory, failpoints and exit, its envelope, its stderr events and the `net.log` lines it added, `pause` failpoints reached and resumed, tree hashes and the paths that differ, and each case of a table-driven test (in `cases/<case>/`);
+- `transcript.md`: the same records, readable, envelopes pretty-printed.
+
+A rerun replaces a test's directory, `cargo clean` removes them all, and nothing is committed. A failing test prints `test log: <path>` and its last 20 records in cargo's failure output, after the panic message. `OMADDONS_TEST_LOG=verbose` also echoes every record on stderr as it happens, without `--nocapture`; unset, the log writes its files only, and any other value fails the test.
+
+```bash
+argc e2e                         # every end-to-end suite, logs echoed live
+argc e2e slice1                  # the suites whose name contains slice1
+argc e2e all --test-threads=1    # every suite, with arguments for the test binaries
+```
+
+`argc e2e [filter] [args…]` runs every test crate whose crate doc has a `//! e2e suite: <purpose>` line, with `OMADDONS_TEST_LOG=verbose`, then prints how many logs it wrote, which ones panicked or have no end record (a killed test), and the log root (`==> test logs: target/tmp/test-logs`). It exits with cargo's status, and a filter that matches no suite exits 2 naming them. It runs the same tests as the gate's `cargo test`, and deletes nothing.
+
+The conventions:
+
+- a test that runs more than one command logs through `TestLog` (`let log = tlog!();`), and its crate carries the `//! e2e suite:` line (`tests/tlog_selftest.rs` checks both ways);
+- each phase of a scenario is a `log.step`;
+- a state assertion goes through `log.tree`, `log.assert_unchanged` or `log.diff`, or `log.assert_eq`, or logs what it compares with `log.json` first;
+- unit tests are table-driven, with a name per case and messages that show the input and the output;
+- older suites adopt the log when a change rewrites them;
+- real-machine tests and live probes never use it;
+- bead comments quote the log root as `target/tmp/test-logs`.
+
+Privacy: the log holds only synthetic homes, and refuses to hash a tree outside them. Variables whose names contain `TOKEN`, `SECRET` or `CREDENTIAL` are recorded as `<redacted>`, and their values (and any a test registers with `log.secret`) are scrubbed from every later record. Stdin and the test process's own environment are never recorded, and paths appear as `<root>`, `<target-tmp>` and `<repo>`.
 
 ### Milestone checkpoints (not part of the gate)
 

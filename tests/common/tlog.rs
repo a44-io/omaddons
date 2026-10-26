@@ -122,6 +122,9 @@ pub const RUN_TIMEOUT: Duration = Duration::from_secs(300);
 pub const SCRUB_MIN_LEN: usize = 8;
 /// The variable that chooses the log mode.
 pub const LOG_MODE_VAR: &str = "OMADDONS_TEST_LOG";
+/// The crate-doc line that marks a test crate as an end-to-end suite for `argc e2e`,
+/// followed by the suite's purpose.
+pub const E2E_MARKER: &str = "//! e2e suite:";
 
 /// The record format, in the header.
 const FORMAT: u32 = 1;
