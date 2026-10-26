@@ -21,6 +21,10 @@
 //!
 //! Debug builds only: every scene arms failpoints, in process or in the binary it runs,
 //! and they exist only there (DEC-7).
+//!
+//! e2e suite: every crash matrix, with E11's differential: before each recovering command,
+//! `journal::diagnose` predicts what it will do to each journal (proved to write nothing),
+//! and the prediction is held to what it did.
 #![cfg(debug_assertions)]
 
 mod common;
@@ -29,7 +33,9 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use common::archives::zip_text;
+use common::differential::{Differential, Tally};
 use common::engine::{Scene, shapes, warning_codes};
+use common::tlog::{TestLog, tlog};
 use omaddons::engine::FAILPOINTS;
 use serde_json::json;
 use support::{
@@ -222,6 +228,18 @@ mod support {
         pub pending: bool,
         /// The first recovering command died mid-recovery (its `recover` failpoints).
         pub recovering_crashed: bool,
+        /// E11: the crash left a journal, and its prediction was compared.
+        pub with_journal: bool,
+        pub compared: bool,
+    }
+
+    /// The tally of crashes `done`.
+    pub fn tally(done: &[Crash]) -> Tally {
+        let mut tally = Tally::default();
+        for crash in done {
+            tally.count(crash.with_journal, crash.compared);
+        }
+        tally
     }
 
     /// `op` run with the failpoints `spec` armed, then the oracle. Each folder, on its
@@ -231,8 +249,19 @@ mod support {
     /// that takes the lock recovers (with `recover` armed it may die mid-recovery,
     /// keeping the journal, and the command after it finishes); then folders and
     /// SavedVariables sit on one side, consistent with the generation and history, with
-    /// nothing stray in AddOns and the same lock file.
-    pub fn crash(op: Op, spec: &str, recover: &str, new: &Foo, fallback: bool) -> Crash {
+    /// nothing stray in AddOns and the same lock file. E11's differential: `diagnose`
+    /// predicts the recovering command (again after a recovery that died), and the
+    /// prediction is held to what it did.
+    pub fn crash(
+        log: &TestLog,
+        op: Op,
+        spec: &str,
+        recover: &str,
+        new: &Foo,
+        fallback: bool,
+    ) -> Crash {
+        let label = format!("{op:?} at {spec}, then {recover:?}");
+        log.step(&label);
         let mut s = op.scene();
         let args = op.prepare(&mut s);
         let s = s;
@@ -296,6 +325,15 @@ mod support {
         assert_eq!(s.snapshot(), before, "{}", context("status wrote"));
         assert_eq!(s.journals(), journals, "{}", context("status recovered"));
 
+        // E11: what `diagnose` predicts of the recovering command.
+        let running: &[&str] = if matches!(op, Op::UndoRunning) {
+            &["_retail_"]
+        } else {
+            &[]
+        };
+        let mut differential = Differential::new(log, &s.home, &["_retail_"], running);
+        differential.predict(log, &label);
+
         // The next command that takes the lock recovers. One armed with `recover` may die
         // mid-recovery: the journal stays for the command after it.
         let install_bar = s.install_args("gh:o/bar", "bar");
@@ -314,11 +352,15 @@ mod support {
                         first.context()
                     ))
                 );
+                // A killed recovery is no prediction's to match: predict what it left.
+                differential.predict(log, &format!("{label}, after the recovery that died"));
             } else {
                 recovered_by = Some(first.expect(0));
             }
         }
         let bar = recovered_by.unwrap_or_else(|| s.run(&install_bar, "").expect(0));
+        let caller = differential.commit(&["retail"]);
+        let compared = differential.compare(log, &bar, &s.journals(), &caller) > 0;
         assert_eq!(
             warning_codes(&bar).iter().any(|c| c == "journal_recovered"),
             pending_before > 0,
@@ -371,23 +413,28 @@ mod support {
             swept,
             pending: pending_before > 0,
             recovering_crashed,
+            with_journal: !journals.is_empty(),
+            compared,
         }
     }
 
     /// Every failpoint as a crash of `op`. Some crash before `prepared` leaves
     /// SavedVariables copies, which the sweep takes.
-    pub fn matrix(op: Op) {
+    pub fn matrix(log: &TestLog, op: Op) {
         let new = expected_new(op);
         let mut swept = false;
+        let mut done_all = Vec::new();
         let crashed_at: Vec<&str> = FAILPOINTS
             .iter()
             .copied()
             .filter(|failpoint| {
-                let done = crash(op, &format!("{failpoint}=abort"), "", &new, false);
+                let done = crash(log, op, &format!("{failpoint}=abort"), "", &new, false);
                 swept |= done.swept;
+                done_all.push(done);
                 done.crashed
             })
             .collect();
+        tally(&done_all).assert_complete(log, &format!("{op:?}"));
         assert!(
             swept,
             "{op:?}: no crash left SavedVariables copies to sweep"
@@ -410,8 +457,10 @@ mod support {
     /// with atomic renames and with the two-rename fallback (`fsx.renameat2.einval`).
     /// `crash` takes a spec and whether the fallback is armed, and runs its oracle; the
     /// first N that does not crash must run to the end. Some crash after the first
-    /// rename must leave the folders mixed until recovery: the window is reached.
-    pub fn renames(what: &str, crash: impl Fn(&str, bool) -> Crash) {
+    /// rename must leave the folders mixed until recovery: the window is reached. Every
+    /// state with a journal must have been compared (E11).
+    pub fn renames(log: &TestLog, what: &str, crash: impl Fn(&str, bool) -> Crash) {
+        let mut done_all = Vec::new();
         for fallback in [false, true] {
             let einval = if fallback {
                 "fsx.renameat2.einval=error,"
@@ -425,6 +474,7 @@ mod support {
                     &format!("{einval}engine.swap.before_rename=abort@{n}"),
                     fallback,
                 );
+                done_all.push(done);
                 if !done.crashed {
                     finished = true;
                     break;
@@ -441,13 +491,14 @@ mod support {
                 "{what} (fallback {fallback}): no crash after the first rename left the folders mixed: {crashes:?}"
             );
         }
+        tally(&done_all).assert_complete(log, &format!("{what} renames"));
     }
 
     /// Every journaled rename of `op` as a crash.
-    pub fn rename_matrix(op: Op) {
+    pub fn rename_matrix(log: &TestLog, op: Op) {
         let new = expected_new(op);
-        renames(&format!("{op:?}"), |spec, fallback| {
-            crash(op, spec, "", &new, fallback)
+        renames(log, &format!("{op:?}"), |spec, fallback| {
+            crash(log, op, spec, "", &new, fallback)
         });
     }
 
@@ -456,15 +507,17 @@ mod support {
     /// for every K it reaches), as a roll-forward starts (`engine.recover.forward`), and
     /// before an undo's SavedVariables restore (`engine.recover.sv`). The command after it
     /// finishes, and the oracle holds then. Each kind of recovery crash must happen.
-    pub fn recovery_matrix(op: Op, kinds: &[&str]) {
+    pub fn recovery_matrix(log: &TestLog, op: Op, kinds: &[&str]) {
         let new = expected_new(op);
         let mut crashed: Vec<(&str, String)> = Vec::new();
+        let mut done_all = Vec::new();
         for failpoint in FAILPOINTS {
             let spec = format!("{failpoint}=abort");
             let mut recovers: Vec<String> = Vec::new();
             for k in 1..=8 {
                 let recover = format!("engine.recover.step=abort@{k}");
-                let done = crash(op, &spec, &recover, &new, false);
+                let done = crash(log, op, &spec, &recover, &new, false);
+                done_all.push(done);
                 if !done.recovering_crashed {
                     recovers.clear();
                     if done.pending {
@@ -478,11 +531,14 @@ mod support {
                 crashed.push((failpoint, recover));
             }
             for recover in recovers {
-                if crash(op, &spec, &recover, &new, false).recovering_crashed {
+                let done = crash(log, op, &spec, &recover, &new, false);
+                done_all.push(done);
+                if done.recovering_crashed {
                     crashed.push((failpoint, recover));
                 }
             }
         }
+        tally(&done_all).assert_complete(log, &format!("{op:?} recoveries"));
         let _ = std::io::Write::write_fmt(
             &mut std::io::stderr(),
             format_args!("{op:?}: recoveries crashed {crashed:?}\n"),
@@ -584,7 +640,15 @@ mod support {
     /// on one side, the side history says (a mix of new folders and old records fails),
     /// every record's folders exist, and the generation and lock inode agree.
     /// Records-only shapes never move a folder.
-    pub fn crash_shape(shape: Shape, spec: &str, new: &Side, fallback: bool) -> Crash {
+    pub fn crash_shape(
+        log: &TestLog,
+        shape: Shape,
+        spec: &str,
+        new: &Side,
+        fallback: bool,
+    ) -> Crash {
+        let label = format!("{shape:?} at {spec}");
+        log.step(&label);
         let s = shape.scene();
         let args = shape.prepare(&s);
         let old = Side::of(&s, shape);
@@ -639,8 +703,14 @@ mod support {
         assert_eq!(s.snapshot(), before, "{}", context("status wrote"));
         assert_eq!(s.journals(), journals, "{}", context("status recovered"));
 
+        // E11: what `diagnose` predicts of the recovering command.
+        let mut differential = Differential::new(log, &s.home, &["_retail_"], &[]);
+        differential.predict(log, &label);
+
         // The next command that takes the lock recovers.
         let bar = s.run(&s.install_args("gh:o/bar", "bar"), "").expect(0);
+        let caller = differential.commit(&["retail"]);
+        let compared = differential.compare(log, &bar, &s.journals(), &caller) > 0;
         assert_eq!(
             warning_codes(&bar).iter().any(|c| c == "journal_recovered"),
             pending_before > 0,
@@ -692,31 +762,36 @@ mod support {
             swept,
             pending: pending_before > 0,
             recovering_crashed: false,
+            with_journal: !journals.is_empty(),
+            compared,
         }
     }
 
     /// Every journaled rename of `shape` as a crash.
-    pub fn shape_rename_matrix(shape: Shape) {
+    pub fn shape_rename_matrix(log: &TestLog, shape: Shape) {
         let new = reference(shape);
-        renames(&format!("{shape:?}"), |spec, fallback| {
-            crash_shape(shape, spec, &new, fallback)
+        renames(log, &format!("{shape:?}"), |spec, fallback| {
+            crash_shape(log, shape, spec, &new, fallback)
         });
     }
 
     /// Every failpoint as a crash of `shape`. Unless it is records-only, some crash
     /// before `prepared` leaves SavedVariables copies, which the sweep takes.
-    pub fn shape_matrix(shape: Shape) {
+    pub fn shape_matrix(log: &TestLog, shape: Shape) {
         let new = reference(shape);
         let mut swept = false;
+        let mut done_all = Vec::new();
         let crashed_at: Vec<&str> = FAILPOINTS
             .iter()
             .copied()
             .filter(|failpoint| {
-                let done = crash_shape(shape, &format!("{failpoint}=abort"), &new, false);
+                let done = crash_shape(log, shape, &format!("{failpoint}=abort"), &new, false);
                 swept |= done.swept;
+                done_all.push(done);
                 done.crashed
             })
             .collect();
+        tally(&done_all).assert_complete(log, &format!("{shape:?}"));
         let records_only = matches!(shape, Shape::Adopt);
         assert_eq!(
             swept, !records_only,
@@ -781,9 +856,12 @@ mod support {
     }
 
     /// Every failpoint as a crash of the records-only `op`, judged by the record oracle.
-    pub fn record_matrix(op: RecordsOp) {
+    pub fn record_matrix(log: &TestLog, op: RecordsOp) {
         let mut crashed_at = Vec::new();
+        let mut tally = Tally::default();
         for failpoint in FAILPOINTS {
+            let label = format!("{op:?} at {failpoint}");
+            log.step(&label);
             let s = Scene::new().with_saved_variables(common::engine::FOLDERS);
             let args = op.prepare(&s);
             let (old, old_wtf) = (s.folders(), s.wtf());
@@ -835,8 +913,15 @@ mod support {
             assert_eq!(s.snapshot(), before, "{}", context("status wrote"));
             assert_eq!(s.journals(), journals, "{}", context("status recovered"));
 
+            // E11: what `diagnose` predicts of the recovering command.
+            let mut differential = Differential::new(log, &s.home, &["_retail_"], &[]);
+            differential.predict(log, &label);
+
             // The next command that takes the lock recovers.
             let bar = s.run(&s.install_args("gh:o/bar", "bar"), "").expect(0);
+            let caller = differential.commit(&["retail"]);
+            let compared = differential.compare(log, &bar, &s.journals(), &caller) > 0;
+            tally.count(!journals.is_empty(), compared);
             assert_eq!(
                 warning_codes(&bar).iter().any(|c| c == "journal_recovered"),
                 pending_before > 0,
@@ -884,6 +969,7 @@ mod support {
             }
             sweep_aged(&s, &context);
         }
+        tally.assert_complete(log, &format!("{op:?}"));
         let _ = std::io::Write::write_fmt(
             &mut std::io::stderr(),
             format_args!(
@@ -901,52 +987,53 @@ mod support {
 
 #[test]
 fn crash_matrix_install() {
-    matrix(Op::Install);
+    matrix(&tlog!(), Op::Install);
 }
 
 #[test]
 fn crash_matrix_first_install() {
-    matrix(Op::FirstInstall);
+    matrix(&tlog!(), Op::FirstInstall);
 }
 
 #[test]
 fn crash_matrix_update() {
-    matrix(Op::Update);
+    matrix(&tlog!(), Op::Update);
 }
 
 #[test]
 fn crash_matrix_remove() {
-    matrix(Op::Remove);
+    matrix(&tlog!(), Op::Remove);
 }
 
 #[test]
 fn crash_matrix_pin() {
-    record_matrix(RecordsOp::Pin);
+    record_matrix(&tlog!(), RecordsOp::Pin);
 }
 
 #[test]
 fn crash_matrix_undo() {
-    matrix(Op::Undo);
+    matrix(&tlog!(), Op::Undo);
 }
 
 #[test]
 fn crash_matrix_undo_keeping_saved_variables() {
-    matrix(Op::UndoKeep);
+    matrix(&tlog!(), Op::UndoKeep);
 }
 
 #[test]
 fn crash_matrix_undo_while_the_client_runs() {
-    matrix(Op::UndoRunning);
+    matrix(&tlog!(), Op::UndoRunning);
 }
 
 #[test]
 fn a_crash_at_every_rename_of_an_undo() {
-    rename_matrix(Op::Undo);
+    rename_matrix(&tlog!(), Op::Undo);
 }
 
 #[test]
 fn a_crash_during_recovery_of_an_install() {
     recovery_matrix(
+        &tlog!(),
         Op::Install,
         &["engine.recover.step", "engine.recover.forward"],
     );
@@ -955,6 +1042,7 @@ fn a_crash_during_recovery_of_an_install() {
 #[test]
 fn a_crash_during_recovery_of_an_update() {
     recovery_matrix(
+        &tlog!(),
         Op::Update,
         &["engine.recover.step", "engine.recover.forward"],
     );
@@ -963,6 +1051,7 @@ fn a_crash_during_recovery_of_an_update() {
 #[test]
 fn a_crash_during_recovery_of_an_undo() {
     recovery_matrix(
+        &tlog!(),
         Op::Undo,
         &[
             "engine.recover.step",
@@ -978,11 +1067,13 @@ fn a_crash_during_recovery_of_an_undo() {
 /// command after it must still finish the rollback, not take that step for a stranger.
 #[test]
 fn a_rollback_that_died_after_undoing_an_exchange_is_finished() {
+    let log = tlog!();
     let new = expected_new(Op::Update);
     let mut crashed = Vec::new();
     for k in 1..=4 {
         let recover = format!("engine.recover.step=abort@{k}");
         let done = support::crash(
+            &log,
             Op::Update,
             "engine.swap.before_rename=abort@3",
             &recover,
@@ -1003,52 +1094,52 @@ fn a_rollback_that_died_after_undoing_an_exchange_is_finished() {
 
 #[test]
 fn a_crash_at_every_rename_of_an_install() {
-    rename_matrix(Op::Install);
+    rename_matrix(&tlog!(), Op::Install);
 }
 
 #[test]
 fn a_crash_at_every_rename_of_an_update() {
-    rename_matrix(Op::Update);
+    rename_matrix(&tlog!(), Op::Update);
 }
 
 #[test]
 fn a_crash_at_every_rename_of_a_remove() {
-    rename_matrix(Op::Remove);
+    rename_matrix(&tlog!(), Op::Remove);
 }
 
 #[test]
 fn a_crash_at_every_rename_of_an_update_of_three() {
-    shape_rename_matrix(Shape::UpdateMany);
+    shape_rename_matrix(&tlog!(), Shape::UpdateMany);
 }
 
 #[test]
 fn a_crash_at_every_rename_of_a_handover() {
-    shape_rename_matrix(Shape::Handover);
+    shape_rename_matrix(&tlog!(), Shape::Handover);
 }
 
 #[test]
 fn crash_matrix_update_many() {
-    shape_matrix(Shape::UpdateMany);
+    shape_matrix(&tlog!(), Shape::UpdateMany);
 }
 
 #[test]
 fn crash_matrix_install_with_dependencies() {
-    shape_matrix(Shape::InstallWithDep);
+    shape_matrix(&tlog!(), Shape::InstallWithDep);
 }
 
 #[test]
 fn crash_matrix_sync_mixed() {
-    shape_matrix(Shape::SyncMixed);
+    shape_matrix(&tlog!(), Shape::SyncMixed);
 }
 
 #[test]
 fn crash_matrix_handover() {
-    shape_matrix(Shape::Handover);
+    shape_matrix(&tlog!(), Shape::Handover);
 }
 
 #[test]
 fn crash_matrix_adopt() {
-    shape_matrix(Shape::Adopt);
+    shape_matrix(&tlog!(), Shape::Adopt);
 }
 
 #[test]
@@ -1099,7 +1190,7 @@ fn the_m2_reference_runs_make_the_change_each_shape_names() {
 
 #[test]
 fn crash_matrix_forget() {
-    record_matrix(RecordsOp::Forget);
+    record_matrix(&tlog!(), RecordsOp::Forget);
 }
 
 #[test]
@@ -2303,6 +2394,16 @@ mod restore_support {
         pub went_new: bool,
         /// The first recovering command died mid-recovery (its `recover` failpoints).
         pub recovering_crashed: bool,
+        /// E11: the run left a journal, and its prediction was compared.
+        pub with_journal: bool,
+        pub compared: bool,
+    }
+
+    impl Restored {
+        /// One more state of a matrix's E11 tally.
+        pub fn tally(&self, tally: &mut Tally) {
+            tally.count(self.with_journal, self.compared);
+        }
     }
 
     /// A restore run with `engine` armed (a fresh scene, `live` or without `WTF/`), then
@@ -2314,8 +2415,8 @@ mod restore_support {
     /// `WTF.previous`; no snapshot of a restore that never committed is left; what a crash
     /// before `prepared` staged goes with the sweep once old; and two more commands that
     /// take the lock change nothing of `WTF/`.
-    pub fn crash(engine: &str, recover: &str, live: bool) -> Restored {
-        crash_op(Op::Restore, engine, recover, live)
+    pub fn crash(log: &TestLog, engine: &str, recover: &str, live: bool) -> Restored {
+        crash_op(log, Op::Restore, engine, recover, live)
     }
 
     /// What a restore scene runs in its child.
@@ -2336,6 +2437,16 @@ mod restore_support {
         pub stopped: bool,
         /// The journal held a preservation intent then.
         pub intent: bool,
+        /// E11: a journal was left for the binary, and its prediction was compared.
+        pub with_journal: bool,
+        pub compared: bool,
+    }
+
+    impl Preserving {
+        /// One more state of a matrix's E11 tally.
+        pub fn tally(&self, tally: &mut Tally) {
+            tally.count(self.with_journal, self.compared);
+        }
     }
 
     /// A restore crashed after its exchange, then played on; recovered by a child with
@@ -2347,7 +2458,9 @@ mod restore_support {
     /// one `recovered` backup holding the played-on tree byte for byte, under the id the
     /// intent reserved when there was one, nothing left in the stage or the journal; two
     /// more commands that take the lock change nothing of that.
-    pub fn preserve_crash(engine: &str) -> Preserving {
+    pub fn preserve_crash(log: &TestLog, engine: &str) -> Preserving {
+        let label = format!("a played-on restore recovered with {engine:?}, then by the binary");
+        log.step(&label);
         let r = RestoreScene::new(true);
         assert!(r.restore("engine.restore.exchanged=abort", &[]).is_none());
         let config = r.client().join("WTF/Config.wtf");
@@ -2389,8 +2502,14 @@ mod restore_support {
         }
         let intent = r.intent();
 
+        // E11: the armed recovery is no prediction's to match; the binary's is.
+        let mut differential = Differential::new(log, &r.s.home, &["_retail_"], &[]);
+        differential.predict(log, &label);
+        let with_journal = !r.s.journals().is_empty();
         let bar = r.s.run(&r.install_bar(), "");
-        bar.expect(0);
+        let envelope = bar.expect(0);
+        let caller = differential.commit(&["retail"]);
+        let compared = differential.compare(log, &envelope, &r.s.journals(), &caller) > 0;
         common::privacy::assert_private_all(&bar.stdout, &bar.stderr);
         assert!(r.s.journals().is_empty(), "{}", context("journals left"));
         assert_eq!(
@@ -2433,11 +2552,15 @@ mod restore_support {
         Preserving {
             stopped,
             intent: intent.is_some(),
+            with_journal,
+            compared,
         }
     }
 
-    /// [`crash`] for `op`.
-    pub fn crash_op(op: Op, engine: &str, recover: &str, live: bool) -> Restored {
+    /// [`crash`] for `op`, with E11's differential before the recovering command.
+    pub fn crash_op(log: &TestLog, op: Op, engine: &str, recover: &str, live: bool) -> Restored {
+        let label = format!("{op:?} with {engine:?} (live: {live}), then {recover:?}");
+        log.step(&label);
         let r = RestoreScene::new(live);
         let s = &r.s;
         let (old, new, kind) = match op {
@@ -2500,6 +2623,10 @@ mod restore_support {
         assert_eq!(s.snapshot(), before, "{}", context("status wrote"));
         assert_eq!(s.journals(), journals, "{}", context("status recovered"));
 
+        // E11: what `diagnose` predicts of the recovering command.
+        let mut differential = Differential::new(log, &s.home, &["_retail_"], &[]);
+        differential.predict(log, &label);
+
         // The next command that takes the lock recovers; one armed with `recover` may die
         // mid-recovery, and the journal stays for the command after it.
         let install_bar = r.install_bar();
@@ -2524,11 +2651,14 @@ mod restore_support {
                     "{}",
                     context("WTF/ split by a recovery that died")
                 );
+                differential.predict(log, &format!("{label}, after the recovery that died"));
             } else {
                 recovered_by = Some(first.expect(0));
             }
         }
         let bar = recovered_by.unwrap_or_else(|| s.run(&install_bar, "").expect(0));
+        let caller = differential.commit(&["retail"]);
+        let compared = differential.compare(log, &bar, &s.journals(), &caller) > 0;
         assert_eq!(
             warning_codes(&bar).iter().any(|c| c == "journal_recovered"),
             pending_before > 0,
@@ -2631,6 +2761,8 @@ mod restore_support {
             pending: pending_before > 0,
             went_new,
             recovering_crashed,
+            with_journal: !journals.is_empty(),
+            compared,
         }
     }
 }
@@ -2642,9 +2774,18 @@ mod restore_support {
 fn crash_matrix_undo_restore() {
     use restore_support::{Op, crash_op};
 
+    let log = tlog!();
+    let mut tally = Tally::default();
     let mut crashed_at = Vec::new();
     for failpoint in FAILPOINTS {
-        let done = crash_op(Op::UndoRestore, &format!("{failpoint}=abort"), "", true);
+        let done = crash_op(
+            &log,
+            Op::UndoRestore,
+            &format!("{failpoint}=abort"),
+            "",
+            true,
+        );
+        done.tally(&mut tally);
         if done.crashed {
             crashed_at.push(*failpoint);
         }
@@ -2666,6 +2807,7 @@ fn crash_matrix_undo_restore() {
             FAILPOINTS.len()
         ),
     );
+    tally.assert_complete(&log, "UndoRestore");
     for on_path in [
         "engine.restore.staged",
         "engine.lock.acquired",
@@ -2691,6 +2833,8 @@ fn crash_matrix_undo_restore() {
 fn crash_matrix_undo_restore_onto_no_wtf() {
     use restore_support::{Op, crash_op};
 
+    let log = tlog!();
+    let mut tally = Tally::default();
     for failpoint in [
         "engine.journal.prepared",
         "engine.restore.exchanged",
@@ -2698,18 +2842,28 @@ fn crash_matrix_undo_restore_onto_no_wtf() {
         "engine.swapped",
         "engine.committed",
     ] {
-        let done = crash_op(Op::UndoRestore, &format!("{failpoint}=abort"), "", false);
+        let done = crash_op(
+            &log,
+            Op::UndoRestore,
+            &format!("{failpoint}=abort"),
+            "",
+            false,
+        );
+        done.tally(&mut tally);
         assert!(done.crashed, "{failpoint}: {done:?}");
     }
     let mut renames = Vec::new();
     for n in 1..=3 {
         let spec = format!("engine.swap.before_rename=abort@{n}");
-        if !crash_op(Op::UndoRestore, &spec, "", false).crashed {
+        let done = crash_op(&log, Op::UndoRestore, &spec, "", false);
+        done.tally(&mut tally);
+        if !done.crashed {
             break;
         }
         renames.push(n);
     }
     assert_eq!(renames, [1], "one rename out");
+    tally.assert_complete(&log, "UndoRestore onto no WTF/");
 }
 
 /// A crash before each journaled rename of the undo of a restore, and in its recovery:
@@ -2719,10 +2873,14 @@ fn crash_matrix_undo_restore_onto_no_wtf() {
 fn a_crash_at_every_rename_and_recovery_of_an_undo_of_a_restore() {
     use restore_support::{Op, crash_op};
 
+    let log = tlog!();
+    let mut tally = Tally::default();
     let mut renames = Vec::new();
     for n in 1..=4 {
         let spec = format!("engine.swap.before_rename=abort@{n}");
-        if !crash_op(Op::UndoRestore, &spec, "", true).crashed {
+        let done = crash_op(&log, Op::UndoRestore, &spec, "", true);
+        done.tally(&mut tally);
+        if !done.crashed {
             break;
         }
         renames.push(n);
@@ -2732,11 +2890,13 @@ fn a_crash_at_every_rename_and_recovery_of_an_undo_of_a_restore() {
     for k in 1..=4 {
         let recover = format!("engine.recover.step=abort@{k}");
         let done = crash_op(
+            &log,
             Op::UndoRestore,
             "engine.restore.snapshotted=abort",
             &recover,
             true,
         );
+        done.tally(&mut tally);
         if !done.recovering_crashed {
             break;
         }
@@ -2744,12 +2904,15 @@ fn a_crash_at_every_rename_and_recovery_of_an_undo_of_a_restore() {
     }
     assert_eq!(recoveries, [1, 2]);
     let done = crash_op(
+        &log,
         Op::UndoRestore,
         "engine.swapped=abort",
         "engine.recover.forward=abort",
         true,
     );
+    done.tally(&mut tally);
     assert!(done.recovering_crashed && done.went_new, "{done:?}");
+    tally.assert_complete(&log, "UndoRestore renames and recoveries");
 }
 
 /// I/O failures where the undo of a restore writes, each injected once at every hit in
@@ -2761,6 +2924,8 @@ fn a_crash_at_every_rename_and_recovery_of_an_undo_of_a_restore() {
 fn io_failures_in_an_undo_of_a_restore_leave_wtf_whole() {
     use restore_support::{Op, crash_op};
 
+    let log = tlog!();
+    let mut tally = Tally::default();
     for (failpoint, most) in [
         ("fsx.clone_file.before", 2),
         ("fsx.append_durable.before", 8),
@@ -2769,7 +2934,14 @@ fn io_failures_in_an_undo_of_a_restore_leave_wtf_whole() {
     ] {
         let mut failed = Vec::new();
         for n in 1..=most {
-            let done = crash_op(Op::UndoRestore, &format!("{failpoint}=error@{n}"), "", true);
+            let done = crash_op(
+                &log,
+                Op::UndoRestore,
+                &format!("{failpoint}=error@{n}"),
+                "",
+                true,
+            );
+            done.tally(&mut tally);
             if !done.ok {
                 failed.push((n, done.pending, done.went_new));
             }
@@ -2780,14 +2952,16 @@ fn io_failures_in_an_undo_of_a_restore_leave_wtf_whole() {
         );
         assert!(!failed.is_empty(), "{failpoint} is on its path");
     }
+    tally.assert_complete(&log, "UndoRestore I/O failures");
 }
 
 /// The undo of a restore crashed after its exchange, the game started since: the next
 /// command refuses (`game_running`, naming the journal) and moves nothing; once the game
-/// exits, the next one rolls it back to the restored tree.
+/// exits, the next one rolls it back to the restored tree. E11 predicts both.
 #[cfg(debug_assertions)]
 #[test]
 fn a_crashed_undo_of_a_restore_waits_while_the_game_runs() {
+    let log = tlog!();
     let mut r = restore_support::RestoreScene::new(true);
     assert_eq!(r.restore("", &[]).unwrap()["ok"], true);
     r.play_on_restored();
@@ -2795,6 +2969,8 @@ fn a_crashed_undo_of_a_restore_waits_while_the_game_runs() {
     assert!(r.undo("engine.restore.exchanged=abort", &[]).is_none());
     assert_eq!(r.s.wtf(), r.played, "the exchange ran");
     r.s.home.retail_running();
+    let mut differential = Differential::new(&log, &r.s.home, &["_retail_"], &["_retail_"]);
+    differential.predict(&log, "the game runs");
     let refused = r.s.run(&r.install_bar(), "");
     let error = &refused.envelope()["error"];
     assert_eq!(
@@ -2803,9 +2979,14 @@ fn a_crashed_undo_of_a_restore_waits_while_the_game_runs() {
         "{}",
         refused.context()
     );
+    let caller = differential.commit(&["retail"]);
+    differential.compare(&log, &refused.envelope(), &r.s.journals(), &caller);
     assert_eq!(r.s.wtf(), r.played, "nothing moves while it runs");
     r.s.home.nothing_running();
-    r.s.run(&r.install_bar(), "").expect(0);
+    let mut differential = Differential::new(&log, &r.s.home, &["_retail_"], &[]);
+    differential.predict(&log, "the game exited");
+    let envelope = r.s.run(&r.install_bar(), "").expect(0);
+    differential.compare(&log, &envelope, &r.s.journals(), &caller);
     assert_eq!(r.s.wtf(), restored, "rolled back once the game exited");
     assert!(r.s.journals().is_empty());
 }
@@ -2832,9 +3013,12 @@ fn child_restore() {
 #[cfg(debug_assertions)]
 #[test]
 fn crash_matrix_restore() {
+    let log = tlog!();
+    let mut tally = Tally::default();
     let mut crashed_at = Vec::new();
     for failpoint in FAILPOINTS {
-        let done = restore_support::crash(&format!("{failpoint}=abort"), "", true);
+        let done = restore_support::crash(&log, &format!("{failpoint}=abort"), "", true);
+        done.tally(&mut tally);
         if done.crashed {
             crashed_at.push(*failpoint);
         }
@@ -2856,6 +3040,7 @@ fn crash_matrix_restore() {
             FAILPOINTS.len()
         ),
     );
+    tally.assert_complete(&log, "Restore");
     for on_path in [
         "engine.restore.staged",
         "engine.lock.acquired",
@@ -2880,6 +3065,8 @@ fn crash_matrix_restore() {
 #[cfg(debug_assertions)]
 #[test]
 fn crash_matrix_restore_onto_no_wtf() {
+    let log = tlog!();
+    let mut tally = Tally::default();
     for failpoint in [
         "engine.restore.staged",
         "engine.journal.prepared",
@@ -2889,9 +3076,11 @@ fn crash_matrix_restore_onto_no_wtf() {
         "engine.history.appended",
         "engine.committed",
     ] {
-        let done = restore_support::crash(&format!("{failpoint}=abort"), "", false);
+        let done = restore_support::crash(&log, &format!("{failpoint}=abort"), "", false);
+        done.tally(&mut tally);
         assert!(done.crashed, "{failpoint}: {done:?}");
     }
+    tally.assert_complete(&log, "Restore onto no WTF/");
 }
 
 /// A crash before each journaled rename: the exchange and the move to `WTF.previous`
@@ -2899,17 +3088,22 @@ fn crash_matrix_restore_onto_no_wtf() {
 #[cfg(debug_assertions)]
 #[test]
 fn a_crash_at_every_rename_of_a_restore() {
+    let log = tlog!();
+    let mut tally = Tally::default();
     for (live, renames) in [(true, 2), (false, 1)] {
         let mut crashed = Vec::new();
         for n in 1..=4 {
             let spec = format!("engine.swap.before_rename=abort@{n}");
-            if !restore_support::crash(&spec, "", live).crashed {
+            let done = restore_support::crash(&log, &spec, "", live);
+            done.tally(&mut tally);
+            if !done.crashed {
                 break;
             }
             crashed.push(n);
         }
         assert_eq!(crashed, (1..=renames).collect::<Vec<_>>(), "live {live}");
     }
+    tally.assert_complete(&log, "Restore renames");
 }
 
 /// Recovery of a restore crashed too: after each rename its rollback undoes, and as a
@@ -2917,12 +3111,14 @@ fn a_crash_at_every_rename_of_a_restore() {
 #[cfg(debug_assertions)]
 #[test]
 fn a_crash_during_recovery_of_a_restore() {
+    let log = tlog!();
+    let mut tally = Tally::default();
     let mut crashed = Vec::new();
     for k in 1..=4 {
         let recover = format!("engine.recover.step=abort@{k}");
-        if !restore_support::crash("engine.restore.snapshotted=abort", &recover, true)
-            .recovering_crashed
-        {
+        let done = restore_support::crash(&log, "engine.restore.snapshotted=abort", &recover, true);
+        done.tally(&mut tally);
+        if !done.recovering_crashed {
             break;
         }
         crashed.push(k);
@@ -2932,8 +3128,15 @@ fn a_crash_during_recovery_of_a_restore() {
         [1, 2],
         "both renames rolled back, each crashed after"
     );
-    let done = restore_support::crash("engine.swapped=abort", "engine.recover.forward=abort", true);
+    let done = restore_support::crash(
+        &log,
+        "engine.swapped=abort",
+        "engine.recover.forward=abort",
+        true,
+    );
+    done.tally(&mut tally);
     assert!(done.recovering_crashed && done.went_new, "{done:?}");
+    tally.assert_complete(&log, "Restore recoveries");
 }
 
 /// I/O failures where a restore writes (its staged copy's directories, files and modes,
@@ -2945,6 +3148,8 @@ fn a_crash_during_recovery_of_a_restore() {
 #[cfg(debug_assertions)]
 #[test]
 fn io_failures_in_a_restore_leave_wtf_whole() {
+    let log = tlog!();
+    let mut tally = Tally::default();
     for (failpoint, most, fails) in [
         ("fsx.create_dir.before", 2, true),
         ("fsx.clone_file.before", 2, true),
@@ -2957,7 +3162,8 @@ fn io_failures_in_a_restore_leave_wtf_whole() {
         // Every hit in turn: one a restore tolerates (best-effort writes) is no end.
         let mut failed = Vec::new();
         for n in 1..=most {
-            let done = restore_support::crash(&format!("{failpoint}=error@{n}"), "", true);
+            let done = restore_support::crash(&log, &format!("{failpoint}=error@{n}"), "", true);
+            done.tally(&mut tally);
             if !done.ok {
                 failed.push((n, done.pending, done.went_new));
             }
@@ -2970,10 +3176,12 @@ fn io_failures_in_a_restore_leave_wtf_whole() {
             assert!(!failed.is_empty(), "{failpoint} is on a restore's path");
         } else {
             assert!(failed.is_empty(), "{failpoint}: rolled forward: {failed:?}");
-            let crashed = restore_support::crash(&format!("{failpoint}=abort@1"), "", true);
+            let crashed = restore_support::crash(&log, &format!("{failpoint}=abort@1"), "", true);
+            crashed.tally(&mut tally);
             assert!(crashed.crashed, "{failpoint} is on a restore's path");
         }
     }
+    tally.assert_complete(&log, "Restore I/O failures");
 }
 
 /// A restore crashed after its exchange, with the game started since: the next command
@@ -2982,10 +3190,13 @@ fn io_failures_in_a_restore_leave_wtf_whole() {
 #[cfg(debug_assertions)]
 #[test]
 fn a_crashed_restore_waits_while_the_game_runs_then_rolls_back() {
+    let log = tlog!();
     let mut r = restore_support::RestoreScene::new(true);
     assert!(r.restore("engine.restore.exchanged=abort", &[]).is_none());
     assert_eq!(r.s.wtf(), r.backed_up, "the exchange ran");
     r.s.home.retail_running();
+    let mut differential = Differential::new(&log, &r.s.home, &["_retail_"], &["_retail_"]);
+    differential.predict(&log, "the game runs");
     let refused = r.s.run(&r.install_bar(), "");
     let envelope = refused.envelope();
     let error = &envelope["error"];
@@ -2995,12 +3206,17 @@ fn a_crashed_restore_waits_while_the_game_runs_then_rolls_back() {
         "{}",
         refused.context()
     );
+    let caller = differential.commit(&["retail"]);
+    differential.compare(&log, &envelope, &r.s.journals(), &caller);
     assert!(error["details"]["journal_pending"].is_string(), "{error}");
     assert_eq!(r.s.wtf(), r.backed_up, "nothing moves while it runs");
     assert_eq!(support::pending(&r.s), 1);
 
     r.s.home.nothing_running();
+    let mut differential = Differential::new(&log, &r.s.home, &["_retail_"], &[]);
+    differential.predict(&log, "the game exited");
     let envelope = r.s.run(&r.install_bar(), "").expect(0);
+    differential.compare(&log, &envelope, &r.s.journals(), &caller);
     assert!(warning_codes(&envelope).contains(&"journal_recovered".to_owned()));
     assert_eq!(r.s.wtf(), r.played, "rolled back once the game exited");
     assert!(r.s.journals().is_empty());
@@ -3171,16 +3387,20 @@ fn another_wtf_live_is_left_and_the_restored_over_tree_preserved() {
 #[cfg(debug_assertions)]
 #[test]
 fn a_preservation_crashed_or_failed_at_each_transition_resumes_with_the_same_id() {
+    let log = tlog!();
+    let mut tally = Tally::default();
     for point in [
         "engine.preserve.intent",
         "engine.preserve.moved",
         "engine.preserve.published",
     ] {
         for action in ["abort", "error"] {
-            let done = restore_support::preserve_crash(&format!("{point}={action}"));
+            let done = restore_support::preserve_crash(&log, &format!("{point}={action}"));
+            done.tally(&mut tally);
             assert!(done.stopped && done.intent, "{point}={action}: {done:?}");
         }
     }
+    tally.assert_complete(&log, "preservation transitions");
 }
 
 /// The fsx writes and renames of a played-on restore's recovery: its walk, the protocol
@@ -3198,10 +3418,13 @@ const RECOVERY_WRITES: &[&str] = &[
 #[cfg(debug_assertions)]
 #[test]
 fn a_preservation_crashed_at_each_write_and_rename_is_finished() {
+    let log = tlog!();
+    let mut tally = Tally::default();
     for name in RECOVERY_WRITES {
         let mut crashed = Vec::new();
         for n in 1..=12 {
-            let done = restore_support::preserve_crash(&format!("{name}=abort@{n}"));
+            let done = restore_support::preserve_crash(&log, &format!("{name}=abort@{n}"));
+            done.tally(&mut tally);
             if !done.stopped {
                 break;
             }
@@ -3213,6 +3436,7 @@ fn a_preservation_crashed_at_each_write_and_rename_is_finished() {
         );
         assert!(!crashed.is_empty(), "{name} is on a recovery's path");
     }
+    tally.assert_complete(&log, "preservation crashes");
 }
 
 /// The same writes failing (an I/O error, a full disk) at every hit in turn: recovery
@@ -3220,10 +3444,13 @@ fn a_preservation_crashed_at_each_write_and_rename_is_finished() {
 #[cfg(debug_assertions)]
 #[test]
 fn a_preservation_failing_at_each_write_and_rename_keeps_everything() {
+    let log = tlog!();
+    let mut tally = Tally::default();
     for name in RECOVERY_WRITES {
         let mut failed = Vec::new();
         for n in 1..=10 {
-            let done = restore_support::preserve_crash(&format!("{name}=error@{n}"));
+            let done = restore_support::preserve_crash(&log, &format!("{name}=error@{n}"));
+            done.tally(&mut tally);
             if done.stopped {
                 failed.push((n, done.intent));
             }
@@ -3234,6 +3461,7 @@ fn a_preservation_failing_at_each_write_and_rename_keeps_everything() {
         );
         assert!(!failed.is_empty(), "{name} is on a recovery's path");
     }
+    tally.assert_complete(&log, "preservation failures");
 }
 
 /// Rule 2's "replaced": a restore onto a client that had no `WTF/`, crashed after it
@@ -3559,7 +3787,9 @@ mod addon_support {
     /// snapshot holds Foo's files as they were, for undo; no snapshot of one that never
     /// committed is left; what was staged goes with the sweep once old; and two more
     /// commands that take the lock change nothing.
-    pub fn crash(op: Op, engine: &str, recover: &str) -> Restored {
+    pub fn crash(log: &TestLog, op: Op, engine: &str, recover: &str) -> Restored {
+        let label = format!("{op:?} with {engine:?}, then {recover:?}");
+        log.step(&label);
         let a = AddonScene::new();
         let s = &a.r.s;
         let (old, new, kind) = match op {
@@ -3629,6 +3859,10 @@ mod addon_support {
         assert_eq!(s.snapshot(), before, "{}", context("status wrote"));
         assert_eq!(s.journals(), journals, "{}", context("status recovered"));
 
+        // E11: what `diagnose` predicts of the recovering command.
+        let mut differential = Differential::new(log, &s.home, &["_retail_"], &[]);
+        differential.predict(log, &label);
+
         // The next command that takes the lock recovers.
         let install_bar = a.r.install_bar();
         let mut recovering_crashed = false;
@@ -3650,11 +3884,14 @@ mod addon_support {
                         context(&format!("{rel} split by a recovery that died"))
                     );
                 }
+                differential.predict(log, &format!("{label}, after the recovery that died"));
             } else {
                 recovered_by = Some(first.expect(0));
             }
         }
         let bar = recovered_by.unwrap_or_else(|| s.run(&install_bar, "").expect(0));
+        let caller = differential.commit(&["retail"]);
+        let compared = differential.compare(log, &bar, &s.journals(), &caller) > 0;
         assert_eq!(
             warning_codes(&bar).iter().any(|c| c == "journal_recovered"),
             pending_before > 0,
@@ -3756,6 +3993,8 @@ mod addon_support {
             pending: pending_before > 0,
             went_new,
             recovering_crashed,
+            with_journal: !journals.is_empty(),
+            compared,
         }
     }
 
@@ -3769,7 +4008,11 @@ mod addon_support {
     /// rolled back, exactly one partial `recovered` backup holding the pre-restore file,
     /// under the id the intent reserved when there was one, nothing left in the stage or
     /// the journal; two more commands that take the lock change nothing of that.
-    pub fn preserve_crash(engine: &str) -> Preserving {
+    pub fn preserve_crash(log: &TestLog, engine: &str) -> Preserving {
+        let label = format!(
+            "a partial restore the game wrote over, recovered with {engine:?}, then by the binary"
+        );
+        log.step(&label);
         let a = AddonScene::new();
         let s = &a.r.s;
         assert!(a.restore("engine.restore.exchanged=abort", &[]).is_none());
@@ -3835,8 +4078,14 @@ mod addon_support {
         }
         let intent = a.r.intent();
 
+        // E11: the armed recovery is no prediction's to match; the binary's is.
+        let mut differential = Differential::new(log, &s.home, &["_retail_"], &[]);
+        differential.predict(log, &label);
+        let with_journal = !s.journals().is_empty();
         let bar = s.run(&a.r.install_bar(), "");
         let envelope = bar.expect(0);
+        let caller = differential.commit(&["retail"]);
+        let compared = differential.compare(log, &envelope, &s.journals(), &caller) > 0;
         common::privacy::assert_private_all(&bar.stdout, &bar.stderr);
         assert!(s.journals().is_empty(), "{}", context("journals left"));
         let now = a.foo();
@@ -3907,6 +4156,8 @@ mod addon_support {
         Preserving {
             stopped,
             intent: intent.is_some(),
+            with_journal,
+            compared,
         }
     }
 }
@@ -3918,9 +4169,12 @@ mod addon_support {
 fn crash_matrix_restore_addon() {
     use addon_support::{Op, crash};
 
+    let log = tlog!();
+    let mut tally = Tally::default();
     let mut crashed_at = Vec::new();
     for failpoint in FAILPOINTS {
-        let done = crash(Op::RestoreAddon, &format!("{failpoint}=abort"), "");
+        let done = crash(&log, Op::RestoreAddon, &format!("{failpoint}=abort"), "");
+        done.tally(&mut tally);
         if done.crashed {
             crashed_at.push(*failpoint);
         }
@@ -3942,6 +4196,7 @@ fn crash_matrix_restore_addon() {
             FAILPOINTS.len()
         ),
     );
+    tally.assert_complete(&log, "RestoreAddon");
     for on_path in [
         "engine.restore.staged",
         "engine.lock.acquired",
@@ -3969,9 +4224,18 @@ fn crash_matrix_restore_addon() {
 fn crash_matrix_undo_restore_addon() {
     use addon_support::{Op, crash};
 
+    let log = tlog!();
+    let mut tally = Tally::default();
     let mut crashed_at = Vec::new();
     for failpoint in FAILPOINTS {
-        if crash(Op::UndoRestoreAddon, &format!("{failpoint}=abort"), "").crashed {
+        let done = crash(
+            &log,
+            Op::UndoRestoreAddon,
+            &format!("{failpoint}=abort"),
+            "",
+        );
+        done.tally(&mut tally);
+        if done.crashed {
             crashed_at.push(*failpoint);
         }
     }
@@ -3983,6 +4247,7 @@ fn crash_matrix_undo_restore_addon() {
             FAILPOINTS.len()
         ),
     );
+    tally.assert_complete(&log, "UndoRestoreAddon");
     for on_path in [
         "engine.snapshot.prestaged",
         "engine.lock.acquired",
@@ -4007,10 +4272,14 @@ fn crash_matrix_undo_restore_addon() {
 fn a_crash_at_every_rename_and_recovery_of_a_partial_restore() {
     use addon_support::{Op, crash};
 
+    let log = tlog!();
+    let mut tally = Tally::default();
     let mut renames = Vec::new();
     for n in 1..=6 {
         let spec = format!("engine.swap.before_rename=abort@{n}");
-        if !crash(Op::RestoreAddon, &spec, "").crashed {
+        let done = crash(&log, Op::RestoreAddon, &spec, "");
+        done.tally(&mut tally);
+        if !done.crashed {
             break;
         }
         renames.push(n);
@@ -4020,10 +4289,12 @@ fn a_crash_at_every_rename_and_recovery_of_a_partial_restore() {
     for k in 1..=6 {
         let recover = format!("engine.recover.step=abort@{k}");
         let done = crash(
+            &log,
             Op::RestoreAddon,
             "engine.restore.snapshotted=abort",
             &recover,
         );
+        done.tally(&mut tally);
         if !done.recovering_crashed {
             break;
         }
@@ -4035,11 +4306,14 @@ fn a_crash_at_every_rename_and_recovery_of_a_partial_restore() {
         "each step rolled back, crashed after"
     );
     let done = crash(
+        &log,
         Op::RestoreAddon,
         "engine.swapped=abort",
         "engine.recover.forward=abort",
     );
+    done.tally(&mut tally);
     assert!(done.recovering_crashed && done.went_new, "{done:?}");
+    tally.assert_complete(&log, "RestoreAddon renames and recoveries");
 }
 
 /// I/O failures where a partial restore writes (its staged copies' folders, files and
@@ -4052,6 +4326,8 @@ fn a_crash_at_every_rename_and_recovery_of_a_partial_restore() {
 fn io_failures_in_a_partial_restore_leave_each_file_whole() {
     use addon_support::{Op, crash};
 
+    let log = tlog!();
+    let mut tally = Tally::default();
     for (failpoint, most) in [
         ("fsx.create_dir.before", 3),
         ("fsx.clone_file.before", 2),
@@ -4063,7 +4339,13 @@ fn io_failures_in_a_partial_restore_leave_each_file_whole() {
     ] {
         let mut failed = Vec::new();
         for n in 1..=most {
-            let done = crash(Op::RestoreAddon, &format!("{failpoint}=error@{n}"), "");
+            let done = crash(
+                &log,
+                Op::RestoreAddon,
+                &format!("{failpoint}=error@{n}"),
+                "",
+            );
+            done.tally(&mut tally);
             if !done.ok {
                 failed.push((n, done.pending, done.went_new));
             }
@@ -4072,10 +4354,14 @@ fn io_failures_in_a_partial_restore_leave_each_file_whole() {
             &mut std::io::stderr(),
             format_args!("partial restore: {failpoint} failed it at {failed:?}\n"),
         );
-        let on_path = !failed.is_empty()
-            || crash(Op::RestoreAddon, &format!("{failpoint}=abort@1"), "").crashed;
+        let on_path = !failed.is_empty() || {
+            let done = crash(&log, Op::RestoreAddon, &format!("{failpoint}=abort@1"), "");
+            done.tally(&mut tally);
+            done.crashed
+        };
         assert!(on_path, "{failpoint} is on a partial restore's path");
     }
+    tally.assert_complete(&log, "RestoreAddon I/O failures");
 }
 
 /// A partial restore crashed after its renames, the game started since: the next command
@@ -4084,11 +4370,14 @@ fn io_failures_in_a_partial_restore_leave_each_file_whole() {
 #[cfg(debug_assertions)]
 #[test]
 fn a_crashed_partial_restore_waits_while_the_game_runs_then_rolls_back() {
+    let log = tlog!();
     let mut a = addon_support::AddonScene::new();
     let outcome = a.restore("engine.restore.exchanged=abort", &[]);
     assert!(outcome.is_none(), "{outcome:?}");
     assert_eq!(a.foo(), a.backed_up, "the renames ran");
     a.r.s.home.retail_running();
+    let mut differential = Differential::new(&log, &a.r.s.home, &["_retail_"], &["_retail_"]);
+    differential.predict(&log, "the game runs");
     let refused = a.r.s.run(&a.r.install_bar(), "");
     let envelope = refused.envelope();
     let error = &envelope["error"];
@@ -4098,10 +4387,15 @@ fn a_crashed_partial_restore_waits_while_the_game_runs_then_rolls_back() {
         "{}",
         refused.context()
     );
+    let caller = differential.commit(&["retail"]);
+    differential.compare(&log, &envelope, &a.r.s.journals(), &caller);
     assert!(error["details"]["journal_pending"].is_string(), "{error}");
     assert_eq!(a.foo(), a.backed_up, "nothing moves while it runs");
     a.r.s.home.nothing_running();
+    let mut differential = Differential::new(&log, &a.r.s.home, &["_retail_"], &[]);
+    differential.predict(&log, "the game exited");
     let envelope = a.r.s.run(&a.r.install_bar(), "").expect(0);
+    differential.compare(&log, &envelope, &a.r.s.journals(), &caller);
     assert!(warning_codes(&envelope).contains(&"journal_recovered".to_owned()));
     assert_eq!(a.foo(), a.played, "rolled back once the game exited");
     assert!(a.r.s.journals().is_empty());
@@ -4152,7 +4446,8 @@ fn a_game_started_before_in_process_recovery_leaves_the_partial_restore_pending(
 #[cfg(debug_assertions)]
 #[test]
 fn a_file_the_game_replaced_is_left_and_the_displaced_one_preserved() {
-    let done = addon_support::preserve_crash("");
+    let log = tlog!();
+    let done = addon_support::preserve_crash(&log, "");
     assert!(!done.stopped && !done.intent, "{done:?}");
 
     // The recovered backup restores Foo's settings, and only with --addon.
@@ -4231,13 +4526,16 @@ fn a_restored_file_the_game_replaced_is_left_and_nothing_is_preserved() {
 #[cfg(debug_assertions)]
 #[test]
 fn a_partial_preservation_crashed_or_failed_anywhere_is_finished() {
+    let log = tlog!();
+    let mut tally = Tally::default();
     for point in [
         "engine.preserve.intent",
         "engine.preserve.moved",
         "engine.preserve.published",
     ] {
         for action in ["abort", "error"] {
-            let done = addon_support::preserve_crash(&format!("{point}={action}"));
+            let done = addon_support::preserve_crash(&log, &format!("{point}={action}"));
+            done.tally(&mut tally);
             assert!(done.stopped && done.intent, "{point}={action}: {done:?}");
         }
     }
@@ -4245,7 +4543,8 @@ fn a_partial_preservation_crashed_or_failed_anywhere_is_finished() {
         for action in ["abort", "error"] {
             let mut stopped = Vec::new();
             for n in 1..=10 {
-                let done = addon_support::preserve_crash(&format!("{name}={action}@{n}"));
+                let done = addon_support::preserve_crash(&log, &format!("{name}={action}@{n}"));
+                done.tally(&mut tally);
                 if done.stopped {
                     stopped.push((n, done.intent));
                 } else if action == "abort" {
@@ -4259,6 +4558,7 @@ fn a_partial_preservation_crashed_or_failed_anywhere_is_finished() {
             assert!(!stopped.is_empty(), "{name} is on a recovery's path");
         }
     }
+    tally.assert_complete(&log, "partial preservation");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -4275,9 +4575,12 @@ mod across_support {
     /// child with `engine` armed in its recovery, then by the binary: the restored tree is
     /// live again, the played-on one a `recovered` backup byte for byte, under the id the
     /// intent reserved when a crash stopped the first recovery after it; exactly one.
-    pub fn undo_preserve_crash(engine: &str) -> restore_support::Preserving {
+    pub fn undo_preserve_crash(log: &TestLog, engine: &str) -> restore_support::Preserving {
         use restore_support::{RestoreScene, listed};
 
+        let label =
+            format!("a played-on undo of a restore recovered with {engine:?}, then by the binary");
+        log.step(&label);
         let r = RestoreScene::new(true);
         assert_eq!(r.restore("", &[]).unwrap()["ok"], true);
         r.play_on_restored();
@@ -4304,8 +4607,14 @@ mod across_support {
             );
         }
         let intent = r.intent();
+        // E11: the armed recovery is no prediction's to match; the binary's is.
+        let mut differential = Differential::new(log, &r.s.home, &["_retail_"], &[]);
+        differential.predict(log, &label);
+        let with_journal = !r.s.journals().is_empty();
         let bar = r.s.run(&r.install_bar(), "");
-        bar.expect(0);
+        let envelope = bar.expect(0);
+        let caller = differential.commit(&["retail"]);
+        let compared = differential.compare(log, &envelope, &r.s.journals(), &caller) > 0;
         common::privacy::assert_private_all(&bar.stdout, &bar.stderr);
         assert!(r.s.journals().is_empty(), "{}", context("journals left"));
         assert_eq!(
@@ -4347,6 +4656,8 @@ mod across_support {
         restore_support::Preserving {
             stopped,
             intent: intent.is_some(),
+            with_journal,
+            compared,
         }
     }
 }
@@ -4356,16 +4667,21 @@ mod across_support {
 fn a_played_on_undo_of_a_restore_is_preserved_and_resumes_with_the_same_id() {
     use across_support::undo_preserve_crash;
 
-    let done = undo_preserve_crash("");
+    let log = tlog!();
+    let mut tally = Tally::default();
+    let done = undo_preserve_crash(&log, "");
+    done.tally(&mut tally);
     assert!(!done.stopped, "{done:?}");
     for point in [
         "engine.preserve.intent",
         "engine.preserve.moved",
         "engine.preserve.published",
     ] {
-        let done = undo_preserve_crash(&format!("{point}=abort"));
+        let done = undo_preserve_crash(&log, &format!("{point}=abort"));
+        done.tally(&mut tally);
         assert!(done.stopped && done.intent, "{point}: {done:?}");
     }
+    tally.assert_complete(&log, "undo-of-restore preservation");
 }
 
 /// An automatic capture racing a restore paused while it stages: the capture takes the
@@ -4550,16 +4866,19 @@ fn recovery_defers_a_running_client_and_preserves_another() {
 #[cfg(debug_assertions)]
 #[test]
 fn every_failpoint_in_every_preservation_shape() {
+    let log = tlog!();
+    let mut tally = Tally::default();
     let mut stopped = std::collections::BTreeMap::new();
     for failpoint in FAILPOINTS {
         let spec = format!("{failpoint}=abort");
         let shapes = [
-            ("restore", restore_support::preserve_crash(&spec).stopped),
-            ("undo", across_support::undo_preserve_crash(&spec).stopped),
-            ("partial", addon_support::preserve_crash(&spec).stopped),
+            ("restore", restore_support::preserve_crash(&log, &spec)),
+            ("undo", across_support::undo_preserve_crash(&log, &spec)),
+            ("partial", addon_support::preserve_crash(&log, &spec)),
         ];
         for (shape, done) in shapes {
-            if done {
+            done.tally(&mut tally);
+            if done.stopped {
                 stopped
                     .entry(shape)
                     .or_insert_with(Vec::new)
@@ -4571,6 +4890,7 @@ fn every_failpoint_in_every_preservation_shape() {
         &mut std::io::stderr(),
         format_args!("preservation sweep: stopped at {stopped:?}\n"),
     );
+    tally.assert_complete(&log, "preservation sweep");
     for shape in ["restore", "undo", "partial"] {
         let on = stopped.get(shape).cloned().unwrap_or_default();
         for point in [

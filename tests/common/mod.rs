@@ -2,8 +2,9 @@
 //! trees, PE stubs, `product.db`, launcher configs, a fake `/proc`, `pause` failpoint
 //! markers, bind mounts, addon folders, HTTP fixtures and release graphs, drift mutators, readers
 //! for state and `net.log`, SavedVariables in both writer formats (BugGrabber's
-//! among them), synthetic repair lines for history (`history`), and a structured step
-//! log (`tlog`).
+//! among them), synthetic repair lines for history (`history`), a structured step log
+//! (`tlog`), and E11's differential of `journal::diagnose` against recovery
+//! (`differential`).
 //! Each integration test crate declares `mod common;` and uses the subset it needs.
 //!
 //! Everything is written under a [`env::TestEnv`] tempdir; nothing here touches the real
@@ -18,6 +19,7 @@ pub mod archives;
 pub mod backups;
 pub mod buggrabber;
 pub mod checkpoint;
+pub mod differential;
 pub mod drift;
 pub mod engine;
 pub mod env;
