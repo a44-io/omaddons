@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::journal::{
-    self, Disk, LiveEntry, LiveKind, LiveView, Parsed, Phase, Prepared, Replay, Route, StepOp,
-    StepRecord, StopReason, Unrecoverable, Walked, WtfWalked,
+    self, Disk, FileId, LiveEntry, LiveKind, LiveView, Parsed, Phase, Prepared, Replay, Route,
+    StepOp, StepRecord, StopReason, Unrecoverable, Walked, WtfWalked,
 };
 use super::preserve::{self, Placed};
 use crate::backup::BackupMeta;
@@ -1196,6 +1196,301 @@ pub(crate) fn cut_below_wtf(path: &Path) -> PathBuf {
         }
     }
     cut
+}
+
+// ---------------------------------------------------------------------------------------
+// The fuzz property (E11): the `journal` target and the seeds' gate test run it.
+
+/// Any bytes as a journal: they parse and diagnose without a panic, the same bytes always
+/// diagnose the same, and every diagnosis agrees with the parse and names nothing below
+/// `WTF/`. Panics with the violated property; never writes.
+#[doc(hidden)]
+pub fn fuzz_property(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    let parsed = journal::parse(&text);
+    let len = data.len();
+    assert!(
+        parsed.unknown_lines <= parsed.lines,
+        "{len} bytes: more unknown lines than lines"
+    );
+    if parsed.torn_tail {
+        let last = text.lines().last().unwrap_or_default();
+        assert!(
+            !text.ends_with('\n') || serde_json::from_str::<serde_json::Value>(last).is_err(),
+            "{len} bytes: a torn tail that is a complete JSON line"
+        );
+    }
+    if parsed.prepared.is_none() {
+        assert!(
+            matches!(parsed.phase, Phase::Unprepared),
+            "{len} bytes: a phase without a prepared line"
+        );
+    }
+    assert_eq!(
+        journal::parse(&text),
+        parsed,
+        "{len} bytes: two parses differ"
+    );
+    let found = fuzz_diagnosis(data);
+    assert_eq!(
+        fuzz_diagnosis(data),
+        found,
+        "{len} bytes: two diagnoses differ"
+    );
+    let alive = FuzzCase::new(data, &parsed).alive;
+    for diagnosis in &found {
+        let _ = (
+            diagnosis.expected(),
+            diagnosis.direction(),
+            diagnosis.exact(),
+        );
+        let agrees = match (diagnosis.verdict, parsed.unrecoverable()) {
+            _ if alive.is_err() => matches!(
+                diagnosis.verdict,
+                JournalVerdict::Unattributed {
+                    cause: UnattributedCause::LivenessUnknown
+                }
+            ),
+            (
+                JournalVerdict::TooNew
+                | JournalVerdict::Unreadable
+                | JournalVerdict::Unattributed { .. },
+                Some(_),
+            ) => true,
+            (_, Some(_)) => false,
+            (verdict, None) if matches!(parsed.phase, Phase::Committed | Phase::Unprepared) => {
+                matches!(
+                    verdict,
+                    JournalVerdict::Recoverable {
+                        direction: Direction::Prune,
+                        ..
+                    }
+                )
+            }
+            (
+                JournalVerdict::StepUnrecognized { step }
+                | JournalVerdict::UnexpectedState { step },
+                None,
+            ) => parsed
+                .steps
+                .iter()
+                // ubs:ignore — comparing step numbers, not secrets
+                .any(|recorded| recorded.n == step),
+            _ => true,
+        };
+        assert!(
+            agrees,
+            "{len} bytes: the verdict {:?} disagrees with the parse",
+            diagnosis.verdict
+        );
+        let named = std::iter::once(&diagnosis.path)
+            .chain(&diagnosis.protected.reads)
+            .chain(&diagnosis.protected.writes)
+            .chain(diagnosis.evidence.artifacts.iter().map(|a| &a.path));
+        for path in named {
+            assert!(
+                cut_below_wtf(path) == *path,
+                "{len} bytes: a diagnosis names a path below WTF/"
+            );
+        }
+    }
+}
+
+/// The diagnoses [`fuzz_property`] checks: the journal `data` on a base whose every path
+/// the journal names is absent, as recorded before or after its step, or something else,
+/// each chosen by a hash of `data` and the path.
+#[doc(hidden)]
+pub fn fuzz_diagnosis(data: &[u8]) -> Vec<JournalDiagnosis> {
+    let text = String::from_utf8_lossy(data).into_owned();
+    let parsed = journal::parse(&text);
+    let case = FuzzCase::new(data, &parsed);
+    let paths = Paths::with_roots("/fuzz", "/fuzz/c", "/fuzz/s", "/fuzz/k");
+    let tx = parsed
+        .prepared
+        .as_ref()
+        .map_or(TxId::from_ulid(ulid::Ulid::nil()), |p| p.tx);
+    let listing = vec![Listed {
+        tx,
+        path: paths.journal(&tx),
+        text: Ok(text),
+    }];
+    let writable = case.pick("sv_writable", 2) == 0;
+    let client_dirs: Vec<PathBuf> = parsed
+        .prepared
+        .iter()
+        .map(|p| p.client_dir.clone())
+        .collect();
+    diagnose_journals(&case.base, &paths, listing, &client_dirs, &|_| writable)
+}
+
+/// `paths`'s journals diagnosed on disk, with a listing of the home taken before and
+/// after: `diagnose` must write nothing. The caller has written the journal.
+#[doc(hidden)]
+pub fn fuzz_disk_property(paths: &Paths) {
+    let before = listing(paths.home());
+    let _ = diagnose(paths, &[], &|_| false);
+    assert_eq!(listing(paths.home()), before, "diagnose changed the disk");
+}
+
+/// Every path under `root` with its kind, size, mode and modification time.
+fn listing(root: &Path) -> Vec<(PathBuf, String)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(children) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for child in children.flatten() {
+            let path = child.path();
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                pending.push(path.clone());
+            }
+            let kind = meta.file_type();
+            let shape = format!(
+                "{}:{}:{:o}:{}.{}",
+                if kind.is_dir() {
+                    "d"
+                } else if kind.is_symlink() {
+                    "l"
+                } else {
+                    "f"
+                },
+                meta.size(),
+                meta.mode(),
+                meta.mtime(),
+                meta.mtime_nsec()
+            );
+            found.push((path, shape));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The base and answers one fuzz input diagnoses with.
+struct FuzzCase<'d> {
+    data: &'d [u8],
+    base: MapBase,
+    alive: Result<bool, String>,
+}
+
+impl<'d> FuzzCase<'d> {
+    fn new(data: &'d [u8], parsed: &Parsed) -> Self {
+        let mut case = Self {
+            data,
+            base: MapBase::default(),
+            alive: Ok(false),
+        };
+        let mut other = 0u64;
+        let mut place =
+            |case: &mut Self, path: &Path, before: Option<FileId>, after: Option<FileId>| {
+                if case.base.entries.contains_key(path) {
+                    return;
+                }
+                other += 1;
+                let someone = FileId {
+                    dev: 0,
+                    ino: u64::MAX - other,
+                    born_ns: None,
+                };
+                let id = match case.pick(&path.to_string_lossy(), 4) {
+                    0 => None,
+                    1 => before,
+                    2 => after,
+                    _ => Some(someone),
+                };
+                if let Some(id) = id {
+                    case.base.entries.insert(
+                        path.to_path_buf(),
+                        LiveEntry {
+                            kind: LiveKind::Dir,
+                            id,
+                        },
+                    );
+                }
+            };
+        for step in &parsed.steps {
+            let after_from = match step.op {
+                StepOp::Exchange => step.to_id,
+                StepOp::Noreplace | StepOp::Rename => None,
+            };
+            place(&mut case, &step.from, step.from_id, after_from);
+            place(&mut case, &step.to, step.to_id, step.from_id);
+        }
+        if let Some(prepared) = &parsed.prepared {
+            let staged = prepared.commit.stage_dir.join("WTF");
+            place(&mut case, &prepared.commit.stage_dir, None, None);
+            place(&mut case, &staged, None, None);
+            let stamp = match (case.pick("staged_stamp", 3), &prepared.staged_stamp) {
+                (0, Some(recorded)) => Ok(recorded.clone()),
+                (1, _) => Err("cannot be listed".to_owned()),
+                _ => Ok("stamp:other".to_owned()),
+            };
+            case.base.tree_stamps.insert(staged.clone(), stamp);
+            for file in prepared.staged_files.iter().flatten() {
+                let path = staged.join(&file.rel);
+                place(&mut case, &path, None, None);
+                if case.pick(&format!("stamp {}", file.rel), 2) == 0 {
+                    case.base.file_stamps.insert(path, file.stamp.clone());
+                }
+            }
+            let client = ClientPaths::new(&prepared.client_dir);
+            if let Some(source) = prepared.source_backup {
+                let dir = crate::backup::backup_dir(&client, &source.id);
+                place(&mut case, &dir, Some(source.dir), None);
+            }
+            for intent in &parsed.preserve {
+                for item in &intent.items {
+                    let assembled = preserve::place(&intent.assembly, &item.rel);
+                    place(&mut case, &item.path, Some(item.identity), None);
+                    place(&mut case, &assembled, Some(item.identity), None);
+                }
+                let published = crate::backup::backup_dir(&client, &intent.id);
+                place(&mut case, &published, None, None);
+                if case.pick("backup meta", 2) == 0 {
+                    case.base.backup_metas.insert(published);
+                }
+            }
+            match case.pick("marker", 3) {
+                0 => {
+                    case.base
+                        .markers
+                        .insert(prepared.client_dir.clone(), prepared.target_key);
+                }
+                1 => {
+                    case.base.markers.insert(
+                        prepared.client_dir.clone(),
+                        TargetKey::from_ulid(ulid::Ulid(1)),
+                    );
+                }
+                _ => {}
+            }
+            if case.pick("describable", 2) == 0 {
+                case.base.describable.insert(prepared.tx);
+            }
+            case.alive = match case.pick("alive", 4) {
+                0 => Ok(true),
+                1 => Err("cannot be probed".to_owned()),
+                _ => Ok(false),
+            };
+            case.base.alive.insert(prepared.tx, case.alive.clone());
+        }
+        case
+    }
+
+    /// One of `choices` values, by an FNV-1a hash of the input and `what`.
+    fn pick(&self, what: &str, choices: u64) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in self.data.iter().chain(what.as_bytes()) {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        hash % choices
+    }
 }
 
 #[cfg(test)]
@@ -3014,6 +3309,48 @@ mod tests {
         std::fs::set_permissions(&dir, mode).unwrap();
         assert!(found.journals.is_empty(), "{found:#?}");
         assert_eq!(found.unlisted.map(|failure| failure.dir), Some(dir));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The fuzz property.
+
+    #[test]
+    fn fuzz_property_accepts_the_shapes_it_is_built_for() {
+        let folder = Folder::new(3, true);
+        let prefix = text(&folder.prepared, &folder.steps, &[]);
+        let torn = &prefix[..prefix.len() - 7];
+        let mut restore = Restore::new(true);
+        restore.replace_live();
+        let wtf = text(&restore.prepared, &restore.steps, &[]);
+        let cases: [(&str, Vec<u8>); 6] = [
+            ("six_step_prefix", prefix.clone().into_bytes()),
+            ("torn", torn.as_bytes().to_vec()),
+            ("whole_restore", wtf.into_bytes()),
+            ("empty", Vec::new()),
+            (
+                "not_utf8",
+                b"\xff\xfe{\"type\":\"prepared\"\x80}\n\xc3".to_vec(),
+            ),
+            ("braces", vec![b'{'; 64 * 1024]),
+        ];
+        for (name, bytes) in cases {
+            let found = fuzz_diagnosis(&bytes);
+            assert_eq!(found.len(), 1, "{name}");
+            fuzz_property(&bytes);
+        }
+    }
+
+    #[test]
+    fn the_disk_arm_sees_nothing_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::with_roots(&root, root.join("c"), root.join("s"), root.join("k"));
+        std::fs::create_dir_all(paths.journal_dir()).unwrap();
+        let folder = Folder::new(3, false);
+        let journal = paths.journal(&folder.tx);
+        std::fs::write(&journal, text(&folder.prepared, &folder.steps, &[])).unwrap();
+        fuzz_disk_property(&paths);
+        assert_eq!(diagnose(&paths, &[], &|_| false).journals.len(), 1);
     }
 
     // -----------------------------------------------------------------------------------

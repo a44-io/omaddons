@@ -2,6 +2,9 @@
 //! and fixtures by an ignored generator, and checked here so every fuzz target keeps a
 //! source file and at least three seeds, one of them malformed.
 //! `OMADDONS_WRITE_SEEDS=1 cargo test --test fuzz_seeds -- --ignored write`
+//!
+//! e2e suite: the `journal` fuzz property on every committed journal seed, each seed's
+//! diagnosis logged.
 
 mod common;
 
@@ -12,7 +15,11 @@ use common::archives::{RawEntry, raw_zip, zip_text};
 use common::buggrabber::{self, Writer};
 use common::env::TestEnv;
 use common::product_db::ProductDb;
+use common::tlog::{TestLog, tlog};
 use common::trees::BattlenetRoot;
+use omaddons::engine::simulate::{fuzz_diagnosis, fuzz_disk_property, fuzz_property};
+use omaddons::model::TxId;
+use omaddons::state::paths::Paths;
 
 /// Every target of `fuzz/Cargo.toml`.
 const TARGETS: &[&str] = &[
@@ -36,6 +43,7 @@ const TARGETS: &[&str] = &[
     "savedvariables",
     "wowace_listing",
     "backup_tar",
+    "journal",
 ];
 
 fn fuzz_dir() -> PathBuf {
@@ -67,6 +75,33 @@ fn every_fuzz_target_has_a_source_and_seeds() {
     }
     let bins = manifest.matches("[[bin]]").count();
     assert_eq!(bins, TARGETS.len(), "TARGETS lists every fuzz target");
+}
+
+/// The `journal` target's property on every committed seed, in every gate: the parse and
+/// in-memory arms, and the disk arm on a scratch home whose journal is the seed.
+#[test]
+fn journal_seeds_satisfy_the_fuzz_property() {
+    let log: TestLog = tlog!();
+    let env = TestEnv::new();
+    let root = env.root();
+    let paths = Paths::with_roots(root, root.join("c"), root.join("s"), root.join("k"));
+    fs::create_dir_all(paths.journal_dir()).unwrap();
+    let journal = paths.journal(&TxId::new());
+    let mut seeds: Vec<PathBuf> = fs::read_dir(fuzz_dir().join("seeds/journal"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    seeds.sort();
+    assert!(seeds.len() >= 3, "{seeds:?}");
+    for seed in seeds {
+        let name = seed.file_name().unwrap().to_string_lossy().into_owned();
+        log.step(&name);
+        let bytes = fs::read(&seed).unwrap();
+        log.json("diagnosis", &fuzz_diagnosis(&bytes));
+        fuzz_property(&bytes);
+        fs::write(&journal, &bytes).unwrap();
+        fuzz_disk_property(&paths);
+    }
 }
 
 #[test]
@@ -591,6 +626,111 @@ fn write_fuzz_seeds() {
     deep.extend("},\r\n".repeat(4095).bytes());
     deep.extend(b"}\r\n");
     write("savedvariables", "malformed-deep", &deep);
+
+    // journal: the journals of real transactions the binary was killed in (an update cut
+    // before its third rename, after `swapped` and after `committed`; a whole and a
+    // partial settings restore), the test root renamed `/sim`; a newer major, a torn tail
+    // and a malformed middle line made from the first.
+    let journal_of = |s: &common::engine::Scene| {
+        let journals = s.journals();
+        assert_eq!(journals.len(), 1, "{journals:?}");
+        let text = fs::read_to_string(&journals[0]).unwrap();
+        let root = s.home.env.root();
+        let canonical = fs::canonicalize(root).unwrap();
+        text.replace(&canonical.display().to_string(), "/sim")
+            .replace(&root.display().to_string(), "/sim")
+    };
+    // An update of Foo from v1 to v2, killed at `failpoint`.
+    let crashed_update = |failpoint: &str| {
+        let s = common::engine::Scene::new().with_saved_variables(common::engine::FOLDERS);
+        s.install("gh:o/foo", "v1");
+        let run = s.run(&s.install_args("gh:o/foo", "v2"), failpoint);
+        assert_ne!(run.code, 0, "{failpoint} killed it");
+        journal_of(&s)
+    };
+    // A client with Foo's and Bar's SavedVariables, backed up.
+    let restore_scene = || {
+        let s = common::engine::Scene::new();
+        let wtf = common::wtf::Wtf::at(s.home.client("_retail_"))
+            .config_wtf("SET locale \"enUS\"\n")
+            .saved_variables("Foo", 300)
+            .saved_variables("Bar", 100)
+            .build();
+        let created = s.run(&s.args(&["backup", "create"]), "").expect(0);
+        let id = created["data"]["targets"][0]["backup"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (s, wtf, id)
+    };
+    // What the game does to Foo's SavedVariables.
+    let play = |wtf: &Path| {
+        for rel in common::trees::tree_entries(wtf).into_keys() {
+            if rel.ends_with("/Foo.lua") {
+                let path = wtf.join(rel);
+                let mut text = fs::read_to_string(&path).unwrap();
+                text.push_str("FooDB.played = true\n");
+                fs::write(&path, text).unwrap();
+            }
+        }
+    };
+    let update = crashed_update("engine.swap.before_rename=abort@3");
+    write("journal", "update_prefix_2.jsonl", update.as_bytes());
+    write(
+        "journal",
+        "swapped.jsonl",
+        crashed_update("engine.swapped=abort").as_bytes(),
+    );
+    write(
+        "journal",
+        "committed.jsonl",
+        crashed_update("engine.committed=abort").as_bytes(),
+    );
+    // A whole restore killed after its exchange.
+    let (s, wtf, id) = restore_scene();
+    play(&wtf);
+    let run = s.run(
+        &s.args(&["backup", "restore", &id]),
+        "engine.restore.exchanged=abort",
+    );
+    assert_ne!(run.code, 0, "killed after the exchange");
+    let whole = journal_of(&s);
+    // A partial one (Foo's SavedVariables) killed there too, whose files the game then
+    // wrote, and whose recovery was killed once its preservation intent was journaled.
+    let (s, wtf, id) = restore_scene();
+    play(&wtf);
+    let restore = s.args(&["backup", "restore", &id, "--addon", "Foo"]);
+    let run = s.run(&restore, "engine.restore.exchanged=abort");
+    assert_ne!(run.code, 0, "killed after the file exchanges");
+    play(&wtf);
+    let run = s.run(&restore, "engine.preserve.intent=abort");
+    assert_ne!(run.code, 0, "recovery killed once its intent was journaled");
+    let partial = journal_of(&s);
+    assert!(partial.contains("\"type\":\"preserve\""), "{partial}");
+    write("journal", "whole_restore_exchanged.jsonl", whole.as_bytes());
+    write(
+        "journal",
+        "partial_restore_with_intent.jsonl",
+        partial.as_bytes(),
+    );
+    let newer = update.replacen(
+        "\"schema_version\":\"1.1\"",
+        "\"schema_version\":\"9.0\"",
+        1,
+    );
+    assert_ne!(newer, update, "the prepared line names its version");
+    write("journal", "newer_major.jsonl", newer.as_bytes());
+    let body = update.strip_suffix('\n').unwrap();
+    let last = body.rfind('\n').unwrap() + 1;
+    let torn = &update[..last + (body.len() - last) / 2];
+    write("journal", "torn_tail.jsonl", torn.as_bytes());
+    let first = update.find('\n').unwrap() + 1;
+    let malformed = format!("{}not json\n{}", &update[..first], &update[first..]);
+    write(
+        "journal",
+        "malformed_middle_line.jsonl",
+        malformed.as_bytes(),
+    );
 }
 
 /// mod_dav_svn's HTML index of BugGrabber v12.1.0, as documented (C2 records the real one).

@@ -156,3 +156,10 @@ path = "fuzz_targets/backup_tar.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "journal"
+path = "fuzz_targets/journal.rs"
+test = false
+doc = false
+bench = false
