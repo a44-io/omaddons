@@ -325,6 +325,7 @@ pub(super) fn same(a: Option<FileId>, b: Option<FileId>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(a), Some(b)) => {
+            // ubs:ignore — comparing inode numbers, not secrets
             a.ino == b.ino
                 && match (a.born_ns, b.born_ns) {
                     // ubs:ignore — comparing birth times, not secrets
@@ -484,6 +485,57 @@ pub struct Parsed {
     pub preserved: Vec<crate::model::BackupId>,
 }
 
+/// Why recovery stops for a journal, as `details.reason` says it (E11): one vocabulary
+/// for recovery's stop errors, the warnings that report another target's stop, and the
+/// doctor's simulation of recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    /// Started by a newer major version of the journal.
+    JournalTooNew,
+    /// A complete line does not read, or no `prepared` line does.
+    JournalUnreadable,
+    /// The journal's client no longer carries its target's marker.
+    MarkerMismatch,
+    /// A rollback met a step in neither its before nor its after state.
+    StepUnrecognized,
+    /// A settings restore's step in neither state (`writes_wtf` journals).
+    UnexpectedState,
+    /// What a settings restore displaced has no durable home yet.
+    PreservationIncomplete,
+    /// A settings restore waits for its game to exit.
+    SavedVariables,
+    /// A failure recovery cannot attribute to one target, which fails every committing
+    /// command on every target.
+    Unattributed,
+}
+
+impl StopReason {
+    pub const ALL: [Self; 8] = [
+        Self::JournalTooNew,
+        Self::JournalUnreadable,
+        Self::MarkerMismatch,
+        Self::StepUnrecognized,
+        Self::UnexpectedState,
+        Self::PreservationIncomplete,
+        Self::SavedVariables,
+        Self::Unattributed,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::JournalTooNew => "journal_too_new",
+            Self::JournalUnreadable => "journal_unreadable",
+            Self::MarkerMismatch => "marker_mismatch",
+            Self::StepUnrecognized => "step_unrecognized",
+            Self::UnexpectedState => "unexpected_state",
+            Self::PreservationIncomplete => "preservation_incomplete",
+            Self::SavedVariables => "saved_variables",
+            Self::Unattributed => "unattributed",
+        }
+    }
+}
+
 /// Why recovery leaves a journal for manual repair (M3-D45).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unrecoverable {
@@ -497,8 +549,8 @@ impl Unrecoverable {
     /// The `journal_pending` reason (`details.reason`).
     pub fn reason(self) -> &'static str {
         match self {
-            Self::TooNew => "journal_too_new",
-            Self::Unreadable => "journal_unreadable",
+            Self::TooNew => StopReason::JournalTooNew.as_str(),
+            Self::Unreadable => StopReason::JournalUnreadable.as_str(),
         }
     }
 
@@ -810,8 +862,8 @@ pub struct Recovered {
 /// roll-forward left; committed and unprepared journals are removed silently.
 pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
     let mut warnings = Vec::new();
-    for (tx, path) in journals(env.paths)? {
-        if InflightLock::is_live(env.paths, &tx)? {
+    for (tx, path) in journals(env.paths).map_err(|error| unattributed(error, None))? {
+        if InflightLock::is_live(env.paths, &tx).map_err(|error| unattributed(error, Some(&tx)))? {
             continue;
         }
         // Whose it is, for isolation, from its `prepared` line even when that line does
@@ -819,6 +871,8 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
         let parsed = read(&path).ok();
         let target = parsed.as_ref().and_then(|p| p.target);
         let unrecoverable = parsed.as_ref().and_then(Parsed::unrecoverable);
+        // No target to attribute its failure to: it fails every committing command.
+        let owner_unknown = target.is_none();
         match recover_one(env, &tx, path) {
             Ok(recovered) => warnings.extend(recovered),
             Err(error) => match (target.filter(|t| !env.own.contains(t)), unrecoverable) {
@@ -840,11 +894,36 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
                     )
                     .with_fix(Suggestion::command(["omaddons", "status"])),
                 ),
+                (None, _) if owner_unknown => return Err(unattributed(error, Some(&tx))),
+                // The caller's own target keeps its stop's reason.
                 (None, _) => return Err(error),
             },
         }
     }
     Ok(warnings)
+}
+
+/// A recovery failure no single target owns (the journal directory does not list, an
+/// in-flight lock cannot be probed, or a journal's target cannot be read): it fails
+/// every committing command on every target, so `details.reason` says `unattributed`
+/// (over any reason it had), with the transaction when one is known. The code, message
+/// and fix still say what failed.
+fn unattributed(mut error: Error, tx: Option<&TxId>) -> Error {
+    if !error.details.is_object() {
+        error.details = serde_json::json!({});
+    }
+    if let Some(details) = error.details.as_object_mut() {
+        details.insert(
+            "reason".to_owned(),
+            serde_json::json!(StopReason::Unattributed.as_str()),
+        );
+        if let Some(tx) = tx {
+            details
+                .entry("journal_pending")
+                .or_insert_with(|| serde_json::json!(tx));
+        }
+    }
+    error
 }
 
 /// Recovery under the global lock `lock`, for a command that takes it without committing
@@ -1019,7 +1098,12 @@ fn recover_parsed(
                 prepared.target_key
             ),
             Suggestion::command(["omaddons", "status"]),
-        ));
+        )
+        .details(serde_json::json!({
+            "reason": StopReason::MarkerMismatch.as_str(),
+            "journal_pending": tx,
+            "target": prepared.target_key,
+        })));
     }
     let env = &RecoveryEnv {
         scopes: scoped.as_ref().unwrap_or(env.scopes),
@@ -1072,8 +1156,8 @@ fn recover_parsed(
                 snapshot_kept: None,
             })
         }
-        (Some(_), Phase::Prepared) => {
-            roll_back(&mut s, &parsed.steps)?;
+        (Some(prepared), Phase::Prepared) => {
+            roll_back(&mut s, &parsed.steps, tx, prepared.target_key)?;
             Some(Recovered {
                 action: RecoveryAction::RolledBack,
                 atomic_swap,
@@ -1169,7 +1253,7 @@ fn waits_for_the_game(tx: &TxId, prepared: &Prepared) -> Error {
         Suggestion::text("quit the game; the next change finishes or undoes it"),
     )
     .details(serde_json::json!({
-        "reason": "saved_variables",
+        "reason": StopReason::SavedVariables.as_str(),
         "journal_pending": tx,
         "target": prepared.target_key,
     }))
@@ -1190,8 +1274,8 @@ enum Stop {
 impl Stop {
     fn reason(self) -> &'static str {
         match self {
-            Self::UnexpectedState => "unexpected_state",
-            Self::PreservationIncomplete => "preservation_incomplete",
+            Self::UnexpectedState => StopReason::UnexpectedState.as_str(),
+            Self::PreservationIncomplete => StopReason::PreservationIncomplete.as_str(),
         }
     }
 }
@@ -1622,10 +1706,25 @@ fn finish_saved_variables(
 
 /// Undoes the steps that ran, last first. The failpoint `engine.recover.step` sits
 /// after each undo, so a crash between replayed steps can be simulated; the next
-/// recovery skips what was already undone.
-fn roll_back(s: &mut WriteSession<'_>, steps: &[StepRecord]) -> Result<()> {
+/// recovery skips what was already undone. A step in neither its before nor its after
+/// state stops it (`details.reason: "step_unrecognized"`, for transaction `tx` of target
+/// `key`), leaving the journal for manual repair.
+fn roll_back(
+    s: &mut WriteSession<'_>,
+    steps: &[StepRecord],
+    tx: &TxId,
+    key: TargetKey,
+) -> Result<()> {
     for (at, step) in steps.iter().enumerate().rev() {
-        if ran_after(step, &steps[..at])? {
+        let ran = ran_after(step, &steps[..at]).map_err(|mut error| {
+            error.details = serde_json::json!({
+                "reason": StopReason::StepUnrecognized.as_str(),
+                "journal_pending": tx,
+                "target": key,
+            });
+            error
+        })?;
+        if ran {
             undo(s, step)?;
         }
         failpoint::hit("engine.recover.step")
@@ -1977,6 +2076,7 @@ mod tests {
         let paths = Paths::with_roots(&root, root.join("c"), root.join("s"), root.join("k"));
         let scopes = ScopeTable::new(&paths, std::slice::from_ref(&client), None).unwrap();
         let mut s = WriteSession::untracked(Writer::Mutating, &scopes, "test");
+        let key = TargetKey::new();
 
         // A recovery that undid both and died: the staged tree is back at `stage`.
         std::fs::rename(&kept, &stage).unwrap();
@@ -1985,7 +2085,7 @@ mod tests {
             ran(&steps[1]).is_err(),
             "on its own, the step is in neither state"
         );
-        roll_back(&mut s, &steps).unwrap();
+        roll_back(&mut s, &steps, &tx, key).unwrap();
         assert!(stage.join("new").exists() && live.join("old").exists());
 
         // A tree recovery does not know at `live`: the exchange is in neither state.
@@ -1993,7 +2093,8 @@ mod tests {
         std::fs::rename(&stage, &kept).unwrap();
         std::fs::rename(&live, root.join("aside")).unwrap();
         std::fs::create_dir(&live).unwrap();
-        assert!(roll_back(&mut s, &steps).is_err());
+        let err = roll_back(&mut s, &steps, &tx, key).unwrap_err();
+        assert_eq!(err.details["reason"], "step_unrecognized", "{err:?}");
         assert!(
             live.read_dir().unwrap().next().is_none(),
             "the foreign tree stays"
@@ -2541,8 +2642,27 @@ mod tests {
             warnings[0].message
         );
         assert!(bar.is_dir() && paths.journal(&tx).exists());
+        assert!(
+            warnings[0].message.contains("(marker_mismatch)"),
+            "{}",
+            warnings[0].message
+        );
         let err = recover(std::slice::from_ref(&key)).unwrap_err();
-        assert_eq!(err.code, ErrorCode::ScopeDenied);
+        assert_eq!(err.code, ErrorCode::ScopeDenied, "{err:?}");
+        assert_eq!(
+            err.details,
+            serde_json::json!({
+                "reason": "marker_mismatch",
+                "journal_pending": tx,
+                "target": key,
+            }),
+            "{err:?}"
+        );
+        assert!(
+            err.message.contains("whose marker is not target"),
+            "{err:?}"
+        );
+        assert_eq!(err.fix, Suggestion::command(["omaddons", "status"]));
 
         // Its own marker: B's command rolls A back and prunes A's stage dir.
         crate::engine::testing::mark(&a, key);
@@ -2903,6 +3023,317 @@ mod tests {
             let read = pending_warnings(&scene.paths).unwrap();
             assert!(read[0].message.contains(why.reason()), "{name}: {read:?}");
         }
+    }
+
+    #[test]
+    fn stop_reasons_are_one_vocabulary() {
+        let names = StopReason::ALL.map(StopReason::as_str);
+        assert_eq!(
+            names,
+            [
+                "journal_too_new",
+                "journal_unreadable",
+                "marker_mismatch",
+                "step_unrecognized",
+                "unexpected_state",
+                "preservation_incomplete",
+                "saved_variables",
+                "unattributed",
+            ],
+            "the strings stay the ones recovery wrote before"
+        );
+        let unique: std::collections::BTreeSet<&str> = names.into_iter().collect();
+        assert_eq!(unique.len(), names.len(), "{names:?}");
+        for (reason, name) in StopReason::ALL.into_iter().zip(names) {
+            assert!(
+                !name.is_empty() && name.bytes().all(|b| matches!(b, b'a'..=b'z' | b'_')),
+                "{name}"
+            );
+            assert_eq!(serde_json::to_value(reason).unwrap(), name, "serde agrees");
+        }
+        assert_eq!(
+            [
+                Unrecoverable::TooNew.reason(),
+                Unrecoverable::Unreadable.reason(),
+                Stop::UnexpectedState.reason(),
+                Stop::PreservationIncomplete.reason(),
+            ],
+            [
+                StopReason::JournalTooNew,
+                StopReason::JournalUnreadable,
+                StopReason::UnexpectedState,
+                StopReason::PreservationIncomplete,
+            ]
+            .map(StopReason::as_str)
+        );
+    }
+
+    /// `testing::Scene`'s transaction, prepared and stopped after three `noreplace`
+    /// steps (Bar in from the stage, then Gone and Foo out to the snapshot), all run, its
+    /// writer gone; step 2's recorded identity is then rewritten, so step 2 is in neither
+    /// its before nor its after state while step 1 is in its after state.
+    fn step_2_unrecognized() -> crate::engine::testing::Scene {
+        let mut scene = crate::engine::testing::Scene::new();
+        let (addons, kept) = (scene.client.addons(), scene.snapshot().join("AddOns"));
+        let bar = scene.staged.stage_dir.join("Bar");
+        assert!(bar.is_dir(), "the scene stages Bar");
+        std::fs::create_dir_all(&kept).unwrap();
+        let steps = [
+            (bar, addons.join("Bar"), StepPurpose::SwapIn),
+            (
+                addons.join("Gone"),
+                kept.join("Gone"),
+                StepPurpose::OldToSnapshot,
+            ),
+            (
+                addons.join("Foo"),
+                kept.join("Foo"),
+                StepPurpose::OldToSnapshot,
+            ),
+        ];
+        {
+            let lock = scene.lock();
+            let mut s = scene.session();
+            let mut journal = scene.journal(&mut s, &lock);
+            for (from, to, purpose) in steps {
+                let step = Step {
+                    op: StepOp::Noreplace,
+                    from,
+                    to,
+                    purpose,
+                };
+                journal.step(&mut s, step.clone()).unwrap();
+                let mode = RenameMode::NoReplace;
+                mutate(&mut s, &step.from, Op::Rename { to: &step.to, mode }).unwrap();
+            }
+        }
+        let path = scene.paths.journal(&scene.tx);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let edited: String = text
+            .lines()
+            .map(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                // ubs:ignore — a journal line's type and step number, not secrets
+                if value["type"] != "step" || value["n"] != 2 {
+                    return format!("{line}\n");
+                }
+                let ino = value["from_id"]["ino"].as_u64().unwrap();
+                let rewritten = line.replacen(
+                    &format!("\"ino\":{ino}"),
+                    &format!("\"ino\":{}", ino ^ 1),
+                    1,
+                );
+                format!("{rewritten}\n")
+            })
+            .collect();
+        assert_ne!(edited, text, "step 2's identity is rewritten");
+        std::fs::write(&path, edited).unwrap();
+        scene.release_inflight();
+        scene
+    }
+
+    #[test]
+    fn a_step_in_neither_state_stops_with_step_unrecognized() {
+        let scene = step_2_unrecognized();
+        let journal = std::fs::read_to_string(scene.paths.journal(&scene.tx)).unwrap();
+        let err = recover_planted(&scene, true).unwrap_err();
+        let context = format!("{err:?}\n{journal}");
+        assert_eq!(err.code, ErrorCode::Internal, "{context}");
+        assert_eq!(
+            err.details,
+            serde_json::json!({
+                "reason": "step_unrecognized",
+                "journal_pending": scene.tx,
+                "target": scene.key,
+            }),
+            "{context}"
+        );
+        assert!(
+            err.message.contains("journal step 2 (")
+                && err
+                    .message
+                    .contains("matches neither its before nor its after state"),
+            "{context}"
+        );
+        assert_eq!(err.fix, crate::error::internal_fix(), "{context}");
+        let (addons, kept) = (scene.client.addons(), scene.snapshot().join("AddOns"));
+        assert!(
+            addons.join("Foo").is_dir() && !kept.join("Foo").exists(),
+            "step 3 was undone before the stop: {context}"
+        );
+        assert!(
+            kept.join("Gone").is_dir() && addons.join("Bar").is_dir(),
+            "steps 2 and 1 were left: {context}"
+        );
+        assert!(
+            scene.paths.journal(&scene.tx).exists(),
+            "the journal is kept"
+        );
+    }
+
+    #[test]
+    fn another_targets_stop_warns_with_its_reason() {
+        let scene = step_2_unrecognized();
+        let warnings = recover_planted(&scene, false).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(
+            warnings[0].code,
+            WarningCode::JournalPending,
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[0].message.contains("(step_unrecognized)")
+                && warnings[0].message.contains("journal step 2 ("),
+            "{warnings:?}"
+        );
+        assert!(
+            scene.paths.journal(&scene.tx).exists(),
+            "the journal is kept"
+        );
+    }
+
+    /// `text` with its `prepared` line's target key garbled, so no target reads from it.
+    fn without_target(text: &str) -> String {
+        let key = "\"target_key\":\"";
+        let at = text.find(key).unwrap() + key.len();
+        let end = at + text[at..].find('"').unwrap();
+        format!("{}garbage{}", &text[..at], &text[end..])
+    }
+
+    /// Runs `f` while `path` has mode `0o000`, then gives it its mode back (a tempdir
+    /// cannot remove a directory it cannot list).
+    fn sealed<R>(path: &Path, f: impl FnOnce() -> R) -> R {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path).unwrap().permissions();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let out = f();
+        std::fs::set_permissions(path, mode).unwrap();
+        out
+    }
+
+    #[test]
+    fn a_journal_with_no_readable_target_is_unattributed() {
+        type Edit = fn(&str) -> String;
+        let rows: [(&str, Edit, ErrorCode, bool); 3] = [
+            (
+                "newer_major_without_target",
+                |t| {
+                    without_target(&t.replacen(
+                        "\"schema_version\":\"1.1\"",
+                        "\"schema_version\":\"9.0\"",
+                        1,
+                    ))
+                },
+                ErrorCode::StateTooNew,
+                false,
+            ),
+            (
+                "undecodable_prepared_without_target",
+                |t| without_target(&t.replacen("\"kind\":\"install\"", "\"kind\":\"teleport\"", 1)),
+                ErrorCode::StateCorrupt,
+                false,
+            ),
+            ("unreadable_file", without_target, ErrorCode::Io, true),
+        ];
+        for (name, edit, code, unreadable) in rows {
+            let scene = planted(edit);
+            let path = scene.paths.journal(&scene.tx);
+            let journal = std::fs::read_to_string(&path).unwrap();
+            // With no target of the caller's, and with the scene's in `own`: the same
+            // error, since no target owns the journal.
+            let errors = [false, true].map(|own| {
+                let recover = || recover_planted(&scene, own).unwrap_err();
+                if unreadable {
+                    sealed(&path, recover)
+                } else {
+                    recover()
+                }
+            });
+            for err in &errors {
+                let context = format!("{name}: {err:?}\n{journal}");
+                assert_eq!(err.code, code, "{context}");
+                assert_eq!(err.details["reason"], "unattributed", "{context}");
+                assert_eq!(
+                    err.details["journal_pending"],
+                    scene.tx.to_string(),
+                    "{context}"
+                );
+                assert!(
+                    err.details
+                        .get("target")
+                        .is_none_or(serde_json::Value::is_null),
+                    "{context}"
+                );
+            }
+            let [a, b] = &errors;
+            assert_eq!(
+                (a.code, &a.message, &a.details),
+                (b.code, &b.message, &b.details),
+                "{name}"
+            );
+            assert_eq!(left(&scene), [true; 5], "{name}: everything left");
+        }
+    }
+
+    #[test]
+    fn an_own_targets_stop_keeps_its_reason() {
+        let scene = planted(|t| {
+            t.replacen(
+                "\"schema_version\":\"1.1\"",
+                "\"schema_version\":\"9.0\"",
+                1,
+            )
+        });
+        let err = recover_planted(&scene, true).unwrap_err();
+        assert_eq!(err.code, ErrorCode::StateTooNew, "{err:?}");
+        assert_eq!(err.details["reason"], "journal_too_new", "{err:?}");
+        assert_eq!(err.details["target"], scene.key.to_string(), "{err:?}");
+    }
+
+    /// A scene whose transaction is prepared and whose writer is gone.
+    fn prepared_scene() -> crate::engine::testing::Scene {
+        let mut scene = crate::engine::testing::Scene::new();
+        {
+            let lock = scene.lock();
+            let mut s = scene.session();
+            scene.journal(&mut s, &lock);
+        }
+        scene.release_inflight();
+        scene
+    }
+
+    #[test]
+    fn an_unlistable_journal_directory_is_unattributed() {
+        let scene = prepared_scene();
+        let err = sealed(&scene.paths.journal_dir(), || {
+            recover_planted(&scene, true).unwrap_err()
+        });
+        assert_eq!(err.code, ErrorCode::Io, "{err:?}");
+        assert_eq!(err.details["reason"], "unattributed", "{err:?}");
+        assert!(err.details.get("journal_pending").is_none(), "{err:?}");
+        assert!(
+            scene.paths.journal(&scene.tx).exists(),
+            "the journal is kept"
+        );
+    }
+
+    #[test]
+    fn an_unprobeable_inflight_lock_is_unattributed() {
+        let scene = prepared_scene();
+        let lock = scene.paths.inflight_lock(&scene.tx);
+        assert!(lock.is_file(), "the gone writer's lock file stays");
+        let err = sealed(&lock, || recover_planted(&scene, false).unwrap_err());
+        assert_eq!(err.code, ErrorCode::Io, "{err:?}");
+        assert_eq!(err.details["reason"], "unattributed", "{err:?}");
+        assert_eq!(
+            err.details["journal_pending"],
+            scene.tx.to_string(),
+            "{err:?}"
+        );
+        assert!(
+            scene.paths.journal(&scene.tx).exists(),
+            "the journal is kept"
+        );
     }
 
     #[test]
