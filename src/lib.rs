@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod backup;
+pub mod build_info;
 pub mod cli;
 pub mod clock;
 pub mod discover;

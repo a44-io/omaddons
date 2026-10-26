@@ -1,8 +1,13 @@
-//! The digest of the widget's runtime files under `omarchy/` (its tests, a generated
-//! `Build.js` and the manifest aside: the same set as `src/omarchy/assets.rs`), so
-//! `status` can compare an installed widget with this build on every call without
-//! hashing some 230 KB each time (E4). `src/omarchy/render.rs` holds it equal to a
-//! digest of the embedded assets in a unit test.
+//! Two outputs, computed separately:
+//!
+//! - The digest of the widget's runtime files under `omarchy/` (its tests, a generated
+//!   `Build.js` and the manifest aside: the same set as `src/omarchy/assets.rs`), so
+//!   `status` can compare an installed widget with this build on every call without
+//!   hashing some 230 KB each time (E4). `src/omarchy/render.rs` holds it equal to a
+//!   digest of the embedded assets in a unit test.
+//! - `OMADDONS_BUILD_ID`, the build's identity (M4-D19): a digest of the explicit input
+//!   manifest in `src/build_info/inputs.rs` and the toolchain. It never covers `skills/`
+//!   (M4-D7).
 
 // Cargo reads its directives from the build script's stdout.
 #![allow(clippy::print_stdout)]
@@ -13,7 +18,60 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
+#[path = "src/build_info/inputs.rs"]
+#[allow(
+    dead_code,
+    reason = "the library's tests use the classification; the build only hashes"
+)]
+mod inputs;
+
 fn main() -> Result<(), Box<dyn Error>> {
+    widget_digest()?;
+    build_id()
+}
+
+/// `OMADDONS_BUILD_ID` from the input manifest and the toolchain Cargo describes.
+fn build_id() -> Result<(), Box<dyn Error>> {
+    let root = Path::new(".");
+    // `omarchy` is watched by the widget digest already. `.cargo/config.toml` is watched
+    // only while it exists: creating it later is picked up the next time any other
+    // input changes.
+    for path in inputs::rerun_paths(root) {
+        if path != "omarchy" {
+            println!("cargo::rerun-if-changed={path}");
+        }
+    }
+    let var = |key: &str| std::env::var(key).unwrap_or_default();
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
+    let version = std::process::Command::new(rustc).arg("-V").output()?;
+    let mut features: Vec<String> = std::env::vars()
+        .filter_map(|(key, _)| key.strip_prefix("CARGO_FEATURE_").map(str::to_owned))
+        .collect();
+    features.sort();
+    let debug_assertions = std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some();
+    let toolchain = inputs::Toolchain {
+        rustc_version: String::from_utf8(version.stdout)?.trim().to_owned(),
+        target: var("TARGET"),
+        // `PROFILE` reads `release` for `bench-fixtures`, whose binary reads failpoints.
+        profile: vec![
+            ("PROFILE".to_owned(), var("PROFILE")),
+            ("OPT_LEVEL".to_owned(), var("OPT_LEVEL")),
+            ("DEBUG".to_owned(), var("DEBUG")),
+            (
+                "debug_assertions".to_owned(),
+                if debug_assertions { "1" } else { "0" }.to_owned(),
+            ),
+        ],
+        features,
+        rustflags: var("CARGO_ENCODED_RUSTFLAGS"),
+    };
+    let id = inputs::input_digest(root, &toolchain)?;
+    println!("cargo::rustc-env=OMADDONS_BUILD_ID={id}");
+    Ok(())
+}
+
+/// `OUT_DIR/assets_digest.rs`: the widget's runtime files' digest.
+fn widget_digest() -> Result<(), Box<dyn Error>> {
     println!("cargo::rerun-if-changed=omarchy");
     let root = Path::new("omarchy");
     let mut files = Vec::new();
