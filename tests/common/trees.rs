@@ -638,6 +638,47 @@ pub fn tree_stat(dir: &Path) -> Vec<(PathBuf, bool, u64, std::time::SystemTime)>
     out
 }
 
+/// Copies the tree at `from` to `to` (which must not exist) exactly: kinds, bytes,
+/// permission bits, symlink targets (never following a link), and file and directory
+/// mtimes, so a tree restored at its own path is the one it was. A directory's mode and
+/// mtime are set after its children, so a 0500 directory accepts them first and its
+/// mtime is not moved by them. A symlink's own mtime is not kept, and anything that is
+/// not a file, directory or symlink fails the copy.
+pub fn copy_tree_exact(from: &Path, to: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = fs::symlink_metadata(from).unwrap();
+    let kind = meta.file_type();
+    let mode = fs::Permissions::from_mode(meta.permissions().mode() & 0o7777);
+    if kind.is_symlink() {
+        symlink(fs::read_link(from).unwrap(), to).unwrap();
+        return;
+    }
+    assert!(
+        kind.is_dir() || kind.is_file(),
+        "{} is neither a file, a directory nor a symlink",
+        from.display()
+    );
+    if kind.is_dir() {
+        fs::create_dir(to).unwrap();
+        let mut children: Vec<PathBuf> = fs::read_dir(from)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        children.sort();
+        for child in children {
+            copy_tree_exact(&child, &to.join(child.file_name().unwrap()));
+        }
+    } else {
+        fs::copy(from, to).unwrap();
+    }
+    fs::set_permissions(to, mode).unwrap();
+    // futimens on a read-only handle: the owner may set times whatever the mode.
+    fs::File::open(to)
+        .unwrap()
+        .set_modified(meta.modified().unwrap())
+        .unwrap();
+}
+
 /// Every path under `dir`, relative and sorted, for failure messages.
 pub fn listing(dir: &Path) -> String {
     let mut paths = Vec::new();

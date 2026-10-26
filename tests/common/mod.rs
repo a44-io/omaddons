@@ -28,6 +28,7 @@ pub mod graph;
 pub mod history;
 pub mod home;
 pub mod http;
+pub mod intent;
 pub mod launchers;
 pub mod lua;
 pub mod memo;
@@ -45,3 +46,6 @@ pub mod trees;
 pub mod tukui;
 pub mod wowi;
 pub mod wtf;
+
+#[allow(unused_imports)]
+pub use intent::{IntentHome, intent_home};

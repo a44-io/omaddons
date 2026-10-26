@@ -1454,3 +1454,307 @@ mod differential {
         assert!(failed.is_err(), "an exact disagreement fails");
     }
 }
+
+/// The run-the-fix corpus home (M4-D15) and its exact same-path restore.
+#[cfg(test)]
+mod intent {
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    use std::time::{Duration, SystemTime};
+
+    use serde_json::Value;
+
+    use super::*;
+    use crate::common::intent::{DBM_INSTALLED, DBM_LATEST, IntentHome};
+    use crate::common::intent_home;
+    use crate::common::netlog::net_log;
+    use crate::common::tlog::{Ran, tlog};
+    use crate::common::trees::copy_tree_exact;
+    use crate::common::wtf::writable_again;
+
+    fn set_mtime(path: &std::path::Path, at: SystemTime) {
+        fs::File::open(path).unwrap().set_modified(at).unwrap();
+    }
+
+    fn mode(path: &std::path::Path, bits: u32) {
+        fs::set_permissions(path, fs::Permissions::from_mode(bits)).unwrap();
+    }
+
+    #[test]
+    fn copy_tree_exact_keeps_kinds_modes_links_and_mtimes() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from");
+        fs::create_dir(&from).unwrap();
+        for (name, bits) in [("a.txt", 0o640), ("b.sh", 0o755)] {
+            fs::write(from.join(name), name).unwrap();
+            mode(&from.join(name), bits);
+        }
+        fs::create_dir(from.join("ro")).unwrap();
+        fs::write(from.join("ro/inner"), "inner").unwrap();
+        mode(&from.join("ro/inner"), 0o400);
+        fs::create_dir(from.join("empty")).unwrap();
+        symlink("a.txt", from.join("rel-link")).unwrap();
+        symlink("/", from.join("root-link")).unwrap();
+        symlink("nowhere", from.join("dangling")).unwrap();
+        // 2026-01-02T03:04:05Z, then one second per entry; children before their
+        // directory, and the 0500 directory's mode before its mtime.
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_767_323_045);
+        let timed = ["a.txt", "b.sh", "ro/inner", "ro", "empty", ""];
+        for (i, rel) in timed.iter().enumerate() {
+            if *rel == "ro" {
+                mode(&from.join("ro"), 0o500);
+            }
+            set_mtime(&from.join(rel), base + Duration::from_secs(i as u64));
+        }
+
+        let to = dir.path().join("to");
+        copy_tree_exact(&from, &to);
+        assert_eq!(tree_hash(&from), tree_hash(&to), "the trees hash alike");
+        for rel in timed {
+            let mtime = |root: &std::path::Path| {
+                fs::symlink_metadata(root.join(rel))
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+            };
+            assert_eq!(mtime(&to), mtime(&from), "{rel:?}: mtime");
+        }
+        for (link, target) in [
+            ("rel-link", "a.txt"),
+            ("root-link", "/"),
+            ("dangling", "nowhere"),
+        ] {
+            let meta = fs::symlink_metadata(to.join(link)).unwrap();
+            assert!(
+                meta.file_type().is_symlink(),
+                "{link} is no longer a symlink"
+            );
+            assert_eq!(
+                fs::read_link(to.join(link)).unwrap(),
+                std::path::PathBuf::from(target),
+                "{link}"
+            );
+        }
+        writable_again(dir.path());
+        dir.close().unwrap();
+    }
+
+    fn ids(ran: &Ran) -> Vec<String> {
+        ran.data()["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// `(name, version)` of each addon `list -t <id>` shows.
+    fn addons(ran: &Ran) -> Vec<(String, String)> {
+        ran.data()["targets"][0]["addons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                (
+                    a["name"].as_str().unwrap().to_owned(),
+                    a["version"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn intent_home_has_three_clients_two_dbms_and_questie() {
+        let log = tlog!();
+        let ih = intent_home();
+        log.env(&ih.home);
+
+        log.step("targets");
+        let ran = ih.cmd(&log, &["targets", "--json"]).run();
+        log.assert_eq(
+            "ids",
+            &ids(ran.ok()),
+            &IntentHome::CLIENTS.map(str::to_owned).to_vec(),
+        );
+        log.assert_eq("default", &ran.data()["default"], &Value::from("retail"));
+
+        log.step("records");
+        let dbm = ("DBM".to_owned(), DBM_INSTALLED.to_owned());
+        let ran = ih.cmd(&log, &["list", "-t", "retail", "--json"]).run();
+        log.assert_eq("retail", &addons(ran.ok()), &vec![dbm.clone()]);
+        let ran = ih.cmd(&log, &["list", "-t", "era", "--json"]).run();
+        let mut era = addons(ran.ok());
+        era.sort();
+        log.assert_eq(
+            "era",
+            &era.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>(),
+            &vec!["DBM".to_owned(), "Questie".to_owned()],
+        );
+        assert!(era.contains(&dbm), "{era:?}");
+        let ran = ih.cmd(&log, &["list", "-t", "wotlk", "--json"]).run();
+        log.assert_eq("wotlk", &addons(ran.ok()), &Vec::new());
+
+        log.step("behind");
+        let before = net_log(&ih.home).len();
+        let ran = ih.cmd(&log, &["outdated", "-t", "retail", "--json"]).run();
+        let item = &ran.ok().data()["targets"][0]["items"][0];
+        log.assert_eq("status", &item["status"], &Value::from("update_available"));
+        assert!(item["latest"].to_string().contains(DBM_LATEST), "{item}");
+        let asked = net_log(&ih.home)
+            .entries
+            .iter()
+            .skip(before)
+            .filter(|e| e.path.contains("DeadlyBossMods"))
+            .count();
+        assert!(
+            asked > 0,
+            "the source was not asked\n{}",
+            net_log(&ih.home).context()
+        );
+
+        log.step("history");
+        let ran = ih.cmd(&log, &["history", "--json"]).run();
+        let installs = ran.ok().data()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "install")
+            .count();
+        log.assert_eq("installs", &installs, &3);
+
+        log.step("layout");
+        assert!(
+            !ih.home.env.home().join(".claude").exists(),
+            "$HOME/.claude"
+        );
+        assert_eq!(fs::read_dir(ih.work_dir()).unwrap().count(), 0, "work dir");
+        let catalog = ih
+            .home
+            .env
+            .config()
+            .join("omaddons/catalog.d/50-intent.toml");
+        assert!(catalog.is_file(), "{}", catalog.display());
+        for id in IntentHome::CLIENTS {
+            assert!(ih.client_dir(id).is_dir(), "{id}");
+        }
+    }
+
+    #[test]
+    fn intent_home_reset_puts_back_every_byte() {
+        let log = tlog!();
+        let ih = intent_home();
+        log.env(&ih.home);
+
+        log.step("snapshot");
+        log.tree("env", ih.env_root());
+
+        log.step("change");
+        ih.cmd(&log, &["remove", "dbm", "-t", "retail", "--json"])
+            .run()
+            .ok();
+        ih.cmd(&log, &["targets", "rm", "era", "--json"]).run().ok();
+        let ro = ih.work_dir().join("ro");
+        fs::create_dir(&ro).unwrap();
+        fs::write(ro.join("file"), "x").unwrap();
+        mode(&ro, 0o500);
+
+        log.step("reset");
+        ih.reset();
+        log.assert_unchanged("env", ih.env_root());
+
+        log.step("check");
+        ih.cmd(&log, &["list", "-t", "era", "--json"]).run().ok();
+        ih.cmd(&log, &["pin", "dbm", "-t", "retail", "--json"])
+            .run()
+            .ok();
+        ih.save_row();
+        log.tree("row", ih.env_root());
+        ih.cmd(&log, &["unpin", "dbm", "-t", "retail", "--json"])
+            .run()
+            .ok();
+        ih.reset_row();
+        log.assert_unchanged("row", ih.env_root());
+    }
+
+    #[test]
+    fn intent_home_records_ignore_the_request_log_only() {
+        let log = tlog!();
+        let ih = intent_home();
+        log.env(&ih.home);
+        let before = ih.records();
+        log.json("records", &before.keys().collect::<Vec<_>>());
+
+        log.step("net.log");
+        let net = ih.home.state().join("net.log");
+        let mut text = fs::read_to_string(&net).unwrap_or_default();
+        text.push_str("{}\n");
+        fs::write(&net, text).unwrap();
+        log.assert_eq("records", &ih.records(), &before);
+
+        log.step("cache");
+        let cache = ih.home.env.cache().join("omaddons");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("discovery.json"), "{}").unwrap();
+        log.assert_eq("records", &ih.records(), &before);
+
+        log.step("a target record");
+        let key = crate::common::state::key_of(&ih.home, "retail");
+        let paths = crate::common::http::paths(&ih.home.env);
+        let record = paths.target_record(&key);
+        let mut bytes = fs::read(&record).unwrap();
+        bytes[0] ^= 0x20;
+        fs::write(&record, bytes).unwrap();
+        let after = ih.records();
+        let differ: Vec<&String> = after
+            .keys()
+            .filter(|k| after.get(*k) != before.get(*k))
+            .collect();
+        let rel = record.strip_prefix(ih.home.state()).unwrap();
+        log.assert_eq(
+            "the differing record",
+            &differ,
+            &vec![&format!("state/{}", rel.display())],
+        );
+
+        log.step("config");
+        ih.reset();
+        log.assert_eq("records after reset", &ih.records(), &before);
+        let catalog_d = ih.home.env.config().join("omaddons/catalog.d");
+        fs::write(catalog_d.join("60-more.toml"), "schema_version = \"1.0\"\n").unwrap();
+        assert_ne!(ih.records(), before, "a config file is a record");
+    }
+
+    #[test]
+    fn intent_homes_are_independent() {
+        let log = tlog!();
+        let (one, two) = (intent_home(), intent_home());
+        log.env(&one.home);
+        log.env(&two.home);
+        let slot = |ih: &IntentHome| ih.env_root().parent().unwrap().to_path_buf();
+        assert!(!one.env_root().starts_with(slot(&two)), "one under two");
+        assert!(!two.env_root().starts_with(slot(&one)), "two under one");
+        log.tree("one", one.env_root());
+        log.tree("two", two.env_root());
+        let records = two.records();
+
+        log.step("change one");
+        one.cmd(&log, &["remove", "dbm", "-t", "retail", "--json"])
+            .run()
+            .ok();
+        log.assert_unchanged("two", two.env_root());
+        log.assert_eq("two's records", &two.records(), &records);
+    }
+
+    #[test]
+    fn intent_home_names_no_account_realm_or_character() {
+        let log = tlog!();
+        let ih = intent_home();
+        log.env(&ih.home);
+        for command in ["status", "list", "errors"] {
+            log.step(command);
+            ih.cmd(&log, &[command, "--json", "--progress", "json"])
+                .run()
+                .ok()
+                .assert_private();
+        }
+    }
+}
