@@ -5480,8 +5480,8 @@ fn file_candidate(file: &std::path::Path, wanted: &Wanted) -> Candidate {
     // Without --version the TOC's ## Version fills it in once the archive is inspected.
     let version = wanted.version.clone().unwrap_or_default();
     Candidate {
-        // A zip is identified by its content, so the same file is a no-op and another
-        // one an update; a directory has no cheap identity and always reinstalls.
+        // A zip is identified by its content and a directory by its listing, so an
+        // unchanged one is current and a changed one an update.
         release_id: format!("{}@{}", wanted.r#ref, local_identity(file)),
         version,
         channel: wanted.channel,
@@ -5521,10 +5521,15 @@ fn toc_version(
         .filter(|v| !v.trim().is_empty())
 }
 
-/// `sha256:<hex>` of a local zip; a fresh `dir:<ulid>` for a directory or an
-/// unreadable file.
+/// `sha256:<hex>` of a local zip; `listing:<hash>` of a directory, as a `file:`
+/// directory ref is identified (M4-D19), so two previews of an unchanged one agree; a
+/// fresh `dir:<ulid>` for anything else, which fails inspection before its id can reach
+/// a record or a token.
 fn local_identity(file: &std::path::Path) -> String {
     use sha2::{Digest, Sha256};
+    if file.is_dir() {
+        return format!("listing:{}", crate::sources::local::listing_hash(file));
+    }
     let hashed = std::fs::read(file)
         .ok()
         .filter(|_| file.is_file())
@@ -5963,6 +5968,48 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_input_is_identified_by_its_listing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("Foo");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("Foo.toc"), "## Interface: 120105\n").unwrap();
+        let first = local_identity(&dir);
+        assert!(first.starts_with("listing:"), "unchanged: {first}");
+        let again = local_identity(&dir);
+        assert_eq!(first, again, "unchanged: {first} vs {again}");
+        type Change = fn(&std::path::Path);
+        let rows: [(&str, Change, bool); 3] = [
+            (
+                ".git/HEAD written",
+                |dir| std::fs::write(dir.join(".git/HEAD"), "ref: main\n").unwrap(),
+                false,
+            ),
+            (
+                "file edited",
+                |dir| std::fs::write(dir.join("Foo.toc"), "## Interface: 120106\n\n").unwrap(),
+                true,
+            ),
+            (
+                "file added",
+                |dir| std::fs::write(dir.join("Foo.lua"), "-- foo\n").unwrap(),
+                true,
+            ),
+        ];
+        for (row, change, moves) in rows {
+            let before = local_identity(&dir);
+            change(&dir);
+            let after = local_identity(&dir);
+            assert_eq!(before != after, moves, "{row}: {before} vs {after}");
+        }
+        let zip = tmp.path().join("Foo.zip");
+        std::fs::write(&zip, b"PK\x05\x06").unwrap();
+        let zipped = local_identity(&zip);
+        assert!(zipped.starts_with("sha256:"), "a zip: {zipped}");
+        let missing = local_identity(&tmp.path().join("nothing"));
+        assert!(missing.starts_with("dir:"), "a missing path: {missing}");
+    }
+
+    #[test]
     fn only_copies_are_what_no_source_gives_again() {
         for (case, owner, expected) in [
             ("unmanaged", None, true),
@@ -5979,6 +6026,11 @@ mod tests {
             (
                 "a local directory",
                 Some(owned("gh:o/foo", Some("gh:o/foo@dir:ab"), None)),
+                true,
+            ),
+            (
+                "a local directory by listing",
+                Some(owned("gh:o/foo", Some("gh:o/foo@listing:ab"), None)),
                 true,
             ),
             (

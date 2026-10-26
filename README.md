@@ -618,7 +618,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 
 **What an update keeps.** Re-installing an installed addon keeps its pin and its recorded channel unless `--channel` names another. An addon installed only because another one needs it (`reason: dependency`, from milestone 2) becomes `explicit` when you install it by name, except with `--reinstall`, which keeps the recorded reason. When the release to install is the one already there, these record changes still happen, as a transaction that moves no folder: `--channel beta` whose newest release is installed records the channel (item `edited`, `fields: ["channel"]`), and a repeat changes nothing.
 
-**A browser download.** `--file ZIP` installs an archive you downloaded as the release of one ref, so it is recorded against that addon.
+**A browser download.** `--file ZIP` installs an archive you downloaded as the release of one ref, so it is recorded against that addon. `--file` also takes an unpacked folder, such as one you develop in. Its identity is a hash of its listing (every file's path, size and modification time, `.git` aside), as for a `file:` folder. Installing an unchanged folder again changes nothing (the item is `unchanged`), an edited one updates, and `--reinstall` installs it again regardless. `update` and `outdated` never replace it from upstream (it is `static`).
 
 **Same name, another ref.** An addon is installed from one ref at a time. Installing an addon whose name is already managed on the client from another ref is:
 

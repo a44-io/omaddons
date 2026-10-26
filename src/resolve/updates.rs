@@ -166,12 +166,12 @@ impl UpdateStatus {
 }
 
 /// Whether `record` has nothing upstream to compare (M2-D31): a `file:` or `url:` ref,
-/// or a release id naming a given archive or directory (`@sha256:`, `@dir:`).
+/// or a release id naming a given archive or directory (`@sha256:`, `@listing:`, and
+/// `@dir:` from records older builds wrote for `--file <dir>`).
 pub fn is_static(record: &AddonRecord) -> bool {
-    let from_file = record
-        .release_id
-        .as_deref()
-        .is_some_and(|id| id.contains("@sha256:") || id.contains("@dir:"));
+    let from_file = record.release_id.as_deref().is_some_and(|id| {
+        id.contains("@sha256:") || id.contains("@listing:") || id.contains("@dir:")
+    });
     matches!(record.r#ref, Ref::File { .. } | Ref::Url { .. }) || from_file
 }
 
@@ -1017,7 +1017,11 @@ mod tests {
             local.r#ref = r.parse().unwrap();
             assert_eq!(eval(&local, Some(&e), &[]), UpdateStatus::Static, "{r}");
         }
-        for id in ["sha256:abcd", "dir:01JB8Q2VA00000000000000000"] {
+        for id in [
+            "sha256:abcd",
+            "listing:ab12",
+            "dir:01JB8Q2VA00000000000000000",
+        ] {
             let given = record(Some(id), "1");
             assert_eq!(eval(&given, Some(&e), &[]), UpdateStatus::Static, "{id}");
         }
