@@ -1435,3 +1435,46 @@ fn target_typos() {
         log.json("envelope", &c.envelope);
     }
 }
+
+/// `completions <SHELL>` (M4-D16): the script as data, a mistyped shell corrected in place,
+/// no shell, and `--if-match` refused. The scripts themselves are pinned by
+/// `tests/completions.rs`; the success snapshot pins every other key.
+#[test]
+fn completions() {
+    let s = Scene::new();
+    let c = s.json(&["completions", "bash"], 0);
+    assert_eq!(c.envelope["command"], "completions");
+    assert_eq!(c.envelope["data"]["shell"], "bash");
+    let script = c.envelope["data"]["script"].as_str().unwrap_or_default();
+    let head: String = script.chars().take(200).collect();
+    assert!(
+        script.starts_with("_omaddons() {") && script.contains("complete -F _omaddons"),
+        "the bash script, {} bytes: {head:?}",
+        script.len()
+    );
+    let mut stable = s.stable(&c.envelope);
+    stable["data"]["script"] = "<script: tests/snapshots/completions__bash.snap>".into();
+    insta::assert_json_snapshot!("completions_bash", stable);
+
+    let c = s.json(&["completions", "bsh"], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "completions", "bash"])
+    );
+    // Alternatives: completions zsh, then completions fish (Levenshtein 1, then 2).
+    insta::assert_json_snapshot!("completions_unknown_shell", s.stable(&c.envelope));
+
+    let c = s.json(&["completions"], 2);
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "help", "completions"])
+    );
+    let token = format!("pc1:{}", "0".repeat(64));
+    let c = s.json(&["completions", "bash", "--if-match", &token], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "completions", "bash"])
+    );
+}

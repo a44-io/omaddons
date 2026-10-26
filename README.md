@@ -158,6 +158,7 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | `status` as triage for the widget and agents: a summary of every client, issues with a failure-mode id, a severity and a remediation, each client's Lua errors and backups, the last change and its undo, and the bar widget; `--cached` answers in a few milliseconds, without a scan | ✅ Done (milestone 3) |
 | Previews that bind: a `--dry-run` of `remove`, `undo`, `backup restore`, `backup prune` or `errors dismiss` returns a token, and the real run with `--if-match` does exactly what it showed, or nothing (`plan_stale`) | ✅ Done (milestone 3) |
 | The Omarchy bar widget: `omarchy install` renders it for this binary, validates it, swaps it in atomically and puts it on the bar; `omarchy status` says whether it is current and on the bar, and `status` reports it on every call (an outdated one is warned about and turns read-only); `omarchy remove` takes it away. The button shows a badge for updates (urgent for problems and new Lua errors) and a summary on hover, and right-click checks for updates; its keyboard panel has its frame (summary, Check now, Undo last, the client filter, the view switcher, progress and results, the confirm dialog) and its five views (Updates, Installed, Issues, Backups, Search, with the restore chooser); on its own it follows a game starting and exiting, takes the after-play checkpoint and reads the session's Lua errors, checks for updates when due, and notifies about new errors (and, when asked, new updates); its safety rules are scanned on every gate | ✅ Done (milestone 3) |
+| `completions`: a static completion script for bash, zsh, fish, elvish and PowerShell (commands, subcommands, aliases, flags and fixed values), generated from the command tree; `--json` gives `{shell, script}` | ✅ Done (milestone 4) |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
@@ -247,9 +248,46 @@ cargo build --locked --release
 
 The release profile uses thin LTO, a single codegen unit and stripped symbols.
 
+### Shell completions
+
+`omaddons completions <SHELL>` prints a completion script for bash, zsh, fish, elvish or PowerShell, generated from this build's own command tree. Save it where your shell looks for completions. Generate it again after upgrading: a script from an older build does not know newer commands.
+
+**bash** (bash-completion loads it on the first Tab):
+
+```bash
+mkdir -p "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
+omaddons completions bash > "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/omaddons"
+```
+
+Without bash-completion, add `source <(omaddons completions bash)` to `.bashrc`.
+
+**zsh** (a directory on `$fpath`, read by `compinit`): `omaddons completions zsh > "${fpath[1]}/_omaddons"` works when that directory is yours. Often it is a system directory; then use one of your own:
+
+```zsh
+mkdir -p "$HOME/.zfunc"
+# in .zshrc, before compinit:
+fpath=("$HOME/.zfunc" $fpath)
+# then:
+omaddons completions zsh > "$HOME/.zfunc/_omaddons"
+```
+
+Start a new shell. If the new script is not picked up, delete `.zcompdump` in your home directory.
+
+**fish** (loaded on first use):
+
+```fish
+omaddons completions fish > "${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/omaddons.fish"
+```
+
+**elvish:** add `eval (omaddons completions elvish | slurp)` to `rc.elv`.
+
+**PowerShell:** add `omaddons completions powershell | Out-String | Invoke-Expression` to `$PROFILE`.
+
+What completes: commands, subcommands, aliases, flags, and fixed values such as `--format json`, `--progress`, `search --source`, `omarchy install --section`, `auth github`'s actions and the shells. What does not: client ids and addon names, because the scripts are static (see [Known limitations](#known-limitations)). Packaged completions are milestone 5.
+
 ### Why there is no installer or package
 
-The repository is private, and the project deliberately has no CI, public distribution or public installer until it fully works on its owner's setup (vision decision D16). Shell completions are planned for milestone 4, and a local `PKGBUILD`, a man page and a version scheme for milestone 5. The public installer is reconsidered after that.
+The repository is private, and the project deliberately has no CI, public distribution or public installer until it fully works on its owner's setup (vision decision D16). Shell completion scripts come from `omaddons completions` (see [Shell completions](#shell-completions)); packaged completions, a local `PKGBUILD`, a man page and a version scheme are planned for milestone 5. The public installer is reconsidered after that.
 
 ### Uninstall
 
@@ -486,7 +524,7 @@ An id beats a family, and the legacy default ids `vanilla`, `tbc`, `cata` and `m
 
 `install` is the only command that picks a target when `-t` is absent. It uses config `default_target`, then the registry default (`targets default`, if that client is present), then the only live client. With several live clients and no default, it dry-runs the refs against every live client (test clients excluded) and installs only if exactly one client loads every ref that loads anywhere (a client is ruled out only by `no_compatible_release` or `wrong_flavor`). `status`, `list` and `history` cover every target unless `-t` narrows them. Bare `undo` reverts the most recent run, every transaction of that invocation on every target; `undo -t <id>` reverts that target's newest transaction. `remove` finds the target that manages the named addons; the names must all agree on one, else `target_ambiguous` asks for `-t`.
 
-**A client in the wrong place.** A client named where a command or an argument belongs is a usage error whose fix moves it into `-t` and keeps your command: `omaddons retail update` → `omaddons update -t retail`, `omaddons sod install questie` → `omaddons install questie -t sod`, `omaddons status era` → `omaddons status -t era`, `omaddons info dbm era` → `omaddons info dbm -t era`. A client word is a built-in id, product code, flavor folder, game mode or family, or the id of a registered target. A catalog addon of the same name is never moved, and nothing is moved when `-t` is already given. `error.details` is `{target, command}`. `config`, `targets`, `net-log`, `auth`, `omarchy`, `copy` and `help` do not take `-t` this way and keep their usual fix. `install`, `update` and `remove` check their names before anything else: one that is a client and no addon (`omaddons remove dbm retail`) makes the whole command a usage error whose fix moves it into `-t` (`omaddons remove dbm -t retail`), so nothing is removed from another client first. A name that is an installed addon, a catalog name or alias, a ref, or (for `install`) a path is never moved; a name that is no client fails alone, as before; with `-t` given, nothing is moved.
+**A client in the wrong place.** A client named where a command or an argument belongs is a usage error whose fix moves it into `-t` and keeps your command: `omaddons retail update` → `omaddons update -t retail`, `omaddons sod install questie` → `omaddons install questie -t sod`, `omaddons status era` → `omaddons status -t era`, `omaddons info dbm era` → `omaddons info dbm -t era`. A client word is a built-in id, product code, flavor folder, game mode or family, or the id of a registered target. A catalog addon of the same name is never moved, and nothing is moved when `-t` is already given. `error.details` is `{target, command}`. `config`, `targets`, `net-log`, `auth`, `omarchy`, `copy`, `completions` and `help` do not take `-t` this way and keep their usual fix. `install`, `update` and `remove` check their names before anything else: one that is a client and no addon (`omaddons remove dbm retail`) makes the whole command a usage error whose fix moves it into `-t` (`omaddons remove dbm -t retail`), so nothing is removed from another client first. A name that is an installed addon, a catalog name or alias, a ref, or (for `install`) a path is never moved; a name that is no client fails alone, as before; with `-t` given, nothing is moved.
 
 ### How omaddons decides what loads
 
@@ -1754,6 +1792,17 @@ The supported way to take the widget away (Omarchy's own `omarchy plugin remove 
 
 `data` is `{dry_run, removed, disabled, settings_dropped}`. `disabled` is whether the widget is off the bar: it was on no section, or Omarchy took it off. Taking it off is best effort: when the shell cannot be told (over SSH, or with the shell stopped), the files are still removed, `disabled` is `false`, and the warning `omarchy_shell_unreachable` says to run `omarchy plugin disable a44.omaddons` from the desktop session, as the entry stays in Omarchy's bar layout until then. With no widget installed, or when another `remove` got there first, it fails `not_found` (`details.reason: "widget_not_installed"`, fix `omaddons omarchy install`). `--dry-run` says what it would do, including whether Omarchy would drop settings, and runs nothing and writes nothing.
 
+### `completions <SHELL>`
+
+```bash
+omaddons completions bash
+omaddons completions zsh --json
+```
+
+Prints a completion script for `bash`, `zsh`, `fish`, `elvish` or `powershell` on stdout, and nothing else, so `> file` saves exactly the script ([where each shell looks](#shell-completions)). The script is generated in memory from this build's command tree at a fixed width: it is the same bytes on every run and in every terminal. It is static: commands, subcommands, aliases, flags and fixed values complete; client ids and addon names do not. It reads no state, needs no home, makes no request and writes nothing.
+
+`data` is `{shell, script}`, where `script` is byte for byte what the human form prints. A shell outside the five is a usage error whose fix is the closest one (`omaddons completions bsh` → `omaddons completions bash`); with no shell, the fix is `omaddons help completions`.
+
 ### `help [COMMAND]`
 
 ```bash
@@ -2545,7 +2594,6 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
 | `capabilities`, `doctor`, `robot-docs`, stored plans, agent skill | ❌ | M4 |
 | CurseForge, Wago | ❌ | M5, optional, bring your own key |
-| Shell completions | ❌ | M4 |
 | Packages, man page | ❌ build from source | M5 |
 | Windows, macOS | ❌ | Never (non-goal) |
 | A GUI, TUI, daemon or MCP server | ❌ | Not in v1 (non-goal) |
@@ -2571,6 +2619,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 - "Not while the game runs" is a check, not a lock on the game: a client launched in the milliseconds before a restore's exchange may write its in-memory settings over the restored files at logout. The restore's undo keeps the tree it replaced (see [Transactions](#transactions)).
 - WowAce projects that need packaging steps (externals, ignored or moved folders, build-time keywords such as `--@debug@` blocks, nolib builds) are refused with `packaging_unsupported`, never installed half-built; download a packaged release in a browser instead. A WowAce tree is fetched one request at a time.
 - Private GitHub repositories and HTTP proxies are not supported.
+- Shell completion is static: commands, subcommands, aliases, flags and fixed values complete; client ids and addon names do not (clap's dynamic completion is unstable, and completing them would run discovery on every Tab press). A script is as current as the build that generated it: generate it again after upgrading.
 - Restores need atomic renames: a whole restore exchanges `WTF/`, and `--addon` exchanges each file in place. On a filesystem without `RENAME_EXCHANGE` (NTFS through ntfs-3g, many FUSE and network filesystems), or with SavedVariables on another mount than `Interface/.omaddons/`, both are refused (`filesystem_unsupported`). The workaround: with the game closed, copy what you need by hand from the backup's own folder, `Interface/.omaddons/backups/<id>/WTF/`, a plain directory (`details.backup_dir` names it).
 - Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) keep separate records: a folder one records is `shared` on the other, which cannot record it too, so manage those addons from one client. Records made on both before this check stay doubled: `status` warns `target_addons_shared`, a change through either warns the same, and M4's doctor will report them.
 - A file whose `release.json` or name labels it for other clients only is refused even when its TOCs would load, unless the addon's own folder carries a TOC named for the client (see [archive grading](#how-omaddons-decides-what-loads)). A multi-client plain `Folder.toc` under such metadata is refused. [`--any-flavor`](#a-build-not-made-for-this-client---any-flavor) installs it anyway, on the client it is given for.

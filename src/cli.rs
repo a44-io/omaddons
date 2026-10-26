@@ -212,6 +212,9 @@ pub enum Command {
     Auth(crate::app::auth::AuthArgs),
     /// Put the omaddons widget on Omarchy's bar
     Omarchy(crate::app::omarchy::OmarchyArgs),
+    /// Print a shell completion script: bash, zsh, fish, elvish or powershell
+    #[command(after_long_help = COMPLETIONS_HELP)]
+    Completions(crate::app::completions::CompletionsArgs),
 }
 
 /// What every command receives (DEC-2).
@@ -577,6 +580,17 @@ the version each entry records (from the download cache when it is still there),
 With --prune it also removes managed addons the file does not list, never one a listed
 addon requires or a lock names, and never on a client the file has no section for; a
 section for no known client refuses it.";
+
+/// `completions`' long help.
+const COMPLETIONS_HELP: &str = "\
+Examples:
+  omaddons completions bash > \"${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/omaddons\"
+  omaddons completions zsh > \"${fpath[1]}/_omaddons\"
+  omaddons completions fish > \"${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/omaddons.fish\"
+  omaddons completions bash --json    the script as data: {shell, script}
+
+The script is static: commands, subcommands, flags and fixed values complete; client
+ids and addon names do not. Generate it again after upgrading omaddons.";
 
 // ---------------------------------------------------------------------------------------
 // Usage errors.

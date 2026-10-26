@@ -457,9 +457,10 @@ mod tests {
             ("targets", Setup),
             ("config", Setup),
             ("auth", Setup),
+            ("completions", Setup),
             ("help", Setup),
         ];
-        assert_eq!(planned.len(), 22);
+        assert_eq!(planned.len(), 23);
         let text = bare_text("omaddons [OPTIONS] <COMMAND>", &planned);
         assert!(
             text.lines().count() < 30,

@@ -500,6 +500,14 @@ pub const CORPUS: &[Row] = &[
             &[0],
         ),
     ),
+    row(
+        CommandTypo,
+        &["completion", "bash"],
+        &[],
+        "a read-only guess runs",
+        error(2, "usage", &["omaddons", "completions", "bash"], &[0]),
+    )
+    .by_leaf("A7"),
     // A mistyped flag.
     row(
         FlagTypo,
@@ -641,6 +649,13 @@ pub const CORPUS: &[Row] = &[
         &["auth github"],
         "a mistyped ACTION with nothing close: github's help",
         error(2, "usage", &["omaddons", "help", "auth", "github"], &[0]),
+    ),
+    row(
+        ValueTypo,
+        &["completions", "bsh"],
+        &["completions"],
+        "a shell name corrected",
+        error(2, "usage", &["omaddons", "completions", "bash"], &[0]),
     ),
     // A mistaken argument.
     row(
@@ -829,29 +844,6 @@ pub const PENDING: &[Pending] = &[
             ),
         )
         .by_leaf("B3"),
-    ),
-    pending(
-        "A7",
-        &["completions"],
-        row(
-            ValueTypo,
-            &["completions", "bsh"],
-            &["completions"],
-            "a shell name corrected",
-            error(2, "usage", &["omaddons", "completions", "bash"], &[0]),
-        ),
-    ),
-    pending(
-        "A7",
-        &["completions"],
-        row(
-            CommandTypo,
-            &["completion", "bash"],
-            &[],
-            "a read-only guess runs",
-            error(2, "usage", &["omaddons", "completions", "bash"], &[0]),
-        )
-        .by_leaf("A7"),
     ),
     pending(
         "D5",

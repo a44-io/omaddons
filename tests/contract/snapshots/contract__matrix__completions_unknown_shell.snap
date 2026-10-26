@@ -1,0 +1,43 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "completions",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "completions",
+          "zsh"
+        ],
+        "display": "omaddons completions zsh"
+      },
+      {
+        "argv": [
+          "omaddons",
+          "completions",
+          "fish"
+        ],
+        "display": "omaddons completions fish"
+      }
+    ],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons completions bash",
+    "fix_argv": [
+      "omaddons",
+      "completions",
+      "bash"
+    ],
+    "message": "invalid value 'bsh' for '<SHELL>'",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

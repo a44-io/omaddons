@@ -332,6 +332,7 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             "backup list" => &["backup", "list"],
             "omarchy" => &["omarchy"],
             "omarchy status" => &["omarchy", "status"],
+            "completions" => &["completions", "bash"],
             "help" => &["help"],
             _ => return None,
         })
@@ -462,6 +463,7 @@ fn repeated_runs_are_byte_identical() {
         (&["history"][..], 0),
         (&["info", "nosuchaddon"][..], 3),
         (&["remove", "Nope", "-t", "retail"][..], 3),
+        (&["completions", "bash"][..], 0),
     ] {
         let a = s.json(args, code);
         let b = s.json(args, code);

@@ -204,7 +204,14 @@ pub const SELECTS_CLIENT: &[&str] = &[
 /// First words of command paths whose run never reads -t (or refuses it: copy): a
 /// misplaced client keeps the fix it had before M4-D12.
 pub const CLIENT_FREE: &[&str] = &[
-    "help", "config", "targets", "net-log", "auth", "omarchy", "copy",
+    "help",
+    "config",
+    "targets",
+    "net-log",
+    "auth",
+    "omarchy",
+    "copy",
+    "completions",
 ];
 
 /// Whether a misplaced client may move into -t on the command at `path`.

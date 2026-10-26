@@ -6,6 +6,7 @@ pub mod auth;
 pub mod backup;
 pub mod backup_verify;
 pub mod backups_status;
+pub mod completions;
 pub mod config;
 pub mod copy;
 pub mod drift;
@@ -254,6 +255,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("omarchy status", Setup, false, &[0, 1, 2], data_schema::<omarchy::StatusOutcome>, Network::None),
     entry("omarchy install", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<omarchy::InstallOutcome>, Network::None),
     entry("omarchy remove", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<omarchy::RemoveOutcome>, Network::None),
+    entry("completions", Setup, false, &[0, 1, 2], data_schema::<completions::CompletionsOutcome>, Network::None),
     entry("help", Setup, false, &[0, 1, 2], data_schema::<help::HelpOutcome>, Network::None),
 ];
 
@@ -382,6 +384,7 @@ pub fn canonical_path(command: &Command) -> &'static str {
             .action
             .as_ref()
             .map_or("omarchy status", omarchy::OmarchyAction::command),
+        Command::Completions(_) => "completions",
     }
 }
 
@@ -737,6 +740,7 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
                 Some(ConfigAction::Path) => out.emit(config::path()),
             }
         }
+        Some(Command::Completions(args)) => out.emit(completions::run(args)),
     }
 }
 
@@ -1124,6 +1128,7 @@ mod tests {
             "omarchy status",
             "omarchy install",
             "omarchy remove",
+            "completions",
             "help",
         ] {
             assert_eq!(network(name), Some(Network::None), "{name}");

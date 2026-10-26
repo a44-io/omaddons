@@ -167,6 +167,12 @@ expression: envelope
         "name": "omarchy"
       },
       {
+        "about": "Print a shell completion script: bash, zsh, fish, elvish or powershell",
+        "aliases": [],
+        "group": "setup",
+        "name": "completions"
+      },
+      {
         "about": "Show help for omaddons or one command",
         "aliases": [],
         "group": "setup",

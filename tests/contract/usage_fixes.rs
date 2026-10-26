@@ -101,6 +101,9 @@ const CORPUS: &[(&[&str], Option<&str>)] = &[
         Some("install"),
     ),
     (&["install", "x", "--actor", "xyzzy"], None),
+    (&["completions", "bsh"], None),
+    (&["completion", "bash"], None),
+    (&["completions"], None),
 ];
 
 /// Mistyped values (argv, the value's index): the fix is the typed command with that
@@ -126,6 +129,7 @@ const VALUE_TYPOS: &[(&[&str], usize)] = &[
     (&["undo", "--last-by", "agnet", "-t", "retail"], 2),
     (&["install", "x", "-t", "retail", "--actor", "humna"], 5),
     (&["install", "x", "--actor=agnet", "-t", "retail"], 2),
+    (&["completions", "bsh"], 1),
 ];
 
 /// The fixes decided by omad-m2-audit-yegz.5.1, exactly.
@@ -160,6 +164,15 @@ const DECIDED: &[(&[&str], &[&str])] = &[
         &["reinstall", "x", "-t", "retail"],
         &["omaddons", "install", "x", "-t", "retail", "--reinstall"],
     ),
+    (
+        &["completions", "bsh"],
+        &["omaddons", "completions", "bash"],
+    ),
+    (
+        &["completion", "bash"],
+        &["omaddons", "completions", "bash"],
+    ),
+    (&["completions"], &["omaddons", "help", "completions"]),
 ];
 
 /// The fixes decided by omad-rnk8: a mistyped actor is corrected in place, and one

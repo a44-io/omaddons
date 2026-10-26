@@ -1,0 +1,18 @@
+---
+source: tests/contract/matrix.rs
+expression: stable
+---
+{
+  "command": "completions",
+  "commands": [],
+  "data": {
+    "script": "<script: tests/snapshots/completions__bash.snap>",
+    "shell": "bash"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
