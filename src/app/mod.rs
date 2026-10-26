@@ -103,7 +103,7 @@ pub struct CommandEntry {
     pub name: &'static str,
     pub group: Group,
     /// Whether some form of it changes state (conservative: `export` writes with
-    /// `--write`, `auth` with `set`). A usage error never guesses one for you.
+    /// `--write`, `auth github` with `set`). A usage error never guesses one for you.
     pub mutates: bool,
 }
 
@@ -115,8 +115,10 @@ const fn entry(name: &'static str, group: Group, mutates: bool) -> CommandEntry 
     }
 }
 
-/// Every subcommand this build has, one per line, in display order within its group (a
-/// nested one takes its parent's group). Each command bead adds its own line in the
+/// Every runnable command path this build has, one per line, in display order within its
+/// group (a nested one takes its parent's group): every clap leaf, and every parent whose
+/// bare form runs (`backup`, `config`, `errors`, `omarchy`, `targets`). A parent that
+/// requires a subcommand (`auth`) has no line. Each command bead adds its own line in the
 /// commit that adds its clap variant (DEC-1).
 pub const COMMANDS: &[CommandEntry] = &[
     entry("status", Group::Look, false),
@@ -156,7 +158,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("config get", Group::Setup, false),
     entry("config set", Group::Setup, true),
     entry("config path", Group::Setup, false),
-    entry("auth", Group::Setup, true),
+    entry("auth github", Group::Setup, true),
     entry("omarchy", Group::Setup, false),
     entry("omarchy status", Group::Setup, false),
     entry("omarchy install", Group::Setup, true),
@@ -173,63 +175,79 @@ pub fn mutates(path: &str) -> bool {
         .is_none_or(|c| c.mutates)
 }
 
-/// The canonical (static) name for a subcommand name clap reported.
+/// The canonical (static) name for a command path read from argv that did not parse:
+/// its row; for a parent with no row, the only row under it (`auth` is `auth github`,
+/// the only command its user can have meant); else `omaddons`.
 pub fn canonical(name: &str) -> &'static str {
-    COMMANDS
-        .iter()
-        .map(|c| c.name)
-        .find(|c| *c == name)
-        .unwrap_or("omaddons")
+    if let Some(row) = COMMANDS.iter().find(|c| c.name == name) {
+        return row.name;
+    }
+    let under = format!("{name} ");
+    let mut rows = COMMANDS.iter().filter(|c| c.name.starts_with(&under));
+    match (rows.next(), rows.next()) {
+        (Some(only), None) => only.name,
+        _ => "omaddons",
+    }
 }
 
-/// The group of the subcommand `name`, and its place in `COMMANDS`.
+/// The group of the command `name`, and its place in `COMMANDS`; a top-level name with no
+/// row (`auth`) takes those of the first row under it.
 pub fn group_of(name: &str) -> Option<(Group, usize)> {
-    COMMANDS
-        .iter()
-        .enumerate()
+    let under = format!("{name} ");
+    let rows = || COMMANDS.iter().enumerate();
+    rows()
         .find(|(_, c)| c.name == name)
+        .or_else(|| rows().find(|(_, c)| c.name.starts_with(&under)))
         .map(|(at, c)| (c.group, at))
 }
 
 /// The envelope `command` of a parsed invocation; bare `omaddons` is help.
 pub fn command_name(command: Option<&Command>) -> &'static str {
+    command.map_or("help", canonical_path)
+}
+
+/// The canonical path of a parsed command: the one mapping from what argv parsed to its
+/// name (the envelope's `command`, `Context::command`), a `COMMANDS` row (M4-D55 rule 5).
+/// A bare command that runs its default action names that action (`backup` is `backup
+/// list`, `omarchy` is `omarchy status`).
+pub fn canonical_path(command: &Command) -> &'static str {
     match command {
-        None | Some(Command::Help { .. }) => "help",
-        Some(Command::Status(_)) => "status",
-        Some(Command::Install(_)) => "install",
-        Some(Command::Update(_)) => "update",
-        Some(Command::Pin(_)) => "pin",
-        Some(Command::Unpin(_)) => "unpin",
-        Some(Command::Adopt(_)) => "adopt",
-        Some(Command::Sync(_)) => "sync",
-        Some(Command::Copy(_)) => "copy",
-        Some(Command::Remove(_)) => "remove",
-        Some(Command::Undo(_)) => "undo",
-        Some(Command::Backup(args)) => args
+        Command::Help { .. } => "help",
+        Command::Status(_) => "status",
+        Command::Install(_) => "install",
+        Command::Update(_) => "update",
+        Command::Pin(_) => "pin",
+        Command::Unpin(_) => "unpin",
+        Command::Adopt(_) => "adopt",
+        Command::Sync(_) => "sync",
+        Command::Copy(_) => "copy",
+        Command::Remove(_) => "remove",
+        Command::Undo(_) => "undo",
+        Command::Backup(args) => args
             .action
             .as_ref()
             .map_or("backup list", backup::BackupAction::command),
-        Some(Command::History(_)) => "history",
-        Some(Command::Info(_)) => "info",
-        Some(Command::Export(_)) => "export",
-        Some(Command::Outdated(_)) => "outdated",
-        Some(Command::Search(_)) => "search",
-        Some(Command::Errors(args)) => match args.action {
+        Command::History(_) => "history",
+        Command::Info(_) => "info",
+        Command::Export(_) => "export",
+        Command::Outdated(_) => "outdated",
+        Command::Search(_) => "search",
+        Command::Errors(args) => match args.action {
             Some(errors::ErrorsAction::Dismiss(_)) => "errors dismiss",
             None => "errors",
         },
-        Some(Command::NetLog(_)) => "net-log",
-        Some(Command::List(_)) => "list",
-        Some(Command::Targets(args)) => args
+        Command::NetLog(_) => "net-log",
+        Command::List(_) => "list",
+        Command::Targets(args) => args
             .action
             .as_ref()
             .map_or("targets", TargetsAction::command),
-        Some(Command::Config(args)) => args
+        Command::Config(args) => args
             .action
             .as_ref()
             .map_or("config", config::ConfigAction::command),
-        Some(Command::Auth(_)) => "auth github",
-        Some(Command::Omarchy(args)) => args
+        Command::Auth(args) => args.service.command(),
+        Command::Omarchy(args) => args
             .action
             .as_ref()
             .map_or("omarchy status", omarchy::OmarchyAction::command),
@@ -583,5 +601,147 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
                 Some(ConfigAction::Path) => out.emit(config::path()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+
+    use super::*;
+    use crate::cli::Cli;
+
+    #[test]
+    fn canonical_path_names_each_sample_by_its_row() {
+        let cases: &[(&[&str], &str)] = &[
+            (&[], "help"),
+            (&["help", "install"], "help"),
+            (&["status"], "status"),
+            (&["ls"], "list"),
+            (&["add", "x"], "install"),
+            (&["upgrade"], "update"),
+            (&["rm", "x"], "remove"),
+            (&["revert"], "undo"),
+            (&["log"], "history"),
+            (&["show", "x"], "info"),
+            (&["find", "x"], "search"),
+            (&["check"], "outdated"),
+            (&["backup"], "backup list"),
+            (&["backup", "create"], "backup create"),
+            (&["omarchy"], "omarchy status"),
+            (&["omarchy", "install"], "omarchy install"),
+            (&["targets"], "targets"),
+            (&["targets", "add", "/x"], "targets add"),
+            (&["config"], "config"),
+            (&["config", "get", "k"], "config get"),
+            (&["errors"], "errors"),
+            (&["errors", "dismiss"], "errors dismiss"),
+            (&["auth", "github"], "auth github"),
+            (&["auth", "github", "set"], "auth github"),
+            (&["auth", "github", "clear"], "auth github"),
+            (&["auth", "github", "status", "--offline"], "auth github"),
+            (&["auth", "github", "--from-gh"], "auth github"),
+            (&["auth", "--from-gh", "github"], "auth github"),
+        ];
+        for (argv, expected) in cases {
+            let parsed =
+                Cli::try_parse_from(std::iter::once("omaddons").chain(argv.iter().copied()))
+                    .unwrap_or_else(|e| panic!("sample {argv:?} does not parse: {e}")); // ubs:ignore
+            let got = command_name(parsed.command.as_ref());
+            assert_eq!(
+                got, *expected,
+                "sample {argv:?}: expected {expected}, got {got}"
+            );
+            assert!(
+                COMMANDS.iter().any(|c| c.name == got),
+                "sample {argv:?}: {got} is no COMMANDS row"
+            );
+        }
+    }
+
+    /// Every clap path under `cmd`, with whether it is a leaf and whether it requires a
+    /// subcommand.
+    fn clap_paths(cmd: &clap::Command, prefix: &str, found: &mut Vec<(String, bool, bool)>) {
+        for sub in cmd.get_subcommands() {
+            let path = if prefix.is_empty() {
+                sub.get_name().to_owned()
+            } else {
+                format!("{prefix} {}", sub.get_name())
+            };
+            let leaf = sub.get_subcommands().next().is_none();
+            found.push((path.clone(), leaf, sub.is_subcommand_required_set()));
+            clap_paths(sub, &path, found);
+        }
+    }
+
+    #[test]
+    fn every_clap_path_has_its_row_and_every_row_is_a_clap_path() {
+        let mut root = Cli::command();
+        root.build();
+        let mut paths = Vec::new();
+        clap_paths(&root, "", &mut paths);
+        let rows = |path: &str| COMMANDS.iter().filter(|c| c.name == path).count();
+        for (path, leaf, required) in &paths {
+            match (leaf, required) {
+                (true, _) => assert_eq!(
+                    rows(path),
+                    1,
+                    "clap leaf `{path}` has no COMMANDS row (DEC-1), or more than one"
+                ),
+                (false, true) => assert_eq!(
+                    rows(path),
+                    0,
+                    "`{path}` cannot run bare, so it has no row: its subcommands carry rows"
+                ),
+                (false, false) => assert_eq!(
+                    rows(path),
+                    1,
+                    "`{path}` runs bare, so it needs a COMMANDS row"
+                ),
+            }
+        }
+        for row in COMMANDS {
+            let runnable = paths
+                .iter()
+                .any(|(path, leaf, required)| path == row.name && (*leaf || !*required));
+            assert!(runnable, "COMMANDS row `{}` names no clap path", row.name);
+            let top = row.name.split(' ').next().unwrap_or_default();
+            if top != row.name {
+                assert_eq!(
+                    group_of(top).map(|(g, _)| g),
+                    Some(row.group),
+                    "`{}` takes its top-level command's group",
+                    row.name
+                );
+            }
+        }
+        assert_eq!(rows("auth"), 0, "no auth row");
+        assert_eq!(rows("auth github"), 1, "one auth github row");
+        for (name, canonical) in [
+            ("targets add", "targets add"),
+            ("nosuch", "omaddons"),
+            ("auth", "auth github"),
+            ("backup", "backup"),
+        ] {
+            assert_eq!(super::canonical(name), canonical, "canonical({name:?})");
+        }
+        let wire: Vec<String> = Group::ALL
+            .iter()
+            .map(|g| {
+                serde_json::to_value(g)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(wire, ["look", "change", "setup"]);
+    }
+
+    #[test]
+    fn group_of_places_a_rowless_parent_at_its_first_subcommand() {
+        assert_eq!(group_of("auth"), group_of("auth github"));
+        assert!(group_of("auth").is_some());
+        assert_eq!(group_of("nosuch"), None);
     }
 }

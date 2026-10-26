@@ -63,8 +63,8 @@ const CORPUS: &[(&[&str], Option<&str>)] = &[
     (&["config", "gt", "k"], None),
     (&["config", "ls"], Some("config")),
     (&["auth", "github", "st"], None),
-    (&["auth", "gihub"], Some("auth")),
-    (&["auth", "github", "show"], Some("auth")),
+    (&["auth", "gihub"], Some("auth github")),
+    (&["auth", "github", "show"], Some("auth github")),
     (&["install", "x", "--dry-rn"], Some("install")),
     (&["targets", "--rescn"], Some("targets")),
     (
@@ -253,7 +253,8 @@ fn verb_aliases_run_the_canonical_command() {
 
 /// Every command name, root and nested, misspelled by one dropped letter or two swapped
 /// neighbours: every suggestion parses and is never a different command that changes
-/// something (in process, so the sweep stays fast).
+/// something (in process, so the sweep stays fast). A service under a service parent
+/// (`auth github`) is corrected in place: that row is the command the user typed.
 #[test]
 fn every_one_edit_typo_of_every_command_gets_a_fix_that_runs() {
     let mut root = Cli::command();
@@ -264,6 +265,9 @@ fn every_one_edit_typo_of_every_command_gets_a_fix_that_runs() {
         let Some((word, parent)) = path.split_last() else {
             continue;
         };
+        let typed = omaddons::cli::SERVICE_PARENTS
+            .contains(&parent.join(" ").as_str())
+            .then_some(entry.name);
         let level = parent
             .iter()
             .fold(&root, |cmd, name| cmd.find_subcommand(name).unwrap_or(cmd));
@@ -302,7 +306,7 @@ fn every_one_edit_typo_of_every_command_gets_a_fix_that_runs() {
                     continue;
                 };
                 support::parses(suggested, &ctx);
-                never_another_mutating_command(suggested, None, &ctx);
+                never_another_mutating_command(suggested, typed, &ctx);
             }
             checked += 1;
         }

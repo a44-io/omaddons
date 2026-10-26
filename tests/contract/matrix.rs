@@ -262,6 +262,16 @@ fn auth() {
     insta::assert_json_snapshot!("auth_set_nothing", s.stable(&c.envelope));
     let c = s.json(&["auth", "github", "clear", "--from-gh"], 2);
     assert_eq!(c.envelope["error"]["code"], "usage");
+    // `auth` requires its service: a one-sentence usage error under `auth github`.
+    let c = s.json(&["auth"], 2);
+    insta::assert_json_snapshot!("auth_usage", s.stable(&c.envelope));
+    // A mistyped service is corrected in place.
+    let c = s.json(&["auth", "gihub"], 2);
+    assert_eq!(c.envelope["command"], "auth github");
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        serde_json::json!(["omaddons", "auth", "github"])
+    );
 }
 
 #[test]

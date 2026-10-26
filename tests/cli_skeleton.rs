@@ -263,34 +263,44 @@ fn help_walks_a_nested_path() {
 /// `auth github` names `auth` with its service (a positional value, not a subcommand):
 /// every spelling README shows for a command's help resolves to `auth`'s.
 #[test]
-fn help_for_a_command_named_with_its_positional_values() {
+fn help_for_auth_and_its_github_subcommand() {
+    // `auth`'s help lists its one subcommand.
     let auth = run(&["help", "auth"]);
     assert_eq!(auth.code, 0, "{}", auth.context());
+    assert!(auth.stdout.contains("github"), "{}", auth.context());
+    let flag = run(&["auth", "--help"]);
+    assert_eq!(flag.stdout, auth.stdout, "auth --help");
+    let envelope = run(&["help", "auth", "--json"]).envelope();
+    assert_eq!(envelope["data"]["command"], "auth", "{envelope}");
+    // `github`'s help, however it is asked for; a value of its ACTION stays on it.
+    let github = run(&["help", "auth", "github"]);
+    assert_eq!(github.code, 0, "{}", github.context());
     for asked in [
         &["help", "auth", "github"][..],
         &["auth", "github", "--help"],
         &["auth", "github", "set", "--help"],
+        &["help", "auth", "github", "set"],
     ] {
         let r = run(asked);
         assert_eq!(r.code, 0, "{}", r.context());
-        assert_eq!(r.stdout, auth.stdout, "{asked:?}");
+        assert_eq!(r.stdout, github.stdout, "{asked:?}");
         let mut json = asked.to_vec();
         json.push("--json");
         let envelope = run(&json).envelope();
         assert_eq!(
             (&envelope["command"], &envelope["data"]["command"]),
-            (&Value::from("help"), &Value::from("auth")),
+            (&Value::from("help"), &Value::from("github")),
             "{envelope}"
         );
     }
-    // A misspelled value is still a usage error, with a whole sentence and a fix that
+    // A misspelled service is still a usage error, with a whole sentence and a fix that
     // resolves.
     let r = run(&["help", "auth", "gihub", "--json"]);
     assert_eq!(r.code, 2, "{}", r.context());
     let error = &r.envelope()["error"];
     assert_eq!(
         error["message"],
-        "there is no command \"auth gihub\": auth takes SERVICE (github)"
+        "there is no command \"auth gihub\": auth has github"
     );
     assert_eq!(
         error["fix_argv"],

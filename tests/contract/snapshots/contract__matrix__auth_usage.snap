@@ -1,0 +1,27 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 267
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "auth github",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons help auth",
+    "fix_argv": [
+      "omaddons",
+      "help",
+      "auth"
+    ],
+    "message": "'omaddons auth' requires a subcommand but one was not provided",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

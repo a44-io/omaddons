@@ -206,7 +206,7 @@ pub enum Command {
     /// Show or change config.toml
     Config(crate::app::config::ConfigArgs),
     /// Store, check or clear the opt-in GitHub token (5,000 REST requests an hour)
-    #[command(after_long_help = AUTH_HELP)]
+    #[command(subcommand_required = true, arg_required_else_help = false)]
     Auth(crate::app::auth::AuthArgs),
     /// Put the omaddons widget on Omarchy's bar
     Omarchy(crate::app::omarchy::OmarchyArgs),
@@ -544,18 +544,6 @@ Examples:
 Messages an addon wrote itself may hold other players' names: they show only
 with --raw-details. Errors other players sent through BugSack are counted apart.";
 
-/// `auth`'s long help.
-const AUTH_HELP: &str = "\
-Examples:
-  omaddons auth github                        which token is used, and the hour's REST budget
-  echo \"$TOKEN\" | omaddons auth github set    store a token (standard input only, never argv)
-  omaddons auth github --from-gh              store the token gh auth token prints
-  omaddons auth github clear                  forget the stored token
-
-The main GitHub path needs no token. A token goes only to api.github.com; GITHUB_TOKEN
-and gh's credentials are never read unless you ask with --from-gh. With --dry-run, set
-and clear check the token and write nothing.";
-
 /// `sync`'s long help: the file it reads.
 const SYNC_HELP: &str = "\
 Examples:
@@ -844,8 +832,9 @@ fn synonym(argv: &[String], path: &[String], bad: &str) -> Option<Suggestion> {
 /// The fix for the unknown subcommand `bad` of the command `path` names: a synonym that
 /// level knows, else its closest subcommands (names and visible aliases, distance ≤ 2).
 /// A command that only reads is suggested as the corrected argv, one that changes
-/// something as its help, so a guess never hands over a different mutating command;
-/// the third value names that command for the message.
+/// something as its help, so a guess never hands over a different mutating command; a
+/// service ([`SERVICE_PARENTS`]) is corrected in place, the verb after it the user's own.
+/// The third value names a command offered as its help, for the message.
 fn subcommand_fix(
     argv: &[String],
     path: &[String],
@@ -873,10 +862,11 @@ fn subcommand_fix(
             canonical.push(name);
         }
     }
+    let service = is_service_parent(path);
     let guess = |name: &str| {
         let mut full = path.to_vec();
         full.push(name.to_owned());
-        if crate::app::mutates(&full.join(" ")) {
+        if !service && crate::app::mutates(&full.join(" ")) {
             (help_for(&full), Some(full.join(" ")))
         } else {
             let fixed = fix_argv_replacing(argv, bad, name).unwrap_or_else(|| fix_argv(argv));
@@ -889,10 +879,20 @@ fn subcommand_fix(
     Some((fix, alternatives, closest))
 }
 
+/// Command paths whose subcommands name a service (a noun), not a verb. A mistyped
+/// service is corrected in place: the verb after it (its ACTION, or none for status) is
+/// the user's own, so the fix keeps the user's command (`auth gihub` → `auth github`).
+pub const SERVICE_PARENTS: &[&str] = &["auth"];
+
+/// Whether the command `path` names takes services as its subcommands.
+fn is_service_parent(path: &[String]) -> bool {
+    SERVICE_PARENTS.contains(&path.join(" ").as_str())
+}
+
 /// The fix for `bad`, a value outside `valid` given to `arg` under `path`: the closest
 /// valid value (distance ≤ 2) in its place. The verb is the user's own, so the value is
-/// applied, except `auth`'s ACTION, itself a verb: `set` and `clear` are suggested as
-/// `auth`'s help, and `show` means `status`.
+/// applied, except `auth github`'s ACTION, itself a verb: `set` and `clear` are suggested
+/// as `auth github`'s help, and `show` means `status`.
 fn value_fix(
     argv: &[String],
     path: &[String],
@@ -1690,9 +1690,12 @@ mod tests {
                 &["install", "x", "--channel=betaa"],
                 &["install", "x", "--channel=beta"],
             ),
+            // A service is corrected in place, the verb after it kept.
             (&["auth", "gihub"], &["auth", "github"]),
-            (&["auth", "github", "st"], &["help", "auth"]),
+            (&["auth", "gihub", "set"], &["auth", "github", "set"]),
+            (&["auth", "github", "st"], &["help", "auth", "github"]),
             (&["auth", "github", "show"], &["auth", "github", "status"]),
+            (&["auth"], &["help", "auth"]),
         ] {
             let (got, alternatives, message) = fixes(args);
             assert_eq!(got, argv(fix), "{args:?}: {message}");
@@ -1971,5 +1974,72 @@ mod tests {
             Some("retail"),
             "later flags override"
         );
+    }
+
+    /// `auth` requires its service: bare, it is a one-sentence usage error whose fix is
+    /// `auth`'s help, never its help printed as the error.
+    #[test]
+    fn bare_auth_is_a_one_sentence_usage_error() {
+        let raw = argv(&["auth"]);
+        let err = Cli::try_parse_from(&raw).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingSubcommand, "{err}");
+        let usage = usage_error(&err, &raw);
+        assert_eq!(usage.code, ErrorCode::Usage);
+        assert!(!usage.message.contains('\n'), "{:?}", usage.message);
+        assert!(
+            !usage.message.starts_with("Store, check or clear"),
+            "{:?}",
+            usage.message
+        );
+        assert_eq!(usage.fix.argv().unwrap(), argv(&["help", "auth"]));
+    }
+
+    /// `github` became a subcommand of `auth`: every argv that parsed before still
+    /// parses, to the same action and `--from-gh`.
+    #[test]
+    fn every_auth_argv_that_parsed_before_still_parses() {
+        use crate::app::auth::{AuthAction, AuthService};
+        let cases: [(&[&str], Option<AuthAction>, bool); 11] = [
+            (&["auth", "github"], None, false),
+            (
+                &["auth", "github", "status"],
+                Some(AuthAction::Status),
+                false,
+            ),
+            (&["auth", "github", "set"], Some(AuthAction::Set), false),
+            (&["auth", "github", "clear"], Some(AuthAction::Clear), false),
+            (&["auth", "github", "--from-gh"], None, true),
+            (
+                &["auth", "github", "set", "--from-gh"],
+                Some(AuthAction::Set),
+                true,
+            ),
+            (&["auth", "--from-gh", "github"], None, true),
+            (
+                &["auth", "github", "status", "--from-gh"],
+                Some(AuthAction::Status),
+                true,
+            ),
+            (&["--offline", "auth", "github"], None, false),
+            (&["auth", "github", "--offline", "--json"], None, false),
+            (
+                &["--json", "auth", "github", "clear"],
+                Some(AuthAction::Clear),
+                false,
+            ),
+        ];
+        for (args, action, from_gh) in cases {
+            let cli = Cli::try_parse_from(argv(args))
+                .unwrap_or_else(|e| panic!("{args:?} no longer parses: {e}")); // ubs:ignore
+            let Some(Command::Auth(auth)) = cli.command else {
+                panic!("{args:?} is not auth"); // ubs:ignore
+            };
+            let AuthService::Github(github) = &auth.service;
+            assert_eq!(
+                (github.action, auth.from_gh),
+                (action, from_gh),
+                "{args:?}: the action and --from-gh"
+            );
+        }
     }
 }

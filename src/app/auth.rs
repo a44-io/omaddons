@@ -32,25 +32,52 @@ use crate::sources::github_token::{GithubToken, TokenSource, valid};
 use crate::state::config::{Config, CredentialRef, resolve_credential};
 use crate::state::paths::Paths;
 
-/// `auth`'s own arguments.
+/// `auth`'s arguments: the service, and `--from-gh` before or after it.
 #[derive(Debug, Clone, clap::Args)]
 pub struct AuthArgs {
-    /// The service (only github)
-    #[arg(value_enum, value_name = "SERVICE")]
-    pub service: AuthService,
-    /// status (the default), set (the token from standard input) or clear
-    #[arg(value_enum, value_name = "ACTION")]
-    pub action: Option<AuthAction>,
     /// Store the token `gh auth token` prints (the only time omaddons asks gh)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub from_gh: bool,
+    #[command(subcommand)]
+    pub service: AuthService,
 }
 
 /// The services a token can be stored for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, clap::Subcommand)]
 pub enum AuthService {
-    Github,
+    /// The GitHub token: status (the default), set (from standard input) or clear
+    #[command(after_long_help = AUTH_HELP)]
+    Github(GithubArgs),
 }
+
+impl AuthService {
+    /// The envelope `command`.
+    pub const fn command(&self) -> &'static str {
+        match self {
+            Self::Github(_) => "auth github",
+        }
+    }
+}
+
+/// `auth github`'s own arguments.
+#[derive(Debug, Clone, clap::Args)]
+pub struct GithubArgs {
+    /// status (the default), set (the token from standard input) or clear
+    #[arg(value_enum, value_name = "ACTION")]
+    pub action: Option<AuthAction>,
+}
+
+/// `auth github`'s long help.
+const AUTH_HELP: &str = "\
+Examples:
+  omaddons auth github                        which token is used, and the hour's REST budget
+  echo \"$TOKEN\" | omaddons auth github set    store a token (standard input only, never argv)
+  omaddons auth github --from-gh              store the token gh auth token prints
+  omaddons auth github clear                  forget the stored token
+
+The main GitHub path needs no token. A token goes only to api.github.com; GITHUB_TOKEN
+and gh's credentials are never read unless you ask with --from-gh. With --dry-run, set
+and clear check the token and write nothing.";
 
 /// What `auth github` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -148,7 +175,8 @@ impl Outcome for AuthOutcome {
 
 /// Runs `auth github`.
 pub fn run(ctx: &Context, args: &AuthArgs) -> Result<AuthOutcome> {
-    let action = match (args.action, args.from_gh) {
+    let AuthService::Github(github) = &args.service;
+    let action = match (github.action, args.from_gh) {
         (Some(AuthAction::Status | AuthAction::Clear), true) => {
             return Err(Error::new(
                 ErrorCode::Usage,

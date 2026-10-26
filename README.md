@@ -1643,7 +1643,7 @@ omaddons auth github clear                    # forget the stored token
 
 `set` writes `~/.config/omaddons/credentials/github` with mode 0600, in a 0700 directory, and refuses a terminal at once rather than wait for input. `--from-gh` is the only time omaddons asks `gh` for anything, and only when you pass it. `clear` empties the file: an empty file is no token. `status` makes one request, to `/rate_limit` (which costs none of the budget), and none with `--offline`. With `--offline` it also runs no credential command, so `configured` then says a credential is configured, not that it works; `set` and `clear` never run one. With `--dry-run`, `set` and `clear` check the token and write nothing ("would store", "would clear"), and `data` describes the token as the write would leave it. `data` is `{configured, source, rate_limit, dry_run}`, `source` one of `env`, `config`, `file` or `none` (see **Tokens** under [Network and privacy](#network-and-privacy) for the order). The token is never shown, logged or sent anywhere but `api.github.com`. A rejected token is `auth_rejected`, whose fix undoes the token's source: `omaddons auth github clear` (alternative: `set` a new one) for the stored file, unsetting `OMADDONS_GITHUB_TOKEN`, or correcting config.toml's `[sources.github] credential`, each with `clear` as an alternative. `--from-gh` goes with `set` (or bare `auth github --from-gh`); with `status` or `clear` it is a usage error.
 
-`omaddons help auth` explains `auth github`, and `omaddons auth github --help` (or `omaddons help auth github`) shows its flags.
+`omaddons help auth` lists `auth`'s one subcommand, `github`; `omaddons help auth github` (or `omaddons auth github --help`) explains it: its actions and `--from-gh`.
 
 ### `net-log`
 
@@ -1796,7 +1796,7 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 | `ok` | bool | `true` exactly when `exit_code` is 0 |
 | `schema_version` | string | `"1.0"` |
 | `tool_version` | string | the binary's version |
-| `command` | string | `install`, `targets add`, `config set`, … |
+| `command` | string | the command's canonical path: `install`, `targets add`, `auth github`; a bare command that runs its default action names that action (`backup` is `backup list`, `omarchy` is `omarchy status`); `help` for help, `version` for `--version`, and `omaddons` when no command could be read from the arguments |
 | `exit_code` | int | the process exit code |
 | `partial` | bool | success with some failed items (present on success and on `check_failed`) |
 | `data` | object | the command's result (success, and `check_failed`) |

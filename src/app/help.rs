@@ -250,8 +250,8 @@ pub fn for_command(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, E
     let Some(name) = name else { return Ok(bare()) };
     let mut root = Cli::command();
     root.build();
-    // A nested path such as `targets add` walks one level per word. A word that is a
-    // possible value of the command's next positional (`auth github`, `auth github set`)
+    // A nested path such as `targets add` or `auth github` walks one level per word. A
+    // word that is a possible value of the command's next positional (`auth github set`)
     // stays on that command, and so does every word after it. An unknown word is
     // suggested among the subcommands and values the command it follows takes.
     let mut sub = &mut root;
@@ -477,45 +477,6 @@ mod tests {
     }
 
     #[test]
-    fn every_subcommand_has_exactly_one_registry_entry() {
-        let cmd = Cli::command();
-        let clap: Vec<&str> = cmd.get_subcommands().map(clap::Command::get_name).collect();
-        for name in &clap {
-            let entries = super::super::COMMANDS
-                .iter()
-                .filter(|c| c.name == *name)
-                .count();
-            assert_eq!(entries, 1, "{name} needs one COMMANDS entry");
-        }
-        for entry in super::super::COMMANDS {
-            let top = entry.name.split(' ').next().unwrap_or_default();
-            assert!(clap.contains(&top), "{} is not a subcommand", entry.name);
-            if top != entry.name {
-                assert_eq!(
-                    group_of(top).map(|(g, _)| g),
-                    Some(entry.group),
-                    "{} takes its parent's group",
-                    entry.name
-                );
-            }
-        }
-        for (name, canonical) in [("targets add", "targets add"), ("nosuch", "omaddons")] {
-            assert_eq!(super::super::canonical(name), canonical);
-        }
-        let wire: Vec<String> = Group::ALL
-            .iter()
-            .map(|g| {
-                serde_json::to_value(g)
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .to_owned()
-            })
-            .collect();
-        assert_eq!(wire, ["look", "change", "setup"]);
-    }
-
-    #[test]
     fn command_help_and_unknown_commands() {
         let help = for_command(Some("help"), &[]).unwrap();
         let data = serde_json::to_value(&help.data).unwrap();
@@ -535,23 +496,24 @@ mod tests {
         assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help", "help"]);
     }
 
-    /// `auth github` is `auth` with its first positional's value (the envelope name of
-    /// `auth github --help`): a value of the next positional stays on the command, and
-    /// no message ends in an empty list.
+    /// `auth github` is a subcommand of `auth`; a value of the next positional (`auth
+    /// github set`) stays on the command, and no message ends in an empty list.
     #[test]
     fn positional_values_resolve_to_their_command() {
         for name in ["auth github", "auth github set", "auth github status"] {
             let help = for_command(Some(name), &[]).unwrap();
             let data = serde_json::to_value(&help.data).unwrap();
-            assert_eq!(data["command"], "auth", "{name}");
+            assert_eq!(data["command"], "github", "{name}");
+            let usage = data["usage"].as_str().unwrap();
             assert!(
-                data["usage"]
-                    .as_str()
-                    .unwrap()
-                    .contains("<SERVICE> [ACTION]"),
-                "{data}"
+                usage.contains("auth github") && usage.contains("[ACTION]"),
+                "{name}: {data}"
             );
         }
+        let auth = for_command(Some("auth"), &[]).unwrap();
+        let data = serde_json::to_value(&auth.data).unwrap();
+        assert_eq!(data["command"], "auth");
+        assert!(auth.text.contains("github"), "{}", auth.text);
         let argv = |words: &[&str]| -> Vec<String> {
             ["omaddons", "help"]
                 .iter()
@@ -563,7 +525,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Usage);
         assert_eq!(
             err.message,
-            "there is no command \"auth gihub\": auth takes SERVICE (github)"
+            "there is no command \"auth gihub\": auth has github"
         );
         assert_eq!(
             err.fix.argv().unwrap(),

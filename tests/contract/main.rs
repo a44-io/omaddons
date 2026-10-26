@@ -131,6 +131,7 @@ mod support {
             .filter(|k| keys.0.iter().any(|have| have == k))
             .collect();
         assert_eq!(keys.0, expected, "envelope key order\n{ctx}");
+        named(&envelope, &run.argv, &ctx);
 
         // ok, exit_code and the registered exit agree.
         assert_eq!(envelope["schema_version"], "1.0", "{ctx}");
@@ -249,6 +250,37 @@ mod support {
         );
         no_presentation_flags(&argv, ctx);
         parses(&argv, ctx);
+    }
+
+    /// The envelope `command` an argv that parses must carry (M4-D55 rule 5): `version`
+    /// for -V, `help` for -h, else the canonical path of the parsed command.
+    pub fn canonical_name(argv: &[String]) -> Option<&'static str> {
+        use clap::Parser as _;
+        use clap::error::ErrorKind;
+        let program = std::iter::once("omaddons".to_owned());
+        match omaddons::cli::Cli::try_parse_from(program.chain(argv.iter().cloned())) {
+            Ok(cli) => Some(omaddons::app::command_name(cli.command.as_ref())),
+            Err(e) => match e.kind() {
+                ErrorKind::DisplayVersion => Some("version"),
+                ErrorKind::DisplayHelp => Some("help"),
+                _ => None,
+            },
+        }
+    }
+
+    /// The envelope of an argv that parses names its canonical path. A panic is reported
+    /// under the name known when it struck, so `internal` is left out.
+    fn named(envelope: &Value, argv: &[String], ctx: &str) {
+        if envelope["error"]["code"] == "internal" {
+            return;
+        }
+        if let Some(expected) = canonical_name(argv) {
+            let got = &envelope["command"];
+            assert_eq!(
+                got, expected,
+                "envelope command {got:?} is not the canonical path {expected:?} of {argv:?}\n{ctx}"
+            );
+        }
     }
 
     /// A suggested argv parses as an omaddons command line (a help or version request
@@ -551,31 +583,40 @@ fn the_harness_rejects_broken_envelopes() {
         stdout: stdout.into(),
         stderr: String::new(),
     };
+    // Each case fails for its own reason, not an earlier check's.
+    let rejects = |failing: Run, code: i32, phrase: &str| {
+        let caught = std::panic::catch_unwind(|| support::check(failing, code));
+        let message = match caught {
+            Ok(_) => String::new(),
+            Err(panic) => panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                .unwrap_or_default(),
+        };
+        assert!(
+            message.contains(phrase),
+            "expected a failure for {phrase:?}, got {message:?}"
+        );
+    };
     let two = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"t","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
     let doubled = format!("{two}\n{two}");
-    assert!(
-        std::panic::catch_unwind(|| support::check(run(&doubled, 0), 0)).is_err(),
-        "two documents"
-    );
+    rejects(run(&doubled, 0), 0, "exactly one envelope");
     let empty_fix = r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"t","exit_code":3,"error":{"code":"not_found","message":"m","fix":"","fix_argv":null,"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
     let mut failing = run(empty_fix, 3);
     failing.stderr = r#"{"event":"error"}"#.into();
-    assert!(
-        std::panic::catch_unwind(|| support::check(failing, 3)).is_err(),
-        "empty fix"
-    );
+    rejects(failing, 3, "empty fix");
     let unparsable = r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"t","exit_code":3,"error":{"code":"not_found","message":"m","fix":"omaddons targets pin a b","fix_argv":["omaddons","targets","pin","a","b"],"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
     let mut failing = run(unparsable, 3);
     failing.stderr = r#"{"event":"error"}"#.into();
-    assert!(
-        std::panic::catch_unwind(|| support::check(failing, 3)).is_err(),
-        "a fix that does not parse"
-    );
+    rejects(failing, 3, "does not parse");
     let reordered = r#"{"schema_version":"1.0","ok":true,"tool_version":"x","command":"t","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
-    assert!(
-        std::panic::catch_unwind(|| support::check(run(reordered, 0), 0)).is_err(),
-        "key order"
-    );
+    rejects(run(reordered, 0), 0, "envelope key order");
+    // An envelope that names another command than the argv it ran.
+    let misnamed = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"status","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let mut listed = run(misnamed, 0);
+    listed.argv = vec!["list".into(), "--json".into()];
+    rejects(listed, 0, "canonical path");
     let ok = support::check(run(two, 0), 0);
     assert!(support::codes(&[&ok]).is_empty());
 }
