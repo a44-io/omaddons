@@ -887,7 +887,12 @@ fn misplaced_after_verb(
 /// The usage error of a misplaced client: the fix keeps the user's command
 /// ([`UsageFix::UserVerb`](crate::error::UsageFix)) and its help is the one alternative;
 /// `details` names the client as typed and the command the fix runs.
-fn misplaced_client_error(message: String, fix: Vec<String>, path: &[String], word: &str) -> Error {
+pub(crate) fn misplaced_client_error(
+    message: String,
+    fix: Vec<String>,
+    path: &[String],
+    word: &str,
+) -> Error {
     Error::new(ErrorCode::Usage, message, Suggestion::command(fix))
         .alternative(help_for(path))
         .details(serde_json::json!({ "target": word, "command": path.join(" ") }))
@@ -997,7 +1002,7 @@ fn is_presentation(flag: &str) -> bool {
 }
 
 /// Whether a suggested command line parses (help and version requests count).
-fn parses(suggestion: &Suggestion) -> bool {
+pub(crate) fn parses(suggestion: &Suggestion) -> bool {
     let Some(argv) = suggestion.argv() else {
         return true;
     };
@@ -1264,6 +1269,36 @@ fn walk_command_path(argv: &[String]) -> (Vec<String>, Option<usize>) {
         }
     }
     (path, None)
+}
+
+/// The indices in `argv` of the positional arguments of the command it names
+/// (`omaddons update dbm retail` → `[2, 3]`), walking as [`command_path`] does: flags and
+/// their values skipped, nothing after `--`, and no subcommand after the first
+/// positional.
+pub(crate) fn positional_indices(argv: &[String]) -> Vec<usize> {
+    let mut root = Cli::command();
+    root.build();
+    let mut cmd = &root;
+    let mut positionals = Vec::new();
+    let mut args = argv.iter().enumerate().skip(1);
+    while let Some((i, arg)) = args.next() {
+        // ubs:ignore — comparing command-line words, not secrets
+        if arg == "--" {
+            break;
+        }
+        // ubs:ignore — comparing command-line words, not secrets
+        if arg.starts_with('-') && arg != "-" {
+            if takes_value(cmd, arg) {
+                args.next();
+            }
+            continue;
+        }
+        match cmd.find_subcommand(arg).filter(|_| positionals.is_empty()) {
+            Some(sub) => cmd = sub,
+            None => positionals.push(i),
+        }
+    }
+    positionals
 }
 
 /// `-h` or `--help` appears before any `--`.
@@ -2695,6 +2730,42 @@ mod tests {
             let raw = argv(args);
             let error = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
             assert_eq!(error.usage_fix, want, "{args:?}: {}", shown(&error));
+        }
+    }
+
+    #[test]
+    fn positional_indices_skip_the_path_flags_and_their_values() {
+        for (case, args, want) in [
+            (
+                "after the verb",
+                &["update", "dbm", "retail"][..],
+                &[2, 3][..],
+            ),
+            (
+                "a switch among them",
+                &["--json", "update", "dbm", "-v", "retail"],
+                &[3, 5],
+            ),
+            (
+                "a flag's value skipped",
+                &["install", "questie", "--version", "1.2", "era"],
+                &[2, 5],
+            ),
+            (
+                "an = value kept with its flag",
+                &["install", "questie", "--channel=beta", "era"],
+                &[2, 4],
+            ),
+            ("nothing after --", &["update", "dbm", "--", "retail"], &[2]),
+            (
+                "a global flag's value skipped",
+                &["update", "--reason", "retail", "dbm"],
+                &[4],
+            ),
+            ("under a nested path", &["backup", "list", "01M6"], &[3]),
+        ] {
+            let got = positional_indices(&argv(args));
+            assert_eq!(got, want, "{case}: {args:?}");
         }
     }
 }

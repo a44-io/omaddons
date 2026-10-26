@@ -424,6 +424,14 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
                 .map_err(|e| aimed_at(e, &ctx.argv, request)),
         })
         .collect();
+    // A client named among the refs (M4-D12 hook 3), before anything is written: a word
+    // `parse_ref` answers to, or refuses for another reason than `not_found`, names
+    // something and stays.
+    super::resolve_args::misplaced_clients(ctx, &world, &catalog, &args.refs, &|w| {
+        items.iter().any(|i| {
+            i.request == w && !matches!(&i.parsed, Err(e) if matches!(e.code, ErrorCode::NotFound))
+        })
+    })?;
     // clap admits only these three.
     let channel = args.channel.as_deref().map(|c| match c {
         "beta" => Channel::Beta,

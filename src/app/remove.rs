@@ -178,6 +178,18 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
             .filter(|d| d.target.key.is_some())
             .collect(),
     };
+    // A client named among the addons (M4-D12 hook 3), before anything is written; with
+    // -t given there is nothing to move, and no catalog to load.
+    if ctx.target.is_none() {
+        let (catalog, _) = world.catalog(ctx);
+        super::resolve_args::misplaced_clients(ctx, &world, &catalog, &args.addons, &|w| {
+            targets.iter().any(|d| {
+                records
+                    .get(&d.target.id)
+                    .is_some_and(|r| !matches(r, w).is_empty())
+            })
+        })?;
+    }
     let requests: Vec<Request> = args
         .addons
         .iter()

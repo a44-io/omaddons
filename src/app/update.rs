@@ -136,6 +136,14 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
     targets.sort_by(|a, b| a.target.id.cmp(&b.target.id));
     let records = world.records()?;
     let (scope, unknown) = in_scope(&targets, &records, &catalog, &args.addons);
+    // A client named among the addons (M4-D12 hook 3), before anything is written.
+    super::resolve_args::misplaced_clients(ctx, &world, &catalog, &args.addons, &|w| {
+        targets.iter().any(|d| {
+            records
+                .get(&d.target.id)
+                .is_some_and(|r| r.addons.values().any(|a| names_addon(w, a, &catalog)))
+        })
+    })?;
     // A named addon with no client to be on is `not_managed`, as on clients without it:
     // never dropped for a "nothing to update".
     if targets.is_empty()
