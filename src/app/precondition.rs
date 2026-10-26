@@ -15,10 +15,13 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::engine::plan::Plan;
+use crate::app::outcome::SkipReason;
+use crate::engine::plan::{Change, Plan, PlannedOp, PlannedRelease, TargetPlan};
+use crate::engine::witness::ApprovalWitness;
 use crate::engine::{Binding, UndoOutcome as EngineUndo};
 use crate::error::{Error, PlanStaleSource, Result, Suggestion};
-use crate::model::{BackupId, TargetKey, TxId};
+pub use crate::model::TargetRef;
+use crate::model::{BackupId, FolderName, TargetKey, TxId};
 
 /// The command paths whose runs bind to a preview; `--if-match` is a usage error on any
 /// other.
@@ -67,9 +70,10 @@ impl Part {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Precondition {
     command: &'static str,
-    /// Each target's key and the generation planned against; `None` for a part that
-    /// binds to keys only (`errors dismiss`).
-    targets: Vec<(TargetKey, Option<u64>)>,
+    /// Each target (its key, or its provisional id while unregistered) and the
+    /// generation planned against; `None` for a part that binds to keys only (`errors
+    /// dismiss`, `backup prune`).
+    targets: Vec<(TargetRef, Option<u64>)>,
     selection: Value,
     observed: Value,
 }
@@ -77,7 +81,7 @@ pub struct Precondition {
 impl Precondition {
     pub fn new(
         command: &'static str,
-        targets: Vec<(TargetKey, Option<u64>)>,
+        targets: Vec<(TargetRef, Option<u64>)>,
         selection: Value,
         observed: Value,
     ) -> Self {
@@ -102,16 +106,24 @@ impl Precondition {
         self.canonical().map(|text| field(&text))
     }
 
-    /// Each part's canonical JSON, in token order.
+    /// The four parts' canonical JSON texts, in token order: what each field hashes (for
+    /// test logs, and a stored plan's `precondition.parts`).
+    pub fn parts(&self) -> [String; 4] {
+        self.canonical()
+    }
+
+    /// Each part's canonical JSON, in token order. Keys sort before provisional ids.
     fn canonical(&self) -> [String; 4] {
         let mut targets = self.targets.clone();
         targets.sort();
         targets.dedup();
         let targets: Vec<Value> = targets
             .iter()
-            .map(|(key, generation)| match generation {
-                Some(generation) => json!({"key": key.to_string(), "generation": generation}),
-                None => json!({"key": key.to_string()}),
+            .map(|(target, generation)| match generation {
+                Some(generation) => {
+                    json!({"key": target.to_string(), "generation": generation})
+                }
+                None => json!({"key": target.to_string()}),
             })
             .collect();
         [
@@ -239,17 +251,16 @@ pub fn preview_argv(argv: &[String]) -> Vec<String> {
 // ---------------------------------------------------------------------------------------
 // `remove`.
 
-/// `remove`'s precondition: each target's key and generation, and the exact folders it
-/// would move out with the records it would change; nothing observed beyond the targets
-/// (their generations cover what the selection was made from).
+/// `remove`'s precondition: each target (its key, or its provisional id while
+/// unregistered) with its generation, and the exact folders it would move out with the
+/// records it would change; nothing observed beyond the targets (their generations cover
+/// what the selection was made from).
 pub fn of_remove(plan: &Plan) -> Precondition {
     let mut targets = Vec::new();
     let mut selection = BTreeMap::new();
     for tp in &plan.targets {
-        let Some(key) = tp.key else {
-            continue;
-        };
-        targets.push((key, Some(tp.generation)));
+        let target = TargetRef::of(tp.key, &tp.target);
+        targets.push((target.clone(), Some(tp.generation)));
         let mut ops: Vec<Value> = tp
             .ops
             .iter()
@@ -270,7 +281,7 @@ pub fn of_remove(plan: &Plan) -> Precondition {
             })
             .collect();
         changes.sort_by_key(Value::to_string);
-        selection.insert(key.to_string(), json!({"ops": ops, "changes": changes}));
+        selection.insert(target.to_string(), json!({"ops": ops, "changes": changes}));
     }
     Precondition::new("remove", targets, json!(selection), Value::Null)
 }
@@ -296,6 +307,206 @@ impl Binding for RemoveBinding {
 }
 
 // ---------------------------------------------------------------------------------------
+// The engine commands: `install`, `update`, `pin`, `unpin`, `adopt`, `sync`, `copy`.
+
+/// What a command decided above the engine, which its token covers too.
+#[derive(Debug, Clone, Default)]
+pub struct PlanExtras<'a> {
+    /// `copy`: `--from`'s key and record generation.
+    pub copy_source: Option<(TargetKey, u64)>,
+    /// `sync`: the lowercase hex SHA-256 of the desired-state file's bytes.
+    pub desired_sha256: Option<String>,
+    /// `update`: what it chose not to touch, as (target, addon name, why).
+    pub update_skips: &'a [(TargetRef, String, SkipReason)],
+}
+
+/// An engine command's precondition (M4-D19, M4-D60), from the plan it will execute:
+/// each target with its generation; per target, the folder ops, the changes, the
+/// releases (a deferred one by its source and key, never the URL it resolves to) and
+/// whether it creates `Interface/AddOns`; and, observed, this build's id, the command's
+/// extras and each target's approval witness digest (`null` when none was collected).
+/// Text a human reads (warnings, notes) never enters it.
+pub fn of_plan(
+    command: &'static str,
+    plan: &Plan,
+    witnesses: &[ApprovalWitness],
+    extras: &PlanExtras<'_>,
+) -> Precondition {
+    of_plan_at(
+        crate::build_info::BUILD_ID,
+        command,
+        plan,
+        witnesses,
+        extras,
+    )
+}
+
+/// [`of_plan`] for the build `build_id`.
+fn of_plan_at(
+    build_id: &str,
+    command: &'static str,
+    plan: &Plan,
+    witnesses: &[ApprovalWitness],
+    extras: &PlanExtras<'_>,
+) -> Precondition {
+    let mut targets = Vec::new();
+    let mut selection = BTreeMap::new();
+    let mut witnessed = BTreeMap::new();
+    for tp in &plan.targets {
+        let target = TargetRef::of(tp.key, &tp.target);
+        targets.push((target.clone(), Some(tp.generation)));
+        selection.insert(target.to_string(), target_selection(tp));
+        // Paired by target, never by position.
+        let digest = witnesses
+            .iter()
+            .find(|w| w.target == target)
+            .map(witness_digest);
+        witnessed.insert(target.to_string(), json!(digest));
+    }
+    let mut skips: Vec<(String, &str, Value)> = extras
+        .update_skips
+        .iter()
+        .map(|(target, addon, reason)| (target.to_string(), addon.as_str(), json!(reason)))
+        .collect();
+    skips.sort_by(|a, b| (&a.0, a.1, a.2.to_string()).cmp(&(&b.0, b.1, b.2.to_string())));
+    let skips: Vec<Value> = skips
+        .into_iter()
+        .map(|(target, addon, reason)| json!({"target": target, "addon": addon, "reason": reason}))
+        .collect();
+    let observed = json!({
+        "build_id": build_id,
+        "copy_source": extras
+            .copy_source
+            .map(|(key, generation)| json!({"key": key.to_string(), "generation": generation})),
+        "desired_sha256": extras.desired_sha256,
+        "update_skips": skips,
+        "witnesses": witnessed,
+    });
+    Precondition::new(command, targets, json!(selection), observed)
+}
+
+/// One target's selection: its folder ops, changes and releases, canonically ordered,
+/// and whether it creates `Interface/AddOns`.
+fn target_selection(tp: &TargetPlan) -> Value {
+    let mut ops: Vec<&PlannedOp> = tp.ops.iter().collect();
+    ops.sort_by_key(|o| (o.folder.key(), op_wire(o), o.addon.as_str()));
+    let ops: Vec<Value> = ops
+        .into_iter()
+        .map(|o| json!({"op": op_wire(o), "folder": o.folder.as_str(), "addon": o.addon}))
+        .collect();
+    let mut changes: Vec<&Change> = tp.changes.iter().collect();
+    changes.sort_by_key(|c| {
+        (
+            c.addon.to_ascii_lowercase(),
+            c.addon.as_str(),
+            c.r#ref.to_string(),
+        )
+    });
+    let changes: Vec<Value> = changes.into_iter().map(change_value).collect();
+    let mut releases: Vec<Value> = tp.releases.iter().map(release_value).collect();
+    releases.sort_by_key(|r| {
+        (
+            r["release_id"].as_str().unwrap_or_default().to_owned(),
+            r.to_string(),
+        )
+    });
+    json!({
+        "ops": ops,
+        "changes": changes,
+        "releases": releases,
+        "creates_addons_dir": tp.creates_addons_dir,
+    })
+}
+
+fn op_wire(op: &PlannedOp) -> String {
+    json!(op.op).as_str().unwrap_or_default().to_owned()
+}
+
+/// Folder names as spelled, sorted by key.
+fn folder_names(folders: &[FolderName]) -> Vec<&str> {
+    let mut sorted: Vec<&FolderName> = folders.iter().collect();
+    sorted.sort_by_key(|f| f.key());
+    sorted.into_iter().map(FolderName::as_str).collect()
+}
+
+fn change_value(c: &Change) -> Value {
+    let mut fields: Vec<&str> = c.fields.iter().map(|f| f.wire()).collect();
+    fields.sort_unstable();
+    let mut skipped: Vec<_> = c.folders.skipped.iter().collect();
+    skipped.sort_by_key(|s| s.name.key());
+    json!({
+        "addon": c.addon,
+        "ref": c.r#ref.to_string(),
+        "kind": c.kind,
+        "fields": fields,
+        "from_version": c.from_version,
+        "to_version": c.to_version,
+        "folders": {
+            "added": folder_names(&c.folders.added),
+            "replaced": folder_names(&c.folders.replaced),
+            "removed": folder_names(&c.folders.removed),
+            "recorded": folder_names(&c.folders.recorded),
+            "skipped": skipped,
+        },
+    })
+}
+
+/// A release by what identifies it; a deferred one by its source and key, never the URL
+/// a fresh download resolves to (a blob-cache hit has none).
+fn release_value(r: &PlannedRelease) -> Value {
+    match &r.deferred {
+        Some(deferred) => json!({
+            "release_id": r.release_id,
+            "source": deferred.source,
+            "key": deferred.key,
+            "expected_hash": r.expected_hash,
+            "blob_sha256": r.blob_sha256,
+        }),
+        None => json!({
+            "release_id": r.release_id,
+            "url": r.url,
+            "expected_hash": r.expected_hash,
+            "blob_sha256": r.blob_sha256,
+        }),
+    }
+}
+
+/// The lowercase hex SHA-256 (untruncated) of the canonical JSON of the witness's public
+/// parts, in M4-D60's order: marker, folders, absent names, inputs, dependency choices,
+/// judge. Its private stamps and cost never enter it.
+pub fn witness_digest(w: &ApprovalWitness) -> String {
+    let folders: Vec<Value> = w
+        .folders
+        .iter()
+        .map(|f| json!({"role": f.role.wire(), "key": f.key, "digest": f.digest.to_string()}))
+        .collect();
+    let inputs: Vec<Value> = w
+        .inputs
+        .iter()
+        .map(|i| json!({"kind": i.kind.wire(), "source": i.source, "digest": i.digest}))
+        .collect();
+    let dependencies: Vec<Value> = w
+        .dependencies
+        .iter()
+        .map(|d| {
+            json!({
+                "requester": d.requester,
+                "folder": d.folder,
+                "by": d.by.wire(),
+                "detail": d.by.detail(),
+            })
+        })
+        .collect();
+    let value = json!([w.marker, folders, w.absent, inputs, dependencies, w.judge]);
+    let mut text = String::new();
+    canonical(&value, &mut text);
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------
 // `undo`.
 
 /// One transaction an undo selected: the target it changed, and the undo's plan or why
@@ -318,7 +529,7 @@ pub fn of_undo(planned: &[UndoPlanned<'_>]) -> Precondition {
         match result {
             Ok(undo) => {
                 let facts = &undo.plan;
-                targets.push((*key, Some(facts.generation)));
+                targets.push((TargetRef::Key(*key), Some(facts.generation)));
                 let mut ops: Vec<Value> = facts
                     .ops
                     .iter()
@@ -356,7 +567,7 @@ pub fn of_undo(planned: &[UndoPlanned<'_>]) -> Precondition {
                 observed.push(seen);
             }
             Err(error) => {
-                targets.push((*key, None));
+                targets.push((TargetRef::Key(*key), None));
                 selection.push(json!({ "tx": tx.to_string() }));
                 observed.push(json!({ "tx": tx.to_string(), "verdict": error.code.wire() }));
             }
@@ -440,7 +651,7 @@ pub fn of_dismiss(parts: &[DismissPart<'_>]) -> Precondition {
         parts
             .iter()
             .filter_map(|p| p.key)
-            .map(|k| (k, None))
+            .map(|k| (TargetRef::Key(k), None))
             .collect(),
         Value::Array(selection),
         Value::Array(observed),
@@ -472,7 +683,7 @@ pub fn of_restore(part: &RestorePart<'_>) -> Precondition {
     Precondition::new(
         "backup restore",
         part.key
-            .map(|key| (key, Some(part.generation)))
+            .map(|key| (TargetRef::Key(key), Some(part.generation)))
             .into_iter()
             .collect(),
         json!({
@@ -523,7 +734,7 @@ pub fn of_restore_addons(part: &AddonsPart<'_>) -> Precondition {
     Precondition::new(
         "backup restore",
         part.key
-            .map(|key| (key, Some(part.generation)))
+            .map(|key| (TargetRef::Key(key), Some(part.generation)))
             .into_iter()
             .collect(),
         json!({
@@ -599,7 +810,7 @@ pub fn of_prune(parts: &[PrunePart<'_>]) -> Precondition {
         parts
             .iter()
             .filter_map(|p| p.key)
-            .map(|k| (k, None))
+            .map(|k| (TargetRef::Key(k), None))
             .collect(),
         json!(selection),
         Value::Array(observed),
@@ -609,13 +820,640 @@ pub fn of_prune(parts: &[PrunePart<'_>]) -> Precondition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::{ErrorBody, ErrorCode};
+    use crate::engine::edit::EditField;
+    use crate::engine::inspect::SkippedFolder;
+    use crate::engine::plan::{ChangeKind, DeferredAsset, FolderSummary, OpKind, SCHEMA_VERSION};
+    use crate::engine::witness::{
+        DependencyBy, DependencyChoice, EntryDigest, FolderWitness, InputKind, InputWitness,
+        WitnessCost, WitnessRole,
+    };
+    use crate::error::{ErrorBody, ErrorCode, Warning, WarningCode};
+    use crate::model::{Actor, ExpectedHash, ReloadRequired, TxKind};
+    use crate::sources::SourceId;
+    use crate::toc::WrongFlavorReason;
 
     const KEY: &str = "01JB8Q2V9W0000000000000000";
     const OTHER: &str = "01JB8Q2V9W0000000000000001";
 
     fn key(s: &str) -> TargetKey {
         s.parse().unwrap()
+    }
+
+    /// The registered target `s`.
+    fn by_key(s: &str) -> TargetRef {
+        TargetRef::Key(key(s))
+    }
+
+    fn folder(name: &str) -> FolderName {
+        FolderName::new(name).unwrap()
+    }
+
+    /// A target's plan with nothing in it: registered as `key`, else provisional as `id`.
+    fn tp(key: Option<TargetKey>, id: &str, generation: u64) -> TargetPlan {
+        TargetPlan {
+            target: id.to_owned(),
+            key,
+            kind: None,
+            changes: Vec::new(),
+            ops: Vec::new(),
+            releases: Vec::new(),
+            reload_required: ReloadRequired::None,
+            warnings: Vec::new(),
+            creates_addons_dir: false,
+            generation,
+            work: Vec::new(),
+            unchanged_warnings: Vec::new(),
+            notes: Vec::new(),
+            default_kind: TxKind::Install,
+            dependencies: BTreeMap::new(),
+        }
+    }
+
+    fn op(op: OpKind, name: &str, addon: &str) -> PlannedOp {
+        PlannedOp {
+            op,
+            folder: folder(name),
+            addon: addon.to_owned(),
+        }
+    }
+
+    fn change(addon: &str, r: &str, kind: ChangeKind, folders: FolderSummary) -> Change {
+        Change {
+            addon: addon.to_owned(),
+            r#ref: r.parse().unwrap(),
+            kind,
+            fields: Vec::new(),
+            from_version: None,
+            to_version: None,
+            folders,
+        }
+    }
+
+    fn plan_with(targets: Vec<TargetPlan>) -> Plan {
+        Plan {
+            schema_version: SCHEMA_VERSION,
+            plan_id: None,
+            created_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            expires_at: None,
+            argv: Vec::new(),
+            actor: Actor::Agent,
+            dry_run: true,
+            generations: BTreeMap::new(),
+            targets,
+            failures: Vec::new(),
+            facts: Vec::new(),
+            witnesses: Vec::new(),
+        }
+    }
+
+    /// The remove of Foo on a registered target at generation 7.
+    fn remove_plan(key: Option<TargetKey>) -> Plan {
+        let mut t = tp(key, "retail", 7);
+        t.ops.push(op(OpKind::Remove, "Foo", "Foo"));
+        t.changes.push(change(
+            "Foo",
+            "gh:o/foo",
+            ChangeKind::Remove,
+            FolderSummary {
+                removed: vec![folder("Foo")],
+                ..FolderSummary::default()
+            },
+        ));
+        plan_with(vec![t])
+    }
+
+    #[test]
+    fn of_remove_keeps_its_m3_token() {
+        // Pinned against M3's `of_remove` before unregistered targets were covered.
+        let token = of_remove(&remove_plan(Some(key(KEY)))).token();
+        assert_eq!(
+            token,
+            "pc1:66f3d68b7627c9f62b9796bcd091931eee83806e6f17042474234e98afe7498f"
+        );
+    }
+
+    #[test]
+    fn remove_covers_an_unregistered_target() {
+        let p = of_remove(&remove_plan(None));
+        let [_, targets, selection, _] = p.parts();
+        assert_eq!(targets, r#"[{"generation":7,"key":"retail"}]"#);
+        assert!(selection.starts_with(r#"{"retail":"#), "{selection}");
+        assert_ne!(p.token(), of_remove(&remove_plan(Some(key(KEY)))).token());
+    }
+
+    // ---- `of_plan` ---------------------------------------------------------------
+
+    const BUILD: &str = "0123456789abcdef";
+    const THIRD: &str = "01JB8Q2V9W0000000000000002";
+
+    fn digest(n: u8) -> EntryDigest {
+        EntryDigest::from_bytes([n; 32])
+    }
+
+    fn release(id: &str, url: &str) -> PlannedRelease {
+        PlannedRelease {
+            release_id: id.to_owned(),
+            url: Some(url.to_owned()),
+            expected_hash: Some(ExpectedHash::Sha256("a".repeat(64))),
+            blob_sha256: Some("b".repeat(64)),
+            deferred: None,
+        }
+    }
+
+    fn deferred(id: &str, key: &str, url: Option<&str>) -> PlannedRelease {
+        PlannedRelease {
+            release_id: id.to_owned(),
+            url: url.map(str::to_owned),
+            expected_hash: Some(ExpectedHash::Md5("c".repeat(32))),
+            blob_sha256: Some("d".repeat(64)),
+            deferred: Some(DeferredAsset {
+                source: SourceId::Tukui,
+                key: key.to_owned(),
+            }),
+        }
+    }
+
+    fn folder_witness(role: WitnessRole, key: &str, n: u8) -> FolderWitness {
+        FolderWitness {
+            role,
+            key: key.to_owned(),
+            digest: digest(n),
+        }
+    }
+
+    fn input(kind: InputKind, source: &str, digest: &str) -> InputWitness {
+        InputWitness {
+            kind,
+            source: source.to_owned(),
+            digest: digest.to_owned(),
+        }
+    }
+
+    /// Everything `of_plan` reads, as the tests vary it.
+    #[derive(Clone)]
+    struct Inputs {
+        command: &'static str,
+        plan: Plan,
+        witnesses: Vec<ApprovalWitness>,
+        copy_source: Option<(TargetKey, u64)>,
+        desired: Option<String>,
+        skips: Vec<(TargetRef, String, SkipReason)>,
+        build_id: String,
+    }
+
+    impl Inputs {
+        fn precondition(&self) -> Precondition {
+            let extras = PlanExtras {
+                copy_source: self.copy_source,
+                desired_sha256: self.desired.clone(),
+                update_skips: &self.skips,
+            };
+            of_plan_at(
+                &self.build_id,
+                self.command,
+                &self.plan,
+                &self.witnesses,
+                &extras,
+            )
+        }
+
+        /// The witness of `target`'s folder in `role`.
+        fn folder_digest(&mut self, role: WitnessRole) -> &mut EntryDigest {
+            let folders = &mut self.witnesses[0].folders;
+            let at = folders.iter().position(|f| f.role == role).unwrap();
+            &mut folders[at].digest
+        }
+
+        fn input_digest(&mut self, kind: InputKind) -> &mut String {
+            let inputs = &mut self.witnesses[0].inputs;
+            let at = inputs.iter().position(|i| i.kind == kind).unwrap();
+            &mut inputs[at].digest
+        }
+    }
+
+    /// A plan over a registered target (an update with every folder list, a removal, a
+    /// direct and a deferred release) and a provisional one (a first install creating
+    /// `Interface/AddOns`), their witnesses, and every extra.
+    fn inputs() -> Inputs {
+        let mut registered = tp(Some(key(KEY)), "retail", 7);
+        registered.ops = vec![
+            op(OpKind::Replace, "Foo", "Foo"),
+            op(OpKind::Add, "FooExtra", "Foo"),
+            op(OpKind::Remove, "Old", "Old"),
+        ];
+        registered.changes = vec![
+            Change {
+                from_version: Some("1".into()),
+                to_version: Some("2".into()),
+                ..change(
+                    "Foo",
+                    "gh:o/foo",
+                    ChangeKind::Update,
+                    FolderSummary {
+                        added: vec![folder("FooExtra")],
+                        replaced: vec![folder("Foo")],
+                        removed: Vec::new(),
+                        skipped: vec![SkippedFolder {
+                            name: folder("Foo_Vanilla"),
+                            reason: WrongFlavorReason::NoInterface,
+                        }],
+                        recorded: vec![folder("FooRecorded")],
+                    },
+                )
+            },
+            change(
+                "Old",
+                "gh:o/old",
+                ChangeKind::Remove,
+                FolderSummary {
+                    removed: vec![folder("Old")],
+                    ..FolderSummary::default()
+                },
+            ),
+        ];
+        registered.releases = vec![
+            release("gh:o/foo@2", "https://example.com/foo-2.zip"),
+            deferred(
+                "tukui:elvui@13.80",
+                "elvui",
+                Some("https://tukui.example/download?token=x"),
+            ),
+        ];
+        let mut provisional = tp(None, "classic", 0);
+        provisional.ops = vec![op(OpKind::Add, "Baz", "Baz")];
+        provisional.changes = vec![change(
+            "Baz",
+            "gh:o/baz",
+            ChangeKind::Install,
+            FolderSummary {
+                added: vec![folder("Baz")],
+                ..FolderSummary::default()
+            },
+        )];
+        provisional.releases = vec![release("gh:o/baz@1", "https://example.com/baz-1.zip")];
+        provisional.creates_addons_dir = true;
+        let witnesses = vec![
+            ApprovalWitness::new(
+                by_key(KEY),
+                Some(format!("sha256:{}", "e".repeat(64))),
+                vec![
+                    folder_witness(WitnessRole::Replaced, "foo", 1),
+                    folder_witness(WitnessRole::Removed, "old", 2),
+                    folder_witness(WitnessRole::CopySource, "src", 3),
+                    folder_witness(WitnessRole::Adopted, "adopted", 4),
+                ],
+                vec!["fooextra".into()],
+                vec![
+                    input(InputKind::Zip, "/dl/Foo.zip", &"f".repeat(64)),
+                    input(InputKind::Dir, "/src/Foo", &"1".repeat(64)),
+                    input(InputKind::Git, "https://git.example/o/foo.git", "0123abcd"),
+                ],
+                vec![DependencyChoice {
+                    requester: "Foo".into(),
+                    folder: "libstub".into(),
+                    by: DependencyBy::Installs("LibStub".into()),
+                }],
+                "ab12".repeat(16),
+            ),
+            ApprovalWitness::new(
+                TargetRef::Provisional("classic".into()),
+                None,
+                Vec::new(),
+                vec!["Interface/AddOns".into(), "baz".into()],
+                Vec::new(),
+                Vec::new(),
+                "cd34".repeat(16),
+            ),
+        ];
+        Inputs {
+            command: "install",
+            plan: plan_with(vec![registered, provisional]),
+            witnesses,
+            copy_source: Some((key(OTHER), 4)),
+            desired: Some("9".repeat(64)),
+            skips: vec![
+                (by_key(KEY), "DBM-Core".into(), SkipReason::Pinned),
+                (by_key(KEY), "Plater".into(), SkipReason::Ahead),
+            ],
+            build_id: BUILD.into(),
+        }
+    }
+
+    /// Both tokens and the four parts of each, for a failure message.
+    fn shown(a: &Precondition, b: &Precondition) -> String {
+        format!(
+            "{}\n{:#?}\n{}\n{:#?}",
+            a.token(),
+            a.parts(),
+            b.token(),
+            b.parts()
+        )
+    }
+
+    #[test]
+    fn of_plan_fixture_token_never_drifts() {
+        // Each field is the first 16 hex digits of `sha256sum` over one of `parts()`.
+        let p = inputs().precondition();
+        assert_eq!(
+            p.token(),
+            "pc1:39975c7e71548c5101f290ceb610e821935a76b37d3a58dce2ee9968a74a44df",
+            "{:#?}",
+            p.parts()
+        );
+        assert_eq!(inputs().precondition().token(), p.token());
+    }
+
+    #[test]
+    fn every_covered_input_moves_its_own_part() {
+        type Edit = fn(&mut Inputs);
+        const SELECTION: &[Part] = &[Part::Selection];
+        const OBSERVED: &[Part] = &[Part::Observed];
+        let rows: Vec<(&str, Edit, &[Part])> = vec![
+            (
+                "generation 7 -> 8",
+                |i| i.plan.targets[0].generation = 8,
+                &[Part::Targets],
+            ),
+            (
+                "an op added",
+                |i| i.plan.targets[0].ops.push(op(OpKind::Add, "New", "Foo")),
+                SELECTION,
+            ),
+            (
+                "an op's kind",
+                |i| i.plan.targets[0].ops[1].op = OpKind::Replace,
+                SELECTION,
+            ),
+            (
+                "a release id",
+                |i| i.plan.targets[0].releases[0].release_id = "gh:o/foo@3".into(),
+                SELECTION,
+            ),
+            (
+                "an expected hash",
+                |i| i.plan.targets[0].releases[0].expected_hash = None,
+                SELECTION,
+            ),
+            (
+                "a blob digest",
+                |i| i.plan.targets[0].releases[0].blob_sha256 = Some("0".repeat(64)),
+                SELECTION,
+            ),
+            (
+                "a direct release's url",
+                |i| i.plan.targets[0].releases[0].url = Some("https://example.com/x.zip".into()),
+                SELECTION,
+            ),
+            (
+                "a deferred release's source key",
+                |i| {
+                    if let Some(d) = &mut i.plan.targets[0].releases[1].deferred {
+                        d.key = "tukui-other".into();
+                    }
+                },
+                SELECTION,
+            ),
+            (
+                "a change's to_version",
+                |i| i.plan.targets[0].changes[0].to_version = Some("3".into()),
+                SELECTION,
+            ),
+            (
+                "a change's replaced folders",
+                |i| {
+                    i.plan.targets[0].changes[0]
+                        .folders
+                        .replaced
+                        .push(folder("FooToo"));
+                },
+                SELECTION,
+            ),
+            (
+                "a change's fields",
+                |i| i.plan.targets[0].changes[0].fields.push(EditField::Pinned),
+                SELECTION,
+            ),
+            (
+                "creates_addons_dir",
+                |i| i.plan.targets[0].creates_addons_dir = true,
+                SELECTION,
+            ),
+            (
+                "the judge digest",
+                |i| i.witnesses[0].judge = "ef56".repeat(16),
+                OBSERVED,
+            ),
+            ("the marker", |i| i.witnesses[0].marker = None, OBSERVED),
+            (
+                "a replaced folder's digest (any hand edit)",
+                |i| *i.folder_digest(WitnessRole::Replaced) = digest(9),
+                OBSERVED,
+            ),
+            (
+                "a removed folder's digest",
+                |i| *i.folder_digest(WitnessRole::Removed) = digest(9),
+                OBSERVED,
+            ),
+            (
+                "an absent name added",
+                |i| i.witnesses[0].absent.push("new".into()),
+                OBSERVED,
+            ),
+            (
+                "a zip input's digest",
+                |i| *i.input_digest(InputKind::Zip) = "0".repeat(64),
+                OBSERVED,
+            ),
+            (
+                "a dir input's listing",
+                |i| *i.input_digest(InputKind::Dir) = "0".repeat(64),
+                OBSERVED,
+            ),
+            (
+                "a git input's commit",
+                |i| *i.input_digest(InputKind::Git) = "4567cdef".into(),
+                OBSERVED,
+            ),
+            (
+                "a dependency choice",
+                |i| i.witnesses[0].dependencies[0].by = DependencyBy::Unmanaged,
+                OBSERVED,
+            ),
+            (
+                "the build id",
+                |i| i.build_id = "fedcba9876543210".into(),
+                OBSERVED,
+            ),
+            (
+                "copy's source generation",
+                |i| i.copy_source = Some((key(OTHER), 5)),
+                OBSERVED,
+            ),
+            (
+                "a copy-source folder's digest",
+                |i| *i.folder_digest(WitnessRole::CopySource) = digest(9),
+                OBSERVED,
+            ),
+            (
+                "sync's file bytes",
+                |i| i.desired = Some("8".repeat(64)),
+                OBSERVED,
+            ),
+            (
+                "an adopted folder's digest",
+                |i| *i.folder_digest(WitnessRole::Adopted) = digest(9),
+                OBSERVED,
+            ),
+            (
+                "update's skip reason",
+                |i| i.skips[0].2 = SkipReason::Ahead,
+                OBSERVED,
+            ),
+            (
+                "update's skip added",
+                |i| {
+                    i.skips
+                        .push((by_key(KEY), "WeakAuras".into(), SkipReason::Pinned));
+                },
+                OBSERVED,
+            ),
+            ("the command", |i| i.command = "update", &[Part::Command]),
+            (
+                "a target registering",
+                |i| {
+                    i.plan.targets[1].key = Some(key(THIRD));
+                    i.witnesses[1].target = by_key(THIRD);
+                    i.witnesses[1].marker = Some(format!("sha256:{}", "7".repeat(64)));
+                },
+                &[Part::Targets, Part::Selection, Part::Observed],
+            ),
+        ];
+        let base = inputs().precondition();
+        let preview = argv(&["omaddons", "install", "Foo", "--dry-run"]);
+        for (row, edit, expected) in rows {
+            let mut changed = inputs();
+            edit(&mut changed);
+            let actual = changed.precondition();
+            let result = check(Some(&base.token()), &actual, &preview);
+            assert!(
+                result.is_err(),
+                "{row}: the token did not move\n{}",
+                shown(&base, &actual)
+            );
+            let body = ErrorBody::from(result.unwrap_err());
+            let names: Vec<&str> = expected.iter().map(|p| p.wire()).collect();
+            assert_eq!(body.code, ErrorCode::PlanStale, "{row}");
+            assert!(!body.retryable, "{row}");
+            assert_eq!(
+                body.details["changed"],
+                json!(names),
+                "{row}\n{}",
+                shown(&base, &actual)
+            );
+            assert_eq!(body.fix_argv, Some(preview.clone()), "{row}");
+        }
+    }
+
+    #[test]
+    fn benign_differences_leave_the_token_equal() {
+        type Edit = fn(&mut Inputs);
+        let rows: Vec<(&str, Edit)> = vec![
+            ("warnings text", |i| {
+                i.plan.targets[0]
+                    .warnings
+                    .push(Warning::new(WarningCode::AddonPinned, "Foo is pinned"));
+            }),
+            ("notes", |i| i.plan.targets[0].notes.push("a note".into())),
+            ("created_at", |i| {
+                i.plan.created_at = "2027-06-01T12:00:00Z".parse().unwrap();
+            }),
+            ("plan_id", |i| i.plan.plan_id = Some("01JB8Q2V9W".into())),
+            ("argv", |i| {
+                i.plan.argv = argv(&["omaddons", "install", "Foo", "--reason", "x"]);
+            }),
+            ("actor", |i| i.plan.actor = Actor::Human),
+            ("generations map", |i| {
+                i.plan.generations.insert(KEY.into(), 99);
+            }),
+            ("targets reordered", |i| {
+                i.plan.targets.reverse();
+                i.witnesses.reverse();
+            }),
+            ("ops, changes, releases and skips shuffled", |i| {
+                for t in &mut i.plan.targets {
+                    t.ops.reverse();
+                    t.changes.reverse();
+                    t.releases.reverse();
+                }
+                i.skips.reverse();
+            }),
+            ("witness stamps and cost", |i| {
+                let tmp = tempfile::tempdir().unwrap();
+                let stamp = crate::fsx::TreeStamp::read(tmp.path()).unwrap();
+                let cost = WitnessCost {
+                    files_hashed: 3,
+                    files_reused: 2,
+                    bytes_hashed: 99,
+                };
+                i.witnesses[0] = i.witnesses[0]
+                    .clone()
+                    .with_private(vec![(tmp.path().to_path_buf(), stamp)], cost);
+            }),
+            ("a deferred release with and without its url", |i| {
+                i.plan.targets[0].releases[1].url = None;
+            }),
+        ];
+        let base = inputs().precondition();
+        for (row, edit) in rows {
+            let mut changed = inputs();
+            edit(&mut changed);
+            let changed = changed.precondition();
+            assert_eq!(
+                changed.token(),
+                base.token(),
+                "{row}\n{}",
+                shown(&base, &changed)
+            );
+        }
+    }
+
+    #[test]
+    fn a_deferred_release_is_keyed_without_its_url() {
+        let [_, _, selection, _] = inputs().precondition().parts();
+        let parsed: Value = serde_json::from_str(&selection).unwrap();
+        let releases = &parsed[KEY]["releases"];
+        let deferred = releases
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r.get("source").is_some())
+            .unwrap();
+        assert_eq!(deferred["source"], "tukui", "{selection}");
+        assert_eq!(deferred["key"], "elvui", "{selection}");
+        assert!(deferred.get("url").is_none(), "{selection}");
+        assert!(!selection.contains("tukui.example"), "{selection}");
+    }
+
+    #[test]
+    fn a_missing_witness_is_null() {
+        let mut i = inputs();
+        i.witnesses.truncate(1);
+        let [_, _, _, observed] = i.precondition().parts();
+        assert!(observed.contains(r#""classic":null"#), "{observed}");
+        assert!(observed.contains(&format!(r#""{KEY}":""#)), "{observed}");
+    }
+
+    #[test]
+    fn observed_always_has_one_shape() {
+        let plan = plan_with(vec![tp(Some(key(KEY)), "retail", 1)]);
+        let p = of_plan_at(BUILD, "pin", &plan, &[], &PlanExtras::default());
+        let [_, _, _, observed] = p.parts();
+        assert_eq!(
+            observed,
+            format!(
+                r#"{{"build_id":"{BUILD}","copy_source":null,"desired_sha256":null,"update_skips":[],"witnesses":{{"{KEY}":null}}}}"#
+            )
+        );
     }
 
     fn argv(parts: &[&str]) -> Vec<String> {
@@ -625,7 +1463,7 @@ mod tests {
     fn fixture() -> Precondition {
         Precondition::new(
             "remove",
-            vec![(key(KEY), Some(7))],
+            vec![(by_key(KEY), Some(7))],
             json!({ KEY: {"ops": [{"op": "remove", "folder": "Foo", "addon": "Foo"}]} }),
             Value::Null,
         )
@@ -650,9 +1488,9 @@ mod tests {
         let p = Precondition::new(
             "undo",
             vec![
-                (key(OTHER), Some(2)),
-                (key(KEY), None),
-                (key(OTHER), Some(2)),
+                (by_key(OTHER), Some(2)),
+                (by_key(KEY), None),
+                (by_key(OTHER), Some(2)),
             ],
             json!({"b": [3, 1], "a": {"z": null, "y": "é\"x"}}),
             json!([true, 0]),
@@ -669,7 +1507,7 @@ mod tests {
         // Target order and repeats never move the token.
         let reordered = Precondition::new(
             "undo",
-            vec![(key(KEY), None), (key(OTHER), Some(2))],
+            vec![(by_key(KEY), None), (by_key(OTHER), Some(2))],
             p.selection.clone(),
             p.observed.clone(),
         );
@@ -689,14 +1527,14 @@ mod tests {
             ),
             (
                 Precondition {
-                    targets: vec![(key(KEY), Some(8))],
+                    targets: vec![(by_key(KEY), Some(8))],
                     ..base.clone()
                 },
                 Part::Targets,
             ),
             (
                 Precondition {
-                    targets: vec![(key(KEY), None)],
+                    targets: vec![(by_key(KEY), None)],
                     ..base.clone()
                 },
                 Part::Targets,

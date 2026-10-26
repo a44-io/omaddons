@@ -685,6 +685,30 @@ pub struct PlannedRelease {
     /// `{"sha256": …}` or `{"md5": …}`; `null` when the source declares none.
     pub expected_hash: Option<ExpectedHash>,
     pub blob_sha256: Option<String>,
+    /// A deferred asset's source and key: its URL is resolved only for a fresh
+    /// download, so a token keys the release by these instead (`precondition::of_plan`).
+    #[serde(skip)]
+    pub deferred: Option<DeferredAsset>,
+}
+
+/// A release whose download URL a source resolves right before each attempt (Tukui).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredAsset {
+    pub source: crate::sources::SourceId,
+    pub key: String,
+}
+
+impl DeferredAsset {
+    /// The deferred asset `location` names, if it is one.
+    fn of(location: &AssetLocation) -> Option<Self> {
+        match location {
+            AssetLocation::Deferred { source, key } => Some(Self {
+                source: *source,
+                key: key.clone(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// A change that could not be planned.
@@ -3964,6 +3988,7 @@ impl TargetPlanner<'_> {
             url,
             expected_hash,
             blob_sha256: winner.loadable.inspected.blob_sha256.clone(),
+            deferred: DeferredAsset::of(&winner.candidate.asset.location),
         };
         let input = super::witness::input_of(
             &winner.candidate.asset.location,
@@ -5965,6 +5990,23 @@ mod tests {
             blob_sha256: blob.map(str::to_owned),
             ..requiring("Foo", AddonReason::Explicit, &[])
         }
+    }
+
+    #[test]
+    fn a_deferred_location_marks_its_release() {
+        let deferred = AssetLocation::Deferred {
+            source: crate::sources::SourceId::Tukui,
+            key: "elvui".into(),
+        };
+        assert_eq!(
+            DeferredAsset::of(&deferred),
+            Some(DeferredAsset {
+                source: crate::sources::SourceId::Tukui,
+                key: "elvui".into(),
+            })
+        );
+        let direct = AssetLocation::Url("https://example.com/Foo.zip".into());
+        assert_eq!(DeferredAsset::of(&direct), None);
     }
 
     #[test]

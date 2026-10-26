@@ -58,6 +58,12 @@ impl EntryDigest {
     pub fn of_dir(dir: &Path, limits: &ArchiveLimits) -> Result<Self> {
         folder(dir, None, limits, i128::MAX, &mut || {}).map(|f| f.digest)
     }
+
+    /// These bytes as a digest, for tests that need fixed ones.
+    #[cfg(test)]
+    pub(crate) const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 }
 
 /// What a witnessed folder is to the plan.
@@ -469,6 +475,19 @@ impl ApprovalWitness {
     /// What collecting it cost, summed over its folders.
     pub fn cost(&self) -> WitnessCost {
         self.cost
+    }
+
+    /// The same witness with these private stamps and cost, for tests proving they never
+    /// reach a token.
+    #[cfg(test)]
+    pub(crate) fn with_private(
+        mut self,
+        stamps: Vec<(PathBuf, TreeStamp)>,
+        cost: WitnessCost,
+    ) -> Self {
+        self.stamps = stamps;
+        self.cost = cost;
+        self
     }
 }
 
