@@ -618,9 +618,22 @@ impl TargetsData {
     /// When every item failed (nothing changed, stayed unchanged or was skipped): the
     /// first failure's error, its kept details beside every item's error in
     /// `details.items`.
+    ///
+    /// A run bound to a preview (`--if-match`) that changed nothing and that a target's
+    /// lock refused is that refusal too, whatever else was unchanged or skipped: what
+    /// the preview approved did not run (M4-D19). With a commit elsewhere it stays
+    /// partial (M4-D61).
     pub fn all_failed(&self) -> Option<Error> {
         let s = &self.summary;
-        if s.failed == 0 || s.changed + s.unchanged + s.skipped > 0 {
+        // A binding's refusal: the only `plan_stale` that is not retryable.
+        let refusal = self
+            .targets
+            .iter()
+            .filter_map(|t| t.error.as_ref())
+            // ubs:ignore — comparing error codes, not secrets
+            .find(|body| body.code == ErrorCode::PlanStale && !body.retryable)
+            .filter(|_| s.changed == 0);
+        if refusal.is_none() && (s.failed == 0 || s.changed + s.unchanged + s.skipped > 0) {
             return None;
         }
         let failed: Vec<(&TargetResult, &ItemResult)> = self
@@ -629,8 +642,6 @@ impl TargetsData {
             .flat_map(|t| t.items.iter().map(move |i| (t, i)))
             .filter(|(_, i)| i.status == ItemStatus::Failed)
             .collect();
-        let (first_target, first_item) = failed.first()?;
-        let first = first_item.error.as_ref()?;
         let details: Vec<serde_json::Value> = failed
             .iter()
             .map(|(t, i)| {
@@ -643,10 +654,16 @@ impl TargetsData {
             .collect();
         // A binding's refusal under the lock keeps its form: not retryable, with its
         // `details.changed`, which an item's error keeps neither of.
-        let mut error = match &first_target.error {
-            // ubs:ignore — comparing error codes, not secrets
-            Some(body) if body.code == ErrorCode::PlanStale => error_of(body),
-            _ => first.error(),
+        let mut error = match refusal {
+            Some(body) => error_of(body),
+            None => {
+                let (first_target, first_item) = failed.first()?;
+                match &first_target.error {
+                    // ubs:ignore — comparing error codes, not secrets
+                    Some(body) if body.code == ErrorCode::PlanStale => error_of(body),
+                    _ => first_item.error.as_ref()?.error(),
+                }
+            }
         };
         if let Some(kept) = error.details.as_object_mut() {
             kept.insert("items".to_owned(), serde_json::Value::Array(details));
@@ -1652,6 +1669,109 @@ mod tests {
         );
         let keys: Vec<&String> = locked.details.as_object().unwrap().keys().collect();
         assert_eq!(keys, ["items"], "{locked:?}");
+    }
+
+    /// A bound run that changed nothing and that a target's lock refused is that refusal,
+    /// though another item was unchanged; a commit elsewhere keeps it partial; an
+    /// unbound target error beside an unchanged item is still a partial run.
+    #[test]
+    fn a_binding_refusal_that_changed_nothing_is_the_refusal() {
+        let preview: Vec<String> = ["omaddons", "sync", "--dry-run"]
+            .map(str::to_owned)
+            .to_vec();
+        let refused = crate::app::precondition::stale(
+            "sync",
+            &[crate::app::precondition::Part::Targets],
+            &preview,
+        );
+        let replan = Error::plan_stale(
+            crate::error::PlanStaleSource::Replan,
+            "the target changed while this command planned",
+            Suggestion::text("run the command again"),
+        );
+        // Foo's commit on retail failed with `error`, Baz was unchanged there, and with
+        // `committed` era updated Questie.
+        let data = |error: &Error, committed: bool| {
+            let foo = [change("Foo", ChangeKind::Install, None, Some("1"))];
+            let questie = [change("Questie", ChangeKind::Update, Some("9"), Some("10"))];
+            let mut planned_targets = vec![planned("retail", &foo)];
+            let mut outcomes = Vec::new();
+            let mut requested = vec![request("retail", "Foo")];
+            if committed {
+                planned_targets.push(planned("era", &questie));
+                outcomes.push(outcome(
+                    "era",
+                    Some("01JB8Q2VA00000000000000002"),
+                    questie.to_vec(),
+                ));
+                requested.push(request("era", "Questie"));
+            }
+            let failure = PlanFailure {
+                r#ref: None,
+                addon: None,
+                target: "retail".to_owned(),
+                error: ErrorBody::from(error.clone()),
+                cause: Some(error.clone()),
+            };
+            let mut data = TargetsData::assemble(
+                &planned_targets,
+                &outcomes,
+                &[failure],
+                false,
+                run(),
+                &requested,
+            );
+            data.push_item(
+                TargetRef {
+                    id: "retail".into(),
+                    key: None,
+                    mode: None,
+                },
+                item_with("Baz", ItemStatus::Unchanged),
+            );
+            data
+        };
+        let bound = data(&refused, false);
+        assert_eq!(
+            (
+                bound.summary.changed,
+                bound.summary.unchanged,
+                bound.summary.failed
+            ),
+            (0, 1, 1),
+            "{:?}",
+            bound.summary
+        );
+        let error = bound.all_failed().expect("the refusal");
+        let body = ErrorBody::from(error.clone());
+        assert_eq!(
+            (
+                body.code,
+                body.retryable,
+                &body.details["changed"],
+                &body.fix_argv
+            ),
+            (
+                ErrorCode::PlanStale,
+                false,
+                &serde_json::json!(["targets"]),
+                &Some(preview.clone())
+            ),
+            "{body:?}"
+        );
+        assert_eq!(
+            error.details["items"].as_array().map(Vec::len),
+            Some(1),
+            "the failed item, beside changed: {error:?}"
+        );
+        assert!(
+            data(&refused, true).all_failed().is_none(),
+            "a commit on era: partial (M4-D61)"
+        );
+        assert!(
+            data(&replan, false).all_failed().is_none(),
+            "an unbound target error beside an unchanged item: partial, as before"
+        );
     }
 
     /// A failed item keeps why a running client refused it, and whether `/proc` could

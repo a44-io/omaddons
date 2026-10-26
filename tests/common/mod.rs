@@ -4,8 +4,10 @@
 //! for state and `net.log`, SavedVariables in both writer formats (BugGrabber's
 //! among them), synthetic repair lines for history (`history`), a structured step log
 //! (`tlog`), E11's differential of `journal::diagnose` against recovery
-//! (`differential`), shell checks of completion scripts (`shells`), and planning as a
-//! command plans, with a persistent release cache and approval witnesses (`planning`).
+//! (`differential`), shell checks of completion scripts (`shells`), planning as a
+//! command plans, with a persistent release cache and approval witnesses (`planning`),
+//! and previews bound by `--if-match`, their refusals and what they leave alone
+//! (`binding`).
 //! Each integration test crate declares `mod common;` and uses the subset it needs.
 //!
 //! Everything is written under a [`env::TestEnv`] tempdir; nothing here touches the real
@@ -18,6 +20,7 @@
 pub mod addons;
 pub mod archives;
 pub mod backups;
+pub mod binding;
 pub mod buggrabber;
 pub mod checkpoint;
 pub mod differential;

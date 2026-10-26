@@ -233,6 +233,7 @@ fn state_tree(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
             if name.contains("net.log") {
                 continue;
             }
+            // ubs:ignore — comparing paths, not secrets
             if path == dir.join("omaddons") {
                 todo.push(path);
             } else if path.is_dir() {
@@ -331,6 +332,135 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
         &["undo", "--dry-run"],
         &["pin", "Foo", "-t", "retail", "--dry-run"],
     ]);
+}
+
+/// Every path in `BINDING_COMMANDS` carries `data.precondition`: a token on its dry run,
+/// `null` (the key present) on its real run. A binding path without a row fails here.
+/// This is also M4-D55's guard for `errors dismiss`, whose real-run `null` was made by
+/// `omad-q585`. (A path whose report is top level, such as the doctor's once it binds,
+/// would be excluded by name with that reason.)
+#[test]
+fn every_binding_path_carries_its_precondition() {
+    use common::addons::{addon_folder, toc};
+    use common::backups::seed_backup;
+    use common::buggrabber::{self, BugDb, BugEntry, NOW, TimeKind, Writer, write_files};
+    use omaddons::app::precondition::{BINDING_COMMANDS, is_token};
+    use omaddons::backup::BackupKind;
+
+    let now = [("OMADDONS_NOW", "2026-10-15T18:30:00Z")];
+    for path in BINDING_COMMANDS {
+        let s = Scene::new();
+        let retail = s.home.client("_retail_");
+        let at = |t: &str| t.parse().unwrap();
+        // The setup, the dry run's argv (with `--dry-run`) and the environment.
+        let (dry, env): (Vec<String>, &[(&str, &str)]) = match *path {
+            "remove" => {
+                s.install_foo();
+                (argv(&["remove", "Foo", "-t", "retail", "--dry-run"]), &[])
+            }
+            "undo" => {
+                s.install_foo();
+                (argv(&["undo", "--dry-run"]), &[])
+            }
+            "backup restore" => {
+                common::wtf::Wtf::at(retail.clone())
+                    .config_wtf("SET locale \"enUS\"\n")
+                    .saved_variables("Foo", 100)
+                    .build();
+                let id = seed_backup(&retail, BackupKind::Manual, at("2026-10-05T08:00:00Z"), 2)
+                    .to_string();
+                (
+                    argv(&["backup", "restore", &id, "-t", "retail", "--dry-run"]),
+                    &[],
+                )
+            }
+            "backup prune" => {
+                seed_backup(&retail, BackupKind::Auto, at("2026-10-01T08:00:00Z"), 1);
+                seed_backup(&retail, BackupKind::Auto, at("2026-10-01T20:00:00Z"), 1);
+                seed_backup(&retail, BackupKind::Manual, at("2026-10-05T10:00:00Z"), 1);
+                (
+                    argv(&["backup", "prune", "-t", "retail", "--dry-run"]),
+                    &now,
+                )
+            }
+            "errors dismiss" => {
+                s.install_foo();
+                let bug_toc = toc("120105", &["## SavedVariables: BugGrabberDB"]);
+                addon_folder(
+                    &s.home.addons("_retail_"),
+                    "!BugGrabber",
+                    &[("!BugGrabber.toc", &bug_toc)],
+                    &[],
+                );
+                let db = BugDb::new(Writer::Modern, 10).entry(BugEntry::new(
+                    &format!(
+                        "{} attempt to call a nil value",
+                        buggrabber::stack_era_c("Foo", "core.lua", 12)
+                    ),
+                    10,
+                    (TimeKind::Unix, NOW - 60),
+                ));
+                write_files(&retail.join("WTF"), &[db.file()]);
+                (
+                    argv(&["errors", "dismiss", "-t", "retail", "--dry-run"]),
+                    &now,
+                )
+            }
+            "install" => {
+                let foo = s.zip("foo");
+                (
+                    argv(&[
+                        "install",
+                        "gh:o/foo",
+                        "--file",
+                        &foo,
+                        "-t",
+                        "retail",
+                        "--dry-run",
+                    ]),
+                    &[],
+                )
+            }
+            "update" => {
+                s.json(&["install", "weakauras", "-t", "retail"], 0);
+                (argv(&["update", "--dry-run"]), &[])
+            }
+            "sync" => {
+                s.home
+                    .write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
+                (argv(&["sync", "--dry-run"]), &[])
+            }
+            "copy" => {
+                s.json(&["install", "weakauras", "-t", "retail"], 0);
+                (
+                    argv(&["copy", "--from", "retail", "--to", "classic", "--dry-run"]),
+                    &[],
+                )
+            }
+            other => panic!("add a row for {other}"), // ubs:ignore — the test's own failure
+        };
+        let dry: Vec<&str> = dry.iter().map(String::as_str).collect();
+        // ubs:ignore — comparing command-line words, not secrets
+        let real: Vec<&str> = dry.iter().copied().filter(|a| *a != "--dry-run").collect();
+        let preview = s.json_env(&dry, env, 0);
+        let token = &preview.envelope["data"]["precondition"];
+        assert!(
+            token.as_str().is_some_and(is_token),
+            "{path}: the dry run's precondition is a token: {}",
+            preview.envelope
+        );
+        let ran = s.json_env(&real, env, 0);
+        let data = &ran.envelope["data"];
+        assert!(
+            data.get("precondition").is_some_and(Value::is_null),
+            "{path}: the real run carries precondition: null: {}",
+            ran.envelope
+        );
+    }
+}
+
+fn argv(args: &[&str]) -> Vec<String> {
+    args.iter().map(|a| (*a).to_owned()).collect()
 }
 
 /// Every command that changes nothing accepts `--dry-run` and `--reason` and ignores
@@ -536,6 +666,7 @@ fn m2_outputs_are_byte_identical() {
         .as_array()
         .unwrap()
         .iter()
+        // ubs:ignore — comparing target ids, not secrets
         .find(|t| t["id"] == "retail")
         .unwrap();
     assert!(

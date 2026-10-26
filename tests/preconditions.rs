@@ -11,6 +11,7 @@
 
 mod common;
 
+use common::binding as b;
 use common::engine::Scene;
 use common::graph::Folder;
 use common::pause::Pause;
@@ -469,7 +470,7 @@ fn a_bound_install_dry_run_compares() {
 /// `install` asks its sources again (M4-D20): a release published after the preview
 /// makes the bound run stale, and the preview that fix runs shows the new release.
 #[test]
-fn a_release_published_after_an_install_preview_makes_it_stale() {
+fn a_release_since_the_preview_stales_a_bound_install() {
     use common::home::Home;
     use common::http::{Asset, gh_release};
 
@@ -605,17 +606,6 @@ const fn retail_folder(name: &'static str) -> Folder<'static> {
     }
 }
 
-/// Moves every release memo entry an hour back, past the 15-minute window, so the next
-/// `update` asks its sources again.
-fn age_release_memo(scene: &Scene) {
-    let paths = common::http::paths(&scene.home.env);
-    let (mut memo, _) = omaddons::state::memo::load(&paths);
-    for entry in memo.entries.values_mut() {
-        entry.fetched_at -= jiff::SignedDuration::from_hours(1);
-    }
-    scene.home.seed_memo(&memo);
-}
-
 /// A retail client with Foo v1 installed from `gh:o/foo`, v2 published since, and the
 /// memo aged, so the next `update` sees v2.
 fn foo_behind(log: &common::tlog::TestLog) -> Scene {
@@ -625,7 +615,7 @@ fn foo_behind(log: &common::tlog::TestLog) -> Scene {
     log.run(&scene, &["install", "gh:o/foo", "-t", "retail", "--json"])
         .ok();
     scene.release("foo", "v2", &[retail_folder("Foo")]);
-    age_release_memo(&scene);
+    b::age_release_memo(&scene.home, jiff::SignedDuration::from_hours(1));
     scene
 }
 
@@ -718,7 +708,7 @@ fn an_update_binds_to_its_preview() {
 /// M4-D20: inside the memo's window a bound `update` does what its preview showed, a
 /// release published since notwithstanding, and asks no source.
 #[test]
-fn a_bound_update_installs_the_previewed_release_inside_the_memo_window() {
+fn a_release_inside_the_memo_window_keeps_a_bound_update_to_its_preview() {
     let log = common::tlog::tlog!();
     let scene = foo_behind(&log);
     let update = argv(&["update", "Foo", "-t", "retail"]);
@@ -749,6 +739,11 @@ fn a_bound_update_installs_the_previewed_release_inside_the_memo_window() {
             latest(&scene) - asked,
         ),
         &(&json!("v2"), 0),
+    );
+    log.assert_eq(
+        "Foo's record: v2, not v3",
+        &scene.record("foo")["version"],
+        &json!("v2"),
     );
 }
 
@@ -937,22 +932,9 @@ fn a_bound_noop_update_is_stale_after_a_change() {
 const ERA: &str = "_classic_era_";
 const ANNIVERSARY: &str = "_anniversary_";
 
-/// Release `tag` of `gh:o/<repo>` as its latest: `<name>/<name>.toc`, built for both.
+/// Release `tag` of `gh:o/<repo>` as its latest, built for both clients.
 fn publish_for_both(home: &common::home::Home, repo: &str, name: &str, tag: &str) {
-    use common::http::{Asset, gh_release};
-    let (file, path) = (format!("{name}.zip"), format!("{name}/{name}.toc"));
-    let toc = format!("## Interface: 11509, 20506\n## Version: {tag}\n");
-    let assets: [Asset<'_>; 1] = [(
-        file.as_str(),
-        &[("classic", 11_509), ("bcc", 20_506)],
-        vec![(path.as_str(), toc.as_str())],
-    )];
-    gh_release(
-        &home.http,
-        &format!("https://github.com/o/{repo}"),
-        tag,
-        &assets,
-    );
+    b::publish(home, repo, name, tag, b::ERA_AND_TBC);
 }
 
 /// Foo installed on Classic Era; Foo and Bar published for both clients.
@@ -1081,7 +1063,7 @@ fn a_copy_binds_to_its_preview() {
 /// `copy` asks its sources again (M4-D20), as `install` does: a release published after
 /// the preview makes the bound run stale.
 #[test]
-fn a_release_published_after_a_copy_preview_makes_it_stale() {
+fn a_release_since_the_preview_stales_a_bound_copy() {
     let log = common::tlog::tlog!();
     let home = era_with_foo(&log);
     let copy = argv(COPY_FOO);
@@ -1154,6 +1136,646 @@ fn a_copy_whose_source_client_committed_is_stale() {
         &strs(&preview_of(&copy)),
     );
     assert_both_alone(&log, &home, &history);
+}
+
+// ---- D2's acceptance rows, end to end (checkpoint criterion 6) --------------------------
+//
+// The smoke scenarios above prove each command binds; these prove every row of D2 for
+// each command, each on fresh homes: what moves which part of the token, and that a
+// stale run changes nothing. Releases are replayed `gh:` fixtures (`common::binding`).
+
+/// The engine commands D2 binds.
+const ENGINE_COMMANDS: [&str; 4] = ["install", "update", "sync", "copy"];
+
+/// One command on a fresh home where it has work on `client` (registered, so a commit
+/// there moves only its generation), with Bar published as a current release nothing
+/// installs yet.
+struct Case {
+    home: common::home::Home,
+    args: Vec<String>,
+    client: &'static str,
+}
+
+impl Case {
+    fn new(log: &common::tlog::TestLog, command: &str) -> Self {
+        use common::home::Home;
+        let mm = b::MAINLINE_AND_MISTS;
+        let install = |home: &Home, r: &str, client: &str| {
+            log.run(home, &["install", r, "-t", client, "--json"]).ok();
+        };
+        let (home, args, client) = match command {
+            "install" => {
+                let home = Home::new(&["wow"]);
+                log.env(&home);
+                b::publish(&home, "foo", "Foo", "v1", mm);
+                install(&home, "gh:o/foo", "retail");
+                b::publish(&home, "foo", "Foo", "v2", mm);
+                (
+                    home,
+                    b::argv(&["install", "gh:o/foo", "-t", "retail"]),
+                    "retail",
+                )
+            }
+            "update" => {
+                let home = Home::new(&["wow"]);
+                log.env(&home);
+                b::foo_behind(log, &home, "retail", ("v1", "v2"), mm);
+                (home, b::argv(&["update", "Foo", "-t", "retail"]), "retail")
+            }
+            "sync" => {
+                let home = Home::new(&["wow"]);
+                log.env(&home);
+                b::publish(&home, "foo", "Foo", "v1", mm);
+                b::publish(&home, "baz", "Baz", "v1", mm);
+                install(&home, "gh:o/baz", "retail");
+                home.write_desired("[family.mainline]\naddons = [\"gh:o/baz\", \"gh:o/foo\"]\n");
+                (home, b::argv(&["sync"]), "retail")
+            }
+            "copy" => {
+                let home = Home::new(&["wow_classic_era", "wow_anniversary"]);
+                log.env(&home);
+                b::publish(&home, "foo", "Foo", "v1", b::ERA_AND_TBC);
+                b::publish(&home, "baz", "Baz", "v1", b::ERA_AND_TBC);
+                install(&home, "gh:o/foo", "era");
+                install(&home, "gh:o/baz", "anniversary");
+                (home, b::argv(COPY_FOO), "anniversary")
+            }
+            other => panic!("no case for {other}"), // ubs:ignore — the test's own failure
+        };
+        let flavors = if client == "anniversary" {
+            b::ERA_AND_TBC
+        } else {
+            mm
+        };
+        b::publish(&home, "bar", "Bar", "v1", flavors);
+        Self { home, args, client }
+    }
+
+    fn args(&self) -> Vec<&str> {
+        self.args.iter().map(String::as_str).collect()
+    }
+
+    /// The flavor folder of the client the run changes.
+    fn folder(&self) -> &'static str {
+        if self.client == "anniversary" {
+            ANNIVERSARY
+        } else {
+            "_retail_"
+        }
+    }
+
+    /// Another install commits on the client the run changes, outside the run's scope,
+    /// so only that client's generation moves (`targets`).
+    fn commit_between(&self, log: &common::tlog::TestLog) {
+        log.note(format!(
+            "another install commits on {}: only its generation moves (targets)",
+            self.client
+        ));
+        log.run(
+            &self.home,
+            &["install", "gh:o/bar", "-t", self.client, "--json"],
+        )
+        .ok();
+    }
+
+    /// A refusal's fix: the run's preview.
+    fn fix(&self) -> Vec<String> {
+        b::preview_argv(&self.args())
+    }
+}
+
+/// `path` with its first `v1` replaced by `x1`: the same size, another byte.
+#[cfg(test)]
+fn same_size_edit(path: &std::path::Path) {
+    let text = std::fs::read_to_string(path).unwrap();
+    let edited = text.replacen("v1", "x1", 1);
+    assert!(edited.len() == text.len() && edited != text, "{text}");
+    std::fs::write(path, edited).unwrap();
+}
+
+#[test]
+fn a_commit_on_an_affected_client_stales_each_command() {
+    let log = common::tlog::tlog!();
+    for command in ENGINE_COMMANDS {
+        log.step(&format!("{command}: setup"));
+        let case = Case::new(&log, command);
+        log.step(&format!("{command}: preview"));
+        let (_, token) = b::preview(&log, &case.home, command, &case.args());
+        log.step(&format!("{command}: a commit on {}", case.client));
+        case.commit_between(&log);
+        let guard = b::guard(&log, &case.home, command);
+        log.step(&format!("{command}: the bound run"));
+        let ran = log.run(&case.home, &b::bound(&case.args(), &token));
+        b::assert_stale(&log, &ran, &["targets"], &case.fix());
+        guard.unchanged(&log);
+    }
+}
+
+/// M4-D20: `sync` answers from the memo for 15 minutes, like `update`.
+#[test]
+fn a_release_inside_the_memo_window_keeps_a_bound_sync_to_its_preview() {
+    let log = common::tlog::tlog!();
+    let home = common::home::Home::new(&["wow"]);
+    log.env(&home);
+    log.step("setup: Foo v1 published, named in addons.toml, not installed");
+    b::publish(&home, "foo", "Foo", "v1", b::MAINLINE_AND_MISTS);
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
+    let latest =
+        |h: &common::home::Home| common::netlog::net_log(h).count("github.com", "release-latest");
+
+    log.step("preview: v1");
+    let (dry, token) = b::preview(&log, &home, "sync", &["sync"]);
+    log.assert_eq(
+        "(the preview installs, it asked the source)",
+        &(&b::items(dry.data())[0]["to_version"], latest(&home) > 0),
+        &(&json!("v1"), true),
+    );
+
+    log.step("v2 is published");
+    b::publish(&home, "foo", "Foo", "v2", b::MAINLINE_AND_MISTS);
+    let asked = latest(&home);
+
+    log.step("the bound run installs v1, from the memo");
+    let ran = log.run(&home, &b::bound(&["sync"], &token));
+    log.assert_eq(
+        "(installed, releases/latest requests since the preview)",
+        &(
+            &b::items(ran.ok().data())[0]["to_version"],
+            latest(&home) - asked,
+        ),
+        &(&json!("v1"), 0),
+    );
+    log.assert_eq(
+        "Foo's record",
+        &common::state::record(&home, "retail").addons["foo"].version,
+        &"v1".to_owned(),
+    );
+}
+
+/// `--refresh` asks the source again, so a newer release stales the bound run.
+#[test]
+fn a_bound_update_with_refresh_revalidates() {
+    let log = common::tlog::tlog!();
+    log.step("setup");
+    let case = Case::new(&log, "update");
+    let mut args = case.args();
+    args.push("--refresh");
+    log.step("preview with --refresh: v2");
+    let (_, token) = b::preview(&log, &case.home, "update", &args);
+    log.step("v3 is published");
+    b::publish(&case.home, "foo", "Foo", "v3", b::MAINLINE_AND_MISTS);
+    let guard = b::guard(&log, &case.home, "update");
+    log.step("the bound run asks again");
+    let ran = log.run(&case.home, &b::bound(&args, &token));
+    b::assert_stale(&log, &ran, &["selection"], &b::preview_argv(&args));
+    guard.unchanged(&log);
+}
+
+#[test]
+fn a_hand_edit_in_a_replaced_folder_stales_the_bound_run() {
+    let log = common::tlog::tlog!();
+    for command in ["install", "update"] {
+        log.step(&format!("{command}: setup"));
+        let case = Case::new(&log, command);
+        log.step(&format!("{command}: preview"));
+        let (_, token) = b::preview(&log, &case.home, command, &case.args());
+        log.step(&format!("{command}: Foo.toc edited by hand, the same size"));
+        log.note("clean at the preview, in a folder the run replaces: observed");
+        same_size_edit(&case.home.addons(case.folder()).join("Foo/Foo.toc"));
+        let guard = b::guard(&log, &case.home, command);
+        log.step(&format!("{command}: the bound run"));
+        let ran = log.run(&case.home, &b::bound(&case.args(), &token));
+        b::assert_stale(&log, &ran, &["observed"], &case.fix());
+        guard.unchanged(&log);
+    }
+
+    log.step("sync --prune: setup, Bar installed and not in the file");
+    let home = common::home::Home::new(&["wow"]);
+    log.env(&home);
+    for (repo, name) in [("foo", "Foo"), ("bar", "Bar")] {
+        b::publish(&home, repo, name, "v1", b::MAINLINE_AND_MISTS);
+        log.run(
+            &home,
+            &["install", &format!("gh:o/{repo}"), "-t", "retail", "--json"],
+        )
+        .ok();
+    }
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
+    let prune = ["sync", "--prune"];
+    log.step("sync --prune: preview, which removes Bar");
+    let (dry, token) = b::preview(&log, &home, "sync --prune", &prune);
+    log.assert_eq(
+        "the preview removes Bar",
+        &dry.data()["summary"]["changed"],
+        &json!(1),
+    );
+    log.step("sync --prune: Bar.toc edited by hand, the same size");
+    log.note("in the folder the run removes: observed");
+    same_size_edit(&home.addons("_retail_").join("Bar/Bar.toc"));
+    let guard = b::guard(&log, &home, "sync --prune");
+    log.step("sync --prune: the bound run");
+    let ran = log.run(&home, &b::bound(&prune, &token));
+    b::assert_stale(&log, &ran, &["observed"], &b::preview_argv(&prune));
+    guard.unchanged(&log);
+}
+
+#[test]
+fn a_name_the_install_creates_appearing_stales_it() {
+    let log = common::tlog::tlog!();
+    let home = common::home::Home::new(&["wow"]);
+    log.env(&home);
+    log.step("setup: Foo installed, Bar published");
+    for (repo, name) in [("foo", "Foo"), ("bar", "Bar")] {
+        b::publish(&home, repo, name, "v1", b::MAINLINE_AND_MISTS);
+    }
+    log.run(&home, &["install", "gh:o/foo", "-t", "retail", "--json"])
+        .ok();
+    let install = ["install", "gh:o/bar", "-t", "retail"];
+    log.step("preview: Bar's folder would be added");
+    let (_, token) = b::preview(&log, &home, "install", &install);
+    log.step("a folder named Bar is made by hand");
+    let mine = home.addons("_retail_").join("Bar");
+    std::fs::create_dir_all(&mine).unwrap();
+    std::fs::write(
+        mine.join("Bar.toc"),
+        "## Interface: 120105\n## Title: mine\n",
+    )
+    .unwrap();
+    let guard = b::guard(&log, &home, "install");
+    log.step("the bound run plans around it, so it is not the preview");
+    let ran = log.run(&home, &b::bound(&install, &token));
+    b::assert_stale_with(&log, &ran, "selection", &b::preview_argv(&install));
+    guard.unchanged(&log);
+}
+
+#[test]
+fn an_edited_sync_file_stales_a_bound_sync() {
+    let log = common::tlog::tlog!();
+    let home = common::home::Home::new(&["wow"]);
+    log.env(&home);
+    log.step("setup: Baz installed, addons.toml naming Baz and Foo");
+    for (repo, name) in [("foo", "Foo"), ("bar", "Bar"), ("baz", "Baz")] {
+        b::publish(&home, repo, name, "v1", b::MAINLINE_AND_MISTS);
+    }
+    log.run(&home, &["install", "gh:o/baz", "-t", "retail", "--json"])
+        .ok();
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/baz\", \"gh:o/foo\"]\n");
+    log.step("preview");
+    let (_, token) = b::preview(&log, &home, "sync", &["sync"]);
+    log.step("an entry is added to the file");
+    log.note("a new install (selection) and other bytes (observed)");
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/baz\", \"gh:o/foo\", \"gh:o/bar\"]\n");
+    let guard = b::guard(&log, &home, "sync");
+    log.step("the bound run");
+    let ran = log.run(&home, &b::bound(&["sync"], &token));
+    b::assert_stale(
+        &log,
+        &ran,
+        &["selection", "observed"],
+        &b::preview_argv(&["sync"]),
+    );
+    guard.unchanged(&log);
+}
+
+/// A home where `command` has nothing to do, with Bar installed on the client it would
+/// change: (the home, the run's argv, that client).
+fn idle_case(
+    log: &common::tlog::TestLog,
+    command: &str,
+) -> (common::home::Home, Vec<String>, &'static str) {
+    use common::home::Home;
+    let install = |home: &Home, r: &str, client: &str| {
+        log.run(home, &["install", r, "-t", client, "--json"]).ok();
+    };
+    if command == "copy" {
+        let home = Home::new(&["wow_classic_era", "wow_anniversary"]);
+        log.env(&home);
+        for (repo, name) in [("foo", "Foo"), ("bar", "Bar")] {
+            b::publish(&home, repo, name, "v1", b::ERA_AND_TBC);
+        }
+        install(&home, "gh:o/foo", "era");
+        install(&home, "gh:o/foo", "anniversary");
+        install(&home, "gh:o/bar", "anniversary");
+        return (home, b::argv(COPY_FOO), "anniversary");
+    }
+    let home = Home::new(&["wow"]);
+    log.env(&home);
+    for (repo, name) in [("foo", "Foo"), ("bar", "Bar")] {
+        b::publish(&home, repo, name, "v1", b::MAINLINE_AND_MISTS);
+        install(&home, &format!("gh:o/{repo}"), "retail");
+    }
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\", \"gh:o/bar\"]\n");
+    let args = match command {
+        // Already at the newest release: the engine plans it unchanged.
+        "install" => b::argv(&["install", "gh:o/foo", "-t", "retail"]),
+        "update" => b::argv(&["update", "Foo", "-t", "retail"]),
+        _ => b::argv(&["sync"]),
+    };
+    (home, args, "retail")
+}
+
+#[test]
+fn a_bound_noop_run_with_a_stale_token_is_stale() {
+    let log = common::tlog::tlog!();
+    for command in ENGINE_COMMANDS {
+        log.step(&format!("{command}: setup, nothing to do"));
+        let (home, args, client) = idle_case(&log, command);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        log.step(&format!("{command}: preview"));
+        let (dry, token) = b::preview(&log, &home, command, &args);
+        // ubs:ignore — comparing a command name and an item status, not secrets
+        let idle = if command == "install" {
+            // ubs:ignore — comparing an item status, not secrets
+            dry.data()["items"][0]["status"] == "unchanged"
+        } else {
+            dry.data()["summary"]["changed"] == 0
+        };
+        log.assert_eq("the preview changes nothing", &idle, &true);
+        log.step(&format!("{command}: Bar is pinned on {client}"));
+        log.note("a records-only commit: the client's generation moves");
+        log.run(&home, &["pin", "Bar", "-t", client, "--json"]).ok();
+        let guard = b::guard(&log, &home, command);
+        log.step(&format!(
+            "{command}: the bound run, stale, never `nothing to do`"
+        ));
+        let ran = log.run(&home, &b::bound(&args, &token));
+        b::assert_stale_with(&log, &ran, "targets", &b::preview_argv(&args));
+        guard.unchanged(&log);
+    }
+}
+
+#[test]
+fn the_second_of_two_runs_holding_one_token_is_stale() {
+    let log = common::tlog::tlog!();
+    for command in ["update", "copy"] {
+        log.step(&format!("{command}: setup"));
+        let case = Case::new(&log, command);
+        log.step(&format!("{command}: preview, then the bound run"));
+        let (_, token) = b::preview(&log, &case.home, command, &case.args());
+        log.run(&case.home, &b::bound(&case.args(), &token)).ok();
+        let guard = b::guard(&log, &case.home, command);
+        log.step(&format!("{command}: the same token again"));
+        log.note("its own commit moved the client, and it now has nothing to do");
+        let ran = log.run(&case.home, &b::bound(&case.args(), &token));
+        b::assert_stale_with(&log, &ran, "targets", &case.fix());
+        b::assert_stale_with(&log, &ran, "selection", &case.fix());
+        guard.unchanged(&log);
+    }
+}
+
+#[test]
+fn a_bound_dry_run_compares() {
+    let log = common::tlog::tlog!();
+    for command in ENGINE_COMMANDS {
+        log.step(&format!("{command}: setup"));
+        let case = Case::new(&log, command);
+        let home = &case.home;
+        log.step(&format!("{command}: preview"));
+        let (_, token) = b::preview(&log, home, command, &case.args());
+        let mut dry = case.args();
+        dry.push("--dry-run");
+        // A dry run writes nothing under `<state>` and takes no global lock.
+        let untouched = |label: &str| {
+            (
+                b::state_without_net_log(&log, home, label),
+                b::lock_inode(home),
+            )
+        };
+
+        log.step(&format!("{command}: a matching bound dry run"));
+        let before = untouched("before the matching dry run");
+        let ran = log.run(home, &b::bound(&dry, &token));
+        log.assert_eq(
+            "the same token",
+            &ran.ok().data()["precondition"],
+            &json!(token),
+        );
+        log.assert_eq(
+            "<state> and the lock file",
+            &untouched("after the matching dry run"),
+            &before,
+        );
+
+        log.step(&format!("{command}: a stale bound dry run"));
+        case.commit_between(&log);
+        let before = untouched("before the stale dry run");
+        let ran = log.run(home, &b::bound(&dry, &token));
+        b::assert_stale(&log, &ran, &["targets"], &case.fix());
+        log.assert_eq(
+            "<state> and the lock file",
+            &untouched("after the stale dry run"),
+            &before,
+        );
+    }
+}
+
+/// M4-D61: the guarantee is per client. A two-client bound `update` whose second client
+/// receives a commit while the run waits before that client's lock ends partial.
+#[test]
+fn a_two_client_bound_update_commits_per_client() {
+    let log = common::tlog::tlog!();
+    let home = b::two_clients_with_foo("v1");
+    log.env(&home);
+    log.step("setup: Foo v1 on retail and classic, v2 published");
+    for client in ["retail", "classic"] {
+        log.run(&home, &["install", "gh:o/foo", "-t", client, "--json"])
+            .ok();
+    }
+    b::publish(&home, "foo", "Foo", "v2", b::MAINLINE_AND_MISTS);
+    b::age_release_memo(&home, jiff::SignedDuration::from_hours(1));
+    let update = ["update", "Foo"];
+
+    log.step("preview: both clients");
+    let (dry, token) = b::preview(&log, &home, "update", &update);
+    log.assert_eq(
+        "both clients update",
+        &dry.data()["summary"]["changed"],
+        &json!(2),
+    );
+    // The engine commits registered clients in key order: the second one is raced.
+    let mut keyed = [
+        ("retail", "_retail_", common::state::key_of(&home, "retail")),
+        (
+            "classic",
+            "_classic_",
+            common::state::key_of(&home, "classic"),
+        ),
+    ];
+    keyed.sort_by_key(|(_, _, key)| *key);
+    let [(first, _, _), (second, second_folder, _)] = keyed;
+    log.json("commit order", &[first, second]);
+    let kinds = |h: &common::home::Home| -> Vec<String> {
+        common::state::history(h)
+            .iter()
+            .map(|e| {
+                serde_json::to_value(e.kind)
+                    .unwrap()
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect()
+    };
+    let before = kinds(&home);
+
+    log.step("the bound run stops before the second client's lock");
+    let pause = Pause::new(home.env.root());
+    let child = log
+        .cmd(&home, &b::bound(&update, &token))
+        .failpoints("engine.snapshot.prestaged=pause@2")
+        .pause(&pause)
+        .spawn();
+    log.reached(&pause, "engine.snapshot.prestaged");
+    log.step(&format!("Bar installs on {second} meanwhile"));
+    log.run(&home, &["install", "gh:o/bar", "-t", second, "--json"])
+        .ok();
+    log.tree("second addons", &home.addons(second_folder));
+
+    log.step("the bound run goes on");
+    log.resume(&pause, "engine.snapshot.prestaged");
+    let ran = child.wait();
+    let data = ran.ok().data();
+    let target = |id: &str| {
+        data["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            // ubs:ignore — comparing target ids, not secrets
+            .find(|t| t["target"]["id"] == id)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let (one, two) = (target(first), target(second));
+    log.assert_eq(
+        "(partial, the first committed with no error)",
+        &(
+            &ran.envelope()["partial"],
+            one["tx"].is_string(),
+            &one["error"],
+        ),
+        &(&json!(true), true, &Value::Null),
+    );
+    log.assert_eq(
+        "the second refused: (code, retryable, changed, tx)",
+        &(
+            &two["error"]["code"],
+            &two["error"]["retryable"],
+            &two["error"]["details"]["changed"],
+            &two["tx"],
+        ),
+        &(
+            &json!("plan_stale"),
+            &json!(false),
+            &json!(["targets"]),
+            &Value::Null,
+        ),
+    );
+    let version = |id: &str| {
+        common::state::record(&home, id).addons["foo"]
+            .version
+            .clone()
+    };
+    log.assert_eq(
+        "Foo: (first, second)",
+        &(version(first), version(second)),
+        &("v2".to_owned(), "v1".to_owned()),
+    );
+    log.assert_unchanged("second addons", &home.addons(second_folder));
+    let after = kinds(&home);
+    log.assert_eq(
+        "history gains the first client's update and Bar's install",
+        &after[before.len()..].to_vec(),
+        &["update".to_owned(), "install".to_owned()].to_vec(),
+    );
+}
+
+#[test]
+fn a_bound_run_refused_under_the_lock_is_not_retryable() {
+    let log = common::tlog::tlog!();
+    for command in ["install", "sync", "copy"] {
+        log.step(&format!("{command}: setup"));
+        let case = Case::new(&log, command);
+        log.step(&format!("{command}: preview"));
+        let (_, token) = b::preview(&log, &case.home, command, &case.args());
+
+        log.step(&format!("{command}: the bound run stops before its lock"));
+        let pause = Pause::new(case.home.env.root());
+        let child = log
+            .cmd(&case.home, &b::bound(&case.args(), &token))
+            .failpoints("engine.snapshot.prestaged=pause")
+            .pause(&pause)
+            .spawn();
+        log.reached(&pause, "engine.snapshot.prestaged");
+        case.commit_between(&log);
+        let guard = b::guard(&log, &case.home, command);
+
+        log.step(&format!("{command}: the bound run goes on"));
+        log.resume(&pause, "engine.snapshot.prestaged");
+        let ran = child.wait();
+        b::assert_stale(&log, &ran, &["targets"], &case.fix());
+        guard.unchanged(&log);
+    }
+}
+
+#[test]
+fn two_previews_of_an_unchanged_home_agree() {
+    let log = common::tlog::tlog!();
+    for command in ENGINE_COMMANDS {
+        log.step(&format!("{command}: setup"));
+        let case = Case::new(&log, command);
+        let net = || common::netlog::net_log(&case.home);
+        log.step(&format!("{command}: two previews"));
+        let (_, first) = b::preview(&log, &case.home, command, &case.args());
+        let before = net();
+        let (_, second) = b::preview(&log, &case.home, command, &case.args());
+        let after = net();
+        log.assert_eq("the same token", &second, &first);
+        match command {
+            // The first preview asked the source (the memo was aged); the second
+            // answers from the memo.
+            "update" => log.assert_eq(
+                "(the first preview asked, releases/latest requests by the second)",
+                &(
+                    before.count("github.com", "release-latest") > 0,
+                    after.count("github.com", "release-latest")
+                        - before.count("github.com", "release-latest"),
+                ),
+                &(true, 0),
+            ),
+            // `install` asks again, but the archive comes from the blob cache.
+            "install" => log.assert_eq(
+                "downloads by the second preview",
+                &(after.count_purpose("asset") - before.count_purpose("asset")),
+                &0,
+            ),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn a_token_from_another_command_is_stale_on_each() {
+    let log = common::tlog::tlog!();
+    let home = b::two_clients_with_foo("v1");
+    log.env(&home);
+    log.step("setup: Foo on retail, named in addons.toml");
+    log.run(&home, &["install", "gh:o/foo", "-t", "retail", "--json"])
+        .ok();
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
+    log.step("remove's preview");
+    let (_, token) = b::preview(&log, &home, "remove", &["remove", "Foo", "-t", "retail"]);
+    let guard = b::guard(&log, &home, "every command");
+    for args in [
+        &["install", "gh:o/foo", "-t", "classic"][..],
+        &["update", "Foo", "-t", "retail"],
+        &["sync"],
+        &["copy", "--from", "retail", "--to", "classic", "Foo"],
+    ] {
+        log.step(&format!("{}: remove's token", args[0]));
+        let ran = log.run(&home, &b::bound(args, &token));
+        b::assert_stale_with(&log, &ran, "command", &b::preview_argv(args));
+    }
+    guard.unchanged(&log);
 }
 
 const PRUNE: &[&str] = &["backup", "prune", "-t", "retail", "--keep", "2"];
