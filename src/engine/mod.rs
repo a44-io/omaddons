@@ -18,6 +18,7 @@ pub mod stage;
 pub mod swap;
 pub mod tx;
 pub mod undo;
+pub mod witness;
 
 pub use tx::{Binding, EngineCtx, FAILPOINTS, TxOutcome, TxOutcomes, TxRequest, TxTarget, run};
 pub use undo::{

@@ -305,7 +305,7 @@ fn list(dir: &Path, prefix: &str, out: &mut BTreeMap<String, OnDisk>) {
 
 /// The racy slack of a folder: nanosecond mtimes (some indexed mtime has a sub-second
 /// part) get `RACY_SLACK_NS`, whole-second ones `RACY_SLACK_COARSE_NS`.
-fn slack(entry: &FolderIndex) -> i128 {
+pub(crate) fn slack(entry: &FolderIndex) -> i128 {
     if entry
         .files
         .iter()

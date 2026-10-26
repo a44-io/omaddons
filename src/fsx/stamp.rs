@@ -68,6 +68,24 @@ impl FileStamp {
         self.mtime_ns
     }
 
+    pub fn dev(&self) -> u64 {
+        self.dev
+    }
+
+    pub fn ino(&self) -> u64 {
+        self.ino
+    }
+
+    /// The status-change time, in nanoseconds since the epoch.
+    pub fn ctime_ns(&self) -> i128 {
+        self.ctime_ns
+    }
+
+    /// The entry's kind, symlinks not followed.
+    pub fn file_type(&self) -> FileType {
+        self.file_type
+    }
+
     /// Every field as one string: equal for equal stamps, so a preview can record what it
     /// observed and a later run compare it (M3-D46).
     pub fn fingerprint(&self) -> String {
@@ -130,6 +148,36 @@ impl TreeStamp {
         Ok(Self(entries))
     }
 
+    /// [`TreeStamp::read`], bounded: `None` as soon as more than `max_entries` entries
+    /// (the root included) were seen. A root that is not a real directory is its one
+    /// entry, never listed (a symlinked root is not followed). A directory that cannot be
+    /// listed or stamped fails with a [`WalkError`] inside the `io::Error`, naming it.
+    pub fn read_at_most(dir: &Path, max_entries: u64) -> io::Result<Option<Self>> {
+        let root = Self::root(dir)?;
+        let mut entries = vec![(PathBuf::new(), root)];
+        if !root.file_type.is_dir() {
+            return Ok(Some(Self(entries)));
+        }
+        let mut pending = vec![PathBuf::new()];
+        while let Some(rel) = pending.pop() {
+            let failed = |source: io::Error| WalkError::wrap(&rel, source);
+            for entry in fs::read_dir(dir.join(&rel)).map_err(failed)? {
+                let entry = entry.map_err(failed)?;
+                let rel_child = rel.join(entry.file_name());
+                let stamp = FileStamp::of(&entry.metadata().map_err(failed)?);
+                if stamp.file_type.is_dir() {
+                    pending.push(rel_child.clone());
+                }
+                entries.push((rel_child, stamp));
+                if entries.len() as u64 > max_entries {
+                    return Ok(None);
+                }
+            }
+        }
+        entries.sort_by(|a, b| a.0.as_os_str().cmp(b.0.as_os_str()));
+        Ok(Some(Self(entries)))
+    }
+
     fn root(dir: &Path) -> io::Result<FileStamp> {
         FileStamp::read(dir)?.ok_or_else(|| {
             io::Error::new(
@@ -139,9 +187,55 @@ impl TreeStamp {
         })
     }
 
+    /// Every entry with its stamp, by relative path in byte order, the root first.
+    pub fn entries(&self) -> &[(PathBuf, FileStamp)] {
+        &self.0
+    }
+
     /// Whether every entry is [settled](FileStamp::settled) at `read_at_ns`.
     pub fn settled(&self, read_at_ns: i128) -> bool {
         self.0.iter().all(|(_, stamp)| stamp.settled(read_at_ns))
+    }
+}
+
+/// A directory a [`TreeStamp::read_at_most`] walk could not list or stamp: its path
+/// relative to the tree, and why. Carried inside the `io::Error` the walk returns.
+#[derive(Debug)]
+pub struct WalkError {
+    pub rel: PathBuf,
+    pub source: io::Error,
+}
+
+impl WalkError {
+    fn wrap(rel: &Path, source: io::Error) -> io::Error {
+        let kind = source.kind();
+        io::Error::new(
+            kind,
+            Self {
+                rel: rel.to_path_buf(),
+                source,
+            },
+        )
+    }
+
+    /// The directory an `io::Error` from [`TreeStamp::read_at_most`] names, if any.
+    pub fn rel_of(error: &io::Error) -> Option<&Path> {
+        error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<Self>())
+            .map(|walk| walk.rel.as_path())
+    }
+}
+
+impl std::fmt::Display for WalkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.rel.display(), self.source)
+    }
+}
+
+impl std::error::Error for WalkError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
     }
 }
 
@@ -270,5 +364,68 @@ mod tests {
             fs::write(root.join("libs/Lib.lua"), "-- LIB\n").unwrap();
         });
         assert!(TreeStamp::read(&dir.path().join("absent")).is_err());
+    }
+
+    #[test]
+    fn read_at_most_stops_past_the_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Foo");
+        fs::create_dir_all(root.join("libs")).unwrap();
+        fs::write(root.join("Foo.toc"), "## Interface: 120105\n").unwrap();
+        fs::write(root.join("libs/lib.lua"), "-- lib\n").unwrap();
+        assert_eq!(
+            TreeStamp::read_at_most(&root, 3).unwrap(),
+            None,
+            "four entries"
+        );
+        assert_eq!(
+            TreeStamp::read_at_most(&root, 4).unwrap(),
+            Some(TreeStamp::read(&root).unwrap())
+        );
+        // A symlinked root is its one entry, never listed.
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let linked = TreeStamp::read_at_most(&link, 10).unwrap().unwrap();
+        assert_eq!(linked.entries().len(), 1);
+        assert!(linked.entries()[0].1.file_type().is_symlink());
+    }
+
+    #[test]
+    fn the_accessors_report_the_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Foo.lua");
+        fs::write(&file, "x").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        for (path, kind) in [
+            (&file, "file"),
+            (&dir.path().to_path_buf(), "dir"),
+            (&link, "symlink"),
+        ] {
+            let meta = fs::symlink_metadata(path).unwrap();
+            let s = stamp(path);
+            assert_eq!((s.dev(), s.ino()), (meta.dev(), meta.ino()), "{kind}");
+            let ctime = i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec());
+            assert_eq!(s.ctime_ns(), ctime, "{kind}");
+            assert_eq!(s.file_type(), meta.file_type(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_walk_error_names_the_directory_it_could_not_list() {
+        if rustix::process::geteuid().is_root() {
+            return; // root lists a mode-000 directory
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Foo");
+        fs::create_dir_all(root.join("locked")).unwrap();
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        let error = TreeStamp::read_at_most(&root, 10).unwrap_err();
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            WalkError::rel_of(&error),
+            Some(Path::new("locked")),
+            "{error}"
+        );
     }
 }

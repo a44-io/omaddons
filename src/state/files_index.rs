@@ -114,7 +114,7 @@ pub fn mtime_ns(meta: &std::fs::Metadata) -> i128 {
 }
 
 /// Bytes read and lowercase hex SHA-256 of `reader`, in 64 KiB chunks.
-fn hash_reader(mut reader: impl Read) -> io::Result<(u64, String)> {
+pub(crate) fn hash_reader(mut reader: impl Read) -> io::Result<(u64, String)> {
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     let mut size = 0u64;
@@ -158,29 +158,16 @@ pub fn index_live_folder(path: &Path, limits: &ArchiveLimits) -> Result<FolderIn
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let unindexable = |rel: &str, why: &str| {
-        Error::new(
-            ErrorCode::Io,
+        self::unindexable(
+            &folder,
+            rel,
             format!("{folder}/{rel} {why}, so the folder cannot be indexed"),
             Suggestion::text("replace it with a regular file, or leave the folder unmanaged"),
         )
-        .details(json!({ "reason": "unindexable", "folder": folder, "path": rel }))
     };
     let unreadable = |rel: &str, e: &io::Error| unindexable(rel, &format!("cannot be read ({e})"));
     let over = |what: &str, measured: u64, limit: u64, key: &str| {
-        Error::new(
-            ErrorCode::ArchiveTooLarge,
-            format!("{folder} has {measured} {what}, over the limit of {limit}"),
-            Suggestion::text(format!(
-                "if the folder is genuine, raise the limit: omaddons config set {key} <value>"
-            )),
-        )
-        .details(json!({
-            "reason": "limit_exceeded",
-            "folder": folder,
-            "measured": measured,
-            "limit": limit,
-            "config_key": key,
-        }))
+        limit_exceeded(&folder, what, measured, limit, key)
     };
 
     let meta = std::fs::symlink_metadata(path).map_err(|e| unreadable(".", &e))?;
@@ -258,6 +245,38 @@ pub fn index_live_folder(path: &Path, limits: &ArchiveLimits) -> Result<FolderIn
     }
     let recorded = jiff::Timestamp::now().as_nanosecond();
     Ok(FolderIndex::new(folder, entries).stamped(recorded))
+}
+
+/// `io` with `details {reason: "unindexable", folder, path}`: a live folder whose entry
+/// `rel` (folder-relative) cannot be read as the caller needs.
+pub(crate) fn unindexable(folder: &str, rel: &str, message: String, fix: Suggestion) -> Error {
+    Error::new(ErrorCode::Io, message, fix)
+        .details(json!({ "reason": "unindexable", "folder": folder, "path": rel }))
+}
+
+/// `archive_too_large` with `details {reason: "limit_exceeded", folder, measured, limit,
+/// config_key}`: a live folder with `measured` `what` (entries, bytes) over `limit`.
+pub(crate) fn limit_exceeded(
+    folder: &str,
+    what: &str,
+    measured: u64,
+    limit: u64,
+    config_key: &str,
+) -> Error {
+    Error::new(
+        ErrorCode::ArchiveTooLarge,
+        format!("{folder} has {measured} {what}, over the limit of {limit}"),
+        Suggestion::text(format!(
+            "if the folder is genuine, raise the limit: omaddons config set {config_key} <value>"
+        )),
+    )
+    .details(json!({
+        "reason": "limit_exceeded",
+        "folder": folder,
+        "measured": measured,
+        "limit": limit,
+        "config_key": config_key,
+    }))
 }
 
 #[cfg(test)]
