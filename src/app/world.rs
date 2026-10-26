@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use crate::cli::Context;
 use crate::discover::cache::{CacheStats, DiscoveryMode, discover_cached};
-use crate::discover::registry::{Resolved, missing_named, reconcile, resolve, resolve_one_in};
+use crate::discover::registry::{
+    Resolved, is_all_keyword, missing_named, reconcile, reserved_id_warning, resolve,
+    resolve_one_in,
+};
 use crate::discover::running::process_prefixes;
 use crate::discover::{DiscoveredTarget, DiscoveryInput, DiscoverySource, ScanLimits};
 use crate::error::{Error, Result, Warning};
@@ -126,6 +129,14 @@ impl World {
             .filter_map(|d| crate::discover::unknown_flavor(&d.target))
             .collect();
         found(&unknown);
+        // `-t all` shadowed by a client named `all` (M4-D13): said once, through the notes.
+        let reserved = ctx
+            .target
+            .as_deref()
+            .and_then(|selector| reserved_id_warning(selector, &resolved));
+        if let Some(warning) = reserved {
+            found(std::slice::from_ref(&warning));
+        }
         // Unfinished transactions, reported without recovering (D23). A mutating
         // command recovers them under the lock and reports `journal_recovered` instead:
         // the run's notes read them again when it ends.
@@ -235,28 +246,40 @@ impl World {
     }
 
     /// The targets a command that acts on several clients covers (M2-D24): every
-    /// discovered target without `-t`, else every match of the first selector kind
-    /// that matches (`-t vanilla` is every vanilla client, `-t sod` the Classic Era
-    /// client); sorted by id, without duplicates. For `status`, `list`, `info`, and
-    /// later `outdated`, `update`, `export`, `sync`, `adopt`, `pin`/`unpin` and
-    /// `search`. Commands that must land on one client (`install`, `remove`, `copy`'s
-    /// sides, `adopt --ref`, `history` and `undo`) use `resolve_one`, whose ambiguity is
-    /// an error.
+    /// discovered target without `-t` or with `-t all` (M4-D13; test clients included),
+    /// else every match of the first selector kind that matches (`-t vanilla` is every
+    /// vanilla client, `-t sod` the Classic Era client); sorted by id, without
+    /// duplicates. For `status`, `list`, `info`, `outdated`, `update`, `export`, `sync`,
+    /// `adopt`, `pin`/`unpin`, `search`, `backup` and `errors`. Commands that must land
+    /// on one client (`install`, `remove`, `copy`'s sides, `adopt --ref`, `history` and
+    /// `undo`) use `resolve_one`, where `-t all` with several clients is
+    /// `target_ambiguous`. A command that reads `ctx.target` itself asks
+    /// [`World::selects_all`] first.
     pub fn select_many(&self, ctx: &Context) -> Result<Vec<&DiscoveredTarget>> {
         if let Some(selector) = ctx.target.as_deref() {
             missing_named(selector, &self.resolved.targets, &self.resolved.missing)?;
         }
         select_many(ctx.target.as_deref(), &self.resolved.targets, &self.table)
     }
+
+    /// Whether `-t` is the keyword `all` and selects every client: no client is named
+    /// `all` (one that is wins, with `target_id_reserved`).
+    pub fn selects_all(&self, ctx: &Context) -> bool {
+        ctx.target.as_deref().is_some_and(|selector| {
+            is_all_keyword(selector) && reserved_id_warning(selector, &self.resolved).is_none()
+        })
+    }
 }
 
-/// [`World::select_many`] over `targets`.
+/// [`World::select_many`] over `targets`; `-t all` on a machine without clients selects
+/// none, as no `-t` does.
 fn select_many<'a>(
     selector: Option<&str>,
     targets: &'a [DiscoveredTarget],
     table: &RulesTable,
 ) -> Result<Vec<&'a DiscoveredTarget>> {
     let mut selected: Vec<&DiscoveredTarget> = match selector {
+        Some(selector) if targets.is_empty() && is_all_keyword(selector) => Vec::new(),
         Some(selector) => resolve(selector, targets, table)?,
         None => targets.iter().collect(),
     };
@@ -381,6 +404,28 @@ mod tests {
         with_legacy.push(found("vanilla", Family::VanillaLegacy, None));
         let selected = select_many(Some("vanilla"), &with_legacy, &table).unwrap();
         assert_eq!(ids(&selected), ["vanilla"]);
+    }
+
+    #[test]
+    fn select_many_with_all_is_every_target_and_may_be_empty() {
+        let table = RulesTable::builtin();
+        let none = select_many(Some("all"), &[], &table).unwrap();
+        assert!(none.is_empty(), "no client: {:?}", ids(&none));
+        let targets = vec![
+            found("retail", Family::Mainline, Some("wow")),
+            found("turtle", Family::Vanilla, None),
+            found("era", Family::Vanilla, Some("wow_classic_era")),
+            found("ptr", Family::Mainline, Some("wowt")),
+        ];
+        let every = select_many(None, &targets, &table).unwrap();
+        for selector in ["all", "ALL"] {
+            let all = select_many(Some(selector), &targets, &table).unwrap();
+            assert_eq!(ids(&all), ids(&every), "{selector}");
+        }
+        let mut named = targets.clone();
+        named.push(found("all", Family::Mainline, None));
+        let shadowed = select_many(Some("all"), &named, &table).unwrap();
+        assert_eq!(ids(&shadowed), ["all"], "a client named all wins");
     }
 
     #[test]

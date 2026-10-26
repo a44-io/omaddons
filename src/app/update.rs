@@ -24,7 +24,7 @@ use crate::discover::DiscoveredTarget;
 use crate::engine::plan::{AnyFlavorIntent, PinIntent, RequestedChange, addon_pinned};
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning};
-use crate::model::{AddonRecord, Channel, Ref, RunId, TxId, TxKind};
+use crate::model::{AddonRecord, Channel, Ref, RunId, Target, TxId, TxKind};
 use crate::output::{Outcome, Style};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::Freshness;
@@ -32,6 +32,7 @@ use crate::resolve::catalog::Catalog;
 use crate::resolve::updates::{
     UncheckedReason, UpdateStatus, installed_primary_interface, is_static, statuses, update_floor,
 };
+use crate::rules::TargetKind;
 use crate::sources::{SourceId, Wanted};
 use crate::state::records::TargetRecord;
 
@@ -68,6 +69,8 @@ pub struct UpdateOutcome {
     pub locks: Vec<(TxId, u64)>,
     /// For `-v` log lines: why addons were left alone, the memo ignored or not written.
     pub notes: Vec<String>,
+    /// `-t all`'s first human line ([`all_line`]); not serialized.
+    all_clients: Option<String>,
 }
 
 impl Outcome for UpdateOutcome {
@@ -105,12 +108,38 @@ impl Outcome for UpdateOutcome {
     }
 
     fn render_human(&self, w: &mut dyn std::io::Write, style: &Style) -> std::io::Result<()> {
+        if let Some(line) = &self.all_clients {
+            writeln!(w, "{line}")?;
+        }
         self.inner.render_human(w, style)
     }
 }
 
 fn noun(n: usize) -> &'static str {
     if n == 1 { "addon" } else { "addons" }
+}
+
+/// `update -t all`'s first human line (M4-D13): how many clients it selected, and which
+/// of them are test clients, so the wider selection is never silent.
+fn all_line(targets: &[&Target]) -> String {
+    if targets.is_empty() {
+        return "-t all selects no client".to_owned();
+    }
+    let clients = crate::output::count(targets.len(), "client");
+    let mut tests: Vec<&str> = targets
+        .iter()
+        .filter(|t| matches!(t.kind, TargetKind::Test))
+        .map(|t| t.id.as_str())
+        .collect();
+    tests.sort_unstable();
+    if tests.is_empty() {
+        return format!("-t all selects {clients}, none of them a test client");
+    }
+    let count = crate::output::count(tests.len(), "test client");
+    format!(
+        "-t all selects {clients}, including {count} ({})",
+        tests.join(", ")
+    )
 }
 
 /// One managed addon in the run's scope.
@@ -134,6 +163,10 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
     warnings.extend(catalog_warnings);
     let mut targets: Vec<&DiscoveredTarget> = world.select_many(ctx)?;
     targets.sort_by(|a, b| a.target.id.cmp(&b.target.id));
+    let all_clients = world.selects_all(ctx).then(|| {
+        let selected: Vec<&Target> = targets.iter().map(|d| &d.target).collect();
+        all_line(&selected)
+    });
     let records = world.records()?;
     let (scope, unknown) = in_scope(&targets, &records, &catalog, &args.addons);
     // A client named among the addons (M4-D12 hook 3), before anything is written.
@@ -467,6 +500,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
         strict: args.strict,
         locks,
         notes,
+        all_clients,
     })
 }
 
@@ -669,6 +703,55 @@ fn blocked(error: &ErrorBody) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_all_line_counts_the_test_clients() {
+        let client = |id: &str, kind: TargetKind| {
+            let mut target =
+                crate::engine::testing::target(&std::path::PathBuf::from(format!("/c/{id}")));
+            target.id = id.into();
+            target.kind = kind;
+            target
+        };
+        let (live, test) = (TargetKind::Live, TargetKind::Test);
+        for (case, clients, want) in [
+            (
+                "three_with_one_test",
+                vec![
+                    client("retail", live),
+                    client("ptr", test),
+                    client("era", live),
+                ],
+                "-t all selects 3 clients, including 1 test client (ptr)",
+            ),
+            (
+                "six_with_two_tests",
+                vec![
+                    client("retail", live),
+                    client("ptr", test),
+                    client("era", live),
+                    client("classic", live),
+                    client("classic-ptr", test),
+                    client("anniversary", live),
+                ],
+                "-t all selects 6 clients, including 2 test clients (classic-ptr, ptr)",
+            ),
+            (
+                "two_live",
+                vec![client("retail", live), client("era", live)],
+                "-t all selects 2 clients, none of them a test client",
+            ),
+            (
+                "one_live",
+                vec![client("retail", live)],
+                "-t all selects 1 client, none of them a test client",
+            ),
+            ("none", Vec::new(), "-t all selects no client"),
+        ] {
+            let targets: Vec<&Target> = clients.iter().collect();
+            assert_eq!(all_line(&targets), want, "{case}");
+        }
+    }
 
     #[test]
     fn only_verification_refusals_are_blocked() {

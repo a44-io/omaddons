@@ -62,7 +62,7 @@ pub struct GlobalArgs {
     )]
     pub format: Option<String>,
     /// The client to act on: id, key, game mode (sod and hardcore select the Classic Era
-    /// client), family, product, flavor folder or path
+    /// client), family, product, flavor folder, path, or all (every client)
     #[arg(
         short = 't',
         long = "target",

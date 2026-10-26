@@ -138,18 +138,20 @@ pub fn run(ctx: &Context, args: &ExportArgs) -> Result<ExportOutcome> {
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();
 
-    // Registered clients whose dir is gone: every one without -t, else the one -t names
-    // by id or key.
+    // Registered clients whose dir is gone: every one without -t or with -t all, else
+    // the one -t names by id or key.
     let key = ctx
         .target
         .as_deref()
         .and_then(|s| s.parse::<TargetKey>().ok());
+    let all = world.selects_all(ctx);
     let missing: Vec<_> = world
         .resolved
         .missing
         .iter()
         .filter(|e| match &ctx.target {
             None => true,
+            Some(_) if all => true,
             Some(selector) => e.id.eq_ignore_ascii_case(selector) || Some(e.key) == key,
         })
         .collect();

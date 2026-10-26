@@ -243,6 +243,9 @@ pub fn id_problem(id: &str, table: &RulesTable) -> Option<String> {
     if table.product_by_code(id).is_some() {
         return Some(format!("{id:?} is a product code"));
     }
+    if id == ALL_TARGETS {
+        return Some(format!("{id:?} is reserved: -t all selects every client"));
+    }
     None
 }
 
@@ -635,7 +638,35 @@ pub fn check_user_id(registry: &Registry, new: &str, table: &RulesTable) -> Resu
 // ---------------------------------------------------------------------------------------
 // Selectors.
 
-/// The targets `selector` names. Precedence, first match wins: key, id, product code,
+/// The selector that names every target (M4-D13): `-t all`, any case.
+pub const ALL_TARGETS: &str = "all";
+
+/// Whether `selector` spells the `all` keyword (ASCII case ignored).
+pub fn is_all_keyword(selector: &str) -> bool {
+    selector.eq_ignore_ascii_case(ALL_TARGETS)
+}
+
+/// `target_id_reserved`, when `selector` spells `all` and a target is named `all`: a
+/// discovered one (registered or provisional), or a registered one whose directory is
+/// gone. That target wins over the keyword.
+pub fn reserved_id_warning(selector: &str, resolved: &Resolved) -> Option<Warning> {
+    let named = resolved
+        .known_ids()
+        .iter()
+        .any(|id| id.eq_ignore_ascii_case(ALL_TARGETS));
+    (is_all_keyword(selector) && named).then(|| {
+        Warning::new(
+            WarningCode::TargetIdReserved,
+            "a client has the id \"all\", so -t all selected that client, not every client",
+        )
+        .with_fix(Suggestion::text(
+            "rename it, and -t all selects every client again: omaddons targets rename all <new id>",
+        ))
+    })
+}
+
+/// The targets `selector` names. Precedence, first match wins: key, the keyword `all`
+/// (every target, in id order, unless a target is named `all`), id, product code,
 /// flavor folder, game mode (`table`'s mode ids and aliases: `sod` selects the Classic
 /// Era client), family, then a path (install root, client dir or AddOns path).
 /// `target_not_found` when nothing matches, naming the missing client for a known mode.
@@ -644,6 +675,24 @@ pub fn resolve<'a>(
     targets: &'a [DiscoveredTarget],
     table: &RulesTable,
 ) -> Result<Vec<&'a DiscoveredTarget>> {
+    // The key step never matches `all` (not a ULID), so the keyword comes first. Sorted:
+    // its set is everything, and discovery order depends on routes the user cannot see.
+    let named_all = targets
+        .iter()
+        .any(|d| d.target.id.eq_ignore_ascii_case(ALL_TARGETS));
+    if is_all_keyword(selector) && !named_all {
+        if targets.is_empty() {
+            return Err(Error::new(
+                ErrorCode::TargetNotFound,
+                "-t all selects every client, and none was found on this machine",
+                Suggestion::command(["omaddons", "targets"]),
+            )
+            .details(serde_json::json!({ "selector": selector })));
+        }
+        let mut all: Vec<&DiscoveredTarget> = targets.iter().collect();
+        all.sort_by(|a, b| a.target.id.cmp(&b.target.id));
+        return Ok(all);
+    }
     let pick = |test: &dyn Fn(&DiscoveredTarget) -> bool| -> Vec<&'a DiscoveredTarget> {
         targets.iter().filter(|d| test(d)).collect()
     };
@@ -1028,6 +1077,195 @@ mod tests {
                 .id,
             "wotlk"
         );
+    }
+
+    /// `retail`, `wotlk`, `era` and the test client `ptr`, in that (discovery) order.
+    fn four_targets() -> Vec<DiscoveredTarget> {
+        let mut ptr = discovered(
+            "ptr",
+            Family::Mainline,
+            Some("wowt"),
+            Some("_ptr_"),
+            "/g/wow",
+        );
+        ptr.target.kind = TargetKind::Test;
+        vec![
+            discovered(
+                "retail",
+                Family::Mainline,
+                Some("wow"),
+                Some("_retail_"),
+                "/g/wow",
+            ),
+            discovered("wotlk", Family::WrathLegacy, None, None, "/g/a"),
+            discovered(
+                "era",
+                Family::Vanilla,
+                Some("wow_classic_era"),
+                Some("_classic_era_"),
+                "/g/wow",
+            ),
+            ptr,
+        ]
+    }
+
+    fn ids_of(found: &[&DiscoveredTarget]) -> Vec<String> {
+        found.iter().map(|d| d.target.id.clone()).collect()
+    }
+
+    #[test]
+    fn the_all_keyword_selects_every_target_in_id_order() {
+        let targets = four_targets();
+        let table = RulesTable::builtin();
+        for selector in ["all", "ALL", "All"] {
+            let found = resolve(selector, &targets, &table).unwrap();
+            assert_eq!(
+                ids_of(&found),
+                ["era", "ptr", "retail", "wotlk"],
+                "{selector}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_target_named_all_wins_over_the_keyword() {
+        let mut targets = four_targets();
+        targets.push(discovered("all", Family::Mainline, None, None, "/g/all"));
+        let table = RulesTable::builtin();
+        for selector in ["all", "ALL"] {
+            let found = resolve(selector, &targets, &table).unwrap();
+            assert_eq!(ids_of(&found), ["all"], "{selector}");
+        }
+    }
+
+    #[test]
+    fn the_all_keyword_with_no_target_is_target_not_found() {
+        let error = resolve("all", &[], &RulesTable::builtin()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::TargetNotFound);
+        assert_eq!(
+            error.message,
+            "-t all selects every client, and none was found on this machine"
+        );
+        assert_eq!(error.details, serde_json::json!({ "selector": "all" }));
+        assert_eq!(
+            error.fix.argv(),
+            Some(&["omaddons".to_owned(), "targets".to_owned()][..])
+        );
+    }
+
+    #[test]
+    fn resolve_one_with_all_offers_one_fix_per_target() {
+        let targets = four_targets();
+        let table = RulesTable::builtin();
+        let argv = |words: &[&str]| -> Vec<String> {
+            std::iter::once("omaddons")
+                .chain(words.iter().copied())
+                .map(str::to_owned)
+                .collect()
+        };
+        for (case, typed, spelled) in [
+            ("-t all", argv(&["install", "x", "-t", "all"]), "-t"),
+            (
+                "--target=all",
+                argv(&["install", "x", "--target=all"]),
+                "--target=",
+            ),
+        ] {
+            let error = resolve_one("all", &targets, &table, &typed).unwrap_err();
+            assert_eq!(error.code, ErrorCode::TargetAmbiguous, "{case}");
+            let ids = ["era", "ptr", "retail", "wotlk"];
+            assert_eq!(
+                error.details["candidates"],
+                serde_json::json!(ids),
+                "{case}"
+            );
+            let fixes: Vec<Vec<String>> = std::iter::once(&error.fix)
+                .chain(&error.alternatives)
+                .map(|s| s.argv().unwrap_or_default().to_vec())
+                .collect();
+            let want: Vec<Vec<String>> = ids
+                .iter()
+                .map(|id| match spelled {
+                    "-t" => argv(&["install", "x", "-t", id]),
+                    _ => argv(&["install", "x", &format!("--target={id}")]),
+                })
+                .collect();
+            assert_eq!(fixes, want, "{case}");
+        }
+        let one = vec![four_targets().remove(0)];
+        let found = resolve_one("all", &one, &table, &argv(&["install", "x", "-t", "all"]));
+        assert_eq!(found.unwrap().target.id, "retail", "a single target");
+    }
+
+    #[test]
+    fn all_is_a_reserved_id() {
+        let table = RulesTable::builtin();
+        let problem = id_problem("all", &table).unwrap_or_default();
+        assert!(problem.contains("reserved"), "{problem}");
+        let error = check_user_id(&Registry::default(), "all", &table).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Usage, "{}", error.message);
+        for id in ["all-1", "ball", "allx", "all.x"] {
+            assert_eq!(id_problem(id, &table), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_reserved_id_warning_fires_only_when_the_keyword_is_shadowed() {
+        let with_all = |missing: bool| {
+            let mut targets = four_targets();
+            let mut gone = Vec::new();
+            if missing {
+                gone.push(RegistryEntry {
+                    key: TargetKey::new(),
+                    id: "all".to_owned(),
+                    install_root: PathBuf::from("/g/all"),
+                    client_dir: PathBuf::from("/g/all"),
+                    flavor_dir: None,
+                    product: None,
+                    qualifier: String::new(),
+                    origin: Origin::Manual,
+                    registered_at: Timestamp::UNIX_EPOCH,
+                });
+            } else {
+                targets.push(discovered("all", Family::Mainline, None, None, "/g/all"));
+            }
+            Resolved {
+                targets,
+                warnings: Vec::new(),
+                missing: gone,
+            }
+        };
+        let without = Resolved {
+            targets: four_targets(),
+            warnings: Vec::new(),
+            missing: Vec::new(),
+        };
+        for (case, selector, resolved, fires) in [
+            ("keyword_and_a_discovered_all", "all", with_all(false), true),
+            ("keyword_in_capitals", "ALL", with_all(false), true),
+            ("keyword_and_a_missing_all", "all", with_all(true), true),
+            ("another_selector", "retail", with_all(false), false),
+            ("keyword_without_an_all", "all", without.clone(), false),
+        ] {
+            let warning = reserved_id_warning(selector, &resolved);
+            assert_eq!(warning.is_some(), fires, "{case}: {warning:?}");
+            let Some(warning) = warning else {
+                continue;
+            };
+            assert_eq!(warning.code, WarningCode::TargetIdReserved, "{case}");
+            assert_eq!(
+                warning.message,
+                "a client has the id \"all\", so -t all selected that client, not every client",
+                "{case}"
+            );
+            let fix = warning.fix.unwrap_or_else(|| Suggestion::text(""));
+            assert!(
+                fix.display()
+                    .contains("omaddons targets rename all <new id>"),
+                "{case}: {fix:?}"
+            );
+            assert_eq!(fix.argv(), None, "{case}");
+        }
     }
 
     /// A registered client whose directory is gone, named by its id or key, is not

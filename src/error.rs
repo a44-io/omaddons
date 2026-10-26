@@ -346,6 +346,9 @@ warning_codes! {
     /// The widget is installed, but Omarchy's shell could not be told to put it on the
     /// bar (no desktop session, or the shell is not running).
     OmarchyShellUnreachable     = "omarchy_shell_unreachable";
+    /// `-t all` selected the client whose id is `all`, not every client: the id wins over
+    /// the keyword.
+    TargetIdReserved            = "target_id_reserved";
 }
 
 impl fmt::Display for WarningCode {
@@ -867,7 +870,8 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 52);
+        assert_eq!(WarningCode::ALL.len(), 53);
+        assert_eq!(WarningCode::TargetIdReserved.wire(), "target_id_reserved");
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());
         }

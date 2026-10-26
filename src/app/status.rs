@@ -626,9 +626,10 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     let mut warnings = world.warnings.clone();
 
     let selected: Vec<&DiscoveredTarget> = world.select_many(ctx)?;
+    // Registered clients whose dir is gone: listed without -t and with -t all.
     let missing: Vec<&RegistryEntry> = match &ctx.target {
-        Some(_) => Vec::new(),
-        None => world.resolved.missing.iter().collect(),
+        Some(_) if !world.selects_all(ctx) => Vec::new(),
+        _ => world.resolved.missing.iter().collect(),
     };
     let found: Vec<Target> = selected.iter().map(|d| d.target.clone()).collect();
     let running = detect_running(&found);

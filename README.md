@@ -476,7 +476,9 @@ A client's interface number is `major×10000 + minor×100 (+ patch on modern cli
 6. a **family**: `mainline`, `vanilla`, `wrath-legacy`;
 7. a **path**: the install root, the client directory or its AddOns folder.
 
-Every target that the first matching kind matches is selected (a client reached twice is listed once). `status`, `list`, `info`, `outdated`, `update`, `export`, `sync`, `adopt`, `pin`, `unpin`, `search` and `backup` cover them all: `-t vanilla` reads every vanilla client, `-t mainline` every retail, PTR, XPTR and beta client. A command that must land on one client (`install`, `remove`, each side of `copy`, `adopt --ref`, and `history` and `undo`, which name one) refuses a selector that matches two with `target_ambiguous` (exit 3): the first candidate is the `fix`, and each other one is an `alternatives` entry. So does config `default_target` when it matches two.
+Every target that the first matching kind matches is selected (a client reached twice is listed once). `status`, `list`, `info`, `outdated`, `update`, `export`, `sync`, `adopt`, `pin`, `unpin`, `search`, `backup` and `errors` cover them all: `-t vanilla` reads every vanilla client, `-t mainline` every retail, PTR, XPTR and beta client. A command that must land on one client (`install`, `remove`, each side of `copy`, `adopt --ref`, and `history` and `undo`, which name one) refuses a selector that matches two with `target_ambiguous` (exit 3): the first candidate is the `fix`, and each other one is an `alternatives` entry. So does config `default_target` when it matches two.
+
+**`-t all`** (any case) selects every client, test clients included, in id order. For most commands that is the same as no `-t`; where a command's default leaves clients out (`backup create` backs up live clients, `backup list` lists clients that have backups), `-t all` includes them. On a command that lands on one client (`install`, `remove`, `adopt --ref`, `history`, `undo`, `backup restore`, `backup import`) it is `target_ambiguous`, one fix per client, unless there is only one client. A target named `all` (registered by an older build, or found in a flavor folder `_all_`) wins over the keyword, with the warning `target_id_reserved`; rename it with `omaddons targets rename all <new id>`.
 
 An id beats a family, and the legacy default ids `vanilla`, `tbc`, `cata` and `mists` are also family names. With a 1.12.1 server present, `-t vanilla` selects it, not Classic Era. With a 5.4.8 server, `-t mists` selects it, not Mists Classic. Use `-t era` and `-t classic` (or `-t mop`) for the Battle.net clients, or rename the server's target.
 
@@ -698,7 +700,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 |---|---|
 | `--json`, `--robot` | One JSON envelope on stdout (see [The JSON contract](#the-json-contract)) |
 | `--format json\|human` | Overrides `--json`; default `human`, or `OMADDONS_FORMAT=json` |
-| `-t, --target <TARGET>` (alias `--flavor`) | The client to act on: [any selector](#choosing-a-target-with--t) |
+| `-t, --target <TARGET>` (alias `--flavor`) | The client to act on: [any selector](#choosing-a-target-with--t), or `all` |
 | `--dry-run` | Show the plan without changing anything. Every command accepts it; one that changes nothing ignores it |
 | `--actor human\|agent\|widget` | Who is acting, recorded in history by every command that changes something. Default `OMADDONS_ACTOR`, else `human` when stdin is a terminal, else `agent`. In `history` it filters |
 | `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters); others accept and ignore it |
@@ -883,6 +885,7 @@ omaddons update                     # everything, everywhere
 omaddons update dbm plater -t retail
 omaddons update dbm --channel beta  # switch to beta and install its newest release
 omaddons update --dry-run           # what would change, per client
+omaddons update -t all --dry-run    # every client, test clients included; the first line counts them
 omaddons update --strict            # exit 6 when only some addons update
 omaddons update --no-deps           # not what the new releases' TOCs start requiring
 ```
@@ -1489,7 +1492,7 @@ omaddons targets rm warmane                # unregister; nothing in the client d
 
 Each client's `found_by` names the discovery route that reached it first (see [Where discovery looks](#where-discovery-looks)): `product_db`, `launcher:<name>`, `process`, `extra_root`, `scan`, `manual` (added with `targets add`), `registered`, `remembered`, or `registry` for a registered client whose directory is gone.
 
-An id you choose (`--name`, `rename`) must match `^[a-z0-9][a-z0-9._-]*$`, be at most 32 characters, contain no `@`, and not be a key, family name or product code. Built-in default ids such as `vanilla` or `mists` are exempt, which is why they can shadow a family (see [Choosing a target](#choosing-a-target-with--t)).
+An id you choose (`--name`, `rename`) must match `^[a-z0-9][a-z0-9._-]*$`, be at most 32 characters, contain no `@`, and not be a key, family name or product code, or `all`. Built-in default ids such as `vanilla` or `mists` are exempt, which is why they can shadow a family (see [Choosing a target](#choosing-a-target-with--t)).
 
 ### `search <QUERY>...`
 
@@ -1873,7 +1876,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 </details>
 
 <details>
-<summary><strong>Every warning code (51)</strong></summary>
+<summary><strong>Every warning code (53)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -1929,6 +1932,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `before_restore_skipped` | `backup restore` kept no `before_restore` backup of the current `WTF/` (the filesystem cannot clone files, or there was no `WTF/`); the restore went on, and its undo snapshot keeps the replaced tree until retention |
 | `auto_backup_failed` | the automatic backup before a change failed; the change went ahead without it. The fix makes one by hand (`omaddons backup create -t <id>`) |
 | `omarchy_shell_unreachable` | `omarchy install` or `remove`: Omarchy's shell could not be reached (over SSH, or with the shell stopped), so the widget's files changed but its place on the bar did not; the fix runs the command again from the desktop session (for `remove`, `omarchy plugin disable a44.omaddons`) |
+| `target_id_reserved` | `-t all` selected the client whose id is `all`, not every client (an id wins over the keyword); only when `-t all` is given; the fix is advice: `omaddons targets rename all <new id>` |
 
 </details>
 
@@ -2429,7 +2433,7 @@ Add `-t`. For `install`, you can also set a default once:
 omaddons targets default retail
 ```
 
-The `fix` is the first candidate, and with `--json` `error.alternatives` holds one runnable argv for each of the others.
+The `fix` is the first candidate, and with `--json` `error.alternatives` holds one runnable argv for each of the others. `-t all` names every client, so a command that changes one client (`install`, `remove`) asks which; take the fix or an alternative.
 
 ### `no_compatible_release` or `wrong_flavor`
 
