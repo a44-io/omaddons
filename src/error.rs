@@ -515,6 +515,8 @@ pub struct ErrorData {
     pub details: serde_json::Value,
     /// How a usage fix relates to the typed command. Not serialized.
     pub usage_fix: UsageFix,
+    /// The words closest to a selector that named no client. Not serialized.
+    pub closest_selectors: Option<ClosestSelectors>,
 }
 
 impl std::ops::Deref for Error {
@@ -553,6 +555,18 @@ pub enum UsageFix {
     UserVerb,
 }
 
+/// The words closest to a selector that named no client (M4-D14), best first, for the
+/// command boundary to put into the user's argv
+/// (`discover::registry::fix_with_closest_selector`). In process only: `ErrorBody` does
+/// not copy it, so it never reaches the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosestSelectors {
+    /// The selector exactly as given (the raw `-t`, `--from` or `--to` value).
+    pub typed: String,
+    /// Never empty.
+    pub closest: Vec<String>,
+}
+
 impl Error {
     pub fn new(code: ErrorCode, message: impl Into<String>, fix: Suggestion) -> Self {
         Self(Box::new(ErrorData {
@@ -563,6 +577,7 @@ impl Error {
             retryable: code.default_retryable(),
             details: serde_json::Value::Object(serde_json::Map::new()),
             usage_fix: UsageFix::Guess,
+            closest_selectors: None,
         }))
     }
 
@@ -570,6 +585,17 @@ impl Error {
     #[must_use]
     pub fn user_verb(mut self) -> Self {
         self.usage_fix = UsageFix::UserVerb;
+        self
+    }
+
+    /// Records the words closest to `typed` ([`ClosestSelectors`]); nothing when `closest`
+    /// is empty.
+    #[must_use]
+    pub fn closest_selectors(mut self, typed: &str, closest: Vec<String>) -> Self {
+        self.closest_selectors = (!closest.is_empty()).then(|| ClosestSelectors {
+            typed: typed.to_owned(),
+            closest,
+        });
         self
     }
 
@@ -913,6 +939,33 @@ mod tests {
         assert!(Error::new(ErrorCode::Locked, "x", fix()).retryable);
         assert!(!Error::new(ErrorCode::Usage, "x", fix()).retryable);
         assert_eq!(Error::http_status(503, "x", fix()).details["status"], 503);
+    }
+
+    #[test]
+    fn closest_selectors_stay_in_process() {
+        let error = || {
+            Error::new(
+                ErrorCode::TargetNotFound,
+                "m",
+                Suggestion::command(["omaddons", "targets"]),
+            )
+        };
+        let marked = error().closest_selectors("retial", vec!["retail".into()]);
+        assert_eq!(
+            serde_json::to_string(&marked).unwrap(),
+            serde_json::to_string(&error()).unwrap()
+        );
+        assert_eq!(
+            marked.closest_selectors,
+            Some(ClosestSelectors {
+                typed: "retial".into(),
+                closest: vec!["retail".into()],
+            })
+        );
+        assert_eq!(
+            error().closest_selectors("x", vec![]).closest_selectors,
+            None
+        );
     }
 
     #[test]

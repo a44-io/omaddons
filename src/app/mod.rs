@@ -298,7 +298,9 @@ impl Out<'_> {
 
     /// The fixes only the command's boundary knows: an internal error's never reruns
     /// what failed; a retryable `plan_stale` and a `locked` rerun the same command; an
-    /// `offline` one, when `--offline` alone made the run offline, reruns it without.
+    /// `offline` one, when `--offline` alone made the run offline, reruns it without; a
+    /// `target_not_found` whose selector was a near miss names the closest one in the
+    /// user's own command (M4-D14).
     fn boundary_fix(&self, name: &str, e: &mut crate::error::Error) {
         use crate::error::ErrorCode;
         let rerun = |argv: &[String]| crate::error::Suggestion::command(crate::cli::fix_argv(argv));
@@ -312,6 +314,9 @@ impl Out<'_> {
                 if let Some(online) = crate::cli::online_rerun(self.argv, self.offline_by_env) {
                     e.fix = crate::error::Suggestion::command(online);
                 }
+            }
+            ErrorCode::TargetNotFound => {
+                crate::discover::registry::fix_with_closest_selector(e, self.argv);
             }
             _ => {}
         }

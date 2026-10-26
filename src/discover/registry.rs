@@ -29,6 +29,7 @@ use crate::state::registry::{
     Origin, Registry, RegistryEntry, TargetMarker, load_registry, save_registry,
 };
 use crate::state::store::{self, Loaded, VersionStatus};
+use crate::vocabulary::TargetVocabulary;
 
 /// The marker of a client dir, under whichever case `Interface` has on disk.
 pub fn marker_path(client_dir: &Path) -> PathBuf {
@@ -693,12 +694,24 @@ pub fn resolve<'a>(
         all.sort_by(|a, b| a.target.id.cmp(&b.target.id));
         return Ok(all);
     }
+    let path = std::fs::canonicalize(selector).ok();
+    first_match(selector, targets, table, path.as_deref())
+        .ok_or_else(|| no_match(selector, targets, table))
+}
+
+/// The targets the first matching step selects (key, id, product code, flavor folder,
+/// game mode, family, then `path` when given), `None` when no step matches.
+fn first_match<'a>(
+    selector: &str,
+    targets: &'a [DiscoveredTarget],
+    table: &RulesTable,
+    path: Option<&Path>,
+) -> Option<Vec<&'a DiscoveredTarget>> {
     let pick = |test: &dyn Fn(&DiscoveredTarget) -> bool| -> Vec<&'a DiscoveredTarget> {
         targets.iter().filter(|d| test(d)).collect()
     };
     let key = selector.parse::<TargetKey>().ok();
     let family = Family::from_name(selector);
-    let path = std::fs::canonicalize(selector).ok();
     let modes = table.products_with_mode(selector);
     let hosts_mode = |d: &DiscoveredTarget| {
         d.target
@@ -724,36 +737,61 @@ pub fn resolve<'a>(
         // A game mode selects the client that runs it (`sod` → Classic Era).
         &|d| hosts_mode(d),
         &|d| family.is_some_and(|f| d.target.family == f),
-        &|d| path.as_ref().is_some_and(|p| path_names(p, d)),
+        &|d| path.is_some_and(|p| path_names(p, d)),
     ];
     steps
         .iter()
         .map(|step| pick(*step))
         .find(|found| !found.is_empty())
-        .ok_or_else(|| match modes.first() {
-            // A known mode whose client is not on this machine.
-            Some((product, mode)) => Error::new(
-                ErrorCode::TargetNotFound,
-                format!(
-                    "{} runs in the {} client ({}), which was not found on this machine",
-                    mode.name,
-                    host_name(product),
-                    product.folder
-                ),
-                Suggestion::command(["omaddons", "targets", "--rescan"]),
-            )
-            .details(serde_json::json!({
-                "selector": selector,
-                "mode": mode.id,
-                "product": product.code,
-            })),
-            None => Error::new(
-                ErrorCode::TargetNotFound,
-                format!("no target matches {selector:?}"),
-                Suggestion::command(["omaddons", "targets"]),
-            )
-            .details(serde_json::json!({ "selector": selector })),
-        })
+}
+
+/// `target_not_found` for a selector no step matched. A known mode whose client is not
+/// here names that client; any other selector names its closest words that select a
+/// client here (M4-D14), recorded for the command boundary to put into the user's argv.
+fn no_match(selector: &str, targets: &[DiscoveredTarget], table: &RulesTable) -> Error {
+    if let Some((product, mode)) = table.products_with_mode(selector).first() {
+        return Error::new(
+            ErrorCode::TargetNotFound,
+            format!(
+                "{} runs in the {} client ({}), which was not found on this machine",
+                mode.name,
+                host_name(product),
+                product.folder
+            ),
+            Suggestion::command(["omaddons", "targets", "--rescan"]),
+        )
+        .details(serde_json::json!({
+            "selector": selector,
+            "mode": mode.id,
+            "product": product.code,
+        }));
+    }
+    let closest = closest_selectors(selector, targets, table);
+    let message = match closest.first() {
+        Some(best) => format!("no target matches {selector:?}; the closest selector is {best:?}"),
+        None => format!("no target matches {selector:?}"),
+    };
+    Error::new(
+        ErrorCode::TargetNotFound,
+        message,
+        Suggestion::command(["omaddons", "targets"]),
+    )
+    .details(serde_json::json!({ "selector": selector }))
+    .closest_selectors(selector, closest)
+}
+
+/// The words close to `selector` that select at least one client here (M4-D14): ids of
+/// the clients here first among equals, never a path, and never `all`, which would widen
+/// a selection from one client to every client.
+fn closest_selectors(
+    selector: &str,
+    targets: &[DiscoveredTarget],
+    table: &RulesTable,
+) -> Vec<String> {
+    let here = targets.iter().map(|d| d.target.id.as_str());
+    TargetVocabulary::new(table, here).closest(selector, &|word| {
+        !is_all_keyword(word) && first_match(word, targets, table, None).is_some()
+    })
 }
 
 /// A client as players name it: its first mode (`Classic Era` for the client that also
@@ -902,6 +940,111 @@ pub(crate) fn with_target(argv: &[String], id: &str) -> Vec<String> {
         out.extend(["-t".to_owned(), id.to_owned()]);
     }
     crate::cli::fix_argv(&out)
+}
+
+/// Where a token carries a selector value: in the next token, or attached after the
+/// token's first `n` bytes.
+enum SelectorAt {
+    Next,
+    Attached(usize),
+}
+
+/// Whether `arg` is a selector flag, in every spelling clap accepts: `-t`, `--target`,
+/// `--flavor` (and `copy`'s `--from`, `--to`), their `=` forms, `-tV`, `-t=V`, and a
+/// cluster of the value-less `-v` and `-h` ending in `t` (`-vt V`, `-vtV`).
+fn selector_at(arg: &str) -> Option<SelectorAt> {
+    if let Some(long) = arg.strip_prefix("--") {
+        return ["target", "flavor", "from", "to"].iter().find_map(|name| {
+            let rest = long.strip_prefix(name)?;
+            match rest {
+                "" => Some(SelectorAt::Next),
+                _ if rest.starts_with('=') => Some(SelectorAt::Attached(2 + name.len() + 1)),
+                _ => None,
+            }
+        });
+    }
+    let short = arg.strip_prefix('-')?;
+    let switches = short.len() - short.trim_start_matches(['v', 'h']).len();
+    let rest = short.get(switches..)?.strip_prefix('t')?;
+    Some(match rest {
+        "" => SelectorAt::Next,
+        _ if rest.starts_with('=') => SelectorAt::Attached(1 + switches + 2),
+        _ => SelectorAt::Attached(1 + switches + 1),
+    })
+}
+
+/// `argv` (without presentation flags) with `typed` replaced by `with` wherever it is the
+/// value of a selector flag, the flag kept as the user spelled it; `None` when no
+/// selector flag holds `typed` (it came from config's `default_target`). Every such
+/// occurrence is replaced; a positional, another flag's value, and anything after `--`
+/// are left alone.
+pub(crate) fn with_selector(argv: &[String], typed: &str, with: &str) -> Option<Vec<String>> {
+    let mut out: Vec<String> = Vec::with_capacity(argv.len());
+    let mut replaced = false;
+    let mut value_next = false;
+    let mut rest = argv.iter();
+    while let Some(arg) = rest.next() {
+        if std::mem::take(&mut value_next) {
+            // ubs:ignore — comparing command-line words, not secrets
+            let hit = arg == typed;
+            out.push(if hit { with.to_owned() } else { arg.clone() });
+            replaced |= hit;
+            continue;
+        }
+        // ubs:ignore — comparing command-line words, not secrets
+        if arg == "--" {
+            out.push(arg.clone());
+            out.extend(rest.by_ref().cloned());
+            break;
+        }
+        match selector_at(arg) {
+            Some(SelectorAt::Next) => {
+                value_next = true;
+                out.push(arg.clone());
+            }
+            Some(SelectorAt::Attached(at)) => match (arg.get(..at), arg.get(at..)) {
+                // ubs:ignore — comparing command-line words, not secrets
+                (Some(flag), Some(value)) if value == typed => {
+                    out.push(format!("{flag}{with}"));
+                    replaced = true;
+                }
+                _ => out.push(arg.clone()),
+            },
+            None => out.push(arg.clone()),
+        }
+    }
+    replaced.then(|| crate::cli::fix_argv(&out))
+}
+
+/// A `target_not_found` whose selector was a near miss (M4-D14), in the user's own
+/// command: the closest word as the fix, the other close words as alternatives in rank
+/// order, then the listing it had. The verb is the user's own, only the client word
+/// changed ([`UsageFix::UserVerb`](crate::error::UsageFix)). Any other error, and one
+/// whose selector is not on the command line, is left as it is.
+pub(crate) fn fix_with_closest_selector(error: &mut Error, argv: &[String]) {
+    if !matches!(error.code, ErrorCode::TargetNotFound) {
+        return;
+    }
+    let Some(record) = error.closest_selectors.clone() else {
+        return;
+    };
+    let fixes: Option<Vec<Vec<String>>> = record
+        .closest
+        .iter()
+        .map(|word| with_selector(argv, &record.typed, word))
+        .collect();
+    let Some((first, others)) = fixes.as_deref().and_then(<[Vec<String>]>::split_first) else {
+        return;
+    };
+    let listing = std::mem::replace(&mut error.fix, Suggestion::command(first.clone()));
+    let mut alternatives: Vec<Suggestion> = others
+        .iter()
+        .map(|fix| Suggestion::command(fix.clone()))
+        .collect();
+    alternatives.append(&mut error.alternatives);
+    alternatives.push(listing);
+    error.alternatives = alternatives;
+    error.usage_fix = crate::error::UsageFix::UserVerb;
 }
 
 #[cfg(test)]
@@ -1425,5 +1568,394 @@ mod tests {
                 "{args:?}"
             );
         }
+    }
+
+    /// `retail` (Mainline), `era` (Vanilla, the Classic Era client) and the 3.3.5a
+    /// custom client `wotlk`.
+    fn typo_targets() -> Vec<DiscoveredTarget> {
+        vec![
+            discovered(
+                "retail",
+                Family::Mainline,
+                Some("wow"),
+                Some("_retail_"),
+                "/g/wow",
+            ),
+            discovered(
+                "era",
+                Family::Vanilla,
+                Some("wow_classic_era"),
+                Some("_classic_era_"),
+                "/g/wow",
+            ),
+            discovered("wotlk", Family::WrathLegacy, None, None, "/g/wotlk"),
+        ]
+    }
+
+    /// The closest words `resolve` recorded, empty for none.
+    fn recorded(error: &Error) -> Vec<String> {
+        error
+            .closest_selectors
+            .as_ref()
+            .map(|c| c.closest.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_selector_that_matches_nothing_names_its_closest_words() {
+        let targets = typo_targets();
+        let table = RulesTable::builtin();
+        for (case, typed, closest) in [
+            ("transposed_id", "retial", &["retail"][..]),
+            ("upper_case", "RETIAL", &["retail"]),
+            ("custom_client_id", "wtolk", &["wotlk"]),
+            ("family", "vanila", &["vanilla"]),
+            ("mode", "sodd", &["sod"]),
+            ("short", "er", &["era"]),
+            ("folder_typo", "_retail", &["retail"]),
+            ("product_code_typo", "wow_classic_ear", &[]),
+            ("nothing_close", "nosuch", &[]),
+        ] {
+            let error = resolve(typed, &targets, &table).unwrap_err();
+            let ctx = format!("{case}: {typed:?}: {error:?}");
+            assert_eq!(error.code, ErrorCode::TargetNotFound, "{ctx}");
+            assert_eq!(error.fix.argv(), Some(&argv(&["targets"])[..]), "{ctx}");
+            assert!(error.alternatives.is_empty(), "{ctx}");
+            assert_eq!(
+                error.details,
+                serde_json::json!({ "selector": typed }),
+                "{ctx}"
+            );
+            assert_eq!(recorded(&error), closest, "{ctx}");
+            if closest.is_empty() {
+                assert_eq!(error.closest_selectors, None, "{ctx}");
+            } else {
+                let typed_back = error.closest_selectors.as_ref().map(|c| c.typed.as_str());
+                assert_eq!(typed_back, Some(typed), "{ctx}");
+            }
+            let message = match closest.first() {
+                Some(best) => {
+                    format!("no target matches {typed:?}; the closest selector is {best:?}")
+                }
+                None => format!("no target matches {typed:?}"),
+            };
+            assert_eq!(error.message, message, "{ctx}");
+        }
+    }
+
+    #[test]
+    fn a_close_word_that_selects_no_client_here_is_never_offered() {
+        let retail = vec![typo_targets().remove(0)];
+        let table = RulesTable::builtin();
+        for typed in ["sodd", "clasic", "vanila"] {
+            let error = resolve(typed, &retail, &table).unwrap_err();
+            assert_eq!(recorded(&error), Vec::<String>::new(), "{typed}");
+            assert!(
+                !error.message.contains("closest"),
+                "{typed}: {}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_known_mode_whose_client_is_missing_keeps_its_own_error() {
+        let retail = vec![typo_targets().remove(0)];
+        let error = resolve("sod", &retail, &RulesTable::builtin()).unwrap_err();
+        assert_eq!(
+            error.message,
+            "Season of Discovery runs in the Classic Era client (_classic_era_), which was not found on this machine"
+        );
+        assert_eq!(error.fix.argv(), Some(&argv(&["targets", "--rescan"])[..]));
+        assert_eq!(error.closest_selectors, None);
+    }
+
+    #[test]
+    fn ties_go_to_ids_on_this_machine_then_alphabetical() {
+        let table = RulesTable::builtin();
+        let era = || {
+            discovered(
+                "era",
+                Family::Vanilla,
+                Some("wow_classic_era"),
+                Some("_classic_era_"),
+                "/g/wow",
+            )
+        };
+        let sad = discovered("sad", Family::Vanilla, None, None, "/g/sad");
+        let beta = discovered(
+            "beta",
+            Family::Mainline,
+            Some("wow_beta"),
+            Some("_beta_"),
+            "/g/wow",
+        );
+        for (case, targets, typed, want) in [
+            (
+                "an id before a mode",
+                vec![sad, era()],
+                "sxd",
+                &["sad", "sod"][..],
+            ),
+            (
+                "ids alphabetical",
+                vec![beta, era()],
+                "bera",
+                &["beta", "era"],
+            ),
+            (
+                "built-in words alphabetical",
+                vec![era()],
+                "sdc",
+                &["hc", "sod"],
+            ),
+        ] {
+            let error = resolve(typed, &targets, &table).unwrap_err();
+            assert_eq!(recorded(&error), want, "{case}: {typed}");
+        }
+    }
+
+    #[test]
+    fn first_match_is_resolve_without_its_path_step() {
+        let targets = typo_targets();
+        let table = RulesTable::builtin();
+        let ids = |found: &[&DiscoveredTarget]| -> Vec<String> {
+            found.iter().map(|d| d.target.id.clone()).collect()
+        };
+        let words = TargetVocabulary::builtin();
+        let spellings: Vec<&str> = words
+            .words()
+            .map(|(spelling, _)| spelling)
+            .filter(|spelling| !Path::new(spelling).exists())
+            .collect();
+        assert!(spellings.len() > 50, "{}", spellings.len());
+        for word in spellings {
+            let first = first_match(word, &targets, &table, None).map(|f| ids(&f));
+            let resolved = resolve(word, &targets, &table).ok().map(|f| ids(&f));
+            assert_eq!(first, resolved, "{word}");
+        }
+    }
+
+    /// (case, argv after `omaddons`, the typed selector, the expected argv after `omaddons`).
+    type SelectorCase<'a> = (&'a str, &'a [&'a str], &'a str, Option<&'a [&'a str]>);
+
+    #[test]
+    fn with_selector_replaces_the_value_where_it_was_typed() {
+        use clap::Parser as _;
+        let cases: &[SelectorCase<'_>] = &[
+            (
+                "short",
+                &["status", "-t", "retial"],
+                "retial",
+                Some(&["status", "-t", "retail"]),
+            ),
+            (
+                "long",
+                &["status", "--target", "retial"],
+                "retial",
+                Some(&["status", "--target", "retail"]),
+            ),
+            (
+                "long_equals",
+                &["status", "--target=retial"],
+                "retial",
+                Some(&["status", "--target=retail"]),
+            ),
+            (
+                "alias",
+                &["status", "--flavor", "retial"],
+                "retial",
+                Some(&["status", "--flavor", "retail"]),
+            ),
+            (
+                "alias_equals",
+                &["status", "--flavor=retial"],
+                "retial",
+                Some(&["status", "--flavor=retail"]),
+            ),
+            (
+                "attached",
+                &["status", "-tretial"],
+                "retial",
+                Some(&["status", "-tretail"]),
+            ),
+            (
+                "short_equals",
+                &["status", "-t=retial"],
+                "retial",
+                Some(&["status", "-t=retail"]),
+            ),
+            (
+                "cluster",
+                &["status", "-vt", "retial"],
+                "retial",
+                Some(&["status", "-vt", "retail"]),
+            ),
+            (
+                "cluster_attached",
+                &["status", "-vtretial"],
+                "retial",
+                Some(&["status", "-vtretail"]),
+            ),
+            (
+                "before_the_verb",
+                &["-t", "retial", "status"],
+                "retial",
+                Some(&["-t", "retail", "status"]),
+            ),
+            (
+                "presentation_dropped",
+                &["status", "-t", "retial", "--json"],
+                "retial",
+                Some(&["status", "-t", "retail"]),
+            ),
+            (
+                "copy_from",
+                &["copy", "--from", "retial", "--to", "era"],
+                "retial",
+                Some(&["copy", "--from", "retail", "--to", "era"]),
+            ),
+            (
+                "copy_to_equals",
+                &["copy", "--from=era", "--to=retial"],
+                "retial",
+                Some(&["copy", "--from=era", "--to=retail"]),
+            ),
+            (
+                "both_sides",
+                &["copy", "--from", "retial", "--to", "retial"],
+                "retial",
+                Some(&["copy", "--from", "retail", "--to", "retail"]),
+            ),
+            (
+                "other_flag_value",
+                &["install", "x", "--reason", "retial", "-t", "retial"],
+                "retial",
+                Some(&["install", "x", "--reason", "retial", "-t", "retail"]),
+            ),
+            (
+                "positional",
+                &["remove", "retial", "-t", "retial"],
+                "retial",
+                Some(&["remove", "retial", "-t", "retail"]),
+            ),
+            (
+                "after_double_dash",
+                &["remove", "-t", "retial", "--", "retial"],
+                "retial",
+                Some(&["remove", "-t", "retail", "--", "retial"]),
+            ),
+            ("not_on_the_command_line", &["install", "x"], "retial", None),
+            ("exact_only", &["status", "-t", "RETIAL"], "retial", None),
+            (
+                "as_typed",
+                &["status", "-t", "RETIAL"],
+                "RETIAL",
+                Some(&["status", "-t", "retail"]),
+            ),
+        ];
+        for (case, args, typed, want) in cases {
+            let got = with_selector(&argv(args), typed, "retail");
+            assert_eq!(got, want.map(argv), "{case}: {args:?}");
+            if let Some(fix) = got {
+                let parsed = crate::cli::Cli::try_parse_from(&fix);
+                assert!(parsed.is_ok(), "{case}: {fix:?} does not parse: {parsed:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn fix_with_closest_selector_puts_the_closest_word_in_the_users_command() {
+        use crate::error::UsageFix;
+        let table = RulesTable::builtin();
+        let targets = typo_targets();
+        let fixes = |error: &Error| -> Vec<Vec<String>> {
+            std::iter::once(&error.fix)
+                .chain(&error.alternatives)
+                .map(|s| s.argv().unwrap_or_default().to_vec())
+                .collect()
+        };
+
+        // One close word: the fix, then the listing.
+        let before = resolve("retial", &targets, &table).unwrap_err();
+        let mut error = before.clone();
+        fix_with_closest_selector(
+            &mut error,
+            &argv(&["remove", "dbm", "-t", "retial", "--json"]),
+        );
+        assert_eq!(
+            fixes(&error),
+            [argv(&["remove", "dbm", "-t", "retail"]), argv(&["targets"])],
+            "one_close_word"
+        );
+        assert_eq!(error.usage_fix, UsageFix::UserVerb, "one_close_word");
+        assert_eq!(
+            (&error.code, error.retryable, &error.message, &error.details),
+            (
+                &before.code,
+                before.retryable,
+                &before.message,
+                &before.details
+            ),
+            "one_close_word: the rest unchanged"
+        );
+
+        // Two: the others follow in rank order, the listing last.
+        let sad = vec![
+            discovered("sad", Family::Vanilla, None, None, "/g/sad"),
+            typo_targets().remove(1),
+        ];
+        let mut error = resolve("sxd", &sad, &table).unwrap_err();
+        fix_with_closest_selector(&mut error, &argv(&["status", "-t", "sxd"]));
+        assert_eq!(
+            fixes(&error),
+            [
+                argv(&["status", "-t", "sad"]),
+                argv(&["status", "-t", "sod"]),
+                argv(&["targets"])
+            ],
+            "two_close_words"
+        );
+
+        // Left exactly as they were.
+        let ambiguous = resolve_one(
+            "wrath-legacy",
+            &[
+                discovered("wotlk", Family::WrathLegacy, None, None, "/g/a"),
+                discovered("wotlk@b", Family::WrathLegacy, None, None, "/g/b"),
+            ],
+            &table,
+            &argv(&["install", "x", "-t", "wrath-legacy"]),
+        )
+        .unwrap_err();
+        let retail = vec![typo_targets().remove(0)];
+        for (case, before, typed_argv) in [
+            (
+                "nothing_close",
+                resolve("nosuch", &targets, &table).unwrap_err(),
+                argv(&["status", "-t", "nosuch"]),
+            ),
+            (
+                "not_on_the_command_line",
+                resolve("retial", &targets, &table).unwrap_err(),
+                argv(&["install", "x"]),
+            ),
+            (
+                "other_code",
+                ambiguous,
+                argv(&["install", "x", "-t", "wrath-legacy"]),
+            ),
+            (
+                "mode_arm",
+                resolve("sod", &retail, &table).unwrap_err(),
+                argv(&["status", "-t", "sod"]),
+            ),
+        ] {
+            let mut error = before.clone();
+            fix_with_closest_selector(&mut error, &typed_argv);
+            assert_eq!(error, before, "{case}");
+        }
+        let config = resolve("retial", &targets, &table).unwrap_err();
+        assert!(config.message.contains("\"retail\""), "{}", config.message);
     }
 }

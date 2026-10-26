@@ -1,0 +1,38 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 1401
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "status",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "targets"
+        ],
+        "display": "omaddons targets"
+      }
+    ],
+    "code": "target_not_found",
+    "details": {
+      "selector": "retial"
+    },
+    "fix": "omaddons status -t retail",
+    "fix_argv": [
+      "omaddons",
+      "status",
+      "-t",
+      "retail"
+    ],
+    "message": "no target matches \"retial\"; the closest selector is \"retail\"",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

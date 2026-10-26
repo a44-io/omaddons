@@ -131,6 +131,48 @@ impl TargetVocabulary {
             .map(|(_, word)| word.clone())
     }
 
+    /// The words that may be what `typed` meant, a selector that matched nothing (M4-D14),
+    /// best first: within Levenshtein distance 2 of `typed` (ASCII case ignored) and closer
+    /// than its length, never equal to it, of kind Registered, DefaultId, Mode or Family,
+    /// and accepted by `admit`. Ordered by distance, then registered ids before built-in
+    /// words, then alphabetically. A registered id is returned as stored, any other word as
+    /// the vocabulary spells it (`hc`, not `hardcore`). Pure: no I/O.
+    pub fn closest(&self, typed: &str, admit: &dyn Fn(&str) -> bool) -> Vec<String> {
+        let typed = typed.to_ascii_lowercase();
+        let len = typed.chars().count();
+        let mut close: Vec<(usize, bool, String)> = Vec::new();
+        for (spelling, word) in &self.words {
+            // Product codes and flavor folders are spellings copied from output; a near
+            // miss of one is near an id or mode that selects the same client.
+            if matches!(
+                word.kind,
+                TargetWordKind::ProductCode | TargetWordKind::FlavorFolder
+            ) {
+                continue;
+            }
+            // The distance is at least the length difference: skipping first bounds the
+            // work by the vocabulary, whatever length was typed.
+            if spelling.chars().count().abs_diff(len) > 2 {
+                continue;
+            }
+            let distance = crate::cli::levenshtein(&typed, spelling);
+            if !(1..=2).contains(&distance) || distance >= len {
+                continue;
+            }
+            let registered = matches!(word.kind, TargetWordKind::Registered);
+            let returned = if registered {
+                word.canonical.clone()
+            } else {
+                spelling.clone()
+            };
+            if admit(&returned) {
+                close.push((distance, !registered, returned));
+            }
+        }
+        close.sort();
+        close.into_iter().map(|(_, _, word)| word).collect()
+    }
+
     /// Every word, in resolution order.
     pub fn words(&self) -> impl Iterator<Item = (&str, &TargetWord)> {
         self.words
@@ -426,6 +468,85 @@ mod tests {
         assert!(selects_client(&path(&["backup", "create"])));
         assert!(!selects_client(&path(&["copy"])));
         assert!(!selects_client(&path(&[])));
+    }
+
+    fn check_closest(case: &str, vocabulary: &TargetVocabulary, typed: &str, want: &[&str]) {
+        let got = vocabulary.closest(typed, &|_| true);
+        assert_eq!(
+            got, want,
+            "{case}: closest({typed:?}) = {got:?}, expected {want:?}"
+        );
+    }
+
+    #[test]
+    fn closest_ranks_by_distance_then_registered_ids_then_alphabetically() {
+        let builtin = TargetVocabulary::builtin();
+        let table = RulesTable::builtin();
+        let zera = TargetVocabulary::new(&table, ["zera"]);
+        let sad = TargetVocabulary::new(&table, ["sad"]);
+        for (case, vocabulary, typed, want) in [
+            ("one_transposition", &builtin, "retial", &["retail"][..]),
+            ("case_is_ignored", &builtin, "RETIAL", &["retail"]),
+            ("nearest_first", &builtin, "ptx", &["ptr", "xptr"]),
+            ("a_mode_alias_as_spelled", &builtin, "hcc", &["hc", "tbc"]),
+            (
+                "alphabetical_among_equals",
+                &builtin,
+                "bera",
+                &["beta", "era"],
+            ),
+            (
+                "registered_first_among_equals",
+                &zera,
+                "bera",
+                &["zera", "beta", "era"],
+            ),
+            ("registered_id_against_a_mode", &sad, "sxd", &["sad", "sod"]),
+        ] {
+            check_closest(case, vocabulary, typed, want);
+        }
+    }
+
+    #[test]
+    fn closest_never_offers_codes_folders_the_word_itself_or_a_wild_guess() {
+        let builtin = TargetVocabulary::builtin();
+        let huge = "x".repeat(100_000);
+        for (case, typed, want) in [
+            ("product_code", "wow_classic_ear", &[][..]),
+            (
+                "flavor_folder_but_its_mode",
+                "_classic_era",
+                &["classic-era"],
+            ),
+            ("flavor_folder_but_its_id", "_retail", &["retail"]),
+            ("exact_word", "retail", &[]),
+            ("one_letter", "x", &[]),
+            ("two_letters", "er", &["era"]),
+            ("empty", "", &[]),
+            ("far", "zzzzzz", &[]),
+            ("huge", huge.as_str(), &[]),
+        ] {
+            check_closest(case, &builtin, typed, want);
+        }
+    }
+
+    #[test]
+    fn closest_asks_admit_only_about_close_words() {
+        let builtin = TargetVocabulary::builtin();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let recording = |word: &str| {
+            asked.borrow_mut().push(word.to_owned());
+            true
+        };
+        assert_eq!(builtin.closest("retial", &recording), ["retail"]);
+        assert_eq!(
+            *asked.borrow(),
+            ["retail"],
+            "only the close words are asked"
+        );
+        let no_beta = |word: &str| word != "beta";
+        assert_eq!(builtin.closest("bera", &no_beta), ["era"]);
+        assert!(builtin.closest("bera", &|_| false).is_empty());
     }
 
     #[test]

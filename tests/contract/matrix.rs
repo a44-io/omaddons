@@ -1356,3 +1356,82 @@ fn target_all() {
     log.json("envelope", &c.envelope);
     assert!(reserved(&c.envelope).is_empty(), "{}", c.run.context());
 }
+
+/// A mistyped selector (M4-D14): the closest word that selects a client here, in the
+/// user's own command, with the listing as the last alternative.
+#[test]
+fn target_typos() {
+    let s = Scene::new();
+    let log = crate::common::tlog::tlog!();
+    let listing =
+        serde_json::json!({ "display": "omaddons targets", "argv": ["omaddons", "targets"] });
+    for (args, fix) in [
+        (
+            &["status", "-t", "retial"][..],
+            &["status", "-t", "retail"][..],
+        ),
+        (&["list", "--target=Retial"], &["list", "--target=retail"]),
+        // A command that changes addons keeps its verb.
+        (
+            &["install", "weakauras", "-tretial"],
+            &["install", "weakauras", "-tretail"],
+        ),
+        (
+            &["copy", "--from", "retial", "--to", "classic"],
+            &["copy", "--from", "retail", "--to", "classic"],
+        ),
+        // A mode alias that selects the Mists Classic client.
+        (
+            &["status", "-t", "mop-clasic"],
+            &["status", "-t", "mop-classic"],
+        ),
+    ] {
+        log.step(&args.join(" "));
+        let c = s.json(args, 3);
+        log.json("envelope", &c.envelope);
+        let ctx = c.run.context();
+        let error = &c.envelope["error"];
+        assert_eq!(error["code"], "target_not_found", "{ctx}");
+        let want: Vec<String> = std::iter::once("omaddons")
+            .chain(fix.iter().copied())
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(support::strings(&error["fix_argv"]), want, "{ctx}");
+        assert_eq!(error["alternatives"], serde_json::json!([listing]), "{ctx}");
+        if matches!(*args, ["status", "-t", "retial"]) {
+            assert_eq!(
+                error["message"],
+                "no target matches \"retial\"; the closest selector is \"retail\"",
+                "{ctx}"
+            );
+            assert_eq!(
+                error["details"],
+                serde_json::json!({ "selector": "retial" }),
+                "{ctx}"
+            );
+            insta::assert_json_snapshot!("status_target_typo", s.stable(&c.envelope));
+        }
+    }
+
+    log.step("status -t sodd: no Classic Era client, no guess");
+    let c = s.json(&["status", "-t", "sodd"], 3);
+    log.json("envelope", &c.envelope);
+    let ctx = c.run.context();
+    let error = &c.envelope["error"];
+    assert_eq!(
+        support::strings(&error["fix_argv"]),
+        ["omaddons", "targets"],
+        "{ctx}"
+    );
+    assert_eq!(error["alternatives"], serde_json::json!([]), "{ctx}");
+    assert_eq!(error["message"], "no target matches \"sodd\"", "{ctx}");
+
+    log.step("the fixes run");
+    for fix in [
+        &["status", "-t", "retail"][..],
+        &["list", "--target=retail"],
+    ] {
+        let c = s.json(fix, 0);
+        log.json("envelope", &c.envelope);
+    }
+}
