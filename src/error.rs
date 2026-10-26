@@ -510,6 +510,8 @@ pub struct ErrorData {
     pub retryable: bool,
     /// A JSON object; `{}` when there is nothing to add.
     pub details: serde_json::Value,
+    /// How a usage fix relates to the typed command. Not serialized.
+    pub usage_fix: UsageFix,
 }
 
 impl std::ops::Deref for Error {
@@ -535,6 +537,19 @@ pub enum PlanStaleSource {
     Apply,
 }
 
+/// How a usage fix relates to the command the user typed (M4-D12). Not on the wire:
+/// `cli::usage_error` and the tests read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UsageFix {
+    /// May name another command (the closest name, a synonym, `help`); a guessed command
+    /// that changes something is offered as its help (`subcommand_fix`).
+    #[default]
+    Guess,
+    /// The user's own command, kept: only a client word moved into -t (M4-D12) or a
+    /// selector corrected (M4-D14). Never demoted to help; it must still parse.
+    UserVerb,
+}
+
 impl Error {
     pub fn new(code: ErrorCode, message: impl Into<String>, fix: Suggestion) -> Self {
         Self(Box::new(ErrorData {
@@ -544,7 +559,15 @@ impl Error {
             alternatives: Vec::new(),
             retryable: code.default_retryable(),
             details: serde_json::Value::Object(serde_json::Map::new()),
+            usage_fix: UsageFix::Guess,
         }))
+    }
+
+    /// Marks the fix as the user's own command, kept ([`UsageFix::UserVerb`]).
+    #[must_use]
+    pub fn user_verb(mut self) -> Self {
+        self.usage_fix = UsageFix::UserVerb;
+        self
     }
 
     #[must_use]
@@ -886,6 +909,25 @@ mod tests {
         assert!(Error::new(ErrorCode::Locked, "x", fix()).retryable);
         assert!(!Error::new(ErrorCode::Usage, "x", fix()).retryable);
         assert_eq!(Error::http_status(503, "x", fix()).details["status"], 503);
+    }
+
+    #[test]
+    fn user_verb_marks_the_error_and_never_reaches_the_wire() {
+        let error = || {
+            Error::new(
+                ErrorCode::Usage,
+                "'retail' is a client, not a command; the client goes in -t",
+                Suggestion::command(["omaddons", "update", "-t", "retail"]),
+            )
+            .details(serde_json::json!({ "target": "retail", "command": "update" }))
+        };
+        let (guess, kept) = (error(), error().user_verb());
+        assert_eq!(guess.usage_fix, UsageFix::Guess);
+        assert_eq!(kept.usage_fix, UsageFix::UserVerb);
+        assert_eq!(
+            serde_json::to_string(&kept).unwrap(),
+            serde_json::to_string(&guess).unwrap()
+        );
     }
 
     #[test]

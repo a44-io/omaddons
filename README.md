@@ -482,6 +482,8 @@ An id beats a family, and the legacy default ids `vanilla`, `tbc`, `cata` and `m
 
 `install` is the only command that picks a target when `-t` is absent. It uses config `default_target`, then the registry default (`targets default`, if that client is present), then the only live client. With several live clients and no default, it dry-runs the refs against every live client (test clients excluded) and installs only if exactly one client loads every ref that loads anywhere (a client is ruled out only by `no_compatible_release` or `wrong_flavor`). `status`, `list` and `history` cover every target unless `-t` narrows them. Bare `undo` reverts the most recent run, every transaction of that invocation on every target; `undo -t <id>` reverts that target's newest transaction. `remove` finds the target that manages the named addons; the names must all agree on one, else `target_ambiguous` asks for `-t`.
 
+**A client in the wrong place.** A client named where a command or an argument belongs is a usage error whose fix moves it into `-t` and keeps your command: `omaddons retail update` → `omaddons update -t retail`, `omaddons sod install questie` → `omaddons install questie -t sod`, `omaddons status era` → `omaddons status -t era`, `omaddons info dbm era` → `omaddons info dbm -t era`. A client word is a built-in id, product code, flavor folder, game mode or family, or the id of a registered target. A catalog addon of the same name is never moved, and nothing is moved when `-t` is already given. `error.details` is `{target, command}`. `config`, `targets`, `net-log`, `auth`, `omarchy`, `copy` and `help` do not take `-t` this way and keep their usual fix.
+
 ### How omaddons decides what loads
 
 For each top-level folder in the archive:
@@ -686,7 +688,7 @@ remove = true
 
 `omaddons help` lists the commands. `omaddons help <command>` or `omaddons <command> --help` shows every flag. For subcommands, use `omaddons targets add --help` or `omaddons help targets add`.
 
-A mistyped command, flag or value is a usage error. Its fix is the corrected command when that command only reads, and `omaddons help <command>` when the closest command changes something: a typo never hands you a different command that changes addons. A mistyped flag, or a mistyped value of a flag with fixed choices, of the command you typed is corrected in place (`--channel betaa` → `--channel beta`). A bad value with no close match, such as `--actor robot` or `undo --last-by robot`, gets `omaddons help <command>`. Every suggested command parses.
+A mistyped command, flag or value is a usage error. Its fix is the corrected command when that command only reads, and `omaddons help <command>` when the closest command changes something: a typo never hands you a different command that changes addons. A mistyped flag, or a mistyped value of a flag with fixed choices, of the command you typed is corrected in place (`--channel betaa` → `--channel beta`). A bad value with no close match, such as `--actor robot` or `undo --last-by robot`, gets `omaddons help <command>`. A client named before or after the command is moved into `-t`; that fix keeps your command even when it changes something, because only the client moved. Every suggested command parses.
 
 ### Global options
 
@@ -1826,7 +1828,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 
 | Code | Exit | Retryable | When |
 |---|---|---|---|
-| `usage` | 2 | no | bad flag, value, `--since`, `--limit`, `--actor`, `--reason`, config key or id; a missing or relative `HOME` |
+| `usage` | 2 | no | bad flag, value, `--since`, `--limit`, `--actor`, `--reason`, config key or id; a missing or relative `HOME`; a client named where a command or argument belongs (`details: {target, command}`) |
 | `ref_invalid` | 2 | no | malformed ref: `gh:owner`, `git:` without https, `http://` |
 | `desired_state_invalid` | 2 | no | `sync`'s `addons.toml` cannot be read: broken TOML, a bad value, an unknown family, an entry listed twice, or a newer schema (`details: {path, line, key, reason}`); also a failed `sync` item when two entries name the same addon, and `export --write` refusing a file edited since it was written (`reason: "edited"`) or an empty export (`reason: "empty"`), and `sync --prune` refusing a file with a section for no known client (`reason: "unknown_target_section"`) |
 | `target_not_found` | 3 | no | no target matches the selector or id; a known game mode whose client is missing; no client found at all (fix `omaddons targets add <path>`), or only test clients (the first as the fix, each other one an alternative, all with `-t`), or, for bare `backup create`, only test clients with a `WTF/`; a `targets add` path holding no client; undo of a transaction whose target is gone |

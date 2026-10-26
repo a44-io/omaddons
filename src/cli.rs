@@ -6,6 +6,7 @@
 //! holds even when parsing fails (vision §5.9, D17). Each command bead adds its own
 //! subcommand (DEC-1).
 
+use std::cell::OnceCell;
 use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::panic::AssertUnwindSafe;
@@ -20,6 +21,7 @@ use crate::error::{Error, ErrorCode, Exit, Suggestion};
 use crate::limits::REASON_MAX_CHARS;
 use crate::model::Actor;
 use crate::output::{self, OutputConfig, OutputFlags, Reporter, TermEnv};
+use crate::vocabulary::{self, TargetVocabulary};
 
 /// The command line.
 #[derive(Debug, Parser)]
@@ -387,7 +389,9 @@ fn run_with(
             );
         }
         Err(err) => {
-            let error = usage_error(&err, &argv);
+            // The registered ids count as client words; read only if a hook needs them.
+            let vocabulary = || TargetVocabulary::from_env(env);
+            let error = usage_error_with(&err, &argv, &vocabulary, &names_a_builtin_catalog_entry);
             return render_error(&fallback, command_of(&argv), started, early_offline, error);
         }
     };
@@ -587,9 +591,28 @@ const PRESENTATION_FLAGS: &[(&str, bool)] = &[
     ("--no-progress", false),
 ];
 
-/// Maps a clap error to `usage` (exit 2) with the closest valid command as the fix
-/// (Levenshtein distance ≤ 2), else help.
+/// [`usage_error_with`] with the built-in client words and the embedded catalog: no file
+/// is read.
 pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
+    usage_error_with(
+        err,
+        argv,
+        &TargetVocabulary::builtin,
+        &names_a_builtin_catalog_entry,
+    )
+}
+
+/// Maps a clap error to `usage` (exit 2) with the closest valid command as the fix
+/// (Levenshtein distance ≤ 2), else help. A client named where a command or an argument
+/// belongs is moved into -t, the user's command kept (M4-D12): `vocabulary` loads the
+/// client words (at most once, and only when a hook could apply), and a word
+/// `names_an_addon` claims is never moved.
+pub fn usage_error_with(
+    err: &clap::Error,
+    argv: &[String],
+    vocabulary: &dyn Fn() -> TargetVocabulary,
+    names_an_addon: &dyn Fn(&str) -> bool,
+) -> Error {
     let rendered = err.to_string();
     let mut lines = rendered.lines().map(str::trim).filter(|l| !l.is_empty());
     let mut message = lines
@@ -659,6 +682,12 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
         } else {
             error
         };
+    }
+    let words = UsageWords::new(vocabulary, names_an_addon);
+    if let Some(error) =
+        misplaced_before_verb(err, argv, &words).or_else(|| misplaced_after_verb(err, argv, &words))
+    {
+        return error;
     }
     let (fix, alternatives) = match err.kind() {
         ErrorKind::InvalidSubcommand => invalid(ContextKind::InvalidSubcommand)
@@ -758,6 +787,201 @@ pub fn usage_error(err: &clap::Error, argv: &[String]) -> Error {
         }
     }
     error
+}
+
+/// The client words and the addon test the misplaced-client hooks read. The words load
+/// at most once per usage error, and only after a hook's argv checks passed.
+struct UsageWords<'a> {
+    vocabulary: OnceCell<TargetVocabulary>,
+    load: &'a dyn Fn() -> TargetVocabulary,
+    names_an_addon: &'a dyn Fn(&str) -> bool,
+}
+
+impl<'a> UsageWords<'a> {
+    fn new(
+        load: &'a dyn Fn() -> TargetVocabulary,
+        names_an_addon: &'a dyn Fn(&str) -> bool,
+    ) -> Self {
+        Self {
+            vocabulary: OnceCell::new(),
+            load,
+            names_an_addon,
+        }
+    }
+
+    fn vocabulary(&self) -> &TargetVocabulary {
+        self.vocabulary.get_or_init(self.load)
+    }
+
+    /// `word` names a client and no addon: the addon wins (M4-D12).
+    fn misplaced_client(&self, word: &str) -> bool {
+        self.vocabulary().classify(word).is_some() && !(self.names_an_addon)(word)
+    }
+}
+
+/// M4-D12 hook 1, a client before the verb: `omaddons retail update` is `omaddons update
+/// -t retail`. `None` (the usual fix) when the rejected word names no client or an addon,
+/// a target is already given, or no command that selects clients is left to run.
+fn misplaced_before_verb(
+    err: &clap::Error,
+    argv: &[String],
+    words: &UsageWords<'_>,
+) -> Option<Error> {
+    if !matches!(err.kind(), ErrorKind::InvalidSubcommand) {
+        return None;
+    }
+    let Some(ContextValue::String(word)) = err.get(ContextKind::InvalidSubcommand) else {
+        return None;
+    };
+    let at = rejected_subcommand_at(argv)?;
+    // A second client would override the first, or be overridden.
+    if argv.get(at) != Some(word) || has_target_flag(argv) || !words.misplaced_client(word) {
+        return None;
+    }
+    let parent = command_path(argv);
+    let candidate = with_target_appended(argv, at);
+    let path = command_path(&candidate);
+    // A subcommand followed the client (`retail backup list`), or the level it sat under
+    // runs bare (`backup retail`); `omaddons retail` alone has no verb to keep.
+    if !path.starts_with(&parent) || !selects_client_row(&path) || !offerable(&candidate, argv) {
+        return None;
+    }
+    let message = format!("'{word}' is a client, not a command; the client goes in -t");
+    Some(misplaced_client_error(message, candidate, &path, word))
+}
+
+/// M4-D12 hook 2, a client after the verb where an argument belongs: `omaddons status
+/// retail` is `omaddons status -t retail`, `omaddons info dbm era` is `omaddons info dbm
+/// -t era`. The word is replaced in place, every other argument kept.
+fn misplaced_after_verb(
+    err: &clap::Error,
+    argv: &[String],
+    words: &UsageWords<'_>,
+) -> Option<Error> {
+    if !matches!(err.kind(), ErrorKind::UnknownArgument) {
+        return None;
+    }
+    let Some(ContextValue::String(word)) = err.get(ContextKind::InvalidArg) else {
+        return None;
+    };
+    let path = command_path(argv);
+    if word.starts_with('-') || !selects_client_row(&path) || has_target_flag(argv) {
+        return None;
+    }
+    // The last one: clap rejects the word after the filled positionals.
+    let at = last_positional_at(argv, word)?;
+    if !words.misplaced_client(word) {
+        return None;
+    }
+    let candidate = with_target_in_place(argv, at);
+    if !offerable(&candidate, argv) {
+        return None;
+    }
+    let message = format!(
+        "'{word}' is a client, not an argument of {}; the client goes in -t",
+        path.join(" ")
+    );
+    Some(misplaced_client_error(message, candidate, &path, word))
+}
+
+/// The usage error of a misplaced client: the fix keeps the user's command
+/// ([`UsageFix::UserVerb`](crate::error::UsageFix)) and its help is the one alternative;
+/// `details` names the client as typed and the command the fix runs.
+fn misplaced_client_error(message: String, fix: Vec<String>, path: &[String], word: &str) -> Error {
+    Error::new(ErrorCode::Usage, message, Suggestion::command(fix))
+        .alternative(help_for(path))
+        .details(serde_json::json!({ "target": word, "command": path.join(" ") }))
+        .user_verb()
+}
+
+/// Whether `path` is a command (an `app::COMMANDS` row) whose run selects clients with -t.
+fn selects_client_row(path: &[String]) -> bool {
+    let name = path.join(" ");
+    // ubs:ignore — comparing command names, not secrets
+    let row = crate::app::COMMANDS.iter().any(|c| c.name == name);
+    !path.is_empty() && row && vocabulary::selects_client(path)
+}
+
+/// The final filter's checks for a fix that keeps the user's command, applied before it so
+/// such a fix is never replaced by help: it parses and is not the failing argv.
+fn offerable(candidate: &[String], argv: &[String]) -> bool {
+    candidate != fix_argv(argv).as_slice() && parses(&Suggestion::command(candidate.to_vec()))
+}
+
+/// Whether an embedded catalog entry answers to `word` (a name or alias, any case): the
+/// addon wins over a client word. The usage path reads no `catalog.d` file and no
+/// installed record: both need the config dir and a target.
+fn names_a_builtin_catalog_entry(word: &str) -> bool {
+    crate::resolve::catalog::Catalog::builtin()
+        .is_ok_and(|catalog| catalog.entries().iter().any(|e| e.answers_to(word)))
+}
+
+/// Whether `argv` names a target before any `--`, in every spelling [`without_target`]
+/// knows: `-t`, `--target`, `--flavor`, their `=` forms, `-tX`, or a short cluster with
+/// `t` (`-vt`). `--to` is not one.
+fn has_target_flag(argv: &[String]) -> bool {
+    // ubs:ignore — comparing command-line words, not secrets
+    argv.iter().skip(1).take_while(|a| *a != "--").any(|arg| {
+        let name = arg.split('=').next().unwrap_or(arg);
+        matches!(name, "--target" | "--flavor")
+            || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains('t'))
+    })
+}
+
+/// The index in `argv` of the positional argument that names no subcommand of the level
+/// reached (`retail` in `omaddons retail update`), walking as [`command_path`] does.
+fn rejected_subcommand_at(argv: &[String]) -> Option<usize> {
+    walk_command_path(argv).1
+}
+
+/// The index in `argv` of the last positional argument equal to `word`: not a flag, not
+/// a flag's value (at the command `argv` names, globals included), not after `--`.
+fn last_positional_at(argv: &[String], word: &str) -> Option<usize> {
+    let mut root = Cli::command();
+    root.build();
+    let cmd = command_at(&root, &command_path(argv));
+    let mut found = None;
+    let mut args = argv.iter().enumerate().skip(1);
+    while let Some((i, arg)) = args.next() {
+        // ubs:ignore — comparing command-line words, not secrets
+        if arg == "--" {
+            break;
+        }
+        // ubs:ignore — comparing command-line words, not secrets
+        if arg.starts_with('-') && arg != "-" {
+            if takes_value(cmd, arg) {
+                args.next();
+            }
+            continue;
+        }
+        // ubs:ignore — comparing command-line words, not secrets
+        if arg == word {
+            found = Some(i);
+        }
+    }
+    found
+}
+
+/// `argv` (without presentation flags) with the word at `at` moved to the end as `-t
+/// <word>`, or before `--` when there is one: after it, both would be positionals.
+pub(crate) fn with_target_appended(argv: &[String], at: usize) -> Vec<String> {
+    let mut out = argv.to_vec();
+    if at < out.len() {
+        let word = out.remove(at);
+        let end = out.iter().position(|a| a == "--").unwrap_or(out.len());
+        out.splice(end..end, ["-t".to_owned(), word]);
+    }
+    fix_argv(&out)
+}
+
+/// `argv` (without presentation flags) with the word at `at` given as `-t <word>`, every
+/// other argument where it was.
+pub(crate) fn with_target_in_place(argv: &[String], at: usize) -> Vec<String> {
+    let mut out = argv.to_vec();
+    if at < out.len() {
+        out.insert(at, "-t".to_owned());
+    }
+    fix_argv(&out)
 }
 
 /// A flag's name in clap's rendering of it: `--format <FORMAT>` or `--json=1` is
@@ -1008,12 +1232,18 @@ fn takes_value(cmd: &clap::Command, flag: &str) -> bool {
 /// The subcommand path `argv` names (`["targets", "add"]`): each positional argument
 /// that is a subcommand of the one before, skipping flag values; nothing after `--`.
 pub fn command_path(argv: &[String]) -> Vec<String> {
+    walk_command_path(argv).0
+}
+
+/// [`command_path`], and the index in `argv` of the positional argument the walk stopped
+/// at (one that names no subcommand of the level reached), if any.
+fn walk_command_path(argv: &[String]) -> (Vec<String>, Option<usize>) {
     let mut root = Cli::command();
     root.build();
     let mut cmd = &root;
     let mut path = Vec::new();
-    let mut args = argv.iter().skip(1);
-    while let Some(arg) = args.next() {
+    let mut args = argv.iter().enumerate().skip(1);
+    while let Some((i, arg)) = args.next() {
         // ubs:ignore — comparing command-line words, not secrets
         if arg == "--" {
             break;
@@ -1030,10 +1260,10 @@ pub fn command_path(argv: &[String]) -> Vec<String> {
                 path.push(sub.get_name().to_owned());
                 cmd = sub;
             }
-            None => break,
+            None => return (path, Some(i)),
         }
     }
-    path
+    (path, None)
 }
 
 /// `-h` or `--help` appears before any `--`.
@@ -2040,6 +2270,431 @@ mod tests {
                 (action, from_gh),
                 "{args:?}: the action and --from-gh"
             );
+        }
+    }
+
+    // Misplaced clients (M4-D12).
+
+    /// The usage error for `args`, with the client words `vocabulary` loads and the addon
+    /// test `names_an_addon`.
+    fn usage_with(
+        args: &[&str],
+        vocabulary: &dyn Fn() -> TargetVocabulary,
+        names_an_addon: &dyn Fn(&str) -> bool,
+    ) -> Error {
+        let raw = argv(args);
+        let err = Cli::try_parse_from(&raw).unwrap_err();
+        usage_error_with(&err, &raw, vocabulary, names_an_addon)
+    }
+
+    fn no_addon(_: &str) -> bool {
+        false
+    }
+
+    /// The fields a misplaced-client case is judged by, on one line.
+    fn shown(error: &Error) -> String {
+        let alternatives: Vec<_> = error.alternatives.iter().map(Suggestion::argv).collect();
+        format!(
+            "message {:?}, fix {:?}, alternatives {alternatives:?}, details {}, usage_fix {:?}",
+            error.message,
+            error.fix.argv(),
+            error.details,
+            error.usage_fix
+        )
+    }
+
+    /// The misplaced-client error `args` must get: `fix` (after the program name), the
+    /// help of `command` as its one alternative, `details {target, command}`, user verb.
+    fn moved(message: String, fix: &[&str], target: &str, command: &str) -> Error {
+        let path: Vec<String> = command.split(' ').map(str::to_owned).collect();
+        Error::new(ErrorCode::Usage, message, Suggestion::command(argv(fix)))
+            .alternative(help_for(&path))
+            .details(serde_json::json!({ "target": target, "command": command }))
+            .user_verb()
+    }
+
+    /// (case, argv, fix, details.target, details.command).
+    type MovedCase<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a str, &'a str);
+
+    #[test]
+    fn a_client_before_the_verb_moves_to_the_end_as_dash_t() {
+        let cases: &[MovedCase<'_>] = &[
+            (
+                "a default id",
+                &["retail", "update"],
+                &["update", "-t", "retail"],
+                "retail",
+                "update",
+            ),
+            (
+                "era",
+                &["era", "status"],
+                &["status", "-t", "era"],
+                "era",
+                "status",
+            ),
+            (
+                "a mode, the verb's argument kept",
+                &["sod", "install", "questie"],
+                &["install", "questie", "-t", "sod"],
+                "sod",
+                "install",
+            ),
+            (
+                "a family row's id",
+                &["wotlk", "list"],
+                &["list", "-t", "wotlk"],
+                "wotlk",
+                "list",
+            ),
+            (
+                "as typed",
+                &["Retail", "update"],
+                &["update", "-t", "Retail"],
+                "Retail",
+                "update",
+            ),
+            (
+                "an alias verb, its command canonical",
+                &["retail", "upgrade"],
+                &["upgrade", "-t", "retail"],
+                "retail",
+                "update",
+            ),
+            (
+                "a presentation flag dropped",
+                &["--json", "retail", "update"],
+                &["update", "-t", "retail"],
+                "retail",
+                "update",
+            ),
+            (
+                "a global flag kept",
+                &["--dry-run", "retail", "update"],
+                &["--dry-run", "update", "-t", "retail"],
+                "retail",
+                "update",
+            ),
+            (
+                "a global flag's value kept",
+                &["--actor", "agent", "retail", "update"],
+                &["--actor", "agent", "update", "-t", "retail"],
+                "retail",
+                "update",
+            ),
+            (
+                "before --",
+                &["retail", "remove", "--", "dbm"],
+                &["remove", "-t", "retail", "--", "dbm"],
+                "retail",
+                "remove",
+            ),
+            (
+                "under a parent",
+                &["backup", "retail", "list"],
+                &["backup", "list", "-t", "retail"],
+                "retail",
+                "backup list",
+            ),
+            (
+                "before a parent",
+                &["retail", "backup", "list"],
+                &["backup", "list", "-t", "retail"],
+                "retail",
+                "backup list",
+            ),
+            (
+                "a parent that runs bare",
+                &["backup", "retail"],
+                &["backup", "-t", "retail"],
+                "retail",
+                "backup",
+            ),
+            (
+                "errors runs bare",
+                &["errors", "retail"],
+                &["errors", "-t", "retail"],
+                "retail",
+                "errors",
+            ),
+            (
+                "a product code",
+                &["wow_classic_era", "list"],
+                &["list", "-t", "wow_classic_era"],
+                "wow_classic_era",
+                "list",
+            ),
+            (
+                "a flavor folder",
+                &["_retail_", "outdated"],
+                &["outdated", "-t", "_retail_"],
+                "_retail_",
+                "outdated",
+            ),
+            (
+                "mainline",
+                &["mainline", "status"],
+                &["status", "-t", "mainline"],
+                "mainline",
+                "status",
+            ),
+            (
+                "a mode alias",
+                &["hc", "list"],
+                &["list", "-t", "hc"],
+                "hc",
+                "list",
+            ),
+        ];
+        let registered = || TargetVocabulary::new(&crate::rules::RulesTable::builtin(), ["turtle"]);
+        let turtle: MovedCase<'_> = (
+            "a registered id",
+            &["turtle", "list"],
+            &["list", "-t", "turtle"],
+            "turtle",
+            "list",
+        );
+        let all = cases
+            .iter()
+            .map(|case| {
+                (
+                    *case,
+                    &TargetVocabulary::builtin as &dyn Fn() -> TargetVocabulary,
+                )
+            })
+            .chain([(turtle, &registered as &dyn Fn() -> TargetVocabulary)]);
+        for ((case, args, fix, target, command), vocabulary) in all {
+            let got = usage_with(args, vocabulary, &no_addon);
+            let message = format!("'{target}' is a client, not a command; the client goes in -t");
+            let want = moved(message, fix, target, command);
+            assert_eq!(
+                got,
+                want,
+                "{case}: {args:?}\n got  {}\n want {}",
+                shown(&got),
+                shown(&want)
+            );
+        }
+    }
+
+    #[test]
+    fn a_client_after_the_verb_is_replaced_by_dash_t() {
+        let cases: &[MovedCase<'_>] = &[
+            (
+                "no positional",
+                &["status", "retail"],
+                &["status", "-t", "retail"],
+                "retail",
+                "status",
+            ),
+            (
+                "list",
+                &["list", "era"],
+                &["list", "-t", "era"],
+                "era",
+                "list",
+            ),
+            (
+                "outdated",
+                &["outdated", "retail"],
+                &["outdated", "-t", "retail"],
+                "retail",
+                "outdated",
+            ),
+            (
+                "history",
+                &["history", "retail"],
+                &["history", "-t", "retail"],
+                "retail",
+                "history",
+            ),
+            (
+                "export",
+                &["export", "retail"],
+                &["export", "-t", "retail"],
+                "retail",
+                "export",
+            ),
+            (
+                "its one positional filled",
+                &["info", "dbm", "era"],
+                &["info", "dbm", "-t", "era"],
+                "era",
+                "info",
+            ),
+            (
+                "pin",
+                &["pin", "dbm", "retail"],
+                &["pin", "dbm", "-t", "retail"],
+                "retail",
+                "pin",
+            ),
+            (
+                "unpin",
+                &["unpin", "dbm", "retail"],
+                &["unpin", "dbm", "-t", "retail"],
+                "retail",
+                "unpin",
+            ),
+            (
+                "the arguments after it kept",
+                &["pin", "dbm", "retail", "--version", "12.1.14"],
+                &["pin", "dbm", "-t", "retail", "--version", "12.1.14"],
+                "retail",
+                "pin",
+            ),
+            (
+                "a presentation flag dropped",
+                &["status", "retail", "--json"],
+                &["status", "-t", "retail"],
+                "retail",
+                "status",
+            ),
+            (
+                "the last occurrence moves",
+                &["pin", "retail", "retail"],
+                &["pin", "retail", "-t", "retail"],
+                "retail",
+                "pin",
+            ),
+        ];
+        for (case, args, fix, target, command) in cases {
+            let got = usage_with(args, &TargetVocabulary::builtin, &no_addon);
+            let message = format!(
+                "'{target}' is a client, not an argument of {command}; the client goes in -t"
+            );
+            let want = moved(message, fix, target, command);
+            assert_eq!(
+                got,
+                want,
+                "{case}: {args:?}\n got  {}\n want {}",
+                shown(&got),
+                shown(&want)
+            );
+        }
+    }
+
+    #[test]
+    fn words_that_are_not_misplaced_clients_keep_todays_fix() {
+        for args in [
+            &["frobnicate", "update"][..],
+            &["retail"],
+            &["retail", "dbm"],
+            &["status", "dbm"],
+            &["info", "dbm", "questie"],
+            &["turtle", "list"],
+            &["retail", "update", "-t", "era"],
+            &["retail", "update", "--target=era"],
+            &["status", "retail", "--flavor", "era"],
+            &["-vt", "era", "retail", "update"],
+            &["status", "--", "retail"],
+            &["info", "dbm", "--", "era"],
+            &["retail", "config"],
+            &["retail", "targets"],
+            &["retail", "net-log"],
+            &["retail", "auth", "github"],
+            &["retail", "help"],
+            &["retail", "copy", "--from", "era", "--to", "classic"],
+            &["config", "retail"],
+            &["targets", "retail"],
+            &["omarchy", "retail"],
+            &["01JZ0000000000000000000000", "update"],
+        ] {
+            let got = usage_with(args, &TargetVocabulary::builtin, &no_addon);
+            let want = usage_with(args, &TargetVocabulary::empty, &no_addon);
+            assert_eq!(
+                got,
+                want,
+                "{args:?}\n got  {}\n want {}",
+                shown(&got),
+                shown(&want)
+            );
+            assert_eq!(got.usage_fix, crate::error::UsageFix::Guess, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn the_addon_wins_over_a_client_word() {
+        let sod = |word: &str| word.eq_ignore_ascii_case("sod");
+        for args in [
+            &["sod", "install", "questie"][..],
+            &["SOD", "update"],
+            &["pin", "dbm", "sod"],
+        ] {
+            let got = usage_with(args, &TargetVocabulary::builtin, &sod);
+            let want = usage_with(args, &TargetVocabulary::empty, &sod);
+            assert_eq!(
+                got,
+                want,
+                "{args:?}\n got  {}\n want {}",
+                shown(&got),
+                shown(&want)
+            );
+        }
+        let era = usage_with(&["era", "status"], &TargetVocabulary::builtin, &sod);
+        assert_eq!(
+            era.usage_fix,
+            crate::error::UsageFix::UserVerb,
+            "{}",
+            shown(&era)
+        );
+    }
+
+    #[test]
+    fn has_target_flag_knows_every_spelling() {
+        for (args, named) in [
+            (&["status", "-t", "x"][..], true),
+            (&["status", "--target", "x"], true),
+            (&["status", "--target=x"], true),
+            (&["status", "--flavor", "x"], true),
+            (&["status", "--flavor=x"], true),
+            (&["status", "-tx"], true),
+            (&["status", "-vt", "x"], true),
+            (&["status", "-v"], false),
+            (&["status", "--json"], false),
+            (&["copy", "--to", "x"], false),
+            (&["remove", "--", "-t", "x"], false),
+        ] {
+            assert_eq!(has_target_flag(&argv(args)), named, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn the_vocabulary_loads_once_and_only_when_a_hook_could_apply() {
+        let loads = std::cell::Cell::new(0);
+        let counting = || {
+            loads.set(loads.get() + 1);
+            TargetVocabulary::builtin()
+        };
+        for (args, want) in [
+            (&["retail", "update"][..], 1),
+            // The word is classified, and names nothing.
+            (&["frobnicate"], 1),
+            (&["status", "--bogus"], 0),
+            (&["install"], 0),
+            (&["retail", "update", "-t", "era"], 0),
+            (&["install", "x", "--channel", "betaa"], 0),
+        ] {
+            loads.set(0);
+            let error = usage_with(args, &counting, &no_addon);
+            assert_eq!(loads.get(), want, "{args:?}: loads, {}", shown(&error));
+        }
+    }
+
+    #[test]
+    fn hook_fixes_are_user_verb_and_guesses_are_not() {
+        use crate::error::UsageFix::{Guess, UserVerb};
+        // `usage_error` knows the built-in words only: `turtle` is no client there.
+        for (args, want) in [
+            (&["retail", "update"][..], UserVerb),
+            (&["statsu"], Guess),
+            (&["instal", "dbm"], Guess),
+            (&["reinstall", "x", "-t", "retail"], Guess),
+            (&["turtle", "list"], Guess),
+        ] {
+            let raw = argv(args);
+            let error = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+            assert_eq!(error.usage_fix, want, "{args:?}: {}", shown(&error));
         }
     }
 }
