@@ -2295,6 +2295,17 @@ impl Ran {
         &self.run.stderr
     }
 
+    /// A copy of the run, for a check that takes a [`Run`] by value (the contract
+    /// suite's `support::check`).
+    pub fn to_run(&self) -> Run {
+        Run {
+            argv: self.run.argv.clone(),
+            code: self.run.code,
+            stdout: self.run.stdout.clone(),
+            stderr: self.run.stderr.clone(),
+        }
+    }
+
     fn exited(&self, code: i32) -> bool {
         self.signal.is_none() && !self.timed_out && self.run.code == code
     }

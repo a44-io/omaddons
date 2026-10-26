@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 
 use super::*;
-use crate::common::home::Run;
 use crate::common::intent::IntentHome;
 use crate::common::intent_home;
 use crate::common::netlog::net_log;
@@ -1164,16 +1163,6 @@ fn as_strs(argv: &[String]) -> Vec<&str> {
     argv.iter().map(String::as_str).collect()
 }
 
-/// A copy of `run`, for `support::check`, which takes one.
-fn copy_run(run: &Run) -> Run {
-    Run {
-        argv: run.argv.clone(),
-        code: run.code,
-        stdout: run.stdout.clone(),
-        stderr: run.stderr.clone(),
-    }
-}
-
 /// Every suggestion of an envelope's error: the fix's argv and each alternative's.
 fn suggestions(error: &Value) -> Vec<Vec<String>> {
     std::iter::once(&error["fix_argv"])
@@ -1336,7 +1325,7 @@ fn steps(
         Expect::Ok | Expect::Warning { .. } => 0,
     };
     ran.exit(exit);
-    support::check(copy_run(&ran.run), exit);
+    support::check(ran.to_run(), exit);
     ran.assert_private();
     let rejected = |suggestion: &[String]| {
         let path = command_path(suggestion).join(" ");
@@ -1432,7 +1421,7 @@ fn steps(
         fix_exit.contains(&code),
         "fix exit {code} is not one of {fix_exit:?}"
     );
-    support::check(copy_run(&ran.run), code);
+    support::check(ran.to_run(), code);
     ran.assert_private();
 
     if let (Some(extra), Some(wrong)) = (row.extra, progress.wrong.as_ref()) {

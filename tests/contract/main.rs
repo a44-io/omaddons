@@ -10,6 +10,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod canonical_names;
 mod exit_sites;
 mod intent_corpus;
 mod matrix;
@@ -258,12 +259,16 @@ mod support {
     }
 
     /// The envelope `command` an argv that parses must carry (M4-D55 rule 5): `version`
-    /// for -V, `help` for -h, else the canonical path of the parsed command.
+    /// for -V, `help` for -h, else the canonical path of the parsed command. Both flags
+    /// are omaddons' own (they parse; dispatch answers them before the command, -V
+    /// first), so they are read from the parse, not from clap's display errors.
     pub fn canonical_name(argv: &[String]) -> Option<&'static str> {
         use clap::Parser as _;
         use clap::error::ErrorKind;
         let program = std::iter::once("omaddons".to_owned());
         match omaddons::cli::Cli::try_parse_from(program.chain(argv.iter().cloned())) {
+            Ok(cli) if cli.global.version => Some("version"),
+            Ok(cli) if cli.global.help => Some("help"),
             Ok(cli) => Some(omaddons::app::command_name(cli.command.as_ref())),
             Err(e) => match e.kind() {
                 ErrorKind::DisplayVersion => Some("version"),
