@@ -59,8 +59,8 @@ use crate::model::{
 };
 use crate::state::files_index::FilesIndex;
 use crate::state::history::{
-    self, FolderOp, HistoryEdit, HistoryEntry, HistoryFilter, HistoryOp, HistoryRead, TxResult,
-    UnreadableLine,
+    self, FolderOp, HistoryEdit, HistoryEntry, HistoryFilter, HistoryOp, HistoryRead, RepairEntry,
+    TxResult, UnreadableLine,
 };
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::{TargetRecord, load_record};
@@ -1038,10 +1038,22 @@ fn check_conflicts(
                 .iter()
                 .any(|o| o.edit.is_none() && sv_keys.contains(o.folder.key()))
     };
+    // A later repair, or the undo of one, that touched one of the folders this undo
+    // writes back: on this target, or on a client its primitive does not name (M4-D31
+    // fails closed). E7 generalizes this to resource sets (M4-D62).
+    let repaired = |e: &HistoryEntry| -> BTreeSet<FolderName> {
+        e.repairs
+            .iter()
+            .filter(|r| r.target.is_none_or(|t| t == key))
+            .flat_map(RepairEntry::addon_folders)
+            .filter(|f| keys.contains(f.key()))
+            .collect()
+    };
     let touches = |e: &HistoryEntry| {
         e.ops.iter().any(conflicts)
             || (whole && matches!(e.kind, TxKind::Undo) && may_have_restored(e))
             || restored_sv_of(e)
+            || !repaired(e).is_empty()
     };
     let undid = |e: &HistoryEntry| matches!(e.kind, TxKind::Undo) && e.reverts == Some(reverted.tx);
     let conflicting: Vec<&HistoryEntry> = later
@@ -1076,6 +1088,7 @@ fn check_conflicts(
             message,
             &conflicting,
             &conflicts,
+            &repaired,
         ));
     }
     // Rule 2: a later whole restore put settings in place that this undo would overwrite.
@@ -1091,7 +1104,9 @@ fn check_conflicts(
                 newest.tx, reverted.tx, reverted.tx
             );
             let wtf = |o: &HistoryOp| matches!(o.op, FolderOp::Wtf);
-            let refusal = undo_first(reverted, newest, message, &restored, &wtf);
+            let refusal = undo_first(reverted, newest, message, &restored, &wtf, &|_| {
+                BTreeSet::new()
+            });
             // A follow-up restores SavedVariables only: keeping them leaves nothing.
             return Err(match sv_only {
                 Some(_) => refusal,
@@ -1129,24 +1144,30 @@ fn may_have_restored(entry: &HistoryEntry) -> bool {
     entry.sv_restored != Some(0)
 }
 
-/// The `undo_conflict` refusal of undoing `reverted` while `conflicting` stand (the ops
-/// of each that `counts` lists in `details`): undo `newest` first.
+/// The `undo_conflict` refusal of undoing `reverted` while `conflicting` stand: undo
+/// `newest` first. `details` lists each one's folders: those of its ops that `counts`,
+/// then those its repair operations touched (`repaired`, in folder-key order).
 fn undo_first(
     reverted: &HistoryEntry,
     newest: &HistoryEntry,
     message: String,
     conflicting: &[&HistoryEntry],
     counts: &dyn Fn(&HistoryOp) -> bool,
+    repaired: &dyn Fn(&HistoryEntry) -> BTreeSet<FolderName>,
 ) -> Error {
     let listed: Vec<serde_json::Value> = conflicting
         .iter()
         .map(|e| {
-            let folders: Vec<&str> = e
-                .ops
-                .iter()
-                .filter(|o| counts(o))
-                .map(|o| o.folder.as_str())
-                .collect();
+            let mut folders: Vec<String> = Vec::new();
+            let ops = e.ops.iter().filter(|o| counts(o)).map(|o| o.folder.clone());
+            for folder in ops.chain(repaired(e)) {
+                if !folders
+                    .iter()
+                    .any(|f| f.eq_ignore_ascii_case(folder.as_str()))
+                {
+                    folders.push(folder.as_str().to_owned());
+                }
+            }
             serde_json::json!({ "tx": e.tx, "kind": e.kind, "folders": folders })
         })
         .collect();
@@ -4081,6 +4102,201 @@ mod tests {
         assert!(
             required_by.iter().any(|r| r == "Other") && !required_by.iter().any(|r| r == "Req"),
             "only the line on the target replays: {required_by:?}"
+        );
+    }
+
+    /// One repair primitive: `(target, folder, path, to)`.
+    type Primitive<'a> = (Option<TargetKey>, Option<&'a str>, &'a str, Option<&'a str>);
+
+    /// A repair line on `targets` with one primitive per `(target, folder, path, to)`.
+    fn repair_with(targets: &[TargetKey], primitives: &[Primitive<'_>]) -> HistoryEntry {
+        use crate::state::history::{PredicateKind, RepairEndpoints, RepairOp, RepairPredicate};
+        let absent = || RepairPredicate {
+            kind: PredicateKind::Absent,
+            identity: None,
+            sha256: None,
+            mode: None,
+            stamp: None,
+            link_target: None,
+        };
+        let repairs = primitives
+            .iter()
+            .zip(1..)
+            .map(|(&(target, folder, path, to), seq)| RepairEntry {
+                seq,
+                fix: 1,
+                fm: "fm-external_artifacts-nested-addon-folder".into(),
+                op: RepairOp::RenameNoReplace,
+                path: path.into(),
+                to: to.map(Into::into),
+                mode: None,
+                pre: RepairEndpoints::Path(absent()),
+                post: RepairEndpoints::Path(absent()),
+                backup: None,
+                activation: false,
+                target,
+                folder: folder.map(|f| FolderName::new(f).unwrap()),
+            })
+            .collect();
+        HistoryEntry {
+            targets: targets.to_vec(),
+            repairs,
+            ..repair_line(TargetKey::new())
+        }
+    }
+
+    #[test]
+    fn a_later_repair_of_one_of_its_folders_conflicts() {
+        let key = TargetKey::new();
+        let other = TargetKey::new();
+        let reverted = line(key, TxKind::Install, &[(FolderOp::Add, "Foo")]);
+        let in_foo = repair_with(
+            &[key],
+            &[(
+                Some(key),
+                Some("Foo"),
+                "/c/Interface/AddOns/Foo/x.lua",
+                None,
+            )],
+        );
+        let undo_of_it = HistoryEntry {
+            kind: TxKind::Undo,
+            reverts: Some(in_foo.tx),
+            ..repair_with(
+                &[key],
+                &[(
+                    Some(key),
+                    Some("Foo"),
+                    "/c/Interface/AddOns/Foo/x.lua",
+                    None,
+                )],
+            )
+        };
+        let with = |later: &[HistoryEntry]| {
+            let mut entries = vec![reverted.clone()];
+            entries.extend_from_slice(later);
+            entries
+        };
+        let conflicts = [
+            ("folder_field_on_target", in_foo.clone()),
+            (
+                "rename_path_out_of_folder",
+                repair_with(
+                    &[key],
+                    &[(
+                        Some(key),
+                        None,
+                        "/c/Interface/AddOns/Foo/Inner",
+                        Some("/c/Interface/AddOns/Inner"),
+                    )],
+                ),
+            ),
+            (
+                "rename_to_into_folder",
+                repair_with(
+                    &[key],
+                    &[(
+                        Some(key),
+                        None,
+                        "/c/Interface/AddOns/Wrap/Foo",
+                        Some("/c/Interface/AddOns/Foo"),
+                    )],
+                ),
+            ),
+            (
+                "primitive_names_no_client",
+                repair_with(
+                    &[key],
+                    &[(None, Some("Foo"), "/c/Interface/AddOns/Foo", None)],
+                ),
+            ),
+            (
+                "every_line_with_folder",
+                repair_with(&[], &[(None, Some("Foo"), "/c/Interface/AddOns/Foo", None)]),
+            ),
+        ];
+        for (name, repair) in conflicts {
+            let entries = with(std::slice::from_ref(&repair));
+            let err = check_conflicts(&entries, 0, None, false).unwrap_err();
+            assert_eq!(err.code, ErrorCode::UndoConflict, "{name}: {repair:?}");
+            assert_eq!(
+                err.details["conflicting"][0],
+                serde_json::json!({"tx": repair.tx, "kind": "repair", "folders": ["Foo"]}),
+                "{name}: {repair:?} gave {}",
+                err.details
+            );
+            assert_eq!(
+                first(&entries, 0, None, false),
+                Some(repair.tx),
+                "{name}: the fix"
+            );
+        }
+
+        let quiet: [(&str, Vec<HistoryEntry>); 5] = [
+            (
+                "other_folder",
+                with(&[repair_with(
+                    &[key],
+                    &[(Some(key), Some("Bar"), "/c/Interface/AddOns/Bar", None)],
+                )]),
+            ),
+            (
+                "other_target",
+                with(&[repair_with(
+                    &[other],
+                    &[(Some(other), Some("Foo"), "/o/Interface/AddOns/Foo", None)],
+                )]),
+            ),
+            (
+                "home_side_only",
+                with(&[repair_with(
+                    &[key],
+                    &[(None, None, "/cfg/credentials/github", None)],
+                )]),
+            ),
+            ("repair_then_its_undo", with(&[in_foo.clone(), undo_of_it])),
+            ("older_repair", vec![in_foo.clone(), reverted.clone()]),
+        ];
+        for (name, entries) in quiet {
+            let at = entries.iter().position(|e| e.tx == reverted.tx).unwrap();
+            let output = check_conflicts(&entries, at, None, false)
+                .err()
+                .map(|e| e.details.clone());
+            assert_eq!(output, None, "{name}: {:?}", &entries[at + 1..]);
+        }
+
+        // A whole restore's undo writes back no AddOns folder: a repair never conflicts.
+        let restore = restore_line(key);
+        let entries = vec![restore, in_foo];
+        let output = check_conflicts(&entries, 0, None, true)
+            .err()
+            .map(|e| e.details.clone());
+        assert_eq!(output, None, "whole_restore_undo");
+    }
+
+    #[test]
+    fn a_repair_counts_like_a_folder_change_for_a_saved_variables_follow_up() {
+        let key = TargetKey::new();
+        let reverted = line(key, TxKind::Install, &[(FolderOp::Add, "Foo")]);
+        let deferred = HistoryEntry {
+            sv_deferred: true,
+            ..undo_line(key, reverted.tx, Some(0))
+        };
+        let repair = repair_with(
+            &[key],
+            &[(Some(key), Some("Foo"), "/c/Interface/AddOns/Foo", None)],
+        );
+        let after = vec![reverted.clone(), deferred.clone(), repair.clone()];
+        assert_eq!(
+            first(&after, 0, Some(1), true),
+            Some(repair.tx),
+            "a repair after the deferred undo conflicts with its follow-up"
+        );
+        let before = vec![reverted, repair, deferred];
+        assert_eq!(
+            first(&before, 0, Some(2), true),
+            None,
+            "a repair before the deferred undo does not"
         );
     }
 }
