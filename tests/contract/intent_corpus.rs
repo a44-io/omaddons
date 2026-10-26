@@ -196,8 +196,8 @@ impl Row {
 }
 
 use Kind::{
-    Argument, ClientAsAddon, CommandTypo, FlagTypo, MisplacedAfterVerb, MisplacedBeforeVerb,
-    TargetAll, TargetTypo, ValueTypo, WarningFix,
+    ApplyForAdopt, Argument, ClientAsAddon, CommandTypo, DoctorVerb, FlagTypo, MisplacedAfterVerb,
+    MisplacedBeforeVerb, TargetAll, TargetTypo, ValueTypo, WarningFix,
 };
 
 pub const CORPUS: &[Row] = &[
@@ -710,6 +710,370 @@ pub const CORPUS: &[Row] = &[
     .then(offline_then_online),
 ];
 
+/// A row whose surface another leaf owns and that has not landed yet (common rule 18).
+#[derive(Debug, Clone, Copy)]
+pub struct Pending {
+    pub row: Row,
+    /// `app::COMMANDS` paths the row needs: its wrong argv's and its fix's.
+    pub needs: &'static [&'static str],
+    /// The leaf that owns the surface, and promotes the row if it lands after C4.
+    pub leaf: &'static str,
+}
+
+const fn pending(leaf: &'static str, needs: &'static [&'static str], row: Row) -> Pending {
+    Pending { row, needs, leaf }
+}
+
+/// A doctor-tree usage error's expectation (exit 64, M4-D40).
+const fn doctor_usage(fix: &'static [&'static str], fix_exit: &'static [i32]) -> Expect {
+    error(64, "usage", fix, fix_exit)
+}
+
+/// The note of E7's rows while their setup is unwritten.
+const E7_SETUP: &str = "setup: E7 writes it (one committed repair by E6's fm-test-write)";
+
+/// Rows of surfaces that have not landed, grouped by leaf. The leaf that adds the last
+/// surface a row needs moves it into `CORPUS` and makes it pass, in that commit.
+pub const PENDING: &[Pending] = &[
+    pending(
+        "A4",
+        &["capabilities"],
+        row(
+            CommandTypo,
+            &["capabilites"],
+            &[],
+            "a read-only guess runs",
+            error(2, "usage", &["omaddons", "capabilities"], &[0]),
+        ),
+    ),
+    pending(
+        "A5",
+        &["robot-docs"],
+        row(
+            CommandTypo,
+            &["robotdocs"],
+            &[],
+            "bare robot-docs runs its help",
+            error(2, "usage", &["omaddons", "robot-docs"], &[0]),
+        ),
+    ),
+    pending(
+        "A5",
+        &["robot-docs schema"],
+        row(
+            CommandTypo,
+            &["robot-docs", "schema", "instal"],
+            &["robot-docs schema"],
+            "a schema's command name, corrected",
+            error(
+                2,
+                "usage",
+                &["omaddons", "robot-docs", "schema", "install"],
+                &[0],
+            ),
+        )
+        .by_leaf("A5"),
+    ),
+    pending(
+        "A5",
+        &["robot-docs errors"],
+        row(
+            CommandTypo,
+            &["robot-docs", "erors"],
+            &[],
+            "a read-only guess runs",
+            error(2, "usage", &["omaddons", "robot-docs", "errors"], &[0]),
+        )
+        .by_leaf("A5"),
+    ),
+    pending(
+        "B1",
+        &["robot-docs guide"],
+        row(
+            CommandTypo,
+            &["robot-docs", "gide"],
+            &[],
+            "a read-only guess runs",
+            error(2, "usage", &["omaddons", "robot-docs", "guide"], &[0]),
+        ),
+    ),
+    pending(
+        "B3",
+        &["robot-docs install-skill"],
+        row(
+            CommandTypo,
+            &["robot-docs", "install-skil"],
+            &[],
+            "a mutating guess becomes help",
+            error(
+                2,
+                "usage",
+                &["omaddons", "help", "robot-docs", "install-skill"],
+                &[0],
+            ),
+        )
+        .by_leaf("B3"),
+    ),
+    pending(
+        "B3",
+        &["robot-docs install-skill"],
+        row(
+            FlagTypo,
+            &["robot-docs", "install-skill", "--dry-rn"],
+            &["robot-docs install-skill"],
+            "the corpus home has no $HOME/.claude: the fix exits 3",
+            error(
+                2,
+                "usage",
+                &["omaddons", "robot-docs", "install-skill", "--dry-run"],
+                &[3],
+            ),
+        )
+        .by_leaf("B3"),
+    ),
+    pending(
+        "A7",
+        &["completions"],
+        row(
+            ValueTypo,
+            &["completions", "bsh"],
+            &["completions"],
+            "a shell name corrected",
+            error(2, "usage", &["omaddons", "completions", "bash"], &[0]),
+        ),
+    ),
+    pending(
+        "A7",
+        &["completions"],
+        row(
+            CommandTypo,
+            &["completion", "bash"],
+            &[],
+            "a read-only guess runs",
+            error(2, "usage", &["omaddons", "completions", "bash"], &[0]),
+        )
+        .by_leaf("A7"),
+    ),
+    pending(
+        "D5",
+        &["apply"],
+        row(
+            ApplyForAdopt,
+            &["apply"],
+            &["apply", "adopt"],
+            "help first; the alternative is adopt --apply (M4-D27)",
+            error(2, "usage", &["omaddons", "help", "apply"], &[0]),
+        ),
+    ),
+    pending(
+        "D5",
+        &["apply"],
+        row(
+            ApplyForAdopt,
+            &["apply", "nosuchid0"],
+            &["apply"],
+            "no such plan",
+            error(3, "plan_not_found", &["omaddons", "help", "apply"], &[0]),
+        ),
+    ),
+    pending(
+        "D5",
+        &["apply"],
+        row(
+            ApplyForAdopt,
+            &["adopt", "apply"],
+            &["adopt"],
+            "the user's own verb; nothing to adopt on the corpus home",
+            error(2, "usage", &["omaddons", "adopt", "--apply"], &[0]),
+        ),
+    ),
+    pending(
+        "D5",
+        &["apply"],
+        row(
+            ApplyForAdopt,
+            &["aply", "01M8Q2VA"],
+            &[],
+            "a mutating guess becomes help",
+            error(2, "usage", &["omaddons", "help", "apply"], &[0]),
+        ),
+    ),
+    pending(
+        "D9",
+        &["plans show"],
+        row(
+            CommandTypo,
+            &["plans", "shwo", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+            &["plans show"],
+            "the corpus home holds no such plan: the fix exits 3",
+            error(
+                2,
+                "usage",
+                &["omaddons", "plans", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+                &[3],
+            ),
+        ),
+    ),
+    pending(
+        "D9",
+        &["plans show"],
+        row(
+            CommandTypo,
+            &["plan", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+            &["plans show"],
+            "the corpus home holds no such plan: the fix exits 3",
+            error(
+                2,
+                "usage",
+                &["omaddons", "plans", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+                &[3],
+            ),
+        ),
+    ),
+    pending(
+        "E3",
+        &["doctor"],
+        row(
+            DoctorVerb,
+            &["doctor", "--fix"],
+            &["doctor fix"],
+            "help until E6; then doctor fix --dry-run, exiting 0 or 1",
+            doctor_usage(&["omaddons", "help", "doctor"], &[0]),
+        ),
+    ),
+    pending(
+        "E3",
+        &["doctor explain"],
+        row(
+            DoctorVerb,
+            &["doctor", "--explain", "fm-schemas-state-version-newer"],
+            &["doctor explain"],
+            "--explain is a subcommand",
+            doctor_usage(
+                &[
+                    "omaddons",
+                    "doctor",
+                    "explain",
+                    "fm-schemas-state-version-newer",
+                ],
+                &[0],
+            ),
+        ),
+    ),
+    pending(
+        "E3",
+        &["doctor diagnose"],
+        row(
+            DoctorVerb,
+            &["doctor", "diagnoze"],
+            &[],
+            "a finding exits 1",
+            doctor_usage(&["omaddons", "doctor", "diagnose"], &[0, 1]),
+        ),
+    ),
+    pending(
+        "E3",
+        &["doctor"],
+        row(
+            DoctorVerb,
+            &["doctor", "--only", "fm-nope"],
+            &["doctor"],
+            "an unknown failure mode",
+            doctor_usage(&["omaddons", "doctor"], &[0, 1]),
+        ),
+    ),
+    pending(
+        "E3",
+        &["doctor"],
+        row(
+            DoctorVerb,
+            &["doctr"],
+            &[],
+            "a root-level typo uses the general dictionary (exit 2)",
+            error(2, "usage", &["omaddons", "doctor"], &[0, 1]),
+        ),
+    ),
+    pending(
+        "E3",
+        &["doctor explain"],
+        row(
+            DoctorVerb,
+            &[
+                "doctor",
+                "explain",
+                "fm-concurrency_primitives-journal-pendng",
+            ],
+            &["doctor explain"],
+            "a failure mode id corrected",
+            doctor_usage(
+                &[
+                    "omaddons",
+                    "doctor",
+                    "explain",
+                    "fm-concurrency_primitives-journal-pending",
+                ],
+                &[0],
+            ),
+        ),
+    ),
+    pending(
+        "E6",
+        &["doctor fix"],
+        row(
+            DoctorVerb,
+            &["doctor", "fix", "--force"],
+            &["doctor fix"],
+            "a preview, never a forced fix",
+            doctor_usage(&["omaddons", "doctor", "fix", "--dry-run"], &[0, 1]),
+        ),
+    ),
+    pending(
+        "E6",
+        &["doctor fix"],
+        row(
+            DoctorVerb,
+            &["doctor", "fxi"],
+            &[],
+            "a mutating guess becomes help",
+            doctor_usage(&["omaddons", "help", "doctor", "fix"], &[0]),
+        )
+        .by_leaf("E6"),
+    ),
+    pending(
+        "E7",
+        &["doctor undo", "doctor fix"],
+        row(
+            DoctorVerb,
+            &["doctor", "undo", "latest"],
+            &["doctor undo"],
+            E7_SETUP,
+            doctor_usage(&["omaddons", "doctor", "undo"], &[0]),
+        ),
+    ),
+    pending(
+        "E7",
+        &["doctor undo", "doctor fix"],
+        row(
+            DoctorVerb,
+            &["undo", "--run", "{run}"],
+            &["doctor undo"],
+            E7_SETUP,
+            error(2, "usage", &["omaddons", "doctor", "undo", "{run}"], &[0]),
+        )
+        .by_leaf("E7"),
+    ),
+];
+
+/// Whether every path of `needs` is among `commands`.
+fn ready(needs: &[&str], commands: &[&str]) -> bool {
+    needs.iter().all(|need| commands.contains(need))
+}
+
+/// The paths of `app::COMMANDS`.
+fn command_names() -> Vec<&'static str> {
+    omaddons::app::COMMANDS.iter().map(|c| c.name).collect()
+}
+
 /// The https install lands on the default target.
 fn installs_on_retail(log: &TestLog, runs: &RowRuns<'_>) {
     let target = &runs.fix.data()["target"]["id"];
@@ -1089,8 +1453,21 @@ fn steps(
 /// listing every failing row, after all of them ran.
 fn run_kind(log: &TestLog, kind: Kind) {
     let rows: Vec<&Row> = CORPUS.iter().filter(|r| r.kind == kind).collect();
+    // What is not proven yet, and whose surface it waits for.
+    let waiting: Vec<String> = PENDING
+        .iter()
+        .filter(|p| p.row.kind == kind)
+        .map(|p| format!("{} (leaf {})", p.row.argv.join(" "), p.leaf))
+        .collect();
+    for row in &waiting {
+        log.note(format!("pending: {row}"));
+    }
     if rows.is_empty() {
-        log.note(format!("no active row of {}", kind.name()));
+        log.note(format!(
+            "no active row of {}; {} pending",
+            kind.name(),
+            waiting.len()
+        ));
         return;
     }
     let home = intent_home();
@@ -1462,4 +1839,156 @@ fn harness_catches_a_changed_client_tree() {
             "the report lacks {part:?}:\n{report}"
         );
     }
+}
+
+// ---- the pending table and criterion 5 ----
+
+#[test]
+fn ready_needs_every_path() {
+    for (case, needs, commands, want) in [
+        (
+            "all_present",
+            &["status"][..],
+            &["status", "list"][..],
+            true,
+        ),
+        (
+            "one_missing",
+            &["doctor undo", "doctor fix"],
+            &["doctor fix"],
+            false,
+        ),
+        ("none_present", &["doctor"], &["status"], false),
+        ("empty_needs", &[], &["status"], true),
+    ] {
+        assert_eq!(
+            ready(needs, commands),
+            want,
+            "{case}: {needs:?} in {commands:?}"
+        );
+    }
+    for p in PENDING {
+        assert!(
+            !p.needs.is_empty(),
+            "pending row {:?} names no need",
+            p.row.argv
+        );
+    }
+}
+
+#[test]
+fn pending_rows_wait_for_a_surface_that_has_not_landed() {
+    let commands = command_names();
+    for p in PENDING {
+        let argv = p.row.argv.join(" ");
+        assert!(
+            !ready(p.needs, &commands),
+            "pending row {argv} (surface of {}): its surfaces {:?} exist; move it from PENDING to CORPUS and make it pass (common rule 18)",
+            p.leaf,
+            p.needs
+        );
+        for need in p.needs {
+            let spelled = !need.is_empty()
+                && need.split(' ').all(|word| {
+                    !word.is_empty()
+                        && word
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                });
+            assert!(spelled, "pending row {argv}: {need:?} is no command path");
+        }
+    }
+}
+
+#[test]
+fn pending_rows_are_unique_and_not_in_the_corpus() {
+    let mut argvs: Vec<&[&str]> = CORPUS
+        .iter()
+        .map(|r| r.argv)
+        .chain(PENDING.iter().map(|p| p.row.argv))
+        .collect();
+    argvs.sort_unstable();
+    let total = argvs.len();
+    argvs.dedup();
+    assert_eq!(
+        argvs.len(),
+        total,
+        "an argv appears twice across CORPUS and PENDING"
+    );
+}
+
+/// The plan's rows per kind, across `CORPUS` and `PENDING`.
+fn plan_rows() -> BTreeMap<&'static str, usize> {
+    let mut per_kind = BTreeMap::new();
+    for row in CORPUS.iter().chain(PENDING.iter().map(|p| &p.row)) {
+        if matches!(row.origin, Origin::Plan) {
+            *per_kind.entry(row.kind.name()).or_insert(0) += 1;
+        }
+    }
+    per_kind
+}
+
+#[test]
+fn plan_rows_are_never_dropped() {
+    // Appendix C.2's 56, plus D5's 4, D9's 2, E3's 4 and E6's 1.
+    let per_kind = plan_rows();
+    let total: usize = per_kind.values().sum();
+    assert_eq!(total, 67, "plan rows per kind: {per_kind:?}");
+}
+
+/// The categories whose surfaces exist without any other M4 leaf.
+const LANDED_CATEGORIES: [Kind; 8] = [
+    MisplacedBeforeVerb,
+    MisplacedAfterVerb,
+    ClientAsAddon,
+    TargetAll,
+    TargetTypo,
+    CommandTypo,
+    FlagTypo,
+    ValueTypo,
+];
+
+#[test]
+fn every_landed_category_has_a_row() {
+    for kind in LANDED_CATEGORIES {
+        assert!(
+            CORPUS.iter().any(|r| r.kind == kind),
+            "no corpus row of {}",
+            kind.name()
+        );
+    }
+}
+
+#[test]
+#[ignore = "checkpoint: H4 and H6 run it once every M4 surface has landed"]
+fn the_corpus_meets_checkpoint_criterion_5() {
+    let log = tlog!();
+    let mut per_kind: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut per_origin: BTreeMap<String, usize> = BTreeMap::new();
+    for row in CORPUS {
+        *per_kind.entry(row.kind.name()).or_insert(0) += 1;
+        let origin = match row.origin {
+            Origin::Plan => "plan".to_owned(),
+            Origin::Leaf(leaf) => format!("leaf {leaf}"),
+        };
+        *per_origin.entry(origin).or_insert(0) += 1;
+    }
+    let counts = format!(
+        "intent corpus: {} rows\nper kind: {per_kind:?}\nper origin: {per_origin:?}",
+        CORPUS.len()
+    );
+    log.note(&counts);
+    let pending: Vec<String> = PENDING
+        .iter()
+        .map(|p| format!("{} (leaf {})", p.row.argv.join(" "), p.leaf))
+        .collect();
+    let categories = LANDED_CATEGORIES.iter().chain(&[ApplyForAdopt, DoctorVerb]);
+    let missing: Vec<&str> = categories
+        .filter(|kind| !CORPUS.iter().any(|r| r.kind == **kind))
+        .map(|kind| kind.name())
+        .collect();
+    assert!(
+        CORPUS.len() >= 60 && pending.is_empty() && missing.is_empty(),
+        "{counts}\npending: {pending:?}\nmissing categories: {missing:?}"
+    );
 }
