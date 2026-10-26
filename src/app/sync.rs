@@ -700,6 +700,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
             kind: Some(TxKind::Sync),
             run,
             no_deps: args.no_deps,
+            witness: None,
         };
         let done = engine.run(&req, Some(&cache));
         let remembered = cache.remember(done.as_ref().map_or(&[][..], |d| &d.plan.facts));

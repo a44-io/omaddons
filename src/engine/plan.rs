@@ -36,6 +36,7 @@ use super::ownership::{self, AllowedOp, FolderChange, Transfer, WorkingView};
 use super::retention::RetentionLimits;
 use super::running::{self, PolicyContext, PolicyOp};
 use super::swap::SwapOp;
+use super::witness::{self, ApprovalWitness, InputWitness, WitnessCtx, WitnessScope};
 use crate::error::{Error, ErrorBody, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{ScopeTable, TreeDigest, WriteSession, Writer, ensure_dir_all, failpoint};
 use crate::inventory::{Depth, FolderClass, Inventory, inventory_shared, sibling_records};
@@ -82,6 +83,9 @@ pub struct PlanRequest {
     /// `--no-deps`: install only what was asked for; what the TOCs require is still
     /// checked and warned about.
     pub no_deps: bool,
+    /// Collect an approval witness per target while planning (`Plan.witnesses`), with
+    /// what it covers beyond the plan; `None` collects none.
+    pub witness: Option<WitnessScope>,
 }
 
 /// The changes for one target.
@@ -499,6 +503,10 @@ pub struct Plan {
     /// release memo (dry runs included: their downloads are real).
     #[serde(skip)]
     pub facts: Vec<CandidateFact>,
+    /// One approval witness per target, in `targets` order, when the request asked for
+    /// them; empty otherwise. Only its digest leaves the engine.
+    #[serde(skip)]
+    pub witnesses: Vec<ApprovalWitness>,
 }
 
 impl Plan {
@@ -743,6 +751,9 @@ pub struct FolderWork {
     /// install (`out_of_date`, `toc_comma_on_legacy`) and `download_unverified`. The
     /// commit inspects and downloads nothing, so it warns again from the work.
     pub archive_warnings: Vec<Warning>,
+    /// The local input it installs from (a `--file` zip or directory, a git checkout),
+    /// for the approval witness; `None` for downloads, cached blobs and removes.
+    pub input: Option<InputWitness>,
 }
 
 /// Changed files of the folders a work replaces.
@@ -1133,6 +1144,14 @@ impl AddonWork {
         }
     }
 
+    /// The local input it installs from, for the approval witness.
+    pub fn input(&self) -> Option<&InputWitness> {
+        match &self.mode {
+            WorkMode::Folders(f) => f.input.as_ref(),
+            WorkMode::Records(_) => None,
+        }
+    }
+
     /// Folders taken from other addons (`--force`).
     pub fn transfers(&self) -> &[Transfer] {
         match &self.mode {
@@ -1322,6 +1341,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
     let mut targets = Vec::with_capacity(prepared.len());
     let mut failures = Vec::new();
     let mut facts = Vec::new();
+    let mut witnesses = Vec::new();
     for (tr, record, index, wants) in prepared {
         let target = &tr.target;
         let mut tp = TargetPlan {
@@ -1361,6 +1381,9 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                         }
                     };
                     failures.push(failure(r, addon, target, error));
+                }
+                if req.witness.is_some() {
+                    witnesses.push(bare_witness(target));
                 }
                 targets.push(tp);
                 continue;
@@ -1520,6 +1543,22 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         tp.creates_addons_dir =
             live.addons_dir_missing && tp.work.iter().any(|w| w.inspected().is_some());
         tp.notes.extend(planner.notes.take());
+        if let Some(scope) = &req.witness {
+            let wctx = WitnessCtx {
+                paths: ctx.paths,
+                target,
+                index: index.as_ref(),
+                scope,
+                limits: ctx.limits,
+            };
+            match witness::collect(&tp, &wctx) {
+                Ok(witnessed) => witnesses.push(witnessed),
+                Err(error) => {
+                    unwitnessed(&mut tp, &mut failures, target, &error);
+                    witnesses.push(bare_witness(target));
+                }
+            }
+        }
         targets.push(tp);
         for fact in planner.facts.into_inner() {
             merge_fact(&mut facts, fact);
@@ -1538,7 +1577,52 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         targets,
         failures,
         facts,
+        witnesses,
     })
+}
+
+/// A target's bare witness (its marker and judge), else one without a marker when even
+/// that cannot be read (its changes have failed already): the token pairs a witness
+/// with every target.
+fn bare_witness(target: &Target) -> ApprovalWitness {
+    witness::bare(target).unwrap_or_else(|_| {
+        ApprovalWitness::new(
+            crate::model::TargetRef::of(target.key, &target.id),
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            target.judge.clone(),
+        )
+    })
+}
+
+/// A target whose witness could not be collected: nothing of it can commit. Each change
+/// it planned fails with `error` under its own ref and addon, as when its AddOns cannot
+/// be listed; only the warnings of addons it left unchanged remain.
+fn unwitnessed(
+    tp: &mut TargetPlan,
+    failures: &mut Vec<PlanFailure>,
+    target: &Target,
+    error: &Error,
+) {
+    for change in std::mem::take(&mut tp.changes) {
+        failures.push(failure(
+            Some(change.r#ref),
+            Some(change.addon),
+            target,
+            error.clone(),
+        ));
+    }
+    tp.work.clear();
+    tp.ops.clear();
+    tp.releases.clear();
+    tp.dependencies.clear();
+    tp.warnings.clone_from(&tp.unchanged_warnings);
+    tp.reload_required = ReloadRequired::None;
+    tp.kind = None;
+    tp.creates_addons_dir = false;
 }
 
 /// The target as dependency checks see it while planning: what this transaction's
@@ -2628,6 +2712,7 @@ pub fn check_release(
         dry_run: true,
         kind: None,
         no_deps: true,
+        witness: None,
     };
     let record = TargetRecord::empty(TargetKey::from_ulid(ulid::Ulid::nil()));
     let live = Inventory {
@@ -3468,6 +3553,7 @@ struct PendingBuild {
     release: Option<PlannedRelease>,
     warnings: Vec<Warning>,
     deps: DepFacts,
+    input: Option<InputWitness>,
 }
 
 impl PendingBuild {
@@ -3879,6 +3965,11 @@ impl TargetPlanner<'_> {
             expected_hash,
             blob_sha256: winner.loadable.inspected.blob_sha256.clone(),
         };
+        let input = super::witness::input_of(
+            &winner.candidate.asset.location,
+            winner.loadable.inspected.blob_sha256.as_deref(),
+            &self.ctx.paths.blobs_dir(),
+        );
         Ok(Prepared::Build(Box::new(PendingBuild {
             existing: existing.cloned(),
             template,
@@ -3888,6 +3979,7 @@ impl TargetPlanner<'_> {
             release: Some(release),
             warnings: winner.warnings,
             deps: winner.deps,
+            input,
         })))
     }
 
@@ -3907,6 +3999,7 @@ impl TargetPlanner<'_> {
         )?;
         if let WorkMode::Folders(f) = &mut planned.work.mode {
             f.deps = b.deps;
+            f.input = b.input;
             f.archive_warnings = archive_warnings;
             // Here, never in `build_install`: the walk stays out of the commit window
             // that `rejudge` holds the lock for.
@@ -4222,6 +4315,7 @@ impl TargetPlanner<'_> {
                     deps: DepFacts::default(),
                     local_changes: None,
                     archive_warnings: Vec::new(),
+                    input: None,
                 })),
             },
         })
@@ -4291,6 +4385,7 @@ impl TargetPlanner<'_> {
                     deps: DepFacts::default(),
                     local_changes: None,
                     archive_warnings: Vec::new(),
+                    input: None,
                 })),
             },
         })
@@ -5941,6 +6036,7 @@ mod tests {
                     folders: vec![FolderName::new("Foo").unwrap()],
                 }),
                 archive_warnings: Vec::new(),
+                input: None,
             })),
         };
         let replace = |indexed: Option<TreeDigest>| SwapOp::Replace {
@@ -6366,6 +6462,7 @@ mod tests {
             dry_run: false,
             kind: None,
             no_deps: false,
+            witness: None,
         };
         let plan = plan(&req, &ctx).unwrap();
         f(&req, &ctx, &plan)

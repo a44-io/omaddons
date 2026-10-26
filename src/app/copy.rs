@@ -303,6 +303,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             kind: None,
             run,
             no_deps: args.no_deps,
+            witness: None,
         };
         match engine.run(&req, Some(&cache)) {
             Ok(done) => Some(done),

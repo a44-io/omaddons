@@ -908,6 +908,7 @@ fn verify(
         run: RunId::new(),
         // Verifying the updates themselves: their dependencies download at update time.
         no_deps: true,
+        witness: None,
     };
     let mut verified = Verified::default();
     if req.targets.is_empty() {

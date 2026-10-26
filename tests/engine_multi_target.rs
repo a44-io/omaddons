@@ -175,6 +175,7 @@ mod support {
                 kind: None,
                 run,
                 no_deps: false,
+                witness: None,
             }
         }
 

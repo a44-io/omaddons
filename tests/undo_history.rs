@@ -1000,6 +1000,7 @@ mod runs {
                     kind: Some(TxKind::Update),
                     run,
                     no_deps: false,
+                    witness: None,
                 };
                 let http = replay(&self.home.env, &self.home.http);
                 let sources = SourceRegistry::builtin(&SourceConfigView::all_enabled());

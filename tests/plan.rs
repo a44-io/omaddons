@@ -145,6 +145,7 @@ mod support {
                 dry_run: true,
                 kind: None,
                 no_deps: false,
+                witness: None,
             };
             plan(&req, &ctx).unwrap()
         }

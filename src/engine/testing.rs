@@ -504,7 +504,32 @@ impl TxScene {
         kind: Option<TxKind>,
         default_kind: TxKind,
     ) -> crate::error::Result<super::tx::TxOutcomes> {
-        let req = super::tx::TxRequest {
+        let req = self.request(changes, kind, default_kind);
+        self.with_ctx("install", |ctx| super::tx::run(&req, ctx))
+    }
+
+    /// A dry run of `changes`, as an install, that collects an approval witness per
+    /// target under `scope` (`plan.witnesses`).
+    pub fn run_witnessed(
+        &self,
+        changes: Vec<super::plan::RequestedChange>,
+        scope: super::witness::WitnessScope,
+    ) -> crate::error::Result<super::tx::TxOutcomes> {
+        let mut req = self.request(changes, None, TxKind::Install);
+        req.dry_run = true;
+        req.witness = Some(scope);
+        self.with_ctx("install", |ctx| super::tx::run(&req, ctx))
+    }
+
+    /// The request [`TxScene::run_as`] runs, for a test to adjust (a dry run, a second
+    /// target, a witness scope).
+    pub fn request(
+        &self,
+        changes: Vec<super::plan::RequestedChange>,
+        kind: Option<TxKind>,
+        default_kind: TxKind,
+    ) -> super::tx::TxRequest {
+        super::tx::TxRequest {
             targets: vec![super::tx::TxTarget {
                 discovered: self.current_target(),
                 changes,
@@ -518,8 +543,8 @@ impl TxScene {
             kind,
             run: crate::model::RunId::new(),
             no_deps: false,
-        };
-        self.with_ctx("install", |ctx| super::tx::run(&req, ctx))
+            witness: None,
+        }
     }
 
     /// A records-only edit of the installed addon `addon`.

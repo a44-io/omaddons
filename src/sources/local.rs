@@ -117,7 +117,7 @@ fn file_hash(path: &Path) -> Result<String> {
 }
 
 /// SHA-256 of the sorted `<path>\0<size>\0<mtime_ns>\n` lines of every regular file.
-fn listing_hash(dir: &Path) -> String {
+pub(crate) fn listing_hash(dir: &Path) -> String {
     let mut lines = Vec::new();
     let mut pending = vec![dir.to_path_buf()];
     while let Some(at) = pending.pop() {

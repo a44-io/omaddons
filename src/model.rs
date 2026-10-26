@@ -304,6 +304,63 @@ ulid_id!(
     "backup id"
 );
 
+/// A target as a token or a stored plan names it: its key once registered, else its
+/// provisional id (deterministic, `discover::registry::reconcile`). Every key sorts before
+/// every provisional id, keys as [`TargetKey`] sorts them. On the wire it is the plain
+/// string, and a string reads as a key only when it is a key's canonical (uppercase)
+/// display, so a provisional id (always lowercase) never does.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TargetRef {
+    Key(TargetKey),
+    Provisional(String),
+}
+
+impl TargetRef {
+    /// The key when there is one, else the id.
+    pub fn of(key: Option<TargetKey>, id: &str) -> Self {
+        key.map_or_else(|| Self::Provisional(id.to_owned()), Self::Key)
+    }
+
+    /// `Key` for a key's canonical display, `Provisional` for anything else.
+    pub fn parse(s: &str) -> Self {
+        match s.parse::<TargetKey>() {
+            Ok(key) if key.to_string() == s => Self::Key(key),
+            _ => Self::Provisional(s.to_owned()),
+        }
+    }
+}
+
+impl fmt::Display for TargetRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Key(key) => key.fmt(f),
+            Self::Provisional(id) => f.write_str(id),
+        }
+    }
+}
+
+impl Serialize for TargetRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for TargetRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(|s| Self::parse(&s))
+    }
+}
+
+impl JsonSchema for TargetRef {
+    fn schema_name() -> Cow<'static, str> {
+        "TargetRef".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({ "type": "string" })
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Small enums.
 
@@ -1451,6 +1508,52 @@ mod tests {
     }
 
     // ---- Ids -----------------------------------------------------------------------
+
+    #[test]
+    fn target_refs_order_keys_first_and_as_keys_do() {
+        let key = |n: u64| TargetKey::from_ulid(Ulid::from_parts(n, u128::from(n)));
+        let mut refs = vec![
+            TargetRef::Provisional("retail".into()),
+            TargetRef::Key(key(30)),
+            TargetRef::Provisional("era".into()),
+            TargetRef::Key(key(10)),
+            TargetRef::Provisional("classic".into()),
+            TargetRef::Key(key(20)),
+        ];
+        refs.sort();
+        let mut keys = vec![key(30), key(10), key(20)];
+        keys.sort();
+        let expected: Vec<TargetRef> = keys
+            .into_iter()
+            .map(TargetRef::Key)
+            .chain(["classic", "era", "retail"].map(|id| TargetRef::Provisional(id.into())))
+            .collect();
+        assert_eq!(refs, expected);
+    }
+
+    #[test]
+    fn a_target_ref_is_its_plain_string() {
+        let key = TargetKey::new();
+        for (case, value, text) in [
+            ("key", TargetRef::of(Some(key), "retail"), key.to_string()),
+            (
+                "provisional",
+                TargetRef::of(None, "retail"),
+                "retail".to_owned(),
+            ),
+            (
+                "a lowercase ULID-like id",
+                TargetRef::Provisional(key.to_string().to_ascii_lowercase()),
+                key.to_string().to_ascii_lowercase(),
+            ),
+        ] {
+            assert_eq!(value.to_string(), text, "{case}: display");
+            let json = serde_json::to_string(&value).unwrap();
+            assert_eq!(json, format!("\"{text}\""), "{case}: serialize");
+            let back: TargetRef = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, value, "{case}: round trip");
+        }
+    }
 
     #[test]
     fn ids_serialize_as_26_character_ulids() {

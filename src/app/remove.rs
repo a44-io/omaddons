@@ -254,6 +254,7 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         kind: None,
         run: RunId::new(),
         no_deps: false,
+        witness: None,
     };
     // A remove fetches nothing. `--if-match` binds the run to its preview's plan.
     let binding = ctx

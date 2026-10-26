@@ -38,6 +38,7 @@ use super::swap::{
     SvSkipped, SwapOp, finish_saved_variables, out_of_scope_warnings, predigest,
     prestage_saved_variables, snapshot_state, swap, with_predigests,
 };
+use super::witness::WitnessScope;
 use crate::backup::Trigger;
 use crate::backup::auto::{self, AutoResult, AutoRun};
 use crate::backup::create::Created;
@@ -127,6 +128,9 @@ pub struct TxRequest {
     pub run: RunId,
     /// `--no-deps`: what the TOCs require is checked and warned about, not installed.
     pub no_deps: bool,
+    /// Collect an approval witness per target while planning: a dry run that returns a
+    /// token, or a run bound to one. `None` collects none.
+    pub witness: Option<WitnessScope>,
 }
 
 /// One target and its changes; unregistered targets are registered at commit.
@@ -364,6 +368,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         dry_run: req.dry_run,
         kind: req.kind,
         no_deps: req.no_deps,
+        witness: req.witness.clone(),
     };
     let no_catalog = Catalog::default();
     let transient;

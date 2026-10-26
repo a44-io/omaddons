@@ -617,6 +617,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         kind: None,
         run: RunId::new(),
         no_deps: args.no_deps,
+        witness: None,
     };
     let done = engine.run(&req, Some(&cache));
     // The command's last engine run: remember what it fetched, even when it failed.
@@ -894,6 +895,7 @@ fn choose_target<'w>(
         run: RunId::new(),
         // The requested refs alone choose the target.
         no_deps: true,
+        witness: None,
     };
     // The same cache as the real run: each ref is fetched once across both.
     let probed = engine.run(&probe, Some(cache))?;

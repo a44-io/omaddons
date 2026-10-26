@@ -10,23 +10,34 @@
 //! files, never following a link and never blocking, each checked by inode once open. A
 //! folder that cannot be read completely fails closed: a token must never approve bytes
 //! nobody observed.
+//!
+//! On that foundation, a target's [`ApprovalWitness`]: what one target's plan was
+//! approved against, [`collect`]ed at the end of its planning when the command asks for
+//! one (`TxRequest.witness`).
 
+use std::collections::BTreeMap;
 use std::fs::FileType;
 use std::io::{self, Read};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
+use jiff::Timestamp;
 use rustix::fs::{Mode, OFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
 use super::inspect::ArchiveLimits;
+use super::plan::{ChangeKind, DepReport, TargetPlan, UnresolvedReason};
+use super::swap::SwapOp;
 use crate::error::{Error, Result, Suggestion};
 use crate::fsx::{FileStamp, TreeStamp, WalkError};
+use crate::model::{AssetLocation, FolderName, Target, TargetRef};
 use crate::state::files_index::{
     FilesIndex, FolderIndex, hash_reader, limit_exceeded, unindexable,
 };
+use crate::state::paths::Paths;
+use crate::state::store;
 
 /// The content of one folder, every entry kind counted: a SHA-256 over length-prefixed
 /// fields, each entry by its raw relative path in byte order. A `touch` or a `chmod`
@@ -384,6 +395,432 @@ fn unreadable(name: &str, rel: &Path, e: &io::Error) -> Error {
     )
 }
 
+// ---------------------------------------------------------------------------------------
+// A target's approval witness.
+
+/// What one target's plan was approved against: the folders it moves, the names it
+/// creates, the target's identity, its local inputs and its dependency choices. Not a
+/// wire shape: only its digest leaves the engine (`precondition::of_plan`).
+#[derive(Debug, Clone)]
+pub struct ApprovalWitness {
+    pub target: TargetRef,
+    /// The client marker: `sha256:<hex>` of its bytes, `link:<target>` or `kind:<type>`;
+    /// `None` when absent (an unregistered target).
+    pub marker: Option<String>,
+    /// Sorted by (key, role).
+    pub folders: Vec<FolderWitness>,
+    /// The folder keys the plan creates, and `Interface/AddOns` when it creates that
+    /// (a folder key never holds a `/`); sorted bytewise.
+    pub absent: Vec<String>,
+    /// Sorted by (kind, source).
+    pub inputs: Vec<InputWitness>,
+    /// Sorted by (requester ASCII-lowercase, requester, folder, by).
+    pub dependencies: Vec<DependencyChoice>,
+    /// `Target.judge`.
+    pub judge: String,
+    /// Each witnessed folder's settled stamp, by its directory: the under-lock check's
+    /// shortcut, never hashed.
+    stamps: Vec<(PathBuf, TreeStamp)>,
+    cost: WitnessCost,
+}
+
+impl ApprovalWitness {
+    /// A witness of these parts, its lists sorted, with no stamps.
+    pub fn new(
+        target: TargetRef,
+        marker: Option<String>,
+        mut folders: Vec<FolderWitness>,
+        mut absent: Vec<String>,
+        mut inputs: Vec<InputWitness>,
+        mut dependencies: Vec<DependencyChoice>,
+        judge: String,
+    ) -> Self {
+        folders.sort_by(|a, b| (a.key.as_str(), a.role).cmp(&(b.key.as_str(), b.role)));
+        absent.sort();
+        absent.dedup();
+        inputs.sort_by(|a, b| (a.kind, &a.source).cmp(&(b.kind, &b.source)));
+        inputs.dedup();
+        dependencies.sort_by_cached_key(DependencyChoice::order);
+        Self {
+            target,
+            marker,
+            folders,
+            absent,
+            inputs,
+            dependencies,
+            judge,
+            stamps: Vec::new(),
+            cost: WitnessCost::default(),
+        }
+    }
+
+    /// The settled stamp of the witnessed folder at `dir`, when it had one.
+    #[expect(
+        dead_code,
+        reason = "D8 (omad-m4-agent-surface-doctor-c6cm.4.8) reads it under the commit lock"
+    )]
+    pub(crate) fn stamp(&self, dir: &Path) -> Option<&TreeStamp> {
+        self.stamps
+            .iter()
+            .find(|(at, _)| at == dir)
+            .map(|(_, stamp)| stamp)
+    }
+
+    /// What collecting it cost, summed over its folders.
+    pub fn cost(&self) -> WitnessCost {
+        self.cost
+    }
+}
+
+/// A local input of an install: a `--file` zip, a `--file` directory or a git checkout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputWitness {
+    pub kind: InputKind,
+    /// The path as given, or the repository URL.
+    pub source: String,
+    /// The zip's SHA-256, the directory's listing hash, or the commit.
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InputKind {
+    Zip,
+    Dir,
+    Git,
+}
+
+impl InputKind {
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::Zip => "zip",
+            Self::Dir => "dir",
+            Self::Git => "git",
+        }
+    }
+}
+
+/// Which addon satisfies which requirement of a requester.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyChoice {
+    pub requester: String,
+    /// The required folder's key.
+    pub folder: String,
+    pub by: DependencyBy,
+}
+
+impl DependencyChoice {
+    fn order(&self) -> (String, String, String, &'static str, Option<String>) {
+        (
+            self.requester.to_ascii_lowercase(),
+            self.requester.clone(),
+            self.folder.clone(),
+            self.by.wire(),
+            self.by.detail(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencyBy {
+    /// Installed with its requester: the dependency's addon.
+    Installs(String),
+    /// Present but unmanaged.
+    Unmanaged,
+    Unresolved(UnresolvedReason),
+    /// Resolved, but it failed to plan: its ref.
+    Failed(String),
+}
+
+impl DependencyBy {
+    pub const fn wire(&self) -> &'static str {
+        match self {
+            Self::Installs(_) => "install",
+            Self::Unmanaged => "unmanaged",
+            Self::Unresolved(_) => "unresolved",
+            Self::Failed(_) => "failed",
+        }
+    }
+
+    /// The addon, the reason's wire name or the ref; `None` for an unmanaged folder.
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Self::Installs(addon) => Some(addon.clone()),
+            Self::Unmanaged => None,
+            Self::Unresolved(reason) => serde_json::to_value(reason)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned)),
+            Self::Failed(r) => Some(r.clone()),
+        }
+    }
+}
+
+/// What a command asks the witness to cover beyond the plan itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WitnessScope {
+    /// `copy`: the source client and the folders it reads there.
+    pub copy_from: Option<CopyFrom>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyFrom {
+    pub target: Target,
+    pub folders: Vec<FolderName>,
+}
+
+/// What [`collect`] reads with.
+pub struct WitnessCtx<'a> {
+    pub paths: &'a Paths,
+    pub target: &'a Target,
+    /// The target's files index, for managed folders' clean files.
+    pub index: Option<&'a FilesIndex>,
+    pub scope: &'a WitnessScope,
+    pub limits: ArchiveLimits,
+}
+
+/// The witness of one target's plan, collected at the end of its planning: every folder
+/// a replace or remove moves (managed ones with the index's clean files reused), every
+/// adopted folder, `copy`'s source folders, the names it creates, the marker, the local
+/// inputs, the dependency choices and the judge. Read-only.
+pub fn collect(tp: &TargetPlan, ctx: &WitnessCtx<'_>) -> Result<ApprovalWitness> {
+    let now_ns = Timestamp::now().as_nanosecond();
+    let target = ctx.target;
+    let addons = target.addons_dir();
+    let mut gathered = Gathered::default();
+    let mut absent = Vec::new();
+    let mut inputs = Vec::new();
+    for work in &tp.work {
+        for op in work.swap() {
+            let (live, role) = match op {
+                SwapOp::Add { name } => {
+                    absent.push(name.as_folder().key().to_owned());
+                    continue;
+                }
+                SwapOp::Replace { live, .. } => (live, WitnessRole::Replaced),
+                SwapOp::Remove { live, .. } => (live, WitnessRole::Removed),
+            };
+            let seen = Seen {
+                dir: &addons,
+                index: ctx.index,
+                limits: &ctx.limits,
+                now_ns,
+            };
+            gathered.witness(&seen, live.as_folder(), role)?;
+        }
+        inputs.extend(work.input().cloned());
+    }
+    // Adopted folders are hashed: the index entries an adoption records are its own.
+    let unindexed = Seen {
+        dir: &addons,
+        index: None,
+        limits: &ctx.limits,
+        now_ns,
+    };
+    for change in tp.changes.iter().filter(|c| c.kind == ChangeKind::Adopt) {
+        for folder in &change.folders.recorded {
+            gathered.witness(&unindexed, folder, WitnessRole::Adopted)?;
+        }
+    }
+    if let Some(copy) = &ctx.scope.copy_from {
+        // The index only spares hashing clean files: without one, every file is hashed.
+        let index = copy.target.key.and_then(|key| {
+            store::load::<FilesIndex>(&ctx.paths.files_index(&key))
+                .ok()
+                .flatten()
+                .map(|loaded| loaded.value)
+        });
+        let from = copy.target.addons_dir();
+        let seen = Seen {
+            dir: &from,
+            index: index.as_ref(),
+            limits: &ctx.limits,
+            now_ns,
+        };
+        for folder in &copy.folders {
+            gathered.witness(&seen, folder, WitnessRole::CopySource)?;
+        }
+    }
+    if tp.creates_addons_dir {
+        absent.push("Interface/AddOns".to_owned());
+    }
+    let mut witness = ApprovalWitness::new(
+        TargetRef::of(target.key, &target.id),
+        marker(&target.client_dir, &ctx.limits)?,
+        gathered.folders,
+        absent,
+        inputs,
+        dependency_choices(&tp.dependencies),
+        target.judge.clone(),
+    );
+    witness.stamps = gathered.stamps;
+    witness.cost = gathered.cost;
+    Ok(witness)
+}
+
+/// The witness of a target with no folder plan: its marker and judge.
+pub fn bare(target: &Target) -> Result<ApprovalWitness> {
+    Ok(ApprovalWitness::new(
+        TargetRef::of(target.key, &target.id),
+        marker(&target.client_dir, &ArchiveLimits::default())?,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        target.judge.clone(),
+    ))
+}
+
+/// The input an install reads from `location`: a zip outside the blob cache (its SHA-256
+/// is `blob_sha256`), a directory (its listing hash) or a git checkout (its commit). A
+/// download, a cached blob or a WowAce tree is no input: `releases[]` names it.
+pub(crate) fn input_of(
+    location: &AssetLocation,
+    blob_sha256: Option<&str>,
+    blobs_dir: &Path,
+) -> Option<InputWitness> {
+    match location {
+        AssetLocation::LocalZip(path) if !path.starts_with(blobs_dir) => Some(InputWitness {
+            kind: InputKind::Zip,
+            source: path.display().to_string(),
+            digest: blob_sha256?.to_owned(),
+        }),
+        AssetLocation::LocalDir(path) => Some(InputWitness {
+            kind: InputKind::Dir,
+            source: path.display().to_string(),
+            digest: crate::sources::local::listing_hash(path),
+        }),
+        AssetLocation::GitCheckout { url, sha, .. } => Some(InputWitness {
+            kind: InputKind::Git,
+            source: url.clone(),
+            digest: sha.clone(),
+        }),
+        AssetLocation::LocalZip(_)
+        | AssetLocation::Url(_)
+        | AssetLocation::Deferred { .. }
+        | AssetLocation::WowAceTree { .. } => None,
+    }
+}
+
+/// Every requester's dependency choices: installed with it, present unmanaged,
+/// unresolved (the reason; candidates are hints for people) or failed (the ref). Bridge
+/// dependencies and `first_install` are reports, not choices.
+fn dependency_choices(dependencies: &BTreeMap<String, DepReport>) -> Vec<DependencyChoice> {
+    let mut choices = Vec::new();
+    for (requester, report) in dependencies {
+        let mut choose = |folder: &FolderName, by: DependencyBy| {
+            choices.push(DependencyChoice {
+                requester: requester.clone(),
+                folder: folder.key().to_owned(),
+                by,
+            });
+        };
+        for (folder, addon) in &report.installs {
+            choose(folder, DependencyBy::Installs(addon.clone()));
+        }
+        for folder in &report.unmanaged {
+            choose(folder, DependencyBy::Unmanaged);
+        }
+        for unresolved in &report.unresolved {
+            choose(
+                &unresolved.folder,
+                DependencyBy::Unresolved(unresolved.reason),
+            );
+        }
+        for (folder, r) in &report.failed {
+            choose(folder, DependencyBy::Failed(r.to_string()));
+        }
+    }
+    choices
+}
+
+/// Where and how [`Gathered::witness`] reads a folder.
+struct Seen<'a> {
+    /// The AddOns directory the folder is in.
+    dir: &'a Path,
+    index: Option<&'a FilesIndex>,
+    limits: &'a ArchiveLimits,
+    now_ns: i128,
+}
+
+/// The folders witnessed so far, their stamps and their cost.
+#[derive(Default)]
+struct Gathered {
+    folders: Vec<FolderWitness>,
+    stamps: Vec<(PathBuf, TreeStamp)>,
+    cost: WitnessCost,
+}
+
+impl Gathered {
+    /// Witnesses `name` under `seen.dir` as `role`, once per (key, role).
+    fn witness(&mut self, seen: &Seen<'_>, name: &FolderName, role: WitnessRole) -> Result<()> {
+        let key = name.key();
+        if self.folders.iter().any(|f| f.role == role && f.key == key) {
+            return Ok(());
+        }
+        let dir = seen.dir.join(name.as_str());
+        let entry = seen
+            .index
+            .and_then(|index| index.folders.get(key).map(|f| (index, f)));
+        let found = folder(&dir, entry, seen.limits, seen.now_ns, &mut || {})?;
+        self.cost.files_hashed += found.cost.files_hashed;
+        self.cost.files_reused += found.cost.files_reused;
+        self.cost.bytes_hashed = self
+            .cost
+            .bytes_hashed
+            .saturating_add(found.cost.bytes_hashed);
+        if let Some(stamp) = found.stamp
+            && !self.stamps.iter().any(|(at, _)| *at == dir)
+        {
+            self.stamps.push((dir, stamp));
+        }
+        self.folders.push(FolderWitness {
+            role,
+            key: key.to_owned(),
+            digest: found.digest,
+        });
+        Ok(())
+    }
+}
+
+/// The client marker as the witness records it (see [`ApprovalWitness::marker`]). An
+/// unreadable marker fails the target.
+fn marker(client_dir: &Path, limits: &ArchiveLimits) -> Result<Option<String>> {
+    let path = crate::discover::registry::marker_path(client_dir);
+    let fail = |e: &io::Error| {
+        unindexable(
+            "Interface/.omaddons",
+            "target.json",
+            format!(
+                "Interface/.omaddons/target.json cannot be read ({e}), so the target cannot be witnessed for this preview"
+            ),
+            Suggestion::text("make it readable, then preview again"),
+        )
+    };
+    let Some(stamp) = FileStamp::read(&path).map_err(|e| fail(&e))? else {
+        return Ok(None);
+    };
+    let kind = stamp.file_type();
+    if kind.is_symlink() {
+        let to = std::fs::read_link(&path).map_err(|e| fail(&e))?;
+        return Ok(Some(format!("link:{}", to.to_string_lossy())));
+    }
+    if kind.is_dir() {
+        return Ok(Some("kind:dir".to_owned()));
+    }
+    if !kind.is_file() {
+        let other = other_kind(kind);
+        return Ok(Some(format!(
+            "kind:{}",
+            other.strip_prefix("o:").unwrap_or(other)
+        )));
+    }
+    let Some(file) = open_regular(&path, &stamp).map_err(|e| fail(&e))? else {
+        // Replaced while it was read: matches no steady marker.
+        return Ok(Some("kind:changed".to_owned()));
+    };
+    let (_, sha256) = hash_reader(file.take(limits.max_uncompressed)).map_err(|e| fail(&e))?;
+    Ok(Some(format!("sha256:{sha256}")))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -394,8 +831,12 @@ mod tests {
 
     use super::*;
     use crate::drift::{DriftMode, check_folder};
+    use crate::engine::edit::RecordEdit;
+    use crate::engine::plan::{Plan, RequestedChange, Unresolved};
+    use crate::engine::testing::{self, TxScene};
+    use crate::engine::tx::TxTarget;
     use crate::error::ErrorCode;
-    use crate::model::{FolderName, TargetKey};
+    use crate::model::{FolderName, TargetKey, TxKind};
     use crate::state::files_index::index_live_folder;
 
     /// Longer than the kernel's file-timestamp tick, so the next change gets a new ctime.
@@ -942,5 +1383,597 @@ mod tests {
             "{shown}"
         );
         assert_eq!(WitnessRole::CopySource.wire(), "copy_source");
+    }
+
+    // ---- A target's witness ------------------------------------------------------
+
+    const TOC: &str = "## Interface: 120105\n## Version: 1\n";
+
+    /// A witnessed dry run's plan.
+    fn witnessed(scene: &TxScene, changes: Vec<RequestedChange>, scope: WitnessScope) -> Plan {
+        scene.run_witnessed(changes, scope).unwrap().plan
+    }
+
+    /// The witness's public parts and cost, for assertion messages.
+    fn shown(w: &ApprovalWitness) -> String {
+        format!(
+            "target {}\nmarker {:?}\nfolders {:?}\nabsent {:?}\ninputs {:?}\ndependencies {:?}\ncost {:?}",
+            w.target,
+            w.marker,
+            w.folders,
+            w.absent,
+            w.inputs,
+            w.dependencies,
+            w.cost()
+        )
+    }
+
+    fn roles(w: &ApprovalWitness) -> Vec<(String, WitnessRole)> {
+        w.folders.iter().map(|f| (f.key.clone(), f.role)).collect()
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    /// `scene` with Foo installed from a zip (the target registered by the commit).
+    fn with_foo() -> TxScene {
+        let scene = TxScene::new();
+        let zip = scene.zip("foo.zip", &[("Foo/Foo.toc", TOC)]);
+        let done = scene.run(vec![scene.install("gh:o/foo", &zip)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        scene
+    }
+
+    #[test]
+    fn an_update_witnesses_its_replaced_folder_and_reuses_the_index() {
+        let scene = TxScene::new();
+        testing::folder(&scene.client.addons().join("Foo"), TOC);
+        // Older than the index by more than the racy slack, so its files are clean.
+        std::thread::sleep(Duration::from_millis(40));
+        let adopted = scene
+            .run_as(
+                vec![scene.adopt("Foo")],
+                Some(TxKind::Adopt),
+                TxKind::Install,
+            )
+            .unwrap();
+        assert!(adopted.failures.is_empty(), "{:?}", adopted.failures);
+        let v2 = scene.zip(
+            "v2.zip",
+            &[("Foo/Foo.toc", TOC), ("FooExtra/FooExtra.toc", TOC)],
+        );
+        let plan = witnessed(
+            &scene,
+            vec![scene.install("gh:o/foo", &v2)],
+            WitnessScope::default(),
+        );
+        assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+        let w = &plan.witnesses[0];
+        assert_eq!(
+            roles(w),
+            [("foo".to_owned(), WitnessRole::Replaced)],
+            "{}",
+            shown(w)
+        );
+        let cost = w.cost();
+        assert!(
+            cost.files_reused > 0 && cost.files_hashed == 0,
+            "clean files come from the index\n{}",
+            shown(w)
+        );
+        assert_eq!(
+            w.absent,
+            ["fooextra"],
+            "an update lists only the folders it adds\n{}",
+            shown(w)
+        );
+    }
+
+    #[test]
+    fn a_forced_replace_of_an_unmanaged_folder_is_hashed() {
+        let mut scene = TxScene::new();
+        testing::hand_made(&scene.client.addons().join("Foo"));
+        scene.force = true;
+        let zip = scene.zip("foo.zip", &[("Foo/Foo.toc", TOC)]);
+        let plan = witnessed(
+            &scene,
+            vec![scene.install("gh:o/foo", &zip)],
+            WitnessScope::default(),
+        );
+        assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+        let w = &plan.witnesses[0];
+        assert_eq!(
+            roles(w),
+            [("foo".to_owned(), WitnessRole::Replaced)],
+            "{}",
+            shown(w)
+        );
+        let cost = w.cost();
+        assert!(
+            cost.files_hashed > 0 && cost.files_reused == 0,
+            "{}",
+            shown(w)
+        );
+        assert_eq!(
+            w.folders[0].digest,
+            EntryDigest::of_dir(
+                &scene.client.addons().join("Foo"),
+                &ArchiveLimits::default()
+            )
+            .unwrap(),
+            "{}",
+            shown(w)
+        );
+    }
+
+    #[test]
+    fn a_remove_witnesses_the_removed_folder() {
+        let scene = with_foo();
+        let plan = witnessed(&scene, vec![scene.remove("Foo")], WitnessScope::default());
+        assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+        let w = &plan.witnesses[0];
+        assert_eq!(
+            roles(w),
+            [("foo".to_owned(), WitnessRole::Removed)],
+            "{}",
+            shown(w)
+        );
+        assert!(w.absent.is_empty(), "{}", shown(w));
+    }
+
+    #[test]
+    fn an_adopt_witnesses_its_recorded_folders() {
+        let scene = with_foo();
+        testing::folder(&scene.client.addons().join("Bar"), TOC);
+        let plan = witnessed(&scene, vec![scene.adopt("Bar")], WitnessScope::default());
+        assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+        let w = &plan.witnesses[0];
+        assert_eq!(
+            roles(w),
+            [("bar".to_owned(), WitnessRole::Adopted)],
+            "{}",
+            shown(w)
+        );
+        assert!(w.cost().files_hashed > 0, "{}", shown(w));
+    }
+
+    #[test]
+    fn a_pin_witnesses_no_folder() {
+        let scene = with_foo();
+        let plan = witnessed(
+            &scene,
+            vec![scene.edit("Foo", RecordEdit::SetPinned(true))],
+            WitnessScope::default(),
+        );
+        assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+        assert_eq!(plan.targets[0].changes.len(), 1, "{:?}", plan.targets[0]);
+        let w = &plan.witnesses[0];
+        assert!(w.folders.is_empty() && w.absent.is_empty(), "{}", shown(w));
+    }
+
+    #[test]
+    fn a_copy_witnesses_its_source_folders() {
+        let scene = TxScene::new();
+        let other = scene.base.join("_classic_");
+        let from = other.join("Interface/AddOns");
+        testing::folder(&from.join("Foo"), TOC);
+        let mut source = testing::target(&other);
+        source.id = "classic".into();
+        let scope = WitnessScope {
+            copy_from: Some(CopyFrom {
+                target: source,
+                folders: ["Foo", "Gone"]
+                    .map(|n| FolderName::new(n).unwrap())
+                    .to_vec(),
+            }),
+        };
+        let plan = witnessed(&scene, Vec::new(), scope);
+        let w = &plan.witnesses[0];
+        assert_eq!(
+            roles(w),
+            [
+                ("foo".to_owned(), WitnessRole::CopySource),
+                ("gone".to_owned(), WitnessRole::CopySource),
+            ],
+            "{}",
+            shown(w)
+        );
+        let limits = ArchiveLimits::default();
+        assert_eq!(
+            w.folders[0].digest,
+            EntryDigest::of_dir(&from.join("Foo"), &limits).unwrap()
+        );
+        assert_eq!(
+            w.folders[1].digest,
+            EntryDigest::of_dir(&from.join("Gone"), &limits).unwrap(),
+            "a missing source folder digests as absent"
+        );
+    }
+
+    #[test]
+    fn a_first_install_lists_its_absent_names() {
+        let scene = TxScene::new();
+        fs::remove_dir(scene.client.addons()).unwrap();
+        let zip = scene.zip("foo.zip", &[("Foo/Foo.toc", TOC)]);
+        let plan = witnessed(
+            &scene,
+            vec![scene.install("gh:o/foo", &zip)],
+            WitnessScope::default(),
+        );
+        assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+        let w = &plan.witnesses[0];
+        assert_eq!(w.absent, ["Interface/AddOns", "foo"], "{}", shown(w));
+        assert!(w.folders.is_empty(), "{}", shown(w));
+    }
+
+    #[test]
+    fn the_marker_and_the_judge_identify_the_target() {
+        let scene = TxScene::new();
+        let zip = scene.zip("foo.zip", &[("Foo/Foo.toc", TOC)]);
+        let plan = witnessed(
+            &scene,
+            vec![scene.install("gh:o/foo", &zip)],
+            WitnessScope::default(),
+        );
+        let w = &plan.witnesses[0];
+        assert_eq!(w.marker, None, "unregistered\n{}", shown(w));
+        assert_eq!(w.target, TargetRef::Provisional("retail".into()));
+
+        scene.run(vec![scene.install("gh:o/foo", &zip)]).unwrap();
+        let plan = witnessed(&scene, vec![scene.remove("Foo")], WitnessScope::default());
+        let w = &plan.witnesses[0];
+        let client_dir = scene.client.client_dir();
+        let marker = fs::read(crate::discover::registry::marker_path(client_dir)).unwrap();
+        assert_eq!(
+            w.marker,
+            Some(format!("sha256:{}", sha256_hex(&marker))),
+            "registered\n{}",
+            shown(w)
+        );
+        let target = scene.current_target().target;
+        assert_eq!(w.target, TargetRef::of(target.key, "retail"));
+        assert!(matches!(w.target, TargetRef::Key(_)), "{}", shown(w));
+        assert!(!w.judge.is_empty());
+        assert_eq!(w.judge, target.judge);
+    }
+
+    #[test]
+    fn local_inputs_are_witnessed() {
+        let scene = TxScene::new();
+        let zip = scene.zip("foo.zip", &[("Foo/Foo.toc", TOC)]);
+        let plan = witnessed(
+            &scene,
+            vec![scene.install("gh:o/foo", &zip)],
+            WitnessScope::default(),
+        );
+        assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+        let w = &plan.witnesses[0];
+        assert_eq!(
+            w.inputs,
+            [InputWitness {
+                kind: InputKind::Zip,
+                source: zip.display().to_string(),
+                digest: sha256_hex(&fs::read(&zip).unwrap()),
+            }],
+            "{}",
+            shown(w)
+        );
+
+        let dir = scene.base.join("src/Bar");
+        testing::folder(&dir, TOC);
+        let plan = witnessed(
+            &scene,
+            vec![scene.install("gh:o/bar", &dir)],
+            WitnessScope::default(),
+        );
+        assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+        let w = &plan.witnesses[0];
+        assert_eq!(
+            w.inputs,
+            [InputWitness {
+                kind: InputKind::Dir,
+                source: dir.display().to_string(),
+                digest: crate::sources::local::listing_hash(&dir),
+            }],
+            "{}",
+            shown(w)
+        );
+    }
+
+    #[test]
+    fn locations_map_to_their_inputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let blobs = tmp.path().join("blobs");
+        let dir = tmp.path().join("Foo");
+        testing::folder(&dir, TOC);
+        let zip = |kind, source: &str, digest: &str| {
+            Some(InputWitness {
+                kind,
+                source: source.to_owned(),
+                digest: digest.to_owned(),
+            })
+        };
+        let cases: [(&str, AssetLocation, Option<&str>, Option<InputWitness>); 8] = [
+            (
+                "a user's zip",
+                AssetLocation::LocalZip("/x/Foo.zip".into()),
+                Some("ab12"),
+                zip(InputKind::Zip, "/x/Foo.zip", "ab12"),
+            ),
+            (
+                "a cached blob",
+                AssetLocation::LocalZip(blobs.join("ab12")),
+                Some("ab12"),
+                None,
+            ),
+            (
+                "a directory",
+                AssetLocation::LocalDir(dir.clone()),
+                None,
+                zip(
+                    InputKind::Dir,
+                    &dir.display().to_string(),
+                    &crate::sources::local::listing_hash(&dir),
+                ),
+            ),
+            (
+                "a git checkout",
+                AssetLocation::GitCheckout {
+                    url: "https://git.example/o/foo.git".into(),
+                    rev: "main".into(),
+                    sha: "0123abcd".into(),
+                },
+                None,
+                zip(InputKind::Git, "https://git.example/o/foo.git", "0123abcd"),
+            ),
+            (
+                "a download",
+                AssetLocation::Url("https://example.com/Foo.zip".into()),
+                Some("ab12"),
+                None,
+            ),
+            (
+                "a deferred download",
+                AssetLocation::Deferred {
+                    source: crate::sources::SourceId::Tukui,
+                    key: "elvui".into(),
+                },
+                Some("ab12"),
+                None,
+            ),
+            (
+                "a WowAce tree",
+                AssetLocation::WowAceTree {
+                    base: "https://repos.example/!svn/bc/7/foo".into(),
+                    revision: 7,
+                },
+                None,
+                None,
+            ),
+            (
+                "a zip whose hash is unknown",
+                AssetLocation::LocalZip("/x/Foo.zip".into()),
+                None,
+                None,
+            ),
+        ];
+        for (case, location, sha, expected) in cases {
+            assert_eq!(input_of(&location, sha, &blobs), expected, "{case}");
+        }
+        assert_eq!(
+            [InputKind::Zip, InputKind::Dir, InputKind::Git].map(InputKind::wire),
+            ["zip", "dir", "git"]
+        );
+    }
+
+    #[test]
+    fn dependency_choices_are_witnessed() {
+        let scene = TxScene::new();
+        testing::folder(&scene.client.addons().join("LibFoo"), TOC);
+        let zip = scene.zip(
+            "foo.zip",
+            &[(
+                "Foo/Foo.toc",
+                "## Interface: 120105\n## Dependencies: LibFoo, NoSuchLib\n",
+            )],
+        );
+        let plan = witnessed(
+            &scene,
+            vec![scene.install("gh:o/foo", &zip)],
+            WitnessScope::default(),
+        );
+        assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+        let w = &plan.witnesses[0];
+        let by: Vec<(&str, &str, &str)> = w
+            .dependencies
+            .iter()
+            .map(|d| (d.requester.as_str(), d.folder.as_str(), d.by.wire()))
+            .collect();
+        assert_eq!(
+            by,
+            [
+                ("Foo", "libfoo", "unmanaged"),
+                ("Foo", "nosuchlib", "unresolved")
+            ],
+            "{}",
+            shown(w)
+        );
+    }
+
+    #[test]
+    fn dependency_choices_cover_every_kind() {
+        let folder = |n: &str| FolderName::new(n).unwrap();
+        let report = DepReport {
+            installs: vec![(folder("LibA"), "LibA".into())],
+            unmanaged: vec![folder("LibB")],
+            unresolved: vec![Unresolved {
+                folder: folder("LibC"),
+                reason: UnresolvedReason::NoSource,
+                candidates: Vec::new(),
+            }],
+            failed: vec![(folder("LibD"), "gh:o/libd".parse().unwrap())],
+            ..DepReport::default()
+        };
+        let deps = BTreeMap::from([
+            ("zed".to_owned(), report.clone()),
+            ("Alpha".to_owned(), report),
+        ]);
+        let w = ApprovalWitness::new(
+            TargetRef::Provisional("retail".into()),
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            dependency_choices(&deps),
+            String::new(),
+        );
+        let shown: Vec<(String, String, &str, Option<String>)> = w
+            .dependencies
+            .iter()
+            .map(|d| {
+                (
+                    d.requester.clone(),
+                    d.folder.clone(),
+                    d.by.wire(),
+                    d.by.detail(),
+                )
+            })
+            .collect();
+        let expected = |requester: &str| {
+            [
+                ("liba", "install", Some("LibA")),
+                ("libb", "unmanaged", None),
+                ("libc", "unresolved", Some("no_source")),
+                ("libd", "failed", Some("gh:o/libd")),
+            ]
+            .map(|(f, by, detail)| {
+                (
+                    requester.to_owned(),
+                    f.to_owned(),
+                    by,
+                    detail.map(str::to_owned),
+                )
+            })
+        };
+        let all: Vec<_> = expected("Alpha")
+            .into_iter()
+            .chain(expected("zed"))
+            .collect();
+        assert_eq!(shown, all, "sorted by requester (case-folded), then folder");
+    }
+
+    #[test]
+    fn a_target_that_cannot_be_witnessed_fails_alone() {
+        if rustix::process::geteuid().is_root() {
+            return; // root reads a mode-000 file
+        }
+        let scene = with_foo();
+        // A file nobody can read, unknown to the index, in the folder the update replaces.
+        let secret = scene.client.addons().join("Foo/secret.lua");
+        fs::write(&secret, "x").unwrap();
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+        let other = scene.base.join("_other_");
+        fs::create_dir_all(other.join("Interface/AddOns")).unwrap();
+        let mut second = scene.discovered.clone();
+        second.target = testing::target(&other);
+        second.target.id = "other".into();
+        second.default_id = "other".into();
+        let v2 = scene.zip(
+            "v2.zip",
+            &[("Foo/Foo.toc", "## Interface: 120105\n## Version: 2\n")],
+        );
+        let bar = scene.zip("bar.zip", &[("Bar/Bar.toc", TOC)]);
+        let mut req = scene.request(vec![scene.install("gh:o/foo", &v2)], None, TxKind::Install);
+        req.dry_run = true;
+        req.witness = Some(WitnessScope::default());
+        req.targets.push(TxTarget {
+            discovered: second,
+            changes: vec![scene.install("gh:o/bar", &bar)],
+            default_kind: TxKind::Install,
+            dependency_locks: BTreeMap::new(),
+        });
+        let done = scene.with_ctx("install", |ctx| crate::engine::tx::run(&req, ctx));
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+        let plan = done.unwrap().plan;
+
+        let retail = &plan.targets[0];
+        assert!(
+            retail.work.is_empty() && retail.changes.is_empty() && retail.kind.is_none(),
+            "{retail:?}"
+        );
+        let failed: Vec<_> = plan
+            .failures
+            .iter()
+            .filter(|f| matches!(f.target.as_str(), "retail"))
+            .collect();
+        assert_eq!(failed.len(), 1, "{:?}", plan.failures);
+        assert_eq!(failed[0].addon.as_deref(), Some("Foo"));
+        let cause = failed[0].cause.as_ref().unwrap();
+        assert_eq!(cause.code, ErrorCode::Io, "{cause:?}");
+        assert_eq!(cause.details["reason"], "unindexable", "{cause:?}");
+        assert_eq!(plan.witnesses.len(), 2);
+        let bare = &plan.witnesses[0];
+        assert!(
+            bare.folders.is_empty() && bare.absent.is_empty() && bare.marker.is_some(),
+            "{}",
+            shown(bare)
+        );
+        let other = &plan.witnesses[1];
+        assert_eq!(other.target, TargetRef::Provisional("other".into()));
+        assert_eq!(other.absent, ["bar"], "{}", shown(other));
+        assert!(
+            plan.failures
+                .iter()
+                .all(|f| !matches!(f.target.as_str(), "other")),
+            "{:?}",
+            plan.failures
+        );
+    }
+
+    #[test]
+    fn a_dry_run_without_a_scope_collects_nothing() {
+        let scene = TxScene::new();
+        let zip = scene.zip("foo.zip", &[("Foo/Foo.toc", TOC)]);
+        let mut req = scene.request(vec![scene.install("gh:o/foo", &zip)], None, TxKind::Install);
+        req.dry_run = true;
+        let plan = scene
+            .with_ctx("install", |ctx| crate::engine::tx::run(&req, ctx))
+            .unwrap()
+            .plan;
+        assert_eq!(plan.targets.len(), 1);
+        assert!(plan.witnesses.is_empty());
+    }
+
+    #[test]
+    fn collection_writes_nothing() {
+        let scene = with_foo();
+        let state = scene.paths.state_dir().to_path_buf();
+        let client = scene.client.client_dir().to_path_buf();
+        let before = (
+            testing::tree_snapshot(&state),
+            testing::tree_snapshot(&client),
+        );
+        let v2 = scene.zip(
+            "v2.zip",
+            &[("Foo/Foo.toc", "## Interface: 120105\n## Version: 2\n")],
+        );
+        let plan = witnessed(
+            &scene,
+            vec![scene.install("gh:o/foo", &v2)],
+            WitnessScope::default(),
+        );
+        assert_eq!(plan.witnesses.len(), 1);
+        let after = (
+            testing::tree_snapshot(&state),
+            testing::tree_snapshot(&client),
+        );
+        assert!(
+            before == after,
+            "a witnessed dry run changed <state> or the client dir"
+        );
     }
 }

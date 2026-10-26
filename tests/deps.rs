@@ -1754,6 +1754,7 @@ mod engine_api {
             kind: None,
             run: RunId::new(),
             no_deps: false,
+            witness: None,
         };
         let http = replay(&home.env, &home.http);
         let sources = SourceRegistry::builtin(&SourceConfigView::all_enabled());

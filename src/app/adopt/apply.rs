@@ -761,6 +761,7 @@ pub(super) fn commit(
             kind: Some(TxKind::Adopt),
             run,
             no_deps: true,
+            witness: None,
         };
         let done = engine.run(&req, Some(cache))?;
         out.facts.extend(done.plan.facts.iter().cloned());
