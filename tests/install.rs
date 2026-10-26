@@ -1,3 +1,5 @@
+//! e2e suite: `omaddons install` through the binary, `--file <dir>` among it (D1).
+//!
 //! `omaddons install` end to end: the binary over synthetic clients in a Wine prefix,
 //! GitHub releases replayed from synthetic fixtures (`OMADDONS_HTTP_FIXTURES`) and, for
 //! running clients, a synthetic `/proc` (`OMADDONS_PROC_ROOT`).
@@ -2576,4 +2578,84 @@ fn a_wowace_refs_version_must_agree_with_it() {
     assert_eq!(run.expect(2)["error"]["code"], "usage");
     let run = home.run(&["install", "wowace:Bug_Grabber", "-t", "retail"]);
     assert_eq!(run.expect(2)["error"]["code"], "ref_invalid");
+}
+
+/// `install --file <dir>` is identified by the folder's listing (M4-D19): an unchanged
+/// folder installs once, an edited one updates, `--reinstall` installs it again, and
+/// `update` never replaces it from upstream.
+#[test]
+fn an_unchanged_file_directory_installs_once() {
+    let log = common::tlog::tlog!();
+    let home = Home::new(&["wow"]);
+    log.env(&home);
+    log.step("seed home");
+    let dir = home.env.root().join("src/Mine");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("Mine.toc"), toc("120105", &[])).unwrap();
+    let dir_arg = dir.display().to_string();
+    let install = |extra: &[&str]| {
+        let mut argv = vec!["install", "gh:o/mine", "--file", &dir_arg, "-t", "retail"];
+        argv.extend_from_slice(extra);
+        argv.push("--json");
+        let ran = log.run(&home, &argv);
+        ran.ok();
+        ran
+    };
+    let item = |ran: &common::tlog::Ran| ran.data()["items"][0].clone();
+
+    log.step("install");
+    let ran = install(&[]);
+    log.assert_eq("status", &item(&ran)["status"], &Value::from("installed"));
+    let release_id = common::state::record(&home, "retail")
+        .addons
+        .into_values()
+        .next()
+        .and_then(|a| a.release_id)
+        .unwrap_or_default();
+    log.json("record release_id", &release_id);
+    log.assert_eq(
+        "a listing id",
+        &release_id.starts_with("gh:o/mine@listing:"),
+        &true,
+    );
+
+    log.step("again, unchanged");
+    let addons = home.addons("_retail_");
+    log.tree("addons", &addons);
+    let ran = install(&[]);
+    log.assert_eq("status", &item(&ran)["status"], &Value::from("unchanged"));
+    log.assert_unchanged("addons", &addons);
+
+    log.step("an edited folder");
+    fs::write(dir.join("Mine.toc"), toc("120105", &["## Version: 2"])).unwrap();
+    let ran = install(&[]);
+    log.assert_eq("status", &item(&ran)["status"], &Value::from("updated"));
+
+    log.step("--reinstall");
+    let ran = install(&["--reinstall"]);
+    let reinstalled = item(&ran);
+    log.assert_eq("status", &reinstalled["status"], &Value::from("updated"));
+    log.assert_eq(
+        "the same release again",
+        &reinstalled["from_version"],
+        &reinstalled["to_version"],
+    );
+
+    log.step("update leaves it alone");
+    let before = net_log(&home).len();
+    let ran = log.run(&home, &["update", "-t", "retail", "--dry-run", "--json"]);
+    ran.ok();
+    // `update` lists items per target.
+    let mine = ran.data()["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["items"].as_array())
+        .flatten()
+        .find(|i| i["name"] == "Mine")
+        .cloned()
+        .unwrap_or_default();
+    log.assert_eq("status", &mine["status"], &Value::from("skipped"));
+    log.assert_eq("skip_reason", &mine["skip_reason"], &Value::from("static"));
+    log.assert_eq("requests", &(net_log(&home).len() - before), &0);
 }

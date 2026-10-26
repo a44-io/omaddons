@@ -1,6 +1,10 @@
+//! e2e suite: planning over replayed releases, and equal preview tokens across dry runs and sources (D1).
+//!
 //! Planning end to end over replayed GitHub releases whose assets are synthetic zips:
 //! fetch once, select and verify per target, fall back, refuse early, write nothing
-//! outside the cache.
+//! outside the cache. Then the preview token (`precondition::of_plan`) over real plans:
+//! equal for two dry runs of an unchanged home, for every source when the second is
+//! served from the blob cache, and for an unchanged `--file <dir>`.
 
 mod common;
 
@@ -10,10 +14,13 @@ use std::path::{Path, PathBuf};
 
 use common::archives::zip_text;
 use common::env::TestEnv;
-use common::http::{Asset, gh_feed, gh_release, paths, replay};
+use common::http::{Asset, gh_feed, gh_release, paths, replay, scenario};
 use common::netlog::{assert_each_url_once, read_net_log};
+use common::planning::{ManagedAddon, PlanOpts, PlanningHome};
 use common::targets::battlenet;
+use common::tlog::{TestLog, tlog};
 use common::trees::tree_hash;
+use omaddons::app::precondition::{PlanExtras, Precondition, check};
 use omaddons::engine::blobs::BlobCache;
 use omaddons::engine::edit::RecordEdit;
 use omaddons::engine::inspect::ArchiveLimits;
@@ -995,5 +1002,369 @@ fn a_published_hash_of_either_algorithm_is_checked_and_shown_in_the_plan() {
     assert_eq!(
         plan.failures[0].error.code,
         omaddons::error::ErrorCode::NoCompatibleRelease
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// Equal preview tokens (D1, checkpoint criterion 6).
+
+/// Each witness's public parts and cost, for the test log.
+fn witnesses(plan: &Plan) -> serde_json::Value {
+    serde_json::json!(
+        plan.witnesses
+            .iter()
+            .map(|w| {
+                let cost = w.cost();
+                serde_json::json!({
+                    "target": w.target.to_string(),
+                    "marker": w.marker,
+                    "folders": w.folders.iter().map(|f| serde_json::json!({
+                        "role": f.role.wire(), "key": f.key, "digest": f.digest.to_string(),
+                    })).collect::<Vec<_>>(),
+                    "absent": w.absent,
+                    "inputs": w.inputs.iter().map(|i| serde_json::json!({
+                        "kind": i.kind.wire(), "source": i.source, "digest": i.digest,
+                    })).collect::<Vec<_>>(),
+                    "dependencies": w.dependencies.iter().map(|d| serde_json::json!({
+                        "requester": d.requester, "folder": d.folder,
+                        "by": d.by.wire(), "detail": d.by.detail(),
+                    })).collect::<Vec<_>>(),
+                    "cost": {
+                        "files_hashed": cost.files_hashed,
+                        "files_reused": cost.files_reused,
+                        "bytes_hashed": cost.bytes_hashed,
+                    },
+                })
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
+/// A dry run of `targets` on `home`, its token and witnesses logged, with the `net.log`
+/// lines it added.
+fn planned(
+    log: &TestLog,
+    home: &PlanningHome,
+    targets: Vec<omaddons::engine::plan::TargetRequest>,
+    opts: &PlanOpts,
+) -> (Plan, Precondition, Vec<omaddons::net::NetLogEntry>) {
+    let before = home.net_log().len();
+    let plan = home.plan(targets, opts);
+    let added: Vec<omaddons::net::NetLogEntry> = home.net_log().split_off(before);
+    let token = home.token("install", &plan, &PlanExtras::default());
+    log.json(
+        "net.log added",
+        &added
+            .iter()
+            .map(|e| {
+                format!(
+                    "{} {}{} {} {:?}",
+                    e.method, e.host, e.path, e.purpose, e.status
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    log.json("parts", &token.parts());
+    log.json("witness", &witnesses(&plan));
+    assert!(plan.failures.is_empty(), "{:?}", plan.failures);
+    (plan, token, added)
+}
+
+/// `b`'s token equals `a`'s; on a failure, both tokens and their parts.
+fn same_token(what: &str, a: &Precondition, b: &Precondition) {
+    assert!(
+        // ubs:ignore — a preview token is no credential (src/app/precondition.rs)
+        a.token() == b.token(),
+        "{what}: the tokens differ\n{}\n{:#?}\n{}\n{:#?}",
+        a.token(),
+        a.parts(),
+        b.token(),
+        b.parts()
+    );
+}
+
+#[test]
+fn two_dry_runs_of_an_unchanged_home_give_equal_tokens() {
+    let log = tlog!();
+    let home = PlanningHome::new();
+    log.env(&home.env);
+    log.step("seed home");
+    let retail_toc = toc("120105");
+    let mut retail = home.retail.clone();
+    home.manage(
+        &mut retail,
+        &[ManagedAddon {
+            name: "Foo",
+            r#ref: "gh:o/foo",
+            release: "v1",
+            version: "1",
+            folders: &[("Foo", &[("Foo.toc", &retail_toc), ("core.lua", "-- v1")])],
+        }],
+    );
+    home.hand_made(
+        &retail,
+        "Bar",
+        &[("Bar.toc", &retail_toc), ("bar.lua", "-- mine")],
+    );
+    release(
+        &home.scenario,
+        "v2",
+        &[(
+            "Foo.zip",
+            &[("mainline", 120_105)],
+            vec![("Foo/Foo.toc", &retail_toc), ("Foo/core.lua", "-- v2")],
+        )],
+    );
+    gh_release(
+        &home.scenario,
+        "https://github.com/o/bar",
+        "v1",
+        &[(
+            "Bar.zip",
+            &[("mainline", 120_105)],
+            vec![("Bar/Bar.toc", &retail_toc)],
+        )],
+    );
+    // Planning writes `net.log`, the release memo and the blob cache, never the
+    // records, the files index or the client.
+    let records = home.paths.targets_dir();
+    log.tree("records", &records);
+    log.tree("client", &retail.client_dir);
+    let opts = PlanOpts {
+        force: true,
+        ..PlanOpts::default()
+    };
+    let update = RequestedChange::Update {
+        addon: "foo".into(),
+        installed_primary_interface: None,
+    };
+    let mut tokens = Vec::new();
+    for step in ["first plan", "second plan", "third plan"] {
+        log.step(step);
+        let changes = vec![update.clone(), user_install("gh:o/bar")];
+        let (plan, token, _) = planned(
+            &log,
+            &home,
+            vec![request(&retail, changes, TxKind::Install)],
+            &opts,
+        );
+        let w = &plan.witnesses[0];
+        let roles: Vec<(&str, &str)> = w
+            .folders
+            .iter()
+            .map(|f| (f.key.as_str(), f.role.wire()))
+            .collect();
+        log.assert_eq(
+            "replaced folders",
+            &roles,
+            &vec![("bar", "replaced"), ("foo", "replaced")],
+        );
+        let cost = w.cost();
+        log.assert_eq(
+            "Foo's clean files reused, the unmanaged Bar hashed",
+            &(cost.files_reused > 0 && cost.files_hashed > 0),
+            &true,
+        );
+        tokens.push(token);
+    }
+    log.step("compare");
+    same_token("the second plan", &tokens[0], &tokens[1]);
+    same_token("the third plan", &tokens[0], &tokens[2]);
+    log.assert_unchanged("records", &records);
+    log.assert_unchanged("client", &retail.client_dir);
+}
+
+/// Two dry runs of `r` on `target`: a download (`purpose`) on the first, none on the
+/// second (the blob cache, through the facts the first remembered), and equal tokens.
+fn a_cache_hit_equals_a_download(
+    log: &TestLog,
+    home: &PlanningHome,
+    target: &Target,
+    r: &str,
+    purpose: &str,
+) -> (Plan, Plan) {
+    let mut plans = Vec::new();
+    let mut tokens = Vec::new();
+    for step in ["first plan", "second plan"] {
+        log.step(step);
+        let (plan, token, added) = planned(
+            log,
+            home,
+            vec![request(target, vec![user_install(r)], TxKind::Install)],
+            &PlanOpts::default(),
+        );
+        let downloads = added.iter().filter(|e| e.purpose == purpose).count();
+        if plans.is_empty() {
+            log.assert_eq("a download in the first plan", &(downloads > 0), &true);
+        } else {
+            log.assert_eq("downloads in the second plan", &downloads, &0);
+        }
+        plans.push(plan);
+        tokens.push(token);
+    }
+    log.step("compare");
+    same_token("a cache hit and a download", &tokens[0], &tokens[1]);
+    let second = plans.remove(1);
+    (plans.remove(0), second)
+}
+
+#[test]
+fn a_cache_hit_equals_a_download_github() {
+    let log = tlog!();
+    let home = PlanningHome::new();
+    log.env(&home.env);
+    log.step("seed home");
+    let retail_toc = toc("120105");
+    release(
+        &home.scenario,
+        "v1",
+        &[(
+            "Foo.zip",
+            &[("mainline", 120_105)],
+            vec![("Foo/Foo.toc", &retail_toc)],
+        )],
+    );
+    a_cache_hit_equals_a_download(&log, &home, &home.retail, "gh:o/foo", "asset");
+}
+
+#[test]
+fn a_cache_hit_equals_a_download_git() {
+    let log = tlog!();
+    let mut home = PlanningHome::new();
+    log.env(&home.env);
+    log.step("seed home");
+    // GroupBulletinBoard as recorded from GitHub, on the 3.3.5a client.
+    home.scenario = scenario("git-github");
+    let other = home.other.clone();
+    a_cache_hit_equals_a_download(
+        &log,
+        &home,
+        &other,
+        "git:https://github.com/fondlez/GroupBulletinBoard#main",
+        "asset",
+    );
+}
+
+#[test]
+fn a_cache_hit_equals_a_download_wowi() {
+    let log = tlog!();
+    let home = PlanningHome::new();
+    log.env(&home.env);
+    log.step("seed home");
+    let bugsack_toc = format!("{}## Title: BugSack\n", toc("120105"));
+    let zip = zip_text(&[("BugSack/BugSack.toc", &bugsack_toc)]);
+    let md5 = common::wowi::wowi_file(&home.scenario, 5995, &zip);
+    common::wowi::wowi_details(
+        &home.scenario,
+        &[5995],
+        &[common::wowi::details(5995, "BugSack", "1.0", &md5)],
+    );
+    a_cache_hit_equals_a_download(&log, &home, &home.retail, "wowi:5995", "asset");
+}
+
+#[test]
+fn a_cache_hit_equals_a_download_tukui() {
+    use common::tukui::{elvui, etag, tukui_addon, tukui_download, tukui_list};
+    let log = tlog!();
+    let home = PlanningHome::new();
+    log.env(&home.env);
+    log.step("seed home");
+    let elvui_toc = "## Interface: 120105\n## Title: ElvUI\n## X-Tukui-ProjectID: -2\n\
+                     ## X-Tukui-ProjectFolders: ElvUI, ElvUI_Libraries, ElvUI_Options\n";
+    let zip = zip_text(&[
+        ("ElvUI/ElvUI.toc", elvui_toc),
+        ("ElvUI_Libraries/ElvUI_Libraries.toc", elvui_toc),
+        ("ElvUI_Options/ElvUI_Options.toc", elvui_toc),
+    ]);
+    tukui_list(&home.scenario, &[elvui()]);
+    tukui_addon(&home.scenario, &elvui(), &["TOKEN-A", "TOKEN-B"]);
+    tukui_download(&home.scenario, "elvui", "TOKEN-A", &zip, Some(&etag(&zip)));
+    let (first, second) =
+        a_cache_hit_equals_a_download(&log, &home, &home.retail, "tukui:elvui", "asset");
+    // The very case deferred keying fixes: a URL after a download, none after a hit.
+    let url = |plan: &Plan| plan.targets[0].releases[0].url.is_some();
+    log.assert_eq("the first plan's release has its URL", &url(&first), &true);
+    log.assert_eq("the second plan's release has none", &url(&second), &false);
+}
+
+#[test]
+fn a_cache_hit_equals_a_download_wowace() {
+    let log = tlog!();
+    let mut home = PlanningHome::new();
+    log.env(&home.env);
+    log.step("seed home");
+    // BugGrabber's tree as recorded from WowAce.
+    home.scenario = scenario("wowace-bug-grabber");
+    a_cache_hit_equals_a_download(
+        &log,
+        &home,
+        &home.retail,
+        "wowace:bug-grabber",
+        "wowace-file",
+    );
+}
+
+#[test]
+fn a_file_directory_plans_with_one_release_id() {
+    let log = tlog!();
+    let home = PlanningHome::new();
+    log.env(&home.env);
+    log.step("seed home");
+    let dir = home.env.root().join("src/Mine");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("Mine.toc"), toc("120105")).unwrap();
+    let from_dir = || {
+        let mut change = user_install("gh:o/mine");
+        if let RequestedChange::Install { file, .. } = &mut change {
+            *file = Some(dir.clone());
+        }
+        vec![request(&home.retail, vec![change], TxKind::Install)]
+    };
+    let mut runs = Vec::new();
+    for step in ["first plan", "second plan"] {
+        log.step(step);
+        runs.push(planned(&log, &home, from_dir(), &PlanOpts::default()));
+    }
+    log.step("compare");
+    let id = |plan: &Plan| plan.targets[0].releases[0].release_id.clone();
+    let first_id = id(&runs[0].0);
+    log.assert_eq("one release id", &id(&runs[1].0), &first_id);
+    log.assert_eq(
+        "a listing id",
+        &first_id.starts_with("gh:o/mine@listing:"),
+        &true,
+    );
+    same_token("an unchanged folder", &runs[0].1, &runs[1].1);
+    let inputs = |plan: &Plan| {
+        plan.witnesses[0]
+            .inputs
+            .iter()
+            .map(|i| (i.kind.wire(), i.digest.clone()))
+            .collect::<Vec<_>>()
+    };
+    let first_inputs = inputs(&runs[0].0);
+    log.assert_eq("one dir input", &first_inputs.len(), &1);
+    log.assert_eq("a dir input", &first_inputs[0].0, &"dir");
+    log.assert_eq("the same listing", &inputs(&runs[1].0), &first_inputs);
+
+    log.step("an edited folder");
+    fs::write(
+        dir.join("Mine.toc"),
+        format!("{}## Version: 2\n", toc("120105")),
+    )
+    .unwrap();
+    let (edited, token, _) = planned(&log, &home, from_dir(), &PlanOpts::default());
+    log.assert_eq("another release id", &(id(&edited) != first_id), &true);
+    let preview: Vec<String> = ["omaddons", "install", "gh:o/mine", "--dry-run"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    let changed = check(Some(&runs[0].1.token()), &token, &preview)
+        .err()
+        .map(|e| e.details["changed"].clone());
+    log.assert_eq(
+        "details.changed",
+        &changed,
+        &Some(serde_json::json!(["selection", "observed"])),
     );
 }
