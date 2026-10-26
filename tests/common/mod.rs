@@ -1,8 +1,8 @@
 //! Builders for integration tests (DEC-8): an isolated environment, synthetic WoW
 //! trees, PE stubs, `product.db`, launcher configs, a fake `/proc`, `pause` failpoint
 //! markers, bind mounts, addon folders, HTTP fixtures and release graphs, drift mutators, readers
-//! for state and `net.log`, and SavedVariables in both writer formats (BugGrabber's
-//! among them).
+//! for state and `net.log`, SavedVariables in both writer formats (BugGrabber's
+//! among them), and a structured step log (`tlog`).
 //! Each integration test crate declares `mod common;` and uses the subset it needs.
 //!
 //! Everything is written under a [`env::TestEnv`] tempdir; nothing here touches the real
@@ -36,6 +36,7 @@ pub mod procfs;
 pub mod product_db;
 pub mod state;
 pub mod targets;
+pub mod tlog;
 pub mod trees;
 pub mod tukui;
 pub mod wowi;
