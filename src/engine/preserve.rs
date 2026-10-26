@@ -15,7 +15,9 @@
 
 use std::path::{Path, PathBuf};
 
-use super::journal::{FileId, JournalLine, Prepared, PreserveIntent, Preserved, same};
+use super::journal::{
+    Disk, JournalLine, LiveView, Prepared, PreserveIntent, PreserveItem, Preserved, same,
+};
 use crate::backup::create::{DIR_MODE, addons, rename_new, write};
 use crate::backup::inventory::{Change, Ring};
 use crate::backup::tree::walk;
@@ -46,26 +48,20 @@ pub(super) fn run(
 ) -> Result<()> {
     let client = ClientPaths::new(&prepared.client_dir);
     let published = crate::backup::backup_dir(&client, &intent.id);
-    let meta = if std::fs::symlink_metadata(&published).is_ok() {
+    let meta = match published_matches(&mut Disk, &published, intent) {
         // Published already: the items must be there, as recorded.
-        for item in &intent.items {
-            if !same(
-                FileId::of(&place(&published, &item.rel)),
-                Some(item.identity),
-            ) {
-                return Err(surprise(&published));
-            }
-        }
-        store::load::<BackupMeta>(&crate::backup::meta_file(&published))?
+        Some(true) => store::load::<BackupMeta>(&crate::backup::meta_file(&published))?
             .map(|loaded| loaded.value)
-            .ok_or_else(|| surprise(&published))?
-    } else {
-        move_items(s, intent)?;
-        failpoint::hit("engine.preserve.moved").map_err(|e| io(&intent.assembly, &e))?;
-        let meta = describe(s, paths, prepared, intent)?;
-        publish(s, &client, intent, &published)?;
-        failpoint::hit("engine.preserve.published").map_err(|e| io(&published, &e))?;
-        meta
+            .ok_or_else(|| surprise(&published))?,
+        Some(false) => return Err(surprise(&published)),
+        None => {
+            move_items(s, intent)?;
+            failpoint::hit("engine.preserve.moved").map_err(|e| io(&intent.assembly, &e))?;
+            let meta = describe(s, paths, prepared, intent)?;
+            publish(s, &client, intent, &published)?;
+            failpoint::hit("engine.preserve.published").map_err(|e| io(&published, &e))?;
+            meta
+        }
     };
     let done = JournalLine::Preserved(Preserved { id: intent.id });
     super::journal::append_line(s, journal, &done)?;
@@ -84,17 +80,55 @@ fn place(dir: &Path, rel: &str) -> PathBuf {
     if rel.is_empty() { tree } else { tree.join(rel) }
 }
 
+/// Whether the backup `intent` publishes is at `published` with every item in place, as
+/// [`run`] checks before resuming: `None` when nothing is there (it is still to publish).
+pub(super) fn published_matches(
+    view: &mut dyn LiveView,
+    published: &Path,
+    intent: &PreserveIntent,
+) -> Option<bool> {
+    view.entry(published)?;
+    Some(
+        intent
+            .items
+            .iter()
+            .all(|item| same(view.id(&place(published, &item.rel)), Some(item.identity))),
+    )
+}
+
+/// Where an item of a preservation intent is, as [`move_items`] checks before each move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Placed {
+    /// In the assembly, with its identity: moved already.
+    InAssembly,
+    /// Where recovery found it: still to move.
+    AtFound,
+    /// In neither place: a surprise.
+    Neither,
+}
+
+/// [`Placed`] for `item` of the intent assembled at `assembly`: the assembly is checked
+/// first.
+pub(super) fn placed(view: &mut dyn LiveView, item: &PreserveItem, assembly: &Path) -> Placed {
+    if same(view.id(&place(assembly, &item.rel)), Some(item.identity)) {
+        Placed::InAssembly
+    } else if same(view.id(&item.path), Some(item.identity)) {
+        Placed::AtFound
+    } else {
+        Placed::Neither
+    }
+}
+
 /// Moves each item from where recovery found it to its place in the assembly (`0700`,
 /// as every backup directory is): an item there already is skipped, one in neither place
 /// is an error. Whole trees move with their stamp digest (M3-D25) when `s` logs actions.
 fn move_items(s: &mut WriteSession<'_>, intent: &PreserveIntent) -> Result<()> {
     for item in &intent.items {
         let to = place(&intent.assembly, &item.rel);
-        if same(FileId::of(&to), Some(item.identity)) {
-            continue;
-        }
-        if !same(FileId::of(&item.path), Some(item.identity)) {
-            return Err(surprise(&item.path));
+        match placed(&mut Disk, item, &intent.assembly) {
+            Placed::InAssembly => continue,
+            Placed::Neither => return Err(surprise(&item.path)),
+            Placed::AtFound => {}
         }
         ensure_dir_all(s, &intent.assembly)?;
         mutate(s, &intent.assembly, Op::Chmod { mode: DIR_MODE })?;
@@ -102,7 +136,8 @@ fn move_items(s: &mut WriteSession<'_>, intent: &PreserveIntent) -> Result<()> {
             ensure_dir_all(s, parent)?;
         }
         // A stamp digest is a stat walk of the whole tree, which only a session that logs
-        // its actions records; recovery's sessions log none.
+        // its actions records; recovery's sessions log none. It decides what the actions
+        // log records, never an outcome, so it reads the disk directly.
         let tree = std::fs::symlink_metadata(&item.path).is_ok_and(|m| m.is_dir());
         let stamp_before = if tree && s.actions_log().is_some() {
             Some(StampDigest::compute(&item.path).map_err(|e| {
@@ -197,7 +232,9 @@ fn describe(
 
 /// The target id, family and client version a recovered backup is described with: as the
 /// transaction recorded them, else as its source backup did.
-fn described_client(prepared: &Prepared) -> Result<(String, crate::rules::Family, String)> {
+pub(super) fn described_client(
+    prepared: &Prepared,
+) -> Result<(String, crate::rules::Family, String)> {
     if let Some(client) = &prepared.client {
         return Ok((
             client.target_id.clone(),
@@ -305,7 +342,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
-    use crate::engine::journal::PreserveItem;
+    use crate::engine::journal::FileId;
     use crate::fsx::Writer;
 
     /// Recovery's sessions log no actions, so a whole tree moves into the assembly without
@@ -342,5 +379,68 @@ mod tests {
         .ok();
         moved.unwrap();
         assert!(placed.is_dir() && !tree.exists());
+    }
+
+    #[test]
+    fn placed_decides_like_move_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (found, assembly) = (root.join("found"), root.join("assembly"));
+        std::fs::create_dir_all(&found).unwrap();
+        let tree = PreserveItem {
+            path: found.clone(),
+            identity: FileId::of(&found).unwrap(),
+            rel: String::new(),
+        };
+        let file = root.join("X.lua");
+        std::fs::write(&file, "x").unwrap();
+        let single = PreserveItem {
+            path: file.clone(),
+            identity: FileId::of(&file).unwrap(),
+            rel: "Account/X.lua".into(),
+        };
+        let at = |item: &PreserveItem| placed(&mut Disk, item, &assembly);
+
+        assert_eq!(at(&tree), Placed::AtFound, "at_found");
+        std::fs::create_dir_all(&assembly).unwrap();
+        std::fs::rename(&found, place(&assembly, "")).unwrap();
+        assert_eq!(at(&tree), Placed::InAssembly, "in_assembly");
+        std::fs::rename(place(&assembly, ""), root.join("elsewhere")).unwrap();
+        assert_eq!(at(&tree), Placed::Neither, "neither: moved elsewhere");
+
+        // One file in both places (a hard link): the assembly is checked first.
+        let linked = place(&assembly, &single.rel);
+        std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
+        std::fs::hard_link(&file, &linked).unwrap();
+        assert_eq!(at(&single), Placed::InAssembly, "both");
+    }
+
+    #[test]
+    fn published_matches_like_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let published = root.join("backups/01M6X00000000000000000000A");
+        let items = ["Account/A.lua", "Account/B.lua"].map(|rel| {
+            let path = place(&published, rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, rel).unwrap();
+            PreserveItem {
+                identity: FileId::of(&path).unwrap(),
+                path: root.join("found").join(rel),
+                rel: rel.into(),
+            }
+        });
+        let intent = PreserveIntent {
+            id: "01M6X00000000000000000000A".parse().unwrap(),
+            items: items.to_vec(),
+            assembly: root.join("assembly"),
+        };
+        let matches = || published_matches(&mut Disk, &published, &intent);
+
+        assert_eq!(matches(), Some(true), "published_with_every_item");
+        std::fs::remove_file(place(&published, "Account/B.lua")).unwrap();
+        assert_eq!(matches(), Some(false), "published_missing_an_item");
+        std::fs::remove_dir_all(&published).unwrap();
+        assert_eq!(matches(), None, "nothing_published");
     }
 }

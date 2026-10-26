@@ -306,15 +306,22 @@ pub struct FileId {
 impl FileId {
     /// The identity of what is at `path` (not following a symlink), if anything.
     pub fn of(path: &Path) -> Option<Self> {
-        std::fs::symlink_metadata(path).ok().map(|m| Self {
-            dev: m.dev(),
-            ino: m.ino(),
-            born_ns: m
+        std::fs::symlink_metadata(path)
+            .ok()
+            .map(|m| Self::from_metadata(&m))
+    }
+
+    /// The identity `meta` (read without following a symlink) describes.
+    fn from_metadata(meta: &std::fs::Metadata) -> Self {
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            born_ns: meta
                 .created()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .and_then(|d| i64::try_from(d.as_nanos()).ok()),
-        })
+        }
     }
 }
 
@@ -334,6 +341,137 @@ pub(super) fn same(a: Option<FileId>, b: Option<FileId>) -> bool {
                 }
         }
         _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// What recovery's decisions read (E11).
+
+/// What is at a path, as recovery's decisions see it: never following a final symlink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct LiveEntry {
+    pub kind: LiveKind,
+    pub id: FileId,
+}
+
+/// The kind of a [`LiveEntry`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveKind {
+    File,
+    Dir,
+    Symlink,
+    Other,
+}
+
+/// Every read recovery's decision procedure makes (E11). Recovery reads the disk
+/// ([`Disk`]); `journal::diagnose` reads a simulation of it, so both decide with the
+/// same code.
+pub(crate) trait LiveView {
+    /// What is at `path`, if anything.
+    fn entry(&mut self, path: &Path) -> Option<LiveEntry>;
+
+    /// The identity of what is at `path`, as [`FileId::of`] gives it.
+    fn id(&mut self, path: &Path) -> Option<FileId> {
+        self.entry(path).map(|e| e.id)
+    }
+
+    /// Whether a directory is at `path`. [`Disk`] follows a final symlink, as
+    /// `Path::is_dir` does and recovery always has.
+    fn is_dir(&mut self, path: &Path) -> bool {
+        matches!(
+            self.entry(path),
+            Some(LiveEntry {
+                kind: LiveKind::Dir,
+                ..
+            })
+        )
+    }
+
+    /// [`file_stamp`] of the one entry at `path`.
+    fn file_stamp(&mut self, path: &Path) -> Option<String>;
+
+    /// `fsx::StampDigest::compute(path)` as text; its error is what recovery stops on.
+    fn tree_stamp(&mut self, path: &Path) -> std::io::Result<String>;
+}
+
+/// A rollback walk's effects: reversing a step that ran, and the point after each step
+/// the walk passes.
+pub(crate) trait Replay: LiveView {
+    fn reverse(&mut self, step: &StepRecord) -> Result<()>;
+    fn stepped(&mut self, step: &StepRecord) -> Result<()>;
+}
+
+/// The disk, read as recovery always has.
+pub(crate) struct Disk;
+
+impl LiveView for Disk {
+    fn entry(&mut self, path: &Path) -> Option<LiveEntry> {
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        let kind = meta.file_type();
+        let kind = if kind.is_file() {
+            LiveKind::File
+        } else if kind.is_dir() {
+            LiveKind::Dir
+        } else if kind.is_symlink() {
+            LiveKind::Symlink
+        } else {
+            LiveKind::Other
+        };
+        Some(LiveEntry {
+            kind,
+            id: FileId::from_metadata(&meta),
+        })
+    }
+
+    fn is_dir(&mut self, path: &Path) -> bool {
+        path.is_dir()
+    }
+
+    fn file_stamp(&mut self, path: &Path) -> Option<String> {
+        file_stamp(path)
+    }
+
+    fn tree_stamp(&mut self, path: &Path) -> std::io::Result<String> {
+        fsx::StampDigest::compute(path).map(|digest| digest.to_string())
+    }
+}
+
+/// Recovery itself: the disk read as [`Disk`] reads it, and its rollback effects
+/// written through `s`.
+pub(crate) struct Recovering<'s, 'a> {
+    pub s: &'s mut WriteSession<'a>,
+}
+
+impl LiveView for Recovering<'_, '_> {
+    fn entry(&mut self, path: &Path) -> Option<LiveEntry> {
+        Disk.entry(path)
+    }
+
+    fn is_dir(&mut self, path: &Path) -> bool {
+        Disk.is_dir(path)
+    }
+
+    fn file_stamp(&mut self, path: &Path) -> Option<String> {
+        Disk.file_stamp(path)
+    }
+
+    fn tree_stamp(&mut self, path: &Path) -> std::io::Result<String> {
+        Disk.tree_stamp(path)
+    }
+}
+
+impl Replay for Recovering<'_, '_> {
+    /// The rename back ([`undo`]).
+    fn reverse(&mut self, step: &StepRecord) -> Result<()> {
+        undo(self.s, step)
+    }
+
+    /// The failpoint `engine.recover.step`, so a crash between replayed steps can be
+    /// simulated.
+    fn stepped(&mut self, step: &StepRecord) -> Result<()> {
+        failpoint::hit("engine.recover.step")
+            .map_err(|e| Error::io(&step.from, &e, Suggestion::command(["omaddons", "status"])))
     }
 }
 
@@ -1080,31 +1218,13 @@ fn recover_parsed(
     path: &Path,
     parsed: &Parsed,
 ) -> Result<Option<Recovered>> {
-    if let Some(why) = parsed.unrecoverable() {
-        return Err(unrecoverable(tx, parsed, why));
-    }
-    let paths = env.paths;
+    // The marker is read only for a journal this build can read, as ever.
     let scoped = match &parsed.prepared {
-        Some(prepared) => journal_scopes(env, prepared),
-        None => None,
+        Some(prepared) if parsed.unrecoverable().is_none() => journal_scopes(env, prepared),
+        _ => None,
     };
-    let unfinished = matches!(parsed.phase, Phase::Prepared | Phase::Swapped);
-    if let (Some(prepared), None, true) = (&parsed.prepared, &scoped, unfinished) {
-        return Err(Error::new(
-            ErrorCode::ScopeDenied,
-            format!(
-                "transaction {tx} names {}, whose marker is not target {}'s; recovery leaves it for manual repair",
-                prepared.client_dir.display(),
-                prepared.target_key
-            ),
-            Suggestion::command(["omaddons", "status"]),
-        )
-        .details(serde_json::json!({
-            "reason": StopReason::MarkerMismatch.as_str(),
-            "journal_pending": tx,
-            "target": prepared.target_key,
-        })));
-    }
+    let route = route(parsed, scoped.is_some(), env.sv_writable);
+    let paths = env.paths;
     let env = &RecoveryEnv {
         scopes: scoped.as_ref().unwrap_or(env.scopes),
         ..*env
@@ -1118,25 +1238,17 @@ fn recover_parsed(
     } else {
         Writer::Mutating
     };
-    // ... and never while the game runs, or may (M3-D29): a step may have moved `WTF/`.
-    // In process too: the check is made now, not trusted from before the failure.
-    if let Some(prepared) = &parsed.prepared
-        && writes_wtf
-        && unfinished
-        && !parsed.steps.is_empty()
-        && !(env.sv_writable)(&prepared.client_dir)
-    {
-        return Err(waits_for_the_game(tx, prepared));
-    }
     let mut s = WriteSession::untracked(writer, scopes, "recovery");
     let atomic_swap = !parsed
         .steps
         .iter()
         .any(|step| matches!(step.op, StepOp::Rename));
-    let mut recovered = match (&parsed.prepared, parsed.phase) {
-        (None, _) | (_, Phase::Unprepared) => None,
-        (Some(_), Phase::Committed) => None,
-        (Some(prepared), Phase::Swapped) => {
+    let mut recovered = match route {
+        Route::Unrecoverable(why) => return Err(unrecoverable(tx, parsed, why)),
+        Route::MarkerMismatch(prepared) => return Err(marker_mismatch(tx, prepared)),
+        Route::WaitsForGame(prepared) => return Err(waits_for_the_game(tx, prepared)),
+        Route::Prune => None,
+        Route::Forward(prepared) => {
             let left = roll_forward(&mut s, env, path, prepared, parsed.torn_tail)?;
             Some(Recovered {
                 action: RecoveryAction::RolledForward,
@@ -1146,7 +1258,7 @@ fn recover_parsed(
                 snapshot_kept: None,
             })
         }
-        (Some(prepared), Phase::Prepared) if prepared.writes_wtf => {
+        Route::BackPreserving(prepared) => {
             let warnings = roll_back_preserving(&mut s, env, tx, path, prepared, parsed)?;
             Some(Recovered {
                 action: RecoveryAction::RolledBack,
@@ -1156,7 +1268,7 @@ fn recover_parsed(
                 snapshot_kept: None,
             })
         }
-        (Some(prepared), Phase::Prepared) => {
+        Route::Back(prepared) => {
             roll_back(&mut s, &parsed.steps, tx, prepared.target_key)?;
             Some(Recovered {
                 action: RecoveryAction::RolledBack,
@@ -1207,6 +1319,79 @@ fn recover_parsed(
         }
     }
     Ok(recovered)
+}
+
+/// What recovery does with a journal, decided before it writes anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Route<'a> {
+    /// This build cannot read it: left whole ([`Parsed::unrecoverable`]).
+    Unrecoverable(Unrecoverable),
+    /// Unfinished, and its client no longer carries its target's marker.
+    MarkerMismatch(&'a Prepared),
+    /// A settings restore with a step, while its game runs or may (M3-D29).
+    WaitsForGame(&'a Prepared),
+    /// Nothing to finish or undo: never prepared, or committed.
+    Prune,
+    /// Swapped: roll forward.
+    Forward(&'a Prepared),
+    /// Prepared, renaming `WTF/`: roll back, preserving what it displaced.
+    BackPreserving(&'a Prepared),
+    /// Prepared: roll back.
+    Back(&'a Prepared),
+}
+
+/// [`Route`] for `parsed`, in recovery's order: what this build cannot read, then a
+/// marker that is not its target's (`owns_client_dir` is false), then the game, then the
+/// phase. `sv_writable` is asked only for an unfinished settings restore with a step,
+/// and the check is made now, not trusted from before a failure.
+pub(crate) fn route<'a>(
+    parsed: &'a Parsed,
+    owns_client_dir: bool,
+    sv_writable: &dyn Fn(&Path) -> bool,
+) -> Route<'a> {
+    if let Some(why) = parsed.unrecoverable() {
+        return Route::Unrecoverable(why);
+    }
+    let unfinished = matches!(parsed.phase, Phase::Prepared | Phase::Swapped);
+    let Some(prepared) = &parsed.prepared else {
+        return Route::Prune;
+    };
+    if unfinished && !owns_client_dir {
+        return Route::MarkerMismatch(prepared);
+    }
+    // ... and never while the game runs, or may: a step may have moved `WTF/`.
+    if prepared.writes_wtf
+        && unfinished
+        && !parsed.steps.is_empty()
+        && !sv_writable(&prepared.client_dir)
+    {
+        return Route::WaitsForGame(prepared);
+    }
+    match parsed.phase {
+        Phase::Unprepared | Phase::Committed => Route::Prune,
+        Phase::Swapped => Route::Forward(prepared),
+        Phase::Prepared if prepared.writes_wtf => Route::BackPreserving(prepared),
+        Phase::Prepared => Route::Back(prepared),
+    }
+}
+
+/// An unfinished journal whose client dir's marker does not name its target, or that
+/// the scopes cannot add: `scope_denied`, left for manual repair.
+fn marker_mismatch(tx: &TxId, prepared: &Prepared) -> Error {
+    Error::new(
+        ErrorCode::ScopeDenied,
+        format!(
+            "transaction {tx} names {}, whose marker is not target {}'s; recovery leaves it for manual repair",
+            prepared.client_dir.display(),
+            prepared.target_key
+        ),
+        Suggestion::command(["omaddons", "status"]),
+    )
+    .details(serde_json::json!({
+        "reason": StopReason::MarkerMismatch.as_str(),
+        "journal_pending": tx,
+        "target": prepared.target_key,
+    }))
 }
 
 /// The failure of a journal recovery leaves as it is: `state_too_new` for a newer major
@@ -1334,7 +1519,14 @@ fn roll_back_preserving(
     if intents.is_empty() {
         let live = ClientPaths::new(&prepared.client_dir).wtf();
         let displaced = roll_back_wtf(s, tx, prepared, &live, &parsed.steps)?;
-        let items = candidates(prepared, displaced).map_err(incomplete)?;
+        let staged = prepared.commit.stage_dir.join("WTF");
+        let items = candidates(&mut Disk, prepared, displaced).map_err(|e| {
+            incomplete(Error::io(
+                &staged,
+                &e,
+                Suggestion::command(["omaddons", "status"]),
+            ))
+        })?;
         if !items.is_empty() {
             let id = crate::model::BackupId::new();
             let assembly = prepared
@@ -1388,7 +1580,7 @@ fn drop_torn_tail(s: &mut WriteSession<'_>, journal: &Path) -> Result<()> {
 /// longer recognizable, never who changed it (the game, a sync tool, a hand or an
 /// interrupted recovery), so the live path is never touched.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Unexpected {
+pub(crate) enum Unexpected {
     /// A rename into the live path whose source is empty while the live entry is not the
     /// one it put there: our restored copy (of a backup) was replaced, and nothing of ours
     /// is displaced. The walk goes on.
@@ -1400,12 +1592,12 @@ enum Unexpected {
     Unrecognized,
 }
 
-/// [`Unexpected`] for `step`, whose live paths are `live` and below it.
-fn classify(step: &StepRecord, live: &Path) -> Unexpected {
+/// [`Unexpected`] for `step`, whose live paths are `live` and below it, in `view`.
+pub(crate) fn classify(view: &mut dyn LiveView, step: &StepRecord, live: &Path) -> Unexpected {
     let in_live = |path: &Path| path.starts_with(live);
     // The displaced side holds `recorded`; its place under `WTF/` is the live side's.
-    let found = |side: &Path, recorded: Option<FileId>, live_side: &Path| match recorded {
-        Some(identity) if same(FileId::of(side), Some(identity)) => {
+    let mut found = |side: &Path, recorded: Option<FileId>, live_side: &Path| match recorded {
+        Some(identity) if same(view.id(side), Some(identity)) => {
             let rel = live_side
                 .strip_prefix(live)
                 .map(|rel| rel.to_string_lossy().replace('\\', "/"))
@@ -1423,7 +1615,7 @@ fn classify(step: &StepRecord, live: &Path) -> Unexpected {
         StepOp::Exchange if in_live(&step.to) => found(&step.from, step.to_id, &step.to),
         StepOp::Exchange if in_live(&step.from) => found(&step.to, step.from_id, &step.from),
         StepOp::Noreplace | StepOp::Rename if in_live(&step.to) => {
-            if FileId::of(&step.from).is_none() && !same(FileId::of(&step.to), step.from_id) {
+            if view.id(&step.from).is_none() && !same(view.id(&step.to), step.from_id) {
                 Unexpected::Replaced
             } else {
                 Unexpected::Unrecognized
@@ -1447,28 +1639,49 @@ fn roll_back_wtf(
     live: &Path,
     steps: &[StepRecord],
 ) -> Result<Vec<PreserveItem>> {
+    // A rename that fails is the walk's own error: the journal stays, as ever. A partial
+    // restore's step names a file under `WTF/`, so its error is redacted.
+    match walk_back_wtf(&mut Recovering { s }, live, steps).map_err(|e| redacted(prepared, e))? {
+        WtfWalked::Done(displaced) => Ok(displaced),
+        WtfWalked::Unplaced(step) => {
+            let why = super::preserve::redacted(prepared, &neither_message(step));
+            Err(stopped(tx, prepared, Stop::UnexpectedState, &why))
+        }
+    }
+}
+
+/// How a `writes_wtf` rollback walk ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WtfWalked<'a> {
+    /// Every step passed, leaving these displaced versions to preserve.
+    Done(Vec<PreserveItem>),
+    /// This step is in neither state and [`classify`] cannot place it: the walk stopped
+    /// there, before its point.
+    Unplaced(&'a StepRecord),
+}
+
+/// [`walk_back`] by rule 2 (it replaces `roll_back_wtf`'s loop): a step in neither state
+/// goes to [`classify`], and the walk goes on past one replaced or displaced, collecting
+/// the displaced side; one it cannot place stops it.
+pub(crate) fn walk_back_wtf<'a>(
+    view: &mut dyn Replay,
+    live: &Path,
+    steps: &'a [StepRecord],
+) -> Result<WtfWalked<'a>> {
     let mut displaced = Vec::new();
     for (at, step) in steps.iter().enumerate().rev() {
-        match ran_after(step, &steps[..at]) {
-            // A rename that fails is the walk's own error: the journal stays, as ever. A
-            // partial restore's step names a file under `WTF/`, so its error is redacted.
-            Ok(true) => undo(s, step).map_err(|e| redacted(prepared, e))?,
-            Ok(false) => {}
-            Err(neither) => match classify(step, live) {
+        match step_state_after(view, step, &steps[..at]) {
+            StepState::After => view.reverse(step)?,
+            StepState::Before => {}
+            StepState::Neither => match classify(view, step, live) {
                 Unexpected::Replaced => {}
                 Unexpected::Displaced(item) => displaced.push(item),
-                Unexpected::Unrecognized => {
-                    let why = super::preserve::redacted(prepared, &neither.message);
-                    return Err(stopped(tx, prepared, Stop::UnexpectedState, &why));
-                }
+                Unexpected::Unrecognized => return Ok(WtfWalked::Unplaced(step)),
             },
         }
-        failpoint::hit("engine.recover.step").map_err(|e| {
-            let error = Error::io(&step.from, &e, Suggestion::command(["omaddons", "status"]));
-            redacted(prepared, error)
-        })?;
+        view.stepped(step)?;
     }
-    Ok(displaced)
+    Ok(WtfWalked::Done(displaced))
 }
 
 /// `error` with every account, realm and character name `prepared`'s client and stage
@@ -1484,12 +1697,17 @@ fn redacted(prepared: &Prepared, mut error: Error) -> Error {
 /// `stage/<tx>.wtf/WTF` when it is not one of them and its stamps changed since it was
 /// journaled (the game played on it), or its source is gone (it holds that content's last
 /// copy, which a metadata match cannot vouch for).
-fn candidates(prepared: &Prepared, mut items: Vec<PreserveItem>) -> Result<Vec<PreserveItem>> {
+/// The staged tree's stamp error is what recovery stops on (`preservation_incomplete`).
+pub(crate) fn candidates(
+    view: &mut dyn LiveView,
+    prepared: &Prepared,
+    mut items: Vec<PreserveItem>,
+) -> std::result::Result<Vec<PreserveItem>, std::io::Error> {
     if let Some(files) = &prepared.staged_files {
-        return Ok(staged_file_candidates(prepared, files, items));
+        return Ok(staged_file_candidates(view, prepared, files, items));
     }
     let staged = prepared.commit.stage_dir.join("WTF");
-    let Some(identity) = FileId::of(&staged) else {
+    let Some(identity) = view.id(&staged) else {
         return Ok(items);
     };
     // ubs:ignore — comparing paths, not secrets
@@ -1498,14 +1716,13 @@ fn candidates(prepared: &Prepared, mut items: Vec<PreserveItem>) -> Result<Vec<P
     }
     let changed = match &prepared.staged_stamp {
         Some(recorded) => {
-            let now = fsx::StampDigest::compute(&staged)
-                .map_err(|e| Error::io(&staged, &e, Suggestion::command(["omaddons", "status"])))?;
+            let now = view.tree_stamp(&staged)?;
             // ubs:ignore — comparing stat digests of a tree (evidence of change), not secrets
-            now.to_string() != *recorded
+            now != *recorded
         }
         None => true,
     };
-    if changed || source_gone(prepared) {
+    if changed || source_gone(view, prepared) {
         items.push(PreserveItem {
             path: staged,
             identity,
@@ -1520,15 +1737,16 @@ fn candidates(prepared: &Prepared, mut items: Vec<PreserveItem>) -> Result<Vec<P
 /// before rollback brought it back), or every one when its source backup is gone (it holds
 /// that content's last copy).
 fn staged_file_candidates(
+    view: &mut dyn LiveView,
     prepared: &Prepared,
     files: &[StagedFile],
     mut items: Vec<PreserveItem>,
 ) -> Vec<PreserveItem> {
     let staged = prepared.commit.stage_dir.join("WTF");
-    let gone = source_gone(prepared);
+    let gone = source_gone(view, prepared);
     for file in files {
         let path = staged.join(&file.rel);
-        let Some(identity) = FileId::of(&path) else {
+        let Some(identity) = view.id(&path) else {
             continue;
         };
         // ubs:ignore — comparing paths, not secrets
@@ -1536,7 +1754,7 @@ fn staged_file_candidates(
             continue;
         }
         // ubs:ignore — comparing stat digests of a file (evidence of change), not secrets
-        if gone || file_stamp(&path).as_deref() != Some(file.stamp.as_str()) {
+        if gone || view.file_stamp(&path).as_deref() != Some(file.stamp.as_str()) {
             items.push(PreserveItem {
                 path,
                 identity,
@@ -1550,16 +1768,16 @@ fn staged_file_candidates(
 /// Whether the tree a `writes_wtf` stage was copied from is gone: a restore's backup, by
 /// identity, or, for an undo of one, the reverted transaction's `WTF.previous` (a
 /// snapshot named by that transaction, never reused).
-fn source_gone(prepared: &Prepared) -> bool {
+pub(crate) fn source_gone(view: &mut dyn LiveView, prepared: &Prepared) -> bool {
     let client = ClientPaths::new(&prepared.client_dir);
     match (prepared.source_backup, prepared.commit.history.reverts) {
         (Some(source), _) => {
             let dir = crate::backup::backup_dir(&client, &source.id);
-            !same(FileId::of(&dir), Some(source.dir))
+            !same(view.id(&dir), Some(source.dir))
         }
-        (None, Some(reverted)) => !super::retention::snapshot_of(&client, &reverted)
-            .join(super::retention::WTF_PREVIOUS)
-            .is_dir(),
+        (None, Some(reverted)) => !view.is_dir(
+            &super::retention::snapshot_of(&client, &reverted).join(super::retention::WTF_PREVIOUS),
+        ),
         (None, None) => true,
     }
 }
@@ -1704,54 +1922,42 @@ fn finish_saved_variables(
     Some((files, warning))
 }
 
-/// Undoes the steps that ran, last first. The failpoint `engine.recover.step` sits
-/// after each undo, so a crash between replayed steps can be simulated; the next
-/// recovery skips what was already undone. A step in neither its before nor its after
-/// state stops it (`details.reason: "step_unrecognized"`, for transaction `tx` of target
-/// `key`), leaving the journal for manual repair.
+/// Undoes the steps that ran, last first ([`walk_back`]); the next recovery skips what
+/// was already undone. A step in neither its before nor its after state stops it
+/// (`details.reason: "step_unrecognized"`, for transaction `tx` of target `key`),
+/// leaving the journal for manual repair.
 fn roll_back(
     s: &mut WriteSession<'_>,
     steps: &[StepRecord],
     tx: &TxId,
     key: TargetKey,
 ) -> Result<()> {
-    for (at, step) in steps.iter().enumerate().rev() {
-        let ran = ran_after(step, &steps[..at]).map_err(|mut error| {
-            error.details = serde_json::json!({
+    match walk_back(&mut Recovering { s }, steps)? {
+        Walked::Done => Ok(()),
+        Walked::StoppedAt(step) => Err(Error::internal(neither_message(step)).details(
+            serde_json::json!({
                 "reason": StopReason::StepUnrecognized.as_str(),
                 "journal_pending": tx,
                 "target": key,
-            });
-            error
-        })?;
-        if ran {
-            undo(s, step)?;
-        }
-        failpoint::hit("engine.recover.step")
-            .map_err(|e| Error::io(&step.from, &e, Suggestion::command(["omaddons", "status"])))?;
-    }
-    Ok(())
-}
-
-/// [`ran`], for a step recorded after `earlier`. Steps run first to last and roll back
-/// last first, so while one of `earlier` is in its before state this one cannot have
-/// run, or was undone already: an exchange's old side moved on from the stage path, and
-/// a recovery that died after undoing both put the staged tree back at that path, which
-/// this step then sees in neither of its states. Anything else in neither state still
-/// stops.
-fn ran_after(step: &StepRecord, earlier: &[StepRecord]) -> Result<bool> {
-    match ran(step) {
-        Err(neither) if earlier.iter().any(|e| matches!(ran(e), Ok(false))) => {
-            let _ = neither;
-            Ok(false)
-        }
-        decided => decided,
+            }),
+        )),
     }
 }
 
-/// Whether a recorded step's rename happened, from the identities now at its paths.
-fn ran(step: &StepRecord) -> Result<bool> {
-    let (now_from, now_to) = (FileId::of(&step.from), FileId::of(&step.to));
+/// Where a recorded step's rename is, from the identities now at its paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StepState {
+    /// It did not run, or was undone.
+    Before,
+    /// It ran.
+    After,
+    /// Neither: something else changed its paths.
+    Neither,
+}
+
+/// The [`StepState`] of `step` in `view` (it replaces `ran`).
+pub(crate) fn step_state(view: &mut dyn LiveView, step: &StepRecord) -> StepState {
+    let (now_from, now_to) = (view.id(&step.from), view.id(&step.to));
     let before = (step.from_id, step.to_id);
     let after = match step.op {
         StepOp::Exchange => (step.to_id, step.from_id),
@@ -1760,17 +1966,69 @@ fn ran(step: &StepRecord) -> Result<bool> {
     let is =
         |(from, to): (Option<FileId>, Option<FileId>)| same(now_from, from) && same(now_to, to);
     if is(before) {
-        return Ok(false);
+        StepState::Before
+    } else if is(after) {
+        StepState::After
+    } else {
+        StepState::Neither
     }
-    if is(after) {
-        return Ok(true);
+}
+
+/// [`step_state`], for a step recorded after `earlier` (it replaces `ran_after`). Steps
+/// run first to last and roll back last first, so while one of `earlier` is in its before
+/// state this one cannot have run, or was undone already: an exchange's old side moved on
+/// from the stage path, and a recovery that died after undoing both put the staged tree
+/// back at that path, which this step then sees in neither of its states. Anything else
+/// in neither state stays `Neither`.
+pub(crate) fn step_state_after(
+    view: &mut dyn LiveView,
+    step: &StepRecord,
+    earlier: &[StepRecord],
+) -> StepState {
+    match step_state(view, step) {
+        StepState::Neither
+            if earlier
+                .iter()
+                .any(|e| matches!(step_state(view, e), StepState::Before)) =>
+        {
+            StepState::Before
+        }
+        decided => decided,
     }
-    Err(Error::internal(format!(
+}
+
+/// What recovery says of a step in neither state (it replaces `ran`'s error).
+pub(crate) fn neither_message(step: &StepRecord) -> String {
+    format!(
         "journal step {} ({} → {}) matches neither its before nor its after state; leaving it for manual repair",
         step.n,
         step.from.display(),
         step.to.display()
-    )))
+    )
+}
+
+/// How a rollback walk ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Walked<'a> {
+    /// Every step passed.
+    Done,
+    /// This step is in neither state: the walk stopped there, before its point.
+    StoppedAt(&'a StepRecord),
+}
+
+/// The rollback walk (it replaces `roll_back`'s loop): last step first, one that ran is
+/// reversed, one that did not is skipped, and [`Replay::stepped`] follows every step it
+/// passes; a step in neither state stops it.
+pub(crate) fn walk_back<'a>(view: &mut dyn Replay, steps: &'a [StepRecord]) -> Result<Walked<'a>> {
+    for (at, step) in steps.iter().enumerate().rev() {
+        match step_state_after(view, step, &steps[..at]) {
+            StepState::After => view.reverse(step)?,
+            StepState::Before => {}
+            StepState::Neither => return Ok(Walked::StoppedAt(step)),
+        }
+        view.stepped(step)?;
+    }
+    Ok(Walked::Done)
 }
 
 fn undo(s: &mut WriteSession<'_>, step: &StepRecord) -> Result<()> {
@@ -1998,7 +2256,7 @@ mod tests {
             to: b.clone(),
             purpose: StepPurpose::SwapIn,
         };
-        assert!(!ran(&exchange).unwrap());
+        assert_eq!(step_state(&mut Disk, &exchange), StepState::Before);
         rustix::fs::renameat_with(
             rustix::fs::CWD,
             &a,
@@ -2007,7 +2265,7 @@ mod tests {
             rustix::fs::RenameFlags::EXCHANGE,
         )
         .unwrap();
-        assert!(ran(&exchange).unwrap());
+        assert_eq!(step_state(&mut Disk, &exchange), StepState::After);
 
         let c = dir.path().join("c");
         let rename = StepRecord {
@@ -2019,12 +2277,13 @@ mod tests {
             to: c.clone(),
             purpose: StepPurpose::OldToSnapshot,
         };
-        assert!(!ran(&rename).unwrap());
+        assert_eq!(step_state(&mut Disk, &rename), StepState::Before);
         std::fs::rename(&a, &c).unwrap();
-        assert!(ran(&rename).unwrap());
+        assert_eq!(step_state(&mut Disk, &rename), StepState::After);
         std::fs::create_dir(&a).unwrap();
-        assert!(
-            ran(&rename).is_err(),
+        assert_eq!(
+            step_state(&mut Disk, &rename),
+            StepState::Neither,
             "something new at `from` is neither state"
         );
     }
@@ -2081,8 +2340,9 @@ mod tests {
         // A recovery that undid both and died: the staged tree is back at `stage`.
         std::fs::rename(&kept, &stage).unwrap();
         swap(&stage, &live);
-        assert!(
-            ran(&steps[1]).is_err(),
+        assert_eq!(
+            step_state(&mut Disk, &steps[1]),
+            StepState::Neither,
             "on its own, the step is in neither state"
         );
         roll_back(&mut s, &steps, &tx, key).unwrap();
@@ -2137,7 +2397,13 @@ mod tests {
             to: c.clone(),
             purpose: StepPurpose::OldToSnapshot,
         };
-        assert!(!ran(&exchange).unwrap() && !ran(&noreplace).unwrap());
+        assert_eq!(
+            [
+                step_state(&mut Disk, &exchange),
+                step_state(&mut Disk, &noreplace)
+            ],
+            [StepState::Before; 2]
+        );
         rustix::fs::renameat_with(
             rustix::fs::CWD,
             &a,
@@ -2146,14 +2412,14 @@ mod tests {
             rustix::fs::RenameFlags::EXCHANGE,
         )
         .unwrap();
-        assert!(ran(&exchange).unwrap());
+        assert_eq!(step_state(&mut Disk, &exchange), StepState::After);
         // `b` now holds what was `a`: the noreplace step recorded the old `b`.
         let moved = StepRecord {
             from_id: renumbered(FileId::of(&b)),
             ..noreplace
         };
         std::fs::rename(&b, &c).unwrap();
-        assert!(ran(&moved).unwrap());
+        assert_eq!(step_state(&mut Disk, &moved), StepState::After);
     }
 
     #[test]
@@ -2170,9 +2436,9 @@ mod tests {
         let parsed = parse(&line);
         let step = &parsed.steps[0];
         assert_eq!(step.from_id.unwrap().born_ns, None);
-        assert!(!ran(step).unwrap());
+        assert_eq!(step_state(&mut Disk, step), StepState::Before);
         std::fs::rename(&a, &c).unwrap();
-        assert!(ran(step).unwrap());
+        assert_eq!(step_state(&mut Disk, step), StepState::After);
         assert!(
             serde_json::to_string(step)
                 .unwrap()
@@ -2201,10 +2467,14 @@ mod tests {
             purpose: StepPurpose::OldToSnapshot,
         };
         if now.born_ns.is_some() {
-            assert!(ran(&step).is_err(), "a different file at `from`");
+            assert_eq!(
+                step_state(&mut Disk, &step),
+                StepState::Neither,
+                "a different file at `from`"
+            );
         } else {
             // A filesystem without birth times decides by inode alone.
-            assert!(!ran(&step).unwrap());
+            assert_eq!(step_state(&mut Disk, &step), StepState::Before);
         }
     }
 
@@ -3829,7 +4099,7 @@ mod tests {
         let exchange = step(StepOp::Exchange, &stage, &live, staged, old);
         fresh(&live);
         assert_eq!(
-            classify(&exchange, &live),
+            classify(&mut Disk, &exchange, &live),
             Unexpected::Displaced(PreserveItem {
                 path: stage.clone(),
                 identity: old.unwrap(),
@@ -3837,7 +4107,10 @@ mod tests {
             })
         );
         fresh(&stage);
-        assert_eq!(classify(&exchange, &live), Unexpected::Unrecognized);
+        assert_eq!(
+            classify(&mut Disk, &exchange, &live),
+            Unexpected::Unrecognized
+        );
 
         // Out of the live path, then something else live: the destination holds it.
         let gone = fresh(&live);
@@ -3845,7 +4118,7 @@ mod tests {
         let out = step(StepOp::Noreplace, &live, &kept, gone, None);
         fresh(&live);
         assert_eq!(
-            classify(&out, &live),
+            classify(&mut Disk, &out, &live),
             Unexpected::Displaced(PreserveItem {
                 path: kept.clone(),
                 identity: gone.unwrap(),
@@ -3856,9 +4129,9 @@ mod tests {
         // Into the live path, its source empty and the live entry another: replaced.
         let _ = std::fs::remove_dir_all(&stage);
         let into = step(StepOp::Noreplace, &stage, &live, Some(gone.unwrap()), None);
-        assert_eq!(classify(&into, &live), Unexpected::Replaced);
+        assert_eq!(classify(&mut Disk, &into, &live), Unexpected::Replaced);
         fresh(&stage);
-        assert_eq!(classify(&into, &live), Unexpected::Unrecognized);
+        assert_eq!(classify(&mut Disk, &into, &live), Unexpected::Unrecognized);
 
         // A file restored where none was (a partial restore's step), then rewritten in
         // place by the game: a new inode, the source empty.
@@ -3875,7 +4148,7 @@ mod tests {
             restored,
             None,
         );
-        assert_eq!(classify(&file_step, &live), Unexpected::Replaced);
+        assert_eq!(classify(&mut Disk, &file_step, &live), Unexpected::Replaced);
     }
 
     /// A recovery that stopped inside the protocol leaves its intent; the next one skips
@@ -3961,5 +4234,586 @@ mod tests {
         let assembled = parsed.preserve[0].assembly.join("WTF");
         assert!(assembled.join("d0").exists(), "kept, in the assembly");
         assert!(w.recovered().is_empty());
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The live view (E11): recovery's decisions, each read through `LiveView`.
+
+    #[test]
+    fn the_disk_view_reads_what_recovery_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let tree = root.join("tree");
+        std::fs::create_dir_all(tree.join("sub")).unwrap();
+        std::fs::write(tree.join("sub/x.lua"), "x").unwrap();
+        std::fs::write(root.join("file"), "a file").unwrap();
+        std::os::unix::fs::symlink(&tree, root.join("link")).unwrap();
+        std::os::unix::fs::symlink(root.join("nowhere"), root.join("dangling")).unwrap();
+        let cases = [
+            ("regular_file", root.join("file"), Some(LiveKind::File)),
+            ("directory", tree.clone(), Some(LiveKind::Dir)),
+            (
+                "symlink_not_followed",
+                root.join("link"),
+                Some(LiveKind::Symlink),
+            ),
+            ("absent", root.join("absent"), None),
+            (
+                "dangling_symlink",
+                root.join("dangling"),
+                Some(LiveKind::Symlink),
+            ),
+        ];
+        for (name, path, kind) in cases {
+            let entry = Disk.entry(&path);
+            assert_eq!(entry.map(|e| e.kind), kind, "{name}: {entry:?}");
+            assert!(
+                same(entry.map(|e| e.id), FileId::of(&path)),
+                "{name}: {entry:?} against {:?}",
+                FileId::of(&path)
+            );
+            assert_eq!(Disk.id(&path), entry.map(|e| e.id), "{name}");
+            assert_eq!(Disk.file_stamp(&path), file_stamp(&path), "{name}");
+            assert_eq!(Disk.is_dir(&path), path.is_dir(), "{name}: as Path::is_dir");
+        }
+        assert_eq!(
+            Disk.tree_stamp(&tree).unwrap(),
+            fsx::StampDigest::compute(&tree).unwrap().to_string()
+        );
+        let (view, direct) = sealed(&tree.join("sub"), || {
+            (
+                Disk.tree_stamp(&tree),
+                fsx::StampDigest::compute(&tree).map(|d| d.to_string()),
+            )
+        });
+        let kinds = (
+            view.as_ref().map_err(std::io::Error::kind),
+            direct.as_ref().map_err(std::io::Error::kind),
+        );
+        assert!(kinds.0.is_err(), "a folder it cannot list: {view:?}");
+        assert_eq!(kinds.0, kinds.1, "the view fails as the walk does");
+    }
+
+    /// A label for a [`Route`], for the table below.
+    fn route_label(route: Route<'_>) -> String {
+        match route {
+            Route::Unrecoverable(why) => format!("unrecoverable({})", why.reason()),
+            Route::MarkerMismatch(_) => "marker_mismatch".into(),
+            Route::WaitsForGame(_) => "waits_for_game".into(),
+            Route::Prune => "prune".into(),
+            Route::Forward(_) => "forward".into(),
+            Route::BackPreserving(_) => "back_preserving".into(),
+            Route::Back(_) => "back".into(),
+        }
+    }
+
+    #[test]
+    fn route_follows_recoverys_order() {
+        let scene = crate::engine::testing::Scene::new();
+        let prepared = {
+            let lock = scene.lock();
+            let mut s = scene.session();
+            let journal = scene.journal(&mut s, &lock);
+            parse(&std::fs::read_to_string(journal.path()).unwrap())
+                .prepared
+                .unwrap()
+        };
+        let prepared_line = |writes_wtf: bool, newer: bool| {
+            let mut prepared = prepared.clone();
+            prepared.writes_wtf = writes_wtf;
+            let line = serde_json::to_string(&JournalLine::Prepared(Box::new(prepared))).unwrap();
+            let line = if newer {
+                line.replacen(
+                    "\"schema_version\":\"1.1\"",
+                    "\"schema_version\":\"9.0\"",
+                    1,
+                )
+            } else {
+                line
+            };
+            format!("{line}\n")
+        };
+        let (step, swapped, committed) = (
+            step_line(1),
+            "{\"type\":\"swapped\"}\n",
+            "{\"type\":\"committed\"}\n",
+        );
+        // (case, the journal, whether the scopes own its client dir, whether its
+        // SavedVariables are writable, the route, how often `sv_writable` is asked)
+        let cases: [(&str, String, bool, bool, &str, usize); 9] = [
+            (
+                "unrecoverable_before_marker",
+                format!("{}{step}", prepared_line(false, true)),
+                false,
+                true,
+                "unrecoverable(journal_too_new)",
+                0,
+            ),
+            (
+                "marker_before_wait",
+                format!("{}{step}", prepared_line(true, false)),
+                false,
+                false,
+                "marker_mismatch",
+                0,
+            ),
+            (
+                "committed_ignores_the_marker",
+                format!("{}{step}{swapped}{committed}", prepared_line(false, false)),
+                false,
+                true,
+                "prune",
+                0,
+            ),
+            (
+                "wait_needs_a_step",
+                prepared_line(true, false),
+                true,
+                false,
+                "back_preserving",
+                0,
+            ),
+            (
+                "wait_needs_unwritable",
+                format!("{}{step}", prepared_line(true, false)),
+                true,
+                true,
+                "back_preserving",
+                1,
+            ),
+            (
+                "swapped_wtf_waits",
+                format!("{}{step}{swapped}", prepared_line(true, false)),
+                true,
+                false,
+                "waits_for_game",
+                1,
+            ),
+            ("unprepared_prunes", String::new(), false, true, "prune", 0),
+            (
+                "swapped_forwards",
+                format!("{}{step}{swapped}", prepared_line(false, false)),
+                true,
+                true,
+                "forward",
+                0,
+            ),
+            (
+                "prepared_backs",
+                format!("{}{step}", prepared_line(false, false)),
+                true,
+                true,
+                "back",
+                0,
+            ),
+        ];
+        for (name, text, owns, writable, expected, expected_asked) in cases {
+            let parsed = parse(&text);
+            let asked = std::cell::Cell::new(0);
+            let sv_writable = |_: &Path| {
+                asked.set(asked.get() + 1);
+                writable
+            };
+            let route = route_label(route(&parsed, owns, &sv_writable));
+            assert_eq!(
+                (route.as_str(), asked.get()),
+                (expected, expected_asked),
+                "{name}: the route and how often the game was asked about\n{text}"
+            );
+        }
+    }
+
+    /// A [`Replay`] over the disk that logs its effects: `reverse` renames back as
+    /// [`undo`] does (or fails at step `fails`), and `stepped` only logs.
+    struct Recording {
+        calls: Vec<String>,
+        fails: Option<u32>,
+    }
+
+    impl Recording {
+        fn new(fails: Option<u32>) -> Self {
+            Self {
+                calls: Vec::new(),
+                fails,
+            }
+        }
+    }
+
+    impl LiveView for Recording {
+        fn entry(&mut self, path: &Path) -> Option<LiveEntry> {
+            Disk.entry(path)
+        }
+
+        fn file_stamp(&mut self, path: &Path) -> Option<String> {
+            Disk.file_stamp(path)
+        }
+
+        fn tree_stamp(&mut self, path: &Path) -> std::io::Result<String> {
+            Disk.tree_stamp(path)
+        }
+    }
+
+    impl Replay for Recording {
+        fn reverse(&mut self, step: &StepRecord) -> Result<()> {
+            self.calls.push(format!("reverse {}", step.n));
+            // ubs:ignore — comparing step numbers, not secrets
+            if self.fails == Some(step.n) {
+                return Err(Error::internal(format!("reversing step {} failed", step.n)));
+            }
+            reverse_on_disk(step);
+            Ok(())
+        }
+
+        fn stepped(&mut self, step: &StepRecord) -> Result<()> {
+            self.calls.push(format!("stepped {}", step.n));
+            Ok(())
+        }
+    }
+
+    /// What [`undo`] does to `step`, with plain renames.
+    fn reverse_on_disk(step: &StepRecord) {
+        match step.op {
+            StepOp::Exchange => rustix::fs::renameat_with(
+                rustix::fs::CWD,
+                &step.from,
+                rustix::fs::CWD,
+                &step.to,
+                rustix::fs::RenameFlags::EXCHANGE,
+            )
+            .unwrap(),
+            StepOp::Noreplace | StepOp::Rename => std::fs::rename(&step.to, &step.from).unwrap(),
+        }
+    }
+
+    /// Three steps, all run in `root`, each recorded with the identities before its
+    /// rename as [`Journal::step`] records them: step 1 exchanges a staged tree with the
+    /// live one, step 2 moves the old tree on from the stage to a snapshot, step 3 moves
+    /// another tree aside.
+    fn three_steps_run(root: &Path) -> [StepRecord; 3] {
+        let [stage, live, kept, other, aside] =
+            ["stage", "live", "kept", "other", "aside"].map(|name| root.join(name));
+        for dir in [&stage, &live, &other] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let record = |n: u32, op: StepOp, from: &Path, to: &Path, purpose: StepPurpose| {
+            let record = StepRecord {
+                n,
+                op,
+                from_id: FileId::of(from),
+                to_id: FileId::of(to),
+                from: from.to_path_buf(),
+                to: to.to_path_buf(),
+                purpose,
+            };
+            match op {
+                StepOp::Exchange => rustix::fs::renameat_with(
+                    rustix::fs::CWD,
+                    from,
+                    rustix::fs::CWD,
+                    to,
+                    rustix::fs::RenameFlags::EXCHANGE,
+                )
+                .unwrap(),
+                StepOp::Noreplace | StepOp::Rename => std::fs::rename(from, to).unwrap(),
+            }
+            record
+        };
+        [
+            record(1, StepOp::Exchange, &stage, &live, StepPurpose::SwapIn),
+            record(
+                2,
+                StepOp::Noreplace,
+                &stage,
+                &kept,
+                StepPurpose::OldToSnapshot,
+            ),
+            record(
+                3,
+                StepOp::Noreplace,
+                &other,
+                &aside,
+                StepPurpose::RemoveToSnapshot,
+            ),
+        ]
+    }
+
+    #[test]
+    fn walk_back_hits_the_failpoint_after_every_passed_step() {
+        type Setup = fn(&[StepRecord; 3], &Path);
+        type Case = (
+            &'static str,
+            Setup,
+            Option<u32>,
+            &'static [&'static str],
+            &'static str,
+        );
+        let reverse_from = |from: usize| -> Setup {
+            match from {
+                0 => |s, _| s.iter().rev().for_each(reverse_on_disk),
+                1 => |s, _| s[1..].iter().rev().for_each(reverse_on_disk),
+                2 => |s, _| reverse_on_disk(&s[2]),
+                _ => |_, _| {},
+            }
+        };
+        // (case, the disk after all three ran, the step `reverse` fails at, the calls,
+        // how the walk ends)
+        let cases: [Case; 7] = [
+            (
+                "none_ran",
+                reverse_from(0),
+                None,
+                &["stepped 3", "stepped 2", "stepped 1"],
+                "done",
+            ),
+            (
+                "step_1_ran",
+                reverse_from(1),
+                None,
+                &["stepped 3", "stepped 2", "reverse 1", "stepped 1"],
+                "done",
+            ),
+            (
+                "steps_1_and_2_ran",
+                reverse_from(2),
+                None,
+                &[
+                    "stepped 3",
+                    "reverse 2",
+                    "stepped 2",
+                    "reverse 1",
+                    "stepped 1",
+                ],
+                "done",
+            ),
+            (
+                "all_ran",
+                reverse_from(3),
+                None,
+                &[
+                    "reverse 3",
+                    "stepped 3",
+                    "reverse 2",
+                    "stepped 2",
+                    "reverse 1",
+                    "stepped 1",
+                ],
+                "done",
+            ),
+            (
+                "step_2_neither",
+                |s, root| {
+                    std::fs::rename(&s[1].to, root.join("elsewhere")).unwrap();
+                    std::fs::create_dir(&s[1].to).unwrap();
+                },
+                None,
+                &["reverse 3", "stepped 3"],
+                "stopped at 2",
+            ),
+            (
+                // A rollback that reversed steps 3 and 2 and died: resumed, it goes on
+                // as if they had never run.
+                "half_done_rollback",
+                |s, _| {
+                    reverse_on_disk(&s[2]);
+                    reverse_on_disk(&s[1]);
+                },
+                None,
+                &["stepped 3", "stepped 2", "reverse 1", "stepped 1"],
+                "done",
+            ),
+            (
+                "a_reversal_fails",
+                reverse_from(3),
+                Some(2),
+                &["reverse 3", "stepped 3", "reverse 2"],
+                "error",
+            ),
+        ];
+        for (name, setup, fails, calls, ends) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let root = std::fs::canonicalize(dir.path()).unwrap();
+            let steps = three_steps_run(&root);
+            setup(&steps, &root);
+            let mut view = Recording::new(fails);
+            let walked = match walk_back(&mut view, &steps) {
+                Ok(Walked::Done) => "done".to_owned(),
+                Ok(Walked::StoppedAt(step)) => format!("stopped at {}", step.n),
+                Err(_) => "error".to_owned(),
+            };
+            assert_eq!(view.calls, calls, "{name}: steps {steps:#?}");
+            assert_eq!(walked, ends, "{name}: calls {:?}", view.calls);
+        }
+    }
+
+    #[test]
+    fn the_wtf_walk_classifies_as_before() {
+        let steps_of = |w: &WtfScene| {
+            read(&existing(&w.scene.paths, &w.scene.tx).unwrap())
+                .unwrap()
+                .steps
+        };
+
+        // Untouched: the exchange ran, and is reversed.
+        let w = WtfScene::new(TxKind::Restore, true, true);
+        let (live, steps) = (w.scene.client.wtf(), steps_of(&w));
+        let mut view = Recording::new(None);
+        let walked = walk_back_wtf(&mut view, &live, &steps).unwrap();
+        assert_eq!(view.calls, ["reverse 1", "stepped 1"], "reversed");
+        assert_eq!(walked, WtfWalked::Done(Vec::new()), "reversed");
+
+        // Another WTF/ live: the displaced pre-restore tree is collected, and the walk
+        // goes on.
+        let w = WtfScene::new(TxKind::Restore, true, true);
+        let (live, steps) = (w.scene.client.wtf(), steps_of(&w));
+        std::fs::rename(&live, w.scene.client.client_dir().join("WTF.aside")).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        let mut view = Recording::new(None);
+        let walked = walk_back_wtf(&mut view, &live, &steps).unwrap();
+        assert_eq!(view.calls, ["stepped 1"], "displaced");
+        let item = PreserveItem {
+            path: w.staged(),
+            identity: steps[0].to_id.unwrap(),
+            rel: String::new(),
+        };
+        assert_eq!(walked, WtfWalked::Done(vec![item]), "displaced");
+
+        // With that side gone too, nothing can be placed: the walk stops there, and
+        // passes no point.
+        std::fs::rename(w.staged(), w.scene.client.client_dir().join("moved")).unwrap();
+        let mut view = Recording::new(None);
+        let walked = walk_back_wtf(&mut view, &live, &steps).unwrap();
+        assert!(view.calls.is_empty(), "unplaced: {:?}", view.calls);
+        assert_eq!(walked, WtfWalked::Unplaced(&steps[0]), "unplaced");
+
+        // A rename into the live path whose source is empty while another entry is live:
+        // replaced, and the walk goes on.
+        let w = WtfScene::new(TxKind::Restore, true, false);
+        let live = w.scene.client.wtf();
+        let into = [StepRecord {
+            n: 1,
+            op: StepOp::Noreplace,
+            from: w.scene.staged.stage_dir.join("gone"),
+            to: live.clone(),
+            purpose: StepPurpose::SwapIn,
+            from_id: FileId::of(&w.staged()),
+            to_id: None,
+        }];
+        let mut view = Recording::new(None);
+        let walked = walk_back_wtf(&mut view, &live, &into).unwrap();
+        assert_eq!(view.calls, ["stepped 1"], "replaced");
+        assert_eq!(walked, WtfWalked::Done(Vec::new()), "replaced");
+    }
+
+    /// The census: every direct read in the production code of `journal.rs` and
+    /// `preserve.rs` is in a place that decides no recovery outcome, so
+    /// `journal::diagnose` simulates every decision through the view.
+    #[test]
+    fn recovery_reads_only_through_the_live_view() {
+        const READS: [&str; 4] = [
+            "FileId::of(",
+            "file_stamp(",
+            "StampDigest::compute(",
+            "symlink_metadata(",
+        ];
+        // (file, the item it sits in, the method of that item or "", the reads allowed)
+        const ALLOWED: [(&str, &str, &str, &[&str]); 6] = [
+            ("journal.rs", "impl LiveView for Disk", "", &READS),
+            (
+                "journal.rs",
+                "impl FileId",
+                "pub fn of(",
+                &["symlink_metadata("],
+            ),
+            (
+                "journal.rs",
+                "pub fn file_stamp(",
+                "",
+                &["symlink_metadata("],
+            ),
+            (
+                "journal.rs",
+                "impl Journal",
+                "pub fn step(",
+                &["FileId::of("],
+            ),
+            (
+                "journal.rs",
+                "pub(crate) fn existing(",
+                "",
+                &["symlink_metadata("],
+            ),
+            (
+                "preserve.rs",
+                "fn move_items(",
+                "",
+                &["symlink_metadata(", "StampDigest::compute("],
+            ),
+        ];
+        let sources = [
+            ("journal.rs", include_str!("journal.rs")),
+            ("preserve.rs", include_str!("preserve.rs")),
+        ];
+        let mut seen = [0usize; ALLOWED.len()];
+        let mut outside = Vec::new();
+        for (file, source) in sources {
+            let lines: Vec<&str> = source.lines().collect();
+            // Production lines: up to the test module.
+            let end = lines
+                .windows(2)
+                .position(|w| w[0] == "#[cfg(test)]" && w[1].starts_with("mod tests"))
+                .unwrap_or(lines.len());
+            let (mut item, mut method) = ("", "");
+            for (at, line) in lines[..end].iter().enumerate() {
+                let code = line.trim_start();
+                let indent = line.len() - code.len();
+                if code.is_empty() || code.starts_with("//") {
+                    continue;
+                }
+                if indent == 0 && !code.starts_with(['#', '}', ')', ']']) {
+                    (item, method) = (code, "");
+                }
+                if indent == 4 {
+                    let bare = ["pub ", "pub(crate) ", "pub(super) "]
+                        .iter()
+                        .find_map(|vis| code.strip_prefix(vis))
+                        .unwrap_or(code);
+                    if bare.starts_with("fn ") {
+                        method = code;
+                    }
+                }
+                for read in READS {
+                    // A view's method (`view.file_stamp(`) or a definition is not a read.
+                    let direct = line.match_indices(read).any(|(i, _)| {
+                        let before = &line[..i];
+                        !before.ends_with('.') && !before.ends_with("fn ")
+                    });
+                    if !direct {
+                        continue;
+                    }
+                    let allowed = ALLOWED.iter().position(|(f, it, m, reads)| {
+                        // ubs:ignore — comparing file names, not secrets
+                        *f == file
+                            && item.starts_with(it)
+                            && method.starts_with(m)
+                            && reads.contains(&read)
+                    });
+                    match allowed {
+                        Some(i) => seen[i] += 1,
+                        None => outside.push(format!(
+                            "src/engine/{file}:{} reads the disk outside `LiveView`: a recovery decision that `journal::diagnose` cannot simulate; read through the view\n    {}",
+                            at + 1,
+                            line.trim()
+                        )),
+                    }
+                }
+            }
+        }
+        assert!(outside.is_empty(), "{}", outside.join("\n"));
+        for (place, count) in ALLOWED.iter().zip(seen) {
+            assert!(
+                count > 0,
+                "the census found no read in {place:?}: it no longer sees the code"
+            );
+        }
     }
 }
