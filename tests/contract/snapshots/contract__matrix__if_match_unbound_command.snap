@@ -16,7 +16,7 @@ expression: s.stable(&c.envelope)
       "backup",
       "create"
     ],
-    "message": "--if-match binds a run to its preview, and only remove, undo, backup restore, backup prune, errors dismiss, install, update, pin, unpin, sync and copy take it, not backup create",
+    "message": "--if-match binds a run to its preview, and only remove, undo, backup restore, backup prune, errors dismiss, install, update, pin, unpin, adopt, sync and copy take it, not backup create",
     "retryable": false
   },
   "exit_code": 2,

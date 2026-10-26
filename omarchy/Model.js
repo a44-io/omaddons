@@ -146,7 +146,7 @@ var CLI_PATHS = {
   "update":          { "mutates": true,  "destructive": false, "binds": true },
   "pin":             { "mutates": true,  "destructive": false, "binds": true },
   "unpin":           { "mutates": true,  "destructive": false, "binds": true },
-  "adopt":           { "mutates": true,  "destructive": false, "binds": false },
+  "adopt":           { "mutates": true,  "destructive": false, "binds": true },
   "sync":            { "mutates": true,  "destructive": false, "binds": true },
   "copy":            { "mutates": true,  "destructive": false, "binds": true },
   "remove":          { "mutates": true,  "destructive": true,  "binds": true },

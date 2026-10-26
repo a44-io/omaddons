@@ -36,6 +36,7 @@ pub const BINDING_COMMANDS: &[&str] = &[
     "update",
     "pin",
     "unpin",
+    "adopt",
     "sync",
     "copy",
 ];
@@ -1818,6 +1819,7 @@ mod tests {
                 "update",
                 "pin",
                 "unpin",
+                "adopt",
                 "sync",
                 "copy",
             ]

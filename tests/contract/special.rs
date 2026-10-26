@@ -432,6 +432,10 @@ fn every_binding_path_carries_its_precondition() {
                 }
                 (argv(&[path, "Foo", "-t", "retail", "--dry-run"]), &[])
             }
+            "adopt" => {
+                s.install_foo();
+                (argv(&["adopt", "Foo", "-t", "retail", "--dry-run"]), &[])
+            }
             "sync" => {
                 s.home
                     .write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");

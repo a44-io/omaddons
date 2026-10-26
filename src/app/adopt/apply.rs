@@ -5,6 +5,9 @@
 //! Folders are indexed without the lock. The engine's guard re-checks them under it, so
 //! a file changed in between is `plan_stale` and nothing of that target is recorded. One
 //! run id covers every target, so a bare `undo` reverts the whole adoption.
+//! An adopting run's `--dry-run` returns `data.precondition`, and `--if-match <it>`
+//! adopts exactly what that preview showed or nothing (M4-D19): the token covers each
+//! adopted folder's content. The report takes no `--if-match`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,9 +18,10 @@ use crate::app::engine::Engine;
 use crate::app::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetsData,
 };
+use crate::app::precondition::{self, Idle, PlanBinding, PlanExtras};
 use crate::app::resolve_args::{for_family, parse_ref};
 use crate::app::world::World;
-use crate::cli::{Context, fix_argv};
+use crate::cli::{Context, fix_argv, without_flag};
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::{resolve_one_in, with_target};
 use crate::engine::edit::{AdoptSpec, RecordEdit};
@@ -63,7 +67,7 @@ impl<'a> Mode<'a> {
                 Suggestion::command(argv),
             ));
         }
-        match (&args.r#ref, args.folders.as_slice()) {
+        let mode = match (&args.r#ref, args.folders.as_slice()) {
             (Some(r), [folder]) => Ok(Self::Ref {
                 folder: folder.as_str(),
                 r#ref: r.as_str(),
@@ -76,8 +80,28 @@ impl<'a> Mode<'a> {
             (None, []) if args.apply => Ok(Self::Apply),
             (None, []) => Ok(Self::Report),
             (None, folders) => Ok(Self::Folders(folders)),
-        }
+        }?;
+        report_takes_no_token(
+            matches!(mode, Self::Report),
+            ctx.if_match.as_deref(),
+            &ctx.argv,
+        )?;
+        Ok(mode)
     }
+}
+
+/// The report adopts nothing and returns no token. Its fix keeps the report, without
+/// the flag, so a mistaken invocation never suggests an unrequested adoption.
+fn report_takes_no_token(report: bool, if_match: Option<&str>, argv: &[String]) -> Result<()> {
+    if report && if_match.is_some() {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            "--if-match binds a run that adopts (--apply, folder names or --ref); the report adopts nothing, so it takes no token",
+            Suggestion::command(fix_argv(&without_flag(argv, "--if-match"))),
+        )
+        .user_verb());
+    }
+    Ok(())
 }
 
 /// What adopting does with one request on one target.
@@ -606,6 +630,7 @@ pub(super) fn commit(
     let mut requested: Vec<ItemRequest> = Vec::new();
     let mut decided: Vec<(TargetRef, ItemResult)> = Vec::new();
     let mut tx_targets: Vec<TxTarget> = Vec::new();
+    let scope = noop_scope(&works, records);
     for work in works {
         let TargetWork {
             discovered,
@@ -761,11 +786,20 @@ pub(super) fn commit(
             kind: Some(TxKind::Adopt),
             run,
             no_deps: true,
-            witness: None,
+            witness: precondition::witnessing(ctx),
         };
-        let done = engine.run(&req, Some(cache))?;
+        let extras = PlanExtras::default();
+        let binding = PlanBinding::of_run(ctx, "adopt", extras.clone());
+        let done = engine.run_bound(
+            &req,
+            Some(cache),
+            binding.as_ref().map(|b| b as &dyn crate::engine::Binding),
+        )?;
         out.facts.extend(done.plan.facts.iter().cloned());
         out.data = TargetsData::build(&done, run, &requested);
+        out.data.precondition = ctx
+            .dry_run
+            .then(|| precondition::plan_token("adopt", &done.plan, &extras));
         for o in &done.outcomes {
             out.warnings.extend(o.warnings.iter().cloned());
             out.notes.extend(o.notes.iter().cloned());
@@ -775,6 +809,9 @@ pub(super) fn commit(
         }
         out.warnings.extend(done.warnings.iter().cloned());
     } else {
+        // Even a run with nothing to adopt checks its token before any recovery.
+        out.data.precondition =
+            precondition::check_noop(ctx, "adopt", &scope, &PlanExtras::default())?;
         engine.recover_waiting(ctx);
     }
     for (target, item) in decided {
@@ -790,6 +827,23 @@ pub(super) fn commit(
         }
     }
     Ok(out)
+}
+
+/// Every client examined to decide there was nothing to adopt, including clients
+/// not yet registered, which the token names by provisional id at generation zero.
+fn noop_scope<'a>(
+    works: &[TargetWork<'a>],
+    records: &BTreeMap<String, TargetRecord>,
+) -> Vec<Idle<'a>> {
+    works
+        .iter()
+        .map(|work| Idle {
+            target: &work.discovered.target,
+            generation: records
+                .get(&work.discovered.target.id)
+                .map_or(0, |r| r.generation),
+        })
+        .collect()
 }
 
 /// The name the group's record takes: its claim's, else its primary folder's. A name
@@ -897,5 +951,175 @@ fn failed_item(request: String, error: &Error) -> ItemResult {
         required_by: None,
         deps: ItemDeps::default(),
         error: Some(item_error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::testing::TxScene;
+    use crate::engine::witness::WitnessScope;
+    use crate::error::{ErrorBody, UsageFix};
+    use crate::model::TargetKey;
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_report_refuses_if_match_and_its_fix_drops_it() {
+        let token = format!("pc1:{}", "0".repeat(64));
+        let inline = format!("--if-match={token}");
+        for (case, report, has_token, words, expected) in [
+            (
+                "spaced",
+                true,
+                true,
+                argv(&["omaddons", "adopt", "--if-match", &token, "-t", "retail"]),
+                Some(argv(&["omaddons", "adopt", "-t", "retail"])),
+            ),
+            (
+                "inline",
+                true,
+                true,
+                argv(&["omaddons", "adopt", &inline]),
+                Some(argv(&["omaddons", "adopt"])),
+            ),
+            (
+                "dry run kept",
+                true,
+                true,
+                argv(&["omaddons", "adopt", "--dry-run", "--if-match", &token]),
+                Some(argv(&["omaddons", "adopt", "--dry-run"])),
+            ),
+            (
+                "json dropped",
+                true,
+                true,
+                argv(&["omaddons", "adopt", "--if-match", &token, "--json"]),
+                Some(argv(&["omaddons", "adopt"])),
+            ),
+            (
+                "report without the flag",
+                true,
+                false,
+                argv(&["omaddons", "adopt"]),
+                None,
+            ),
+            (
+                "adopting with the flag",
+                false,
+                true,
+                argv(&["omaddons", "adopt", "--apply", "--if-match", &token]),
+                None,
+            ),
+        ] {
+            let actual = report_takes_no_token(report, has_token.then_some(token.as_str()), &words);
+            if let Some(expected) = expected {
+                let error = actual.unwrap_err();
+                assert_eq!(error.usage_fix, UsageFix::UserVerb, "{case}: {words:?}");
+                let body = ErrorBody::from(error);
+                assert_eq!(body.code, ErrorCode::Usage, "{case}: {words:?}, {body:?}");
+                assert_eq!(body.fix_argv, Some(expected), "{case}: {words:?}, {body:?}");
+                assert!(
+                    body.message.contains("--if-match binds a run that adopts"),
+                    "{case}: {words:?}, {body:?}"
+                );
+            } else {
+                assert!(actual.is_ok(), "{case}: {words:?}, {actual:?}");
+            }
+        }
+    }
+
+    fn work(discovered: &DiscoveredTarget) -> TargetWork<'_> {
+        TargetWork {
+            discovered,
+            unmanaged: 0,
+            entries: Vec::new(),
+            candidates: Vec::new(),
+            groups: Vec::new(),
+            leftovers: Vec::new(),
+            failed: Vec::new(),
+            acts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_noop_scope_is_every_examined_target_with_its_generation() {
+        let scene = TxScene::new();
+        let key = TargetKey::new();
+        let mut registered = scene.discovered.clone();
+        registered.target.key = Some(key);
+        let mut unregistered = scene.discovered.clone();
+        unregistered.target.id = "era".into();
+        let mut record = TargetRecord::empty(key);
+        record.generation = 5;
+        let records = BTreeMap::from([("retail".into(), record)]);
+        for (case, works, expected) in [
+            (
+                "registered then unregistered",
+                vec![work(&registered), work(&unregistered)],
+                vec![("retail", Some(key), 5), ("era", None, 0)],
+            ),
+            (
+                "unregistered then registered",
+                vec![work(&unregistered), work(&registered)],
+                vec![("era", None, 0), ("retail", Some(key), 5)],
+            ),
+        ] {
+            let actual = noop_scope(&works, &records);
+            let actual: Vec<_> = actual
+                .iter()
+                .map(|i| (i.target.id.as_str(), i.target.key, i.generation))
+                .collect();
+            assert_eq!(actual, expected, "{case}: records={records:?}");
+        }
+    }
+
+    #[test]
+    fn an_adoption_previewed_twice_gives_one_token_and_an_edit_moves_observed() {
+        let scene = TxScene::new();
+        let bar = scene.client.addons().join("Bar");
+        crate::engine::testing::folder(&bar, "unmanaged Bar");
+        let core = bar.join("core.lua");
+        std::fs::write(&core, "-- old\n").unwrap();
+        let preview = || {
+            let done = scene
+                .run_bound(
+                    vec![scene.adopt("Bar")],
+                    Some(TxKind::Adopt),
+                    TxKind::Adopt,
+                    true,
+                    Some(WitnessScope::default()),
+                    None,
+                )
+                .unwrap();
+            assert!(done.failures.is_empty(), "Bar: {:?}", done.failures);
+            precondition::of_plan(
+                "adopt",
+                &done.plan,
+                &done.plan.witnesses,
+                &PlanExtras::default(),
+            )
+        };
+        let first = preview();
+        let second = preview();
+        assert_eq!(
+            first.token(),
+            second.token(),
+            "Bar unchanged: first={:?}, second={:?}",
+            first.parts(),
+            second.parts()
+        );
+        std::fs::write(&core, "-- new\n").unwrap();
+        let edited = preview();
+        let before = first.parts();
+        let after = edited.parts();
+        let differs = std::array::from_fn::<_, 4, _>(|i| before[i] != after[i]);
+        assert_eq!(
+            differs,
+            [false, false, false, true],
+            "Bar/core.lua same-size edit: before={before:?}, after={after:?}"
+        );
     }
 }

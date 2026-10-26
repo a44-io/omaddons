@@ -709,6 +709,20 @@ pub const CORPUS: &[Row] = &[
         },
     )
     .then(names_the_missing_file),
+    row(
+        Argument,
+        &[
+            "adopt",
+            "-t",
+            "retail",
+            "--if-match",
+            "pc1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ],
+        &["adopt"],
+        "the report takes no token; the fix keeps the report and only reads",
+        error(2, "usage", &["omaddons", "adopt", "-t", "retail"], &[0]),
+    )
+    .by_leaf("D3"),
     // A warning whose fix is a rerun.
     row(
         WarningFix,
