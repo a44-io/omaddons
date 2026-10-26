@@ -13,6 +13,7 @@ pub mod restore;
 pub mod restore_addons;
 pub mod retention;
 pub mod running;
+pub mod simulate;
 pub mod stage;
 pub mod swap;
 pub mod tx;

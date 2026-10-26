@@ -41,6 +41,12 @@ use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::TargetRecord;
 use crate::state::store::{self, SchemaVersion};
 
+pub use super::simulate::{
+    Approximation, Artifact, ArtifactKind, Base, Diagnoses, Direction, DiskBase, Expected,
+    JournalDiagnosis, JournalEvidence, JournalFamily, JournalVerdict, Listed, ListingFailure,
+    MapBase, Preservation, ProtectedPaths, UnattributedCause, diagnose, diagnose_journals,
+};
+
 /// The version of the line format. A newer minor adds only optional fields and lines an
 /// older build may ignore; a newer major is never recovered by this one.
 pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
@@ -590,7 +596,8 @@ pub(super) fn append_line(s: &mut WriteSession<'_>, path: &Path, line: &JournalL
 // Reading.
 
 /// How far a transaction got.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Phase {
     /// Created, but no valid `prepared` line: nothing ran.
     Unprepared,
@@ -796,8 +803,9 @@ pub fn parse(text: &str) -> Parsed {
     parsed
 }
 
-/// Every journal in `journal/`, by transaction.
-fn journals(paths: &Paths) -> Result<Vec<(TxId, PathBuf)>> {
+/// Every journal in `journal/`, by transaction, in the order recovery takes them. A
+/// directory that does not exist lists nothing; one that cannot be listed is an error.
+pub fn list(paths: &Paths) -> Result<Vec<(TxId, PathBuf)>> {
     let dir = paths.journal_dir();
     let listing = match std::fs::read_dir(&dir) {
         Ok(listing) => listing,
@@ -880,7 +888,7 @@ pub struct Pending {
 /// Writes nothing.
 pub fn pending(paths: &Paths) -> Result<Vec<Pending>> {
     let mut found = Vec::new();
-    for (tx, path) in journals(paths)? {
+    for (tx, path) in list(paths)? {
         let (target, unrecoverable) = match read(&path) {
             Ok(parsed)
                 if matches!(parsed.phase, Phase::Committed) && parsed.unrecoverable().is_none() =>
@@ -1000,7 +1008,7 @@ pub struct Recovered {
 /// roll-forward left; committed and unprepared journals are removed silently.
 pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
     let mut warnings = Vec::new();
-    for (tx, path) in journals(env.paths).map_err(|error| unattributed(error, None))? {
+    for (tx, path) in list(env.paths).map_err(|error| unattributed(error, None))? {
         if InflightLock::is_live(env.paths, &tx).map_err(|error| unattributed(error, Some(&tx)))? {
             continue;
         }
@@ -3838,11 +3846,7 @@ mod tests {
         let (paths, tx) = (&w.scene.paths, &w.scene.tx);
         assert!(paths.journal_wtf(tx).is_file() && !paths.journal(tx).exists());
         assert_eq!(existing(paths, tx), Some(paths.journal_wtf(tx)));
-        let listed: Vec<TxId> = journals(paths)
-            .unwrap()
-            .into_iter()
-            .map(|(tx, _)| tx)
-            .collect();
+        let listed: Vec<TxId> = list(paths).unwrap().into_iter().map(|(tx, _)| tx).collect();
         assert_eq!(listed, [*tx]);
     }
 

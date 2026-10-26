@@ -75,7 +75,7 @@ pub(super) fn run(
 }
 
 /// Where an item `rel` sits under a backup (or assembly) `dir`: its `WTF/`, or a file in it.
-fn place(dir: &Path, rel: &str) -> PathBuf {
+pub(super) fn place(dir: &Path, rel: &str) -> PathBuf {
     let tree = dir.join("WTF");
     if rel.is_empty() { tree } else { tree.join(rel) }
 }
