@@ -19,8 +19,8 @@ use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{Actor, RunId, TargetKey, TxId, TxKind};
 use crate::output::{Outcome, Style, table};
 use crate::state::history::{
-    self, BackupNote, Dismissed, FolderOp, HistoryEntry, HistoryFilter, HistoryOp, SettingEntry,
-    TxResult,
+    self, BackupNote, Dismissed, FolderOp, HistoryEntry, HistoryFilter, HistoryOp, RepairEndpoints,
+    RepairEntry, RepairOp, RepairPredicate, SettingEntry, TxResult,
 };
 
 /// The default `--limit`: token-frugal; agents raise it when they need more.
@@ -61,8 +61,13 @@ pub struct HistoryLine {
     pub kind: TxKind,
     #[schemars(with = "String")]
     pub at: Timestamp,
-    /// `null` for a settings change about no client (`config`, `auth`, `export`).
+    /// `null` for a settings change about no client (`config`, `auth`, `export`), and on
+    /// a repair or the undo of one, which name their clients in `targets`.
     pub target: Option<TargetRef>,
+    /// Target-less lines only (a repair, or the undo of one): the clients it touched, by
+    /// their ids now, sorted by id then key; empty when it touched none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<TargetRef>>,
     pub actor: Actor,
     pub reason: Option<String>,
     pub argv: Vec<String>,
@@ -82,6 +87,13 @@ pub struct HistoryLine {
     /// What an `errors dismiss` line acknowledged, as counts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dismissed: Option<Dismissed>,
+    /// Target-less lines only: the doctor run directory it belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doctor_run_id: Option<String>,
+    /// Target-less lines only: its filesystem operations, as the repair recorded them
+    /// (paths cut after a `WTF` component).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repairs: Option<Vec<RepairEntry>>,
 }
 
 /// A target as history names it: its id now (the key when no longer registered).
@@ -183,7 +195,9 @@ impl Outcome for HistoryOutcome {
                 // A settings change touches no folder: what was run says what it did (a
                 // dismissal, what it acknowledged). A backup touches none either: its
                 // note does.
-                let what = if let Some(d) = &e.dismissed {
+                let what = if let Some(repairs) = &e.repairs {
+                    repair_summary(repairs, e.doctor_run_id.as_deref())
+                } else if let Some(d) = &e.dismissed {
                     let count = |n: u64, what| {
                         crate::output::count(usize::try_from(n).unwrap_or(usize::MAX), what)
                     };
@@ -216,13 +230,20 @@ impl Outcome for HistoryOutcome {
                 if with_runs {
                     row.push(run);
                 }
+                // The line's target; else a target-less line's clients; else `-`.
+                let target = match (&e.target, &e.targets) {
+                    (Some(t), _) => t.id.clone(),
+                    (None, Some(targets)) if !targets.is_empty() => {
+                        let ids: Vec<&str> = targets.iter().map(|t| t.id.as_str()).collect();
+                        ids.join(", ")
+                    }
+                    _ => "-".to_owned(),
+                };
                 row.extend([
                     local_time(e.at),
                     e.actor.as_str().to_owned(),
                     kind_name(e.kind),
-                    e.target
-                        .as_ref()
-                        .map_or_else(|| "-".to_owned(), |t| t.id.clone()),
+                    target,
                     what,
                     e.reason
                         .as_ref()
@@ -389,6 +410,7 @@ fn setting_line(world: &World, e: &SettingEntry, verbose: bool) -> HistoryLine {
             id: world.target_id(key),
             key,
         }),
+        targets: None,
         actor: e.actor,
         reason: e.reason.clone(),
         argv: e.argv.clone(),
@@ -398,20 +420,36 @@ fn setting_line(world: &World, e: &SettingEntry, verbose: bool) -> HistoryLine {
         result: e.result,
         backup: None,
         dismissed: e.dismissed,
+        doctor_run_id: None,
+        repairs: None,
     }
 }
 
 fn line(world: &World, e: &HistoryEntry, verbose: bool) -> HistoryLine {
+    line_with(e, verbose, &|key| world.target_id(key))
+}
+
+/// `e` as `history` lists it, naming each client by `id_of`. A target-less line (a
+/// repair, or the undo of one) also carries its `targets`, doctor run and operations, as
+/// it recorded them; every other line is listed as before M4.
+fn line_with(e: &HistoryEntry, verbose: bool, id_of: &dyn Fn(TargetKey) -> String) -> HistoryLine {
+    let target_ref = |key: TargetKey| TargetRef {
+        id: id_of(key),
+        key,
+    };
+    let target_less = e.target.is_none();
+    let targets = target_less.then(|| {
+        let mut targets: Vec<TargetRef> = e.targets.iter().copied().map(target_ref).collect();
+        targets.sort_by(|a, b| (&a.id, a.key).cmp(&(&b.id, b.key)));
+        targets
+    });
     HistoryLine {
         tx: e.tx,
         run: e.run,
         kind: e.kind,
         at: e.at,
-        // A repair names no single target (subtask 3 renders its `targets`).
-        target: e.target.map(|key| TargetRef {
-            id: world.target_id(key),
-            key,
-        }),
+        target: e.target.map(target_ref),
+        targets,
         actor: e.actor,
         reason: e.reason.clone(),
         argv: e.argv.clone(),
@@ -421,7 +459,75 @@ fn line(world: &World, e: &HistoryEntry, verbose: bool) -> HistoryLine {
         result: e.result,
         backup: e.backup.clone(),
         dismissed: None,
+        doctor_run_id: target_less.then(|| e.doctor_run_id.clone()).flatten(),
+        repairs: target_less.then(|| e.repairs.iter().map(shown).collect()),
     }
+}
+
+/// `entry` as `history` shows it: every path with a component `WTF` (ASCII
+/// case-insensitive) cut after it (`…/WTF/…`), so a hand-made line never prints an
+/// account, realm or character name. A real repair never writes under `WTF/`; the line
+/// on disk is never changed (M4-D49).
+fn shown(entry: &RepairEntry) -> RepairEntry {
+    let mut entry = entry.clone();
+    let cut = |path: &mut std::path::PathBuf| *path = cut_at_wtf(path);
+    cut(&mut entry.path);
+    for path in [entry.to.as_mut(), entry.backup.as_mut()]
+        .into_iter()
+        .flatten()
+    {
+        cut(path);
+    }
+    for endpoints in [&mut entry.pre, &mut entry.post] {
+        let predicates: Vec<&mut RepairPredicate> = match endpoints {
+            RepairEndpoints::Rename { path, to } => vec![path, to],
+            RepairEndpoints::Path(predicate) => vec![predicate],
+        };
+        for link in predicates
+            .into_iter()
+            .filter_map(|p| p.link_target.as_mut())
+        {
+            cut(link);
+        }
+    }
+    entry
+}
+
+/// `path` up to and including its first `WTF` component, then `…`; unchanged without one.
+fn cut_at_wtf(path: &std::path::Path) -> std::path::PathBuf {
+    let mut kept = std::path::PathBuf::new();
+    for part in path.iter() {
+        kept.push(part);
+        if part
+            .to_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case("WTF"))
+        {
+            kept.push("…");
+            return kept;
+        }
+    }
+    path.to_path_buf()
+}
+
+/// A repair line's "what" column: its first operation and path, how many others, and
+/// its doctor run.
+fn repair_summary(repairs: &[RepairEntry], doctor_run_id: Option<&str>) -> String {
+    let Some(first) = repairs.iter().min_by_key(|r| r.seq) else {
+        return "no file operations".to_owned();
+    };
+    let op = match first.op {
+        RepairOp::WriteFile => "write",
+        RepairOp::Chmod => "chmod",
+        RepairOp::RenameNoReplace => "rename",
+    };
+    let mut text = format!("{op} {}", first.path.display());
+    if repairs.len() > 1 {
+        text.push_str(&format!(" and {} more", repairs.len() - 1));
+    }
+    if let Some(run) = doctor_run_id {
+        text.push_str(&format!(" · doctor run {run}"));
+    }
+    text
 }
 
 /// `--since`: an RFC 3339 time, or a whole number of minutes, hours, days or weeks
@@ -599,5 +705,267 @@ mod tests {
         let tx: TxId = "01JB8Q2VA00000000000000000".parse().unwrap();
         assert_eq!(short_tx(&tx), "01JB8Q2VA0000000…");
         assert_eq!(kind_name(TxKind::Undo), "undo");
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Repair lines (M4-D31).
+
+    use crate::state::history::{PredicateKind, RepairIdentity};
+
+    const KEY_A: &str = "01JB8Q2V9W0000000000000000";
+    const KEY_B: &str = "01JB8Q2V9W0000000000000001";
+    const RUN_DIR: &str = "2026-10-30T18-03-40Z__01M8S00000000000000000000";
+
+    fn key(text: &str) -> TargetKey {
+        text.parse().unwrap()
+    }
+
+    /// `A` is `retail`, `B` is `classic`.
+    fn id_of(k: TargetKey) -> String {
+        if k == key(KEY_A) { "retail" } else { "classic" }.to_owned()
+    }
+
+    fn predicate(kind: PredicateKind) -> RepairPredicate {
+        RepairPredicate {
+            kind,
+            identity: Some(RepairIdentity {
+                ino: "4215".into(),
+                born_ns: "1792900000000000000".into(),
+            }),
+            sha256: None,
+            mode: None,
+            stamp: None,
+            link_target: None,
+        }
+    }
+
+    fn primitive(seq: u32, op: RepairOp, path: &str, to: Option<&str>) -> RepairEntry {
+        RepairEntry {
+            seq,
+            fix: 1,
+            fm: "fm-external_artifacts-nested-addon-folder".into(),
+            op,
+            path: path.into(),
+            to: to.map(Into::into),
+            mode: None,
+            pre: RepairEndpoints::Path(predicate(PredicateKind::Dir)),
+            post: RepairEndpoints::Path(predicate(PredicateKind::Absent)),
+            backup: None,
+            activation: false,
+            target: None,
+            folder: None,
+        }
+    }
+
+    fn repair(targets: &[&str], repairs: Vec<RepairEntry>, run_dir: Option<&str>) -> HistoryEntry {
+        HistoryEntry {
+            schema_version: history::CURRENT,
+            tx: "01M9Q00000000000000000000A".parse().unwrap(),
+            kind: TxKind::Repair,
+            at: "2026-10-30T18:03:40Z".parse().unwrap(),
+            target: None,
+            targets: targets.iter().map(|t| key(t)).collect(),
+            actor: Actor::Human,
+            reason: None,
+            argv: vec!["omaddons".into(), "doctor".into(), "fix".into()],
+            ops: Vec::new(),
+            result: TxResult::Committed,
+            reverts: None,
+            sv_deferred: false,
+            sv_restored: None,
+            created_addons_dir: false,
+            run: None,
+            backup: None,
+            doctor_run_id: run_dir.map(str::to_owned),
+            repairs,
+        }
+    }
+
+    /// The table `history` prints for `lines`.
+    fn rendered(lines: Vec<HistoryLine>) -> String {
+        let outcome = HistoryOutcome {
+            data: HistoryData {
+                entries: lines,
+                truncated: false,
+            },
+            warnings: Vec::new(),
+            torn_tail: false,
+            shared_runs: BTreeSet::new(),
+        };
+        let mut out = Vec::new();
+        outcome.render_human(&mut out, &Style::default()).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn a_repair_line_renders_its_targets_paths_and_doctor_run() {
+        let entry = repair(
+            &[KEY_B, KEY_A],
+            vec![
+                primitive(
+                    1,
+                    RepairOp::RenameNoReplace,
+                    "/c/_retail_/Interface/AddOns/X/Y",
+                    Some("/c/_retail_/Interface/AddOns/Y"),
+                ),
+                primitive(
+                    2,
+                    RepairOp::RenameNoReplace,
+                    "/c/_retail_/Interface/AddOns/X",
+                    Some("/c/_retail_/Interface/.omaddons/quarantine/01M9Q/X"),
+                ),
+            ],
+            Some(RUN_DIR),
+        );
+        let line = line_with(&entry, false, &id_of);
+        let ids: Vec<&str> = line
+            .targets
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(ids, ["classic", "retail"], "sorted by id: {line:?}");
+        assert_eq!(line.repairs.as_ref(), Some(&entry.repairs), "as recorded");
+        assert_eq!(line.doctor_run_id.as_deref(), Some(RUN_DIR));
+        let json = serde_json::to_value(&line).unwrap();
+        assert_eq!(json["target"], serde_json::Value::Null, "{json}");
+        assert_eq!(json["targets"][0]["key"], KEY_B, "{json}");
+        let table = rendered(vec![line]);
+        for expected in [
+            "repair",
+            "classic, retail",
+            "rename /c/_retail_/Interface/AddOns/X/Y and 1 more",
+            &format!("doctor run {RUN_DIR}"),
+        ] {
+            assert!(
+                table.contains(expected),
+                "{expected:?} missing from: {table}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chmod_repair_names_its_one_path() {
+        let path = "/home/u/.config/omaddons/credentials/github";
+        let entry = repair(
+            &[],
+            vec![primitive(1, RepairOp::Chmod, path, None)],
+            Some(RUN_DIR),
+        );
+        let table = rendered(vec![line_with(&entry, false, &id_of)]);
+        assert!(
+            table.contains(&format!("chmod {path} · doctor run {RUN_DIR}")),
+            "{table}"
+        );
+        assert!(!table.contains("more"), "{table}");
+        assert!(table.contains("  -  "), "no client: {table}");
+    }
+
+    #[test]
+    fn an_empty_repair_line_says_so() {
+        let table = rendered(vec![line_with(
+            &repair(&[KEY_A], Vec::new(), None),
+            false,
+            &id_of,
+        )]);
+        assert!(table.contains("no file operations"), "{table}");
+        assert!(!table.contains("doctor run"), "{table}");
+    }
+
+    #[test]
+    fn a_path_under_wtf_is_cut_at_wtf() {
+        let account = "/c/_retail_/WTF/Account/FAKEACCT/x.lua";
+        let with_link = |link: &str| RepairEntry {
+            post: RepairEndpoints::Path(RepairPredicate {
+                link_target: Some(link.into()),
+                ..predicate(PredicateKind::Symlink)
+            }),
+            ..primitive(1, RepairOp::WriteFile, "/c/x", None)
+        };
+        let cases = [
+            (
+                "path_under_wtf",
+                primitive(1, RepairOp::WriteFile, account, None),
+            ),
+            (
+                "lowercase_wtf",
+                primitive(
+                    1,
+                    RepairOp::WriteFile,
+                    "/c/_retail_/wtf/Account/FAKEACCT/x",
+                    None,
+                ),
+            ),
+            (
+                "to_under_wtf",
+                primitive(1, RepairOp::RenameNoReplace, "/c/a", Some(account)),
+            ),
+            (
+                "backup_under_wtf",
+                RepairEntry {
+                    backup: Some(account.into()),
+                    ..primitive(1, RepairOp::WriteFile, "/c/a", None)
+                },
+            ),
+            ("link_target_under_wtf", with_link(account)),
+            (
+                "no_wtf_component",
+                primitive(1, RepairOp::WriteFile, "/c/Account/x", None),
+            ),
+            (
+                "wtf_inside_a_name",
+                primitive(1, RepairOp::WriteFile, "/c/WTFish/x", None),
+            ),
+        ];
+        for (name, input) in cases {
+            let output = shown(&input);
+            let json = serde_json::to_string(&output).unwrap();
+            assert!(
+                !json.contains("FAKEACCT"),
+                "{name}: input {input:?} gave {json}"
+            );
+            let untouched = ["no_wtf_component", "wtf_inside_a_name"].contains(&name);
+            assert_eq!(
+                output == input,
+                untouched,
+                "{name}: input {input:?} gave {output:?}"
+            );
+            if !untouched {
+                assert!(
+                    json.contains("/WTF/…") || json.contains("/wtf/…"),
+                    "{name}: gave {json}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lines_with_a_target_render_as_before() {
+        let entry = HistoryEntry {
+            target: Some(key(KEY_A)),
+            kind: TxKind::Install,
+            ops: vec![HistoryOp {
+                op: FolderOp::Add,
+                folder: crate::model::FolderName::new("Foo").unwrap(),
+                addon: "Foo".into(),
+                edit: None,
+                backup: None,
+                from: None,
+                files: None,
+            }],
+            doctor_run_id: None,
+            ..repair(&[], Vec::new(), None)
+        };
+        let line = line_with(&entry, false, &id_of);
+        let json = serde_json::to_value(&line).unwrap();
+        for absent in ["targets", "doctor_run_id", "repairs"] {
+            assert!(json.get(absent).is_none(), "{absent} in {json}");
+        }
+        let table = rendered(vec![line]);
+        assert!(
+            table.contains("retail") && table.contains("+1 ~0 -0"),
+            "{table}"
+        );
     }
 }
