@@ -1260,20 +1260,19 @@ impl Inner {
         self.write(&line, &text);
     }
 
+    /// The record's summary on stderr when verbose (`[tlog <suite>::<test> #<seq>]
+    /// <summary>`), and in the ring (`#<seq> <summary>`).
     fn show(&mut self, record: &Record) {
-        let summary = format!("#{} {}", record.seq(), record.summary());
+        let (seq, summary) = (record.seq(), record.summary());
         if self.mode == Mode::Verbose {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "[tlog {}] {summary}",
-                self.echo_name
-            );
+            let name = &self.echo_name;
+            let _ = writeln!(std::io::stderr().lock(), "[tlog {name} #{seq}] {summary}");
         }
         if !matches!(record, Record::End { .. }) {
             if self.ring.len() == LAST_STEPS_SHOWN {
                 self.ring.pop_front();
             }
-            self.ring.push_back(summary);
+            self.ring.push_back(format!("#{seq} {summary}"));
         }
     }
 

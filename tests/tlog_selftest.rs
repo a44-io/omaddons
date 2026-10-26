@@ -1312,3 +1312,996 @@ mod convention {
         );
     }
 }
+
+/// The log's promises over the real binary: each scenario logs itself through `tlog!()`
+/// and inspects a subject log under `tlog_selftest_child`, read after it is dropped.
+mod scenarios {
+    use std::any::Any;
+    use std::fs;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    use serde_json::{Value, json};
+
+    use crate::common::addons::toc;
+    use crate::common::engine::Scene;
+    use crate::common::env::TestEnv;
+    use crate::common::home::Home;
+    use crate::common::http::{Asset, gh_release, paths};
+    use crate::common::netlog::read_net_log;
+    use crate::common::pause::Pause;
+    use crate::common::tlog::{Caps, TestLog, tlog};
+
+    /// The suite directory of the subject logs.
+    const CHILD: &str = "tlog_selftest_child";
+    /// Every field a `run` record carries.
+    const RUN_FIELDS: &[&str] = &[
+        "seq",
+        "step",
+        "env",
+        "argv",
+        "cwd",
+        "overrides",
+        "failpoints",
+        "stdin_bytes",
+        "background",
+        "started_at",
+        "elapsed_ms",
+        "exit",
+        "signal",
+        "timed_out",
+        "stdout",
+        "stderr",
+        "net_log",
+        "scrubbed",
+    ];
+
+    /// A dropped subject log's records, in file order.
+    fn records(dir: &Path) -> Vec<Value> {
+        let text = fs::read_to_string(dir.join("steps.jsonl")).unwrap();
+        text.lines()
+            .enumerate()
+            .map(|(i, line)| {
+                let record = serde_json::from_str::<Value>(line);
+                assert!(
+                    record.is_ok(),
+                    "{}: steps.jsonl line {} is no JSON: {line}",
+                    dir.display(),
+                    i + 1
+                );
+                record.unwrap()
+            })
+            .collect()
+    }
+
+    fn kinds(records: &[Value]) -> Vec<&str> {
+        records
+            .iter()
+            .map(|r| r["kind"].as_str().unwrap())
+            .collect()
+    }
+
+    fn of_kind<'a>(records: &'a [Value], kind: &str) -> Vec<&'a Value> {
+        // ubs:ignore — comparing record kinds, not secrets
+        records.iter().filter(|r| r["kind"] == kind).collect()
+    }
+
+    fn file(dir: &Path, name: &str) -> String {
+        fs::read_to_string(dir.join(name)).unwrap()
+    }
+
+    /// Both files' bytes together.
+    fn bytes(dir: &Path) -> u64 {
+        ["steps.jsonl", "transcript.md"]
+            .iter()
+            .map(|name| fs::metadata(dir.join(name)).unwrap().len())
+            .sum()
+    }
+
+    /// A panic's message.
+    fn message(payload: Box<dyn Any + Send>) -> String {
+        match payload.downcast::<String>() {
+            Ok(text) => *text,
+            Err(payload) => payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_owned())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The subject's records, with the scenario's own log saying what it reads.
+    fn read(log: &TestLog, dir: &Path) -> Vec<Value> {
+        log.step("read its files");
+        log.note(format!(
+            "subject transcript: {}",
+            dir.join("transcript.md").display()
+        ));
+        let records = records(dir);
+        log.json("subject kinds", &kinds(&records));
+        log.step("check");
+        records
+    }
+
+    #[test]
+    fn a_passing_scenario_writes_both_files() {
+        let log = tlog!();
+        log.step("build the subject");
+        let env = TestEnv::new();
+        let subject = TestLog::new(CHILD, "a_passing_scenario");
+        let dir = subject.dir().to_path_buf();
+
+        log.step("run it");
+        subject.step("help, then a usage error");
+        subject.run(&env, &["help", "--json"]).ok();
+        subject
+            .run(&env, &["frobnicate", "--json"])
+            .fails(2, "usage");
+        subject.step("status");
+        subject.run(&env, &["status", "--json"]).ok();
+        subject.tree("state", &env.state());
+        subject
+            .run(&env, &["config", "get", "check_interval_hours", "--json"])
+            .ok();
+        subject.assert_unchanged("state", &env.state());
+        drop(subject);
+
+        let records = read(&log, &dir);
+        let context = format!("subject {}", dir.join("transcript.md").display());
+        log.assert_eq(
+            "kinds",
+            &kinds(&records),
+            &vec![
+                "header",
+                "step",
+                "env",
+                "run",
+                "run",
+                "step",
+                "run",
+                "tree",
+                "run",
+                "tree_check",
+                "end",
+            ],
+        );
+        let runs = of_kind(&records, "run");
+        for (i, run) in runs.iter().enumerate() {
+            let missing: Vec<&&str> = RUN_FIELDS
+                .iter()
+                .filter(|field| run.get(**field).is_none())
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "{context}: run {i} lacks {missing:?}: {run}"
+            );
+            assert_eq!(run["argv"][0], "omaddons", "{context}: run {i}");
+            assert_eq!(run["env"], "<root>", "{context}: run {i}");
+            assert_eq!(run["cwd"], "<repo>", "{context}: run {i}");
+            assert_eq!(run["overrides"], json!({}), "{context}: run {i}");
+            assert_eq!(run["failpoints"], Value::Null, "{context}: run {i}");
+            assert_eq!(run["stdin_bytes"], Value::Null, "{context}: run {i}");
+            assert_eq!(run["background"], false, "{context}: run {i}");
+            assert_eq!(run["timed_out"], false, "{context}: run {i}");
+            assert_eq!(run["signal"], Value::Null, "{context}: run {i}");
+            assert!(run["elapsed_ms"].is_u64(), "{context}: run {i}");
+            let started = run["started_at"].as_str().unwrap();
+            assert!(
+                started.parse::<jiff::Timestamp>().is_ok(),
+                "{context}: run {i}: {started}"
+            );
+            assert_eq!(
+                run["net_log"],
+                json!({"added": [], "rotated": false}),
+                "{context}: run {i}"
+            );
+            assert_eq!(run["scrubbed"], json!([]), "{context}: run {i}");
+        }
+        assert_eq!(
+            runs[0]["argv"],
+            json!(["omaddons", "help", "--json"]),
+            "{context}"
+        );
+        assert_eq!(runs[0]["stdout"]["form"], "envelope", "{context}");
+        assert_eq!(runs[0]["stdout"]["value"]["ok"], true, "{context}");
+        assert_eq!(runs[1]["exit"], 2, "{context}");
+        assert_eq!(
+            runs[1]["stdout"]["value"]["error"]["code"], "usage",
+            "{context}"
+        );
+        assert_eq!(runs[1]["stderr"]["lines"][0]["event"], "error", "{context}");
+        let end = records.last().unwrap();
+        assert_eq!(
+            (&end["outcome"], &end["runs"]),
+            (&json!("passed"), &json!(4)),
+            "{context}"
+        );
+
+        let transcript = file(&dir, "transcript.md");
+        for expected in [
+            "\n## 1. help, then a usage error\n",
+            "\n## 2. status\n",
+            " run `omaddons help --json` → exit 0 (",
+            " run `omaddons frobnicate --json` → exit 2 (",
+            "stdout (envelope):\n\n```json\n{\n",
+            "tree check `state`: unchanged",
+        ] {
+            assert!(
+                transcript.contains(expected),
+                "{context}: the transcript lacks {expected:?}"
+            );
+        }
+        let size = bytes(&dir);
+        log.json("subject bytes", &size);
+        assert!(size < 64 << 10, "{context}: {size} bytes, past 64 KiB");
+    }
+
+    #[test]
+    fn net_log_lines_are_recorded() {
+        const MAINLINE: &[(&str, u32)] = &[("mainline", 120_105)];
+        let log = tlog!();
+        log.step("build the subject");
+        let home = Home::new(&["wow"]);
+        let text = toc("120105", &["## Title: Foo", "## Version: 1.0"]);
+        let assets: [Asset<'_>; 1] = [(
+            "Foo.zip",
+            MAINLINE,
+            vec![("Foo/Foo.toc", text.as_str()), ("Foo/core.lua", "1.0")],
+        )];
+        gh_release(&home.http, "https://github.com/o/foo", "v1", &assets);
+        let subject = TestLog::new(CHILD, "net_log_lines");
+        let dir = subject.dir().to_path_buf();
+
+        log.step("run it");
+        subject
+            .run(&home, &["install", "gh:o/foo", "-t", "retail", "--json"])
+            .ok();
+        subject.run(&home, &["status", "--cached", "--json"]).ok();
+        drop(subject);
+
+        let records = read(&log, &dir);
+        let context = format!("subject {}", dir.join("transcript.md").display());
+        let runs = of_kind(&records, "run");
+        let entries = read_net_log(&paths(&home.env));
+        let purposes: Vec<&str> = entries.iter().map(|e| e.purpose.as_str()).collect();
+        log.json("net.log purposes", &purposes);
+        let added = runs[0]["net_log"]["added"].as_array().unwrap();
+        assert_eq!(
+            added.len(),
+            entries.len(),
+            "{context}: one recorded line per net.log line"
+        );
+        for (line, entry) in added.iter().zip(&entries) {
+            let recorded = (
+                &line["method"],
+                &line["host"],
+                &line["path"],
+                &line["purpose"],
+                &line["status"],
+            );
+            let expected = (
+                &json!(entry.method),
+                &json!(entry.host),
+                &json!(entry.path),
+                &json!(entry.purpose),
+                &json!(entry.status),
+            );
+            assert_eq!(recorded, expected, "{context}: {line}");
+        }
+        assert!(
+            purposes.contains(&"release-latest") && purposes.contains(&"release-json"),
+            "{context}: {purposes:?}"
+        );
+        assert_eq!(runs[0]["net_log"]["rotated"], false, "{context}");
+        assert_eq!(
+            runs[0]["overrides"]["OMADDONS_HTTP_FIXTURES"], "<root>/http",
+            "{context}"
+        );
+        assert_eq!(
+            runs[1]["net_log"]["added"],
+            json!([]),
+            "{context}: status --cached asks nothing"
+        );
+    }
+
+    #[test]
+    fn failpoints_and_pauses_are_recorded() {
+        let log = tlog!();
+        log.step("build the subject");
+        let scene = Scene::new();
+        let pause = Pause::new(scene.home.env.root());
+        let subject = TestLog::new(CHILD, "failpoints_and_pauses");
+        let dir = subject.dir().to_path_buf();
+
+        log.step("run it");
+        let running = subject
+            .cmd(&scene, &scene.install_args("gh:o/foo", "v1"))
+            .failpoints("engine.plan.done=pause")
+            .pause(&pause)
+            .spawn();
+        subject.reached(&pause, "engine.plan.done");
+        subject.run(&scene, &["status", "--json"]).ok();
+        subject.resume(&pause, "engine.plan.done");
+        running.wait().ok();
+        drop(subject);
+
+        let records = read(&log, &dir);
+        let context = format!("subject {}", dir.join("transcript.md").display());
+        let pauses = of_kind(&records, "pause");
+        let actions: Vec<&str> = pauses
+            .iter()
+            .map(|p| p["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(actions, ["waiting", "reached", "resumed"], "{context}");
+        assert!(pauses[1]["waited_ms"].is_u64(), "{context}");
+        for pause in &pauses {
+            let pause_dir = pause["dir"].as_str().unwrap();
+            assert!(pause_dir.starts_with("<root>/"), "{context}: {pause}");
+        }
+        let runs = of_kind(&records, "run");
+        let (status, install) = (runs[0], runs[1]);
+        assert_eq!(
+            status["argv"][1], "status",
+            "{context}: the status run's line comes first"
+        );
+        assert!(
+            install["seq"].as_u64() < status["seq"].as_u64(),
+            "{context}: the install's seq was taken when it started"
+        );
+        assert_eq!(
+            install["failpoints"]["spec"], "engine.plan.done=pause",
+            "{context}"
+        );
+        let pause_dir = install["failpoints"]["pause_dir"].as_str().unwrap();
+        assert!(pause_dir.starts_with("<root>/"), "{context}: {pause_dir}");
+        assert_eq!(install["background"], true, "{context}");
+        assert_eq!(status["background"], false, "{context}");
+    }
+
+    #[test]
+    fn an_aborted_child_is_recorded_with_its_signal() {
+        let log = tlog!();
+        log.step("build the subject");
+        let scene = Scene::new();
+        let subject = TestLog::new(CHILD, "aborted_child");
+        let dir = subject.dir().to_path_buf();
+
+        log.step("run it");
+        subject.step("install, crashing under the lock");
+        let ran = subject
+            .cmd(&scene, &scene.install_args("gh:o/foo", "v1"))
+            .failpoints("engine.journal.prepared=abort")
+            .run();
+        ran.aborted();
+        assert_eq!(ran.run.code, -1, "an abort reads as code -1");
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            ran.ok();
+        }));
+        let text = message(caught.expect_err("ok() fails on an aborted run"));
+        log.note(format!("ok() said: {text}"));
+        for expected in [
+            "in step \"install, crashing under the lock\"",
+            "expected exit 0, killed by signal 6",
+            "transcript:",
+        ] {
+            assert!(
+                text.contains(expected),
+                "the panic lacks {expected:?}: {text}"
+            );
+        }
+        drop(subject);
+
+        let records = read(&log, &dir);
+        let context = format!("subject {}", dir.join("transcript.md").display());
+        let run = of_kind(&records, "run")[0];
+        assert_eq!(
+            (&run["exit"], &run["signal"]),
+            (&json!(-1), &json!(6)),
+            "{context}"
+        );
+    }
+
+    #[test]
+    fn a_hung_child_is_killed_at_its_timeout() {
+        let log = tlog!();
+        log.step("build the subject");
+        let scene = Scene::new();
+        let pause = Pause::new(scene.home.env.root());
+        let subject = TestLog::new(CHILD, "hung_child");
+        let dir = subject.dir().to_path_buf();
+
+        log.step("run it");
+        subject.step("an install paused for good");
+        let running = subject
+            .cmd(&scene, &scene.install_args("gh:o/foo", "v1"))
+            .failpoints("engine.plan.done=pause")
+            .pause(&pause)
+            .timeout(Duration::from_millis(300))
+            .spawn();
+        let pid = running.pid();
+        let caught = catch_unwind(AssertUnwindSafe(|| running.wait()));
+        let text = message(caught.err().expect("a run past its timeout fails"));
+        log.note(format!("wait() said: {text}"));
+        assert!(
+            text.contains("in step \"an install paused for good\"")
+                && text.contains("timed out after 3"),
+            "the panic names the step and the timeout: {text}"
+        );
+        let proc = PathBuf::from(format!("/proc/{pid}"));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while proc.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!proc.exists(), "the child {pid} is gone");
+        drop(subject);
+
+        let records = read(&log, &dir);
+        let context = format!("subject {}", dir.join("transcript.md").display());
+        let run = of_kind(&records, "run")[0];
+        assert_eq!(run["timed_out"], true, "{context}");
+        assert!(run["elapsed_ms"].as_u64().unwrap() >= 300, "{context}");
+    }
+
+    #[test]
+    // ubs:ignore — the planted values below are fakes; the test asserts they never reach the log
+    fn a_planted_token_never_reaches_the_files() {
+        // ubs:ignore — a fake planted value; the test asserts it never reaches the log
+        const TOKEN: &str = "tlogSelftestToken-0123456789abcdef";
+        // ubs:ignore — a fake planted value; the test asserts it never reaches the log
+        const OTHER: &str = "tlogSelftestOther-fedcba9876543210";
+        let log = tlog!();
+        log.step("build the subject");
+        let env = TestEnv::new();
+        let subject = TestLog::new(CHILD, "planted_token");
+        let dir = subject.dir().to_path_buf();
+
+        log.step("run it");
+        subject
+            .cmd(&env, &["status", "--json"])
+            .env("OMADDONS_GITHUB_TOKEN", TOKEN)
+            .run()
+            .ok();
+        subject.secret(OTHER);
+        subject.note(format!("planted {OTHER} twice: {OTHER}"));
+        subject.json("blob", &json!({"value": OTHER}));
+        drop(subject);
+
+        let records = read(&log, &dir);
+        let context = format!("subject {}", dir.join("transcript.md").display());
+        for name in ["steps.jsonl", "transcript.md"] {
+            let text = file(&dir, name);
+            assert!(
+                !text.contains(TOKEN) && !text.contains(OTHER),
+                "{context}: {name} holds a planted value"
+            );
+        }
+        let run = of_kind(&records, "run")[0];
+        assert_eq!(
+            run["overrides"]["OMADDONS_GITHUB_TOKEN"], "<redacted>",
+            "{context}"
+        );
+        assert_eq!(
+            run["scrubbed"],
+            json!(["OMADDONS_GITHUB_TOKEN"]),
+            "{context}"
+        );
+        assert_eq!(
+            of_kind(&records, "note")[0]["text"],
+            "planted <redacted> twice: <redacted>",
+            "{context}"
+        );
+        assert_eq!(
+            of_kind(&records, "json")[0]["value"],
+            json!({"value": "<redacted>"}),
+            "{context}"
+        );
+    }
+
+    #[test]
+    fn truncation_and_capping_are_recorded() {
+        let log = tlog!();
+        log.step("build the subject");
+        let env = TestEnv::new();
+        let caps = Caps {
+            stream_bytes: 256,
+            test_bytes: 8 << 10,
+        };
+        let subject = TestLog::with_caps(CHILD, "truncation", caps);
+        let dir = subject.dir().to_path_buf();
+
+        log.step("run it until the cap");
+        let first = subject.run(&env, &["help", "--json"]);
+        let stdout_len = first.stdout().len() as u64;
+        let mut runs: u64 = 1;
+        let capped = || file(&dir, "steps.jsonl").contains("\"kind\":\"capped\"");
+        while !capped() {
+            assert!(runs < 100, "the log never reached its cap");
+            subject.run(&env, &["help", "--json"]);
+            runs += 1;
+        }
+        let after_cap: u64 = 3;
+        for _ in 0..after_cap {
+            subject.run(&env, &["help", "--json"]);
+        }
+        drop(subject);
+
+        let records = read(&log, &dir);
+        let context = format!("subject {}", dir.join("transcript.md").display());
+        let first = of_kind(&records, "run")[0];
+        assert_eq!(
+            first["stdout"]["form"], "text",
+            "{context}: a cut envelope is text"
+        );
+        let kept = first["stdout"]["truncated"]["kept"].as_u64().unwrap();
+        assert!((253..=256).contains(&kept), "{context}: kept {kept}");
+        assert_eq!(
+            first["stdout"]["truncated"]["total"], stdout_len,
+            "{context}"
+        );
+        let kinds = kinds(&records);
+        // ubs:ignore — comparing record kinds, not secrets
+        let capped_at = kinds.iter().position(|k| *k == "capped");
+        let capped_count = kinds.iter().filter(|k| **k == "capped").count(); // ubs:ignore — record kinds
+        assert_eq!(capped_count, 1, "{context}");
+        assert!(
+            !kinds[capped_at.unwrap()..].contains(&"run"),
+            "{context}: no run after the cap"
+        );
+        let written = of_kind(&records, "run").len() as u64;
+        let end = records.last().unwrap();
+        assert_eq!(
+            end["dropped"],
+            runs + after_cap - written,
+            "{context}: the runs left out"
+        );
+        let end_line = file(&dir, "steps.jsonl").lines().last().unwrap().len() as u64 + 1;
+        let transcript = file(&dir, "transcript.md");
+        let end_part = (transcript.len() - transcript.rfind("\n---\n\nend: ").unwrap()) as u64;
+        let before_end = bytes(&dir) - end_line - end_part;
+        assert!(
+            before_end <= 8 << 10,
+            "{context}: {before_end} bytes before end"
+        );
+        assert!(
+            transcript.contains("truncated: kept") && transcript.contains("log capped"),
+            "{context}: the transcript says what was cut and capped"
+        );
+    }
+
+    #[test]
+    fn tree_differences_name_the_paths() {
+        let log = tlog!();
+        log.step("build the subject");
+        let env = TestEnv::new();
+        let tree = env.root().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("a.txt"), "alpha").unwrap();
+        fs::write(tree.join("b.sh"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(tree.join("b.sh"), fs::Permissions::from_mode(0o644)).unwrap();
+        symlink("a.txt", tree.join("link")).unwrap();
+        let subject = TestLog::new(CHILD, "tree_differences");
+        let dir = subject.dir().to_path_buf();
+        subject.env(&env);
+        subject.tree("t", &tree);
+
+        log.step("change it");
+        fs::write(tree.join("a.txt"), "alphA").unwrap();
+        fs::set_permissions(tree.join("b.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_file(tree.join("link")).unwrap();
+        symlink("b.sh", tree.join("link")).unwrap();
+        let expected = ["~ a.txt (content)", "~ b.sh (mode)", "~ link (target)"];
+        let caught = catch_unwind(AssertUnwindSafe(|| subject.assert_unchanged("t", &tree)));
+        let text = message(caught.expect_err("a changed tree fails"));
+        log.note(format!("assert_unchanged said: {text}"));
+        for line in expected {
+            assert!(text.contains(line), "the panic lacks {line:?}: {text}");
+        }
+        let diff = subject.diff("t", &tree);
+        let wanted: Vec<String> = expected.iter().map(|line| (*line).to_owned()).collect();
+        log.assert_eq("diff", &diff.first(20), &wanted);
+        subject.tree("t", &tree);
+        subject.assert_unchanged("t", &tree);
+        let gone = subject.tree("gone", &env.root().join("missing"));
+        assert_eq!(gone, None, "an absent root has no hash");
+        drop(subject);
+
+        let records = read(&log, &dir);
+        let context = format!("subject {}", dir.join("transcript.md").display());
+        let checks = of_kind(&records, "tree_check");
+        assert_eq!(checks[0]["equal"], false, "{context}");
+        assert_eq!(checks[0]["diff"]["total"], 3, "{context}");
+        assert_eq!(checks[0]["diff"]["first"], json!(expected), "{context}");
+        assert_eq!(checks.last().unwrap()["equal"], true, "{context}");
+        let trees = of_kind(&records, "tree");
+        let gone = trees.last().unwrap();
+        assert_eq!(
+            (&gone["exists"], &gone["hash"]),
+            (&json!(false), &Value::Null),
+            "{context}"
+        );
+    }
+
+    #[test]
+    fn tree_roots_outside_the_test_are_refused() {
+        let log = tlog!();
+        let subject = TestLog::new(CHILD, "refused_roots");
+        let dir = subject.dir().to_path_buf();
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let caught = catch_unwind(AssertUnwindSafe(|| subject.tree("repo", repo)));
+        let text = message(caught.expect_err("the repository is refused"));
+        log.note(format!("tree said: {text}"));
+        assert!(
+            text.contains("outside this test's synthetic directories"),
+            "{text}"
+        );
+        drop(subject);
+        let records = read(&log, &dir);
+        assert!(
+            of_kind(&records, "tree").is_empty(),
+            "no tree was recorded for the repository"
+        );
+    }
+
+    #[test]
+    fn ran_assertions_name_the_step_and_the_transcript() {
+        let log = tlog!();
+        let env = TestEnv::new();
+        let subject = TestLog::new(CHILD, "ran_assertions");
+        let dir = subject.dir().to_path_buf();
+        subject.step("a usage error");
+        let ran = subject.run(&env, &["frobnicate", "--json"]);
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            ran.exit(0);
+        }));
+        let text = message(caught.expect_err("exit(0) fails on exit 2"));
+        log.note(format!("exit(0) said: {text}"));
+        for expected in [
+            "in step \"a usage error\"",
+            "expected exit 0, got 2",
+            "error: usage: ",
+            "argv: omaddons frobnicate --json",
+            "transcript: ",
+        ] {
+            assert!(
+                text.contains(expected),
+                "the panic lacks {expected:?}: {text}"
+            );
+        }
+        drop(subject);
+        let records = read(&log, &dir);
+        let kinds = kinds(&records);
+        // ubs:ignore — comparing record kinds, not secrets
+        let run = kinds.iter().position(|k| *k == "run").unwrap();
+        assert_eq!(
+            kinds[run + 1],
+            "failure",
+            "a failure record follows the run: {kinds:?}"
+        );
+    }
+
+    #[test]
+    fn cases_have_their_own_files_and_share_the_budget() {
+        let log = tlog!();
+        log.step("build the subject");
+        let env = TestEnv::new();
+        let caps = Caps {
+            stream_bytes: 1 << 20,
+            test_bytes: 64 << 10,
+        };
+        let subject = TestLog::with_caps(CHILD, "cases", caps);
+        let dir = subject.dir().to_path_buf();
+
+        log.step("run two cases from two threads");
+        std::thread::scope(|scope| {
+            for i in 0..2 {
+                let (subject, env) = (&subject, &env);
+                scope.spawn(move || {
+                    let case = subject.case(&format!("case-{i}"));
+                    case.step("run");
+                    case.run(env, &["help", "--json"]).ok();
+                });
+            }
+        });
+        drop(subject);
+
+        let parent = read(&log, &dir);
+        let context = format!("subject {}", dir.join("transcript.md").display());
+        assert_eq!(of_kind(&parent, "case").len(), 2, "{context}");
+        let mut total = parent.last().unwrap()["bytes"].as_u64().unwrap();
+        for i in 0..2 {
+            let case = records(&dir.join(format!("cases/case-{i}")));
+            assert_eq!(case[0]["parent"], "tlog_selftest_child/cases", "case {i}");
+            assert_eq!(of_kind(&case, "run").len(), 1, "case {i}");
+            total += case.last().unwrap()["bytes"].as_u64().unwrap();
+        }
+        assert!(
+            total <= 64 << 10,
+            "{context}: {total} bytes in the parent and its cases"
+        );
+
+        log.step("a 4 KiB budget caps the second case too");
+        let small = Caps {
+            stream_bytes: 1 << 20,
+            test_bytes: 4 << 10,
+        };
+        let subject = TestLog::with_caps(CHILD, "cases_capped", small);
+        let dir = subject.dir().to_path_buf();
+        for i in 0..2 {
+            let case = subject.case(&format!("case-{i}"));
+            case.run(&env, &["help", "--json"]);
+        }
+        drop(subject);
+        for i in 0..2 {
+            let case = records(&dir.join(format!("cases/case-{i}")));
+            assert_eq!(
+                of_kind(&case, "capped").len(),
+                1,
+                "case {i} of cases_capped is capped: {:?}",
+                kinds(&case)
+            );
+        }
+    }
+
+    #[test]
+    fn paths_are_relative_in_both_files() {
+        let log = tlog!();
+        let env = TestEnv::new();
+        let subject = TestLog::new(CHILD, "relative_paths");
+        let dir = subject.dir().to_path_buf();
+        subject.run(&env, &["help", "--json"]).ok();
+        subject
+            .run(&env, &["frobnicate", "--json"])
+            .fails(2, "usage");
+        subject.run(&env, &["status", "--json"]).ok();
+        subject.tree("state", &env.state());
+        drop(subject);
+        let _ = read(&log, &dir);
+        let absolute = [
+            env.root().display().to_string(),
+            env!("CARGO_TARGET_TMPDIR").to_owned(),
+            env!("CARGO_MANIFEST_DIR").to_owned(),
+        ];
+        for name in ["steps.jsonl", "transcript.md"] {
+            let text = file(&dir, name);
+            for path in &absolute {
+                assert!(
+                    !text.contains(path.as_str()),
+                    "{name} holds the absolute path {path}"
+                );
+            }
+            assert!(
+                text.contains("<root>/") && text.contains("<repo>"),
+                "{name} uses the placeholders"
+            );
+        }
+    }
+}
+
+/// What only a separate process shows: libtest's failure output with the guard's lines,
+/// the live echo, and the mode error. Each parent runs one child test of this binary
+/// (`--ignored --exact child::<name>`) with `OMADDONS_TEST_LOG` set or removed
+/// explicitly, never inherited (`argc e2e` sets it for the parent).
+mod child {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::thread::JoinHandle;
+    use std::time::{Duration, Instant};
+
+    use serde_json::{Value, json};
+
+    use crate::common::env::TestEnv;
+    use crate::common::tlog::{LOG_MODE_VAR, TestLog, log_root, tlog};
+
+    /// The private handshake that lets a child test do its work: not an `OMADDONS_`
+    /// name, so it needs no registry row and `TestEnv` leaves it alone.
+    const HANDSHAKE: &str = "TLOG_SELFTEST_CHILD";
+    /// The longest a child may take.
+    const CHILD_TIMEOUT: Duration = Duration::from_secs(60);
+    /// The suite directory of the children's logs.
+    const CHILD: &str = "tlog_selftest_child";
+
+    fn is_child() -> bool {
+        // ubs:ignore — a test handshake flag, not a secret
+        std::env::var(HANDSHAKE).as_deref() == Ok("1")
+    }
+
+    /// A child's exit code and output.
+    struct Output {
+        code: Option<i32>,
+        stdout: String,
+        stderr: String,
+    }
+
+    fn read_to_end<R: Read + Send + 'static>(mut pipe: R) -> JoinHandle<String> {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = pipe.read_to_string(&mut text);
+            text
+        })
+    }
+
+    /// Runs the child test `child::<name>` with `mode` as `OMADDONS_TEST_LOG` (`None`
+    /// removes it), and logs its argv, exit and output.
+    fn run_child(log: &TestLog, name: &str, mode: Option<&str>) -> Output {
+        let test = format!("child::{name}");
+        let args = ["--ignored", "--exact", test.as_str(), "--test-threads=1"];
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(args)
+            .env(HANDSHAKE, "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        match mode {
+            Some(mode) => command.env(LOG_MODE_VAR, mode),
+            None => command.env_remove(LOG_MODE_VAR),
+        };
+        let mut child = command.spawn().unwrap();
+        let stdout = read_to_end(child.stdout.take().unwrap());
+        let stderr = read_to_end(child.stderr.take().unwrap());
+        let deadline = Instant::now() + CHILD_TIMEOUT;
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let output = Output {
+            code: status.and_then(|status| status.code()),
+            stdout: stdout.join().unwrap(),
+            stderr: stderr.join().unwrap(),
+        };
+        log.json(
+            "child",
+            &json!({
+                "argv": args,
+                "mode": mode,
+                "exit": output.code,
+                "stdout": output.stdout,
+                "stderr": output.stderr,
+            }),
+        );
+        assert!(
+            status.is_some(),
+            "child {name} ran past {CHILD_TIMEOUT:?} and was killed"
+        );
+        output
+    }
+
+    /// `text` holds each of `parts`, in this order.
+    fn in_order(text: &str, parts: &[&str]) -> Result<(), String> {
+        let mut from = 0;
+        for part in parts {
+            match text[from..].find(part) {
+                Some(at) => from += at + part.len(),
+                None => return Err(format!("{part:?} is missing, or out of order")),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "run by a parent test as a child process"]
+    fn fails_after_twenty_five_notes() {
+        if !is_child() {
+            return;
+        }
+        let log = TestLog::new(CHILD, "fails_after_twenty_five_notes");
+        for i in 1..=25 {
+            log.note(format!("note {i:02}"));
+        }
+        log.run(&TestEnv::new(), &["frobnicate", "--json"]).ok();
+    }
+
+    #[test]
+    #[ignore = "run by a parent test as a child process"]
+    fn passes_with_three_steps() {
+        if !is_child() {
+            return;
+        }
+        let log = TestLog::new(CHILD, "passes_with_three_steps");
+        log.step("one");
+        log.step("two");
+        log.step("three");
+        log.run(&TestEnv::new(), &["help", "--json"]).ok();
+    }
+
+    #[test]
+    #[ignore = "run by a parent test as a child process"]
+    fn creates_one_log() {
+        if !is_child() {
+            return;
+        }
+        let log = TestLog::new(CHILD, "creates_one_log");
+        log.note("not reached with an unknown mode");
+    }
+
+    #[test]
+    fn a_failing_test_prints_its_log_and_last_steps() {
+        let log = tlog!();
+        log.step("run the failing child");
+        let output = run_child(&log, "fails_after_twenty_five_notes", None);
+        log.step("check its output");
+        assert_ne!(output.code, Some(0), "the child fails");
+        let text = format!("{}{}", output.stdout, output.stderr);
+        let order = in_order(
+            &text,
+            &[
+                "expected exit 0, got 2",
+                "test log: ",
+                "tlog_selftest_child/fails_after_twenty_five_notes/transcript.md",
+                "last 20 of 29 records:",
+                "#10 note: note 09",
+                "#26 note: note 25",
+                "#28 run omaddons frobnicate --json → exit 2",
+                "#29 failure: run #28",
+            ],
+        );
+        assert!(order.is_ok(), "{}: {text}", order.unwrap_err());
+        assert!(
+            !text.contains("note 08"),
+            "only the last 20 records are shown: {text}"
+        );
+
+        let dir = log_root().join(CHILD).join("fails_after_twenty_five_notes");
+        let steps = std::fs::read_to_string(dir.join("steps.jsonl")).unwrap();
+        let tail: Vec<Value> = steps
+            .lines()
+            .rev()
+            .take(2)
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        log.json("the child's last records", &tail);
+        assert_eq!(
+            (&tail[1]["kind"], &tail[0]["kind"], &tail[0]["outcome"]),
+            (&json!("failure"), &json!("end"), &json!("panicked")),
+            "the child's log ends with its failure, then a panicked end"
+        );
+    }
+
+    #[test]
+    fn verbose_echoes_every_record_live() {
+        let log = tlog!();
+        log.step("verbose");
+        let output = run_child(&log, "passes_with_three_steps", Some("verbose"));
+        assert_eq!(output.code, Some(0), "the child passes");
+        let prefix = "[tlog tlog_selftest_child::passes_with_three_steps";
+        let lines = [
+            format!("{prefix} #2] step 1: one"),
+            format!("{prefix} #3] step 2: two"),
+            format!("{prefix} #4] step 3: three"),
+            format!("{prefix} #6] run omaddons help --json → exit 0"),
+        ];
+        let parts: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let order = in_order(&output.stderr, &parts);
+        assert!(order.is_ok(), "{}: {}", order.unwrap_err(), output.stderr);
+
+        log.step("unset");
+        let output = run_child(&log, "passes_with_three_steps", None);
+        assert_eq!(output.code, Some(0), "the child passes");
+        assert!(
+            !output.stderr.contains("[tlog "),
+            "no echo without the mode: {}",
+            output.stderr
+        );
+    }
+
+    #[test]
+    fn an_unknown_log_mode_fails_the_test() {
+        let log = tlog!();
+        let output = run_child(&log, "creates_one_log", Some("verbos"));
+        assert_ne!(output.code, Some(0), "the child fails");
+        let text = format!("{}{}", output.stdout, output.stderr);
+        assert!(
+            text.contains("OMADDONS_TEST_LOG=verbos is not a log mode")
+                && text.contains("`verbose`"),
+            "the failure names the accepted value: {text}"
+        );
+    }
+}

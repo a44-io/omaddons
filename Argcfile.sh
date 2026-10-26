@@ -80,19 +80,22 @@ e2e() {
 
 # Counts the test logs this run wrote (newer than $start) in each selected suite's
 # directory, cases included, and names each one that panicked or has no end record (a
-# killed test). Deletes nothing: each test replaces its own log.
+# killed test). Only a log's last line is read: its end record, which starts with
+# `{"kind":"end",` and holds no text a test wrote. Deletes nothing: each test replaces
+# its own log.
 _e2e_summary() {
-    local root=$1 start=$2 written=0 log name
+    local root=$1 start=$2 written=0 log name last
     shift 2
     local panicked=() incomplete=()
     for name in "$@"; do
         [[ -d $root/$name ]] || continue
         while IFS= read -r log; do
             written=$((written + 1))
-            if grep -q '"outcome":"panicked"' "$log"; then
-                panicked+=("${log%steps.jsonl}transcript.md")
-            elif ! grep -q '"kind":"end"' "$log"; then
+            last=$(tail -n 1 "$log")
+            if [[ $last != '{"kind":"end",'* ]]; then
                 incomplete+=("${log%steps.jsonl}transcript.md")
+            elif [[ $last == *'"outcome":"panicked"'* ]]; then
+                panicked+=("${log%steps.jsonl}transcript.md")
             fi
         done < <(find "$root/$name" -name steps.jsonl -newermt "@$start" | sort)
     done
