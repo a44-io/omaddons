@@ -931,6 +931,231 @@ fn a_bound_noop_update_is_stale_after_a_change() {
     assert_left_alone(&log, &scene, &history);
 }
 
+// ---- `copy` (D2): its source client in the token ---------------------------------------
+
+/// `copy`'s two clients: Classic Era (the source) and Anniversary.
+const ERA: &str = "_classic_era_";
+const ANNIVERSARY: &str = "_anniversary_";
+
+/// Release `tag` of `gh:o/<repo>` as its latest: `<name>/<name>.toc`, built for both.
+fn publish_for_both(home: &common::home::Home, repo: &str, name: &str, tag: &str) {
+    use common::http::{Asset, gh_release};
+    let (file, path) = (format!("{name}.zip"), format!("{name}/{name}.toc"));
+    let toc = format!("## Interface: 11509, 20506\n## Version: {tag}\n");
+    let assets: [Asset<'_>; 1] = [(
+        file.as_str(),
+        &[("classic", 11_509), ("bcc", 20_506)],
+        vec![(path.as_str(), toc.as_str())],
+    )];
+    gh_release(
+        &home.http,
+        &format!("https://github.com/o/{repo}"),
+        tag,
+        &assets,
+    );
+}
+
+/// Foo installed on Classic Era; Foo and Bar published for both clients.
+fn era_with_foo(log: &common::tlog::TestLog) -> common::home::Home {
+    let home = common::home::Home::new(&["wow_classic_era", "wow_anniversary"]);
+    log.env(&home);
+    publish_for_both(&home, "foo", "Foo", "v1");
+    publish_for_both(&home, "bar", "Bar", "v1");
+    log.run(&home, &["install", "gh:o/foo", "-t", "era", "--json"])
+        .ok();
+    home
+}
+
+/// Both clients' AddOns and the records, recorded; the transactions history lists,
+/// returned.
+fn record_both(log: &common::tlog::TestLog, home: &common::home::Home) -> Vec<String> {
+    log.tree("era addons", &home.addons(ERA));
+    log.tree("anniversary addons", &home.addons(ANNIVERSARY));
+    log.tree("records", &home.state().join("targets"));
+    let history = history_txs(home);
+    log.json("history", &history);
+    history
+}
+
+fn assert_both_alone(log: &common::tlog::TestLog, home: &common::home::Home, history: &[String]) {
+    log.assert_unchanged("era addons", &home.addons(ERA));
+    log.assert_unchanged("anniversary addons", &home.addons(ANNIVERSARY));
+    log.assert_unchanged("records", &home.state().join("targets"));
+    log.assert_eq("history", &history_txs(home), &history.to_vec());
+}
+
+/// The transaction ids `history.jsonl` lists, oldest first.
+fn history_txs(home: &common::home::Home) -> Vec<String> {
+    std::fs::read_to_string(home.state().join("history.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|v| v["tx"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+const COPY_FOO: &[&str] = &["copy", "--from", "era", "--to", "anniversary", "Foo"];
+
+#[test]
+fn a_copy_binds_to_its_preview() {
+    let log = common::tlog::tlog!();
+    let home = era_with_foo(&log);
+    let copy = argv(COPY_FOO);
+    let fix = preview_of(&copy);
+    // Registered before the preview: registering `--to` in between would rename it in
+    // every part of the token, not only `targets`.
+    log.step("anniversary has Bar");
+    log.run(
+        &home,
+        &["install", "gh:o/bar", "-t", "anniversary", "--json"],
+    )
+    .ok();
+
+    log.step("preview");
+    let dry = log.run(&home, &with(&copy, &["--dry-run"]));
+    let previewed = token(dry.ok().envelope());
+    log.json("token", &previewed);
+    log.step("preview again");
+    let again = log.run(&home, &with(&copy, &["--dry-run"]));
+    log.assert_eq(
+        "an unchanged home, the same token",
+        &token(again.ok().envelope()),
+        &previewed,
+    );
+
+    log.step("another change commits on --to");
+    log.run(&home, &["remove", "Bar", "-t", "anniversary", "--json"])
+        .ok();
+    let history = record_both(&log, &home);
+    let stale = log.run(&home, &with(&copy, &["--if-match", &previewed]));
+    assert_stale(
+        stale.fails(1, "plan_stale").envelope(),
+        &["targets"],
+        &strs(&fix),
+    );
+    assert_both_alone(&log, &home, &history);
+
+    log.step("the fix's preview binds");
+    let dry = log.run(&home, &with(&copy, &["--dry-run"]));
+    let fresh = token(dry.ok().envelope());
+    log.json("token", &fresh);
+    let ran = log.run(&home, &with(&copy, &["--if-match", &fresh]));
+    log.assert_eq(
+        "the items the preview showed, and a real run's precondition",
+        &(
+            &ran.ok().data()["targets"][0]["items"],
+            &ran.data()["precondition"],
+        ),
+        &(&dry.data()["targets"][0]["items"], &Value::Null),
+    );
+    log.assert_eq(
+        "Foo on anniversary",
+        &home.addons(ANNIVERSARY).join("Foo/Foo.toc").is_file(),
+        &true,
+    );
+
+    log.step("nothing left to copy, then another commit on --to");
+    let dry = log.run(&home, &with(&copy, &["--dry-run"]));
+    let idle = token(dry.ok().envelope());
+    log.json("token", &idle);
+    log.assert_eq(
+        "Foo is already there",
+        &dry.data()["summary"]["changed"],
+        &json!(0),
+    );
+    log.run(
+        &home,
+        &["install", "gh:o/bar", "-t", "anniversary", "--json"],
+    )
+    .ok();
+    let history = record_both(&log, &home);
+    let stale = log.run(&home, &with(&copy, &["--if-match", &idle]));
+    assert_stale(
+        stale.fails(1, "plan_stale").envelope(),
+        &["targets"],
+        &strs(&fix),
+    );
+    assert_both_alone(&log, &home, &history);
+}
+
+/// `copy` asks its sources again (M4-D20), as `install` does: a release published after
+/// the preview makes the bound run stale.
+#[test]
+fn a_release_published_after_a_copy_preview_makes_it_stale() {
+    let log = common::tlog::tlog!();
+    let home = era_with_foo(&log);
+    let copy = argv(COPY_FOO);
+    log.step("preview: v1");
+    let previewed = token(log.run(&home, &with(&copy, &["--dry-run"])).ok().envelope());
+    log.json("token", &previewed);
+
+    log.step("v2 is published");
+    publish_for_both(&home, "foo", "Foo", "v2");
+    let history = record_both(&log, &home);
+
+    log.step("the bound run");
+    let stale = log.run(&home, &with(&copy, &["--if-match", &previewed]));
+    let changed = &stale.fails(1, "plan_stale").envelope()["error"]["details"]["changed"];
+    log.assert_eq(
+        "the release changed the selection",
+        &changed
+            .as_array()
+            .is_some_and(|c| c.contains(&json!("selection"))),
+        &true,
+    );
+    assert_both_alone(&log, &home, &history);
+}
+
+#[test]
+fn a_copy_whose_source_folder_changed_is_stale() {
+    let log = common::tlog::tlog!();
+    let home = era_with_foo(&log);
+    let copy = argv(COPY_FOO);
+    log.step("preview");
+    let previewed = token(log.run(&home, &with(&copy, &["--dry-run"])).ok().envelope());
+    log.json("token", &previewed);
+
+    log.step("Foo's folder on era is edited by hand; its record is not");
+    let toc = home.addons(ERA).join("Foo/Foo.toc");
+    let mut text = std::fs::read_to_string(&toc).unwrap();
+    text.push_str("## X-Edited: by hand\n");
+    std::fs::write(&toc, text).unwrap();
+    let history = record_both(&log, &home);
+
+    log.step("the bound run");
+    let stale = log.run(&home, &with(&copy, &["--if-match", &previewed]));
+    assert_stale(
+        stale.fails(1, "plan_stale").envelope(),
+        &["observed"],
+        &strs(&preview_of(&copy)),
+    );
+    assert_both_alone(&log, &home, &history);
+}
+
+#[test]
+fn a_copy_whose_source_client_committed_is_stale() {
+    let log = common::tlog::tlog!();
+    let home = era_with_foo(&log);
+    let copy = argv(COPY_FOO);
+    log.step("preview a copy of Foo alone");
+    let previewed = token(log.run(&home, &with(&copy, &["--dry-run"])).ok().envelope());
+    log.json("token", &previewed);
+
+    log.step("Bar, which the copy does not name, installs on era");
+    log.run(&home, &["install", "gh:o/bar", "-t", "era", "--json"])
+        .ok();
+    let history = record_both(&log, &home);
+
+    log.step("the bound run: the source's generation moved");
+    let stale = log.run(&home, &with(&copy, &["--if-match", &previewed]));
+    assert_stale(
+        stale.fails(1, "plan_stale").envelope(),
+        &["observed"],
+        &strs(&preview_of(&copy)),
+    );
+    assert_both_alone(&log, &home, &history);
+}
+
 const PRUNE: &[&str] = &["backup", "prune", "-t", "retail", "--keep", "2"];
 const PRUNE_PREVIEW: &[&str] = &[
     "omaddons",

@@ -922,6 +922,28 @@ fn update_binding() {
     insta::assert_json_snapshot!("update_if_match_ok", s.stable(&c.envelope));
 }
 
+/// `copy` binds to its preview and to its source: a file edited in a copied source
+/// folder in between stales it (`observed`), and a fresh preview's token runs.
+#[test]
+fn copy_binding() {
+    let s = Scene::new();
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    let copy = ["copy", "--from", "retail", "--to", "classic"];
+    let c = s.json(&[&copy[..], &["--dry-run"]].concat(), 0);
+    insta::assert_json_snapshot!("copy_dry_run", s.stable(&c.envelope));
+    let token = precondition_of(&c);
+    // The source's record stays as it was: only its folder changed.
+    let toc = s.home.addons("_retail_").join("WeakAuras/WeakAuras.toc");
+    let mut text = std::fs::read_to_string(&toc).unwrap();
+    text.push_str("## X-Edited: by hand\n");
+    std::fs::write(&toc, text).unwrap();
+    let c = s.json(&[&copy[..], &["--if-match", &token]].concat(), 1);
+    insta::assert_json_snapshot!("copy_if_match_stale", s.stable(&c.envelope));
+    let token = precondition_of(&s.json(&[&copy[..], &["--dry-run"]].concat(), 0));
+    let c = s.json(&[&copy[..], &["--if-match", &token]].concat(), 0);
+    insta::assert_json_snapshot!("copy_if_match_ok", s.stable(&c.envelope));
+}
+
 /// `sync` binds to its preview and to the file's bytes: a comment added in between
 /// stales it, and a fresh preview's token runs.
 #[test]

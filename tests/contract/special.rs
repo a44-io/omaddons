@@ -289,8 +289,9 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
     let tx = s.install_foo();
     s.home
         .write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
-    // A bound dry run compares its token, and writes nothing either: an install's, and
-    // the no-op tokens of an update and a sync with nothing to do.
+    // A bound dry run compares its token, and writes nothing either: an install's, a
+    // copy's (Foo has no build for classic), and the no-op tokens of an update and a
+    // sync with nothing to do.
     let bound = |preview: &[&str]| -> Vec<String> {
         let token = s.json(preview, 0).envelope["data"]["precondition"]
             .as_str()
@@ -311,8 +312,9 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
     ];
     let update = ["update", "--all", "--dry-run"];
     let sync = ["sync", "--dry-run"];
-    let owned = [bound(&install), bound(&update), bound(&sync)];
-    let [bound_install, bound_update, bound_sync] = owned
+    let copy = ["copy", "--from", "retail", "--to", "classic", "--dry-run"];
+    let owned = [bound(&install), bound(&update), bound(&sync), bound(&copy)];
+    let [bound_install, bound_update, bound_sync, bound_copy] = owned
         .each_ref()
         .map(|argv| argv.iter().map(String::as_str).collect::<Vec<_>>());
     dry_runs(&[
@@ -323,6 +325,8 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
         &bound_update,
         &sync,
         &bound_sync,
+        &copy,
+        &bound_copy,
         &["undo", &tx, "--dry-run"],
         &["undo", "--dry-run"],
         &["pin", "Foo", "-t", "retail", "--dry-run"],

@@ -148,7 +148,7 @@ var CLI_PATHS = {
   "unpin":           { "mutates": true,  "destructive": false, "binds": false },
   "adopt":           { "mutates": true,  "destructive": false, "binds": false },
   "sync":            { "mutates": true,  "destructive": false, "binds": true },
-  "copy":            { "mutates": true,  "destructive": false, "binds": false },
+  "copy":            { "mutates": true,  "destructive": false, "binds": true },
   "remove":          { "mutates": true,  "destructive": true,  "binds": true },
   "undo":            { "mutates": true,  "destructive": true,  "binds": true },
   "backup":          { "mutates": false, "destructive": false, "binds": false },

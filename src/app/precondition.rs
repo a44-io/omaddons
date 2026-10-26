@@ -35,6 +35,7 @@ pub const BINDING_COMMANDS: &[&str] = &[
     "install",
     "update",
     "sync",
+    "copy",
 ];
 
 /// The token format's version and separator.
@@ -1814,6 +1815,7 @@ mod tests {
                 "install",
                 "update",
                 "sync",
+                "copy",
             ]
         );
         assert_eq!(

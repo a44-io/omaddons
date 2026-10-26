@@ -1,0 +1,34 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "copy",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "plan_stale",
+    "details": {
+      "changed": [
+        "observed"
+      ]
+    },
+    "fix": "omaddons copy --from retail --to classic --dry-run",
+    "fix_argv": [
+      "omaddons",
+      "copy",
+      "--from",
+      "retail",
+      "--to",
+      "classic",
+      "--dry-run"
+    ],
+    "message": "this copy is no longer what its preview showed (observed changed); nothing was changed: preview it again",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

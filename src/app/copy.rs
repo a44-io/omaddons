@@ -17,15 +17,19 @@ use super::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef, TargetResult,
     TargetsData, TargetsOutcome, header, item_detail, item_name, sort_keeping_dependencies,
 };
+use super::precondition::{self, Idle, PlanBinding, PlanExtras};
 use super::resolve_args::catalog_name;
 use super::world::{World, names_addon};
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::resolve_one_in;
 use crate::engine::plan::{AnyFlavorIntent, PinIntent, RequestedChange};
-use crate::engine::{TxOutcomes, TxRequest, TxTarget};
+use crate::engine::witness::CopyFrom;
+use crate::engine::{Binding, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning};
-use crate::model::{AddonReason, AddonRecord, Ref, RunId, TxId, TxKind};
+use crate::model::{
+    AddonReason, AddonRecord, FolderName, Ref, RunId, Target, TargetKey, TxId, TxKind,
+};
 use crate::output::{Outcome, Style};
 use crate::resolve::cache::Freshness;
 use crate::resolve::catalog::Catalog;
@@ -104,7 +108,7 @@ impl Outcome for CopyOutcome {
 
     /// `anniversary: installed 4 addons (tx 01M5…)`, the installs and failures, then one
     /// line of skips: `skipped: pfUI (no build for tbc), Questie (already installed)`.
-    fn render_human(&self, w: &mut dyn std::io::Write, _style: &Style) -> std::io::Result<()> {
+    fn render_human(&self, w: &mut dyn std::io::Write, style: &Style) -> std::io::Result<()> {
         let data = &self.inner.data;
         for t in &data.targets {
             writeln!(w, "{}", header("copy", data.dry_run, t))?;
@@ -151,6 +155,10 @@ impl Outcome for CopyOutcome {
         }
         if let Some(tx) = data.targets.iter().find_map(|t| t.tx) {
             writeln!(w, "undo: omaddons undo {tx}")?;
+        }
+        // Behind `-v`: D4's stored plan makes its `apply` line the default hint.
+        if let Some(token) = data.precondition.as_deref().filter(|_| style.verbose > 0) {
+            writeln!(w, "Run it bound to this preview: --if-match {token}")?;
         }
         Ok(())
     }
@@ -207,6 +215,9 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
     let mut changes: Vec<RequestedChange> = Vec::new();
     let mut requested: Vec<ItemRequest> = Vec::new();
     let mut pushed: Vec<ItemResult> = Vec::new();
+    // The records of `--from` whose install the copy requests, whose folders a preview
+    // was judged from.
+    let mut copied: Vec<&AddonRecord> = Vec::new();
     for s in &scope {
         let a = s.record;
         // A catalog name with a build per family: the destination's own build, as
@@ -256,6 +267,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             // A per-client decision: never copied.
             any_flavor: AnyFlavorIntent::Keep,
         });
+        copied.push(a);
         requested.push(ItemRequest {
             request: s.request.clone(),
             target: to.target.id.clone(),
@@ -285,10 +297,31 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
         Freshness::Revalidate
     };
     let cache = engine.cache(freshness);
-    let done: Option<TxOutcomes> = if changes.is_empty() {
+    // The token covers the source client too: its key and generation here, and the
+    // folders copied from it in the witness.
+    let extras = PlanExtras {
+        copy_source: copy_source(&from.target, source),
+        ..PlanExtras::default()
+    };
+    let (done, token): (Option<TxOutcomes>, Option<String>) = if changes.is_empty() {
+        // `--to`, the one client a copy changes. A stale bound run changes nothing, not
+        // even a recovery.
+        let idle = [Idle {
+            target: &to.target,
+            generation: destination.map_or(0, |r| r.generation),
+        }];
+        let token = precondition::check_noop(ctx, "copy", &idle, &extras)?;
         recover_waiting(ctx, &world, "copy");
-        None
+        (None, token)
     } else {
+        // The run the token describes: a dry run's, or a bound run's to compare.
+        let witness = precondition::witnessing(ctx).map(|mut scope| {
+            scope.copy_from = Some(CopyFrom {
+                target: from.target.clone(),
+                folders: copied_folders(&copied),
+            });
+            scope
+        });
         let req = TxRequest {
             targets: vec![TxTarget {
                 discovered: to.clone(),
@@ -303,10 +336,20 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             kind: None,
             run,
             no_deps: args.no_deps,
-            witness: None,
+            witness,
         };
-        match engine.run(&req, Some(&cache)) {
-            Ok(done) => Some(done),
+        let binding = PlanBinding::of_run(ctx, "copy", extras.clone());
+        match engine.run_bound(
+            &req,
+            Some(&cache),
+            binding.as_ref().map(|b| b as &dyn Binding),
+        ) {
+            Ok(done) => {
+                let token = ctx
+                    .dry_run
+                    .then(|| precondition::plan_token("copy", &done.plan, &extras));
+                (Some(done), token)
+            }
             Err(error) => {
                 // What the plan fetched is still worth remembering.
                 cache.remember(&[]);
@@ -361,7 +404,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
         .flat_map(|d| &d.outcomes)
         .filter_map(|o| Some((o.tx?, o.lock_held_ms?)))
         .collect();
-    let data = data.listing(verbose);
+    let data = data.with_precondition(token).listing(verbose);
     let commands = data.undo_commands();
     let mut unique: Vec<Warning> = Vec::new();
     for w in warnings {
@@ -382,6 +425,25 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
         locks,
         notes,
     })
+}
+
+/// `--from`'s key and record generation (`PlanExtras::copy_source`); `None` while it is
+/// unregistered, when it manages nothing a copy could take.
+fn copy_source(from: &Target, source: Option<&TargetRecord>) -> Option<(TargetKey, u64)> {
+    from.key
+        .map(|key| (key, source.map_or(0, |r| r.generation)))
+}
+
+/// The folders of the source records a copy requests, sorted by key, each once: what its
+/// preview was judged from (M4-D60's source folders).
+fn copied_folders(requested: &[&AddonRecord]) -> Vec<FolderName> {
+    let mut folders: Vec<FolderName> = requested
+        .iter()
+        .flat_map(|a| a.folders.iter().cloned())
+        .collect();
+    folders.sort_by(|a, b| a.key().cmp(b.key()));
+    folders.dedup_by(|a, b| a.key() == b.key());
+    folders
 }
 
 /// The one client `selector` names for `flag`. An ambiguous one is `target_ambiguous`
@@ -591,9 +653,121 @@ fn no_build(error: &ErrorBody) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{AddonState, Channel, VersionConfidence};
 
     fn argv(s: &str) -> Vec<String> {
         s.split(' ').map(str::to_owned).collect()
+    }
+
+    fn addon(name: &str, folders: &[&str]) -> AddonRecord {
+        AddonRecord {
+            r#ref: format!("gh:o/{}", name.to_lowercase()).parse().unwrap(),
+            name: name.to_owned(),
+            version: "v1".to_owned(),
+            version_confidence: VersionConfidence::Release,
+            release_id: None,
+            channel: Channel::Stable,
+            pinned: false,
+            reason: AddonReason::Explicit,
+            required_by: Vec::new(),
+            folders: folders
+                .iter()
+                .map(|f| FolderName::new(f).unwrap())
+                .collect(),
+            state: AddonState::Ok,
+            installed_at: jiff::Timestamp::now(),
+            tx_id: TxId::new(),
+            blob_sha256: None,
+            revision: None,
+            left_out: Vec::new(),
+            any_flavor: false,
+        }
+    }
+
+    #[test]
+    fn copy_source_is_the_sources_key_and_generation() {
+        let mut from = crate::engine::testing::target(std::path::Path::new("/c/_classic_era_"));
+        let key = TargetKey::new();
+        let mut record = TargetRecord::empty(key);
+        record.generation = 7;
+        let unregistered = copy_source(&from, Some(&record));
+        from.key = Some(key);
+        for (case, got, want) in [
+            (
+                "registered, with a record",
+                copy_source(&from, Some(&record)),
+                Some((key, 7)),
+            ),
+            (
+                "registered, no record yet",
+                copy_source(&from, None),
+                Some((key, 0)),
+            ),
+            ("unregistered", unregistered, None),
+        ] {
+            assert_eq!(got, want, "{case}");
+        }
+    }
+
+    #[test]
+    fn copy_from_lists_the_requested_addons_folders() {
+        let foo = addon("Foo", &["Foo", "Foo_Options"]);
+        // Already on `--to`: not requested, so not among the folders.
+        let there = addon("There", &["There"]);
+        let bar = addon("Bar", &["foo_options", "Bar"]);
+        let copied = copied_folders(&[&foo, &bar]);
+        let folders: Vec<&str> = copied.iter().map(FolderName::as_str).collect();
+        assert_eq!(
+            folders,
+            ["Bar", "Foo", "Foo_Options"],
+            "sorted by key, one per key, {} left out",
+            there.name
+        );
+    }
+
+    #[test]
+    fn the_token_line_is_shown_only_under_verbose() {
+        let token = format!("pc1:{}", "0123456789abcdef".repeat(4));
+        let line = format!("Run it bound to this preview: --if-match {token}\n");
+        let outcome = |precondition: Option<String>| CopyOutcome {
+            inner: TargetsOutcome {
+                command: "copy",
+                data: TargetsData::assemble(&[], &[], &[], true, RunId::new(), &[])
+                    .with_precondition(precondition),
+                warnings: Vec::new(),
+                commands: Vec::new(),
+                notes: Vec::new(),
+            },
+            strict: false,
+            family: Family::Tbc,
+            locks: Vec::new(),
+            notes: Vec::new(),
+        };
+        let human = |o: &CopyOutcome, verbose: u8| {
+            let mut out = Vec::new();
+            let style = Style {
+                color: false,
+                verbose,
+                quiet: false,
+            };
+            o.render_human(&mut out, &style).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        let (bound, unbound) = (outcome(Some(token)), outcome(None));
+        for (case, o, verbose, shown) in [
+            ("a dry run with a token, without -v", &bound, 0, false),
+            ("a dry run with a token, with -v", &bound, 1, true),
+            ("no token, with -v", &unbound, 1, false),
+        ] {
+            let text = human(o, verbose);
+            assert_eq!(text.ends_with(&line), shown, "{case}: {text}");
+            assert_eq!(
+                text.matches("--if-match").count(),
+                usize::from(shown),
+                "{case}: {text}"
+            );
+        }
+        assert_eq!(human(&bound, 0), human(&unbound, 0), "unchanged without -v");
     }
 
     #[test]
