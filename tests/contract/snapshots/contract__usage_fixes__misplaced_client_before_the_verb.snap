@@ -1,0 +1,40 @@
+---
+source: tests/contract/usage_fixes.rs
+assertion_line: 524
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "omaddons",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "help",
+          "update"
+        ],
+        "display": "omaddons help update"
+      }
+    ],
+    "code": "usage",
+    "details": {
+      "command": "update",
+      "target": "retail"
+    },
+    "fix": "omaddons update -t retail",
+    "fix_argv": [
+      "omaddons",
+      "update",
+      "-t",
+      "retail"
+    ],
+    "message": "'retail' is a client, not a command; the client goes in -t",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

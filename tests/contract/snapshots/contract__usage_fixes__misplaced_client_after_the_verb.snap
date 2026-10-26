@@ -1,0 +1,41 @@
+---
+source: tests/contract/usage_fixes.rs
+assertion_line: 531
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "info",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "help",
+          "info"
+        ],
+        "display": "omaddons help info"
+      }
+    ],
+    "code": "usage",
+    "details": {
+      "command": "info",
+      "target": "era"
+    },
+    "fix": "omaddons info dbm -t era",
+    "fix_argv": [
+      "omaddons",
+      "info",
+      "dbm",
+      "-t",
+      "era"
+    ],
+    "message": "'era' is a client, not an argument of info; the client goes in -t",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

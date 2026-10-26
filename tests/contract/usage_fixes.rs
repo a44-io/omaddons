@@ -4,9 +4,15 @@
 //! user typed (through an alias or a synonym), a command that only reads, or
 //! `omaddons help …` (README "Command reference").
 
+use std::collections::BTreeSet;
+
 use super::*;
+use crate::common::tlog::tlog;
 use clap::{CommandFactory as _, Parser as _};
-use omaddons::cli::{Cli, command_path, usage_error};
+use omaddons::cli::{Cli, command_path, usage_error, usage_error_with};
+use omaddons::error::{Error, UsageFix};
+use omaddons::resolve::catalog::Catalog;
+use omaddons::vocabulary::{CLIENT_FREE, SELECTS_CLIENT, TargetVocabulary, selects_client};
 
 /// The verb rule on one suggestion: `help …`, the command the user typed (`typed`, its
 /// canonical path), or one that only reads.
@@ -312,4 +318,421 @@ fn every_one_edit_typo_of_every_command_gets_a_fix_that_runs() {
         }
     }
     assert!(checked > 100, "{checked}");
+}
+
+// Misplaced clients (M4-D12): a client named where a command or an argument belongs is
+// moved into -t, the user's command kept.
+
+/// Where a misplaced client was typed: in a command's place (hook 1) or an argument's
+/// (hook 2). It decides the message.
+#[derive(Debug, Clone, Copy)]
+enum Slot {
+    Command,
+    Argument,
+}
+
+/// (argv after `omaddons`, `fix_argv`, `details.target`, `details.command`, slot).
+type Misplaced = (
+    &'static [&'static str],
+    &'static [&'static str],
+    &'static str,
+    &'static str,
+    Slot,
+);
+
+const MISPLACED: &[Misplaced] = &[
+    (
+        &["retail", "update"],
+        &["omaddons", "update", "-t", "retail"],
+        "retail",
+        "update",
+        Slot::Command,
+    ),
+    (
+        &["era", "status"],
+        &["omaddons", "status", "-t", "era"],
+        "era",
+        "status",
+        Slot::Command,
+    ),
+    (
+        &["wotlk", "list"],
+        &["omaddons", "list", "-t", "wotlk"],
+        "wotlk",
+        "list",
+        Slot::Command,
+    ),
+    (
+        &["sod", "install", "questie"],
+        &["omaddons", "install", "questie", "-t", "sod"],
+        "sod",
+        "install",
+        Slot::Command,
+    ),
+    (
+        &["Retail", "upgrade"],
+        &["omaddons", "upgrade", "-t", "Retail"],
+        "Retail",
+        "update",
+        Slot::Command,
+    ),
+    (
+        &["--dry-run", "retail", "update"],
+        &["omaddons", "--dry-run", "update", "-t", "retail"],
+        "retail",
+        "update",
+        Slot::Command,
+    ),
+    (
+        &["retail", "remove", "--", "dbm"],
+        &["omaddons", "remove", "-t", "retail", "--", "dbm"],
+        "retail",
+        "remove",
+        Slot::Command,
+    ),
+    (
+        &["backup", "retail", "list"],
+        &["omaddons", "backup", "list", "-t", "retail"],
+        "retail",
+        "backup list",
+        Slot::Command,
+    ),
+    (
+        &["errors", "retail"],
+        &["omaddons", "errors", "-t", "retail"],
+        "retail",
+        "errors",
+        Slot::Command,
+    ),
+    (
+        &["status", "retail"],
+        &["omaddons", "status", "-t", "retail"],
+        "retail",
+        "status",
+        Slot::Argument,
+    ),
+    (
+        &["list", "era"],
+        &["omaddons", "list", "-t", "era"],
+        "era",
+        "list",
+        Slot::Argument,
+    ),
+    (
+        &["outdated", "retail"],
+        &["omaddons", "outdated", "-t", "retail"],
+        "retail",
+        "outdated",
+        Slot::Argument,
+    ),
+    (
+        &["info", "dbm", "era"],
+        &["omaddons", "info", "dbm", "-t", "era"],
+        "era",
+        "info",
+        Slot::Argument,
+    ),
+    (
+        &["pin", "dbm", "retail"],
+        &["omaddons", "pin", "dbm", "-t", "retail"],
+        "retail",
+        "pin",
+        Slot::Argument,
+    ),
+    (
+        &["unpin", "dbm", "retail"],
+        &["omaddons", "unpin", "dbm", "-t", "retail"],
+        "retail",
+        "unpin",
+        Slot::Argument,
+    ),
+    (
+        &["pin", "dbm", "hc", "--version", "12.1.14"],
+        &["omaddons", "pin", "dbm", "-t", "hc", "--version", "12.1.14"],
+        "hc",
+        "pin",
+        Slot::Argument,
+    ),
+];
+
+/// Words that must keep the fix they had before M4-D12: no client, a command that never
+/// reads -t, a target already given, or nothing left to run.
+const NOT_MISPLACED: &[&[&str]] = &[
+    &["frobnicate", "update"],
+    &["retail"],
+    &["retail", "dbm"],
+    &["status", "dbm"],
+    &["info", "dbm", "questie"],
+    &["retail", "update", "-t", "era"],
+    &["status", "retail", "--flavor", "era"],
+    &["retail", "config"],
+    &["retail", "targets"],
+    &["retail", "net-log"],
+    &["retail", "help"],
+    &["retail", "copy", "--from", "era", "--to", "classic"],
+    &["config", "retail"],
+    &["targets", "retail"],
+    &["omarchy", "retail"],
+];
+
+/// `omaddons <args> --json` through the contract's checks, the flag before any `--` (after
+/// it, it would be a positional).
+fn run_json(s: &Scene, args: &[&str], code: i32) -> support::Checked {
+    match args.iter().position(|a| *a == "--") {
+        Some(at) => {
+            let mut argv = owned(args);
+            argv.insert(at, "--json".to_owned());
+            support::check(s.home.exec(&argv), code)
+        }
+        None => s.json(args, code),
+    }
+}
+
+#[test]
+fn a_misplaced_client_moves_into_dash_t_and_keeps_the_verb() {
+    let s = Scene::new();
+    let log = tlog!();
+    for (args, fix, target, command, slot) in MISPLACED {
+        log.step(&format!("{args:?}"));
+        let c = run_json(&s, args, 2);
+        log.json("envelope", &c.envelope);
+        let ctx = c.run.context();
+        let error = &c.envelope["error"];
+        assert_eq!(error["code"], "usage", "{ctx}");
+        assert_eq!(error["retryable"], false, "{ctx}");
+        assert_eq!(support::strings(&error["fix_argv"]), owned(fix), "{ctx}");
+        assert_eq!(
+            error["details"],
+            serde_json::json!({ "target": target, "command": command }),
+            "{ctx}"
+        );
+        let help: Vec<&str> = ["omaddons", "help"]
+            .into_iter()
+            .chain(command.split(' '))
+            .collect();
+        assert_eq!(
+            error["alternatives"],
+            serde_json::json!([{ "display": help.join(" "), "argv": help }]),
+            "{ctx}"
+        );
+        let message = match slot {
+            Slot::Command => {
+                format!("'{target}' is a client, not a command; the client goes in -t")
+            }
+            Slot::Argument => format!(
+                "'{target}' is a client, not an argument of {command}; the client goes in -t"
+            ),
+        };
+        assert_eq!(error["message"], message, "{ctx}");
+        let fixed = owned(fix);
+        never_another_mutating_command(&fixed, Some(command), &ctx);
+        assert_eq!(command_path(&fixed).join(" "), *command, "{ctx}");
+        // A usage error is named by the words it could read.
+        match *args {
+            ["retail", "update"] => {
+                assert_eq!(c.envelope["command"], "omaddons", "{ctx}");
+                insta::assert_json_snapshot!(
+                    "misplaced_client_before_the_verb",
+                    s.stable(&c.envelope)
+                );
+            }
+            ["status", "retail"] => assert_eq!(c.envelope["command"], "status", "{ctx}"),
+            ["info", "dbm", "era"] => {
+                insta::assert_json_snapshot!(
+                    "misplaced_client_after_the_verb",
+                    s.stable(&c.envelope)
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn a_word_that_names_no_client_keeps_todays_fix() {
+    let s = Scene::new();
+    let log = tlog!();
+    for args in NOT_MISPLACED {
+        log.step(&format!("{args:?}"));
+        let c = s.json(args, 2);
+        log.json("envelope", &c.envelope);
+        let ctx = c.run.context();
+        let full: Vec<String> = std::iter::once("omaddons")
+            .chain(args.iter().copied())
+            .chain(["--json"])
+            .map(str::to_owned)
+            .collect();
+        let err = Cli::try_parse_from(&full).unwrap_err();
+        let oracle = usage_error_with(&err, &full, &TargetVocabulary::empty, &|_| false);
+        let oracle = serde_json::to_value(&oracle).unwrap();
+        let error = &c.envelope["error"];
+        for field in ["fix_argv", "alternatives", "message"] {
+            assert_eq!(error[field], oracle[field], "{field}\n{ctx}");
+        }
+        assert_eq!(error["details"], serde_json::json!({}), "{ctx}");
+        assert_eq!(usage_error(&err, &full).usage_fix, UsageFix::Guess, "{ctx}");
+    }
+}
+
+/// The error `argv` gets in process with the built-in words, and the one it got before
+/// M4-D12 (no words); `None` when `argv` parses.
+fn hooked(argv: &[String]) -> Option<(Error, Error)> {
+    let err = Cli::try_parse_from(argv).err()?;
+    let oracle = usage_error_with(&err, argv, &TargetVocabulary::empty, &|_| false);
+    Some((usage_error(&err, argv), oracle))
+}
+
+/// An error's fix argv, `details` and `usage_fix`, for assertion messages.
+fn shown(error: &Error) -> String {
+    format!(
+        "fix {:?}, details {}, usage_fix {:?}",
+        error.fix.argv(),
+        error.details,
+        error.usage_fix
+    )
+}
+
+/// Every built-in word, before `update` and after `status`, is moved; every command path,
+/// with `retail` before or after it, is either moved with its verb kept or gets exactly the
+/// error it got before M4-D12 (in process, as the one-edit sweep).
+#[test]
+fn every_client_word_before_or_after_a_command_gets_a_fix_that_keeps_the_verb() {
+    let catalog = Catalog::builtin().unwrap();
+    let mut words = 0;
+    for (spelling, _) in TargetVocabulary::builtin().words() {
+        // The addon wins (the catalog guard below covers those words).
+        if catalog.entries().iter().any(|e| e.answers_to(spelling)) {
+            continue;
+        }
+        for (typed, fixed) in [
+            ([spelling, "update"], ["update", "-t", spelling]),
+            (["status", spelling], ["status", "-t", spelling]),
+        ] {
+            let argv = owned(&[&["omaddons"][..], &typed].concat());
+            let (error, oracle) = hooked(&argv).expect("a misplaced client does not parse");
+            let ctx = format!(
+                "{argv:?}\n got    {}\n oracle {}",
+                shown(&error),
+                shown(&oracle)
+            );
+            assert_eq!(error.usage_fix, UsageFix::UserVerb, "{ctx}");
+            let fix = error.fix.argv().unwrap_or_default();
+            assert_eq!(fix, owned(&[&["omaddons"][..], &fixed].concat()), "{ctx}");
+            assert_eq!(error.details["target"], spelling, "{ctx}");
+            support::parses(fix, &ctx);
+        }
+        words += 1;
+    }
+    assert!(words > 50, "{words} words swept");
+
+    let mut runnable = BTreeSet::new();
+    let mut moved = BTreeSet::new();
+    for entry in omaddons::app::COMMANDS {
+        let path: Vec<&str> = entry.name.split(' ').collect();
+        let first = path.first().copied().unwrap_or_default();
+        let alone = owned(&[&["omaddons"][..], &path, &["-t", "retail"]].concat());
+        // A client-selecting command that runs with -t alone: hook 1 must move a client
+        // typed before it.
+        let must_move = SELECTS_CLIENT.contains(&first) && Cli::try_parse_from(&alone).is_ok();
+        if must_move {
+            runnable.insert(entry.name);
+        }
+        let before = owned(&[&["omaddons", "retail"][..], &path].concat());
+        let after = owned(&[&["omaddons"][..], &path, &["retail"]].concat());
+        for (argv, hook1) in [(before, true), (after, false)] {
+            // Those positionals belong to the command (C2's preflight).
+            let Some((error, oracle)) = hooked(&argv) else {
+                continue;
+            };
+            let ctx = format!(
+                "{argv:?}\n got    {}\n oracle {}",
+                shown(&error),
+                shown(&oracle)
+            );
+            if error.usage_fix == UsageFix::UserVerb {
+                let fix = error.fix.argv().unwrap_or_default().to_vec();
+                let command = error.details["command"].as_str().unwrap_or_default();
+                assert!(
+                    selects_client(&owned(&path)),
+                    "moved on {}\n{ctx}",
+                    entry.name
+                );
+                support::parses(&fix, &ctx);
+                assert_eq!(command_path(&fix).join(" "), command, "{ctx}");
+                assert!(
+                    fix.windows(2).any(|w| w[0] == "-t" && w[1] == "retail"),
+                    "no -t retail\n{ctx}"
+                );
+                never_another_mutating_command(&fix, Some(command), &ctx);
+                // Every other token kept, in order.
+                let mut rest = fix.iter();
+                // ubs:ignore — comparing command-line words, not secrets
+                for token in argv.iter().filter(|a| *a != "retail") {
+                    // ubs:ignore — comparing command-line words, not secrets
+                    assert!(rest.any(|f| f == token), "{token} dropped or moved\n{ctx}");
+                }
+                if hook1 {
+                    moved.insert(entry.name);
+                }
+            } else {
+                assert_eq!(error, oracle, "{ctx}");
+            }
+            if CLIENT_FREE.contains(&first) {
+                assert_eq!(error.usage_fix, UsageFix::Guess, "{ctx}");
+            }
+            if hook1 && must_move {
+                assert_eq!(error.usage_fix, UsageFix::UserVerb, "a silent miss\n{ctx}");
+            }
+        }
+    }
+    assert_eq!(
+        moved, runnable,
+        "moved before the verb vs runnable with -t alone"
+    );
+    for expected in [
+        "status",
+        "list",
+        "outdated",
+        "update",
+        "export",
+        "history",
+        "errors",
+        "backup",
+        "backup list",
+    ] {
+        assert!(runnable.contains(expected), "{expected}: {runnable:?}");
+    }
+}
+
+/// The addon wins: a catalog name or alias that is also a client word is never moved. No
+/// such name exists today; this guards the day one does (an addon called Hardcore exists).
+#[test]
+fn a_catalog_name_that_is_a_client_word_is_never_moved() {
+    let log = tlog!();
+    let words = TargetVocabulary::builtin();
+    let catalog = Catalog::builtin().unwrap();
+    let names: Vec<&str> = catalog
+        .entries()
+        .iter()
+        .flat_map(|e| std::iter::once(&e.name).chain(&e.aliases))
+        .map(String::as_str)
+        .filter(|name| words.classify(name).is_some())
+        .collect();
+    log.note(format!(
+        "{} catalog names or aliases are client words: {names:?}",
+        names.len()
+    ));
+    for name in names {
+        for typed in [[name, "update"], ["status", name]] {
+            let argv = owned(&[&["omaddons"][..], &typed].concat());
+            let (error, oracle) = hooked(&argv).expect("does not parse");
+            assert_eq!(
+                error,
+                oracle,
+                "{argv:?}\n got    {}\n oracle {}",
+                shown(&error),
+                shown(&oracle)
+            );
+        }
+    }
 }

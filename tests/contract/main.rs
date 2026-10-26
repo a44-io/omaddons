@@ -1,3 +1,5 @@
+//! e2e suite: the CLI contract (envelopes, exits, usage fixes) through the real binary.
+//!
 //! The M1 CLI contract conformance suite (vision §5.9, §7 M1 contract core): every
 //! command, on success and on failure, prints exactly one JSON envelope on stdout with
 //! the documented keys in order, an `exit_code` equal to the process exit and to the
