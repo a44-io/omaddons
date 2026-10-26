@@ -685,3 +685,428 @@ mod core_units {
         assert_eq!(seqs, expected, "{context}: one sequence, in file order");
     }
 }
+
+mod run_units {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::path::Path;
+    use std::process::Command;
+
+    use serde_json::{Value, json};
+
+    use crate::common::env::TestEnv;
+    use crate::common::home::Home;
+    use crate::common::tlog::{
+        NetLogAdded, Runner, Stdout, TestLog, base_vars, classify_stdout, net_log_added, overrides,
+        parse_stderr, root_allowed,
+    };
+    use crate::common::trees::{EntryKind, listing, tree_diff, tree_entries, tree_hash};
+
+    /// The suite directory of the subject logs.
+    const CHILD: &str = "tlog_selftest_child";
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn stdout_is_classified() {
+        let cases = [
+            ("envelope", "{\"ok\":true}\n", "envelope"),
+            ("two_lines", "{\"ok\":true}\nx\n", "text"),
+            ("plain", "omaddons 0.1.0\n", "text"),
+            ("empty", "", "empty"),
+            ("array", "[1]\n", "text"),
+            ("no_newline", "{\"ok\":false}", "envelope"),
+        ];
+        for (name, input, expected) in cases {
+            let output = classify_stdout(input, 1 << 20);
+            let form = match &output {
+                Stdout::Envelope { .. } => "envelope",
+                Stdout::Text { .. } => "text",
+                Stdout::Empty { .. } => "empty",
+            };
+            assert_eq!(form, expected, "{name}: input {input:?} gave {output:?}");
+        }
+        let input = "{\"ok\":true,\"data\":\"0123456789\"}\n";
+        let output = classify_stdout(input, 8);
+        let cut = matches!(
+            &output,
+            Stdout::Text { text, truncated: Some(t), .. } if text == "{\"ok\":tr" && t.kept == 8
+        );
+        assert!(cut, "truncated_envelope: input {input:?} gave {output:?}");
+    }
+
+    #[test]
+    fn stderr_lines_parse_one_by_one() {
+        let event = "{\"event\":\"log\",\"level\":\"debug\"}";
+        let parsed = json!({"event": "log", "level": "debug"});
+        let cases: [(&str, String, Vec<Value>); 3] = [
+            (
+                "mixed",
+                format!("{event}\nplain text\n{event}\n"),
+                vec![parsed.clone(), json!("plain text"), parsed.clone()],
+            ),
+            ("empty", String::new(), vec![]),
+            (
+                "blank_line",
+                format!("{event}\n\n{event}\n"),
+                vec![parsed.clone(), json!(""), parsed.clone()],
+            ),
+        ];
+        for (name, input, expected) in cases {
+            let output = parse_stderr(&input, 1 << 20);
+            assert_eq!(
+                output.lines, expected,
+                "{name}: input {input:?} gave {output:?}"
+            );
+            assert_eq!(
+                output.bytes,
+                input.len(),
+                "{name}: input {input:?} gave {output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn net_log_additions_are_the_new_suffix() {
+        let (a, b, c) = (
+            "{\"purpose\":\"a\"}",
+            "{\"purpose\":\"b\"}",
+            "{\"purpose\":\"c\"}",
+        );
+        let added = |lines: &[&str], rotated| NetLogAdded {
+            added: lines
+                .iter()
+                .map(|line| serde_json::from_str(line).unwrap_or_else(|_| json!(line)))
+                .collect(),
+            rotated,
+        };
+        // (name, before: net.log.1 then net.log, after: net.log.1, after: net.log, expected)
+        let cases = [
+            (
+                "appended",
+                strings(&[a]),
+                strings(&[]),
+                strings(&[a, b, c]),
+                added(&[b, c], false),
+            ),
+            (
+                "first_run",
+                strings(&[]),
+                strings(&[]),
+                strings(&[a, b]),
+                added(&[a, b], false),
+            ),
+            (
+                "nothing",
+                strings(&[a]),
+                strings(&[]),
+                strings(&[a]),
+                added(&[], false),
+            ),
+            (
+                "rotation_kept",
+                strings(&[a, b]),
+                strings(&[a, b]),
+                strings(&[c]),
+                added(&[c], false),
+            ),
+            (
+                "rotation_dropped",
+                strings(&[a, b]),
+                strings(&[b]),
+                strings(&[c]),
+                added(&[c], true),
+            ),
+            (
+                "garbage",
+                strings(&[]),
+                strings(&[]),
+                strings(&["not json"]),
+                added(&["not json"], false),
+            ),
+        ];
+        for (name, before, after_old, after_current, expected) in cases {
+            let output = net_log_added(&before, &after_old, &after_current);
+            assert_eq!(
+                output, expected,
+                "{name}: input {before:?} then {after_old:?} + {after_current:?} gave {output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn overrides_exclude_the_base_and_redact_secrets() {
+        let env = TestEnv::new();
+        let base = base_vars(&env);
+        let home = Home::new(&["wow"]);
+        let home_base = base_vars(&home.env);
+        let argv = strings(&["status"]);
+
+        let plain = Runner::command(&env, &argv);
+        let mut proc_root = Runner::command(&env, &argv);
+        let other_proc = env.root().join("other-proc");
+        proc_root.env("OMADDONS_PROC_ROOT", &other_proc);
+        let fixtures = Runner::command(&home, &argv);
+        let mut token = Runner::command(&env, &argv);
+        // ubs:ignore — a fake planted value; the test asserts it is redacted
+        token.env("OMADDONS_GITHUB_TOKEN", "tlogSelftestFake-0123");
+        let mut removed = Runner::command(&env, &argv);
+        removed.env_remove("HOME");
+
+        // (name, the environment's base, the command, the overrides expected)
+        type Case<'a> = (
+            &'a str,
+            &'a BTreeMap<String, String>,
+            &'a Command,
+            Vec<(&'a str, String)>,
+        );
+        let cases: [Case<'_>; 5] = [
+            ("base_only", &base, &plain, vec![]),
+            (
+                "proc_root_changed",
+                &base,
+                &proc_root,
+                vec![("OMADDONS_PROC_ROOT", other_proc.display().to_string())],
+            ),
+            (
+                "fixtures",
+                &home_base,
+                &fixtures,
+                vec![("OMADDONS_HTTP_FIXTURES", home.http.display().to_string())],
+            ),
+            (
+                "token",
+                &base,
+                &token,
+                vec![("OMADDONS_GITHUB_TOKEN", "<redacted>".to_owned())],
+            ),
+            ("removed", &base, &removed, vec![]),
+        ];
+        for (name, base, command, expected) in cases {
+            let output = overrides(base, command);
+            let expected: BTreeMap<String, String> = expected
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect();
+            assert_eq!(output.vars, expected, "{name}: {command:?} gave {output:?}");
+        }
+        let output = overrides(&base, &token);
+        let learned: Vec<&str> = output
+            .secrets
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(learned, ["OMADDONS_GITHUB_TOKEN"], "token: gave {output:?}");
+    }
+
+    /// A tree: `a.txt`, `dir/b.txt`, an empty `dir/empty/`, and `link` → `a.txt`.
+    fn sample_tree(root: &Path) {
+        fs::create_dir_all(root.join("dir/empty")).unwrap();
+        fs::write(root.join("a.txt"), "alpha").unwrap();
+        fs::write(root.join("dir/b.txt"), "bravo").unwrap();
+        symlink("a.txt", root.join("link")).unwrap();
+    }
+
+    #[test]
+    fn tree_entries_cover_kind_mode_content_and_target() {
+        let env = TestEnv::new();
+        let root = env.root().join("tree");
+        sample_tree(&root);
+        fs::write(root.join("private.txt"), "0600").unwrap();
+        fs::set_permissions(root.join("private.txt"), fs::Permissions::from_mode(0o600)).unwrap();
+        let entries = tree_entries(&root);
+        let context = listing(&root);
+        let paths: Vec<&str> = entries.keys().map(String::as_str).collect();
+        assert_eq!(
+            paths,
+            [
+                "a.txt",
+                "dir",
+                "dir/b.txt",
+                "dir/empty",
+                "link",
+                "private.txt"
+            ],
+            "{context}"
+        );
+        let a = &entries["a.txt"];
+        assert_eq!(
+            (a.kind, a.len, a.target.as_deref()),
+            (EntryKind::File, 5, None),
+            "{context}"
+        );
+        assert_eq!(
+            a.sha256.as_deref(),
+            Some("8ed3f6ad685b959ead7022518e1af76cd816f8e8ec7ccdda1ed4018e8f2223f8"),
+            "{context}: the SHA-256 of `alpha`"
+        );
+        assert_eq!(entries["dir"].kind, EntryKind::Dir, "{context}");
+        assert_eq!(entries["dir/empty"].kind, EntryKind::Dir, "{context}");
+        let link = &entries["link"];
+        assert_eq!(
+            (link.kind, link.target.as_deref(), link.sha256.as_deref()),
+            (EntryKind::Symlink, Some("a.txt"), None),
+            "{context}"
+        );
+        assert_eq!(entries["private.txt"].mode, 0o600, "{context}");
+    }
+
+    type Mutate = fn(&Path);
+
+    /// Each change to [`sample_tree`] and the lines `TreeDiff::first` gives for it.
+    fn tree_changes() -> [(&'static str, Mutate, &'static [&'static str]); 7] {
+        [
+            (
+                "added",
+                |r| fs::write(r.join("new.txt"), "n").unwrap(),
+                &["+ new.txt"],
+            ),
+            (
+                "removed",
+                |r| fs::remove_file(r.join("dir/b.txt")).unwrap(),
+                &["- dir/b.txt"],
+            ),
+            (
+                "same_size_edit",
+                |r| fs::write(r.join("a.txt"), "alphA").unwrap(),
+                &["~ a.txt (content)"],
+            ),
+            (
+                "chmod",
+                |r| {
+                    fs::set_permissions(r.join("a.txt"), fs::Permissions::from_mode(0o600)).unwrap()
+                },
+                &["~ a.txt (mode)"],
+            ),
+            (
+                "file_to_dir",
+                |r| {
+                    fs::remove_file(r.join("a.txt")).unwrap();
+                    fs::create_dir(r.join("a.txt")).unwrap();
+                },
+                &["~ a.txt (kind)"],
+            ),
+            (
+                "retarget",
+                |r| {
+                    fs::remove_file(r.join("link")).unwrap();
+                    symlink("dir/b.txt", r.join("link")).unwrap();
+                },
+                &["~ link (target)"],
+            ),
+            (
+                "empty_dir",
+                |r| fs::create_dir(r.join("dir/also-empty")).unwrap(),
+                &["+ dir/also-empty"],
+            ),
+        ]
+    }
+
+    #[test]
+    fn tree_diff_names_what_changed() {
+        for (name, mutate, expected) in tree_changes() {
+            let env = TestEnv::new();
+            let root = env.root().join("tree");
+            sample_tree(&root);
+            let before = tree_entries(&root);
+            mutate(&root);
+            let diff = tree_diff(&before, &tree_entries(&root));
+            let output = diff.first(20);
+            assert_eq!(
+                output,
+                expected,
+                "{name}: gave {diff:?}\n{}",
+                listing(&root)
+            );
+            assert_eq!(diff.total, expected.len(), "{name}: gave {diff:?}");
+        }
+
+        let env = TestEnv::new();
+        let root = env.root().join("many");
+        fs::create_dir_all(&root).unwrap();
+        for i in 0..25 {
+            fs::write(root.join(format!("f{i:02}")), "x").unwrap();
+        }
+        let before = tree_entries(&root);
+        for i in 0..25 {
+            fs::write(root.join(format!("f{i:02}")), "y").unwrap();
+        }
+        let diff = tree_diff(&before, &tree_entries(&root));
+        let expected: Vec<String> = (0..20).map(|i| format!("~ f{i:02} (content)")).collect();
+        assert_eq!(diff.total, 25, "many: gave {diff:?}");
+        assert_eq!(diff.first(20), expected, "many: the first 20 in path order");
+    }
+
+    #[test]
+    fn tree_hash_and_tree_entries_agree() {
+        let unchanged: Mutate = |_| {};
+        let cases = tree_changes()
+            .into_iter()
+            .map(|(name, mutate, _)| (name, mutate))
+            .chain([("unchanged", unchanged)]);
+        for (name, mutate) in cases {
+            let env = TestEnv::new();
+            let root = env.root().join("tree");
+            sample_tree(&root);
+            let (hash, entries) = (tree_hash(&root), tree_entries(&root));
+            mutate(&root);
+            let hash_moved = hash != tree_hash(&root);
+            let diff = tree_diff(&entries, &tree_entries(&root));
+            assert_eq!(
+                hash_moved,
+                !diff.is_empty(),
+                "{name}: tree_hash moved {hash_moved}, tree_diff gave {diff:?}\n{}",
+                listing(&root)
+            );
+        }
+    }
+
+    #[test]
+    fn tree_roots_outside_the_test_are_refused() {
+        let env = TestEnv::new();
+        let roots = [env.root().to_path_buf()];
+        let cases = [
+            ("env_root", env.root().join("home"), true),
+            (
+                "target_tmp",
+                Path::new(env!("CARGO_TARGET_TMPDIR")).join("tlog-selftest-tree"),
+                true,
+            ),
+            (
+                "repo",
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+                false,
+            ),
+            (
+                "parent_escape",
+                env.root().join("../../no-such-dir/x"),
+                false,
+            ),
+        ];
+        for (name, input, expected) in cases {
+            let output = root_allowed(&input, &roots);
+            assert_eq!(output, expected, "{name}: input {input:?} gave {output:?}");
+        }
+
+        let log = TestLog::new(CHILD, "refused_root");
+        let dir = log.dir().to_path_buf();
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let caught = catch_unwind(AssertUnwindSafe(|| log.tree("repo", &repo)));
+        let payload = caught.expect_err("a root in the repository is refused");
+        let message = payload.downcast_ref::<String>().unwrap();
+        assert!(
+            message.contains("is outside this test's synthetic directories"),
+            "refused: the panic says why: {message}"
+        );
+        drop(log);
+        let steps = fs::read_to_string(dir.join("steps.jsonl")).unwrap();
+        assert!(
+            !steps.contains("\"kind\":\"tree\"") && steps.contains("\"kind\":\"failure\""),
+            "refused: no tree was recorded, a failure was: {steps}"
+        );
+    }
+}

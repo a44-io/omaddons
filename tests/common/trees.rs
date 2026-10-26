@@ -474,6 +474,150 @@ pub fn tree_hash(dir: &Path) -> String {
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// What a tree entry is, as [`tree_hash`] tells entries apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryKind {
+    File,
+    Dir,
+    Symlink,
+}
+
+/// One entry of [`tree_entries`]: what [`tree_hash`] hashes of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub kind: EntryKind,
+    /// The permission bits, `mode & 0o7777`.
+    pub mode: u32,
+    /// A file's length; 0 for a directory or a symlink.
+    pub len: u64,
+    /// A file's SHA-256.
+    pub sha256: Option<String>,
+    /// A symlink's target.
+    pub target: Option<String>,
+}
+
+/// Every entry under `dir`, by relative path: the same walk, kinds and modes as
+/// [`tree_hash`], so the two differ together, but able to say which path differs.
+/// Symlinks are not followed.
+pub fn tree_entries(dir: &Path) -> BTreeMap<String, Entry> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut entries = BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in fs::read_dir(&at).unwrap() {
+            let path = entry.unwrap().path();
+            let meta = fs::symlink_metadata(&path).unwrap();
+            let mode = meta.permissions().mode() & 0o7777;
+            let entry = if meta.file_type().is_symlink() {
+                let target = fs::read_link(&path).unwrap().display().to_string();
+                Entry {
+                    kind: EntryKind::Symlink,
+                    mode,
+                    len: 0,
+                    sha256: None,
+                    target: Some(target),
+                }
+            } else if meta.is_dir() {
+                stack.push(path.clone());
+                Entry {
+                    kind: EntryKind::Dir,
+                    mode,
+                    len: 0,
+                    sha256: None,
+                    target: None,
+                }
+            } else {
+                let bytes = fs::read(&path).unwrap();
+                let digest = Sha256::digest(&bytes)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                Entry {
+                    kind: EntryKind::File,
+                    mode,
+                    len: bytes.len() as u64,
+                    sha256: Some(digest),
+                    target: None,
+                }
+            };
+            let rel = path.strip_prefix(dir).unwrap().display().to_string();
+            entries.insert(rel, entry);
+        }
+    }
+    entries
+}
+
+/// How two [`tree_entries`] differ: paths only `after` has, paths only `before` has, and
+/// paths both have that differ, each with what changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TreeDiff {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    /// `(path, what)`: `what` joins `kind`, `content`, `target` and `mode` with `+`, in
+    /// that order; a path whose kind changed says `kind` alone.
+    pub changed: Vec<(String, String)>,
+    pub total: usize,
+}
+
+impl TreeDiff {
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    /// The first `n` differing paths in path order: `+ <path>`, `- <path>` or
+    /// `~ <path> (<what>)`.
+    pub fn first(&self, n: usize) -> Vec<String> {
+        let mut lines: Vec<(&str, String)> = Vec::with_capacity(self.total);
+        lines.extend(self.added.iter().map(|p| (p.as_str(), format!("+ {p}"))));
+        lines.extend(self.removed.iter().map(|p| (p.as_str(), format!("- {p}"))));
+        lines.extend(
+            self.changed
+                .iter()
+                .map(|(p, what)| (p.as_str(), format!("~ {p} ({what})"))),
+        );
+        lines.sort_by(|a, b| a.0.cmp(b.0));
+        lines.into_iter().take(n).map(|(_, line)| line).collect()
+    }
+}
+
+/// What changed from `before` to `after` (two [`tree_entries`]).
+pub fn tree_diff(before: &BTreeMap<String, Entry>, after: &BTreeMap<String, Entry>) -> TreeDiff {
+    let mut diff = TreeDiff::default();
+    for (path, now) in after {
+        match before.get(path) {
+            None => diff.added.push(path.clone()),
+            Some(was) if was != now => diff.changed.push((path.clone(), what_changed(was, now))),
+            Some(_) => {}
+        }
+    }
+    diff.removed = before
+        .keys()
+        .filter(|path| !after.contains_key(*path))
+        .cloned()
+        .collect();
+    diff.total = diff.added.len() + diff.removed.len() + diff.changed.len();
+    diff
+}
+
+/// `kind` alone when the kind changed (the rest does not compare across kinds), else
+/// `content`, `target` and `mode` as they differ, joined with `+`.
+fn what_changed(was: &Entry, now: &Entry) -> String {
+    if was.kind != now.kind {
+        return "kind".to_owned();
+    }
+    let mut what = Vec::new();
+    if was.len != now.len || was.sha256 != now.sha256 {
+        what.push("content");
+    }
+    if was.target != now.target {
+        what.push("target");
+    }
+    if was.mode != now.mode {
+        what.push("mode");
+    }
+    what.join("+")
+}
+
 /// Every path under `dir` with its kind, length and modification time, sorted: a cheap
 /// "nothing was written" check for real installs, where hashing gigabytes would take
 /// minutes. Symlinks are not followed.

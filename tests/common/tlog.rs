@@ -44,6 +44,30 @@
 //! counts the records left out. A write that fails (a full disk) prints one line and
 //! turns that log's writes off; the log is a diagnostic and never fails a test itself.
 //!
+//! **Runs.** [`TestLog::run`] runs the real binary on a [`Runner`] (a `TestEnv`, a
+//! `Home`, a `Scene`) with exactly the argv given (nothing is appended, `--json`
+//! included), and [`TestLog::cmd`] sets one up first: extra variables, a working
+//! directory, stdin, failpoints, a `pause` directory, a timeout ([`RUN_TIMEOUT`] by
+//! default, after which the child is killed and the test fails), or the background
+//! ([`Cmd::spawn`], then [`Running::wait`]). Each run is one `run` record: its argv, the
+//! variables it set beyond its environment's base (secret-named ones `<redacted>`), its
+//! working directory, the failpoints armed, stdin's length (never its content), its
+//! times, its exit or signal, stdout (the envelope parsed when it is one, its keys then
+//! sorted), stderr (each NDJSON event parsed) and the `net.log` lines it appended. Two runs in parallel on one
+//! home each see the other's `net.log` lines. The first run on a `TestEnv` writes an
+//! `env` record with that environment's base variables. The returned [`Ran`] holds the
+//! raw output; its assertions (`ok`, `exit`, `fails`, `aborted`, `envelope`, `data`, …)
+//! write a `failure` record and fail the test naming the run, its step, the exit, the
+//! envelope's error, the argv and the transcript.
+//!
+//! **Pauses, trees and cases.** [`TestLog::reached`] and [`TestLog::resume`] record a
+//! `pause` failpoint's interleaving. [`TestLog::tree`] records a tree's `tree_hash` under
+//! a label; [`TestLog::assert_unchanged`] fails naming the first [`DIFF_PATHS_SHOWN`]
+//! paths that differ since, and [`TestLog::diff`] returns the difference for the test to
+//! assert on. All three refuse a root outside the test's synthetic directories before
+//! reading it. [`TestLog::case`] gives each case of a table-driven or parallel test a
+//! sub-log of its own under `cases/<name>/`, within the parent's byte budget.
+//!
 //! **Conventions.**
 //!
 //! 1. Every M4 integration or end-to-end test that runs more than one command logs
@@ -59,16 +83,27 @@
 //! 6. Real-machine tests and live probes never use `TestLog`.
 //! 7. Bead comments quote the log root as `target/tmp/test-logs`, never an absolute path.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::io::{self, Read, Write};
+use std::os::unix::process::ExitStatusExt;
+use std::path::{Component, Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use super::engine::Scene;
+use super::env::TestEnv;
+use super::home::{Home, Run};
+use super::pause::Pause;
+use super::privacy::PRIVATE;
+use super::trees::{Entry, TreeDiff, tree_diff, tree_entries, tree_hash};
 
 /// The most bytes a record keeps of one stream (stdout, stderr), one note's text or one
 /// JSON value's serialization.
@@ -99,6 +134,12 @@ const CAPPED_RESERVE_BYTES: u64 = 256;
 const SUMMARY_CHARS: usize = 120;
 /// The longest value an `assert` heading shows inline.
 const INLINE_VALUE_CHARS: usize = 80;
+/// The longest argv a run's one-line summary shows.
+const SUMMARY_ARGV_CHARS: usize = 60;
+/// How often a waiting run checks whether its child exited.
+const POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// The signal an `abort` failpoint dies by.
+const SIGABRT: i32 = 6;
 
 /// The directory every test log is under: `<CARGO_TARGET_TMPDIR>/test-logs`.
 pub fn log_root() -> PathBuf {
@@ -498,6 +539,84 @@ enum Record {
         dropped: u64,
         elapsed_ms: u64,
     },
+    /// A `TestEnv` the log met: its placeholder and base variables.
+    Env {
+        seq: u64,
+        name: String,
+        vars: BTreeMap<String, String>,
+    },
+    Run(Box<RunRecord>),
+    Pause {
+        seq: u64,
+        step: Option<String>,
+        action: &'static str,
+        name: String,
+        dir: String,
+        waited_ms: Option<u64>,
+    },
+    Tree {
+        seq: u64,
+        step: Option<String>,
+        label: String,
+        root: String,
+        exists: bool,
+        hash: Option<String>,
+        entries: usize,
+    },
+    TreeCheck {
+        seq: u64,
+        step: Option<String>,
+        label: String,
+        root: String,
+        check: &'static str,
+        expected: Option<String>,
+        actual: Option<String>,
+        equal: bool,
+        diff: Option<DiffRecord>,
+    },
+    Case {
+        seq: u64,
+        step: Option<String>,
+        name: String,
+        dir: String,
+    },
+}
+
+/// A `run` record (Technical Approach 4 of the bead).
+#[derive(Serialize)]
+struct RunRecord {
+    seq: u64,
+    step: Option<String>,
+    env: String,
+    argv: Vec<String>,
+    cwd: String,
+    overrides: BTreeMap<String, String>,
+    failpoints: Option<FailpointsRecord>,
+    stdin_bytes: Option<usize>,
+    background: bool,
+    started_at: String,
+    elapsed_ms: u64,
+    exit: i32,
+    signal: Option<i32>,
+    timed_out: bool,
+    stdout: Stdout,
+    stderr: Stderr,
+    net_log: NetLogAdded,
+    scrubbed: Vec<String>,
+}
+
+/// The failpoints a run armed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct FailpointsRecord {
+    spec: Option<String>,
+    pause_dir: Option<String>,
+}
+
+/// A tree check's difference: how many paths, and the first ones.
+#[derive(Serialize)]
+struct DiffRecord {
+    total: usize,
+    first: Vec<String>,
 }
 
 impl Record {
@@ -510,7 +629,13 @@ impl Record {
             | Record::Assert { seq, .. }
             | Record::Failure { seq, .. }
             | Record::Capped { seq, .. }
-            | Record::End { seq, .. } => *seq,
+            | Record::End { seq, .. }
+            | Record::Env { seq, .. }
+            | Record::Pause { seq, .. }
+            | Record::Tree { seq, .. }
+            | Record::TreeCheck { seq, .. }
+            | Record::Case { seq, .. } => *seq,
+            Record::Run(run) => run.seq,
         }
     }
 
@@ -535,6 +660,48 @@ impl Record {
                 thousands(*test_bytes)
             ),
             Record::End { outcome, .. } => format!("end: {outcome}"),
+            Record::Env { name, .. } => format!("env {name}"),
+            Record::Run(run) => {
+                let argv: String = run.argv.join(" ");
+                let mut shown: String = argv.chars().take(SUMMARY_ARGV_CHARS).collect();
+                if shown.len() < argv.len() {
+                    shown.push('…');
+                }
+                format!("run {shown} → {}", run_ending(run))
+            }
+            Record::Pause {
+                action,
+                name,
+                waited_ms,
+                ..
+            } => match waited_ms {
+                Some(ms) => format!("pause {name}: {action} ({ms} ms)"),
+                None => format!("pause {name}: {action}"),
+            },
+            Record::Tree {
+                label,
+                hash,
+                entries,
+                ..
+            } => match hash {
+                Some(hash) => format!("tree {label}: {} ({entries} entries)", short_hash(hash)),
+                None => format!("tree {label}: absent"),
+            },
+            Record::TreeCheck {
+                label,
+                check,
+                equal,
+                diff,
+                ..
+            } => {
+                let paths = diff.as_ref().map_or(0, |d| d.total);
+                match (*check, *equal) {
+                    ("unchanged", true) => format!("tree check {label}: unchanged"),
+                    ("unchanged", false) => format!("tree check {label}: changed, {paths} paths"),
+                    _ => format!("tree diff {label}: {paths} paths"),
+                }
+            }
+            Record::Case { name, .. } => format!("case {name}"),
         }
     }
 
@@ -647,8 +814,187 @@ impl Record {
                     thousands(*bytes)
                 )
             }
+            Record::Env { name, vars, .. } => {
+                let vars: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                format!("- env {}: {}\n", inline_code(name), vars.join(" "))
+            }
+            Record::Run(run) => render_run(run),
+            Record::Pause {
+                seq,
+                action,
+                name,
+                waited_ms,
+                ..
+            } => {
+                let after = waited_ms
+                    .map(|ms| format!(" after {ms} ms"))
+                    .unwrap_or_default();
+                format!(
+                    "\n### #{seq} pause {}: {action}{after}\n",
+                    inline_code(name)
+                )
+            }
+            Record::Tree {
+                seq,
+                label,
+                root,
+                hash,
+                entries,
+                ..
+            } => {
+                let label = inline_code(label);
+                let heading = match hash {
+                    Some(hash) => format!(
+                        "tree {label} = {}… ({} entries)",
+                        short_hash(hash),
+                        thousands(*entries as u64)
+                    ),
+                    None => format!("tree {label}: absent"),
+                };
+                format!("\n### #{seq} {heading}\n\n- root {}\n", inline_code(root))
+            }
+            Record::TreeCheck {
+                seq,
+                label,
+                check,
+                equal,
+                diff,
+                ..
+            } => {
+                let label = inline_code(label);
+                let total = diff.as_ref().map_or(0, |d| d.total);
+                let heading = match (*check, *equal) {
+                    ("unchanged", true) => format!("tree check {label}: unchanged"),
+                    ("unchanged", false) => format!("tree check {label}: changed ({total} paths)"),
+                    _ => format!("tree diff {label}: {total} paths"),
+                };
+                let mut out = format!("\n### #{seq} {heading}\n");
+                if let Some(diff) = diff.as_ref().filter(|d| !d.first.is_empty()) {
+                    out.push('\n');
+                    for line in &diff.first {
+                        out.push_str(&format!("- {}\n", inline_code(line)));
+                    }
+                    if diff.total > diff.first.len() {
+                        out.push_str(&format!("- … {} more\n", diff.total - diff.first.len()));
+                    }
+                }
+                out
+            }
+            Record::Case { seq, name, dir, .. } => {
+                format!(
+                    "\n### #{seq} case {} → {dir}/transcript.md\n",
+                    inline_code(name)
+                )
+            }
         }
     }
+}
+
+/// How a run ended, for its heading and summary.
+fn run_ending(run: &RunRecord) -> String {
+    let ms = thousands(run.elapsed_ms);
+    if run.timed_out {
+        format!("timed out after {ms} ms, killed")
+    } else if let Some(signal) = run.signal {
+        format!("killed by signal {signal} ({ms} ms)")
+    } else {
+        format!("exit {} ({ms} ms)", run.exit)
+    }
+}
+
+/// A run record's part of the transcript.
+fn render_run(run: &RunRecord) -> String {
+    let overrides = if run.overrides.is_empty() {
+        "none".to_owned()
+    } else {
+        let vars: Vec<String> = run
+            .overrides
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        vars.join(" ")
+    };
+    let failpoints = match &run.failpoints {
+        None => "none".to_owned(),
+        Some(armed) => {
+            let mut text = armed
+                .spec
+                .clone()
+                .unwrap_or_else(|| "none armed".to_owned());
+            if let Some(dir) = &armed.pause_dir {
+                text.push_str(&format!(" (pause dir {dir})"));
+            }
+            text
+        }
+    };
+    let stdin = run.stdin_bytes.map_or_else(
+        || "none".to_owned(),
+        |n| format!("{} bytes", thousands(n as u64)),
+    );
+    let rotated = if run.net_log.rotated {
+        " (rotated)"
+    } else {
+        ""
+    };
+    let background = if run.background { " · background" } else { "" };
+    let mut out = format!(
+        "\n### #{} run {} → {}\n\n- cwd `{}` · overrides {overrides} · failpoints {failpoints} · stdin {stdin} · net.log +{}{rotated}{background}\n",
+        run.seq,
+        inline_code(&run.argv.join(" ")),
+        run_ending(run),
+        run.cwd,
+        run.net_log.added.len()
+    );
+    match &run.stdout {
+        Stdout::Empty { .. } => out.push_str("\nstdout: empty\n"),
+        Stdout::Envelope { value, .. } => {
+            out.push_str(&format!(
+                "\nstdout (envelope):\n\n{}",
+                fenced(&pretty(value), "json")
+            ));
+        }
+        Stdout::Text {
+            text, truncated, ..
+        } => out.push_str(&format!(
+            "\nstdout (text):\n\n{}{}",
+            fenced(text, "text"),
+            truncation_line(*truncated)
+        )),
+    }
+    if run.stderr.lines.is_empty() {
+        out.push_str("\nstderr: empty\n");
+    } else {
+        let lines: Vec<String> = run.stderr.lines.iter().map(line_text).collect();
+        let plural = if lines.len() == 1 { "" } else { "s" };
+        out.push_str(&format!(
+            "\nstderr ({} line{plural}):\n\n{}{}",
+            lines.len(),
+            fenced(&lines.join("\n"), "json"),
+            truncation_line(run.stderr.truncated)
+        ));
+    }
+    if !run.net_log.added.is_empty() {
+        let lines: Vec<String> = run.net_log.added.iter().map(line_text).collect();
+        out.push_str(&format!(
+            "\nnet.log (+{}{rotated}):\n\n{}",
+            lines.len(),
+            fenced(&lines.join("\n"), "json")
+        ));
+    }
+    out
+}
+
+/// A parsed line as it was written: a string as is, JSON compact.
+fn line_text(line: &Value) -> String {
+    match line {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// The first 8 hex digits of a hash.
+fn short_hash(hash: &str) -> &str {
+    hash.get(..8).unwrap_or(hash)
 }
 
 /// Where a record was made, for messages: `in step "<label>"`, or `before any step`.
@@ -816,6 +1162,23 @@ struct Inner {
     /// The last [`LAST_STEPS_SHOWN`] summaries, `#<seq> <summary>`.
     ring: VecDeque<String>,
     ended: bool,
+    /// Each tree label's last hash and entries.
+    trees: BTreeMap<String, (Option<String>, BTreeMap<String, Entry>)>,
+}
+
+/// What a new log starts from: its place and names, and what a case inherits from its
+/// parent.
+struct Setup {
+    dir: PathBuf,
+    suite: String,
+    test: String,
+    echo_name: String,
+    mode: Mode,
+    caps: Caps,
+    budget: Arc<Mutex<Budget>>,
+    parent: Option<String>,
+    scrubber: Scrubber,
+    paths: Relativizer,
 }
 
 impl Inner {
@@ -997,15 +1360,18 @@ impl TestLog {
         let (suite, test) = (sanitize_component(suite), sanitize_component(test));
         let dir = log_root().join(&suite).join(&test);
         let budget = Budget::with_reserve(caps.test_bytes, CAPPED_RESERVE_BYTES);
-        Self::open(
+        Self::open(Setup {
             dir,
+            echo_name: format!("{suite}::{test}"),
             suite,
             test,
             mode,
             caps,
-            Arc::new(Mutex::new(budget)),
-            None,
-        )
+            budget: Arc::new(Mutex::new(budget)),
+            parent: None,
+            scrubber: Scrubber::new(),
+            paths: Relativizer::new(),
+        })
     }
 
     /// The log [`tlog!`] makes, named from where it was called.
@@ -1016,15 +1382,19 @@ impl TestLog {
         Self::new(&suite, &test)
     }
 
-    fn open(
-        dir: PathBuf,
-        suite: String,
-        test: String,
-        mode: Mode,
-        caps: Caps,
-        budget: Arc<Mutex<Budget>>,
-        parent: Option<String>,
-    ) -> Self {
+    fn open(setup: Setup) -> Self {
+        let Setup {
+            dir,
+            suite,
+            test,
+            echo_name,
+            mode,
+            caps,
+            budget,
+            parent,
+            scrubber,
+            paths,
+        } = setup;
         let files = match prepare(&dir) {
             Ok(files) => Some(files),
             Err((path, error)) => {
@@ -1033,7 +1403,7 @@ impl TestLog {
             }
         };
         let mut inner = Inner {
-            echo_name: format!("{suite}::{test}"),
+            echo_name,
             suite,
             test,
             mode,
@@ -1051,10 +1421,11 @@ impl TestLog {
             runs: 0,
             step_index: 0,
             step: None,
-            scrubber: Scrubber::new(),
-            paths: Relativizer::new(),
+            scrubber,
+            paths,
             ring: VecDeque::with_capacity(LAST_STEPS_SHOWN),
             ended: false,
+            trees: BTreeMap::new(),
         };
         let header = Record::Header {
             seq: inner.next_seq(),
@@ -1220,6 +1591,1078 @@ impl Drop for TestLog {
             print_guard(&self.transcript_path(), records, &last);
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// Runs of the binary.
+
+/// Where [`TestLog::run`] runs the binary: a synthetic environment, and the command for
+/// an argv.
+pub trait Runner {
+    fn test_env(&self) -> &TestEnv;
+    /// The binary with this home's environment, and `argv` (without the binary's name).
+    fn command(&self, argv: &[String]) -> Command;
+}
+
+impl Runner for TestEnv {
+    fn test_env(&self) -> &TestEnv {
+        self
+    }
+
+    fn command(&self, argv: &[String]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_omaddons"));
+        self.apply_to(&mut command);
+        command.args(argv);
+        command
+    }
+}
+
+impl Runner for Home {
+    fn test_env(&self) -> &TestEnv {
+        &self.env
+    }
+
+    fn command(&self, argv: &[String]) -> Command {
+        self.std_command(argv, &[])
+    }
+}
+
+impl Runner for Scene {
+    fn test_env(&self) -> &TestEnv {
+        &self.home.env
+    }
+
+    fn command(&self, argv: &[String]) -> Command {
+        self.home.std_command(argv, &[])
+    }
+}
+
+/// The variables a `TestEnv` sets on every child, as `TestEnv::apply_to` sets them, read
+/// back from a command it was applied to.
+pub fn base_vars(env: &TestEnv) -> BTreeMap<String, String> {
+    let mut probe = Command::new("omaddons");
+    env.apply_to(&mut probe);
+    probe
+        .get_envs()
+        .filter_map(|(key, value)| {
+            let value = value?;
+            let key = key.to_string_lossy().into_owned();
+            Some((key, value.to_string_lossy().into_owned()))
+        })
+        .collect()
+}
+
+/// The variables a command sets beyond its environment's base, and the secrets among
+/// them.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Overrides {
+    /// Every variable set whose value differs from the base or that the base lacks; a
+    /// secret-named one is `<redacted>`. Removals are not listed.
+    pub vars: BTreeMap<String, String>,
+    /// The secret-named ones, by name and value.
+    pub secrets: Vec<(String, String)>,
+}
+
+pub fn overrides(base: &BTreeMap<String, String>, command: &Command) -> Overrides {
+    let mut out = Overrides::default();
+    for (key, value) in command.get_envs() {
+        let Some(value) = value else { continue };
+        let key = key.to_string_lossy().into_owned();
+        let value = value.to_string_lossy().into_owned();
+        if base.get(&key) == Some(&value) {
+            continue;
+        }
+        if is_secret_name(&key) {
+            out.vars.insert(key.clone(), REDACTED.to_owned());
+            out.secrets.push((key, value));
+        } else {
+            out.vars.insert(key, value);
+        }
+    }
+    out
+}
+
+/// A run's stdout as its record holds it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "form", rename_all = "snake_case")]
+pub enum Stdout {
+    /// Exactly one line (a trailing newline allowed) that parses as a JSON object.
+    Envelope {
+        value: Value,
+        bytes: usize,
+        truncated: Option<Truncated>,
+    },
+    Text {
+        text: String,
+        bytes: usize,
+        truncated: Option<Truncated>,
+    },
+    Empty {
+        bytes: usize,
+        truncated: Option<Truncated>,
+    },
+}
+
+/// `text` (a run's stdout) classified, cut at `cap`: a cut envelope is text, its prefix
+/// kept.
+pub fn classify_stdout(text: &str, cap: usize) -> Stdout {
+    let bytes = text.len();
+    if text.is_empty() {
+        return Stdout::Empty {
+            bytes,
+            truncated: None,
+        };
+    }
+    let (kept, truncated) = cap_text(text, cap);
+    let line = text.strip_suffix('\n').unwrap_or(text);
+    if truncated.is_none()
+        && !line.contains('\n')
+        && let Ok(value @ Value::Object(_)) = serde_json::from_str::<Value>(line)
+    {
+        return Stdout::Envelope {
+            value,
+            bytes,
+            truncated,
+        };
+    }
+    Stdout::Text {
+        text: kept.to_owned(),
+        bytes,
+        truncated,
+    }
+}
+
+/// A run's stderr as its record holds it: each line parsed as JSON when it parses (an
+/// NDJSON event), else the raw string, in order.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Stderr {
+    pub lines: Vec<Value>,
+    pub bytes: usize,
+    pub truncated: Option<Truncated>,
+}
+
+pub fn parse_stderr(text: &str, cap: usize) -> Stderr {
+    let (kept, truncated) = cap_text(text, cap);
+    Stderr {
+        lines: kept.lines().map(parse_line).collect(),
+        bytes: text.len(),
+        truncated,
+    }
+}
+
+/// `line` as JSON, or as the string it is.
+fn parse_line(line: &str) -> Value {
+    serde_json::from_str(line).unwrap_or_else(|_| Value::String(line.to_owned()))
+}
+
+/// The `net.log` lines a run appended.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NetLogAdded {
+    pub added: Vec<Value>,
+    /// The log rotated meanwhile, so `added` is the whole current file.
+    pub rotated: bool,
+}
+
+/// What a run appended to `net.log`. `before` is `net.log.1` then `net.log` as the run
+/// started; `after_old` and `after_current` are the two files once it exited. When
+/// `before` is a prefix of the two after files, the rest is what the run added;
+/// otherwise the log rotated, and every line of the current file counts. Lines are read
+/// raw, so a malformed one never breaks the log: it is kept as a string.
+pub fn net_log_added(
+    before: &[String],
+    after_old: &[String],
+    after_current: &[String],
+) -> NetLogAdded {
+    let after: Vec<&String> = after_old.iter().chain(after_current).collect();
+    let is_prefix =
+        before.len() <= after.len() && before.iter().zip(&after).all(|(was, now)| was == *now);
+    let (lines, rotated) = if is_prefix {
+        (after[before.len()..].to_vec(), false)
+    } else {
+        (after_current.iter().collect(), true)
+    };
+    NetLogAdded {
+        added: lines.into_iter().map(|line| parse_line(line)).collect(),
+        rotated,
+    }
+}
+
+/// The lines of `net.log.1` and `net.log` under a state directory; a missing file has
+/// none.
+fn net_log_lines(state: &Path) -> (Vec<String>, Vec<String>) {
+    let read = |name: &str| {
+        let bytes = fs::read(state.join("omaddons").join(name)).unwrap_or_default();
+        String::from_utf8_lossy(&bytes)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    };
+    (read("net.log.1"), read("net.log"))
+}
+
+/// The failpoints a command arms, from its variables.
+fn failpoints_of(command: &Command) -> Option<FailpointsRecord> {
+    let var = |name: &str| {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+    };
+    let armed = FailpointsRecord {
+        spec: var("OMADDONS_FAILPOINTS"),
+        pause_dir: var("OMADDONS_FAILPOINT_DIR"),
+    };
+    (armed.spec.is_some() || armed.pause_dir.is_some()).then_some(armed)
+}
+
+/// A run being set up: [`TestLog::cmd`], options, then [`Cmd::run`] or [`Cmd::spawn`].
+pub struct Cmd<'a> {
+    log: &'a TestLog,
+    root: PathBuf,
+    state: PathBuf,
+    base: BTreeMap<String, String>,
+    argv: Vec<String>,
+    command: Command,
+    stdin: Option<Vec<u8>>,
+    cwd: Option<PathBuf>,
+    timeout: Duration,
+}
+
+impl Cmd<'_> {
+    pub fn env(mut self, key: &str, value: impl AsRef<OsStr>) -> Self {
+        self.command.env(key, value);
+        self
+    }
+
+    pub fn cwd(mut self, dir: &Path) -> Self {
+        self.cwd = Some(dir.to_path_buf());
+        self
+    }
+
+    /// Feeds `bytes` on standard input; the record holds only their length.
+    pub fn stdin(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.stdin = Some(bytes.into());
+        self
+    }
+
+    /// Arms failpoints: `OMADDONS_FAILPOINTS=<spec>`.
+    pub fn failpoints(self, spec: &str) -> Self {
+        self.env("OMADDONS_FAILPOINTS", spec)
+    }
+
+    /// Points the child's `pause` failpoints at `pause`'s markers.
+    pub fn pause(self, pause: &Pause) -> Self {
+        let (key, value) = pause.env();
+        self.env(key, value)
+    }
+
+    /// How long the run may take before it is killed ([`RUN_TIMEOUT`] by default).
+    pub fn timeout(mut self, limit: Duration) -> Self {
+        self.timeout = limit;
+        self
+    }
+
+    /// Runs to the end, records the run and returns it.
+    #[track_caller]
+    pub fn run(self) -> Ran {
+        self.start(false).wait()
+    }
+
+    /// Starts the run in the background; [`Running::wait`] records it.
+    #[track_caller]
+    pub fn spawn(self) -> Running {
+        self.start(true)
+    }
+
+    #[track_caller]
+    fn start(self, background: bool) -> Running {
+        let Cmd {
+            log,
+            root,
+            state,
+            base,
+            argv,
+            mut command,
+            stdin,
+            cwd,
+            timeout,
+        } = self;
+        if let Some(dir) = &cwd {
+            command.current_dir(dir);
+        }
+        let overrides = overrides(&base, &command);
+        let failpoints = failpoints_of(&command);
+        let before = net_log_lines(&state);
+        let (seq, step, env) = log.begin_run(&root, &base, &overrides.secrets);
+        let stdin_pipe = if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        };
+        command
+            .stdin(stdin_pipe)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let started_at = now_rfc3339();
+        let started = Instant::now();
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => log.fail(&format!(
+                "run #{seq} {}: the binary did not start: {error}",
+                in_step(step.as_deref())
+            )),
+        };
+        let stdin_bytes = stdin.as_ref().map(Vec::len);
+        let writer = stdin.and_then(|bytes| {
+            let mut pipe = child.stdin.take()?;
+            // Written, then closed by the drop, so the child sees the end of its input.
+            Some(std::thread::spawn(move || {
+                let _ = pipe.write_all(&bytes);
+            }))
+        });
+        let out = read_all(child.stdout.take());
+        let err = read_all(child.stderr.take());
+        Running {
+            child: Some(child),
+            threads: Some((writer, out, err)),
+            started,
+            deadline: started + timeout,
+            started_run: StartedRun {
+                seq,
+                step,
+                env,
+                argv,
+                cwd,
+                overrides,
+                failpoints,
+                stdin_bytes,
+                background,
+                started_at,
+                state,
+                before,
+            },
+            log: Arc::downgrade(&log.inner),
+            transcript: log.transcript_path(),
+        }
+    }
+}
+
+/// What a run's record needs that is known when it starts.
+struct StartedRun {
+    seq: u64,
+    step: Option<String>,
+    env: String,
+    argv: Vec<String>,
+    cwd: Option<PathBuf>,
+    overrides: Overrides,
+    failpoints: Option<FailpointsRecord>,
+    stdin_bytes: Option<usize>,
+    background: bool,
+    started_at: String,
+    state: PathBuf,
+    /// `net.log.1` and `net.log` as the run started.
+    before: (Vec<String>, Vec<String>),
+}
+
+/// What a run's end adds to its record.
+struct Ended<'a> {
+    run: &'a Run,
+    signal: Option<i32>,
+    timed_out: bool,
+    elapsed_ms: u64,
+    net_log: NetLogAdded,
+}
+
+/// A run's stdin writer and its two output readers.
+type Threads = (
+    Option<JoinHandle<()>>,
+    JoinHandle<Vec<u8>>,
+    JoinHandle<Vec<u8>>,
+);
+
+/// Everything `pipe` yields, read on a thread of its own.
+fn read_all<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    })
+}
+
+fn now_rfc3339() -> String {
+    jiff::Timestamp::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
+}
+
+/// How a run ended.
+struct Finished {
+    status: Option<ExitStatus>,
+    timed_out: bool,
+    elapsed: Duration,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// A run started in the background ([`Cmd::spawn`]). Dropped without [`Running::wait`],
+/// it kills its child and records the run with a `failure` after it, so no child
+/// outlives its test.
+pub struct Running {
+    child: Option<Child>,
+    threads: Option<Threads>,
+    started: Instant,
+    deadline: Instant,
+    started_run: StartedRun,
+    log: Weak<Mutex<Inner>>,
+    transcript: PathBuf,
+}
+
+impl Running {
+    pub fn pid(&self) -> u32 {
+        self.child.as_ref().map_or(0, Child::id)
+    }
+
+    /// Waits for the run to end, records it and returns it. A run still going at its
+    /// deadline is killed, recorded with `timed_out: true`, and fails the test.
+    #[track_caller]
+    pub fn wait(mut self) -> Ran {
+        let finished = self.finish(false);
+        let ran = self.record(finished);
+        if ran.timed_out {
+            ran.fail(&format!(
+                "timed out after {} ms and was killed",
+                thousands(ran.elapsed_ms)
+            ));
+        }
+        ran
+    }
+
+    /// Waits for the child (killing it at its deadline, or at once with `kill_now`) and
+    /// collects its output.
+    fn finish(&mut self, kill_now: bool) -> Finished {
+        let mut timed_out = false;
+        let status = match self.child.take() {
+            None => None,
+            Some(mut child) => loop {
+                if !kill_now {
+                    match child.try_wait() {
+                        Ok(Some(status)) => break Some(status),
+                        Ok(None) => {}
+                        Err(_) => break child.wait().ok(),
+                    }
+                }
+                if kill_now || Instant::now() >= self.deadline {
+                    timed_out = !kill_now;
+                    let _ = child.kill();
+                    break child.wait().ok();
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            },
+        };
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        if let Some((writer, out, err)) = self.threads.take() {
+            if let Some(writer) = writer {
+                let _ = writer.join();
+            }
+            stdout = out.join().unwrap_or_default();
+            stderr = err.join().unwrap_or_default();
+        }
+        Finished {
+            status,
+            timed_out,
+            elapsed: self.started.elapsed(),
+            stdout,
+            stderr,
+        }
+    }
+
+    /// Writes the run's record (while its log exists) and returns the run.
+    fn record(&self, finished: Finished) -> Ran {
+        let started = &self.started_run;
+        let run = Run {
+            argv: started.argv.clone(),
+            code: finished.status.and_then(|s| s.code()).unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&finished.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&finished.stderr).into_owned(),
+        };
+        let signal = finished.status.and_then(|s| s.signal());
+        let elapsed_ms = millis(finished.elapsed);
+        let before: Vec<String> = started
+            .before
+            .0
+            .iter()
+            .chain(&started.before.1)
+            .cloned()
+            .collect();
+        let (old, current) = net_log_lines(&started.state);
+        if let Some(inner) = self.log.upgrade() {
+            let ended = Ended {
+                run: &run,
+                signal,
+                timed_out: finished.timed_out,
+                elapsed_ms,
+                net_log: net_log_added(&before, &old, &current),
+            };
+            lock(&inner).record_run(started, ended);
+        }
+        let envelope = match classify_stdout(&run.stdout, usize::MAX) {
+            Stdout::Envelope { value, .. } => Some(value),
+            _ => None,
+        };
+        Ran {
+            seq: started.seq,
+            step: started.step.clone().unwrap_or_default(),
+            elapsed_ms,
+            signal,
+            timed_out: finished.timed_out,
+            envelope,
+            transcript: self.transcript.clone(),
+            log: self.log.clone(),
+            run,
+        }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if self.child.is_none() {
+            return;
+        }
+        let finished = self.finish(true);
+        let ran = self.record(finished);
+        if let Some(inner) = self.log.upgrade() {
+            let message = format!(
+                "run #{} was dropped without wait(); its child was killed",
+                ran.seq
+            );
+            lock(&inner).failure(&message);
+        }
+    }
+}
+
+/// A suggested next step from an envelope's `commands`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Suggested {
+    pub action: String,
+    pub command: String,
+    pub argv: Vec<String>,
+    pub destructive: bool,
+}
+
+/// One finished, recorded run. Its assertions return `&Self` for chaining in one
+/// statement; a failing one writes a `failure` record and fails the test naming the run,
+/// its step, the exit, the envelope's error, the argv and the transcript.
+pub struct Ran {
+    /// The raw run (absolute paths, nothing scrubbed): assertions check what the binary
+    /// printed, and only the log is rewritten.
+    pub run: Run,
+    pub seq: u64,
+    /// The phase it ran in; empty before any step.
+    pub step: String,
+    pub elapsed_ms: u64,
+    /// The signal that killed it: `Some(6)` for an `abort` failpoint (`run.code` is then
+    /// -1).
+    pub signal: Option<i32>,
+    pub timed_out: bool,
+    envelope: Option<Value>,
+    transcript: PathBuf,
+    log: Weak<Mutex<Inner>>,
+}
+
+impl Ran {
+    /// Exit 0, and `ok: true` when stdout is an envelope.
+    #[track_caller]
+    pub fn ok(&self) -> &Self {
+        if !self.exited(0) {
+            self.fail(&format!("expected exit 0, {}", self.got()));
+        }
+        if self.envelope.as_ref().is_some_and(|e| e["ok"] != true) {
+            self.fail("exit 0, but the envelope is not ok: true");
+        }
+        self
+    }
+
+    #[track_caller]
+    pub fn exit(&self, code: i32) -> &Self {
+        if !self.exited(code) {
+            self.fail(&format!("expected exit {code}, {}", self.got()));
+        }
+        self
+    }
+
+    /// Exit `exit`, with `error.code` `code`.
+    #[track_caller]
+    pub fn fails(&self, exit: i32, code: &str) -> &Self {
+        self.exit(exit);
+        if self.error_code() != Some(code) {
+            let got = self.error_code().unwrap_or("no error code");
+            self.fail(&format!("expected error {code}, got {got}"));
+        }
+        self
+    }
+
+    /// Killed by `SIGABRT` (an `abort` failpoint).
+    #[track_caller]
+    pub fn aborted(&self) -> &Self {
+        if self.signal != Some(SIGABRT) {
+            self.fail(&format!("expected to be killed by SIGABRT, {}", self.got()));
+        }
+        self
+    }
+
+    /// The one JSON envelope stdout is.
+    #[track_caller]
+    pub fn envelope(&self) -> &Value {
+        match &self.envelope {
+            Some(envelope) => envelope,
+            None => self.fail("expected stdout to be exactly one JSON envelope line"),
+        }
+    }
+
+    /// The envelope's `data`, which must be there.
+    #[track_caller]
+    pub fn data(&self) -> &Value {
+        match self.envelope().get("data") {
+            Some(data) => data,
+            None => self.fail("the envelope has no data"),
+        }
+    }
+
+    pub fn error_code(&self) -> Option<&str> {
+        self.envelope.as_ref()?.get("error")?.get("code")?.as_str()
+    }
+
+    /// The codes of the envelope's `warnings`, in order.
+    #[track_caller]
+    pub fn warnings(&self) -> Vec<String> {
+        let warnings = self.envelope()["warnings"].as_array();
+        warnings
+            .into_iter()
+            .flatten()
+            .map(|warning| warning["code"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// The envelope's `commands`.
+    #[track_caller]
+    pub fn commands(&self) -> Vec<Suggested> {
+        let commands = self.envelope()["commands"].clone();
+        match serde_json::from_value(commands) {
+            Ok(commands) => commands,
+            Err(error) => self.fail(&format!("the envelope's commands do not read: {error}")),
+        }
+    }
+
+    /// Every stderr line, each of which must be JSON (an NDJSON event).
+    #[track_caller]
+    pub fn events(&self) -> Vec<Value> {
+        let mut events = Vec::new();
+        for (index, line) in self.run.stderr.lines().enumerate() {
+            match serde_json::from_str(line) {
+                Ok(event) => events.push(event),
+                Err(_) => self.fail(&format!("stderr line {} is not JSON: {line}", index + 1)),
+            }
+        }
+        events
+    }
+
+    /// Neither stream names an account, realm or character of
+    /// `common::privacy::PRIVATE`, in any case.
+    #[track_caller]
+    pub fn assert_private(&self) -> &Self {
+        for (stream, text) in [("stdout", &self.run.stdout), ("stderr", &self.run.stderr)] {
+            let folded = text.to_lowercase();
+            if let Some(name) = PRIVATE
+                .iter()
+                .find(|name| folded.contains(&name.to_lowercase()))
+            {
+                self.fail(&format!("{stream} names {name}"));
+            }
+        }
+        self
+    }
+
+    pub fn stdout(&self) -> &str {
+        &self.run.stdout
+    }
+
+    pub fn stderr(&self) -> &str {
+        &self.run.stderr
+    }
+
+    fn exited(&self, code: i32) -> bool {
+        self.signal.is_none() && !self.timed_out && self.run.code == code
+    }
+
+    /// How the run ended, for messages.
+    fn got(&self) -> String {
+        match self.signal {
+            _ if self.timed_out => "timed out".to_owned(),
+            Some(signal) => format!("killed by signal {signal}"),
+            None => format!("got {}", self.run.code),
+        }
+    }
+
+    /// Writes a `failure` record (while the log exists) and fails the test.
+    #[track_caller]
+    fn fail(&self, what: &str) -> ! {
+        let step = (!self.step.is_empty()).then_some(self.step.as_str());
+        let mut message = format!("run #{} {}: {what}", self.seq, in_step(step));
+        let error = self.envelope.as_ref().and_then(|e| e.get("error"));
+        if let Some(error) = error.filter(|error| error.is_object()) {
+            let code = error["code"].as_str().unwrap_or_default();
+            let text = error["message"].as_str().unwrap_or_default();
+            message.push_str(&format!("\n  error: {code}: {text}"));
+        }
+        let argv = std::iter::once("omaddons").chain(self.run.argv.iter().map(String::as_str));
+        message.push_str(&format!("\n  argv: {}", shell_words::join(argv)));
+        if let Some(inner) = self.log.upgrade() {
+            let mut inner = lock(&inner);
+            inner.failure(&message);
+            message = inner.scrubber.scrub(&message);
+        }
+        let transcript = self.transcript.display().to_string();
+        panic!("tlog: {message}\n  transcript: {transcript}"); // ubs:ignore — the assertion
+    }
+}
+
+impl TestLog {
+    /// Runs `omaddons <argv>` on `on` (the argv used verbatim: nothing is appended),
+    /// records the run, and returns it.
+    #[track_caller]
+    pub fn run<A: AsRef<str>>(&self, on: &impl Runner, argv: &[A]) -> Ran {
+        self.cmd(on, argv).run()
+    }
+
+    /// A run of `omaddons <argv>` on `on` to set up: variables, stdin, failpoints, a
+    /// timeout, the background.
+    pub fn cmd<A: AsRef<str>>(&self, on: &impl Runner, argv: &[A]) -> Cmd<'_> {
+        let argv: Vec<String> = argv.iter().map(|arg| arg.as_ref().to_owned()).collect();
+        let env = on.test_env();
+        Cmd {
+            log: self,
+            root: env.root().to_path_buf(),
+            state: env.state(),
+            base: base_vars(env),
+            command: on.command(&argv),
+            argv,
+            stdin: None,
+            cwd: None,
+            timeout: RUN_TIMEOUT,
+        }
+    }
+
+    /// Registers `on`'s environment (its `env` record and its root's placeholder)
+    /// without running anything, so a tree under it can be recorded before the first
+    /// run.
+    pub fn env(&self, on: &impl Runner) {
+        let env = on.test_env();
+        self.lock().register_env(env.root(), &base_vars(env));
+    }
+
+    /// A run's number, step and environment placeholder; its environment registered
+    /// and its secrets learned first.
+    fn begin_run(
+        &self,
+        root: &Path,
+        base: &BTreeMap<String, String>,
+        secrets: &[(String, String)],
+    ) -> (u64, Option<String>, String) {
+        let mut inner = self.lock();
+        for (_, value) in secrets {
+            inner.scrubber.add(value);
+        }
+        let env = inner.register_env(root, base);
+        (inner.next_seq(), inner.step.clone(), env)
+    }
+
+    /// Writes a `failure` record and fails the test with `message` and the transcript.
+    #[track_caller]
+    fn fail(&self, message: &str) -> ! {
+        let message = {
+            let mut inner = self.lock();
+            inner.failure(message);
+            inner.scrubber.scrub(message)
+        };
+        let transcript = self.transcript_path().display().to_string();
+        panic!("tlog: {message}\n  transcript: {transcript}"); // ubs:ignore — the assertion
+    }
+
+    /// Waits until the child stops at its `pause` failpoint `name`, recording the wait.
+    #[track_caller]
+    pub fn reached(&self, pause: &Pause, name: &str) {
+        let dir = pause.env().1.to_owned();
+        self.lock().pause("waiting", name, &dir, None);
+        let start = Instant::now();
+        pause.reached(name);
+        let waited = millis(start.elapsed());
+        self.lock().pause("reached", name, &dir, Some(waited));
+    }
+
+    /// Lets the child go on from `name`.
+    pub fn resume(&self, pause: &Pause, name: &str) {
+        let dir = pause.env().1.to_owned();
+        pause.resume(name);
+        self.lock().pause("resumed", name, &dir, None);
+    }
+
+    /// Records the hash and entries of the tree at `root` under `label`, and returns the
+    /// hash (`None` when `root` is absent).
+    #[track_caller]
+    pub fn tree(&self, label: &str, root: &Path) -> Option<String> {
+        self.confine(root);
+        let (hash, entries) = read_tree(root);
+        let mut inner = self.lock();
+        let record = Record::Tree {
+            seq: inner.next_seq(),
+            step: inner.step.clone(),
+            label: inner.clean_capped(label).0,
+            root: inner.clean(&root.display().to_string()),
+            exists: hash.is_some(),
+            hash: hash.clone(),
+            entries: entries.len(),
+        };
+        inner.emit(record);
+        inner
+            .trees
+            .insert(label.to_owned(), (hash.clone(), entries));
+        hash
+    }
+
+    /// The tree at `root` is as `label`'s last [`TestLog::tree`] recorded it; otherwise
+    /// the `tree_check` record names the first differing paths, and the test fails.
+    #[track_caller]
+    pub fn assert_unchanged(&self, label: &str, root: &Path) {
+        let (equal, diff) = self.check_tree("unchanged", label, root);
+        if !equal {
+            let mut paths = diff.first(DIFF_PATHS_SHOWN).join("\n    ");
+            if diff.total > DIFF_PATHS_SHOWN {
+                let more = diff.total - DIFF_PATHS_SHOWN;
+                paths.push_str(&format!("\n    … {more} more"));
+            }
+            let step = self.lock().step.clone();
+            self.fail(&format!(
+                "tree `{label}` changed {} ({} paths):\n    {paths}",
+                in_step(step.as_deref()),
+                diff.total
+            ));
+        }
+    }
+
+    /// How the tree at `root` differs from `label`'s last [`TestLog::tree`], recorded;
+    /// never fails, so the test can assert exactly what changed.
+    #[track_caller]
+    pub fn diff(&self, label: &str, root: &Path) -> TreeDiff {
+        self.check_tree("diff", label, root).1
+    }
+
+    #[track_caller]
+    fn check_tree(&self, check: &'static str, label: &str, root: &Path) -> (bool, TreeDiff) {
+        self.confine(root);
+        let recorded = self.lock().trees.get(label).cloned();
+        let Some((expected, before)) = recorded else {
+            self.fail(&format!("no tree `{label}` was recorded before this check"));
+        };
+        let (actual, after) = read_tree(root);
+        let diff = tree_diff(&before, &after);
+        let equal = expected == actual;
+        let mut inner = self.lock();
+        let shown = (!equal || !diff.is_empty()).then(|| DiffRecord {
+            total: diff.total,
+            first: diff
+                .first(DIFF_PATHS_SHOWN)
+                .iter()
+                .map(|line| inner.clean(line))
+                .collect(),
+        });
+        let record = Record::TreeCheck {
+            seq: inner.next_seq(),
+            step: inner.step.clone(),
+            label: inner.clean_capped(label).0,
+            root: inner.clean(&root.display().to_string()),
+            check,
+            expected,
+            actual,
+            equal,
+            diff: shown,
+        };
+        inner.emit(record);
+        (equal, diff)
+    }
+
+    /// Fails the test, before anything is read, when `root` is outside its synthetic
+    /// directories.
+    #[track_caller]
+    fn confine(&self, root: &Path) {
+        let roots = self.lock().paths.roots().to_vec();
+        if !root_allowed(root, &roots) {
+            self.fail(&format!(
+                "{} is outside this test's synthetic directories; the test log never reads the developer's files",
+                root.display()
+            ));
+        }
+    }
+
+    /// A sub-log for one case of a table-driven or parallel test, under
+    /// `cases/<name>/`: its own files and guard, the parent's secrets and placeholders,
+    /// and the parent's byte budget.
+    #[track_caller]
+    pub fn case(&self, name: &str) -> TestLog {
+        let name = sanitize_component(name);
+        let mut inner = self.lock();
+        let setup = Setup {
+            dir: self.dir.join("cases").join(&name),
+            suite: inner.suite.clone(),
+            test: name.clone(),
+            echo_name: format!("{}::{}::{name}", inner.suite, inner.test),
+            mode: inner.mode,
+            caps: inner.caps,
+            budget: Arc::clone(&inner.budget),
+            parent: Some(format!("{}/{}", inner.suite, inner.test)),
+            scrubber: inner.scrubber.clone(),
+            paths: inner.paths.clone(),
+        };
+        let record = Record::Case {
+            seq: inner.next_seq(),
+            step: inner.step.clone(),
+            dir: format!("cases/{name}"),
+            name,
+        };
+        inner.emit(record);
+        drop(inner);
+        TestLog::open(setup)
+    }
+}
+
+impl Inner {
+    /// `root`'s placeholder; on first sight, its `env` record with the base variables.
+    fn register_env(&mut self, root: &Path, base: &BTreeMap<String, String>) -> String {
+        let known = self.paths.roots().iter().any(|seen| seen == root);
+        let name = self.paths.add_root(root);
+        if !known {
+            let vars = base
+                .iter()
+                .map(|(key, value)| (key.clone(), self.clean(value)))
+                .collect();
+            let record = Record::Env {
+                seq: self.next_seq(),
+                name: name.clone(),
+                vars,
+            };
+            self.emit(record);
+        }
+        name
+    }
+
+    /// A `failure` record in the current step.
+    fn failure(&mut self, message: &str) {
+        let (message, _) = self.clean_capped(message);
+        let record = Record::Failure {
+            seq: self.next_seq(),
+            step: self.step.clone(),
+            message,
+        };
+        self.emit(record);
+    }
+
+    fn pause(&mut self, action: &'static str, name: &str, dir: &str, waited_ms: Option<u64>) {
+        let record = Record::Pause {
+            seq: self.next_seq(),
+            step: self.step.clone(),
+            action,
+            name: self.clean(name),
+            dir: self.clean(dir),
+            waited_ms,
+        };
+        self.emit(record);
+    }
+
+    /// The `run` record of a run that ended: every string cleaned, each stream capped.
+    fn record_run(&mut self, started: &StartedRun, ended: Ended<'_>) {
+        let cap = self.caps.stream_bytes;
+        let cwd = started
+            .cwd
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .map(|dir| self.clean(&dir.display().to_string()))
+            .unwrap_or_default();
+        let argv = std::iter::once("omaddons")
+            .chain(started.argv.iter().map(String::as_str))
+            .map(|arg| self.clean(arg))
+            .collect();
+        let overrides = started
+            .overrides
+            .vars
+            .iter()
+            .map(|(key, value)| (key.clone(), self.clean(value)))
+            .collect();
+        let failpoints = started.failpoints.as_ref().map(|armed| FailpointsRecord {
+            spec: armed.spec.as_deref().map(|spec| self.clean(spec)),
+            pause_dir: armed.pause_dir.as_deref().map(|dir| self.clean(dir)),
+        });
+        let added = ended.net_log.added.into_iter();
+        let net_log = NetLogAdded {
+            added: added.map(|line| self.clean_value(line)).collect(),
+            rotated: ended.net_log.rotated,
+        };
+        let record = RunRecord {
+            seq: started.seq,
+            step: started.step.clone(),
+            env: started.env.clone(),
+            argv,
+            cwd,
+            overrides,
+            failpoints,
+            stdin_bytes: started.stdin_bytes,
+            background: started.background,
+            started_at: started.started_at.clone(),
+            elapsed_ms: ended.elapsed_ms,
+            exit: ended.run.code,
+            signal: ended.signal,
+            timed_out: ended.timed_out,
+            stdout: classify_stdout(&self.clean(&ended.run.stdout), cap),
+            stderr: parse_stderr(&self.clean(&ended.run.stderr), cap),
+            net_log,
+            scrubbed: started
+                .overrides
+                .secrets
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect(),
+        };
+        self.runs += 1;
+        self.emit(Record::Run(Box::new(record)));
+    }
+}
+
+/// A tree's hash and entries, or nothing when it is absent.
+fn read_tree(root: &Path) -> (Option<String>, BTreeMap<String, Entry>) {
+    if fs::symlink_metadata(root).is_err() {
+        return (None, BTreeMap::new());
+    }
+    (Some(tree_hash(root)), tree_entries(root))
+}
+
+/// Whether a log may read the tree at `root`: under one of `env_roots` (the `TestEnv`
+/// roots it has seen), `CARGO_TARGET_TMPDIR` or the system's temporary directory, with
+/// symlinks resolved. A missing root with a `..` in it is refused.
+pub fn root_allowed(root: &Path, env_roots: &[PathBuf]) -> bool {
+    let resolved = match root.canonicalize() {
+        Ok(resolved) => resolved,
+        Err(_) if root.components().any(|c| c == Component::ParentDir) => return false,
+        Err(_) => root.to_path_buf(),
+    };
+    let fixed = [
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")),
+        std::env::temp_dir(),
+    ];
+    env_roots.iter().chain(&fixed).any(|allowed| {
+        let allowed = allowed.canonicalize().unwrap_or_else(|_| allowed.clone());
+        resolved.starts_with(allowed)
+    })
 }
 
 /// A [`TestLog`] named after the test crate and the function it is called in:
