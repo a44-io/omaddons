@@ -96,75 +96,206 @@ impl Group {
     }
 }
 
-/// A subcommand this build has.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which exit dictionary a command's process exit comes from (M4-D5, M4-D40).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Dictionary {
+    /// The general dictionary (`Exit`): 0 to 6.
+    General,
+    /// The doctor tree's own dictionary (E3).
+    Doctor,
+}
+
+impl Dictionary {
+    pub const ALL: [Self; 2] = [Self::General, Self::Doctor];
+}
+
+/// Whether a command uses the network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Network {
+    /// No path of the command sends a request (it may read the release memo).
+    None,
+    /// Some path may send a request (a release, an archive, a listing, the rate limit);
+    /// under --offline the command still does its local work, from caches, or refuses
+    /// only what needs the network.
+    Optional,
+    /// Its purpose is an upstream answer (search, outdated): it asks by default, and
+    /// offline it answers only from what is remembered, marking the rest unchecked.
+    Required,
+}
+
+impl Network {
+    pub const ALL: [Self; 3] = [Self::None, Self::Optional, Self::Required];
+}
+
+/// A command path this build has, with every fact clap cannot provide (M4-D2, M4-D5).
+/// Not comparable: `data` is a function pointer.
+#[derive(Debug, Clone, Copy)]
 pub struct CommandEntry {
-    /// Its canonical name; a nested one is its path (`targets add`).
+    /// Its canonical name; a nested one is its path (`targets add`): the envelope's
+    /// `command`.
     pub name: &'static str,
     pub group: Group,
     /// Whether some form of it changes state (conservative: `export` writes with
     /// `--write`, `auth github` with `set`). A usage error never guesses one for you.
     pub mutates: bool,
+    pub dictionary: Dictionary,
+    /// Every process exit it can return, ascending: declared here, and verified against
+    /// what the contract suite observes.
+    pub exits: &'static [u8],
+    /// The schema of its envelope's `data` (the `Outcome` its dispatch arm returns).
+    pub data: fn(&mut schemars::SchemaGenerator) -> schemars::Schema,
+    /// Whether its dry run stores a plan (M4-D22): set by the plan store (D4).
+    pub stores_plan: bool,
+    pub network: Network,
 }
 
-const fn entry(name: &'static str, group: Group, mutates: bool) -> CommandEntry {
+/// The schema of `O`'s data: what a row's `data` points at, naming the outcome its
+/// dispatch arm returns.
+pub fn data_schema<O: output::Outcome>(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    g.root_schema_for::<O::Data>()
+}
+
+/// A general-dictionary row that stores no plan; [`CommandEntry::doctor`] and
+/// [`CommandEntry::storing_plan`] change either.
+const fn entry(
+    name: &'static str,
+    group: Group,
+    mutates: bool,
+    exits: &'static [u8],
+    data: fn(&mut schemars::SchemaGenerator) -> schemars::Schema,
+    network: Network,
+) -> CommandEntry {
     CommandEntry {
         name,
         group,
         mutates,
+        dictionary: Dictionary::General,
+        exits,
+        data,
+        stores_plan: false,
+        network,
     }
 }
+
+impl CommandEntry {
+    /// A doctor-tree command (E3): its exits come from the doctor dictionary.
+    pub const fn doctor(self) -> Self {
+        Self {
+            dictionary: Dictionary::Doctor,
+            ..self
+        }
+    }
+
+    /// A command whose dry run stores a plan (D4, M4-D22).
+    pub const fn storing_plan(self) -> Self {
+        Self {
+            stores_plan: true,
+            ..self
+        }
+    }
+}
+
+use Group::{Change, Look, Setup};
 
 /// Every runnable command path this build has, one per line, in display order within its
 /// group (a nested one takes its parent's group): every clap leaf, and every parent whose
 /// bare form runs (`backup`, `config`, `errors`, `omarchy`, `targets`). A parent that
-/// requires a subcommand (`auth`) has no line. Each command bead adds its own line in the
-/// commit that adds its clap variant (DEC-1).
+/// requires a subcommand (`auth`) has no line. Each command bead adds its own line, every
+/// field filled, in the commit that adds its clap variant (DEC-1).
+///
+/// Exits beyond 0, 1 and 2 (and 4 and 5 on a mutating row): 3 where the command resolves
+/// a selector, id, ref, name or file; 4 where it loads the world (a registry or record a
+/// newer omaddons wrote is `state_too_new`) or refuses a change; 6 exactly with
+/// `--check` or `--strict`.
+#[rustfmt::skip]
 pub const COMMANDS: &[CommandEntry] = &[
-    entry("status", Group::Look, false),
-    entry("list", Group::Look, false),
-    entry("outdated", Group::Look, false),
-    entry("info", Group::Look, false),
-    entry("search", Group::Look, false),
-    entry("errors", Group::Look, false),
-    entry("errors dismiss", Group::Look, true),
-    entry("export", Group::Look, true),
-    entry("history", Group::Look, false),
-    entry("net-log", Group::Look, false),
-    entry("install", Group::Change, true),
-    entry("update", Group::Change, true),
-    entry("pin", Group::Change, true),
-    entry("unpin", Group::Change, true),
-    entry("adopt", Group::Change, true),
-    entry("sync", Group::Change, true),
-    entry("copy", Group::Change, true),
-    entry("remove", Group::Change, true),
-    entry("undo", Group::Change, true),
-    // Bare `backup` is `backup list`, bare `omarchy` `omarchy status`: reads.
-    entry("backup", Group::Change, false),
-    entry("backup list", Group::Change, false),
-    entry("backup create", Group::Change, true),
-    entry("backup restore", Group::Change, true),
-    entry("backup prune", Group::Change, true),
-    entry("backup export", Group::Change, true),
-    entry("backup import", Group::Change, true),
-    entry("backup verify", Group::Change, true),
-    entry("targets", Group::Setup, false),
-    entry("targets add", Group::Setup, true),
-    entry("targets rm", Group::Setup, true),
-    entry("targets rename", Group::Setup, true),
-    entry("targets default", Group::Setup, true),
-    entry("config", Group::Setup, false),
-    entry("config get", Group::Setup, false),
-    entry("config set", Group::Setup, true),
-    entry("config path", Group::Setup, false),
-    entry("auth github", Group::Setup, true),
-    entry("omarchy", Group::Setup, false),
-    entry("omarchy status", Group::Setup, false),
-    entry("omarchy install", Group::Setup, true),
-    entry("omarchy remove", Group::Setup, true),
-    entry("help", Group::Setup, false),
+    entry("status", Look, false, &[0, 1, 2, 3, 4, 6], data_schema::<status::StatusOutcome>, Network::None),
+    entry("list", Look, false, &[0, 1, 2, 3, 4], data_schema::<list::ListOutcome>, Network::None),
+    entry("outdated", Look, false, &[0, 1, 2, 3, 4, 6], data_schema::<outdated::OutdatedOutcome>, Network::Required),
+    entry("info", Look, false, &[0, 1, 2, 3, 4], data_schema::<info::InfoOutcome>, Network::Optional),
+    entry("search", Look, false, &[0, 1, 2, 3, 4], data_schema::<search::SearchOutcome>, Network::Required),
+    entry("errors", Look, false, &[0, 1, 2, 3, 4, 6], data_schema::<errors::ErrorsOutcome>, Network::None),
+    entry("errors dismiss", Look, true, &[0, 1, 2, 4, 5], data_schema::<errors::DismissOutcome>, Network::None),
+    entry("export", Look, true, &[0, 1, 2, 3, 4, 5], data_schema::<export::ExportOutcome>, Network::None),
+    entry("history", Look, false, &[0, 1, 2, 3, 4], data_schema::<history::HistoryOutcome>, Network::None),
+    entry("net-log", Look, false, &[0, 1, 2], data_schema::<net_log::NetLogOutcome>, Network::None),
+    entry("install", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<install::InstallOutcome>, Network::Optional),
+    entry("update", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<update::UpdateOutcome>, Network::Optional),
+    entry("pin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional),
+    entry("unpin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional),
+    entry("adopt", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<adopt::AdoptOutcome>, Network::Optional),
+    entry("sync", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<sync::SyncOutcome>, Network::Optional),
+    entry("copy", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<copy::CopyOutcome>, Network::Optional),
+    entry("remove", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<remove::RemoveOutcome>, Network::None),
+    entry("undo", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<undo::UndoOutcome>, Network::None),
+    // Bare `backup` runs as `backup list`, bare `omarchy` as `omarchy status`: these two
+    // names appear only on usage errors.
+    entry("backup", Change, false, &[0, 1, 2], data_schema::<backup::BackupListOutcome>, Network::None),
+    entry("backup list", Change, false, &[0, 1, 2, 3, 4], data_schema::<backup::BackupListOutcome>, Network::None),
+    entry("backup create", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupCreateOutcome>, Network::None),
+    entry("backup restore", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupRestoreOutcome>, Network::None),
+    entry("backup prune", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupPruneOutcome>, Network::None),
+    entry("backup export", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupExportOutcome>, Network::None),
+    entry("backup import", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupImportOutcome>, Network::None),
+    entry("backup verify", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup_verify::BackupVerifyOutcome>, Network::None),
+    entry("targets", Setup, false, &[0, 1, 2, 4], data_schema::<targets::Done<targets::TargetsData>>, Network::None),
+    entry("targets add", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<targets::Done<targets::AddData>>, Network::None),
+    entry("targets rm", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<targets::Done<targets::RmData>>, Network::None),
+    entry("targets rename", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<targets::Done<targets::RenameData>>, Network::None),
+    entry("targets default", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<targets::Done<targets::DefaultData>>, Network::None),
+    entry("config", Setup, false, &[0, 1, 2], data_schema::<config::Done<config::ConfigData>>, Network::None),
+    entry("config get", Setup, false, &[0, 1, 2], data_schema::<config::Done<config::GetData>>, Network::None),
+    entry("config set", Setup, true, &[0, 1, 2, 4, 5], data_schema::<config::Done<config::SetData>>, Network::None),
+    entry("config path", Setup, false, &[0, 1, 2], data_schema::<config::Done<config::PathData>>, Network::None),
+    entry("auth github", Setup, true, &[0, 1, 2, 4, 5], data_schema::<auth::AuthOutcome>, Network::Optional),
+    entry("omarchy", Setup, false, &[0, 1, 2], data_schema::<omarchy::StatusOutcome>, Network::None),
+    entry("omarchy status", Setup, false, &[0, 1, 2], data_schema::<omarchy::StatusOutcome>, Network::None),
+    entry("omarchy install", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<omarchy::InstallOutcome>, Network::None),
+    entry("omarchy remove", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<omarchy::RemoveOutcome>, Network::None),
+    entry("help", Setup, false, &[0, 1, 2], data_schema::<help::HelpOutcome>, Network::None),
 ];
+
+/// An envelope `command` that is no clap path: it never appears in help, in
+/// capabilities' commands or in the widget's `CLI_PATHS`.
+#[derive(Debug, Clone, Copy)]
+pub struct EnvelopeOnly {
+    pub name: &'static str,
+    pub exits: &'static [u8],
+    pub data: fn(&mut schemars::SchemaGenerator) -> schemars::Schema,
+    pub why: &'static str,
+}
+
+pub const ENVELOPE_ONLY: &[EnvelopeOnly] = &[
+    EnvelopeOnly {
+        name: "omaddons",
+        exits: &[1, 2],
+        data: data_schema::<help::HelpOutcome>,
+        why: "no command could be read from the arguments: a usage error before any subcommand, or a panic before parsing",
+    },
+    EnvelopeOnly {
+        name: "version",
+        exits: &[0],
+        data: data_schema::<help::HelpOutcome>,
+        why: "-V or --version before any subcommand",
+    },
+];
+
+/// The row of the command at `path`.
+pub fn command_entry(path: &str) -> Option<&'static CommandEntry> {
+    COMMANDS.iter().find(|c| c.name == path)
+}
+
+/// The exits a row declares, else an [`ENVELOPE_ONLY`] name's; `None` for any other.
+pub fn declared_exits(name: &str) -> Option<&'static [u8]> {
+    command_entry(name).map(|c| c.exits).or_else(|| {
+        ENVELOPE_ONLY
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.exits)
+    })
+}
 
 /// Whether the command at `path` (`targets add`) may change state; one this build does
 /// not list counts as changing it.
@@ -748,5 +879,291 @@ mod tests {
         assert_eq!(group_of("auth"), group_of("auth github"));
         assert!(group_of("auth").is_some());
         assert_eq!(group_of("nosuch"), None);
+    }
+
+    // ---- the per-command facts (M4-D2, M4-D5) ----
+
+    /// Whether the clap command at `path` has a `--check` or `--strict` flag.
+    fn has_check_or_strict(path: &str) -> bool {
+        let mut root = Cli::command();
+        root.build();
+        let cmd = path
+            .split(' ')
+            .try_fold(&root, |cmd, name| cmd.find_subcommand(name));
+        cmd.is_some_and(|cmd| {
+            cmd.get_arguments()
+                .any(|a| matches!(a.get_long(), Some("check" | "strict")))
+        })
+    }
+
+    /// Every static exit rule `entry` breaks, one message each.
+    fn exit_rule_violations(entry: &CommandEntry, has_check_or_strict: bool) -> Vec<String> {
+        let mut broken = Vec::new();
+        let exits = entry.exits;
+        if exits.is_empty() {
+            broken.push("exits is empty".to_owned());
+        }
+        if !exits.windows(2).all(|w| w[0] < w[1]) {
+            broken.push(format!("exits {exits:?} are not strictly ascending"));
+        }
+        match entry.dictionary {
+            Dictionary::General => {
+                let general: Vec<u8> = Exit::ALL.iter().map(|e| e.code()).collect();
+                let outside: Vec<&u8> = exits.iter().filter(|c| !general.contains(c)).collect();
+                if !outside.is_empty() {
+                    broken.push(format!("{outside:?} are outside the general dictionary"));
+                }
+                for code in [0, 1, 2] {
+                    if !exits.contains(&code) {
+                        broken.push(format!("a general row lists 0, 1 and 2: {code} is missing"));
+                    }
+                }
+            }
+            Dictionary::Doctor => broken.push(
+                "the doctor dictionary is E3's (omad-m4-agent-surface-doctor-c6cm.5.3): extend these rules with doctor::Exit".to_owned(),
+            ),
+        }
+        if entry.mutates {
+            for code in [4, 5] {
+                if !exits.contains(&code) {
+                    broken.push(format!("a mutating row lists 4 and 5: {code} is missing"));
+                }
+            }
+        }
+        if exits.contains(&6) != has_check_or_strict {
+            broken.push(format!(
+                "6 is listed exactly with --check or --strict: listed {}, flag {has_check_or_strict}",
+                exits.contains(&6)
+            ));
+        }
+        if entry.stores_plan && !entry.mutates {
+            broken.push("a row that stores a plan must mutate".to_owned());
+        }
+        broken
+    }
+
+    #[test]
+    fn every_row_follows_the_static_exit_rules() {
+        for row in COMMANDS {
+            let broken = exit_rule_violations(row, has_check_or_strict(row.name));
+            assert!(
+                broken.is_empty(),
+                "{} (exits {:?}): {broken:?}",
+                row.name,
+                row.exits
+            );
+        }
+    }
+
+    #[test]
+    fn the_static_rules_reject_each_planted_violation() {
+        let base = entry(
+            "x",
+            Group::Look,
+            false,
+            &[0, 1, 2],
+            data_schema::<help::HelpOutcome>,
+            Network::None,
+        );
+        let with = |exits: &'static [u8], mutates: bool| CommandEntry {
+            exits,
+            mutates,
+            ..base
+        };
+        for (case, planted, flag, expected) in [
+            (
+                "general_without_2",
+                with(&[0, 1], false),
+                false,
+                "2 is missing",
+            ),
+            (
+                "mutating_without_5",
+                with(&[0, 1, 2, 4], true),
+                false,
+                "5 is missing",
+            ),
+            (
+                "mutating_without_4",
+                with(&[0, 1, 2, 5], true),
+                false,
+                "4 is missing",
+            ),
+            (
+                "check_flag_without_6",
+                with(&[0, 1, 2], false),
+                true,
+                "exactly with --check",
+            ),
+            (
+                "six_without_check_flag",
+                with(&[0, 1, 2, 6], false),
+                false,
+                "exactly with --check",
+            ),
+            (
+                "unsorted",
+                with(&[0, 2, 1], false),
+                false,
+                "strictly ascending",
+            ),
+            (
+                "duplicate",
+                with(&[0, 0, 1, 2], false),
+                false,
+                "strictly ascending",
+            ),
+            (
+                "outside_the_general_dictionary",
+                with(&[0, 1, 2, 7], false),
+                false,
+                "outside the general",
+            ),
+            ("empty", with(&[], false), false, "exits is empty"),
+            ("plan_on_a_read", base.storing_plan(), false, "must mutate"),
+            (
+                "doctor_row",
+                base.doctor(),
+                false,
+                "omad-m4-agent-surface-doctor-c6cm.5.3",
+            ),
+        ] {
+            let broken = exit_rule_violations(&planted, flag);
+            assert!(
+                broken.iter().any(|m| m.contains(expected)),
+                "{case} (exits {:?}): expected {expected:?} in {broken:?}",
+                planted.exits
+            );
+        }
+        let valid = with(&[0, 1, 2, 4, 5], true);
+        let broken = exit_rule_violations(&valid, false);
+        assert!(broken.is_empty(), "valid: {broken:?}");
+    }
+
+    fn schema_of(row: &str) -> serde_json::Value {
+        let entry = command_entry(row);
+        assert!(entry.is_some(), "no row {row}");
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator();
+        entry.map_or(serde_json::Value::Null, |e| {
+            (e.data)(&mut generator).to_value()
+        })
+    }
+
+    #[test]
+    fn every_row_declares_a_data_schema() {
+        for row in COMMANDS {
+            let schema = schema_of(row.name);
+            assert!(
+                schema
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some(),
+                "{}: no titled root schema",
+                row.name
+            );
+        }
+        for (a, b) in [
+            ("backup", "backup list"),
+            ("omarchy", "omarchy status"),
+            ("pin", "unpin"),
+        ] {
+            assert_eq!(schema_of(a), schema_of(b), "{a} and {b} share an outcome");
+        }
+        assert_ne!(schema_of("install"), schema_of("update"));
+    }
+
+    #[test]
+    fn network_is_declared_as_decided() {
+        let network = |name: &str| command_entry(name).map(|c| c.network);
+        for name in ["search", "outdated"] {
+            assert_eq!(network(name), Some(Network::Required), "{name}");
+        }
+        for name in [
+            "install",
+            "update",
+            "pin",
+            "unpin",
+            "adopt",
+            "sync",
+            "copy",
+            "info",
+            "auth github",
+        ] {
+            assert_eq!(network(name), Some(Network::Optional), "{name}");
+        }
+        for name in [
+            "status",
+            "list",
+            "errors",
+            "errors dismiss",
+            "export",
+            "history",
+            "net-log",
+            "remove",
+            "undo",
+            "backup",
+            "backup list",
+            "backup create",
+            "backup restore",
+            "backup prune",
+            "backup export",
+            "backup import",
+            "backup verify",
+            "targets",
+            "targets add",
+            "targets rm",
+            "targets rename",
+            "targets default",
+            "config",
+            "config get",
+            "config set",
+            "config path",
+            "omarchy",
+            "omarchy status",
+            "omarchy install",
+            "omarchy remove",
+            "help",
+        ] {
+            assert_eq!(network(name), Some(Network::None), "{name}");
+        }
+    }
+
+    #[test]
+    fn envelope_only_names_are_no_clap_paths() {
+        let mut root = Cli::command();
+        root.build();
+        for only in ENVELOPE_ONLY {
+            assert!(command_entry(only.name).is_none(), "{} is a row", only.name);
+            assert!(
+                root.find_subcommand(only.name).is_none(),
+                "{} is a clap path",
+                only.name
+            );
+            assert!(!only.why.is_empty());
+        }
+        assert_eq!(declared_exits("version"), Some(&[0][..]));
+        assert_eq!(declared_exits("omaddons"), Some(&[1, 2][..]));
+        assert_eq!(
+            declared_exits("install"),
+            command_entry("install").map(|c| c.exits)
+        );
+        assert_eq!(declared_exits("auth"), None);
+    }
+
+    #[test]
+    fn command_entry_finds_rows_by_path() {
+        let add = command_entry("targets add");
+        assert_eq!(
+            add.map(|c| (c.group, c.mutates)),
+            Some((Group::Setup, true))
+        );
+        assert!(command_entry("auth").is_none());
+        assert!(
+            COMMANDS
+                .iter()
+                .all(|c| c.dictionary == Dictionary::General && !c.stores_plan)
+        );
     }
 }

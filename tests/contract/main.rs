@@ -180,6 +180,8 @@ mod support {
                 );
             }
         }
+        let command = envelope["command"].as_str().unwrap_or_default();
+        observe_exit(command, code, &ctx);
         for warning in envelope["warnings"].as_array().unwrap() {
             assert!(
                 warning["code"].is_string() && warning["message"].is_string(),
@@ -269,6 +271,42 @@ mod support {
                 _ => None,
             },
         }
+    }
+
+    /// Every (command, exit) the contract suite produced in this process.
+    static OBSERVED: std::sync::Mutex<BTreeMap<String, std::collections::BTreeSet<i32>>> =
+        std::sync::Mutex::new(BTreeMap::new());
+
+    /// Records `code` for `command`, and fails unless the command declares it (its
+    /// `COMMANDS` row, or an `ENVELOPE_ONLY` name). Checked inside `check`, so every
+    /// envelope of every contract test counts, whatever order the tests run in.
+    pub fn observe_exit(command: &str, code: i32, ctx: &str) {
+        let declared = omaddons::app::declared_exits(command);
+        let so_far = {
+            let mut observed = OBSERVED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            observed.entry(command.to_owned()).or_default().insert(code);
+            observed.get(command).cloned().unwrap_or_default()
+        };
+        assert!(
+            declared.is_some(),
+            "envelope command {command:?} is neither a COMMANDS path nor an ENVELOPE_ONLY name\n{ctx}"
+        );
+        let declared = declared.unwrap_or_default();
+        let listed = u8::try_from(code).is_ok_and(|c| declared.contains(&c));
+        assert!(
+            listed,
+            "{command} exited {code}, which its COMMANDS row does not declare: declared {declared:?}, observed so far {so_far:?}; add the code to the row's exits if the command can return it\n{ctx}"
+        );
+    }
+
+    /// A copy of the table, for logs.
+    pub fn observed() -> BTreeMap<String, std::collections::BTreeSet<i32>> {
+        OBSERVED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The envelope of an argv that parses names its canonical path. A panic is reported
@@ -602,24 +640,42 @@ fn the_harness_rejects_broken_envelopes() {
             "expected a failure for {phrase:?}, got {message:?}"
         );
     };
-    let two = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"t","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let argv = |words: &[&str]| -> Vec<String> { words.iter().map(|w| (*w).to_owned()).collect() };
+    let two = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"help","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
     let doubled = format!("{two}\n{two}");
     rejects(run(&doubled, 0), 0, "exactly one envelope");
-    let empty_fix = r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"t","exit_code":3,"error":{"code":"not_found","message":"m","fix":"","fix_argv":null,"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    // `info` declares 3, so these fail for their fix, not their exit.
+    let empty_fix = r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"info","exit_code":3,"error":{"code":"not_found","message":"m","fix":"","fix_argv":null,"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
     let mut failing = run(empty_fix, 3);
+    failing.argv = argv(&["info", "x", "--json"]);
     failing.stderr = r#"{"event":"error"}"#.into();
     rejects(failing, 3, "empty fix");
-    let unparsable = r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"t","exit_code":3,"error":{"code":"not_found","message":"m","fix":"omaddons targets pin a b","fix_argv":["omaddons","targets","pin","a","b"],"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let unparsable = r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"info","exit_code":3,"error":{"code":"not_found","message":"m","fix":"omaddons targets pin a b","fix_argv":["omaddons","targets","pin","a","b"],"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
     let mut failing = run(unparsable, 3);
+    failing.argv = argv(&["info", "x", "--json"]);
     failing.stderr = r#"{"event":"error"}"#.into();
     rejects(failing, 3, "does not parse");
-    let reordered = r#"{"schema_version":"1.0","ok":true,"tool_version":"x","command":"t","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let reordered = r#"{"schema_version":"1.0","ok":true,"tool_version":"x","command":"help","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
     rejects(run(reordered, 0), 0, "envelope key order");
     // An envelope that names another command than the argv it ran.
     let misnamed = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"status","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
     let mut listed = run(misnamed, 0);
-    listed.argv = vec!["list".into(), "--json".into()];
+    listed.argv = argv(&["list", "--json"]);
     rejects(listed, 0, "canonical path");
-    let ok = support::check(run(two, 0), 0);
+    // A name that is no command, and an exit its row does not declare.
+    let unknown = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"auth","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    rejects(run(unknown, 0), 0, "neither a COMMANDS path");
+    let undeclared = r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"help","exit_code":4,"error":{"code":"game_running","message":"m","fix":"quit the game client, then rerun","fix_argv":null,"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let mut failing = run(undeclared, 4);
+    failing.stderr = r#"{"event":"error"}"#.into();
+    rejects(failing, 4, "does not declare");
+    let mut good = run(two, 0);
+    good.argv = argv(&["--json"]);
+    let ok = support::check(good, 0);
     assert!(support::codes(&[&ok]).is_empty());
+    let recorded = support::observed();
+    assert!(
+        recorded.get("help").is_some_and(|exits| exits.contains(&0)),
+        "the good envelope was recorded: {recorded:?}"
+    );
 }
