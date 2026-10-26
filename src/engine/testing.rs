@@ -385,6 +385,33 @@ impl TxScene {
     /// Calls `f` with an engine context for `command` (no network, the scene's running
     /// set and actor).
     pub fn with_ctx<R>(&self, command: &str, f: impl FnOnce(&super::tx::EngineCtx<'_>) -> R) -> R {
+        self.with_bound_ctx(command, None, f)
+    }
+
+    /// Runs `changes` as `run_as` does, as a dry run or not, collecting witnesses under
+    /// `witness`, with `binding` asked by the engine.
+    pub fn run_bound(
+        &self,
+        changes: Vec<super::plan::RequestedChange>,
+        kind: Option<TxKind>,
+        default_kind: TxKind,
+        dry_run: bool,
+        witness: Option<super::witness::WitnessScope>,
+        binding: Option<&dyn super::tx::Binding>,
+    ) -> crate::error::Result<super::tx::TxOutcomes> {
+        let mut req = self.request(changes, kind, default_kind);
+        req.dry_run = dry_run;
+        req.witness = witness;
+        self.with_bound_ctx("install", binding, |ctx| super::tx::run(&req, ctx))
+    }
+
+    /// [`TxScene::with_ctx`] with `binding` in the context.
+    pub fn with_bound_ctx<R>(
+        &self,
+        command: &str,
+        binding: Option<&dyn super::tx::Binding>,
+        f: impl FnOnce(&super::tx::EngineCtx<'_>) -> R,
+    ) -> R {
         let mut registry = crate::sources::SourceRegistry::new();
         if self.with_git {
             registry = registry.with_git(
@@ -418,7 +445,7 @@ impl TxScene {
             downloads: None,
             indexes: None,
             notes: None,
-            binding: None,
+            binding,
             auto_backup: None,
         };
         f(&ctx)

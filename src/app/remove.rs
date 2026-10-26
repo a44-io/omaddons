@@ -256,14 +256,16 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         no_deps: false,
         witness: None,
     };
-    // A remove fetches nothing. `--if-match` binds the run to its preview's plan.
-    let binding = ctx
-        .if_match
-        .clone()
-        .map(|token| precondition::RemoveBinding {
-            token,
-            preview: precondition::preview_argv(&ctx.argv),
-        });
+    // A remove fetches nothing. `--if-match` binds the real run to its preview's plan; a
+    // dry run given a token previews afresh and returns the current one (M3-D46, kept).
+    let binding =
+        ctx.if_match
+            .clone()
+            .filter(|_| !ctx.dry_run)
+            .map(|token| precondition::RemoveBinding {
+                token,
+                preview: precondition::preview_argv(&ctx.argv),
+            });
     let done = Engine::new(ctx, &world, "remove")?.run_bound(
         &req,
         None,

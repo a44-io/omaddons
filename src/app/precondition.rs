@@ -16,12 +16,13 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::app::outcome::SkipReason;
+use crate::cli::Context;
 use crate::engine::plan::{Change, Plan, PlannedOp, PlannedRelease, TargetPlan};
-use crate::engine::witness::ApprovalWitness;
+use crate::engine::witness::{self, ApprovalWitness, WitnessScope};
 use crate::engine::{Binding, UndoOutcome as EngineUndo};
 use crate::error::{Error, PlanStaleSource, Result, Suggestion};
 pub use crate::model::TargetRef;
-use crate::model::{BackupId, FolderName, TargetKey, TxId};
+use crate::model::{Actor, BackupId, FolderName, Target, TargetKey, TxId};
 
 /// The command paths whose runs bind to a preview; `--if-match` is a usage error on any
 /// other.
@@ -504,6 +505,120 @@ pub fn witness_digest(w: &ApprovalWitness) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// An engine command's run bound to its preview's token (M4-D19): its own plan's token,
+/// witnesses and extras included, must be the preview's before anything is staged (on a
+/// dry run too), and its targets' generations must not have moved under the lock. D8
+/// adds the under-lock witness and operation checks to this type; its fields stay
+/// private so it can, without touching a call site.
+pub struct PlanBinding<'a> {
+    command: &'static str,
+    expected: Option<String>,
+    extras: PlanExtras<'a>,
+    preview: Vec<String>,
+}
+
+impl<'a> PlanBinding<'a> {
+    /// `expected: None` binds nothing: it computes no token and checks nothing.
+    pub fn new(
+        command: &'static str,
+        expected: Option<String>,
+        extras: PlanExtras<'a>,
+        preview: Vec<String>,
+    ) -> Self {
+        Self {
+            command,
+            expected,
+            extras,
+            preview,
+        }
+    }
+
+    /// This run's binding: `Some` exactly when `--if-match` was given, dry run or not,
+    /// with the run's preview ([`preview_argv`]) as the fix.
+    pub fn of_run(ctx: &Context, command: &'static str, extras: PlanExtras<'a>) -> Option<Self> {
+        ctx.if_match
+            .clone()
+            .map(|token| Self::new(command, Some(token), extras, preview_argv(&ctx.argv)))
+    }
+}
+
+impl Binding for PlanBinding<'_> {
+    fn plan(&self, plan: &Plan) -> Result<()> {
+        let Some(expected) = &self.expected else {
+            return Ok(());
+        };
+        let actual = of_plan(self.command, plan, &plan.witnesses, &self.extras);
+        check(Some(expected), &actual, &self.preview)
+    }
+
+    fn undo(&self, _planned: &EngineUndo) -> Result<()> {
+        Ok(())
+    }
+
+    fn moved(&self, _target: &str) -> Error {
+        stale(self.command, &[Part::Targets], &self.preview)
+    }
+}
+
+/// A dry run's token: [`of_plan`] over the plan it ran, its witnesses and `extras`.
+pub fn plan_token(command: &'static str, plan: &Plan, extras: &PlanExtras<'_>) -> String {
+    of_plan(command, plan, &plan.witnesses, extras).token()
+}
+
+/// The witness scope of this run: the default scope for a dry run or a bound run, `None`
+/// for an unbound real run, which compares nothing and so collects nothing.
+pub fn witnessing(ctx: &Context) -> Option<WitnessScope> {
+    collects_witnesses(ctx).then(WitnessScope::default)
+}
+
+/// Whether this run compares or returns a token: a dry run, or a run given `--if-match`.
+fn collects_witnesses(ctx: &Context) -> bool {
+    ctx.dry_run || ctx.if_match.is_some()
+}
+
+/// One in-scope target of a run that found nothing to change, with the record
+/// generation it was judged at.
+pub struct Idle<'a> {
+    pub target: &'a Target,
+    pub generation: u64,
+}
+
+/// The token of a run that changes nothing on `targets`: [`of_plan`] over
+/// [`Plan::idle`], each target witnessed with [`witness::bare`] (its marker and judge),
+/// plus `extras`. So a preview with work and a run with none differ in `selection`, and
+/// two runs with nothing to do agree. An unreadable marker fails it (fail closed).
+pub fn of_noop(
+    command: &'static str,
+    targets: &[Idle<'_>],
+    extras: &PlanExtras<'_>,
+) -> Result<Precondition> {
+    let entries: Vec<(&Target, u64)> = targets.iter().map(|i| (i.target, i.generation)).collect();
+    let mut plan = Plan::idle(&entries, &[], Actor::Agent);
+    plan.witnesses = targets
+        .iter()
+        .map(|i| witness::bare(i.target))
+        .collect::<Result<_>>()?;
+    Ok(of_plan(command, &plan, &plan.witnesses, extras))
+}
+
+/// The token check of a run that found nothing to change and never reaches the engine
+/// (M4-D19, "on each command's no-op path"). An unbound real run reads nothing and gives
+/// `Ok(None)`. Otherwise the run's [`of_noop`] token is checked against `--if-match`
+/// (`plan_stale` when it differs), and a dry run gives it back.
+pub fn check_noop(
+    ctx: &Context,
+    command: &'static str,
+    targets: &[Idle<'_>],
+    extras: &PlanExtras<'_>,
+) -> Result<Option<String>> {
+    if !collects_witnesses(ctx) {
+        return Ok(None);
+    }
+    let actual = of_noop(command, targets, extras)?;
+    check(ctx.if_match.as_deref(), &actual, &preview_argv(&ctx.argv))?;
+    Ok(ctx.dry_run.then(|| actual.token()))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1699,5 +1814,440 @@ mod tests {
             Part::ALL.map(Part::wire),
             ["command", "targets", "selection", "observed"]
         );
+    }
+
+    // ---- Binding the engine commands ------------------------------------------------
+
+    const PREVIEW: &[&str] = &["omaddons", "install", "Foo", "--dry-run"];
+
+    /// The fixture plan with its witnesses on it, as the engine hands a binding.
+    fn witnessed_plan(i: &Inputs) -> Plan {
+        let mut plan = i.plan.clone();
+        plan.witnesses = i.witnesses.clone();
+        plan
+    }
+
+    fn extras_of(i: &Inputs) -> PlanExtras<'_> {
+        PlanExtras {
+            copy_source: i.copy_source,
+            desired_sha256: i.desired.clone(),
+            update_skips: &i.skips,
+        }
+    }
+
+    /// `details.changed` of `result`'s refusal, with its code, retryability and fix
+    /// checked; `None` when it passed.
+    fn refused_parts(case: &str, result: Result<()>) -> Option<Value> {
+        let error = result.err()?;
+        let body = ErrorBody::from(error);
+        assert_eq!(body.code, ErrorCode::PlanStale, "{case}");
+        assert!(
+            !body.retryable,
+            "{case}: the same token can only fail again"
+        );
+        assert_eq!(body.fix_argv, Some(argv(PREVIEW)), "{case}");
+        Some(body.details["changed"].clone())
+    }
+
+    #[test]
+    fn a_plan_binding_passes_its_own_token() {
+        let i = inputs();
+        let plan = witnessed_plan(&i);
+        let token = plan_token("install", &plan, &extras_of(&i));
+        let binding = PlanBinding::new("install", Some(token), extras_of(&i), argv(PREVIEW));
+        assert!(binding.plan(&plan).is_ok());
+    }
+
+    #[test]
+    fn a_plan_binding_names_each_moved_part() {
+        type Edit = fn(&mut Inputs);
+        let rows: [(&str, Edit, &str, &str); 8] = [
+            (
+                "generation_moved",
+                |i| i.plan.targets[0].generation = 8,
+                "install",
+                "targets",
+            ),
+            (
+                "op_added",
+                |i| i.plan.targets[0].ops.push(op(OpKind::Add, "New", "Foo")),
+                "install",
+                "selection",
+            ),
+            (
+                "release_changed",
+                |i| i.plan.targets[0].releases[0].release_id = "gh:o/foo@3".into(),
+                "install",
+                "selection",
+            ),
+            (
+                "witness_digest_changed",
+                |i| i.witnesses[0].judge = "ef56".repeat(16),
+                "install",
+                "observed",
+            ),
+            (
+                "copy_source_generation_moved",
+                |i| i.copy_source = Some((key(OTHER), 5)),
+                "install",
+                "observed",
+            ),
+            (
+                "desired_sha256_changed",
+                |i| i.desired = Some("8".repeat(64)),
+                "install",
+                "observed",
+            ),
+            (
+                "update_skip_added",
+                |i| {
+                    i.skips
+                        .push((by_key(KEY), "WeakAuras".into(), SkipReason::Pinned));
+                },
+                "install",
+                "observed",
+            ),
+            ("other_command", |_| {}, "update", "command"),
+        ];
+        let base = inputs();
+        let token = plan_token("install", &witnessed_plan(&base), &extras_of(&base));
+        for (case, edit, command, part) in rows {
+            let mut changed = inputs();
+            edit(&mut changed);
+            let binding = PlanBinding::new(
+                command,
+                Some(token.clone()),
+                extras_of(&changed),
+                argv(PREVIEW),
+            );
+            let parts = refused_parts(case, binding.plan(&witnessed_plan(&changed)));
+            assert_eq!(parts, Some(json!([part])), "{case}");
+        }
+    }
+
+    #[test]
+    fn a_plan_binding_without_a_token_checks_nothing() {
+        let i = inputs();
+        let binding = PlanBinding::new("install", None, PlanExtras::default(), argv(PREVIEW));
+        assert!(binding.plan(&witnessed_plan(&i)).is_ok());
+        assert!(binding.plan(&plan_with(Vec::new())).is_ok());
+    }
+
+    #[test]
+    fn a_plan_bindings_moved_is_a_non_retryable_targets_refusal() {
+        let binding = PlanBinding::new(
+            "install",
+            Some("pc1:x".into()),
+            PlanExtras::default(),
+            argv(PREVIEW),
+        );
+        let body = ErrorBody::from(binding.moved("retail"));
+        assert_eq!(body.code, ErrorCode::PlanStale);
+        assert!(!body.retryable);
+        assert_eq!(body.details["changed"], json!(["targets"]));
+        assert_eq!(body.fix_argv, Some(argv(PREVIEW)));
+        assert!(
+            body.message.starts_with("this install is no longer"),
+            "{}",
+            body.message
+        );
+    }
+
+    /// A run of `install Foo`, dry or not, with or without `--if-match`.
+    fn ctx(dry_run: bool, if_match: Option<&str>) -> Context {
+        let mut words = vec!["omaddons", "install", "Foo"];
+        if dry_run {
+            words.push("--dry-run");
+        }
+        if let Some(token) = if_match {
+            words.extend(["--if-match", token]);
+        }
+        Context {
+            output: crate::output::OutputConfig::machine(),
+            command: "install",
+            actor: Actor::Agent,
+            reason: None,
+            argv: argv(&words),
+            offline: false,
+            offline_by_env: false,
+            dry_run,
+            while_running: false,
+            if_match: if_match.map(str::to_owned),
+            target: None,
+            started: std::time::Instant::now(),
+            progress: crate::output::ProgressSink::none(),
+            notes: crate::output::RunNotes::default(),
+            stdin_is_tty: false,
+        }
+    }
+
+    /// A well-formed preview token (no credential).
+    fn sample_token() -> String {
+        format!("pc1:{}", "0123456789abcdef".repeat(4))
+    }
+
+    #[test]
+    fn of_run_binds_only_with_if_match() {
+        let sample = sample_token();
+        for (case, dry_run, if_match, binds) in [
+            ("dry_without", true, None, false),
+            ("dry_with", true, Some(sample.as_str()), true),
+            ("real_without", false, None, false),
+            ("real_with", false, Some(sample.as_str()), true),
+        ] {
+            let ctx = ctx(dry_run, if_match);
+            let binding = PlanBinding::of_run(&ctx, "install", PlanExtras::default());
+            assert_eq!(binding.is_some(), binds, "{case}");
+            if let Some(binding) = binding {
+                assert_eq!(binding.preview, preview_argv(&ctx.argv), "{case}");
+                assert_eq!(binding.expected.as_deref(), Some(sample.as_str()), "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn witnessing_is_on_for_dry_and_bound_runs_only() {
+        let sample = sample_token();
+        for (case, dry_run, if_match, on) in [
+            ("dry_without", true, None, true),
+            ("dry_with", true, Some(sample.as_str()), true),
+            ("real_without", false, None, false),
+            ("real_with", false, Some(sample.as_str()), true),
+        ] {
+            let scope = witnessing(&ctx(dry_run, if_match));
+            assert_eq!(scope.is_some(), on, "{case}");
+        }
+    }
+
+    /// A target at `dir` (a client dir in a tempdir), registered as `key` when given.
+    fn client(dir: &std::path::Path, id: &str, key: Option<TargetKey>) -> Target {
+        std::fs::create_dir_all(dir.join("Interface/AddOns")).unwrap();
+        let mut target = crate::engine::testing::target(dir);
+        target.id = id.to_owned();
+        target.key = key;
+        if let Some(key) = key {
+            crate::engine::testing::mark(dir, key);
+        }
+        target
+    }
+
+    fn noop(
+        command: &'static str,
+        targets: &[(&Target, u64)],
+        extras: &PlanExtras<'_>,
+    ) -> Precondition {
+        let idle: Vec<Idle<'_>> = targets
+            .iter()
+            .map(|(target, generation)| Idle {
+                target,
+                generation: *generation,
+            })
+            .collect();
+        of_noop(command, &idle, extras).unwrap()
+    }
+
+    #[test]
+    fn the_noop_token_is_stable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let retail = client(&tmp.path().join("retail"), "retail", Some(key(KEY)));
+        let classic = client(&tmp.path().join("classic"), "classic", None);
+        let extras = PlanExtras::default();
+        let a = noop("update", &[(&retail, 7), (&classic, 0)], &extras);
+        let b = noop("update", &[(&classic, 0), (&retail, 7)], &extras);
+        assert_eq!(a.token(), b.token(), "{}", shown(&a, &b));
+        assert_eq!(
+            a.token(),
+            noop("update", &[(&retail, 7), (&classic, 0)], &extras).token()
+        );
+    }
+
+    #[test]
+    fn the_noop_token_covers_its_targets_and_extras() {
+        let tmp = tempfile::tempdir().unwrap();
+        let retail = client(&tmp.path().join("retail"), "retail", Some(key(KEY)));
+        let classic = client(&tmp.path().join("classic"), "classic", None);
+        let skips = [(by_key(KEY), "DBM-Core".to_owned(), SkipReason::Pinned)];
+        let none = PlanExtras::default();
+        let base = noop("update", &[(&retail, 7)], &none);
+        let provisional = noop("update", &[(&classic, 0)], &none);
+        let mut registered = classic.clone();
+        registered.key = Some(key(THIRD));
+        crate::engine::testing::mark(&registered.client_dir, key(THIRD));
+        let remarked = client(&tmp.path().join("remarked"), "retail", Some(key(KEY)));
+        std::fs::write(
+            crate::discover::registry::marker_path(&remarked.client_dir),
+            format!("{{\n  \"key\": \"{KEY}\"\n}}\n"),
+        )
+        .unwrap();
+        // Adding or registering a target also adds or renames its selection entry and
+        // its witness: those rows move all three parts.
+        let cases: Vec<(&str, &Precondition, Precondition, &[&str])> = vec![
+            (
+                "generation_moved",
+                &base,
+                noop("update", &[(&retail, 8)], &none),
+                &["targets"],
+            ),
+            (
+                "target_added",
+                &base,
+                noop("update", &[(&retail, 7), (&classic, 0)], &none),
+                &["targets", "selection", "observed"],
+            ),
+            (
+                "target_registered",
+                &provisional,
+                noop("update", &[(&registered, 0)], &none),
+                &["targets", "selection", "observed"],
+            ),
+            (
+                "marker_changed",
+                &base,
+                noop("update", &[(&remarked, 7)], &none),
+                &["observed"],
+            ),
+            (
+                "desired_sha256",
+                &base,
+                noop(
+                    "update",
+                    &[(&retail, 7)],
+                    &PlanExtras {
+                        desired_sha256: Some("9".repeat(64)),
+                        ..PlanExtras::default()
+                    },
+                ),
+                &["observed"],
+            ),
+            (
+                "update_skip",
+                &base,
+                noop(
+                    "update",
+                    &[(&retail, 7)],
+                    &PlanExtras {
+                        update_skips: &skips,
+                        ..PlanExtras::default()
+                    },
+                ),
+                &["observed"],
+            ),
+            (
+                "copy_source",
+                &base,
+                noop(
+                    "update",
+                    &[(&retail, 7)],
+                    &PlanExtras {
+                        copy_source: Some((key(OTHER), 4)),
+                        ..PlanExtras::default()
+                    },
+                ),
+                &["observed"],
+            ),
+        ];
+        let preview = argv(PREVIEW);
+        for (case, before, actual, parts) in cases {
+            let changed = check(Some(&before.token()), &actual, &preview)
+                .err()
+                .map(|e| e.details["changed"].clone());
+            assert_eq!(
+                changed,
+                Some(json!(parts)),
+                "{case}\n{}",
+                shown(before, &actual)
+            );
+        }
+    }
+
+    #[test]
+    fn a_noop_token_differs_from_a_token_with_work_in_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let retail = client(&tmp.path().join("retail"), "retail", Some(key(KEY)));
+        let extras = PlanExtras::default();
+        let idle = noop("update", &[(&retail, 7)], &extras);
+        let mut busy = Plan::idle(&[(&retail, 7)], &[], Actor::Agent);
+        busy.targets[0].ops.push(op(OpKind::Replace, "Foo", "Foo"));
+        busy.witnesses = vec![witness::bare(&retail).unwrap()];
+        let busy = of_plan("update", &busy, &busy.witnesses, &extras);
+        let changed = check(Some(&idle.token()), &busy, &argv(PREVIEW))
+            .err()
+            .map(|e| e.details["changed"].clone());
+        assert_eq!(
+            changed,
+            Some(json!(["selection"])),
+            "{}",
+            shown(&idle, &busy)
+        );
+    }
+
+    #[test]
+    fn check_noop_reads_nothing_on_an_unbound_real_run() {
+        if rustix::process::geteuid().is_root() {
+            return; // root reads a mode-000 file
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let retail = client(&tmp.path().join("retail"), "retail", Some(key(KEY)));
+        let marker = crate::discover::registry::marker_path(&retail.client_dir);
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let idle = [Idle {
+            target: &retail,
+            generation: 7,
+        }];
+        let extras = PlanExtras::default();
+        let unbound = check_noop(&ctx(false, None), "update", &idle, &extras);
+        let dry = check_noop(&ctx(true, None), "update", &idle, &extras);
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(unbound, Ok(None)), "{unbound:?}");
+        let error = dry.unwrap_err();
+        assert_eq!(error.code, ErrorCode::Io, "{error:?}");
+    }
+
+    #[test]
+    fn check_noop_returns_the_dry_runs_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        let retail = client(&tmp.path().join("retail"), "retail", Some(key(KEY)));
+        let extras = PlanExtras::default();
+        let idle = [Idle {
+            target: &retail,
+            generation: 7,
+        }];
+        let token = check_noop(&ctx(true, None), "update", &idle, &extras).unwrap();
+        assert_eq!(
+            token,
+            Some(noop("update", &[(&retail, 7)], &extras).token())
+        );
+    }
+
+    #[test]
+    fn check_noop_refuses_a_stale_bound_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let retail = client(&tmp.path().join("retail"), "retail", Some(key(KEY)));
+        let extras = PlanExtras::default();
+        let stale = noop("update", &[(&retail, 6)], &extras).token();
+        let idle = [Idle {
+            target: &retail,
+            generation: 7,
+        }];
+        let error = check_noop(&ctx(false, Some(&stale)), "update", &idle, &extras).unwrap_err();
+        let body = ErrorBody::from(error);
+        assert_eq!(body.code, ErrorCode::PlanStale);
+        assert!(!body.retryable);
+        assert_eq!(body.details["changed"], json!(["targets"]));
+    }
+
+    #[test]
+    fn check_noop_passes_a_matching_bound_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let retail = client(&tmp.path().join("retail"), "retail", Some(key(KEY)));
+        let extras = PlanExtras::default();
+        let token = noop("update", &[(&retail, 7)], &extras).token();
+        let idle = [Idle {
+            target: &retail,
+            generation: 7,
+        }];
+        let result = check_noop(&ctx(false, Some(&token)), "update", &idle, &extras);
+        assert!(matches!(result, Ok(None)), "{result:?}");
     }
 }

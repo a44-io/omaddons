@@ -842,7 +842,11 @@ fn preview_binding() {
     s.json(&["install", "gh:o/foo", "--file", &foo2, "-t", "retail"], 0);
     let c = s.json(&["remove", "Foo", "-t", "retail", "--if-match", &token], 1);
     insta::assert_json_snapshot!("if_match_stale", s.stable(&c.envelope));
-    let c = s.json(&["update", "--if-match", &token], 2);
+    // `backup create` never binds (M4-D22); `update` starts to with D2.
+    let c = s.json(
+        &["backup", "create", "-t", "retail", "--if-match", &token],
+        2,
+    );
     insta::assert_json_snapshot!("if_match_unbound_command", s.stable(&c.envelope));
 }
 

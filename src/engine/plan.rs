@@ -516,6 +516,54 @@ impl Plan {
             .iter()
             .any(|t| !t.ops.is_empty() || !t.work.is_empty())
     }
+
+    /// The plan of a run that changes nothing on `targets`, each with the record
+    /// generation it was judged at: one empty `TargetPlan` per target (no ops, changes,
+    /// releases, warnings or work; `creates_addons_dir: false`), no failures and no
+    /// witnesses. A no-op path's token is computed over it.
+    pub fn idle(targets: &[(&Target, u64)], argv: &[String], actor: Actor) -> Self {
+        let mut generations = BTreeMap::new();
+        let targets = targets
+            .iter()
+            .map(|(target, generation)| {
+                let key = target
+                    .key
+                    .map_or_else(|| target.id.clone(), |k| k.to_string());
+                generations.insert(key, *generation);
+                TargetPlan {
+                    target: target.id.clone(),
+                    key: target.key,
+                    kind: None,
+                    changes: Vec::new(),
+                    ops: Vec::new(),
+                    releases: Vec::new(),
+                    reload_required: ReloadRequired::None,
+                    warnings: Vec::new(),
+                    creates_addons_dir: false,
+                    generation: *generation,
+                    work: Vec::new(),
+                    unchanged_warnings: Vec::new(),
+                    notes: Vec::new(),
+                    default_kind: TxKind::Install,
+                    dependencies: BTreeMap::new(),
+                }
+            })
+            .collect();
+        Self {
+            schema_version: SCHEMA_VERSION,
+            plan_id: None,
+            created_at: Timestamp::now(),
+            expires_at: None,
+            argv: argv.to_vec(),
+            actor,
+            dry_run: true,
+            generations,
+            targets,
+            failures: Vec::new(),
+            facts: Vec::new(),
+            witnesses: Vec::new(),
+        }
+    }
 }
 
 /// One target's part of the plan.
@@ -5990,6 +6038,33 @@ mod tests {
             blob_sha256: blob.map(str::to_owned),
             ..requiring("Foo", AddonReason::Explicit, &[])
         }
+    }
+
+    #[test]
+    fn an_idle_plan_has_no_ops_and_keeps_each_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut retail = crate::engine::testing::target(&tmp.path().join("retail"));
+        let key = TargetKey::new();
+        retail.key = Some(key);
+        let mut classic = crate::engine::testing::target(&tmp.path().join("classic"));
+        classic.id = "classic".into();
+        let plan = Plan::idle(&[(&retail, 7), (&classic, 0)], &[], Actor::Agent);
+        assert!(!plan.has_ops());
+        assert!(plan.failures.is_empty() && plan.witnesses.is_empty());
+        let shown: Vec<(&str, Option<TargetKey>, u64)> = plan
+            .targets
+            .iter()
+            .map(|t| (t.target.as_str(), t.key, t.generation))
+            .collect();
+        assert_eq!(shown, [("retail", Some(key), 7), ("classic", None, 0)]);
+        assert!(plan.targets.iter().all(|t| t.changes.is_empty()
+            && t.releases.is_empty()
+            && t.work.is_empty()
+            && !t.creates_addons_dir));
+        assert_eq!(
+            plan.generations,
+            BTreeMap::from([(key.to_string(), 7), ("classic".to_owned(), 0)])
+        );
     }
 
     #[test]

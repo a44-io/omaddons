@@ -403,12 +403,11 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         downloads: ctx.downloads.unwrap_or(&run_downloads),
         indexes: ctx.indexes,
     };
-    let planned = plan::plan(&plan_req, &plan_ctx).and_then(|plan| {
-        // A bound run stages nothing unless it planned what the preview showed.
-        match ctx.binding {
-            Some(binding) if !req.dry_run => binding.plan(&plan).map(|()| plan),
-            _ => Ok(plan),
-        }
+    let planned = plan::plan(&plan_req, &plan_ctx).and_then(|plan| match ctx.binding {
+        // A bound run, dry or not, stages and reports nothing unless it planned what the
+        // preview showed (M4-D19).
+        Some(binding) => binding.plan(&plan).map(|()| plan),
+        None => Ok(plan),
     });
     let plan = match planned {
         Ok(plan) => plan,
@@ -1765,6 +1764,99 @@ mod tests {
         let done = scene.run(vec![scene.install("gh:o/foo", &v1)]).unwrap();
         assert!(done.failures.is_empty(), "{:?}", done.failures);
         scene
+    }
+
+    /// A binding that counts its `plan` calls and refuses or accepts.
+    struct Counting {
+        refuse: bool,
+        asked: std::cell::Cell<u32>,
+    }
+
+    impl Binding for Counting {
+        fn plan(&self, _plan: &Plan) -> Result<()> {
+            self.asked.set(self.asked.get() + 1);
+            if self.refuse {
+                Err(Error::plan_stale(
+                    crate::error::PlanStaleSource::Apply,
+                    "refused by the test binding",
+                    Suggestion::text("preview again"),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn undo(&self, _planned: &super::super::undo::UndoOutcome) -> Result<()> {
+            Ok(())
+        }
+
+        fn moved(&self, _target: &str) -> Error {
+            Error::internal("not asked in a dry run")
+        }
+    }
+
+    #[test]
+    fn a_bound_dry_run_asks_its_binding() {
+        let scene = with_v1();
+        let v2 = scene.zip("v2.zip", V2);
+        let state = crate::engine::testing::tree_snapshot(scene.paths.state_dir());
+        let refusing = Counting {
+            refuse: true,
+            asked: std::cell::Cell::new(0),
+        };
+        let refused = scene.run_bound(
+            vec![scene.install("gh:o/foo", &v2)],
+            None,
+            TxKind::Install,
+            true,
+            None,
+            Some(&refusing),
+        );
+        assert!(
+            matches!(&refused, Err(e) if e.code == ErrorCode::PlanStale),
+            "{refused:?}"
+        );
+        assert_eq!(refusing.asked.get(), 1);
+        assert_eq!(
+            crate::engine::testing::tree_snapshot(scene.paths.state_dir()),
+            state,
+            "a refused bound dry run writes nothing under <state>"
+        );
+        let accepting = Counting {
+            refuse: false,
+            asked: std::cell::Cell::new(0),
+        };
+        let done = scene
+            .run_bound(
+                vec![scene.install("gh:o/foo", &v2)],
+                None,
+                TxKind::Install,
+                true,
+                None,
+                Some(&accepting),
+            )
+            .unwrap();
+        assert_eq!(accepting.asked.get(), 1, "asked exactly once");
+        assert!(done.plan.has_ops(), "the dry run returns its plan");
+    }
+
+    #[test]
+    fn an_unbound_dry_run_asks_nothing() {
+        let scene = with_v1();
+        let v2 = scene.zip("v2.zip", V2);
+        let before = generation(&scene);
+        let done = scene
+            .run_bound(
+                vec![scene.install("gh:o/foo", &v2)],
+                None,
+                TxKind::Install,
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(done.plan.has_ops() && done.outcomes.iter().all(|o| o.tx.is_none()));
+        assert_eq!(generation(&scene), before, "a dry run commits nothing");
     }
 
     fn generation(scene: &TxScene) -> u64 {

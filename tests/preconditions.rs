@@ -253,20 +253,19 @@ fn if_match_goes_only_with_the_binding_commands_and_takes_only_tokens() {
     let scene = Scene::new();
     scene.install("gh:o/foo", "v1");
     let token = preview(&scene, REMOVE);
-    let envelope = scene.run(&bound(&["update"], &token), "").expect(2);
+    // `backup create` never binds (M4-D22).
+    let unbound = ["backup", "create", "-t", "retail"];
+    let envelope = scene.run(&bound(&unbound, &token), "").expect(2);
     let error = &envelope["error"];
     assert_eq!(error["code"], "usage");
     let message = error["message"].as_str().unwrap();
-    for name in [
-        "remove",
-        "undo",
-        "backup restore",
-        "backup prune",
-        "errors dismiss",
-    ] {
+    for name in omaddons::app::precondition::BINDING_COMMANDS {
         assert!(message.contains(name), "{message}");
     }
-    assert_eq!(error["fix_argv"], json!(["omaddons", "help", "update"]));
+    assert_eq!(
+        error["fix_argv"],
+        json!(["omaddons", "help", "backup", "create"])
+    );
     // A command that only reads: its fix drops the flag.
     let envelope = scene.run(&bound(&["list"], &token), "").expect(2);
     assert_eq!(envelope["error"]["fix_argv"], json!(["omaddons", "list"]));

@@ -3,19 +3,20 @@ source: tests/contract/matrix.rs
 expression: s.stable(&c.envelope)
 ---
 {
-  "command": "update",
+  "command": "backup create",
   "commands": [],
   "error": {
     "alternatives": [],
     "code": "usage",
     "details": {},
-    "fix": "omaddons help update",
+    "fix": "omaddons help backup create",
     "fix_argv": [
       "omaddons",
       "help",
-      "update"
+      "backup",
+      "create"
     ],
-    "message": "--if-match binds a run to its preview, and only remove, undo, backup restore, backup prune and errors dismiss take it, not update",
+    "message": "--if-match binds a run to its preview, and only remove, undo, backup restore, backup prune and errors dismiss take it, not backup create",
     "retryable": false
   },
   "exit_code": 2,
