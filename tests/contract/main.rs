@@ -11,6 +11,7 @@
 mod common;
 
 mod exit_sites;
+mod intent_corpus;
 mod matrix;
 mod recommendations;
 mod special;
