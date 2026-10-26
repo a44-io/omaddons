@@ -7,7 +7,8 @@
 //! from `swapped` and rolls back from anything earlier, replaying the step records in
 //! reverse.
 //!
-//! Each step records the identity (device and inode) of both paths before its rename.
+//! Each step records the identity (inode and birth time; the device is recorded for
+//! diagnosis only) of both paths before its rename.
 //! Renames on one filesystem keep inodes, so recovery knows exactly whether a step ran:
 //! an `exchange` leaves both paths in place either way, and only identity tells. A
 //! step that did not run is skipped, which also makes recovery idempotent.
@@ -29,6 +30,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
+pub use crate::fsx::FileId;
 use crate::fsx::{
     self, FsxError, GlobalLock, GlobalLockGuard, InflightLock, LockState, LockUse, Op, PruneReason,
     RenameMode, ScopeTable, WriteSession, Writer, ensure_dir_all, failpoint, mutate, probe_global,
@@ -229,7 +231,7 @@ pub fn file_stamp(path: &Path) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SourceBackup {
     pub id: crate::model::BackupId,
-    /// Its directory's identity, compared with [`same`].
+    /// Its directory's identity, compared with [`FileId::same`].
     pub dir: FileId,
 }
 
@@ -292,62 +294,6 @@ pub enum StepPurpose {
     RemoveToSnapshot,
     FallbackLiveToSnapshot,
     FallbackStageToLive,
-}
-
-/// A path's identity, which a rename on one filesystem keeps: its inode number and, where
-/// the filesystem keeps one, its birth time. The device number is recorded for diagnosis
-/// only: btrfs subvolumes, FUSE and device-mapper volumes get a new one on every mount,
-/// so a reboot would make every step look like neither state. Compare with [`same`],
-/// never `==`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-pub struct FileId {
-    pub dev: u64,
-    pub ino: u64,
-    /// Nanoseconds since the epoch (statx `STATX_BTIME`); `None` where the filesystem
-    /// has none, and in journals written before it was recorded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub born_ns: Option<i64>,
-}
-
-impl FileId {
-    /// The identity of what is at `path` (not following a symlink), if anything.
-    pub fn of(path: &Path) -> Option<Self> {
-        std::fs::symlink_metadata(path)
-            .ok()
-            .map(|m| Self::from_metadata(&m))
-    }
-
-    /// The identity `meta` (read without following a symlink) describes.
-    fn from_metadata(meta: &std::fs::Metadata) -> Self {
-        Self {
-            dev: meta.dev(),
-            ino: meta.ino(),
-            born_ns: meta
-                .created()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .and_then(|d| i64::try_from(d.as_nanos()).ok()),
-        }
-    }
-}
-
-/// Whether two recorded identities name the same file: both absent, or the same inode
-/// with the same birth time when both know it. The device is ignored: a step's two paths
-/// are on one filesystem by construction, and its number changes across mounts.
-pub(super) fn same(a: Option<FileId>, b: Option<FileId>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(a), Some(b)) => {
-            // ubs:ignore — comparing inode numbers, not secrets
-            a.ino == b.ino
-                && match (a.born_ns, b.born_ns) {
-                    // ubs:ignore — comparing birth times, not secrets
-                    (Some(x), Some(y)) => x == y,
-                    _ => true,
-                }
-        }
-        _ => false,
-    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1606,7 +1552,7 @@ pub(crate) fn classify(view: &mut dyn LiveView, step: &StepRecord, live: &Path) 
     let in_live = |path: &Path| path.starts_with(live);
     // The displaced side holds `recorded`; its place under `WTF/` is the live side's.
     let mut found = |side: &Path, recorded: Option<FileId>, live_side: &Path| match recorded {
-        Some(identity) if same(view.id(side), Some(identity)) => {
+        Some(identity) if FileId::same(view.id(side), Some(identity)) => {
             let rel = live_side
                 .strip_prefix(live)
                 .map(|rel| rel.to_string_lossy().replace('\\', "/"))
@@ -1624,7 +1570,7 @@ pub(crate) fn classify(view: &mut dyn LiveView, step: &StepRecord, live: &Path) 
         StepOp::Exchange if in_live(&step.to) => found(&step.from, step.to_id, &step.to),
         StepOp::Exchange if in_live(&step.from) => found(&step.to, step.from_id, &step.from),
         StepOp::Noreplace | StepOp::Rename if in_live(&step.to) => {
-            if view.id(&step.from).is_none() && !same(view.id(&step.to), step.from_id) {
+            if view.id(&step.from).is_none() && !FileId::same(view.id(&step.to), step.from_id) {
                 Unexpected::Replaced
             } else {
                 Unexpected::Unrecognized
@@ -1782,7 +1728,7 @@ pub(crate) fn source_gone(view: &mut dyn LiveView, prepared: &Prepared) -> bool 
     match (prepared.source_backup, prepared.commit.history.reverts) {
         (Some(source), _) => {
             let dir = crate::backup::backup_dir(&client, &source.id);
-            !same(view.id(&dir), Some(source.dir))
+            !FileId::same(view.id(&dir), Some(source.dir))
         }
         (None, Some(reverted)) => !view.is_dir(
             &super::retention::snapshot_of(&client, &reverted).join(super::retention::WTF_PREVIOUS),
@@ -1972,8 +1918,9 @@ pub(crate) fn step_state(view: &mut dyn LiveView, step: &StepRecord) -> StepStat
         StepOp::Exchange => (step.to_id, step.from_id),
         StepOp::Noreplace | StepOp::Rename => (None, step.from_id),
     };
-    let is =
-        |(from, to): (Option<FileId>, Option<FileId>)| same(now_from, from) && same(now_to, to);
+    let is = |(from, to): (Option<FileId>, Option<FileId>)| {
+        FileId::same(now_from, from) && FileId::same(now_to, to)
+    };
     if is(before) {
         StepState::Before
     } else if is(after) {
@@ -4347,7 +4294,7 @@ mod tests {
             let entry = Disk.entry(&path);
             assert_eq!(entry.map(|e| e.kind), kind, "{name}: {entry:?}");
             assert!(
-                same(entry.map(|e| e.id), FileId::of(&path)),
+                FileId::same(entry.map(|e| e.id), FileId::of(&path)),
                 "{name}: {entry:?} against {:?}",
                 FileId::of(&path)
             );
@@ -4794,15 +4741,11 @@ mod tests {
             "StampDigest::compute(",
             "symlink_metadata(",
         ];
-        // (file, the item it sits in, the method of that item or "", the reads allowed)
-        const ALLOWED: [(&str, &str, &str, &[&str]); 6] = [
+        // (file, the item it sits in, the method of that item or "", the reads allowed).
+        // `FileId::of`'s own read lives in fsx (`fsx/identity.rs`); its callers here are
+        // what this census confines.
+        const ALLOWED: [(&str, &str, &str, &[&str]); 5] = [
             ("journal.rs", "impl LiveView for Disk", "", &READS),
-            (
-                "journal.rs",
-                "impl FileId",
-                "pub fn of(",
-                &["symlink_metadata("],
-            ),
             (
                 "journal.rs",
                 "pub fn file_stamp(",

@@ -3,6 +3,7 @@
 //! reflink primitives, and the lock files.
 
 pub(crate) mod failpoint;
+mod identity;
 mod lock;
 mod mutate;
 mod op;
@@ -15,6 +16,7 @@ pub(crate) mod sys;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use failpoint::{with_spec, with_spec_in};
+pub use identity::FileId;
 pub use lock::{
     DirLock, GlobalLock, GlobalLockGuard, HolderInfo, InflightLock, LockState, probe_global,
 };

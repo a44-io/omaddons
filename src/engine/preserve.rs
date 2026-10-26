@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use super::journal::{
-    Disk, JournalLine, LiveView, Prepared, PreserveIntent, PreserveItem, Preserved, same,
+    Disk, FileId, JournalLine, LiveView, Prepared, PreserveIntent, PreserveItem, Preserved,
 };
 use crate::backup::create::{DIR_MODE, addons, rename_new, write};
 use crate::backup::inventory::{Change, Ring};
@@ -92,7 +92,7 @@ pub(super) fn published_matches(
         intent
             .items
             .iter()
-            .all(|item| same(view.id(&place(published, &item.rel)), Some(item.identity))),
+            .all(|item| FileId::same(view.id(&place(published, &item.rel)), Some(item.identity))),
     )
 }
 
@@ -110,9 +110,9 @@ pub(super) enum Placed {
 /// [`Placed`] for `item` of the intent assembled at `assembly`: the assembly is checked
 /// first.
 pub(super) fn placed(view: &mut dyn LiveView, item: &PreserveItem, assembly: &Path) -> Placed {
-    if same(view.id(&place(assembly, &item.rel)), Some(item.identity)) {
+    if FileId::same(view.id(&place(assembly, &item.rel)), Some(item.identity)) {
         Placed::InAssembly
-    } else if same(view.id(&item.path), Some(item.identity)) {
+    } else if FileId::same(view.id(&item.path), Some(item.identity)) {
         Placed::AtFound
     } else {
         Placed::Neither
