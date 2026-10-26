@@ -735,6 +735,26 @@ fn history() {
     insta::assert_json_snapshot!("history_bad_since", s.stable(&c.envelope));
 }
 
+/// A repair line (M4-D31), planted before any command writes one: `target: null`, its
+/// clients in `targets`, its doctor run and its operations.
+#[test]
+fn history_repair_line() {
+    use crate::common::history::{chmod, plant, repair_line};
+    let s = Scene::new();
+    s.install_foo();
+    let retail = crate::common::state::key_of(&s.home, "retail");
+    let credential = crate::common::http::paths(&s.home.env).credential_file("github");
+    let line = repair_line(
+        "repair",
+        &[retail],
+        "2026-10-30T18-03-40Z__01M8S000000000000000000000",
+        vec![chmod(1, &credential, "0644", "0600")],
+    );
+    plant(&s.home, &line);
+    let c = s.json(&["history"], 0);
+    insta::assert_json_snapshot!("history_repair_line", s.stable(&c.envelope));
+}
+
 #[test]
 fn runs() {
     let s = Scene::new();

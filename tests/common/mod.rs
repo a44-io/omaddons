@@ -2,7 +2,8 @@
 //! trees, PE stubs, `product.db`, launcher configs, a fake `/proc`, `pause` failpoint
 //! markers, bind mounts, addon folders, HTTP fixtures and release graphs, drift mutators, readers
 //! for state and `net.log`, SavedVariables in both writer formats (BugGrabber's
-//! among them), and a structured step log (`tlog`).
+//! among them), synthetic repair lines for history (`history`), and a structured step
+//! log (`tlog`).
 //! Each integration test crate declares `mod common;` and uses the subset it needs.
 //!
 //! Everything is written under a [`env::TestEnv`] tempdir; nothing here touches the real
@@ -22,6 +23,7 @@ pub mod engine;
 pub mod env;
 pub mod exec;
 pub mod graph;
+pub mod history;
 pub mod home;
 pub mod http;
 pub mod launchers;

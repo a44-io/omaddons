@@ -1,0 +1,103 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "history",
+  "commands": [],
+  "data": {
+    "entries": [
+      {
+        "actor": "human",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "fix"
+        ],
+        "at": "<time>",
+        "changes": {
+          "added": 0,
+          "recorded": 0,
+          "removed": 0,
+          "replaced": 0,
+          "restored": 0
+        },
+        "doctor_run_id": "2026-10-30T18-03-40Z__<ulid>",
+        "kind": "repair",
+        "reason": null,
+        "repairs": [
+          {
+            "fix": 1,
+            "fm": "fm-secrets-credential-file-mode",
+            "op": "chmod",
+            "path": "<root>/config/omaddons/credentials/github",
+            "post": {
+              "identity": {
+                "born_ns": "1790000000000000000",
+                "ino": "4242"
+              },
+              "kind": "file",
+              "mode": "0600"
+            },
+            "pre": {
+              "identity": {
+                "born_ns": "1790000000000000000",
+                "ino": "4242"
+              },
+              "kind": "file",
+              "mode": "0644"
+            },
+            "seq": 1
+          }
+        ],
+        "result": "committed",
+        "run": "<ulid>",
+        "target": null,
+        "targets": [
+          {
+            "id": "retail",
+            "key": "<ulid>"
+          }
+        ],
+        "tx": "<ulid>"
+      },
+      {
+        "actor": "agent",
+        "argv": [
+          "omaddons",
+          "install",
+          "gh:o/foo",
+          "--file",
+          "<root>/dl/foo.zip",
+          "-t",
+          "retail",
+          "--json"
+        ],
+        "at": "<time>",
+        "changes": {
+          "added": 1,
+          "recorded": 0,
+          "removed": 0,
+          "replaced": 0,
+          "restored": 0
+        },
+        "kind": "install",
+        "reason": null,
+        "result": "committed",
+        "run": "<ulid>",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      }
+    ],
+    "truncated": false
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
