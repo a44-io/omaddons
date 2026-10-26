@@ -737,6 +737,10 @@ pub struct PlannedRelease {
     /// download, so a token keys the release by these instead (`precondition::of_plan`).
     #[serde(skip)]
     pub deferred: Option<DeferredAsset>,
+    /// The downloaded asset's file name, for the approval summary (M4-D28); no part of a
+    /// token.
+    #[serde(skip)]
+    pub asset: Option<String>,
 }
 
 /// A release whose download URL a source resolves right before each attempt (Tukui).
@@ -4037,6 +4041,7 @@ impl TargetPlanner<'_> {
             expected_hash,
             blob_sha256: winner.loadable.inspected.blob_sha256.clone(),
             deferred: DeferredAsset::of(&winner.candidate.asset.location),
+            asset: Some(winner.candidate.asset.filename.clone()),
         };
         let input = super::witness::input_of(
             &winner.candidate.asset.location,
@@ -6792,5 +6797,32 @@ mod tests {
                 "{kinds:?} {over:?} {default:?}"
             );
         }
+    }
+
+    /// The approval summary names the asset a release installs from; the plan's wire form
+    /// (and so `tests/plan.rs`'s snapshot) does not carry it.
+    #[test]
+    fn a_planned_release_knows_its_asset_name() {
+        let scene = crate::engine::testing::TxScene::new();
+        let zip = scene.zip(
+            "Foo-1.0.zip",
+            &[("Foo/Foo.toc", "## Interface: 120105\n## Version: 1.0\n")],
+        );
+        let mut req = scene.request(vec![scene.install("gh:o/foo", &zip)], None, TxKind::Install);
+        req.dry_run = true;
+        let done = scene
+            .with_ctx("install", |ctx| super::super::tx::run(&req, ctx))
+            .unwrap();
+        let releases = &done.plan.targets[0].releases;
+        assert_eq!(
+            releases
+                .iter()
+                .map(|r| r.asset.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("Foo-1.0.zip")],
+            "{releases:?}"
+        );
+        let wire = serde_json::to_value(&releases[0]).unwrap();
+        assert!(wire.get("asset").is_none(), "{wire}");
     }
 }

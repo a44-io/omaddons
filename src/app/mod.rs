@@ -2,6 +2,7 @@
 //! rendering happens in `output`.
 
 pub mod adopt;
+pub mod approval;
 pub mod auth;
 pub mod backup;
 pub mod backup_verify;

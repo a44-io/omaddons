@@ -19,6 +19,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::app::adopt::AdoptArgs;
+use crate::app::approval::ApprovalFlags;
 use crate::app::backup::{BackupPruneArgs, BackupRestoreArgs};
 use crate::app::copy::CopyArgs;
 use crate::app::install::InstallArgs;
@@ -579,6 +580,32 @@ impl StoredIntent {
             self,
             Self::Remove(_) | Self::Undo(_) | Self::BackupRestore(_) | Self::BackupPrune(_)
         )
+    }
+
+    /// What the intent's options say its approval must flag; false where the variant
+    /// has no such option.
+    pub fn approval_flags(&self) -> ApprovalFlags {
+        let (reinstall, force) = match self {
+            Self::Install(i) => (i.reinstall, i.force),
+            _ => (false, false),
+        };
+        let while_running = match self {
+            Self::Install(i) => i.while_running,
+            Self::Update(u) => u.while_running,
+            Self::Pin(p) | Self::Unpin(p) => p.while_running,
+            Self::Adopt(a) => a.while_running,
+            Self::Sync(s) => s.while_running,
+            Self::Copy(c) => c.while_running,
+            Self::Remove(r) => r.while_running,
+            Self::Undo(u) => u.while_running,
+            Self::BackupRestore(_) | Self::BackupPrune(_) => false,
+        };
+        ApprovalFlags {
+            reinstall,
+            force,
+            while_running,
+            destructive: self.destructive(),
+        }
     }
 
     /// The absolute inputs `apply` checks are still there: install's `--file`, a `file:`
@@ -2070,6 +2097,25 @@ mod tests {
         let mut all = paths.clone();
         all.sort_unstable();
         assert_eq!(covered, all, "every storable command has a row");
+    }
+
+    #[test]
+    fn approval_flags_follow_the_options() {
+        for r in rows() {
+            let flags = r.intent.approval_flags();
+            let expected = ApprovalFlags {
+                reinstall: r.name == "install with every option",
+                force: r.name == "install with every option",
+                // A restore and a prune record none: they never take `--while-running`.
+                while_running: r.while_running
+                    && !matches!(
+                        r.intent,
+                        StoredIntent::BackupRestore(_) | StoredIntent::BackupPrune(_)
+                    ),
+                destructive: r.intent.destructive(),
+            };
+            assert_eq!(flags, expected, "{}", r.name);
+        }
     }
 
     #[test]

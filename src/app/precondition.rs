@@ -1079,6 +1079,7 @@ mod tests {
             expected_hash: Some(ExpectedHash::Sha256("a".repeat(64))),
             blob_sha256: Some("b".repeat(64)),
             deferred: None,
+            asset: None,
         }
     }
 
@@ -1092,6 +1093,7 @@ mod tests {
                 source: SourceId::Tukui,
                 key: key.to_owned(),
             }),
+            asset: None,
         }
     }
 
