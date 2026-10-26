@@ -18,6 +18,7 @@ pub mod help;
 pub mod history;
 pub mod info;
 pub mod install;
+pub mod intent;
 pub mod issues;
 pub mod list;
 pub mod net_log;
