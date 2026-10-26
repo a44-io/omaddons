@@ -1,0 +1,50 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 1289
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "install",
+          "gh:o/foo",
+          "--file",
+          "<root>/dl/foo.zip",
+          "-t",
+          "retail"
+        ],
+        "display": "omaddons install gh:o/foo --file <root>/dl/foo.zip -t retail"
+      }
+    ],
+    "code": "target_ambiguous",
+    "details": {
+      "candidates": [
+        "classic",
+        "retail"
+      ],
+      "selector": "all"
+    },
+    "fix": "omaddons install gh:o/foo --file <root>/dl/foo.zip -t classic",
+    "fix_argv": [
+      "omaddons",
+      "install",
+      "gh:o/foo",
+      "--file",
+      "<root>/dl/foo.zip",
+      "-t",
+      "classic"
+    ],
+    "message": "\"all\" matches 2 targets: classic, retail",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

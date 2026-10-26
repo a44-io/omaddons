@@ -1228,3 +1228,131 @@ fn omarchy() {
     let c = s.json_env(&["omarchy", "remove"], &env, 3);
     insta::assert_json_snapshot!("omarchy_remove_missing", s.stable(&c.envelope));
 }
+
+/// `-t all` (M4-D13): every client on a command that covers several, `target_ambiguous`
+/// on one that lands on one, the reserved id, and a client named `all` winning with
+/// `target_id_reserved`.
+#[test]
+fn target_all() {
+    let s = Scene::new();
+    let log = crate::common::tlog::tlog!();
+    s.install_foo();
+    let ids = |envelope: &Value| -> Vec<String> {
+        envelope["data"]["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|t| t["id"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    };
+    let reserved = |envelope: &Value| -> Vec<Value> {
+        envelope["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|w| w["code"] == "target_id_reserved")
+            .cloned()
+            .collect()
+    };
+
+    log.step("status -t all");
+    let c = s.json(&["status", "-t", "all"], 0);
+    log.json("envelope", &c.envelope);
+    let every = s.json(&["status"], 0);
+    assert_eq!(
+        ids(&c.envelope),
+        ["classic", "retail"],
+        "{}",
+        c.run.context()
+    );
+    assert_eq!(ids(&c.envelope), ids(&every.envelope), "the same as no -t");
+    insta::assert_json_snapshot!("target_all_status", s.stable(&c.envelope));
+
+    log.step("list -t ALL");
+    let c = s.json(&["list", "-t", "ALL"], 0);
+    log.json("envelope", &c.envelope);
+    assert_eq!(
+        ids(&c.envelope),
+        ["classic", "retail"],
+        "{}",
+        c.run.context()
+    );
+
+    log.step("install on one target with -t all");
+    let zip = s.zip("foo");
+    let c = s.json(&["install", "gh:o/foo", "--file", &zip, "-t", "all"], 3);
+    log.json("envelope", &c.envelope);
+    let ctx = c.run.context();
+    let error = &c.envelope["error"];
+    assert_eq!(error["code"], "target_ambiguous", "{ctx}");
+    assert_eq!(
+        error["details"]["candidates"],
+        serde_json::json!(["classic", "retail"]),
+        "{ctx}"
+    );
+    let fix = support::strings(&error["fix_argv"]);
+    assert!(fix.ends_with(&["-t".into(), "classic".into()]), "{ctx}");
+    let alternatives = error["alternatives"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(alternatives.len(), 1, "{ctx}");
+    let alternative = support::strings(&alternatives[0]["argv"]);
+    assert!(
+        alternative.ends_with(&["-t".into(), "retail".into()]),
+        "{ctx}"
+    );
+    insta::assert_json_snapshot!("target_all_on_one_target", s.stable(&c.envelope));
+
+    log.step("targets rename retail all");
+    let registry = s.home.state().join("registry.json");
+    let before = fs::read(&registry).unwrap();
+    let c = s.json(&["targets", "rename", "retail", "all"], 2);
+    log.json("envelope", &c.envelope);
+    let ctx = c.run.context();
+    assert_eq!(c.envelope["error"]["code"], "usage", "{ctx}");
+    let message = c.envelope["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("reserved"), "{ctx}");
+    insta::assert_json_snapshot!("target_id_all_refused", s.stable(&c.envelope));
+    assert_eq!(
+        fs::read(&registry).unwrap(),
+        before,
+        "the registry was written"
+    );
+
+    log.step("a client named all, as an older build left it");
+    s.json(&["targets", "default", "classic"], 0);
+    let text = fs::read_to_string(&registry).unwrap();
+    let mut doc: Value = serde_json::from_str(&text).unwrap();
+    log.json("registry before", &doc);
+    for target in doc["targets"].as_array_mut().into_iter().flatten() {
+        if target["id"] == "classic" {
+            target["id"] = Value::from("all");
+        }
+    }
+    log.json("registry after", &doc);
+    fs::write(&registry, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    let c = s.json(&["status", "-t", "all"], 0);
+    log.json("envelope", &c.envelope);
+    let ctx = c.run.context();
+    assert_eq!(ids(&c.envelope), ["all"], "{ctx}");
+    let warned = reserved(&c.envelope);
+    assert_eq!(warned.len(), 1, "{ctx}");
+    assert_eq!(
+        warned[0]["message"],
+        "a client has the id \"all\", so -t all selected that client, not every client",
+        "{ctx}"
+    );
+    let display = warned[0]["fix"].as_str().unwrap_or_default();
+    assert!(
+        display.contains("omaddons targets rename all <new id>"),
+        "{ctx}"
+    );
+    assert!(warned[0]["fix_argv"].is_null(), "{ctx}");
+    insta::assert_json_snapshot!("target_id_reserved", s.stable(&c.envelope));
+
+    log.step("status");
+    let c = s.json(&["status"], 0);
+    log.json("envelope", &c.envelope);
+    assert!(reserved(&c.envelope).is_empty(), "{}", c.run.context());
+}

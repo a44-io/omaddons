@@ -1,0 +1,51 @@
+---
+source: tests/contract/usage_fixes.rs
+assertion_line: 874
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "update",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "help",
+          "update"
+        ],
+        "display": "omaddons help update"
+      },
+      {
+        "argv": [
+          "omaddons",
+          "update",
+          "foo",
+          "-t",
+          "classic"
+        ],
+        "display": "omaddons update foo -t classic"
+      }
+    ],
+    "code": "usage",
+    "details": {
+      "command": "update",
+      "target": "retail"
+    },
+    "fix": "omaddons update foo -t retail",
+    "fix_argv": [
+      "omaddons",
+      "update",
+      "foo",
+      "-t",
+      "retail"
+    ],
+    "message": "'retail' and 'classic' are clients, not addons; the client goes in -t, one per command",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

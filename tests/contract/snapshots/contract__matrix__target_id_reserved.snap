@@ -1,0 +1,156 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 1332
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "status",
+  "commands": [],
+  "data": {
+    "cached": false,
+    "issues": [],
+    "journal": {
+      "in_progress": false,
+      "pending": 0
+    },
+    "last_change": {
+      "actor": "agent",
+      "at": "<time>",
+      "changes": {
+        "added": 1,
+        "recorded": 0,
+        "removed": 0,
+        "replaced": 0,
+        "restored": 0
+      },
+      "kind": "install",
+      "reason": null,
+      "run": "<ulid>",
+      "targets": [
+        "retail"
+      ],
+      "undo": {
+        "argv": [
+          "omaddons",
+          "undo",
+          "--run",
+          "<ulid>"
+        ],
+        "command": "omaddons undo --run <ulid>"
+      }
+    },
+    "last_change_state": "ok",
+    "needs_attention": false,
+    "summary": {
+      "check_due": false,
+      "errors": {
+        "new": 0,
+        "targets": []
+      },
+      "issues": {
+        "p0": 0,
+        "p1": 0,
+        "p2": 0,
+        "p3": 0
+      },
+      "running": [],
+      "state": "idle",
+      "targets": 1,
+      "updates": {
+        "available": 0,
+        "targets": []
+      },
+      "widget_outdated": false
+    },
+    "targets": [
+      {
+        "addons": {
+          "degraded": 0,
+          "total": 0
+        },
+        "adoptable": 0,
+        "any_flavor": [],
+        "attention": [],
+        "backups": {
+          "auto": {
+            "capability": "unsupported",
+            "last": null,
+            "mode": "daily"
+          },
+          "bytes": null,
+          "count": 0,
+          "free_bytes": 68719476736,
+          "latest": null,
+          "latest_qualifying": null,
+          "snapshot_bytes": null,
+          "stale": false
+        },
+        "default": true,
+        "drift": [],
+        "errors": {
+          "addons": 0,
+          "capture": "none",
+          "coverage": "complete",
+          "dismissed_at": null,
+          "last_session_at": null,
+          "new": 0,
+          "received": 0,
+          "state": "ok",
+          "top": [],
+          "total": 0
+        },
+        "family": "mists",
+        "folders": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 0,
+          "protected": 0,
+          "shared": 0,
+          "unmanaged": 0
+        },
+        "id": "all",
+        "install_kind": "battlenet",
+        "interface": 50504,
+        "issues": [],
+        "key": "<ulid>",
+        "kind": "live",
+        "label": "classic (battlenet)",
+        "missing": false,
+        "modes": [
+          {
+            "id": "mists-classic",
+            "name": "Mists of Pandaria Classic"
+          }
+        ],
+        "orphans": 0,
+        "product": "wow_classic",
+        "registered": true,
+        "running": false,
+        "updates": {
+          "available": 0,
+          "blocked": 0,
+          "checked_at": null,
+          "failed": 0,
+          "pinned": 0,
+          "stale": false,
+          "unchecked": 0
+        },
+        "version": "5.5.4.63854"
+      }
+    ],
+    "widget": null
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "target_id_reserved",
+      "fix": "rename it, and -t all selects every client again: omaddons targets rename all <new id>",
+      "fix_argv": null,
+      "message": "a client has the id \"all\", so -t all selected that client, not every client"
+    }
+  ]
+}

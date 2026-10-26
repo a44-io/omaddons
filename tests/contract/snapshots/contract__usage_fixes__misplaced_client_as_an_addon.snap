@@ -1,0 +1,41 @@
+---
+source: tests/contract/usage_fixes.rs
+assertion_line: 870
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "remove",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "help",
+          "remove"
+        ],
+        "display": "omaddons help remove"
+      }
+    ],
+    "code": "usage",
+    "details": {
+      "command": "remove",
+      "target": "classic"
+    },
+    "fix": "omaddons remove foo -t classic",
+    "fix_argv": [
+      "omaddons",
+      "remove",
+      "foo",
+      "-t",
+      "classic"
+    ],
+    "message": "'classic' is a client, not an addon; the client goes in -t",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

@@ -736,3 +736,195 @@ fn a_catalog_name_that_is_a_client_word_is_never_moved() {
         }
     }
 }
+
+// A client named among the addons of install, update or remove (M4-D12 hook 3).
+
+/// (argv after `omaddons`, `fix_argv` after `omaddons`, `details.target`,
+/// `details.command`, the alternatives after the command's help).
+type AsAnAddon = (
+    &'static [&'static str],
+    &'static [&'static str],
+    &'static str,
+    &'static str,
+    &'static [&'static [&'static str]],
+);
+
+const MISPLACED_AS_AN_ADDON: &[AsAnAddon] = &[
+    (
+        &["update", "retail"],
+        &["update", "-t", "retail"],
+        "retail",
+        "update",
+        &[],
+    ),
+    (
+        &["update", "foo", "classic"],
+        &["update", "foo", "-t", "classic"],
+        "classic",
+        "update",
+        &[],
+    ),
+    (
+        &["remove", "foo", "classic"],
+        &["remove", "foo", "-t", "classic"],
+        "classic",
+        "remove",
+        &[],
+    ),
+    (
+        &["rm", "foo", "classic"],
+        &["rm", "foo", "-t", "classic"],
+        "classic",
+        "remove",
+        &[],
+    ),
+    (
+        &["upgrade", "foo", "classic", "--dry-run"],
+        &["upgrade", "foo", "-t", "classic", "--dry-run"],
+        "classic",
+        "update",
+        &[],
+    ),
+    (
+        &["install", "weakauras", "classic"],
+        &["install", "weakauras", "-t", "classic"],
+        "classic",
+        "install",
+        &[],
+    ),
+    (
+        &["install", "weakauras", "mop"],
+        &["install", "weakauras", "-t", "mop"],
+        "mop",
+        "install",
+        &[],
+    ),
+    (
+        &["update", "foo", "Retail"],
+        &["update", "foo", "-t", "Retail"],
+        "Retail",
+        "update",
+        &[],
+    ),
+    (
+        &["update", "foo", "retail", "classic"],
+        &["update", "foo", "-t", "retail"],
+        "retail",
+        "update",
+        &[&["update", "foo", "-t", "classic"]],
+    ),
+];
+
+fn prefixed(words: &[&str]) -> Vec<String> {
+    owned(&[&["omaddons"][..], words].concat())
+}
+
+#[test]
+fn a_client_named_among_the_addons_moves_into_dash_t() {
+    let s = Scene::new();
+    let log = tlog!();
+    s.install_foo();
+    for (args, fix, target, command, others) in MISPLACED_AS_AN_ADDON {
+        log.step(&args.join(" "));
+        let c = s.json(args, 2);
+        log.json("envelope", &c.envelope);
+        let ctx = c.run.context();
+        let error = &c.envelope["error"];
+        assert_eq!(error["code"], "usage", "{ctx}");
+        assert_eq!(error["retryable"], false, "{ctx}");
+        let fixed = support::strings(&error["fix_argv"]);
+        assert_eq!(fixed, prefixed(fix), "{ctx}");
+        let help: Vec<&str> = ["help"].into_iter().chain(command.split(' ')).collect();
+        let alternatives: Vec<Vec<String>> = error["alternatives"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|a| support::strings(&a["argv"]))
+            .collect();
+        let want: Vec<Vec<String>> = std::iter::once(prefixed(&help))
+            .chain(others.iter().map(|o| prefixed(o)))
+            .collect();
+        assert_eq!(alternatives, want, "{ctx}");
+        assert_eq!(
+            error["details"],
+            serde_json::json!({ "target": target, "command": command }),
+            "{ctx}"
+        );
+        let message = match others {
+            [] => format!("'{target}' is a client, not an addon; the client goes in -t"),
+            _ => {
+                let words: Vec<String> = std::iter::once(*target)
+                    .chain(others.iter().filter_map(|o| o.last().copied()))
+                    .map(|w| format!("'{w}'"))
+                    .collect();
+                let (last, rest) = words.split_last().expect("two words or more");
+                format!(
+                    "{} and {last} are clients, not addons; the client goes in -t, one per command",
+                    rest.join(", ")
+                )
+            }
+        };
+        assert_eq!(error["message"], message, "{ctx}");
+        never_another_mutating_command(&fixed, Some(command), &ctx);
+        match *args {
+            ["remove", "foo", "classic"] => {
+                insta::assert_json_snapshot!("misplaced_client_as_an_addon", s.stable(&c.envelope))
+            }
+            ["update", "foo", "retail", "classic"] => {
+                insta::assert_json_snapshot!("misplaced_clients_as_addons", s.stable(&c.envelope))
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn a_name_that_is_no_misplaced_client_keeps_todays_error() {
+    let s = Scene::new();
+    let log = tlog!();
+    s.install_foo();
+    // A catalog name that is also a mode alias (`mop`): read as the addon, never moved.
+    let catalog_d = s.home.env.config().join("omaddons/catalog.d");
+    fs::create_dir_all(&catalog_d).unwrap();
+    fs::write(
+        catalog_d.join("50-mop.toml"),
+        "schema_version = \"1.0\"\n[[addon]]\nname = \"Mop\"\nref = \"gh:o/mop\"\nfamilies = [\"mists\"]\nfolders = [\"Mop\"]\n",
+    )
+    .unwrap();
+    for (args, exit, code) in [
+        (&["update", "nosuch"][..], 3, Some("not_managed")),
+        (&["remove", "nosuch"], 3, Some("not_managed")),
+        (&["install", "nosuchaddon"], 3, Some("not_found")),
+        // A target is given: `retail` fails alone, as an unknown name.
+        (&["update", "foo", "retail", "-t", "retail"], 0, None),
+        (&["update", "mop"], 3, Some("not_managed")),
+        // The fix would not parse: the command fails as before.
+        (&["remove", "retail"], 3, Some("not_managed")),
+    ] {
+        log.step(&args.join(" "));
+        let c = s.json(args, exit);
+        log.json("envelope", &c.envelope);
+        let ctx = c.run.context();
+        let error = &c.envelope["error"];
+        assert_eq!(error["code"].as_str(), code, "{ctx}");
+        let details = &error["details"];
+        assert!(
+            details.get("target").is_none() || details.get("command").is_none(),
+            "a misplaced-client error\n{ctx}"
+        );
+        if exit == 0 {
+            let items = &c.envelope["data"]["targets"][0]["items"];
+            let retail = items
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|item| item["request"] == "retail");
+            let failed = retail.map(|item| (&item["status"], &item["error"]["code"]));
+            assert_eq!(
+                failed,
+                Some((&Value::from("failed"), &Value::from("not_managed"))),
+                "retail fails alone\n{ctx}"
+            );
+        }
+    }
+}
