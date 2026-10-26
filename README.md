@@ -2002,6 +2002,7 @@ omaddons remove Foo -t retail --if-match pc1:…     # exactly that removal, or 
 - The token is `pc1:` and 64 hex digits. Nothing is stored: it holds as long as what it describes is unchanged, and it is no credential.
 - `--if-match` is opt-in: commands without it behave as before. On a command that does not bind it is a usage error, and so is a malformed token. A `--dry-run` that is given one previews afresh and returns the current token.
 - Real runs carry `precondition: null`.
+- `install`, `update`, `pin`, `unpin`, `adopt`, `sync` and `copy` carry `data.precondition` too, `null` until they bind (milestone 4).
 
 ### stderr events
 

@@ -1,6 +1,5 @@
 ---
 source: tests/contract/matrix.rs
-assertion_line: 160
 expression: s.stable(&c.envelope)
 ---
 {
@@ -19,6 +18,7 @@ expression: s.stable(&c.envelope)
   ],
   "data": {
     "dry_run": false,
+    "precondition": null,
     "run": "<ulid>",
     "summary": {
       "changed": 1,

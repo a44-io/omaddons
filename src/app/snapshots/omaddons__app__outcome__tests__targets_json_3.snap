@@ -156,5 +156,6 @@ expression: three
     "unchanged": 1,
     "skipped": 0,
     "failed": 2
-  }
+  },
+  "precondition": null
 }

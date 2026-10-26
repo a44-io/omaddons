@@ -2250,4 +2250,121 @@ mod tests {
         let result = check_noop(&ctx(false, Some(&token)), "update", &idle, &extras);
         assert!(matches!(result, Ok(None)), "{result:?}");
     }
+
+    // ---- The shared binding through the engine (D3) ---------------------------------
+
+    use crate::engine::edit::RecordEdit;
+    use crate::engine::testing::TxScene;
+
+    const PIN_PREVIEW: &[&str] = &["omaddons", "pin", "Foo", "--dry-run"];
+
+    /// A retail client with Foo installed and registered.
+    fn scene_with_foo() -> TxScene {
+        let scene = TxScene::new();
+        let zip = scene.zip("foo.zip", &[("Foo/Foo.toc", "## Interface: 120105\n")]);
+        let done = scene.run(vec![scene.install("gh:o/foo", &zip)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        scene
+    }
+
+    fn pin_foo(scene: &TxScene) -> Vec<crate::engine::plan::RequestedChange> {
+        vec![scene.edit("Foo", RecordEdit::SetPinned(true))]
+    }
+
+    /// `pin Foo` as a dry run with witnesses, and its token.
+    fn pin_preview(scene: &TxScene) -> String {
+        let done = scene
+            .run_bound(
+                pin_foo(scene),
+                Some(TxKind::Pin),
+                TxKind::Pin,
+                true,
+                Some(WitnessScope::default()),
+                None,
+            )
+            .unwrap();
+        plan_token("pin", &done.plan, &PlanExtras::default())
+    }
+
+    /// `pin Foo`, dry or real, bound to `token`.
+    fn bound_pin(scene: &TxScene, dry_run: bool, token: &str) -> Result<crate::engine::TxOutcomes> {
+        let binding = PlanBinding::new(
+            "pin",
+            Some(token.to_owned()),
+            PlanExtras::default(),
+            argv(PIN_PREVIEW),
+        );
+        scene.run_bound(
+            pin_foo(scene),
+            Some(TxKind::Pin),
+            TxKind::Pin,
+            dry_run,
+            Some(WitnessScope::default()),
+            Some(&binding),
+        )
+    }
+
+    #[test]
+    fn a_plan_binding_accepts_the_plan_it_previewed() {
+        let scene = scene_with_foo();
+        let token = pin_preview(&scene);
+        let done = bound_pin(&scene, false, &token).unwrap();
+        assert_eq!(done.outcomes.len(), 1);
+        assert!(done.outcomes[0].tx.is_some(), "it committed");
+        assert!(scene.record().addons["foo"].pinned);
+    }
+
+    #[test]
+    fn a_plan_binding_refuses_a_commit_made_after_its_preview() {
+        let scene = scene_with_foo();
+        let token = pin_preview(&scene);
+        scene
+            .run_as(
+                vec![scene.edit("Foo", RecordEdit::SetChannel(crate::model::Channel::Beta))],
+                Some(TxKind::Pin),
+                TxKind::Pin,
+            )
+            .unwrap();
+        let generation = scene.record().generation;
+        let error = bound_pin(&scene, false, &token).unwrap_err();
+        let body = ErrorBody::from(error);
+        assert_eq!(body.code, ErrorCode::PlanStale, "{body:?}");
+        assert!(!body.retryable);
+        assert_eq!(body.details["changed"], json!(["targets"]), "{body:?}");
+        assert_eq!(body.fix_argv, Some(argv(PIN_PREVIEW)));
+        let record = scene.record();
+        assert!(!record.addons["foo"].pinned, "nothing committed");
+        assert_eq!(record.generation, generation);
+    }
+
+    #[test]
+    fn a_bound_dry_run_compares_its_token() {
+        let scene = scene_with_foo();
+        let token = pin_preview(&scene);
+        // Unbound and matching dry runs give the preview's token back.
+        assert_eq!(pin_preview(&scene), token, "an unbound dry run");
+        let matching = bound_pin(&scene, true, &token).unwrap();
+        assert_eq!(
+            plan_token("pin", &matching.plan, &PlanExtras::default()),
+            token,
+            "a bound dry run, matching"
+        );
+        // A malformed token changes every part.
+        let malformed = ErrorBody::from(bound_pin(&scene, true, "pc1:nope").unwrap_err());
+        assert_eq!(
+            malformed.details["changed"],
+            json!(["command", "targets", "selection", "observed"])
+        );
+        // The world moved: a stale bound dry run is refused.
+        scene
+            .run_as(
+                vec![scene.edit("Foo", RecordEdit::SetChannel(crate::model::Channel::Beta))],
+                Some(TxKind::Pin),
+                TxKind::Pin,
+            )
+            .unwrap();
+        let stale = ErrorBody::from(bound_pin(&scene, true, &token).unwrap_err());
+        assert_eq!(stale.code, ErrorCode::PlanStale);
+        assert_eq!(stale.details["changed"], json!(["targets"]), "{stale:?}");
+    }
 }

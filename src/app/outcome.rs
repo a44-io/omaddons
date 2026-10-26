@@ -243,6 +243,21 @@ impl ItemError {
     }
 }
 
+/// A target's error back from its wire body, kept whole: code, message, fix,
+/// alternatives, retryability and details.
+fn error_of(body: &ErrorBody) -> Error {
+    let fix = match &body.fix_argv {
+        Some(argv) => Suggestion::command(argv.clone()),
+        None => Suggestion::text(body.fix.clone()),
+    };
+    body.alternatives.iter().fold(
+        Error::new(body.code, body.message.clone(), fix)
+            .retryable(body.retryable)
+            .details(body.details.clone()),
+        |error, alternative| error.alternative(alternative.clone()),
+    )
+}
+
 /// A multi-target command's data.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TargetsData {
@@ -253,6 +268,9 @@ pub struct TargetsData {
     pub targets: Vec<TargetResult>,
     /// Every item, listed or not.
     pub summary: Summary,
+    /// `--dry-run`: the token `--if-match` takes to bind the real run to this preview (one
+    /// token for the whole run); `null` for a real run, and until the command binds.
+    pub precondition: Option<String>,
 }
 
 /// One target's result.
@@ -528,6 +546,7 @@ impl TargetsData {
             run: (committed && !dry_run).then_some(run),
             targets,
             summary: Summary::default(),
+            precondition: None,
         };
         data.recount();
         data
@@ -603,7 +622,8 @@ impl TargetsData {
             .flat_map(|t| t.items.iter().map(move |i| (t, i)))
             .filter(|(_, i)| i.status == ItemStatus::Failed)
             .collect();
-        let first = failed.first().and_then(|(_, i)| i.error.as_ref())?;
+        let (first_target, first_item) = failed.first()?;
+        let first = first_item.error.as_ref()?;
         let details: Vec<serde_json::Value> = failed
             .iter()
             .map(|(t, i)| {
@@ -614,7 +634,12 @@ impl TargetsData {
                 })
             })
             .collect();
-        let mut error = first.error();
+        // A binding's refusal under the lock keeps its form: not retryable, with its
+        // `details.changed`, which an item's error keeps neither of.
+        let mut error = match &first_target.error {
+            Some(body) if body.code == ErrorCode::PlanStale => error_of(body),
+            _ => first.error(),
+        };
         if let Some(kept) = error.details.as_object_mut() {
             kept.insert("items".to_owned(), serde_json::Value::Array(details));
         }
@@ -1460,6 +1485,106 @@ mod tests {
         assert_eq!(error.code, ErrorCode::GameRunning);
         assert_eq!(error.details["items"].as_array().unwrap().len(), 2);
         assert_eq!(data.run, None, "nothing committed");
+    }
+
+    #[test]
+    fn targets_data_serializes_a_null_precondition_until_a_command_sets_it() {
+        let mut data = three();
+        let json = serde_json::to_value(&data).unwrap();
+        assert!(
+            json.as_object().unwrap().contains_key("precondition")
+                && json["precondition"].is_null(),
+            "{json}"
+        );
+        let token = format!("pc1:{}", "0".repeat(64));
+        data.precondition = Some(token.clone());
+        assert_eq!(serde_json::to_value(&data).unwrap()["precondition"], token);
+    }
+
+    /// The command's error when one target's commit failed with `error` and so did its
+    /// one item.
+    fn all_failed_with(error: Error) -> Error {
+        let changes = [change("DBM", ChangeKind::Edit, Some("1"), Some("1"))];
+        let failure = PlanFailure {
+            r#ref: None,
+            addon: None,
+            target: "retail".to_owned(),
+            error: ErrorBody::from(error.clone()),
+            cause: Some(error),
+        };
+        TargetsData::assemble(
+            &[planned("retail", &changes)],
+            &[],
+            &[failure],
+            false,
+            run(),
+            &[request("retail", "DBM")],
+        )
+        .all_failed()
+        .unwrap()
+    }
+
+    #[test]
+    fn an_all_failed_target_plan_stale_keeps_its_retryability_and_details() {
+        let preview: Vec<String> = ["omaddons", "pin", "DBM", "--dry-run"]
+            .map(str::to_owned)
+            .to_vec();
+        let items = |error: &Error| error.details["items"].as_array().map_or(0, Vec::len);
+
+        // A binding's refusal under the lock: kept whole.
+        let bound = all_failed_with(crate::app::precondition::stale(
+            "pin",
+            &[crate::app::precondition::Part::Targets],
+            &preview,
+        ));
+        let body = ErrorBody::from(bound.clone());
+        assert_eq!(body.code, ErrorCode::PlanStale, "{body:?}");
+        assert!(!body.retryable, "the same token can only fail again");
+        assert_eq!(
+            body.details["changed"],
+            serde_json::json!(["targets"]),
+            "{body:?}"
+        );
+        assert_eq!(body.fix_argv, Some(preview.clone()));
+        assert_eq!(items(&bound), 1, "{body:?}");
+
+        // The engine's re-plan form: retryable, with its cause.
+        let cause = Error::new(
+            ErrorCode::HashMismatch,
+            "a hash moved",
+            Suggestion::text("x"),
+        );
+        let replan = all_failed_with(
+            Error::plan_stale(
+                crate::error::PlanStaleSource::Replan,
+                format!(
+                    "the target changed while this command planned: {}",
+                    cause.message
+                ),
+                Suggestion::text("run the command again; it re-plans against the current state"),
+            )
+            .details(
+                serde_json::json!({ "cause": cause.code.wire(), "cause_message": cause.message }),
+            ),
+        );
+        assert!(replan.retryable, "{replan:?}");
+        assert_eq!(replan.details["cause"], "hash_mismatch", "{replan:?}");
+        assert_eq!(items(&replan), 1, "{replan:?}");
+
+        // Any other target-level error: exactly today's form.
+        let locked = all_failed_with(Error::new(
+            ErrorCode::Locked,
+            "locked here",
+            Suggestion::text("wait"),
+        ));
+        assert_eq!(locked.code, ErrorCode::Locked);
+        assert_eq!(
+            locked.retryable,
+            ErrorCode::Locked.default_retryable(),
+            "the registry's default"
+        );
+        let keys: Vec<&String> = locked.details.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["items"], "{locked:?}");
     }
 
     /// A failed item keeps why a running client refused it, and whether `/proc` could

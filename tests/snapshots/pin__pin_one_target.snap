@@ -18,6 +18,7 @@ expression: stable(&envelope)
   ],
   "data": {
     "dry_run": false,
+    "precondition": null,
     "run": "<run>",
     "summary": {
       "changed": 1,
