@@ -2694,6 +2694,7 @@ With milestone 3's features in, there are 2,279 Rust tests: 1,154 unit tests in 
 | `tests/errors*.rs`, `tests/status_errors.rs`, `tests/lua.rs` | Lua errors: both SavedVariables writer formats, attribution, privacy on both streams, dismissals bound to their read, and `status`'s counts with and without `--cached` |
 | `tests/preconditions.rs`, `tests/fail_closed.rs` | Previews bound by `--if-match` (`plan_stale` for each change between preview and run), and state a build cannot read refused, never acted on |
 | `tests/omarchy.rs`, `tests/omarchy_widget.rs`, `omarchy/tests/` | The bar widget: `omarchy install`, `status` and `remove` over stub Omarchy tools (never this machine's shell), `status`'s widget block; and the widget pipeline: envelopes from the real binary, `bun` over `Model.js` and the source's security scans, the binary's parser over every argv `bun` built, `qmltestrunner` over the QML |
+| `tests/completions.rs` | `omaddons completions`: each shell's script snapshot-tested; `bash -n` and bash's own completion function over the whole command tree in every gate; the scripts static, the same bytes on every terminal, and pure (no state read, no write, no request); `zsh -n` and `fish --no-execute` at checkpoints |
 | `tests/fsx_lock.rs` | The global lock and the in-flight locks |
 | `tests/tlog_selftest.rs` | The test log itself: both files and every field, `net.log` and failpoint capture, redaction, truncation, tree differences, the failure output and the live echo (in child processes), and the e2e marker convention |
 
@@ -2738,7 +2739,11 @@ cargo test --test compat_m2 -- --ignored --nocapture       # the M2 build agains
 OMADDONS_LIVE=1 cargo test --test live_probes -- --ignored  # the real endpoints
 OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 OMADDONS_ALLOW_SKIP=keyless_installs_forever \
   cargo test --test real_machine -- --ignored --test-threads=1   # this machine's clients; every addon change is undone
+OMADDONS_ALLOW_SKIP=zsh_accepts_its_script,fish_accepts_its_script \
+  cargo test --test completions -- --ignored     # zsh -n and fish --no-execute over the generated scripts
 ```
+
+Where zsh or fish is not installed, its check prints `SKIP` and the variable accepts it: the M4 plan pre-accepts exactly these two skips. bash's check runs in every gate and is never skipped.
 
 A checkpoint test that cannot run (a variable unset, its client running, the Forever stress-test set still installed) prints `SKIP <test>: <reason>` on stderr and fails, so a skip never counts as a pass. `OMADDONS_ALLOW_SKIP=<test>[,<test>…]` accepts the named skips, which still print their line; the real-machine command above accepts `keyless_installs_forever` for as long as the stress-test set stays installed. The checkpoint's close reason quotes every `SKIP` line.
 

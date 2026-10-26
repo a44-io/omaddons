@@ -1837,6 +1837,13 @@ impl Cmd<'_> {
         self
     }
 
+    /// Removes `key` from the child's environment. The record lists only variables set,
+    /// so a test that removes one says so with [`TestLog::note`].
+    pub fn env_remove(mut self, key: &str) -> Self {
+        self.command.env_remove(key);
+        self
+    }
+
     pub fn cwd(mut self, dir: &Path) -> Self {
         self.cwd = Some(dir.to_path_buf());
         self
