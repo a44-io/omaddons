@@ -962,6 +962,56 @@ fn sync_binding() {
     insta::assert_json_snapshot!("sync_if_match_ok", s.stable(&c.envelope));
 }
 
+/// `pin`, `unpin` and an adopting `adopt` bind to their previews (M4-D19): a concurrent
+/// pin stales a bound pin, an edit in a folder the adoption records stales it, and the
+/// report refuses a token with a fix that runs.
+#[test]
+fn pin_unpin_and_adopt_bind() {
+    let s = Scene::new();
+    s.install_foo();
+    let pin = ["pin", "Foo", "-t", "retail"];
+    let c = s.json(&[&pin[..], &["--dry-run"]].concat(), 0);
+    insta::assert_json_snapshot!("pin_dry_run", s.stable(&c.envelope));
+    let token = precondition_of(&c);
+    s.json(&pin, 0);
+    let c = s.json(&[&pin[..], &["--if-match", &token]].concat(), 1);
+    insta::assert_json_snapshot!("pin_stale", s.stable(&c.envelope));
+    let c = s.json(&["unpin", "Foo", "-t", "retail", "--dry-run"], 0);
+    assert!(omaddons::app::precondition::is_token(&precondition_of(&c)));
+
+    // Mystery unpacked by hand, and a catalog entry that names its folder.
+    let mystery = s.home.addons("_retail_").join("Mystery");
+    std::fs::create_dir_all(&mystery).unwrap();
+    std::fs::write(mystery.join("Mystery.toc"), "## Interface: 120105\n").unwrap();
+    std::fs::write(mystery.join("Mystery.lua"), "-- mine\n").unwrap();
+    let catalog = s.home.env.config().join("omaddons/catalog.d");
+    std::fs::create_dir_all(&catalog).unwrap();
+    std::fs::write(
+        catalog.join("50-mystery.toml"),
+        "schema_version = \"1.0\"\n\n[[addon]]\nname = \"Mystery\"\nref = \"gh:o/mystery\"\nfolders = [\"Mystery\"]\n",
+    )
+    .unwrap();
+    let apply = ["adopt", "--apply", "-t", "retail", "--no-verify"];
+    let c = s.json(&[&apply[..], &["--dry-run"]].concat(), 0);
+    insta::assert_json_snapshot!("adopt_apply_dry_run", s.stable(&c.envelope));
+    let token = precondition_of(&c);
+    std::fs::write(mystery.join("Mystery.lua"), "-- edited\n").unwrap();
+    let c = s.json(&[&apply[..], &["--if-match", &token]].concat(), 1);
+    insta::assert_json_snapshot!("adopt_stale", s.stable(&c.envelope));
+
+    let report = ["adopt", "-t", "retail", "--no-verify", "--if-match", &token];
+    let c = s.json(&report, 2);
+    insta::assert_json_snapshot!("adopt_report_if_match", s.stable(&c.envelope));
+    let fix: Vec<&str> = c.envelope["error"]["fix_argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .filter_map(Value::as_str)
+        .collect();
+    s.json(&fix, 0);
+}
+
 #[test]
 fn backup_create() {
     let s = Scene::new();

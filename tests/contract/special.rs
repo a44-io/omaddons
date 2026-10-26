@@ -314,6 +314,14 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
     let update = ["update", "--all", "--dry-run"];
     let sync = ["sync", "--dry-run"];
     let copy = ["copy", "--from", "retail", "--to", "classic", "--dry-run"];
+    let adopt = [
+        "adopt",
+        "--apply",
+        "-t",
+        "retail",
+        "--no-verify",
+        "--dry-run",
+    ];
     let owned = [bound(&install), bound(&update), bound(&sync), bound(&copy)];
     let [bound_install, bound_update, bound_sync, bound_copy] = owned
         .each_ref()
@@ -331,7 +339,31 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
         &["undo", &tx, "--dry-run"],
         &["undo", "--dry-run"],
         &["pin", "Foo", "-t", "retail", "--dry-run"],
+        // No-op dry runs: a token over a bare witness.
+        &["unpin", "Foo", "-t", "retail", "--dry-run"],
+        &adopt,
     ]);
+    // An adoption's dry runs through the engine, witnessing the folder they record.
+    let mystery = s.home.addons("_retail_").join("Mystery");
+    fs::create_dir_all(&mystery).unwrap();
+    fs::write(mystery.join("Mystery.toc"), "## Interface: 120105\n").unwrap();
+    fs::write(mystery.join("Mystery.lua"), "-- mine\n").unwrap();
+    let catalog = s.home.env.config().join("omaddons/catalog.d");
+    fs::create_dir_all(&catalog).unwrap();
+    fs::write(
+        catalog.join("50-mystery.toml"),
+        "schema_version = \"1.0\"\n\n[[addon]]\nname = \"Mystery\"\nref = \"gh:o/mystery\"\nfolders = [\"Mystery\"]\n",
+    )
+    .unwrap();
+    let folder = [
+        "adopt",
+        "Mystery",
+        "-t",
+        "retail",
+        "--no-verify",
+        "--dry-run",
+    ];
+    dry_runs(&[&adopt, &folder]);
 }
 
 /// Every path in `BINDING_COMMANDS` carries `data.precondition`: a token on its dry run,

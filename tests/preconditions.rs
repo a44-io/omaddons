@@ -1,13 +1,15 @@
-//! e2e suite: previews bound by `--if-match`, M3's five commands and `install` (D2).
+//! e2e suite: previews bound by `--if-match`: M3's five commands, `install`, `update`,
+//! `sync` and `copy` (D2), and `pin`, `unpin` and `adopt` (D3).
 //!
 //! Preview binding (M3-D46, M4-D19) end to end: a `--dry-run` of `remove`, `undo`,
-//! `backup prune` or `install` returns `data.precondition`, and the real run with
-//! `--if-match <it>` does exactly what the preview showed or nothing. Each scenario
-//! changes the world between preview and run (a commit on the target, before the run
-//! plans or between its plan and the lock; a SavedVariables file the undo would restore;
-//! a new backup, or a victim's metadata rewritten) and checks the refusal (`plan_stale`,
-//! not retryable, `details.changed`, the preview as `fix_argv`) and that nothing moved.
-//! The `install` scenarios log through `TestLog`.
+//! `backup prune`, `install`, `pin`, `unpin` or an adopting `adopt` (and the others)
+//! returns `data.precondition`, and the real run with `--if-match <it>` does exactly what
+//! the preview showed or nothing. Each scenario changes the world between preview and run
+//! (a commit on the target, before the run plans or between its plan and the lock; a
+//! SavedVariables file the undo would restore; a new backup, or a victim's metadata
+//! rewritten; a file edited in a folder `adopt` records or `pin --version` replaces) and
+//! checks the refusal (`plan_stale`, not retryable, `details.changed`, the preview as
+//! `fix_argv`) and that nothing moved. The D2 and D3 scenarios log through `TestLog`.
 
 mod common;
 
@@ -18,13 +20,17 @@ use common::pause::Pause;
 use prune_support::{at_noon, backups, prune_preview, three_days};
 use restore_support::{restorable, restore_args};
 use serde_json::{Value, json};
-use support::{argv, preview, token};
+use support::{argv, bound_dry, exact_foo, preview, publish_foo, token};
 
 #[cfg(test)]
 mod support {
     use serde_json::Value;
 
+    use super::common::addons::{toc, unpack};
     use super::common::engine::Scene;
+    use super::common::graph::folder_toc;
+    use super::common::home::Home;
+    use super::common::http::{Asset, gh_release};
 
     pub fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|p| (*p).to_owned()).collect()
@@ -50,6 +56,57 @@ mod support {
             "{token}: {envelope}"
         );
         token
+    }
+
+    /// `<args> --dry-run --if-match <token> --json`: a bound dry run.
+    pub fn bound_dry(args: &[&str], token: &str) -> Vec<String> {
+        let mut run = argv(args);
+        run.extend(["--dry-run", "--if-match", token, "--json"].map(str::to_owned));
+        run
+    }
+
+    /// Release `tag` of `gh:o/foo` as its latest, as `tests/pin.rs`'s `Rel` builds it:
+    /// one asset `Foo.zip` with a TOC per (file suffix, interface), so each client reads
+    /// its own, and a `core.lua` that differs per tag at the same size. Its release.json
+    /// names no flavor, so the TOCs decide.
+    pub fn publish_foo(home: &Home, tag: &str, tocs: &[(&str, &str)]) {
+        let mut files: Vec<(String, String)> = tocs
+            .iter()
+            .map(|(suffix, interface)| {
+                (
+                    format!("Foo/Foo{suffix}.toc"),
+                    toc(interface, &["## Title: Foo", &format!("## Version: {tag}")]),
+                )
+            })
+            .collect();
+        files.push(("Foo/core.lua".into(), format!("-- Foo {tag}")));
+        let entries = files
+            .iter()
+            .map(|(p, t)| (p.as_str(), t.as_str()))
+            .collect();
+        let assets: [Asset<'_>; 1] = [("Foo.zip", &[], entries)];
+        gh_release(&home.http, "https://github.com/o/foo", tag, &assets);
+    }
+
+    /// Foo v2 released (`Foo` and `Foo_Options`) and listed in the catalog, and the same
+    /// files unpacked by hand, as `tests/adopt.rs`'s `foo_home` builds them: an `exact`
+    /// group.
+    pub fn exact_foo(scene: &Scene) {
+        let folders = [
+            super::retail_folder("Foo"),
+            super::retail_folder("Foo_Options"),
+        ];
+        scene.release("foo", "v2", &folders);
+        scene.catalog(&[("Foo", "foo", &["Foo", "Foo_Options"])]);
+        let files: Vec<(String, String)> = folders
+            .iter()
+            .map(|f| (format!("{0}/{0}.toc", f.name), folder_toc(f, "v2")))
+            .collect();
+        let entries: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(p, t)| (p.as_str(), t.as_str()))
+            .collect();
+        unpack(&scene.addons(), &entries);
     }
 }
 
@@ -2037,4 +2094,1085 @@ fn a_commit_between_a_bound_restores_stage_and_its_lock_changes_nothing() {
     let preview_argv: Vec<&str> = preview_argv.iter().map(String::as_str).collect();
     assert_stale(&envelope, &["targets"], &preview_argv);
     assert_eq!(common::trees::tree_hash(&wtf), before);
+}
+
+// ---- `pin` and `unpin` (D3, M4-D19): records only, and `pin --version` ------------------
+//
+// A client unregistered at the preview and registered by a commit before the bound run
+// is stale in `targets`, `selection` and `observed` (its token names it by provisional
+// id, then by key; D1). So every scenario that expects one part alone registers the
+// client first, by installing Foo.
+
+const PIN: &[&str] = &["pin", "Foo", "-t", "retail"];
+const UNPIN: &[&str] = &["unpin", "Foo", "-t", "retail"];
+/// An adopting `adopt` with no download: what `shapes::adopt` returns, without `--json`.
+const ADOPT_APPLY: &[&str] = &["adopt", "--apply", "-t", "retail", "--no-verify"];
+/// One TOC, `Foo.toc`, for retail.
+const RETAIL_TOC: &[(&str, &str)] = &[("", "120105")];
+/// Builds for retail and Classic Era.
+const MAINLINE_AND_VANILLA: &[(&str, u32)] = &[("mainline", 120_105), ("classic", 11_509)];
+
+/// A retail scene with Foo 1 (`Foo`, `FooOld`) installed from `gh:o/foo`: the client is
+/// registered.
+fn foo_installed(log: &common::tlog::TestLog) -> Scene {
+    let scene = Scene::new();
+    log.env(&scene);
+    log.step("seed home: Foo installed");
+    log.run(&scene, &scene.install_args("gh:o/foo", "v1")).ok();
+    scene
+}
+
+/// Another install commits on the client: Bar, offline from its fixture, so only the
+/// client's generation moves.
+fn commit_bar(log: &common::tlog::TestLog, scene: &Scene) {
+    log.note("Bar installs: the client's generation moves (targets)");
+    log.run(scene, &scene.install_args("gh:o/bar", "bar")).ok();
+}
+
+/// `args` run unbound, which must succeed.
+fn unbound(log: &common::tlog::TestLog, scene: &Scene, args: &[&str]) {
+    log.run(scene, &with(&argv(args), &[])).ok();
+}
+
+#[test]
+fn a_pin_runs_as_previewed() {
+    let log = common::tlog::tlog!();
+    let scene = foo_installed(&log);
+
+    log.step("preview");
+    let (dry, previewed) = b::preview(&log, &scene, "pin", PIN);
+    let target = &dry.data()["targets"][0];
+    log.assert_eq(
+        "the preview: (Foo's item, no transaction)",
+        &(&target["items"][0]["status"], &target["tx"]),
+        &(&json!("pinned"), &Value::Null),
+    );
+
+    log.step("preview again");
+    let (_, again) = b::preview(&log, &scene, "pin again", PIN);
+    log.assert_eq("an unchanged home, the same token", &again, &previewed);
+
+    log.step("trees");
+    let history = record_before(&log, &scene);
+
+    log.step("bound run");
+    let ran = log.run(&scene, &b::bound(PIN, &previewed));
+    let target = &ran.ok().data()["targets"][0];
+    log.assert_eq(
+        "(Foo's item, a transaction, a real run's precondition)",
+        &(
+            &target["items"][0]["status"],
+            target["tx"].is_string(),
+            &ran.data()["precondition"],
+        ),
+        &(&json!("pinned"), true, &Value::Null),
+    );
+    log.assert_eq("Foo pinned", &scene.record("foo")["pinned"], &json!(true));
+    log.assert_eq(
+        "history gains one line, a pin",
+        &scene.history()[history.len()..].to_vec(),
+        &vec!["pin".to_owned()],
+    );
+    log.assert_unchanged("addons", &scene.addons());
+}
+
+#[test]
+fn an_unpin_runs_as_previewed() {
+    let log = common::tlog::tlog!();
+    let scene = foo_installed(&log);
+    unbound(&log, &scene, PIN);
+
+    log.step("preview");
+    let (dry, previewed) = b::preview(&log, &scene, "unpin", UNPIN);
+    log.assert_eq(
+        "the preview unpins Foo",
+        &dry.data()["targets"][0]["items"][0]["status"],
+        &json!("unpinned"),
+    );
+
+    log.step("preview again");
+    let (_, again) = b::preview(&log, &scene, "unpin again", UNPIN);
+    log.assert_eq("an unchanged home, the same token", &again, &previewed);
+
+    log.step("trees");
+    let history = record_before(&log, &scene);
+
+    log.step("bound run");
+    let ran = log.run(&scene, &b::bound(UNPIN, &previewed));
+    let target = &ran.ok().data()["targets"][0];
+    log.assert_eq(
+        "(Foo's item, a transaction, a real run's precondition)",
+        &(
+            &target["items"][0]["status"],
+            target["tx"].is_string(),
+            &ran.data()["precondition"],
+        ),
+        &(&json!("unpinned"), true, &Value::Null),
+    );
+    log.assert_eq(
+        "Foo not pinned",
+        &scene.record("foo")["pinned"],
+        &json!(false),
+    );
+    log.assert_eq(
+        "history gains one line, a pin transaction",
+        &scene.history()[history.len()..].to_vec(),
+        &vec!["pin".to_owned()],
+    );
+    log.assert_unchanged("addons", &scene.addons());
+}
+
+/// The plan's acceptance: the bound run finds nothing left to change, and its no-op
+/// check sees the moved generation.
+#[test]
+fn a_concurrent_pin_makes_a_bound_pin_stale_on_its_noop_path() {
+    let log = common::tlog::tlog!();
+    let scene = foo_installed(&log);
+
+    log.step("preview");
+    let (_, previewed) = b::preview(&log, &scene, "pin", PIN);
+
+    log.step("change the world: a concurrent pin");
+    unbound(&log, &scene, PIN);
+
+    log.step("trees");
+    let history = record_before(&log, &scene);
+
+    log.step("bound run");
+    let ran = log.run(&scene, &b::bound(PIN, &previewed));
+    b::assert_stale(&log, &ran, &["targets", "selection"], &b::preview_argv(PIN));
+
+    log.step("assert unchanged");
+    assert_left_alone(&log, &scene, &history);
+
+    log.step("fix: preview the no-op, then run it bound");
+    let (dry, fresh) = b::preview(&log, &scene, "pin, a no-op", PIN);
+    log.assert_eq(
+        "(another token, Foo unchanged)",
+        // ubs:ignore — comparing preview tokens, which are no credential
+        &(fresh != previewed, &dry.data()["summary"]["unchanged"]),
+        &(true, &json!(1)),
+    );
+    let ran = log.run(&scene, &b::bound(PIN, &fresh));
+    log.assert_eq(
+        "a no-op bound to its own no-op preview: (unchanged, precondition)",
+        &(
+            &ran.ok().data()["summary"]["unchanged"],
+            &ran.data()["precondition"],
+        ),
+        &(&json!(1), &Value::Null),
+    );
+    assert_left_alone(&log, &scene, &history);
+}
+
+#[test]
+fn an_unpin_after_a_concurrent_unpin_is_stale() {
+    let log = common::tlog::tlog!();
+    let scene = foo_installed(&log);
+    unbound(&log, &scene, PIN);
+
+    log.step("preview");
+    let (_, previewed) = b::preview(&log, &scene, "unpin", UNPIN);
+
+    log.step("change the world: a concurrent unpin");
+    unbound(&log, &scene, UNPIN);
+
+    log.step("trees");
+    let history = record_before(&log, &scene);
+
+    log.step("bound run");
+    let ran = log.run(&scene, &b::bound(UNPIN, &previewed));
+    b::assert_stale(
+        &log,
+        &ran,
+        &["targets", "selection"],
+        &b::preview_argv(UNPIN),
+    );
+
+    log.step("assert unchanged");
+    assert_left_alone(&log, &scene, &history);
+    log.assert_eq(
+        "Foo not pinned",
+        &scene.record("foo")["pinned"],
+        &json!(false),
+    );
+}
+
+#[test]
+fn a_commit_before_a_bound_pins_lock_changes_nothing() {
+    let log = common::tlog::tlog!();
+    let scene = foo_installed(&log);
+
+    log.step("preview");
+    let (_, previewed) = b::preview(&log, &scene, "pin", PIN);
+
+    log.step("the bound run stops before its lock");
+    let pause = Pause::new(scene.home.env.root());
+    let child = log
+        .cmd(&scene, &b::bound(PIN, &previewed))
+        .failpoints("engine.snapshot.prestaged=pause")
+        .pause(&pause)
+        .spawn();
+    log.reached(&pause, "engine.snapshot.prestaged");
+
+    log.step("change the world: a concurrent commit");
+    commit_bar(&log, &scene);
+
+    log.step("trees");
+    let history = record_before(&log, &scene);
+
+    log.step("the bound run goes on");
+    log.resume(&pause, "engine.snapshot.prestaged");
+    let ran = child.wait();
+    log.json("bound run (child)", ran.envelope());
+    b::assert_stale(&log, &ran, &["targets"], &b::preview_argv(PIN));
+    log.assert_eq(
+        "the refused item beside it, in details.items",
+        &ran.envelope()["error"]["details"]["items"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()),
+        &true,
+    );
+
+    log.step("assert unchanged");
+    assert_left_alone(&log, &scene, &history);
+    log.assert_eq(
+        "Foo not pinned",
+        &scene.record("foo")["pinned"],
+        &json!(false),
+    );
+
+    log.step("the same race without --if-match commits: binding is opt-in");
+    let pause = Pause::new(scene.home.env.root());
+    let child = log
+        .cmd(&scene, &with(&argv(PIN), &[]))
+        .failpoints("engine.snapshot.prestaged=pause")
+        .pause(&pause)
+        .spawn();
+    log.reached(&pause, "engine.snapshot.prestaged");
+    unbound(&log, &scene, &["pin", "Bar", "-t", "retail"]);
+    log.resume(&pause, "engine.snapshot.prestaged");
+    child.wait().ok();
+    log.assert_eq("Foo pinned", &scene.record("foo")["pinned"], &json!(true));
+}
+
+/// The set-up of `command` on a scene with Foo installed: Foo unpinned for `pin`, pinned
+/// for `unpin`, Echo and Fox unpacked by hand for `adopt`; returns its argv.
+fn records_only_case(
+    log: &common::tlog::TestLog,
+    scene: &Scene,
+    command: &str,
+) -> &'static [&'static str] {
+    match command {
+        "pin" => PIN,
+        "unpin" => {
+            unbound(log, scene, PIN);
+            UNPIN
+        }
+        _ => {
+            common::engine::shapes::adopt(scene);
+            ADOPT_APPLY
+        }
+    }
+}
+
+/// A bound dry run compares its token on these commands (D2's rule): stale, it is
+/// `plan_stale` and writes nothing; matching, it returns the token it was given.
+#[test]
+fn a_bound_dry_run_of_pin_unpin_or_adopt_compares_its_token() {
+    let log = common::tlog::tlog!();
+    for command in ["pin", "unpin", "adopt"] {
+        log.step(&format!("row: {command}"));
+        let scene = foo_installed(&log);
+        let args = records_only_case(&log, &scene, command);
+        let records = scene.home.state().join("targets");
+
+        log.step(&format!("{command}: preview"));
+        let (_, previewed) = b::preview(&log, &scene, command, args);
+
+        log.step(&format!("{command}: change the world"));
+        commit_bar(&log, &scene);
+        log.tree("records", &records);
+
+        log.step(&format!("{command}: a stale bound dry run"));
+        let ran = log.run(&scene, &bound_dry(args, &previewed));
+        b::assert_stale(&log, &ran, &["targets"], &b::preview_argv(args));
+        log.assert_unchanged("records", &records);
+
+        log.step(&format!("{command}: a matching bound dry run"));
+        let (_, fresh) = b::preview(&log, &scene, command, args);
+        let ran = log.run(&scene, &bound_dry(args, &fresh));
+        log.assert_eq(
+            "the token it was given",
+            &ran.ok().data()["precondition"],
+            &json!(fresh),
+        );
+    }
+}
+
+/// A commit on the client between the preview and the bound run: refused before the run
+/// stages anything.
+#[test]
+fn a_commit_on_the_client_stales_each_bound_run() {
+    let log = common::tlog::tlog!();
+    for command in ["pin", "unpin", "adopt"] {
+        log.step(&format!("row: {command}"));
+        let scene = foo_installed(&log);
+        let args = records_only_case(&log, &scene, command);
+
+        log.step(&format!("{command}: preview"));
+        let (_, previewed) = b::preview(&log, &scene, command, args);
+
+        log.step(&format!("{command}: change the world"));
+        commit_bar(&log, &scene);
+        let guard = b::guard(&log, &scene.home, command);
+
+        log.step(&format!("{command}: bound run"));
+        let ran = log.run(&scene, &b::bound(args, &previewed));
+        b::assert_stale(&log, &ran, &["targets"], &b::preview_argv(args));
+        guard.unchanged(&log);
+    }
+}
+
+/// A commit on the client while the bound run waits before its lock: refused under the
+/// lock, not retryable, with the refused items beside. `pin`'s row, with the opt-in
+/// tail, is `a_commit_before_a_bound_pins_lock_changes_nothing`.
+#[test]
+fn a_commit_before_the_lock_stales_a_bound_unpin_or_adopt() {
+    let log = common::tlog::tlog!();
+    for command in ["unpin", "adopt"] {
+        log.step(&format!("row: {command}"));
+        let scene = foo_installed(&log);
+        let args = records_only_case(&log, &scene, command);
+
+        log.step(&format!("{command}: preview"));
+        let (_, previewed) = b::preview(&log, &scene, command, args);
+
+        log.step(&format!("{command}: the bound run stops before its lock"));
+        let pause = Pause::new(scene.home.env.root());
+        let child = log
+            .cmd(&scene, &b::bound(args, &previewed))
+            .failpoints("engine.snapshot.prestaged=pause")
+            .pause(&pause)
+            .spawn();
+        log.reached(&pause, "engine.snapshot.prestaged");
+
+        log.step(&format!("{command}: change the world"));
+        commit_bar(&log, &scene);
+        let guard = b::guard(&log, &scene.home, command);
+
+        log.step(&format!("{command}: the bound run goes on"));
+        log.resume(&pause, "engine.snapshot.prestaged");
+        let ran = child.wait();
+        log.json("bound run (child)", ran.envelope());
+        b::assert_stale(&log, &ran, &["targets"], &b::preview_argv(args));
+        log.assert_eq(
+            "the refused items beside it, in details.items",
+            &ran.envelope()["error"]["details"]["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()),
+            &true,
+        );
+        guard.unchanged(&log);
+    }
+}
+
+/// Retail with Foo v2 installed from `gh:o/foo` while v1, its previous release, can
+/// still be asked for by its tag.
+fn foo_v2_installed(log: &common::tlog::TestLog) -> Scene {
+    let scene = Scene::new();
+    log.env(&scene);
+    log.step("seed home: Foo v1 and v2 released, v2 installed");
+    for tag in ["v1", "v2"] {
+        publish_foo(&scene.home, tag, RETAIL_TOC);
+    }
+    log.run(&scene, &["install", "gh:o/foo", "-t", "retail", "--json"])
+        .ok();
+    scene
+}
+
+const PIN_V1: &[&str] = &["pin", "foo", "--version", "v1", "-t", "retail"];
+
+#[test]
+fn a_pin_version_previews_once_from_download_and_cache_and_binds_its_folders() {
+    let log = common::tlog::tlog!();
+    let scene = foo_v2_installed(&log);
+    let assets = |s: &Scene| common::netlog::net_log(&s.home).count_purpose("asset");
+
+    log.step("preview 1: downloads v1");
+    let before = assets(&scene);
+    let (_, previewed) = b::preview(&log, &scene, "pin --version", PIN_V1);
+    let downloaded = assets(&scene) - before;
+    log.json("asset requests", &downloaded);
+
+    log.step("preview 2: from the download cache");
+    let (_, again) = b::preview(&log, &scene, "pin --version again", PIN_V1);
+    log.json("asset requests", &(assets(&scene) - before - downloaded));
+    log.assert_eq(
+        "(the same token, the first preview downloaded, the second did not)",
+        &(
+            // ubs:ignore — comparing preview tokens, which are no credential
+            again == previewed,
+            downloaded > 0,
+            assets(&scene) - before - downloaded,
+        ),
+        &(true, true, 0),
+    );
+
+    log.step("bound run");
+    let ran = log.run(&scene, &b::bound(PIN_V1, &previewed));
+    log.assert_eq(
+        "(a real run's precondition; Foo's record: version, pinned)",
+        &(
+            &ran.ok().data()["precondition"],
+            &scene.record("foo")["version"],
+            &scene.record("foo")["pinned"],
+        ),
+        &(&Value::Null, &json!("v1"), &json!(true)),
+    );
+    let expected = Scene::new();
+    publish_foo(&expected.home, "v1", RETAIL_TOC);
+    log.run(
+        &expected,
+        &["install", "gh:o/foo", "-t", "retail", "--json"],
+    )
+    .ok();
+    log.assert_eq(
+        "Foo/, as installing v1 leaves it",
+        &common::trees::tree_hash(&scene.addons().join("Foo")),
+        &common::trees::tree_hash(&expected.addons().join("Foo")),
+    );
+
+    log.step("stale, on a fresh home in the same state");
+    let scene = foo_v2_installed(&log);
+    log.step("preview");
+    let (_, previewed) = b::preview(&log, &scene, "pin --version", PIN_V1);
+    log.step("change the world: Foo/core.lua edited by hand, the same size");
+    log.note("in a folder the run replaces: observed");
+    let core = scene.addons().join("Foo/core.lua");
+    let text = std::fs::read_to_string(&core).unwrap();
+    let edited = text.replace("v2", "x2");
+    assert!(edited.len() == text.len() && edited != text, "{text}");
+    std::fs::write(&core, edited).unwrap();
+    let guard = b::guard(&log, &scene.home, "pin --version");
+    log.step("bound run");
+    let ran = log.run(&scene, &b::bound(PIN_V1, &previewed));
+    b::assert_stale(&log, &ran, &["observed"], &b::preview_argv(PIN_V1));
+    log.step("assert unchanged");
+    guard.unchanged(&log);
+}
+
+/// M4-D61: the guarantee is per client. A two-client bound `pin` whose second client
+/// receives a commit while the run waits before the first client's lock commits the
+/// first and refuses the second.
+#[test]
+fn a_bound_pin_over_two_clients_commits_one_and_refuses_the_changed_one() {
+    let log = common::tlog::tlog!();
+    let home = common::home::Home::new(&["wow", "wow_classic_era"]);
+    log.env(&home);
+    log.step("seed home: Foo and Bar on retail and era");
+    publish_foo(
+        &home,
+        "v1",
+        &[("_Mainline", "120105"), ("_Vanilla", "11509")],
+    );
+    b::publish(&home, "bar", "Bar", "v1", MAINLINE_AND_VANILLA);
+    for client in ["retail", "era"] {
+        log.run(
+            &home,
+            &["install", "gh:o/foo", "gh:o/bar", "-t", client, "--json"],
+        )
+        .ok();
+    }
+    // The engine commits registered clients in key order: the second one is raced.
+    let mut keyed = [
+        ("retail", "_retail_", common::state::key_of(&home, "retail")),
+        ("era", "_classic_era_", common::state::key_of(&home, "era")),
+    ];
+    keyed.sort_by_key(|(_, _, key)| *key);
+    let [(first, _, _), (second, second_folder, _)] = keyed;
+    log.json("commit order", &[first, second]);
+    let pin = ["pin", "foo"];
+
+    log.step("preview: both clients");
+    let (dry, previewed) = b::preview(&log, &home, "pin", &pin);
+    log.assert_eq(
+        "both clients pin Foo",
+        &dry.data()["summary"]["changed"],
+        &json!(2),
+    );
+
+    log.step("the bound run stops before the first client's lock");
+    let pause = Pause::new(home.env.root());
+    let child = log
+        .cmd(&home, &b::bound(&pin, &previewed))
+        .failpoints("engine.snapshot.prestaged=pause")
+        .pause(&pause)
+        .spawn();
+    log.reached(&pause, "engine.snapshot.prestaged");
+
+    log.step(&format!("change the world: Bar is pinned on {second}"));
+    log.run(&home, &["pin", "bar", "-t", second, "--json"]).ok();
+    let record = |id: &str| serde_json::to_value(common::state::record(&home, id)).unwrap();
+    let raced = record(second);
+    log.tree("second addons", &home.addons(second_folder));
+
+    log.step("the bound run goes on");
+    log.resume(&pause, "engine.snapshot.prestaged");
+    let ran = child.wait();
+    let data = ran.ok().data();
+    let target = |id: &str| {
+        data["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            // ubs:ignore — comparing target ids, not secrets
+            .find(|t| t["target"]["id"] == id)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let (one, two) = (target(first), target(second));
+    log.assert_eq(
+        "(partial; the first: committed, its item, no error)",
+        &(
+            &ran.envelope()["partial"],
+            one["tx"].is_string(),
+            &one["items"][0]["status"],
+            &one["error"],
+        ),
+        &(&json!(true), true, &json!("pinned"), &Value::Null),
+    );
+    log.assert_eq(
+        "the second refused: (code, retryable, changed, its item, tx)",
+        &(
+            &two["error"]["code"],
+            &two["error"]["retryable"],
+            &two["error"]["details"]["changed"],
+            &two["items"][0]["status"],
+            &two["tx"],
+        ),
+        &(
+            &json!("plan_stale"),
+            &json!(false),
+            &json!(["targets"]),
+            &json!("failed"),
+            &Value::Null,
+        ),
+    );
+    let pinned = |id: &str| common::state::record(&home, id).addons["foo"].pinned;
+    log.assert_eq(
+        "Foo pinned: (first, second)",
+        &(pinned(first), pinned(second)),
+        &(true, false),
+    );
+    log.assert_eq(
+        "the second's record, as the concurrent pin left it",
+        &record(second),
+        &raced,
+    );
+    log.assert_unchanged("second addons", &home.addons(second_folder));
+}
+
+// ---- `adopt` (D3, M4-D19): the folders it records, file by file -------------------------
+
+/// `(name, status)` of a run's first target's items, sorted.
+fn adopt_items(data: &Value) -> Vec<(String, String)> {
+    let mut items: Vec<(String, String)> = data["targets"][0]["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|i| {
+            (
+                i["name"].as_str().unwrap_or_default().to_owned(),
+                i["status"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    items.sort();
+    items
+}
+
+/// Echo and Fox, each with `status`.
+fn echo_and_fox(status: &str) -> Vec<(String, String)> {
+    ["Echo", "Fox"]
+        .map(|name| (name.to_owned(), status.to_owned()))
+        .to_vec()
+}
+
+/// A retail scene with Echo and Fox unpacked by hand and in the catalog, and
+/// `Echo/Echo.lua` holding `aaaa`.
+#[cfg(test)]
+fn adoptable(log: &common::tlog::TestLog) -> Scene {
+    let scene = Scene::new();
+    log.env(&scene);
+    log.step("seed home: Echo and Fox unpacked by hand");
+    common::engine::shapes::adopt(&scene);
+    std::fs::write(scene.addons().join("Echo/Echo.lua"), "aaaa").unwrap();
+    scene
+}
+
+/// Whether neither Echo nor Fox has a record.
+fn nothing_recorded(log: &common::tlog::TestLog, scene: &Scene) {
+    log.assert_eq(
+        "no record: (Echo, Fox)",
+        &(scene.record("echo"), scene.record("fox")),
+        &(Value::Null, Value::Null),
+    );
+}
+
+#[test]
+fn an_adopt_runs_as_previewed() {
+    let log = common::tlog::tlog!();
+    let scene = adoptable(&log);
+
+    log.step("preview");
+    let (dry, previewed) = b::preview(&log, &scene, "adopt", ADOPT_APPLY);
+    log.assert_eq(
+        "the preview adopts Echo and Fox",
+        &adopt_items(dry.data()),
+        &echo_and_fox("adopted"),
+    );
+
+    log.step("preview again");
+    let (_, again) = b::preview(&log, &scene, "adopt again", ADOPT_APPLY);
+    log.assert_eq("an unchanged home, the same token", &again, &previewed);
+
+    log.step("trees");
+    log.tree("addons", &scene.addons());
+
+    log.step("bound run");
+    let ran = log.run(&scene, &b::bound(ADOPT_APPLY, &previewed));
+    log.assert_eq(
+        "(Echo and Fox adopted, a real run's precondition)",
+        &(adopt_items(ran.ok().data()), &ran.data()["precondition"]),
+        &(echo_and_fox("adopted"), &Value::Null),
+    );
+    log.assert_eq(
+        "recorded: (Echo, Fox)",
+        &(
+            scene.record("echo").is_object(),
+            scene.record("fox").is_object(),
+        ),
+        &(true, true),
+    );
+    log.assert_unchanged("addons", &scene.addons());
+}
+
+/// One adopting run on a scene with Foo installed and Echo and Fox unpacked: its argv,
+/// the items it reports, and the record whose ref it leaves as `r#ref`.
+struct AdoptKind {
+    row: &'static str,
+    args: &'static [&'static str],
+    items: Vec<(String, String)>,
+    record: &'static str,
+    r#ref: &'static str,
+}
+
+/// The other adopting modes bind as `--apply` does: folder names, and `--ref` on an
+/// unmanaged and on a managed folder.
+#[test]
+fn a_bound_adopt_of_each_kind_runs_as_previewed() {
+    let log = common::tlog::tlog!();
+    let kinds = [
+        AdoptKind {
+            row: "folder names",
+            args: &["adopt", "Echo", "Fox", "-t", "retail", "--no-verify"],
+            items: echo_and_fox("adopted"),
+            record: "echo",
+            r#ref: "gh:o/echo",
+        },
+        AdoptKind {
+            row: "--ref on an unmanaged folder",
+            args: &[
+                "adopt",
+                "Echo",
+                "--ref",
+                "gh:o/echo-fork",
+                "-t",
+                "retail",
+                "--no-verify",
+            ],
+            items: vec![("Echo".to_owned(), "adopted".to_owned())],
+            record: "echo",
+            r#ref: "gh:o/echo-fork",
+        },
+        AdoptKind {
+            row: "--ref on a managed folder",
+            args: &["adopt", "Foo", "--ref", "gh:o/bar", "-t", "retail"],
+            items: vec![("Foo".to_owned(), "edited".to_owned())],
+            record: "foo",
+            r#ref: "gh:o/bar",
+        },
+    ];
+    for AdoptKind {
+        row,
+        args,
+        items,
+        record,
+        r#ref,
+    } in kinds
+    {
+        log.step(&format!("row: {row}"));
+        let scene = foo_installed(&log);
+        common::engine::shapes::adopt(&scene);
+
+        log.step(&format!("{row}: preview"));
+        let (dry, previewed) = b::preview(&log, &scene, row, args);
+        log.assert_eq("the preview's items", &adopt_items(dry.data()), &items);
+
+        log.step(&format!("{row}: preview again"));
+        let (_, again) = b::preview(&log, &scene, row, args);
+        log.assert_eq("an unchanged home, the same token", &again, &previewed);
+
+        log.step(&format!("{row}: trees"));
+        log.tree("addons", &scene.addons());
+
+        log.step(&format!("{row}: bound run"));
+        let ran = log.run(&scene, &b::bound(args, &previewed));
+        log.assert_eq(
+            "(the preview's items, a real run's precondition)",
+            &(adopt_items(ran.ok().data()), &ran.data()["precondition"]),
+            &(items, &Value::Null),
+        );
+        log.assert_eq(
+            &format!("{record}'s ref"),
+            &scene.record(record)["ref"],
+            &json!(r#ref),
+        );
+        log.assert_unchanged("addons", &scene.addons());
+    }
+}
+
+/// An edit by hand in a client's AddOns directory.
+type HandEdit = fn(&std::path::Path);
+
+#[test]
+fn an_edited_folder_makes_a_bound_adopt_stale_observed() {
+    let log = common::tlog::tlog!();
+    let rows: [(&str, HandEdit); 3] = [
+        ("same-size edit", |addons| {
+            std::fs::write(addons.join("Echo/Echo.lua"), "bbbb").unwrap();
+        }),
+        ("longer write", |addons| {
+            std::fs::write(addons.join("Echo/Echo.lua"), "bbbbbbbb").unwrap();
+        }),
+        ("empty directory added", |addons| {
+            std::fs::create_dir(addons.join("Fox/Media")).unwrap();
+        }),
+    ];
+    for (row, edit) in rows {
+        log.step(&format!("row: {row}"));
+        let scene = adoptable(&log);
+
+        log.step(&format!("{row}: preview"));
+        let (_, previewed) = b::preview(&log, &scene, row, ADOPT_APPLY);
+
+        log.step(&format!("{row}: change the world"));
+        log.note(format!("{row} in a folder the run records: observed"));
+        edit(&scene.addons());
+
+        log.step(&format!("{row}: trees"));
+        let history = record_before(&log, &scene);
+
+        log.step(&format!("{row}: bound run"));
+        let ran = log.run(&scene, &b::bound(ADOPT_APPLY, &previewed));
+        b::assert_stale(&log, &ran, &["observed"], &b::preview_argv(ADOPT_APPLY));
+
+        log.step(&format!("{row}: assert unchanged"));
+        assert_left_alone(&log, &scene, &history);
+        nothing_recorded(&log, &scene);
+
+        log.step(&format!("{row}: fix"));
+        let (_, fresh) = b::preview(&log, &scene, row, ADOPT_APPLY);
+        let ran = log.run(&scene, &b::bound(ADOPT_APPLY, &fresh));
+        log.assert_eq(
+            "the fix's token adopts",
+            &adopt_items(ran.ok().data()),
+            &echo_and_fox("adopted"),
+        );
+    }
+}
+
+/// The witness is the folders' content, not their stamps (D1; M4-D60).
+#[test]
+fn a_touch_alone_leaves_an_adopt_preview_valid() {
+    let log = common::tlog::tlog!();
+    let scene = adoptable(&log);
+
+    log.step("preview");
+    let (_, previewed) = b::preview(&log, &scene, "adopt", ADOPT_APPLY);
+
+    log.step("change the world: Echo/Echo.lua touched, a minute later, its bytes kept");
+    let path = scene.addons().join("Echo/Echo.lua");
+    let file = std::fs::File::open(&path).unwrap();
+    let later = file.metadata().unwrap().modified().unwrap() + std::time::Duration::from_secs(60);
+    file.set_modified(later).unwrap();
+    log.tree("addons", &scene.addons());
+
+    log.step("bound run");
+    let ran = log.run(&scene, &b::bound(ADOPT_APPLY, &previewed));
+    log.assert_eq(
+        "adopted",
+        &adopt_items(ran.ok().data()),
+        &echo_and_fox("adopted"),
+    );
+    log.assert_unchanged("addons", &scene.addons());
+}
+
+#[test]
+fn an_adopt_whose_folders_were_adopted_meanwhile_is_stale_on_its_noop_path() {
+    let log = common::tlog::tlog!();
+    let scene = adoptable(&log);
+
+    log.step("preview");
+    let (_, previewed) = b::preview(&log, &scene, "adopt", ADOPT_APPLY);
+
+    log.step("change the world: Echo and Fox adopted by name");
+    unbound(
+        &log,
+        &scene,
+        &["adopt", "Echo", "Fox", "-t", "retail", "--no-verify"],
+    );
+
+    log.step("trees");
+    let history = record_before(&log, &scene);
+
+    log.step("bound run: nothing left to adopt, and stale");
+    log.note("the preview witnessed two folders; the no-op's witness is bare");
+    let ran = log.run(&scene, &b::bound(ADOPT_APPLY, &previewed));
+    b::assert_stale(
+        &log,
+        &ran,
+        &["targets", "selection", "observed"],
+        &b::preview_argv(ADOPT_APPLY),
+    );
+
+    log.step("assert unchanged");
+    assert_left_alone(&log, &scene, &history);
+}
+
+#[test]
+fn a_bound_adopt_with_verification_previews_once_from_download_and_cache() {
+    let log = common::tlog::tlog!();
+    let scene = Scene::new();
+    log.env(&scene);
+    log.step("seed home: Foo v2 released, in the catalog, and unpacked by hand");
+    exact_foo(&scene);
+    let apply = ["adopt", "--apply", "-t", "retail"];
+    let assets = |s: &Scene| common::netlog::net_log(&s.home).count_purpose("asset");
+
+    log.step("preview 1: downloads the release to check the folders against it");
+    let (dry, previewed) = b::preview(&log, &scene, "adopt", &apply);
+    let downloaded = assets(&scene);
+    log.json("asset requests", &downloaded);
+    log.assert_eq(
+        "the preview adopts Foo",
+        &adopt_items(dry.data()),
+        &vec![("Foo".to_owned(), "adopted".to_owned())],
+    );
+
+    log.step("preview 2: from the download cache");
+    let (_, again) = b::preview(&log, &scene, "adopt again", &apply);
+    log.json("asset requests", &(assets(&scene) - downloaded));
+    log.assert_eq(
+        "(the same token, the first preview downloaded, the second did not)",
+        &(
+            // ubs:ignore — comparing preview tokens, which are no credential
+            again == previewed,
+            downloaded > 0,
+            assets(&scene) - downloaded,
+        ),
+        &(true, true, 0),
+    );
+
+    log.step("bound run");
+    let ran = log.run(&scene, &b::bound(&apply, &previewed));
+    log.assert_eq(
+        "(a real run's precondition, Foo recorded as exactly its release)",
+        &(
+            &ran.ok().data()["precondition"],
+            &scene.record("foo")["version_confidence"],
+        ),
+        &(&Value::Null, &json!("release")),
+    );
+}
+
+#[test]
+fn a_bound_adopt_ref_repoint_is_stale_after_a_commit() {
+    let log = common::tlog::tlog!();
+    let scene = foo_installed(&log);
+    let repoint = ["adopt", "Foo", "--ref", "gh:o/bar", "-t", "retail"];
+
+    log.step("preview");
+    let (dry, previewed) = b::preview(&log, &scene, "adopt --ref", &repoint);
+    log.assert_eq(
+        "the preview re-points Foo",
+        &adopt_items(dry.data()),
+        &vec![("Foo".to_owned(), "edited".to_owned())],
+    );
+
+    log.step("change the world: Foo pinned");
+    log.note("a records-only commit on the client: its generation moves");
+    unbound(&log, &scene, PIN);
+
+    log.step("trees");
+    let history = record_before(&log, &scene);
+
+    log.step("bound run");
+    let ran = log.run(&scene, &b::bound(&repoint, &previewed));
+    b::assert_stale(&log, &ran, &["targets"], &b::preview_argv(&repoint));
+
+    log.step("assert unchanged");
+    assert_left_alone(&log, &scene, &history);
+    log.assert_eq(
+        "Foo still from gh:o/foo",
+        &scene.record("foo")["ref"],
+        &json!("gh:o/foo"),
+    );
+}
+
+/// The edit lands after the bound run's own check, so adopt's guard under the lock
+/// refuses it, retryable (`details.cause: "hash_mismatch"`), and running the same bound
+/// command again is the non-retryable `observed`. D8
+/// (`omad-m4-agent-surface-doctor-c6cm.4.8`) changes the first refusal to the
+/// non-retryable `observed` of its under-lock witness check, and updates this assertion.
+/// Foo is installed first: a refusal under the lock comes after the commit window
+/// registers a new client, which would rename it in the re-run's token.
+#[test]
+fn a_bound_adopt_edited_before_its_lock_records_nothing_and_converges() {
+    let log = common::tlog::tlog!();
+    let scene = foo_installed(&log);
+    common::engine::shapes::adopt(&scene);
+    std::fs::write(scene.addons().join("Echo/Echo.lua"), "aaaa").unwrap();
+
+    log.step("preview");
+    let (_, previewed) = b::preview(&log, &scene, "adopt", ADOPT_APPLY);
+
+    log.step("the bound run stops before its lock");
+    let pause = Pause::new(scene.home.env.root());
+    let child = log
+        .cmd(&scene, &b::bound(ADOPT_APPLY, &previewed))
+        .failpoints("engine.snapshot.prestaged=pause")
+        .pause(&pause)
+        .spawn();
+    log.reached(&pause, "engine.snapshot.prestaged");
+
+    log.step("change the world: Echo/Echo.lua grows");
+    std::fs::write(scene.addons().join("Echo/Echo.lua"), "aaaaaaaa").unwrap();
+
+    log.step("trees");
+    let history = record_before(&log, &scene);
+
+    log.step("the bound run goes on");
+    log.resume(&pause, "engine.snapshot.prestaged");
+    let ran = child.wait();
+    log.json("bound run (child)", ran.envelope());
+    let error = &ran.fails(1, "plan_stale").envelope()["error"];
+    log.assert_eq(
+        "adopt's guard under the lock: (retryable, details.cause)",
+        &(&error["retryable"], &error["details"]["cause"]),
+        &(&json!(true), &json!("hash_mismatch")),
+    );
+    assert_left_alone(&log, &scene, &history);
+    nothing_recorded(&log, &scene);
+
+    log.step("rerun the same bound command");
+    let ran = log.run(&scene, &b::bound(ADOPT_APPLY, &previewed));
+    b::assert_stale(&log, &ran, &["observed"], &b::preview_argv(ADOPT_APPLY));
+    assert_left_alone(&log, &scene, &history);
+    nothing_recorded(&log, &scene);
+}
+
+#[test]
+fn adopts_report_refuses_if_match_and_its_fix_runs() {
+    let log = common::tlog::tlog!();
+    let scene = adoptable(&log);
+    let state = scene.home.state();
+
+    log.step("preview");
+    let (_, previewed) = b::preview(&log, &scene, "adopt", ADOPT_APPLY);
+    log.tree("state", &state);
+
+    log.step("the report, given the token");
+    let report = ["adopt", "-t", "retail", "--no-verify"];
+    let ran = log.run(&scene, &b::bound(&report, &previewed));
+    let fix = &ran.fails(2, "usage").envelope()["error"]["fix_argv"];
+    log.assert_eq(
+        "the fix: the report without the token",
+        fix,
+        &json!(["omaddons", "adopt", "-t", "retail", "--no-verify"]),
+    );
+    log.assert_unchanged("state", &state);
+
+    log.step("fix");
+    let fix: Vec<&str> = fix.as_array().unwrap()[1..]
+        .iter()
+        .filter_map(Value::as_str)
+        .chain(["--json"])
+        .collect();
+    let ran = log.run(&scene, &fix);
+    let mut groups: Vec<&str> = ran.ok().data()["targets"][0]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|g| g["name"].as_str())
+        .collect();
+    groups.sort_unstable();
+    log.assert_eq(
+        "the report lists Echo and Fox",
+        &groups,
+        &vec!["Echo", "Fox"],
+    );
+}
+
+// ---- every path (D3): a no-op preview binds too -------------------------------------------
+
+/// A bound run with nothing to do never reports "unchanged" over a world its preview did
+/// not see.
+#[test]
+fn a_noop_preview_goes_stale_when_its_target_moves() {
+    let log = common::tlog::tlog!();
+    for command in ["pin", "unpin", "adopt"] {
+        log.step(&format!("row: {command}"));
+        let scene = foo_installed(&log);
+        // Foo already pinned; Foo not pinned; nothing unmanaged.
+        let args = match command {
+            "pin" => {
+                unbound(&log, &scene, PIN);
+                PIN
+            }
+            "unpin" => UNPIN,
+            _ => ADOPT_APPLY,
+        };
+
+        log.step(&format!("{command}: the no-op preview"));
+        let (dry, previewed) = b::preview(&log, &scene, command, args);
+        log.assert_eq(
+            "nothing changes",
+            &dry.data()["summary"]["changed"],
+            &json!(0),
+        );
+
+        log.step(&format!("{command}: change the world"));
+        commit_bar(&log, &scene);
+        let guard = b::guard(&log, &scene.home, command);
+
+        log.step(&format!("{command}: bound run"));
+        let ran = log.run(&scene, &b::bound(args, &previewed));
+        b::assert_stale(&log, &ran, &["targets"], &b::preview_argv(args));
+        guard.unchanged(&log);
+
+        log.step(&format!("{command}: fix"));
+        let (_, fresh) = b::preview(&log, &scene, command, args);
+        let ran = log.run(&scene, &b::bound(args, &fresh));
+        log.assert_eq(
+            "a no-op bound to its own preview: (changed, precondition)",
+            &(
+                &ran.ok().data()["summary"]["changed"],
+                &ran.data()["precondition"],
+            ),
+            &(&json!(0), &Value::Null),
+        );
+        guard.unchanged(&log);
+    }
 }

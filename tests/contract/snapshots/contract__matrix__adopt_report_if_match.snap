@@ -1,0 +1,28 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "adopt",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons adopt -t retail --no-verify",
+    "fix_argv": [
+      "omaddons",
+      "adopt",
+      "-t",
+      "retail",
+      "--no-verify"
+    ],
+    "message": "--if-match binds a run that adopts (--apply, folder names or --ref); the report adopts nothing, so it takes no token",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
