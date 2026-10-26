@@ -885,10 +885,11 @@ pub struct Pending {
 }
 
 /// Every journal that is not `committed` (or that recovery cannot read), oldest first.
-/// Writes nothing.
+/// Writes nothing. A journal directory that cannot be listed is the failure recovery
+/// cannot attribute to one client (`unattributed`): every command reads this first.
 pub fn pending(paths: &Paths) -> Result<Vec<Pending>> {
     let mut found = Vec::new();
-    for (tx, path) in list(paths)? {
+    for (tx, path) in list(paths).map_err(|error| unattributed(error, None))? {
         let (target, unrecoverable) = match read(&path) {
             Ok(parsed)
                 if matches!(parsed.phase, Phase::Committed) && parsed.unrecoverable().is_none() =>
@@ -2899,14 +2900,25 @@ mod tests {
         let bar = a.join("Interface/AddOns/Bar");
         let b_scopes = ScopeTable::new(&paths, std::slice::from_ref(&b), None).unwrap();
         let lock = GlobalLock::acquire(&paths, "test").unwrap();
+        let clients = [a.clone(), b.clone()];
         let recover = |own: &[TargetKey]| {
-            recover_all(&RecoveryEnv {
-                lock: &lock,
-                paths: &paths,
-                scopes: &b_scopes,
+            let (result, _) = crate::engine::testing::predict_then_compare(
+                "a_journal_is_recovered_in_its_own_client_and_only_there",
+                &paths,
+                &clients,
+                &|_| false,
                 own,
-                sv_writable: &|_| false,
-            })
+                || {
+                    recover_all(&RecoveryEnv {
+                        lock: &lock,
+                        paths: &paths,
+                        scopes: &b_scopes,
+                        own,
+                        sv_writable: &|_| false,
+                    })
+                },
+            );
+            result
         };
 
         // A's marker names another target: A is never written.
@@ -3206,20 +3218,32 @@ mod tests {
     }
 
     /// Recovery by a command of the journal's own target (`own`), or of another one's.
+    /// With E11's differential around it.
     fn recover_planted(scene: &crate::engine::testing::Scene, own: bool) -> Result<Vec<Warning>> {
-        let lock = scene.lock();
         let own: &[TargetKey] = if own {
             std::slice::from_ref(&scene.key)
         } else {
             &[]
         };
-        recover_all(&RecoveryEnv {
-            lock: &lock,
-            paths: &scene.paths,
-            scopes: &scene.scopes,
+        let clients = [scene.client.client_dir().to_path_buf()];
+        let (result, _) = crate::engine::testing::predict_then_compare(
+            "recover_planted",
+            &scene.paths,
+            &clients,
+            &|_| false,
             own,
-            sv_writable: &|_| false,
-        })
+            || {
+                let lock = scene.lock();
+                recover_all(&RecoveryEnv {
+                    lock: &lock,
+                    paths: &scene.paths,
+                    scopes: &scene.scopes,
+                    own,
+                    sv_writable: &|_| false,
+                })
+            },
+        );
+        result
     }
 
     #[test]
@@ -3583,9 +3607,23 @@ mod tests {
     #[test]
     fn an_unlistable_journal_directory_is_unattributed() {
         let scene = prepared_scene();
-        let err = sealed(&scene.paths.journal_dir(), || {
-            recover_planted(&scene, true).unwrap_err()
+        // Recovery, and the readers every command runs first (found by E11's differential:
+        // the command failed there, before recovery, with a bare `io`).
+        let (recovered, read, warned) = sealed(&scene.paths.journal_dir(), || {
+            (
+                recover_planted(&scene, true).unwrap_err(),
+                pending(&scene.paths).unwrap_err(),
+                pending_warnings(&scene.paths).unwrap_err(),
+            )
         });
+        for err in [&read, &warned] {
+            assert_eq!(
+                (err.code, &err.details),
+                (recovered.code, &recovered.details),
+                "{err:?}"
+            );
+        }
+        let err = recovered;
         assert_eq!(err.code, ErrorCode::Io, "{err:?}");
         assert_eq!(err.details["reason"], "unattributed", "{err:?}");
         assert!(err.details.get("journal_pending").is_none(), "{err:?}");
@@ -3778,20 +3816,34 @@ mod tests {
             Self { scene, backup }
         }
 
+        /// Recovery by a command of the journal's own target (`own`) or another's, with
+        /// the game `running` or not; E11's differential around it.
         fn recover(&self, own: bool, running: bool) -> Result<Vec<Warning>> {
-            let lock = self.scene.lock();
             let own: &[TargetKey] = if own {
                 std::slice::from_ref(&self.scene.key)
             } else {
                 &[]
             };
-            recover_all(&RecoveryEnv {
-                lock: &lock,
-                paths: &self.scene.paths,
-                scopes: &self.scene.scopes,
+            let clients = [self.scene.client.client_dir().to_path_buf()];
+            let sv_writable = |_: &Path| !running;
+            let (result, _) = crate::engine::testing::predict_then_compare(
+                "WtfScene",
+                &self.scene.paths,
+                &clients,
+                &sv_writable,
                 own,
-                sv_writable: &|_| !running,
-            })
+                || {
+                    let lock = self.scene.lock();
+                    recover_all(&RecoveryEnv {
+                        lock: &lock,
+                        paths: &self.scene.paths,
+                        scopes: &self.scene.scopes,
+                        own,
+                        sv_writable: &sv_writable,
+                    })
+                },
+            );
+            result
         }
 
         /// Whether the live `WTF/` is the restored tree.
@@ -3866,8 +3918,18 @@ mod tests {
                 "{kind:?}: cleaned up"
             );
         }
-        // Without the flag recovery writes as Mutating, which may not move WTF/.
+        // Without the flag recovery writes as Mutating, which may not move WTF/. E11's
+        // known approximation: `diagnose` does not simulate fsx's scope check, so it
+        // predicts a rollback, and flags the path below WTF/.
         let w = WtfScene::new(TxKind::Undo, false, true);
+        let clients = [w.scene.client.client_dir().to_path_buf()];
+        let found = diagnose(&w.scene.paths, &clients, &|_| true);
+        let predicted = &found.journals[0];
+        assert_eq!(predicted.expected(), Expected::RolledBack, "{predicted:#?}");
+        assert_eq!(
+            predicted.evidence.approximations,
+            [Approximation::WtfPathWithoutFlag]
+        );
         let err = w.recover(true, false).unwrap_err();
         assert_eq!(err.code, ErrorCode::ScopeDenied, "{err:?}");
         assert!(w.live_restored() && w.journal_kept());
@@ -4230,7 +4292,20 @@ mod tests {
             deep = deep.join(format!("d{n}"));
         }
         std::fs::create_dir_all(&deep).unwrap();
+        // E11's known approximation: `diagnose` does not simulate the describe walk's
+        // bounds, so it predicts a rollback, and flags the preservation it would run.
+        let clients = [w.scene.client.client_dir().to_path_buf()];
         for _ in 0..2 {
+            let found = diagnose(&w.scene.paths, &clients, &|_| true);
+            let predicted = &found.journals[0];
+            assert_eq!(predicted.expected(), Expected::RolledBack, "{predicted:#?}");
+            assert!(
+                predicted
+                    .evidence
+                    .approximations
+                    .contains(&Approximation::PreservationWalk),
+                "{predicted:#?}"
+            );
             let err = w.recover(true, false).unwrap_err();
             assert_eq!(err.details["reason"], "preservation_incomplete", "{err:?}");
         }

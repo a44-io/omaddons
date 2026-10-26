@@ -33,7 +33,7 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use common::archives::zip_text;
-use common::differential::{Differential, Tally};
+use common::differential::{Caller, Differential, Tally};
 use common::engine::{Scene, shapes, warning_codes};
 use common::tlog::{TestLog, tlog};
 use omaddons::engine::FAILPOINTS;
@@ -1270,7 +1270,12 @@ fn crash_matrix_undo_recovered_while_the_client_runs() {
         ("engine.history.appended", true, true),
         ("engine.committed", true, false),
     ];
+    let log = tlog!();
+    let mut tally = Tally::default();
     for (failpoint, restored, unfinished) in points {
+        log.step(&format!(
+            "an undo at {failpoint}, recovered while the client runs"
+        ));
         let mut s = Scene::new();
         let sv = s.home.client("_retail_").join(SV);
         fs::create_dir_all(sv.parent().unwrap()).unwrap();
@@ -1287,8 +1292,14 @@ fn crash_matrix_undo_recovered_while_the_client_runs() {
         assert_eq!(crashed.code, -1, "{failpoint}: {}", crashed.context());
 
         s.home.retail_running();
+        let mut differential = Differential::new(&log, &s.home, &["_retail_"], &["_retail_"]);
+        differential.predict(&log, failpoint);
+        let with_journal = !s.journals().is_empty();
         let r = s.run(&s.install_args("gh:o/bar", "bar"), "");
         let envelope = r.expect(0);
+        let caller = differential.commit(&["retail"]);
+        let compared = differential.compare(&log, &envelope, &s.journals(), &caller) > 0;
+        tally.count(with_journal, compared);
         let codes = warning_codes(&envelope);
         let context = format!("{failpoint}\n{}", r.context());
         assert_eq!(
@@ -1317,6 +1328,7 @@ fn crash_matrix_undo_recovered_while_the_client_runs() {
             "{context}: {line}"
         );
     }
+    tally.assert_complete(&log, "an undo recovered while the client runs");
 }
 
 /// A commit that fails right after its exchange, whose rollback fails too (the third
@@ -1329,7 +1341,11 @@ fn a_failed_recovery_is_finished_by_the_next_command() {
     use common::archives::zip_text;
 
     const DOUBLE_FAULT: &str = "engine.swap.after_exchange=error,fsx.rename_with.before=error@3";
+    let log = tlog!();
     for force in [false, true] {
+        log.step(&format!(
+            "a double fault (force: {force}), then the next change"
+        ));
         let s = Scene::new();
         let foo = s.addons().join("Foo");
         let zip = |name: &str, entries: &[(&str, &str)]| {
@@ -1402,10 +1418,17 @@ fn a_failed_recovery_is_finished_by_the_next_command() {
         );
 
         // The next change recovers first: everything is as before the failed install.
+        let mut differential = Differential::new(&log, &s.home, &["_retail_"], &[]);
+        differential.predict(&log, &format!("the kept journal (force: {force})"));
         args = s.install_args("gh:o/baz", "baz");
         args.push("--force".to_owned());
         let r = s.run(&args, "");
         let envelope = r.expect(0);
+        let caller = differential.commit(&["retail"]);
+        assert_eq!(
+            differential.compare(&log, &envelope, &s.journals(), &caller),
+            1
+        );
         assert!(
             warning_codes(&envelope)
                 .iter()
@@ -1435,12 +1458,16 @@ fn another_clients_journal_is_recovered_or_reported_never_blocking() {
     use common::home::Home;
     use serde_json::Value;
 
+    let log = tlog!();
     // (failpoint, Foo's version on retail after recovery, whether recovery can finish)
     for (failpoint, foo, recoverable) in [
         ("engine.swapped=abort", "2", true),
         ("engine.swap.after_exchange=abort", "1", true),
         ("engine.swap.after_exchange=abort", "", false),
     ] {
+        log.step(&format!(
+            "retail at {failpoint}, recoverable: {recoverable}"
+        ));
         let home = Home::new(&["wow", "wow_classic"]);
         let dl = home.env.root().join("dl");
         fs::create_dir_all(&dl).unwrap();
@@ -1495,9 +1522,18 @@ fn another_clients_journal_is_recovered_or_reported_never_blocking() {
             fs::write(&journal, text).unwrap();
         }
         let context = format!("{failpoint}, recoverable: {recoverable}");
+        let clients = ["_retail_", "_classic_"];
+        let mut differential = Differential::new(&log, &home, &clients, &[]);
+        differential.predict(&log, &format!("{context}, by classic"));
+        let journals = || restore_support::listed(&journal_dir);
 
         let r = install(&baz, "gh:o/baz", "classic", &[]);
         let envelope = r.expect(0);
+        let classic = differential.commit(&["classic"]);
+        assert_eq!(
+            differential.compare(&log, &envelope, &journals(), &classic),
+            1
+        );
         assert!(home.addons("_classic_").join("Baz").is_dir(), "{context}");
         let warnings = envelope["warnings"].as_array().unwrap();
         let about = |code: &str| {
@@ -1528,13 +1564,253 @@ fn another_clients_journal_is_recovered_or_reported_never_blocking() {
             assert!(about("journal_pending"), "{context}: {}", r.context());
             assert!(journal.exists(), "{context}: kept for repair");
             // Retail's own changes still stop at it.
+            differential.predict(&log, &format!("{context}, by retail"));
             let r = install(&foo2, "gh:o/foo", "retail", &[]);
             assert_ne!(r.code, 0, "{context}: {}", r.context());
+            let retail = differential.commit(&["retail"]);
+            differential.compare(&log, &r.envelope(), &journals(), &retail);
             assert!(
                 r.stdout.contains("manual repair"),
                 "{context}: {}",
                 r.context()
             );
+        }
+    }
+}
+
+/// E11's stuck states, through the binary: a retail install crashed after its exchange,
+/// then each plant, on a fresh two-client home per caller. `diagnose` names the state, and
+/// what it predicts is what each recovering command then does: an install on retail (the
+/// journal's own target), one on classic (another target), and `config set` (recovery
+/// under the lock alone). Every mode a plant takes away is given back.
+#[test]
+fn every_stuck_state_is_predicted_through_the_binary() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    use common::differential::Prediction;
+    use common::home::Home;
+    use omaddons::engine::journal::{JournalVerdict, UnattributedCause};
+    use serde_json::Value;
+
+    /// Rewrites each JSON line of `journal` with `edit`.
+    fn rewrite(journal: &Path, edit: &dyn Fn(&mut Value)) {
+        let mut text = String::new();
+        for line in fs::read_to_string(journal).unwrap().lines() {
+            let mut value: Value = serde_json::from_str(line).unwrap();
+            edit(&mut value);
+            text.push_str(&value.to_string());
+            text.push('\n');
+        }
+        fs::write(journal, text).unwrap();
+    }
+    /// `path` at mode `0o000`, to be given back.
+    fn seal(path: &Path) -> Vec<(PathBuf, u32)> {
+        let mode = fs::metadata(path).unwrap().permissions().mode();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+        vec![(path.to_path_buf(), mode)]
+    }
+    fn prepared(value: &mut Value, edit: &dyn Fn(&mut Value)) {
+        if value["type"] == "prepared" {
+            edit(value);
+        }
+    }
+    fn verdict(p: &Prediction) -> Option<JournalVerdict> {
+        p.diagnoses.journals.first().map(|d| d.verdict)
+    }
+
+    type Plant = Box<dyn Fn(&Home, &Path) -> Vec<(PathBuf, u32)>>;
+    type Named = Box<dyn Fn(&Prediction) -> bool>;
+    let unattributed = |cause| Some(JournalVerdict::Unattributed { cause });
+    let cases: Vec<(&str, Plant, Named)> = vec![
+        (
+            "marker_mismatch",
+            Box::new(|home, _| {
+                let marker = omaddons::discover::registry::marker_path(&home.client("_retail_"));
+                let other = omaddons::model::TargetKey::new();
+                fs::write(marker, format!("{{\"key\":\"{other}\"}}")).unwrap();
+                Vec::new()
+            }),
+            Box::new(|p| verdict(p) == Some(JournalVerdict::MarkerMismatch)),
+        ),
+        (
+            "step_unrecognized",
+            Box::new(|_, journal| {
+                rewrite(journal, &|v| {
+                    if v["type"] == "step" && v["from_id"].is_object() {
+                        v["from_id"]["ino"] = Value::from(1u64);
+                    }
+                });
+                Vec::new()
+            }),
+            Box::new(|p| {
+                let steps = p.diagnoses.journals[0].evidence.steps;
+                verdict(p)
+                    == Some(JournalVerdict::StepUnrecognized {
+                        step: u32::try_from(steps).unwrap(),
+                    })
+            }),
+        ),
+        (
+            "too_new",
+            Box::new(|_, journal| {
+                rewrite(journal, &|v| {
+                    prepared(v, &|v| v["schema_version"] = "9.0".into())
+                });
+                Vec::new()
+            }),
+            Box::new(|p| verdict(p) == Some(JournalVerdict::TooNew)),
+        ),
+        (
+            "unreadable",
+            Box::new(|_, journal| {
+                let text = fs::read_to_string(journal).unwrap();
+                let body = text.strip_suffix('\n').unwrap();
+                let last = body.rfind('\n').unwrap() + 1;
+                fs::write(
+                    journal,
+                    format!("{}not json\n{}", &text[..last], &text[last..]),
+                )
+                .unwrap();
+                Vec::new()
+            }),
+            Box::new(|p| verdict(p) == Some(JournalVerdict::Unreadable)),
+        ),
+        (
+            "unattributed_too_new",
+            Box::new(|_, journal| {
+                rewrite(journal, &|v| {
+                    prepared(v, &|v| {
+                        v["schema_version"] = "9.0".into();
+                        v["target_key"] = "garbage".into();
+                    });
+                });
+                Vec::new()
+            }),
+            Box::new(move |p| verdict(p) == unattributed(UnattributedCause::TooNew)),
+        ),
+        (
+            "unattributed_unreadable",
+            Box::new(|_, journal| {
+                rewrite(journal, &|v| {
+                    prepared(v, &|v| {
+                        v["kind"] = "teleport".into();
+                        v["target_key"] = "garbage".into();
+                    });
+                });
+                Vec::new()
+            }),
+            Box::new(move |p| verdict(p) == unattributed(UnattributedCause::Unreadable)),
+        ),
+        (
+            "unattributed_read_failed",
+            Box::new(|_, journal| seal(journal)),
+            Box::new(move |p| verdict(p) == unattributed(UnattributedCause::ReadFailed)),
+        ),
+        (
+            "unattributed_liveness",
+            Box::new(|home, journal| {
+                let tx = journal.file_stem().unwrap().to_string_lossy().into_owned();
+                let lock = home.state().join("inflight").join(format!("{tx}.lock"));
+                if !lock.exists() {
+                    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+                    fs::write(&lock, "").unwrap();
+                }
+                seal(&lock)
+            }),
+            Box::new(move |p| verdict(p) == unattributed(UnattributedCause::LivenessUnknown)),
+        ),
+        (
+            "unlisted",
+            Box::new(|_, journal| seal(journal.parent().unwrap())),
+            Box::new(|p| p.diagnoses.unlisted.is_some() && p.diagnoses.journals.is_empty()),
+        ),
+    ];
+
+    let log = tlog!();
+    let callers: [(&str, &[&str]); 3] = [
+        ("retail", &["install", "gh:o/qux", "-t", "retail"]),
+        ("classic", &["install", "gh:o/baz", "-t", "classic"]),
+        ("config set", &["config", "set", "running_policy", "refuse"]),
+    ];
+    for (case, plant, named) in &cases {
+        for (caller_name, argv) in callers {
+            log.step(&format!("{case}, recovered by {caller_name}"));
+            let home = Home::new(&["wow", "wow_classic"]);
+            let dl = home.env.root().join("dl");
+            fs::create_dir_all(&dl).unwrap();
+            let zip = |name: &str, entries: &[(&str, &str)]| {
+                let path = dl.join(format!("{name}.zip"));
+                fs::write(&path, zip_text(entries)).unwrap();
+                path.display().to_string()
+            };
+            let install = |file: &str, r: &str, target: &str, extra: &[(&str, &str)]| {
+                let argv =
+                    ["install", r, "--file", file, "-t", target, "--json"].map(str::to_owned);
+                home.exec_with(&argv, extra)
+            };
+            let foo1 = zip(
+                "foo1",
+                &[("Foo/Foo.toc", "## Interface: 120105\n## Version: 1\n")],
+            );
+            let foo2 = zip(
+                "foo2",
+                &[("Foo/Foo.toc", "## Interface: 120105\n## Version: 2\n")],
+            );
+            let files = [
+                (
+                    "gh:o/qux",
+                    zip("qux", &[("Qux/Qux.toc", "## Interface: 120105\n")]),
+                ),
+                (
+                    "gh:o/baz",
+                    zip("baz", &[("Baz/Baz.toc", "## Interface: 50504\n")]),
+                ),
+            ];
+            install(&foo1, "gh:o/foo", "retail", &[]).expect(0);
+            let crashed = install(
+                &foo2,
+                "gh:o/foo",
+                "retail",
+                &[("OMADDONS_FAILPOINTS", "engine.swap.after_exchange=abort")],
+            );
+            assert_eq!(crashed.code, -1, "{case}: {}", crashed.context());
+            let journal_dir = home.state().join("journal");
+            let journal = restore_support::listed(&journal_dir).remove(0);
+            let sealed = plant(&home, &journal);
+
+            let clients = ["_retail_", "_classic_"];
+            let mut differential = Differential::new(&log, &home, &clients, &[]);
+            let under = argv[0] == "config";
+            let prediction = if under {
+                differential.predict_unknown(&log, case)
+            } else {
+                differential.predict(&log, case)
+            };
+            assert!(named(prediction), "{case}: {:#?}", prediction.diagnoses);
+            let mut argv: Vec<String> = argv.iter().map(|a| (*a).to_owned()).collect();
+            if let Some((_, file)) = files
+                .iter()
+                .find(|(r, _)| argv.get(1) == Some(&(*r).to_owned()))
+            {
+                argv.extend(["--file".to_owned(), file.clone()]);
+            }
+            argv.push("--json".to_owned());
+            let run = home.exec(&argv);
+            let journals_after = if sealed.iter().any(|(p, _)| *p == journal_dir) {
+                vec![journal.clone()]
+            } else {
+                restore_support::listed(&journal_dir)
+            };
+            let caller = if under {
+                Caller::Under
+            } else {
+                differential.commit(&[caller_name])
+            };
+            differential.compare(&log, &run.envelope(), &journals_after, &caller);
+            for (path, mode) in sealed {
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            }
         }
     }
 }
@@ -1636,7 +1912,9 @@ fn a_journal_cut_short_by_a_crash_rolls_back() {
         Op::Update.prepare(&mut s);
         support::Foo::of(&s)
     };
+    let log = tlog!();
     for failpoint in ["engine.swap.before_rename", "engine.swapped"] {
+        log.step(&format!("an update at {failpoint}, its journal cut"));
         let mut s = Op::Update.scene();
         let args = Op::Update.prepare(&mut s);
         let history = s.history();
@@ -1654,7 +1932,11 @@ fn a_journal_cut_short_by_a_crash_rolls_back() {
         );
         assert_eq!(s.snapshot(), before, "{failpoint}: a read wrote");
 
+        let mut differential = Differential::new(&log, &s.home, &["_retail_"], &[]);
+        differential.predict(&log, failpoint);
         let bar = s.install("gh:o/bar", "bar");
+        let caller = differential.commit(&["retail"]);
+        assert_eq!(differential.compare(&log, &bar, &s.journals(), &caller), 1);
         assert!(
             warning_codes(&bar).contains(&"journal_recovered".to_owned()),
             "{failpoint}: {bar}"
@@ -1864,8 +2146,16 @@ fn a_journal_recovery_cannot_finish_only_warns_outside_the_engine() {
     }
     fs::write(&journal, text).unwrap();
 
+    // E11: `config set` runs no discovery, and recovers under the lock alone.
+    let log = tlog!();
+    let mut differential = Differential::new(&log, &s.home, &["_retail_"], &[]);
+    differential.predict_unknown(&log, "a step in neither state, by config set");
     let r = s.home.run(&["config", "set", "running_policy", "refuse"]);
     let envelope = r.expect(0);
+    assert_eq!(
+        differential.compare(&log, &envelope, &s.journals(), &Caller::Under),
+        1
+    );
     let pending: Vec<&str> = envelope["warnings"]
         .as_array()
         .unwrap()
@@ -2223,6 +2513,25 @@ mod restore_support {
         /// The argv of the command that recovers: an install of Bar.
         pub fn install_bar(&self) -> Vec<String> {
             self.s.install_args("gh:o/bar", "bar")
+        }
+
+        /// The install of Bar, which recovers, with E11's differential around it: what
+        /// `diagnose` predicts (its game running when `running`) is held to what it did.
+        /// The run, for the scene's own oracle.
+        pub fn recover_predicted(
+            &self,
+            log: &TestLog,
+            label: &str,
+            running: bool,
+        ) -> common::home::Run {
+            let games: &[&str] = if running { &["_retail_"] } else { &[] };
+            let mut differential = Differential::new(log, &self.s.home, &["_retail_"], games);
+            differential.predict(log, label);
+            let run = self.s.run(&self.install_bar(), "");
+            let caller = differential.commit(&["retail"]);
+            let compared = differential.compare(log, &run.envelope(), &self.s.journals(), &caller);
+            assert!(compared > 0, "{label}: a journal was compared");
+            run
         }
 
         /// The child running the engine's restore: `engine` armed around the engine call
@@ -3289,7 +3598,10 @@ fn a_game_started_before_in_process_recovery_leaves_the_restore_pending() {
     assert_eq!(support::pending(&r.s), 1);
 
     r.s.home.nothing_running();
-    let envelope = r.s.run(&r.install_bar(), "").expect(0);
+    let log = tlog!();
+    let envelope = r
+        .recover_predicted(&log, "the restore left pending", false)
+        .expect(0);
     assert!(warning_codes(&envelope).contains(&"journal_recovered".to_owned()));
     assert_eq!(r.s.wtf(), r.played);
 }
@@ -3307,7 +3619,8 @@ fn a_restore_played_on_before_recovery_is_preserved() {
     fs::write(&config, "SET locale \"enUS\"\nSET played \"1\"\n").unwrap();
     let played_on = r.s.wtf();
 
-    let run = r.s.run(&r.install_bar(), "");
+    let log = tlog!();
+    let run = r.recover_predicted(&log, "a restore played on", false);
     let envelope = run.expect(0);
     common::privacy::assert_private_all(&run.stdout, &run.stderr);
     let codes = warning_codes(&envelope);
@@ -3346,7 +3659,10 @@ fn a_restore_whose_backup_is_gone_is_preserved() {
     common::wtf::writable_again(&backup);
     fs::remove_dir_all(&backup).unwrap();
 
-    let envelope = r.s.run(&r.install_bar(), "").expect(0);
+    let log = tlog!();
+    let envelope = r
+        .recover_predicted(&log, "a restore whose backup is gone", false)
+        .expect(0);
     assert!(warning_codes(&envelope).contains(&"restore_rolled_back".to_owned()));
     assert_eq!(r.s.wtf(), r.played, "rolled back");
     let kept = r.recovered();
@@ -3371,7 +3687,10 @@ fn another_wtf_live_is_left_and_the_restored_over_tree_preserved() {
     fs::write(wtf.join("Config.wtf"), "SET planted \"1\"\n").unwrap();
     let (planted, moved) = (r.s.wtf(), common::trees::tree_hash(&aside));
 
-    let envelope = r.s.run(&r.install_bar(), "").expect(0);
+    let log = tlog!();
+    let envelope = r
+        .recover_predicted(&log, "another WTF/ live", false)
+        .expect(0);
     assert!(warning_codes(&envelope).contains(&"restore_rolled_back".to_owned()));
     assert_eq!(r.s.wtf(), planted, "the live path is never touched");
     assert_eq!(common::trees::tree_hash(&aside), moved);
@@ -3480,7 +3799,10 @@ fn a_restored_tree_the_game_replaced_is_left_and_nothing_is_preserved() {
     fs::write(wtf.join("Config.wtf"), "SET fresh \"1\"\n").unwrap();
     let fresh = r.s.wtf();
 
-    let envelope = r.s.run(&r.install_bar(), "").expect(0);
+    let log = tlog!();
+    let envelope = r
+        .recover_predicted(&log, "a restored tree the game replaced", false)
+        .expect(0);
     let codes = warning_codes(&envelope);
     assert!(
         codes.contains(&"journal_recovered".to_owned())
@@ -3507,8 +3829,10 @@ fn a_restore_recovery_that_cannot_place_what_it_moved_keeps_everything() {
     fs::rename(snapshot.join("WTF.previous"), &elsewhere).unwrap();
     let (live, moved) = (r.s.wtf(), common::trees::tree_hash(&elsewhere));
 
-    for _ in 0..2 {
-        let stopped = r.s.run(&r.install_bar(), "");
+    let log = tlog!();
+    for attempt in 1..=2 {
+        let stopped =
+            r.recover_predicted(&log, &format!("what it moved is gone ({attempt})"), false);
         let error = &stopped.envelope()["error"];
         assert_eq!(
             error["details"]["reason"],
@@ -4434,7 +4758,10 @@ fn a_game_started_before_in_process_recovery_leaves_the_partial_restore_pending(
     );
     assert_eq!(support::pending(&a.r.s), 1);
     a.r.s.home.nothing_running();
-    let envelope = a.r.s.run(&a.r.install_bar(), "").expect(0);
+    let log = tlog!();
+    let envelope =
+        a.r.recover_predicted(&log, "the partial restore left pending", false)
+            .expect(0);
     assert!(warning_codes(&envelope).contains(&"journal_recovered".to_owned()));
     assert_eq!(a.foo(), a.played);
 }
@@ -4812,9 +5139,25 @@ fn recovery_defers_a_running_client_and_preserves_another() {
     .unwrap();
     let classic_played_on = tree_hash(&wtf("_classic_"));
 
+    // E11: an update with nothing to update commits no target: it recovers under the lock
+    // alone, knowing which games run.
+    let log = tlog!();
+    let clients = ["_retail_", "_classic_"];
+    let journals = home.state().join("journal");
+    let mut differential = Differential::new(&log, &home, &clients, &["_retail_"]);
+    differential.predict(&log, "retail's client runs");
     let update = ["update", "--offline", "--json"].map(str::to_owned);
     let r = home.exec(&update);
     let envelope = r.envelope();
+    assert_eq!(
+        differential.compare(
+            &log,
+            &envelope,
+            &restore_support::listed(&journals),
+            &Caller::Under
+        ),
+        2
+    );
     common::privacy::assert_private_all(&r.stdout, &r.stderr);
     let codes = warning_codes(&envelope);
     assert!(
@@ -4842,7 +5185,6 @@ fn recovery_defers_a_running_client_and_preserves_another() {
         retail_restored,
         "nothing moves under a running client"
     );
-    let journals = home.state().join("journal");
     assert_eq!(
         restore_support::listed(&journals).len(),
         1,
@@ -4850,7 +5192,18 @@ fn recovery_defers_a_running_client_and_preserves_another() {
     );
 
     home.nothing_running();
-    home.exec(&update).expect(0);
+    let mut differential = Differential::new(&log, &home, &clients, &[]);
+    differential.predict(&log, "retail's client exited");
+    let envelope = home.exec(&update).expect(0);
+    assert_eq!(
+        differential.compare(
+            &log,
+            &envelope,
+            &restore_support::listed(&journals),
+            &Caller::Under
+        ),
+        1
+    );
     assert_eq!(
         tree_hash(&wtf("_retail_")),
         played["retail"],

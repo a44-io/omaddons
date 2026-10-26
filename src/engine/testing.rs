@@ -697,3 +697,134 @@ impl Pause {
         std::fs::write(self.dir().join(format!("{name}.resume")), "").unwrap();
     }
 }
+
+/// What recovery did to one journal, as the in-crate differential reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Seen {
+    Forward,
+    Back,
+    Pruned,
+    Untouched,
+    /// Recovery failed the caller here.
+    Failed {
+        code: crate::error::ErrorCode,
+        reason: Option<String>,
+        step: Option<u32>,
+    },
+    /// Recovery only warned of it.
+    Warned {
+        reason: Option<String>,
+    },
+}
+
+/// E11's differential in process (`tests/common/differential.rs` holds the binary's):
+/// `journal::diagnose` on `paths`, with the clients and the `sv_writable` recovery will
+/// have, predicts (twice, equally, writing nothing); then `recover` runs, and each
+/// diagnosis's `expected()` must agree with what it did for a caller committing `own`,
+/// unless the diagnosis flags itself as approximate. The first journal that fails the
+/// caller ends the run. Returns recovery's result and the diagnoses.
+pub fn predict_then_compare(
+    test: &str,
+    paths: &Paths,
+    clients: &[PathBuf],
+    sv_writable: &dyn Fn(&Path) -> bool,
+    own: &[TargetKey],
+    recover: impl FnOnce() -> crate::error::Result<Vec<crate::error::Warning>>,
+) -> (
+    crate::error::Result<Vec<crate::error::Warning>>,
+    journal::Diagnoses,
+) {
+    use crate::error::WarningCode;
+    use journal::{Expected, StopReason};
+
+    let diagnoses = journal::diagnose(paths, clients, sv_writable);
+    assert_eq!(
+        journal::diagnose(paths, clients, sv_writable),
+        diagnoses,
+        "{test}: two diagnoses differ"
+    );
+    let result = recover();
+    let step_in = |message: &str| -> Option<u32> {
+        let (_, rest) = message.split_once("journal step ")?;
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    let reason_in = |message: &str| -> Option<String> {
+        ["could not be recovered (", "cannot recover it ("]
+            .iter()
+            .find_map(|lead| message.split_once(lead))
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(reason, _)| reason.to_owned())
+    };
+    let mut ended = false;
+    for diagnosis in &diagnoses.journals {
+        let tx = diagnosis.tx.to_string();
+        let warned = |code: WarningCode| {
+            result.as_ref().ok().and_then(|warnings| {
+                warnings
+                    .iter()
+                    .find(|w| w.code == code && w.message.contains(&tx))
+            })
+        };
+        let seen = match &result {
+            Err(e) if e.details["journal_pending"] == tx.as_str() => Seen::Failed {
+                code: e.code,
+                reason: e.details["reason"].as_str().map(str::to_owned),
+                step: step_in(&e.message),
+            },
+            _ => match (
+                warned(WarningCode::JournalRecovered),
+                warned(WarningCode::JournalPending),
+            ) {
+                (Some(w), _) if w.message.contains("rolled forward") => Seen::Forward,
+                (Some(_), _) => Seen::Back,
+                (None, Some(w)) => Seen::Warned {
+                    reason: reason_in(&w.message),
+                },
+                (None, None) if journal::existing(paths, &diagnosis.tx).is_some() => {
+                    Seen::Untouched
+                }
+                (None, None) => Seen::Pruned,
+            },
+        };
+        let want = if ended {
+            Seen::Untouched
+        } else {
+            match diagnosis.expected() {
+                Expected::RolledForward => Seen::Forward,
+                Expected::RolledBack => Seen::Back,
+                Expected::Pruned => Seen::Pruned,
+                Expected::Skipped => Seen::Untouched,
+                Expected::Stops { code, reason, step } => {
+                    let fails = diagnosis.target.is_none_or(|t| own.contains(&t))
+                        || reason == StopReason::Unattributed;
+                    ended |= fails;
+                    let reason = Some(reason.as_str().to_owned());
+                    if fails {
+                        Seen::Failed { code, reason, step }
+                    } else {
+                        Seen::Warned { reason }
+                    }
+                }
+            }
+        };
+        let agrees = match (&want, &seen) {
+            (
+                Seen::Failed { code, reason, step },
+                Seen::Failed {
+                    code: seen_code,
+                    reason: seen_reason,
+                    step: seen_step,
+                },
+            ) => {
+                code == seen_code && reason == seen_reason && (step.is_none() || step == seen_step)
+            }
+            _ => want == seen,
+        };
+        assert!(
+            agrees || !diagnosis.exact(),
+            "{test}: diagnose predicted {want:?}, recovery did {seen:?}\n{diagnosis:#?}\n{result:?}"
+        );
+    }
+    (result, diagnoses)
+}

@@ -1,22 +1,30 @@
 //! The journal end to end with real renames: a six-step transaction (exchange, old to
 //! snapshot, a new folder, a removal, and the two-rename fallback) stopped at every
 //! point, then recovered under the lock; plus read-side reporting.
+//!
+//! e2e suite: E11's differential in process: `journal::diagnose` predicts every state of
+//! the six-step transaction, each stuck state and each unreadable input, and recovery
+//! then does what it predicted.
 
 mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use common::differential::{
+    Caller, Games, Prediction, assert_agrees, assert_settled, observe_result, predict,
+};
 use common::env::TestEnv;
 use common::http::paths;
 use common::targets::battlenet;
+use common::tlog::{TestLog, tlog};
 use common::trees::tree_hash;
 use jiff::Timestamp;
 use omaddons::engine::journal::{
-    CURRENT, CommitPayload, IndexChanges, Journal, Prepared, RecoveryEnv, Step, StepOp,
-    StepPurpose, pending_warnings, recover_all,
+    CURRENT, CommitPayload, Expected, IndexChanges, Journal, JournalVerdict, Prepared, RecoveryEnv,
+    Step, StepOp, StepPurpose, UnattributedCause, pending_warnings, recover_all,
 };
-use omaddons::error::{Warning, WarningCode};
+use omaddons::error::{Result, Warning, WarningCode};
 use omaddons::fsx::{
     GlobalLock, InflightLock, Op, RenameMode, ScopeTable, WriteSession, Writer, mutate,
 };
@@ -285,6 +293,55 @@ mod support {
             assert!(!self.paths.journal(&self.tx).exists(), "journal left");
             assert!(!self.stage.exists(), "stage dir left");
         }
+
+        /// What `journal::diagnose` predicts of the scene now, with recovery's own
+        /// `sv_writable` (nothing writable, as [`Self::recover`] has it).
+        pub fn predict(&self, log: &TestLog, label: &str) -> Prediction {
+            log.env(&self.env);
+            let clients = [self.target.client_dir.clone()];
+            predict(log, label, &self.paths, &clients, &Games::Unknown)
+        }
+
+        /// Recovery in process, held to `prediction` (E11): what it did to each journal,
+        /// and, once none is left, nothing diagnosed after. Its result.
+        pub fn recover_predicted(
+            &self,
+            log: &TestLog,
+            prediction: &Prediction,
+        ) -> Result<Vec<Warning>> {
+            let result = {
+                let lock = GlobalLock::acquire(&self.paths, "test").unwrap();
+                let env = RecoveryEnv {
+                    lock: &lock,
+                    paths: &self.paths,
+                    scopes: &self.scopes,
+                    own: std::slice::from_ref(&self.key),
+                    sv_writable: &|_| false,
+                };
+                recover_all(&env)
+            };
+            let after: Vec<PathBuf> = fs::read_dir(self.paths.journal_dir())
+                .map(|l| l.map(|e| e.unwrap().path()).collect())
+                .unwrap_or_default();
+            let observation = observe_result(&result, prediction, &after);
+            let caller = Caller::Commit {
+                own: vec![self.key],
+            };
+            assert_agrees(log, prediction, &observation, &caller);
+            if after.is_empty() {
+                let clients = [self.target.client_dir.clone()];
+                assert_settled(log, prediction, &self.paths, &clients);
+            }
+            result
+        }
+
+        /// Predicts, then recovers in process and compares.
+        pub fn predicted(&self, log: &TestLog, label: &str) -> (Prediction, Result<Vec<Warning>>) {
+            log.step(label);
+            let prediction = self.predict(log, label);
+            let result = self.recover_predicted(log, &prediction);
+            (prediction, result)
+        }
     }
 }
 
@@ -504,4 +561,259 @@ fn committed_journals_are_never_reported() {
     scene.run(6, false, true, true);
     assert!(scene.paths.journal(&scene.tx).exists());
     assert!(pending_warnings(&scene.paths).unwrap().is_empty());
+}
+
+// -----------------------------------------------------------------------------------------
+// E11: `journal::diagnose` predicts, recovery does.
+
+/// The only diagnosis of `prediction`.
+fn only(prediction: &Prediction) -> (JournalVerdict, Expected) {
+    assert_eq!(
+        prediction.diagnoses.journals.len(),
+        1,
+        "{:#?}",
+        prediction.diagnoses
+    );
+    let diagnosis = &prediction.diagnoses.journals[0];
+    (diagnosis.verdict, diagnosis.expected())
+}
+
+#[test]
+fn diagnose_predicts_every_interrupted_prefix() {
+    let log = tlog!();
+    for (executed, record_next, reboot) in (0..=6)
+        .flat_map(|e| [(e, false), (e, true)])
+        .flat_map(|(e, r)| [(e, r, false), (e, r, true)])
+    {
+        if record_next && executed == 6 {
+            continue;
+        }
+        let scene = Scene::new();
+        scene.run(executed, record_next, false, false);
+        if reboot {
+            scene.renumber_devices();
+        }
+        let label = format!("{executed} steps run, next recorded: {record_next}, reboot: {reboot}");
+        let (prediction, result) = scene.predicted(&log, &label);
+        assert_eq!(only(&prediction).1, Expected::RolledBack, "{label}");
+        let ran: Vec<u32> = (1..=u32::try_from(executed).unwrap()).collect();
+        assert_eq!(
+            prediction.diagnoses.journals[0].evidence.ran, ran,
+            "{label}: the steps the walk reverses are those that ran"
+        );
+        assert_eq!(result.unwrap().len(), 1, "{label}");
+        assert_eq!(tree_hash(&scene.addons), scene.old, "{label}");
+    }
+}
+
+#[test]
+fn diagnose_predicts_forward_commit_torn_and_unprepared() {
+    let log = tlog!();
+    let scene = Scene::new();
+    scene.run(6, false, true, false);
+    let (prediction, _) = scene.predicted(&log, "swapped");
+    assert_eq!(only(&prediction).1, Expected::RolledForward);
+
+    let scene = Scene::new();
+    scene.run(6, false, true, true);
+    let (prediction, result) = scene.predicted(&log, "committed");
+    assert_eq!(only(&prediction).1, Expected::Pruned);
+    assert!(result.unwrap().is_empty());
+
+    let scene = Scene::new();
+    scene.run(2, false, false, false);
+    let journal = scene.paths.journal(&scene.tx);
+    let mut text = fs::read_to_string(&journal).unwrap();
+    text.push_str("{\"type\":\"step\",\"n\":3,\"op\":\"nore");
+    fs::write(&journal, text).unwrap();
+    let (prediction, _) = scene.predicted(&log, "a torn step");
+    assert_eq!(only(&prediction).1, Expected::RolledBack);
+    assert!(prediction.diagnoses.journals[0].evidence.torn_tail);
+
+    let other = TxId::new();
+    fs::write(scene.paths.journal(&other), "{\"type\":\"prep").unwrap();
+    let (prediction, _) = scene.predicted(&log, "a torn prepared line");
+    assert_eq!(only(&prediction).1, Expected::Pruned);
+}
+
+#[test]
+fn diagnose_reports_a_live_writer_as_skipped() {
+    let log = tlog!();
+    let scene = Scene::new();
+    let inflight = InflightLock::create(&scene.paths, &scene.tx).unwrap();
+    scene.run(1, false, false, false);
+    let (prediction, result) = scene.predicted(&log, "its writer is alive");
+    assert!(prediction.diagnoses.journals[0].live);
+    assert_eq!(only(&prediction).1, Expected::Skipped);
+    assert!(result.unwrap().is_empty());
+    assert!(scene.paths.journal(&scene.tx).exists(), "untouched");
+    drop(inflight);
+    let (prediction, _) = scene.predicted(&log, "its writer is gone");
+    assert_eq!(only(&prediction).1, Expected::RolledBack);
+    assert_eq!(tree_hash(&scene.addons), scene.old);
+}
+
+#[test]
+fn diagnose_predicts_each_stuck_state() {
+    /// Rewrites each JSON line of `journal` with `edit`.
+    fn rewrite(journal: &Path, edit: &dyn Fn(&mut serde_json::Value)) {
+        let mut text = String::new();
+        for line in fs::read_to_string(journal).unwrap().lines() {
+            let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+            edit(&mut value);
+            text.push_str(&value.to_string());
+            text.push('\n');
+        }
+        fs::write(journal, text).unwrap();
+    }
+
+    type Plant = fn(&Scene);
+    let cases: [(&str, Plant, JournalVerdict); 6] = [
+        (
+            "marker_mismatch",
+            |scene| {
+                let marker = omaddons::discover::registry::marker_path(&scene.target.client_dir);
+                fs::write(marker, format!("{{\"key\":\"{}\"}}", TargetKey::new())).unwrap();
+            },
+            JournalVerdict::MarkerMismatch,
+        ),
+        (
+            "step_unrecognized",
+            |scene| {
+                rewrite(&scene.paths.journal(&scene.tx), &|v| {
+                    if v["type"] == "step" && v["from_id"].is_object() {
+                        v["from_id"]["ino"] = 1u64.into();
+                    }
+                });
+            },
+            JournalVerdict::StepUnrecognized { step: 3 },
+        ),
+        (
+            "too_new",
+            |scene| {
+                rewrite(&scene.paths.journal(&scene.tx), &|v| {
+                    if v["type"] == "prepared" {
+                        v["schema_version"] = "9.0".into();
+                    }
+                });
+            },
+            JournalVerdict::TooNew,
+        ),
+        (
+            "unreadable",
+            |scene| {
+                let journal = scene.paths.journal(&scene.tx);
+                let text = fs::read_to_string(&journal).unwrap();
+                let first = text.find('\n').unwrap() + 1;
+                fs::write(
+                    &journal,
+                    format!("{}not json\n{}", &text[..first], &text[first..]),
+                )
+                .unwrap();
+            },
+            JournalVerdict::Unreadable,
+        ),
+        (
+            "unattributed_too_new",
+            |scene| {
+                rewrite(&scene.paths.journal(&scene.tx), &|v| {
+                    if v["type"] == "prepared" {
+                        v["schema_version"] = "9.0".into();
+                        v["target_key"] = "garbage".into();
+                    }
+                });
+            },
+            JournalVerdict::Unattributed {
+                cause: UnattributedCause::TooNew,
+            },
+        ),
+        (
+            "unattributed_unreadable",
+            |scene| {
+                rewrite(&scene.paths.journal(&scene.tx), &|v| {
+                    if v["type"] == "prepared" {
+                        v["kind"] = "teleport".into();
+                        v["target_key"] = "garbage".into();
+                    }
+                });
+            },
+            JournalVerdict::Unattributed {
+                cause: UnattributedCause::Unreadable,
+            },
+        ),
+    ];
+    let log = tlog!();
+    for (name, plant, verdict) in cases {
+        let scene = Scene::new();
+        scene.run(3, false, false, false);
+        plant(&scene);
+        let (prediction, result) = scene.predicted(&log, name);
+        assert_eq!(only(&prediction).0, verdict, "{name}");
+        assert!(result.is_err(), "{name}: the caller's own target stops");
+        assert!(scene.paths.journal(&scene.tx).exists(), "{name}: kept");
+    }
+}
+
+#[test]
+fn diagnose_and_recovery_agree_on_unreadable_inputs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let log = tlog!();
+    for name in ["journal_file", "inflight_lock", "journal_dir"] {
+        let scene = Scene::new();
+        scene.run(2, false, false, false);
+        let sealed = match name {
+            "journal_file" => scene.paths.journal(&scene.tx),
+            "inflight_lock" => {
+                let lock = scene.paths.inflight_lock(&scene.tx);
+                fs::create_dir_all(lock.parent().unwrap()).unwrap();
+                fs::write(&lock, "").unwrap();
+                lock
+            }
+            _ => scene.paths.journal_dir(),
+        };
+        let mode = fs::metadata(&sealed).unwrap().permissions().mode();
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o000)).unwrap();
+        log.step(name);
+        let prediction = scene.predict(&log, name);
+        let result = scene.recover_predicted(&log, &prediction);
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(mode)).unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(
+            (error.code.wire(), error.details["reason"].as_str()),
+            ("io", Some("unattributed")),
+            "{name}: {error:?}"
+        );
+        let want = match name {
+            "journal_file" => Some(UnattributedCause::ReadFailed),
+            "inflight_lock" => Some(UnattributedCause::LivenessUnknown),
+            _ => None,
+        };
+        match want {
+            Some(cause) => assert_eq!(
+                only(&prediction).0,
+                JournalVerdict::Unattributed { cause },
+                "{name}"
+            ),
+            None => assert!(prediction.diagnoses.unlisted.is_some(), "{name}"),
+        }
+        // Once readable again, it rolls back as predicted.
+        let (prediction, _) = scene.predicted(&log, &format!("{name}, readable again"));
+        assert_eq!(only(&prediction).1, Expected::RolledBack, "{name}");
+    }
+}
+
+#[test]
+fn diagnose_after_recovery_finds_nothing() {
+    let log = tlog!();
+    for (executed, swapped) in [(3, false), (6, true)] {
+        let scene = Scene::new();
+        scene.run(executed, false, swapped, false);
+        let (prediction, _) =
+            scene.predicted(&log, &format!("{executed} steps, swapped: {swapped}"));
+        let clients = [scene.target.client_dir.clone()];
+        let after = omaddons::engine::journal::diagnose(&scene.paths, &clients, &|_| false);
+        assert!(after.journals.is_empty(), "{after:#?}");
+        assert!(!prediction.txs().is_empty());
+    }
 }

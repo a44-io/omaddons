@@ -14,7 +14,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use omaddons::engine::journal::{self, Diagnoses, Expected, JournalDiagnosis};
+use omaddons::engine::journal::{self, Diagnoses, Expected, JournalDiagnosis, StopReason};
 use omaddons::error::{Result, Warning};
 use omaddons::model::{TargetKey, TxId};
 use omaddons::state::paths::Paths;
@@ -197,9 +197,13 @@ pub fn observe_envelope(
             )
         })
         .collect();
+    // A command reports the journals it found before it takes the lock, as a reader does
+    // ("… the next omaddons command … recovers it"): that says nothing of what recovery
+    // did, so only recovery's own warnings count.
     let warned = |code: &str, about: &str| {
         warnings
             .iter()
+            .filter(|(_, message)| !message.contains("the next omaddons command"))
             .find(|(c, message)| *c == code && message.contains(about))
             .map(|(_, message)| *message)
     };
@@ -308,7 +312,10 @@ fn wanted(diagnosis: &JournalDiagnosis, caller: &Caller) -> (Observed, bool) {
         Expected::Pruned => (Observed::Pruned, false),
         Expected::Skipped => (Observed::Untouched, false),
         Expected::Stops { code, reason, step } => {
-            let unowned = diagnosis.target.is_none();
+            // A failure recovery cannot attribute (a journal with no readable target, or a
+            // writer whose lock cannot be probed, which recovery asks before it reads the
+            // journal) fails every committing command.
+            let unowned = diagnosis.target.is_none() || reason == StopReason::Unattributed;
             let fails = match caller {
                 Caller::Commit { own } => {
                     unowned || diagnosis.target.is_some_and(|t| own.contains(&t))
@@ -342,9 +349,12 @@ pub fn assert_agrees(
     let mut ended = false;
     let mut compared = 0;
     if prediction.diagnoses.unlisted.is_some() {
+        // A committing command fails (`io`, `unattributed`); one recovering under the lock
+        // alone warns that recovery could not run, the reason left out.
+        let commit = matches!(caller, Caller::Commit { .. });
         let want = Observed::Stopped {
-            code: matches!(caller, Caller::Commit { .. }).then(|| "io".to_owned()),
-            reason: matches!(caller, Caller::Commit { .. }).then(|| "unattributed".to_owned()),
+            code: commit.then(|| "io".to_owned()),
+            reason: commit.then(|| "unattributed".to_owned()),
             step: None,
         };
         assert_eq!(
@@ -513,6 +523,7 @@ pub fn compare(
     paths: &Paths,
     clients: &[PathBuf],
 ) -> usize {
+    log.json("recovering", envelope);
     let observation = observe_envelope(envelope, prediction, journals_after);
     let compared = assert_agrees(log, prediction, &observation, caller);
     if journals_after.is_empty() {

@@ -1,5 +1,8 @@
 //! Each builder in `tests/common/` produces what it claims, checked against the real
 //! parsers (BPSV, pelite, product.db, discovery) where they exist.
+//!
+//! e2e suite: the builders' self-checks, E11's differential among them (each comparison
+//! logged).
 
 mod common;
 
@@ -1258,5 +1261,196 @@ mod saved_variables {
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// E11's differential (`common::differential`).
+
+mod differential {
+    use std::path::PathBuf;
+
+    use omaddons::engine::journal::{
+        Approximation, Diagnoses, Direction, JournalDiagnosis, JournalEvidence, JournalFamily,
+        JournalVerdict, Phase, ProtectedPaths,
+    };
+    use omaddons::model::{TargetKey, TxId};
+    use serde_json::json;
+
+    use super::common::differential::{
+        Caller, Observed, Prediction, assert_agrees, observe_envelope,
+    };
+    use super::common::tlog::tlog;
+
+    fn diagnosis(
+        verdict: JournalVerdict,
+        target: Option<TargetKey>,
+        approximations: Vec<Approximation>,
+    ) -> JournalDiagnosis {
+        let tx = TxId::new();
+        JournalDiagnosis {
+            tx,
+            family: JournalFamily::Folder,
+            path: PathBuf::from(format!("/sim/state/omaddons/journal/{tx}.jsonl")),
+            target,
+            client_dir: None,
+            phase: Phase::Prepared,
+            live: false,
+            verdict,
+            evidence: JournalEvidence {
+                approximations,
+                ..JournalEvidence::default()
+            },
+            protected: ProtectedPaths::default(),
+        }
+    }
+
+    fn prediction(journals: Vec<JournalDiagnosis>) -> Prediction {
+        Prediction {
+            label: "self-check".to_owned(),
+            diagnoses: Diagnoses {
+                journals,
+                unlisted: None,
+            },
+        }
+    }
+
+    const BACK: JournalVerdict = JournalVerdict::Recoverable {
+        phase: Phase::Prepared,
+        direction: Direction::Back,
+    };
+
+    #[test]
+    fn observe_parses_each_warning_and_error_shape() {
+        let key = TargetKey::new();
+        let journals: Vec<JournalDiagnosis> = (0..6)
+            .map(|_| diagnosis(BACK, Some(key), Vec::new()))
+            .collect();
+        let tx: Vec<String> = journals.iter().map(|d| d.tx.to_string()).collect();
+        let warning = |code: &str, message: String| json!({"code": code, "message": message});
+        let envelope = json!({
+            "ok": false,
+            "warnings": [
+                warning("journal_pending", format!("transaction {} on target {key} did not finish; the next omaddons command that changes addons, settings or targets recovers it (dry runs never do)", tx[0])),
+                warning("journal_recovered", format!("transaction {} on target {key} was interrupted; recovery undid it (rolled back)", tx[0])),
+                warning("journal_recovered", format!("transaction {} on target {key} was interrupted; recovery completed it (rolled forward)", tx[1])),
+                warning("journal_pending", format!("transaction {} on target {key} did not finish and could not be recovered (marker_mismatch): transaction {} names a dir", tx[2], tx[2])),
+                warning("journal_pending", format!("transaction {} did not finish, and this omaddons cannot recover it (journal_too_new); it is left as it is", tx[3])),
+            ],
+            "error": {
+                "code": "internal",
+                "message": "journal step 3 (a → b) matches neither its before nor its after state; leaving it for manual repair",
+                "details": {"reason": "step_unrecognized", "journal_pending": tx[4], "target": key},
+            },
+        });
+        let left = vec![journals[5].path.clone()];
+        let seen = observe_envelope(&envelope, &prediction(journals.clone()), &left).journals;
+        let stopped = |code: Option<&str>, reason: &str, step: Option<u32>| Observed::Stopped {
+            code: code.map(str::to_owned),
+            reason: Some(reason.to_owned()),
+            step,
+        };
+        let want = [
+            Observed::RolledBack,
+            Observed::RolledForward,
+            stopped(None, "marker_mismatch", None),
+            stopped(None, "journal_too_new", None),
+            stopped(Some("internal"), "step_unrecognized", Some(3)),
+            Observed::Untouched,
+        ];
+        for (diagnosis, want) in journals.iter().zip(want) {
+            assert_eq!(seen[&diagnosis.tx], want, "{}", diagnosis.tx);
+        }
+        // With no word of it and its file gone: pruned.
+        let gone = observe_envelope(
+            &json!({"ok": true}),
+            &prediction(vec![journals[5].clone()]),
+            &[],
+        );
+        assert_eq!(gone.journals[&journals[5].tx], Observed::Pruned);
+    }
+
+    #[test]
+    fn the_first_failing_journal_ends_the_run() {
+        let log = tlog!();
+        let own = TargetKey::new();
+        let first = diagnosis(JournalVerdict::MarkerMismatch, Some(own), Vec::new());
+        let second = diagnosis(BACK, Some(TargetKey::new()), Vec::new());
+        let predicted = prediction(vec![first.clone(), second.clone()]);
+        let caller = Caller::Commit { own: vec![own] };
+        let stopped = Observed::Stopped {
+            code: Some("scope_denied".to_owned()),
+            reason: Some("marker_mismatch".to_owned()),
+            step: None,
+        };
+        let observation = |later: Observed| super::common::differential::Observation {
+            journals: [(first.tx, stopped.clone()), (second.tx, later)].into(),
+            unlisted: None,
+        };
+        // The second is never reached, however it would have gone.
+        assert_eq!(
+            assert_agrees(&log, &predicted, &observation(Observed::Untouched), &caller),
+            2
+        );
+        let rolled = std::panic::catch_unwind(|| {
+            assert_agrees(
+                &log,
+                &predicted,
+                &observation(Observed::RolledBack),
+                &caller,
+            )
+        });
+        assert!(
+            rolled.is_err(),
+            "a journal after the failing one was recovered"
+        );
+        // Another target's stop only warns: the run goes on.
+        let warned = Observed::Stopped {
+            code: None,
+            reason: Some("marker_mismatch".to_owned()),
+            step: None,
+        };
+        let other = Caller::Commit {
+            own: vec![TargetKey::new()],
+        };
+        let observation = super::common::differential::Observation {
+            journals: [(first.tx, warned), (second.tx, Observed::RolledBack)].into(),
+            unlisted: None,
+        };
+        assert_eq!(assert_agrees(&log, &predicted, &observation, &other), 2);
+    }
+
+    #[test]
+    fn a_flagged_disagreement_is_noted_not_failed() {
+        let log = tlog!();
+        let caller = Caller::Commit {
+            own: vec![TargetKey::new()],
+        };
+        let stopped = Observed::Stopped {
+            code: Some("state_corrupt".to_owned()),
+            reason: Some("preservation_incomplete".to_owned()),
+            step: None,
+        };
+        let flagged = diagnosis(BACK, None, vec![Approximation::PreservationWalk]);
+        let observation = super::common::differential::Observation {
+            journals: [(flagged.tx, stopped.clone())].into(),
+            unlisted: None,
+        };
+        assert_eq!(
+            assert_agrees(&log, &prediction(vec![flagged]), &observation, &caller),
+            1
+        );
+        let notes = std::fs::read_to_string(log.steps_path()).unwrap();
+        assert!(notes.contains("known approximation"), "{notes}");
+
+        let exact = diagnosis(BACK, None, Vec::new());
+        let observation = super::common::differential::Observation {
+            journals: [(exact.tx, stopped)].into(),
+            unlisted: None,
+        };
+        let failed = std::panic::catch_unwind(|| {
+            assert_agrees(&log, &prediction(vec![exact]), &observation, &caller)
+        });
+        assert!(failed.is_err(), "an exact disagreement fails");
     }
 }
