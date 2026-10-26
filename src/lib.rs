@@ -33,6 +33,7 @@ pub mod sources;
 pub mod state;
 pub mod text;
 pub mod toc;
+pub mod vocabulary;
 
 #[cfg(test)]
 mod source_scan;
