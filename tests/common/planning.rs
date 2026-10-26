@@ -106,8 +106,9 @@ impl PlanningHome {
     }
 
     /// Registers `target` (its marker, a record at generation 3 holding `addons`), writes
-    /// the addons' live folders, and records them in a files index stamped well after
-    /// every file's ctime, so their clean files are reused by a witness.
+    /// the addons' live folders, and records them in a files index made past the racy
+    /// slack after the files were written, as a commit records it, so their clean files
+    /// are reused by a witness and any later edit is not.
     pub fn manage(&self, target: &mut Target, addons: &[ManagedAddon<'_>]) {
         let key = TargetKey::new();
         target.key = Some(key);
@@ -120,20 +121,23 @@ impl PlanningHome {
         .unwrap();
         let mut record = TargetRecord::empty(key);
         record.generation = 3;
-        let now = jiff::Timestamp::now().as_nanosecond();
+        for addon in addons {
+            for (folder, files) in addon.folders {
+                self.write_folder(target, folder, files);
+            }
+        }
+        // Past `RACY_SLACK_NS` (20 ms): the index's own time proves the files clean.
+        std::thread::sleep(std::time::Duration::from_millis(40));
         let mut index = FilesIndex {
             key,
-            written_at_ns: now,
+            written_at_ns: jiff::Timestamp::now().as_nanosecond(),
             folders: BTreeMap::new(),
         };
         for addon in addons {
             let mut folders = Vec::new();
-            for (folder, files) in addon.folders {
-                self.write_folder(target, folder, files);
+            for (folder, _) in addon.folders {
                 let dir = target.addons_dir().join(folder);
-                let indexed = index_live_folder(&dir, &ArchiveLimits::default())
-                    .unwrap()
-                    .stamped(now + 10_000_000_000);
+                let indexed = index_live_folder(&dir, &ArchiveLimits::default()).unwrap();
                 let name = FolderName::new(folder).unwrap();
                 index.folders.insert(name.key().to_owned(), indexed);
                 folders.push(name);

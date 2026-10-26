@@ -460,12 +460,9 @@ impl ApprovalWitness {
         }
     }
 
-    /// The settled stamp of the witnessed folder at `dir`, when it had one.
-    #[expect(
-        dead_code,
-        reason = "D8 (omad-m4-agent-surface-doctor-c6cm.4.8) reads it under the commit lock"
-    )]
-    pub(crate) fn stamp(&self, dir: &Path) -> Option<&TreeStamp> {
+    /// The settled stamp of the witnessed folder at `dir`, when it had one: what D8 (the
+    /// approval checked again under the commit lock) compares first.
+    pub fn stamp(&self, dir: &Path) -> Option<&TreeStamp> {
         self.stamps
             .iter()
             .find(|(at, _)| at == dir)
