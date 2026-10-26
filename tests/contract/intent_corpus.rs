@@ -32,11 +32,24 @@ pub struct Row {
     pub setup: &'static [Step],
     /// What the row proves, in a line.
     pub note: &'static str,
+    /// Checks of this row alone, run after its fix (an error or warning row).
+    pub extra: Option<Extra>,
+}
+
+/// A row's own checks, given both runs and the requests each added.
+pub type Extra = fn(&TestLog, &RowRuns<'_>);
+
+/// What a row's [`Extra`] sees.
+pub struct RowRuns<'a> {
+    pub home: &'a IntentHome,
+    pub wrong: &'a Ran,
+    pub fix: &'a Ran,
+    /// The `net.log` requests each run added, as `METHOD host path`.
+    pub wrong_requests: &'a [String],
+    pub fix_requests: &'a [String],
 }
 
 /// What the wrong run must give.
-// Warning rows, setup steps and leaf origins arrive with the corpus's later parts.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum Expect {
     /// An error with this exit and code; its suggestion `fix` runs to one of `fix_exit`.
@@ -57,7 +70,6 @@ pub enum Expect {
 }
 
 /// Which suggestion of an error the row pins and runs.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum Fix {
     /// `error.fix_argv`.
@@ -111,7 +123,6 @@ impl Kind {
 }
 
 /// Where a row comes from: the plan's Appendix C.2, or a leaf's own surface.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum Origin {
     Plan,
@@ -119,6 +130,7 @@ pub enum Origin {
 }
 
 /// A command run on the home before a row.
+// The first rows with setup steps (the doctor's) arrive with the corpus's last part.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Step {
@@ -146,6 +158,7 @@ const fn row(
         expect,
         setup: &[],
         note,
+        extra: None,
     }
 }
 
@@ -165,6 +178,14 @@ const fn error(
 }
 
 impl Row {
+    /// The row with checks of its own, run after its fix.
+    const fn then(self, extra: Extra) -> Self {
+        Self {
+            extra: Some(extra),
+            ..self
+        }
+    }
+
     /// The row as a leaf's own case, not the plan's.
     const fn by_leaf(self, leaf: &'static str) -> Self {
         Self {
@@ -174,7 +195,10 @@ impl Row {
     }
 }
 
-use Kind::{ClientAsAddon, MisplacedAfterVerb, MisplacedBeforeVerb, TargetAll, TargetTypo};
+use Kind::{
+    Argument, ClientAsAddon, CommandTypo, FlagTypo, MisplacedAfterVerb, MisplacedBeforeVerb,
+    TargetAll, TargetTypo, ValueTypo, WarningFix,
+};
 
 pub const CORPUS: &[Row] = &[
     // A client before the verb (M4-D12 hook 1).
@@ -410,7 +434,307 @@ pub const CORPUS: &[Row] = &[
             &[0],
         ),
     ),
+    // A mistyped command (M2's and M3's usage fixes).
+    row(
+        CommandTypo,
+        &["instal", "dbm", "-t", "retail"],
+        &[],
+        "a mutating guess becomes help",
+        error(2, "usage", &["omaddons", "help", "install"], &[0]),
+    ),
+    row(
+        CommandTypo,
+        &["statsu"],
+        &[],
+        "a read-only guess runs",
+        error(2, "usage", &["omaddons", "status"], &[0]),
+    ),
+    row(
+        CommandTypo,
+        &["lsit"],
+        &[],
+        "a read-only guess runs",
+        error(2, "usage", &["omaddons", "list"], &[0]),
+    ),
+    row(
+        CommandTypo,
+        &["reinstall", "dbm", "-t", "retail"],
+        &["install"],
+        "a synonym keeps the user's intent",
+        error(
+            2,
+            "usage",
+            &["omaddons", "install", "dbm", "-t", "retail", "--reinstall"],
+            &[0],
+        ),
+    ),
+    row(
+        CommandTypo,
+        &["targets", "remove", "era"],
+        &["targets rm"],
+        "a synonym (the user's verb); the fix unregisters era on its copy",
+        error(2, "usage", &["omaddons", "targets", "rm", "era"], &[0]),
+    ),
+    row(
+        CommandTypo,
+        &["config", "ls"],
+        &["config"],
+        "a synonym of the bare listing",
+        error(2, "usage", &["omaddons", "config"], &[0]),
+    ),
+    row(
+        CommandTypo,
+        &["backup", "restor", "01M6Q2VA"],
+        &[],
+        "a nested mutating guess becomes help",
+        error(2, "usage", &["omaddons", "help", "backup", "restore"], &[0]),
+    ),
+    row(
+        CommandTypo,
+        &["omarchy", "instal"],
+        &[],
+        "a nested mutating guess becomes help",
+        error(
+            2,
+            "usage",
+            &["omaddons", "help", "omarchy", "install"],
+            &[0],
+        ),
+    ),
+    // A mistyped flag.
+    row(
+        FlagTypo,
+        &["upgrade", "--al"],
+        &["update"],
+        "the alias is kept; the fix updates DBM on both clients",
+        error(2, "usage", &["omaddons", "upgrade", "--all"], &[0]),
+    ),
+    row(
+        FlagTypo,
+        &["install", "dbm", "--chanel", "beta", "-t", "retail"],
+        &["install"],
+        "corrected in place",
+        error(
+            2,
+            "usage",
+            &[
+                "omaddons",
+                "install",
+                "dbm",
+                "--channel",
+                "beta",
+                "-t",
+                "retail",
+            ],
+            &[0],
+        ),
+    ),
+    row(
+        FlagTypo,
+        &["status", "--json=1"],
+        &["status"],
+        "a refused presentation flag is dropped",
+        error(2, "usage", &["omaddons", "status"], &[0]),
+    ),
+    row(
+        FlagTypo,
+        &["status", "--jsno"],
+        &["status"],
+        "a mistyped presentation flag is dropped",
+        error(2, "usage", &["omaddons", "status"], &[0]),
+    ),
+    row(
+        FlagTypo,
+        &["status", "--cached", "--deep"],
+        &["status"],
+        "conflicting flags",
+        error(2, "usage", &["omaddons", "help", "status"], &[0]),
+    ),
+    row(
+        FlagTypo,
+        &["list", "--protectd", "-t", "wotlk"],
+        &["list"],
+        "corrected in place",
+        error(
+            2,
+            "usage",
+            &["omaddons", "list", "--protected", "-t", "wotlk"],
+            &[0],
+        ),
+    ),
+    row(
+        FlagTypo,
+        &["export", "--overwrite"],
+        &["export"],
+        "the fix adds the --write that --overwrite presupposes; it writes on its copy",
+        error(
+            2,
+            "usage",
+            &["omaddons", "export", "--overwrite", "--write"],
+            &[0],
+        ),
+    ),
+    // A mistyped value.
+    row(
+        ValueTypo,
+        &["install", "dbm", "--channel", "betaa", "-t", "retail"],
+        &["install"],
+        "corrected in place",
+        error(
+            2,
+            "usage",
+            &[
+                "omaddons",
+                "install",
+                "dbm",
+                "--channel",
+                "beta",
+                "-t",
+                "retail",
+            ],
+            &[0],
+        ),
+    ),
+    row(
+        ValueTypo,
+        &["history", "--since", "yesterday"],
+        &["history"],
+        "a corrected duration",
+        error(2, "usage", &["omaddons", "history", "--since", "1d"], &[0]),
+    ),
+    row(
+        ValueTypo,
+        &["undo", "--last-by", "robot"],
+        &["undo"],
+        "nothing is close to robot: help, never a guessed actor",
+        error(2, "usage", &["omaddons", "help", "undo"], &[0]),
+    ),
+    row(
+        ValueTypo,
+        &["backup", "list", "01M6"],
+        &["backup list"],
+        "an id too short to name a backup",
+        error(2, "usage", &["omaddons", "backup", "list"], &[0]),
+    ),
+    row(
+        ValueTypo,
+        &["errors", "--limit", "0"],
+        &["errors"],
+        "a limit out of range",
+        error(2, "usage", &["omaddons", "errors", "--limit", "10"], &[0]),
+    ),
+    row(
+        ValueTypo,
+        &["install", "http://github.com/o/r"],
+        &["install"],
+        "installs gh:o/r on retail, the default target",
+        error(
+            2,
+            "ref_invalid",
+            &["omaddons", "install", "https://github.com/o/r"],
+            &[0],
+        ),
+    )
+    .then(installs_on_retail),
+    row(
+        ValueTypo,
+        &["auth", "github", "shwo"],
+        &["auth github"],
+        "a mistyped ACTION with nothing close: github's help",
+        error(2, "usage", &["omaddons", "help", "auth", "github"], &[0]),
+    ),
+    // A mistaken argument.
+    row(
+        Argument,
+        &["update", "--version", "12.1.14", "dbm"],
+        &["install", "pin"],
+        "a given version is an install; pins DBM at 12.1.14 on retail",
+        error(
+            2,
+            "usage",
+            &["omaddons", "install", "--version", "12.1.14", "dbm"],
+            &[0],
+        ),
+    ),
+    row(
+        Argument,
+        &["install", "unknownthing", "-t", "retail"],
+        &["install"],
+        "the fix only reads",
+        error(
+            3,
+            "not_found",
+            &["omaddons", "search", "unknownthing"],
+            &[0],
+        ),
+    ),
+    row(
+        Argument,
+        &["search"],
+        &["search"],
+        "a required argument missing",
+        error(2, "usage", &["omaddons", "help", "search"], &[0]),
+    ),
+    row(
+        Argument,
+        &["copy", "--from", "era", "--to", "era"],
+        &["copy"],
+        "one client on both sides",
+        error(2, "usage", &["omaddons", "targets"], &[0]),
+    ),
+    row(
+        Argument,
+        &["sync", "missing.toml"],
+        &["sync"],
+        "the fix is prose with <path>; the first alternative runs",
+        Expect::Error {
+            exit: 3,
+            code: "not_found",
+            fix: Fix::FirstAlternative(&["omaddons", "help", "sync"]),
+            fix_exit: &[0],
+        },
+    )
+    .then(names_the_missing_file),
+    // A warning whose fix is a rerun.
+    row(
+        WarningFix,
+        &["--offline", "outdated"],
+        &["outdated"],
+        "the warning's fix reruns online",
+        Expect::Warning {
+            code: "stale_check",
+            fix: &["omaddons", "outdated"],
+            fix_exit: &[0],
+        },
+    )
+    .then(offline_then_online),
 ];
+
+/// The https install lands on the default target.
+fn installs_on_retail(log: &TestLog, runs: &RowRuns<'_>) {
+    let target = &runs.fix.data()["target"]["id"];
+    log.assert_eq("target", target, &Value::from("retail"));
+}
+
+/// A prose fix (no argv), the missing file resolved in the work directory.
+fn names_the_missing_file(log: &TestLog, runs: &RowRuns<'_>) {
+    let error = &runs.wrong.envelope()["error"];
+    log.assert_eq("fix_argv", &error["fix_argv"], &Value::Null);
+    let path = error["details"]["path"].as_str().unwrap_or_default();
+    let under = std::path::Path::new(path).starts_with(runs.home.work_dir());
+    assert!(under, "{path:?} is not under the work directory");
+}
+
+/// Offline answers from the memo and sends nothing; the online rerun asks.
+fn offline_then_online(log: &TestLog, runs: &RowRuns<'_>) {
+    let offline = &runs.wrong.envelope()["meta"]["offline"];
+    log.assert_eq("meta.offline", offline, &Value::from(true));
+    log.assert_eq("wrong requests", &runs.wrong_requests, &[].as_slice());
+    assert!(
+        !runs.fix_requests.is_empty(),
+        "the online rerun sent no request"
+    );
+}
 
 /// `<kind>-<two-digit index within the kind>-<argv joined with _>`, every character
 /// outside `[A-Za-z0-9_.-]` as `_`, the argv part cut at 60 characters. A row that is not
@@ -642,6 +966,7 @@ fn steps(
     case.step("wrong");
     let argv = with_output(&substitute(row.argv, &vars));
     let ran = progress.wrong.insert(home.cmd(case, &as_strs(&argv)).run());
+    let wrong_requests: Vec<String> = requests(home).into_iter().skip(requested.len()).collect();
     let exit = match row.expect {
         Expect::Error { exit, .. } => exit,
         Expect::Ok | Expect::Warning { .. } => 0,
@@ -721,8 +1046,7 @@ fn steps(
         let changed: Vec<&String> = differ.iter().map(|(k, _, _)| *k).collect();
         assert!(changed.is_empty(), "records changed: {changed:?}");
         case.assert_eq("records", &after, &before);
-        let added: Vec<String> = requests(home).into_iter().skip(requested.len()).collect();
-        case.assert_eq("requests", &added, &Vec::<String>::new());
+        case.assert_eq("requests", &wrong_requests, &Vec::<String>::new());
     }
 
     progress.step = "restore for the fix";
@@ -735,8 +1059,10 @@ fn steps(
 
     progress.step = "fix";
     case.step("fix");
+    let requested = requests(home);
     let argv = with_output(&substitute(pinned.get(1..).unwrap_or_default(), &vars));
     let ran = progress.fix.insert(home.cmd(case, &as_strs(&argv)).run());
+    let fix_requests: Vec<String> = requests(home).into_iter().skip(requested.len()).collect();
     let code = ran.run.code;
     assert!(
         fix_exit.contains(&code),
@@ -744,6 +1070,19 @@ fn steps(
     );
     support::check(copy_run(&ran.run), code);
     ran.assert_private();
+
+    if let (Some(extra), Some(wrong)) = (row.extra, progress.wrong.as_ref()) {
+        progress.step = "extra";
+        case.step("extra");
+        let runs = RowRuns {
+            home,
+            wrong,
+            fix: ran,
+            wrong_requests: &wrong_requests,
+            fix_requests: &fix_requests,
+        };
+        extra(case, &runs);
+    }
 }
 
 /// Runs every row of `kind` on one corpus home, each in its own case log, and fails

@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::home::Home;
-use super::http::{Asset, gh_release, github_search, paths};
+use super::http::{Asset, fixture, gh_release, github_search, paths};
 use super::tlog::{Cmd, TestLog};
 use super::trees::{CustomRoot, EntryKind, copy_tree_exact, tree_entries};
 use super::tukui::{elvui, tukui_list};
@@ -120,6 +120,35 @@ pub fn intent_home() -> IntentHome {
 
     // DBM is now one release behind, and the memo old enough that a check asks again.
     serve_dbm(&home, DBM_LATEST);
+    // The REST listing a beta or alpha channel reads: both releases, stable.
+    let download = |tag: &str, file: &str| format!("{DBM_BASE}/releases/download/{tag}/{file}");
+    let listed: Vec<serde_json::Value> = [
+        (DBM_LATEST, "2026-10-20T00:00:00Z"),
+        (DBM_INSTALLED, "2026-10-01T00:00:00Z"),
+    ]
+    .iter()
+    .map(|(tag, at)| {
+        let zip = format!("DBM-{tag}.zip");
+        serde_json::json!({
+            "tag_name": tag,
+            "prerelease": false,
+            "draft": false,
+            "published_at": at,
+            "assets": [
+                {"name": "release.json", "browser_download_url": download(tag, "release.json")},
+                {"name": zip, "browser_download_url": download(tag, &zip)},
+            ],
+        })
+    })
+    .collect();
+    fixture(
+        &home.http,
+        "rest-listing-dbm",
+        "https://api.github.com/repos/DeadlyBossMods/DeadlyBossMods/releases?per_page=20",
+        200,
+        &[("x-ratelimit-remaining", "59")],
+        Some(&serde_json::Value::from(listed).to_string()),
+    );
     let (mut memo, _) = omaddons::state::memo::load(&paths(&home.env));
     for entry in memo.entries.values_mut() {
         entry.fetched_at -= jiff::SignedDuration::from_hours(24);
