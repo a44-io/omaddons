@@ -16,9 +16,13 @@ use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::time::Duration;
 
+use common::archives::zip_text;
 use common::env::TestEnv;
 use common::home::Home;
+use common::http::{Asset, gh_release};
+use common::netlog::net_log;
 use common::procfs::running_as_root;
+use common::state::record;
 use common::tlog::{Ran, Runner, TestLog, tlog};
 use common::trees::{CustomRoot, tree_stat};
 use omaddons::limits::DISCOVERY_FILE_MAX_BYTES;
@@ -611,4 +615,513 @@ fn the_usage_path_reads_no_discovery_and_writes_nothing() {
     let kind = fs::symlink_metadata(&discovery).unwrap().file_type();
     assert!(kind.is_fifo(), "the discovery FIFO was replaced");
     assert!(!env.home().join("Games").exists(), "Games/ was created");
+}
+
+// ---- A client named among the addons (C2, M4-D12 hook 3) ----
+
+const DBM: &str = "https://github.com/DeadlyBossMods/DeadlyBossMods";
+
+/// (argv after `omaddons`, `fix_argv`, `details.target`, `details.command`, the
+/// alternatives after the command's help).
+type AsAnAddon<'a> = (
+    &'a [&'a str],
+    &'a [&'a str],
+    &'a str,
+    &'a str,
+    &'a [&'a [&'a str]],
+);
+
+/// `retail` and `era`, with DBM `v1` (loading on both) installed on each client of `on`
+/// and `v2` released since.
+fn dbm_home(log: &TestLog, on: &[&str]) -> Home {
+    let mut home = Home::new(&["wow", "wow_classic_era"]);
+    log.env(&home);
+    let toc = |version: &str| format!("## Interface: 120105, 11509\n## Version: {version}\n");
+    let (v1, v2) = (toc("v1"), toc("v2"));
+    let unannotated: &[(&str, u32)] = &[];
+    let old: [Asset<'_>; 1] = [(
+        "DBM-Core.zip",
+        unannotated,
+        vec![("DBM-Core/DBM-Core.toc", v1.as_str())],
+    )];
+    let new: [Asset<'_>; 1] = [(
+        "DBM-Core.zip",
+        unannotated,
+        vec![("DBM-Core/DBM-Core.toc", v2.as_str())],
+    )];
+    home.installed_behind(DBM, ("v1", &old), ("v2", &new), on);
+    let installed: serde_json::Map<String, Value> = on
+        .iter()
+        .map(|id| ((*id).to_owned(), json!(dbm_on(&home, id))))
+        .collect();
+    log.json("installed", &installed);
+    home
+}
+
+/// DBM's recorded version on `id`, if it is installed there.
+fn dbm_on(home: &Home, id: &str) -> Option<String> {
+    record(home, id)
+        .addons
+        .values()
+        .find(|a| a.name.eq_ignore_ascii_case("DBM"))
+        .map(|a| a.version.clone())
+}
+
+fn dbm_versions(home: &Home) -> Value {
+    json!({ "retail": dbm_on(home, "retail"), "era": dbm_on(home, "era") })
+}
+
+/// Writes a zip of `entries` under the home's `dl/` and returns its path.
+fn zip_file(home: &Home, name: &str, entries: &[(&str, &str)]) -> String {
+    let dl = home.env.root().join("dl");
+    let path = dl.join(format!("{name}.zip"));
+    let written = fs::create_dir_all(&dl).and_then(|()| fs::write(&path, zip_text(entries)));
+    assert!(written.is_ok(), "{}: {written:?}", path.display());
+    path.display().to_string()
+}
+
+/// Installs a `Foo` folder loading on retail from a local zip, so `retail` is registered
+/// and manages an addon of its own.
+fn install_foo(log: &TestLog, home: &Home) {
+    let zip = zip_file(home, "foo", &[("Foo/Foo.toc", "## Interface: 120105\n")]);
+    let argv = json_argv(&["install", "gh:o/foo", "--file", &zip, "-t", "retail"]);
+    log.run(home, &argv).ok().assert_private();
+}
+
+/// The trees a misplaced client must leave alone: `<state>` (records, files indexes,
+/// history, the journal, `net.log`), `<config>` and both clients. `<cache>` is only
+/// listed: any command may refresh the derived discovery cache.
+fn record_roots(home: &Home) -> [(&'static str, std::path::PathBuf); 4] {
+    [
+        ("state", home.env.state()),
+        ("config", home.env.config()),
+        ("retail", home.client("_retail_")),
+        ("era", home.client("_classic_era_")),
+    ]
+}
+
+fn records_baseline(log: &TestLog, home: &Home) {
+    for (label, root) in record_roots(home) {
+        log.tree(label, &root);
+    }
+    log.json("cache", &stat_listing(&home.env.cache()));
+}
+
+#[track_caller]
+fn records_unchanged(log: &TestLog, home: &Home) {
+    for (label, root) in record_roots(home) {
+        log.assert_unchanged(label, &root);
+    }
+}
+
+/// Runs a client named among the addons and asserts its usage error: exit 2, the exact
+/// fix, `details`, the help alternative then the row's others, the message, one stderr
+/// `error` event.
+#[track_caller]
+fn misplaced(log: &TestLog, home: &Home, (args, fix, target, command, others): AsAnAddon<'_>) {
+    let ran = log.run(home, &json_argv(args));
+    ran.fails(2, "usage").assert_private();
+    let ctx = ran.run.context();
+    let error = &ran.envelope()["error"];
+    assert_eq!(error["retryable"], false, "{ctx}");
+    assert_eq!(strings(&error["fix_argv"]), fix, "{ctx}");
+    assert_eq!(
+        error["details"],
+        json!({ "target": target, "command": command }),
+        "{ctx}"
+    );
+    let help: Vec<&str> = ["omaddons", "help"]
+        .into_iter()
+        .chain(command.split(' '))
+        .collect();
+    let alternatives: Vec<Vec<String>> = error["alternatives"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| strings(&a["argv"]))
+        .collect();
+    let mut want: Vec<Vec<String>> = vec![help.iter().map(|w| (*w).to_owned()).collect()];
+    want.extend(
+        others
+            .iter()
+            .map(|o| o.iter().map(|w| (*w).to_owned()).collect()),
+    );
+    assert_eq!(alternatives, want, "{ctx}");
+    let message = match others {
+        [] => format!("'{target}' is a client, not an addon; the client goes in -t"),
+        _ => {
+            let mut words = vec![format!("'{target}'")];
+            words.extend(
+                others
+                    .iter()
+                    .filter_map(|o| o.last())
+                    .map(|w| format!("'{w}'")),
+            );
+            let (last, rest) = words.split_last().unwrap_or((&words[0], &[]));
+            format!(
+                "{} and {last} are clients, not addons; the client goes in -t, one per command",
+                rest.join(", ")
+            )
+        }
+    };
+    assert_eq!(error["message"], message, "{ctx}");
+    one_error_event(&ran);
+}
+
+#[test]
+fn remove_and_update_with_a_misplaced_client_change_nothing() {
+    let log = tlog!();
+    log.step("home");
+    let home = dbm_home(&log, &["retail", "era"]);
+    records_baseline(&log, &home);
+    let requests = net_log(&home).len();
+
+    log.step("wrong invocations");
+    let cases: &[AsAnAddon<'_>] = &[
+        (
+            &["remove", "dbm", "retail"],
+            &["omaddons", "remove", "dbm", "-t", "retail"],
+            "retail",
+            "remove",
+            &[],
+        ),
+        (
+            &["rm", "dbm", "retail"],
+            &["omaddons", "rm", "dbm", "-t", "retail"],
+            "retail",
+            "remove",
+            &[],
+        ),
+        (
+            &["update", "dbm", "retail"],
+            &["omaddons", "update", "dbm", "-t", "retail"],
+            "retail",
+            "update",
+            &[],
+        ),
+        (
+            &["upgrade", "dbm", "retail", "--dry-run"],
+            &["omaddons", "upgrade", "dbm", "-t", "retail", "--dry-run"],
+            "retail",
+            "update",
+            &[],
+        ),
+        (
+            &["update", "retail"],
+            &["omaddons", "update", "-t", "retail"],
+            "retail",
+            "update",
+            &[],
+        ),
+        (
+            &["remove", "dbm", "retail", "--dry-run"],
+            &["omaddons", "remove", "dbm", "-t", "retail", "--dry-run"],
+            "retail",
+            "remove",
+            &[],
+        ),
+    ];
+    for case in cases {
+        misplaced(&log, &home, *case);
+    }
+
+    log.step("nothing changed");
+    records_unchanged(&log, &home);
+    let after = net_log(&home);
+    log.json("net.log", &after.len());
+    assert_eq!(
+        after.len(),
+        requests,
+        "a request was sent\n{}",
+        after.context()
+    );
+
+    log.step("the update fix runs");
+    log.run(&home, &json_argv(&["update", "dbm", "-t", "retail"]))
+        .ok()
+        .assert_private();
+    log.json("installed", &dbm_versions(&home));
+    assert_eq!(dbm_on(&home, "retail").as_deref(), Some("v2"));
+    assert_eq!(dbm_on(&home, "era").as_deref(), Some("v1"));
+
+    log.step("the remove fix runs");
+    log.run(&home, &json_argv(&["remove", "dbm", "-t", "retail"]))
+        .ok()
+        .assert_private();
+    log.json("installed", &dbm_versions(&home));
+    assert_eq!(dbm_on(&home, "retail"), None);
+    assert_eq!(dbm_on(&home, "era").as_deref(), Some("v1"));
+    assert!(home.addons("_classic_era_").join("DBM-Core").is_dir());
+}
+
+#[test]
+fn a_misplaced_client_never_removes_from_another_client() {
+    let log = tlog!();
+    log.step("home");
+    let home = dbm_home(&log, &["era"]);
+    install_foo(&log, &home);
+    records_baseline(&log, &home);
+
+    log.step("wrong invocation");
+    misplaced(
+        &log,
+        &home,
+        (
+            &["remove", "dbm", "retail"],
+            &["omaddons", "remove", "dbm", "-t", "retail"],
+            "retail",
+            "remove",
+            &[],
+        ),
+    );
+
+    log.step("nothing changed");
+    records_unchanged(&log, &home);
+    assert_eq!(dbm_on(&home, "era").as_deref(), Some("v1"));
+    log.note(
+        "before C2 this removed DBM from era (remove.rs:254-258), then warned that retail is not managed",
+    );
+
+    log.step("the fix says where DBM is");
+    log.run(&home, &json_argv(&["remove", "dbm", "-t", "retail"]))
+        .fails(3, "not_managed")
+        .assert_private();
+    records_unchanged(&log, &home);
+}
+
+#[test]
+fn install_with_a_misplaced_client_installs_nothing() {
+    let log = tlog!();
+    log.step("home");
+    let home = Home::new(&["wow", "wow_classic_era"]);
+    log.env(&home);
+    let unannotated: &[(&str, u32)] = &[];
+    let questie: [Asset<'_>; 1] = [(
+        "Questie.zip",
+        unannotated,
+        vec![(
+            "Questie/Questie.toc",
+            "## Interface: 11509\n## Version: v1\n",
+        )],
+    )];
+    gh_release(
+        &home.http,
+        "https://github.com/Questie/Questie",
+        "v1",
+        &questie,
+    );
+    install_foo(&log, &home);
+    records_baseline(&log, &home);
+    let requests = net_log(&home).len();
+
+    log.step("wrong invocations");
+    let cases: &[AsAnAddon<'_>] = &[
+        (
+            &["install", "questie", "era"],
+            &["omaddons", "install", "questie", "-t", "era"],
+            "era",
+            "install",
+            &[],
+        ),
+        (
+            &["install", "questie", "sod"],
+            &["omaddons", "install", "questie", "-t", "sod"],
+            "sod",
+            "install",
+            &[],
+        ),
+    ];
+    for case in cases {
+        misplaced(&log, &home, *case);
+    }
+
+    log.step("nothing changed");
+    records_unchanged(&log, &home);
+    let after = net_log(&home);
+    assert_eq!(
+        after.len(),
+        requests,
+        "a request was sent\n{}",
+        after.context()
+    );
+
+    log.step("the fix runs");
+    log.run(&home, &json_argv(&["install", "questie", "-t", "era"]))
+        .ok()
+        .assert_private();
+    let named = |id: &str| {
+        record(&home, id)
+            .addons
+            .values()
+            .any(|a| a.name.eq_ignore_ascii_case("Questie"))
+    };
+    assert!(named("era"), "Questie is not on era");
+    assert!(!named("retail"), "Questie is on retail");
+}
+
+#[test]
+fn ordinary_partial_success_is_unchanged() {
+    let log = tlog!();
+    log.step("home");
+    let home = dbm_home(&log, &["retail", "era"]);
+    records_baseline(&log, &home);
+
+    log.step("an unknown name fails alone");
+    let ran = log.run(
+        &home,
+        &json_argv(&["remove", "dbm", "nosuch", "-t", "retail"]),
+    );
+    ran.ok().assert_private();
+    let ctx = ran.run.context();
+    assert_eq!(ran.envelope()["partial"], true, "{ctx}");
+    let unknown = ran.envelope()["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|w| {
+            w["code"] == "not_managed"
+                && w["message"].as_str().is_some_and(|m| m.contains("nosuch"))
+        });
+    assert!(unknown, "no not_managed warning naming nosuch\n{ctx}");
+    assert_eq!(dbm_on(&home, "retail"), None, "{ctx}");
+    assert_eq!(dbm_on(&home, "era").as_deref(), Some("v1"), "{ctx}");
+    log.tree("retail after", &home.client("_retail_"));
+
+    log.step("a target given: the client word fails alone");
+    let ran = log.run(&home, &json_argv(&["update", "dbm", "retail", "-t", "era"]));
+    ran.ok().assert_private();
+    let ctx = ran.run.context();
+    assert_eq!(ran.envelope()["partial"], true, "{ctx}");
+    assert_eq!(dbm_on(&home, "era").as_deref(), Some("v2"), "{ctx}");
+    let failed = ran.data()["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|t| t["items"].as_array().into_iter().flatten())
+        .any(|item| {
+            item["request"] == "retail"
+                && item["status"] == "failed"
+                && item["error"]["code"] == "not_managed"
+        });
+    assert!(failed, "no failed not_managed item for retail\n{ctx}");
+    log.assert_unchanged("retail after", &home.client("_retail_"));
+
+    log.step("an unknown name with no client word");
+    for (label, root) in record_roots(&home) {
+        log.tree(&format!("{label} before nosuch"), &root);
+    }
+    log.run(&home, &json_argv(&["remove", "nosuch"]))
+        .fails(3, "not_managed")
+        .assert_private();
+    for (label, root) in record_roots(&home) {
+        log.assert_unchanged(&format!("{label} before nosuch"), &root);
+    }
+}
+
+#[test]
+fn an_addon_named_like_a_client_is_never_moved() {
+    let log = tlog!();
+    log.step("home");
+    let home = Home::new(&["wow", "wow_classic_era"]);
+    log.env(&home);
+    // `hardcore` is also a game mode of era's client.
+    let catalog_d = home.env.config().join("omaddons/catalog.d");
+    fs::create_dir_all(&catalog_d).unwrap();
+    fs::write(
+        catalog_d.join("50-hardcore.toml"),
+        "schema_version = \"1.0\"\n[[addon]]\nname = \"Hardcore\"\nref = \"gh:o/hardcore\"\nfamilies = [\"vanilla\"]\nfolders = [\"Hardcore\"]\n",
+    )
+    .unwrap();
+    let unannotated: &[(&str, u32)] = &[];
+    let hardcore: [Asset<'_>; 1] = [(
+        "Hardcore.zip",
+        unannotated,
+        vec![(
+            "Hardcore/Hardcore.toc",
+            "## Interface: 11509\n## Version: v1\n",
+        )],
+    )];
+    gh_release(&home.http, "https://github.com/o/hardcore", "v1", &hardcore);
+    // An addon owning a folder named like the mode `sod`.
+    let zip = zip_file(&home, "sod", &[("SoD/SoD.toc", "## Interface: 11509\n")]);
+    let argv = json_argv(&["install", "gh:o/sod", "--file", &zip, "-t", "era"]);
+    log.run(&home, &argv).ok().assert_private();
+    log.json(
+        "era",
+        &record(&home, "era").addons.keys().collect::<Vec<_>>(),
+    );
+
+    log.step("a catalog name is read as the addon");
+    log.run(&home, &json_argv(&["install", "hardcore", "-t", "era"]))
+        .ok()
+        .assert_private();
+    log.run(&home, &json_argv(&["update", "hardcore"]))
+        .ok()
+        .assert_private();
+    misplaced(
+        &log,
+        &home,
+        (
+            &["update", "hardcore", "era"],
+            &["omaddons", "update", "hardcore", "-t", "era"],
+            "era",
+            "update",
+            &[],
+        ),
+    );
+
+    log.step("an owned folder is read as the addon");
+    log.run(&home, &json_argv(&["remove", "sod"]))
+        .ok()
+        .assert_private();
+    let owns_sod = record(&home, "era")
+        .addons
+        .values()
+        .any(|a| a.folders.iter().any(|f| f.as_str() == "SoD"));
+    assert!(!owns_sod, "the addon owning SoD is still on era");
+
+    log.step("a client word after -- is never moved");
+    let argv: Vec<String> = [
+        "remove",
+        "hardcore",
+        "--json",
+        "--progress",
+        "json",
+        "--",
+        "era",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let ran = log.run(&home, &argv);
+    ran.ok().assert_private();
+    assert_eq!(ran.envelope()["partial"], true, "{}", ran.run.context());
+}
+
+#[test]
+fn several_misplaced_clients_move_the_first() {
+    let log = tlog!();
+    log.step("home");
+    let home = dbm_home(&log, &["retail", "era"]);
+    records_baseline(&log, &home);
+
+    log.step("wrong invocation");
+    misplaced(
+        &log,
+        &home,
+        (
+            &["update", "dbm", "retail", "era"],
+            &["omaddons", "update", "dbm", "-t", "retail"],
+            "retail",
+            "update",
+            &[&["omaddons", "update", "dbm", "-t", "era"]],
+        ),
+    );
+
+    log.step("a lone client word");
+    log.run(&home, &json_argv(&["remove", "retail"]))
+        .fails(3, "not_managed")
+        .assert_private();
+
+    log.step("nothing changed");
+    records_unchanged(&log, &home);
 }
