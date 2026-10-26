@@ -33,6 +33,8 @@ pub const BINDING_COMMANDS: &[&str] = &[
     "backup prune",
     "errors dismiss",
     "install",
+    "update",
+    "sync",
 ];
 
 /// The token format's version and separator.
@@ -1810,6 +1812,8 @@ mod tests {
                 "backup prune",
                 "errors dismiss",
                 "install",
+                "update",
+                "sync",
             ]
         );
         assert_eq!(

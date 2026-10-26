@@ -125,6 +125,10 @@ mod support {
         if let Some(run) = envelope["data"]["run"].as_str() {
             text = text.replace(run, "<run>");
         }
+        // A dry run's token holds the build id, so it is never snapshotted raw.
+        if let Some(token) = envelope["data"]["precondition"].as_str() {
+            text = text.replace(token, "<precondition>");
+        }
         let mut stable: Value = serde_json::from_str(&text).unwrap();
         stable["meta"] = Value::from("<meta>");
         stable["tool_version"] = Value::from("<version>");

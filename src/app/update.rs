@@ -18,11 +18,12 @@ use super::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef, TargetResult,
     TargetsData, TargetsOutcome, sort_keeping_dependencies,
 };
+use super::precondition::{self, Idle, PlanBinding, PlanExtras};
 use super::world::{World, names_addon};
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::engine::plan::{AnyFlavorIntent, PinIntent, RequestedChange, addon_pinned};
-use crate::engine::{TxOutcomes, TxRequest, TxTarget};
+use crate::engine::{Binding, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{AddonRecord, Channel, Ref, RunId, Target, TxId, TxKind};
 use crate::output::{Outcome, Style};
@@ -349,10 +350,26 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
         }
     }
 
+    // What the token covers beyond the engine's plan: what was left alone, and why.
+    let skips = update_skips(&pushed);
+    let extras = PlanExtras {
+        update_skips: &skips,
+        ..PlanExtras::default()
+    };
     let run = RunId::new();
-    let done: Option<TxOutcomes> = if changes.is_empty() {
+    let (done, token): (Option<TxOutcomes>, Option<String>) = if changes.is_empty() {
+        // Every selected client: the preview said there was nothing to do on each. A
+        // stale bound run changes nothing, not even a recovery.
+        let idle: Vec<Idle<'_>> = targets
+            .iter()
+            .map(|d| Idle {
+                target: &d.target,
+                generation: records.get(&d.target.id).map_or(0, |r| r.generation),
+            })
+            .collect();
+        let token = precondition::check_noop(ctx, "update", &idle, &extras)?;
         recover_waiting(ctx, &world, "update");
-        None
+        (None, token)
     } else {
         let req = TxRequest {
             targets: targets
@@ -373,10 +390,21 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
             kind: None,
             run,
             no_deps: args.no_deps,
-            witness: None,
+            // The run the token describes: a dry run's, or a bound run's to compare.
+            witness: precondition::witnessing(ctx),
         };
-        match engine.run(&req, Some(&cache)) {
-            Ok(done) => Some(done),
+        let binding = PlanBinding::of_run(ctx, "update", extras.clone());
+        match engine.run_bound(
+            &req,
+            Some(&cache),
+            binding.as_ref().map(|b| b as &dyn Binding),
+        ) {
+            Ok(done) => {
+                let token = ctx
+                    .dry_run
+                    .then(|| precondition::plan_token("update", &done.plan, &extras));
+                (Some(done), token)
+            }
             Err(error) => {
                 // What the plan fetched is still worth remembering.
                 cache.remember(&[]);
@@ -445,6 +473,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
     }
     // Every selected target is listed, with or without work; items by name.
     for d in &targets {
+        // ubs:ignore — comparing target ids, not secrets
         if !data.targets.iter().any(|t| t.target.id == d.target.id) {
             data.push_target(TargetResult::empty(TargetRef {
                 id: d.target.id.clone(),
@@ -481,7 +510,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
         .flat_map(|d| &d.outcomes)
         .filter_map(|o| Some((o.tx?, o.lock_held_ms?)))
         .collect();
-    let data = data.listing(verbose);
+    let data = data.with_precondition(token).listing(verbose);
     let mut commands = data.undo_commands();
     commands.extend(super::status::adopt_hints(&world, &targets, &records));
     let mut unique: Vec<Warning> = Vec::new();
@@ -626,6 +655,26 @@ fn failed(s: &InScope<'_>, error: ItemError) -> ItemResult {
     }
 }
 
+/// The skip decisions made before the engine (`PlanExtras::update_skips`): each addon
+/// left alone, by target, and why. Failed and unchanged items decide nothing, and the
+/// `blocked` skips `settle_failures` makes later are the engine's results.
+fn update_skips(
+    pushed: &[(TargetRef, ItemResult)],
+) -> Vec<(precondition::TargetRef, String, SkipReason)> {
+    pushed
+        .iter()
+        .filter(|(_, i)| i.status == ItemStatus::Skipped)
+        .filter_map(|(t, i)| {
+            let name = i.name.clone().unwrap_or_else(|| i.request.clone());
+            Some((
+                precondition::TargetRef::of(t.key, &t.id),
+                name,
+                i.skip_reason?,
+            ))
+        })
+        .collect()
+}
+
 /// What the engine's failures mean for `update`: a release of an addon it was asked
 /// to update that does not load here is skipped as blocked (M2-D41), never a
 /// dependency's, which is a failure (M2-D9); a fix that takes over a folder with
@@ -704,6 +753,82 @@ fn blocked(error: &ErrorBody) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::TargetKey;
+
+    #[test]
+    fn update_skips_are_the_skip_decisions() {
+        let item = |name: &str, status: ItemStatus, skip_reason: Option<SkipReason>| ItemResult {
+            request: name.to_owned(),
+            name: Some(name.to_owned()),
+            r#ref: None,
+            status,
+            skip_reason,
+            duplicate_of: None,
+            reason: None,
+            from_version: None,
+            to_version: None,
+            folders: None,
+            required_by: None,
+            deps: ItemDeps::default(),
+            error: None,
+        };
+        let key = TargetKey::new();
+        let retail = TargetRef {
+            id: "retail".into(),
+            key: Some(key),
+            mode: None,
+        };
+        // Not registered yet: named by its id.
+        let era = TargetRef {
+            id: "era".into(),
+            key: None,
+            mode: None,
+        };
+        let pushed = vec![
+            (
+                retail.clone(),
+                item("Pin", ItemStatus::Skipped, Some(SkipReason::Pinned)),
+            ),
+            (
+                retail.clone(),
+                item("New", ItemStatus::Skipped, Some(SkipReason::Ahead)),
+            ),
+            (
+                era.clone(),
+                item("Old", ItemStatus::Skipped, Some(SkipReason::Blocked)),
+            ),
+            (
+                era.clone(),
+                item("Zip", ItemStatus::Skipped, Some(SkipReason::Static)),
+            ),
+            (
+                retail.clone(),
+                item("Off", ItemStatus::Skipped, Some(SkipReason::Unchecked)),
+            ),
+            (retail.clone(), item("Up", ItemStatus::Updated, None)),
+            (era.clone(), item("Same", ItemStatus::Unchanged, None)),
+            (retail, item("Gone", ItemStatus::Failed, None)),
+        ];
+        let skips: Vec<(String, String, serde_json::Value)> = update_skips(&pushed)
+            .into_iter()
+            .map(|(t, name, reason)| (t.to_string(), name, serde_json::json!(reason)))
+            .collect();
+        let want = |t: &str, name: &str, reason: &str| {
+            (t.to_owned(), name.to_owned(), serde_json::json!(reason))
+        };
+        let key = key.to_string();
+        assert_eq!(
+            skips,
+            vec![
+                want(&key, "Pin", "pinned"),
+                want(&key, "New", "ahead"),
+                want("era", "Old", "blocked"),
+                want("era", "Zip", "static"),
+                want(&key, "Off", "unchecked"),
+            ],
+            "updated, unchanged and failed items are no skip decisions: {pushed:?}"
+        );
+    }
 
     #[test]
     fn the_all_line_counts_the_test_clients() {

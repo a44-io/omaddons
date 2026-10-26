@@ -12,6 +12,7 @@
 mod common;
 
 use common::engine::Scene;
+use common::graph::Folder;
 use common::pause::Pause;
 use prune_support::{at_noon, backups, prune_preview, three_days};
 use restore_support::{restorable, restore_args};
@@ -590,6 +591,344 @@ fn a_bound_install_without_a_client_binds_the_client_the_probe_chose() {
     );
     log.assert_unchanged("retail addons", &retail);
     log.assert_unchanged("classic addons", &classic);
+}
+
+// ---- `update` and `sync` (D2): the memo's releases, skip decisions, the file's bytes --
+
+/// A release's folder, built for retail.
+const fn retail_folder(name: &'static str) -> Folder<'static> {
+    Folder {
+        name,
+        interface: "120105",
+        deps: &[],
+        optional: &[],
+    }
+}
+
+/// Moves every release memo entry an hour back, past the 15-minute window, so the next
+/// `update` asks its sources again.
+fn age_release_memo(scene: &Scene) {
+    let paths = common::http::paths(&scene.home.env);
+    let (mut memo, _) = omaddons::state::memo::load(&paths);
+    for entry in memo.entries.values_mut() {
+        entry.fetched_at -= jiff::SignedDuration::from_hours(1);
+    }
+    scene.home.seed_memo(&memo);
+}
+
+/// A retail client with Foo v1 installed from `gh:o/foo`, v2 published since, and the
+/// memo aged, so the next `update` sees v2.
+fn foo_behind(log: &common::tlog::TestLog) -> Scene {
+    let scene = Scene::new();
+    log.env(&scene);
+    scene.release("foo", "v1", &[retail_folder("Foo")]);
+    log.run(&scene, &["install", "gh:o/foo", "-t", "retail", "--json"])
+        .ok();
+    scene.release("foo", "v2", &[retail_folder("Foo")]);
+    age_release_memo(&scene);
+    scene
+}
+
+/// Another install commits on the client: Bar v1, current, from `gh:o/bar`.
+fn install_bar(log: &common::tlog::TestLog, scene: &Scene) {
+    scene.release("bar", "v1", &[retail_folder("Bar")]);
+    log.run(scene, &["install", "gh:o/bar", "-t", "retail", "--json"])
+        .ok();
+}
+
+/// What a stale run must leave alone, recorded: the AddOns and `<state>/targets` trees,
+/// and the transactions `history.jsonl` lists (returned).
+fn record_before(log: &common::tlog::TestLog, scene: &Scene) -> Vec<String> {
+    log.tree("addons", &scene.addons());
+    log.tree("records", &scene.home.state().join("targets"));
+    let history = scene.history_txs();
+    log.json("history", &history);
+    history
+}
+
+fn assert_left_alone(log: &common::tlog::TestLog, scene: &Scene, history: &[String]) {
+    log.assert_unchanged("addons", &scene.addons());
+    log.assert_unchanged("records", &scene.home.state().join("targets"));
+    log.assert_eq("history", &scene.history_txs(), &history.to_vec());
+}
+
+#[test]
+fn an_update_binds_to_its_preview() {
+    let log = common::tlog::tlog!();
+    let scene = foo_behind(&log);
+    let update = argv(&["update", "Foo", "-t", "retail"]);
+
+    log.step("preview");
+    let dry = log.run(&scene, &with(&update, &["--dry-run"]));
+    let previewed = token(dry.ok().envelope());
+    log.json("token", &previewed);
+    log.assert_eq(
+        "the preview updates Foo to v2",
+        &dry.data()["targets"][0]["items"][0]["to_version"],
+        &json!("v2"),
+    );
+
+    log.step("preview again, from the memo");
+    let again = log.run(&scene, &with(&update, &["--dry-run"]));
+    log.assert_eq(
+        "an unchanged home, the same token",
+        &token(again.ok().envelope()),
+        &previewed,
+    );
+
+    log.step("bound run");
+    let ran = log.run(&scene, &with(&update, &["--if-match", &previewed]));
+    ran.ok();
+    log.assert_eq(
+        "a real run's precondition",
+        &ran.data()["precondition"],
+        &Value::Null,
+    );
+    log.assert_eq(
+        "the items the preview showed",
+        &ran.data()["targets"][0]["items"],
+        &dry.data()["targets"][0]["items"],
+    );
+    log.assert_eq(
+        "Foo's record",
+        // Records are keyed by the lowercase name.
+        &scene.record("foo")["version"],
+        &json!("v2"),
+    );
+
+    log.step("stale, on a fresh home in the same state");
+    let scene = foo_behind(&log);
+    let previewed = token(
+        log.run(&scene, &with(&update, &["--dry-run"]))
+            .ok()
+            .envelope(),
+    );
+    log.json("token", &previewed);
+    install_bar(&log, &scene);
+    let history = record_before(&log, &scene);
+    let stale = log.run(&scene, &with(&update, &["--if-match", &previewed]));
+    assert_stale(
+        stale.fails(1, "plan_stale").envelope(),
+        &["targets"],
+        &strs(&preview_of(&update)),
+    );
+    assert_left_alone(&log, &scene, &history);
+}
+
+/// M4-D20: inside the memo's window a bound `update` does what its preview showed, a
+/// release published since notwithstanding, and asks no source.
+#[test]
+fn a_bound_update_installs_the_previewed_release_inside_the_memo_window() {
+    let log = common::tlog::tlog!();
+    let scene = foo_behind(&log);
+    let update = argv(&["update", "Foo", "-t", "retail"]);
+    log.step("preview: v2");
+    let previewed = token(
+        log.run(&scene, &with(&update, &["--dry-run"]))
+            .ok()
+            .envelope(),
+    );
+    log.json("token", &previewed);
+
+    log.step("v3 is published");
+    scene.release("foo", "v3", &[retail_folder("Foo")]);
+    let latest = |s: &Scene| common::netlog::net_log(&s.home).count("github.com", "release-latest");
+    let asked = latest(&scene);
+    log.assert_eq(
+        "the aged memo made the preview ask the source",
+        &(asked > 0),
+        &true,
+    );
+
+    log.step("the bound run installs v2, from the memo");
+    let ran = log.run(&scene, &with(&update, &["--if-match", &previewed]));
+    log.assert_eq(
+        "(installed, releases/latest requests since the preview)",
+        &(
+            &ran.ok().data()["targets"][0]["items"][0]["to_version"],
+            latest(&scene) - asked,
+        ),
+        &(&json!("v2"), 0),
+    );
+}
+
+#[test]
+fn a_bound_update_refused_under_the_lock_is_not_retryable() {
+    let log = common::tlog::tlog!();
+    let scene = foo_behind(&log);
+    let update = argv(&["update", "Foo", "-t", "retail"]);
+    log.step("preview");
+    let previewed = token(
+        log.run(&scene, &with(&update, &["--dry-run"]))
+            .ok()
+            .envelope(),
+    );
+    log.json("token", &previewed);
+
+    log.step("the bound run stops before its lock");
+    let pause = Pause::new(scene.home.env.root());
+    let child = log
+        .cmd(&scene, &with(&update, &["--if-match", &previewed]))
+        .failpoints("engine.snapshot.prestaged=pause")
+        .pause(&pause)
+        .spawn();
+    log.reached(&pause, "engine.snapshot.prestaged");
+
+    log.step("another install commits meanwhile");
+    install_bar(&log, &scene);
+    let history = record_before(&log, &scene);
+
+    log.step("the bound run goes on");
+    log.resume(&pause, "engine.snapshot.prestaged");
+    let ran = child.wait();
+    assert_stale(
+        ran.fails(1, "plan_stale").envelope(),
+        &["targets"],
+        &strs(&preview_of(&update)),
+    );
+    assert_left_alone(&log, &scene, &history);
+}
+
+#[test]
+fn a_sync_binds_to_its_file() {
+    let log = common::tlog::tlog!();
+    let scene = Scene::new();
+    log.env(&scene);
+    scene.release("foo", "v1", &[retail_folder("Foo")]);
+    scene.release("bar", "v1", &[retail_folder("Bar")]);
+    let desired = |entries: &str, tail: &str| {
+        let text = format!("[family.mainline]\naddons = [{entries}]\n{tail}");
+        log.json("addons.toml", &text);
+        scene.home.write_desired(&text);
+    };
+    let sync = argv(&["sync"]);
+
+    log.step("a file naming Foo: preview, then the bound run");
+    desired("\"gh:o/foo\"", "");
+    let previewed = token(
+        log.run(&scene, &with(&sync, &["--dry-run"]))
+            .ok()
+            .envelope(),
+    );
+    log.json("token", &previewed);
+    let ran = log.run(&scene, &with(&sync, &["--if-match", &previewed]));
+    log.assert_eq(
+        "Foo installed",
+        &(
+            &ran.ok().data()["precondition"],
+            scene.addons().join("Foo").is_dir(),
+        ),
+        &(&Value::Null, true),
+    );
+
+    log.step("Bar added: preview, then a comment added to the file");
+    desired("\"gh:o/foo\", \"gh:o/bar\"", "");
+    let previewed = token(
+        log.run(&scene, &with(&sync, &["--dry-run"]))
+            .ok()
+            .envelope(),
+    );
+    log.json("token", &previewed);
+    desired("\"gh:o/foo\", \"gh:o/bar\"", "# a note\n");
+    let history = record_before(&log, &scene);
+
+    log.step("the bound run");
+    let stale = log.run(&scene, &with(&sync, &["--if-match", &previewed]));
+    assert_stale(
+        stale.fails(1, "plan_stale").envelope(),
+        &["observed"],
+        &strs(&preview_of(&sync)),
+    );
+    assert_left_alone(&log, &scene, &history);
+    log.assert_eq(
+        "Bar not installed",
+        &scene.addons().join("Bar").exists(),
+        &false,
+    );
+
+    log.step("preview again, then another install commits on the client");
+    let previewed = token(
+        log.run(&scene, &with(&sync, &["--dry-run"]))
+            .ok()
+            .envelope(),
+    );
+    log.json("token", &previewed);
+    // Baz is not in the file: only the client's record moves.
+    scene.release("baz", "v1", &[retail_folder("Baz")]);
+    log.run(&scene, &["install", "gh:o/baz", "-t", "retail", "--json"])
+        .ok();
+    let history = record_before(&log, &scene);
+    let stale = log.run(&scene, &with(&sync, &["--if-match", &previewed]));
+    assert_stale(
+        stale.fails(1, "plan_stale").envelope(),
+        &["targets"],
+        &strs(&preview_of(&sync)),
+    );
+    assert_left_alone(&log, &scene, &history);
+
+    log.step("the fix's preview binds: Bar, exactly as previewed");
+    let dry = log.run(&scene, &with(&sync, &["--dry-run"]));
+    let previewed = token(dry.ok().envelope());
+    log.json("token", &previewed);
+    let ran = log.run(&scene, &with(&sync, &["--if-match", &previewed]));
+    log.assert_eq(
+        "the items the preview showed",
+        &ran.ok().data()["targets"][0]["items"],
+        &dry.data()["targets"][0]["items"],
+    );
+    log.assert_eq("Bar installed", &scene.addons().join("Bar").is_dir(), &true);
+}
+
+#[test]
+fn a_bound_noop_update_is_stale_after_a_change() {
+    let log = common::tlog::tlog!();
+    let scene = Scene::new();
+    log.env(&scene);
+    scene.release("foo", "v1", &[retail_folder("Foo")]);
+    log.run(&scene, &["install", "gh:o/foo", "-t", "retail", "--json"])
+        .ok();
+    let update = argv(&["update", "Foo", "-t", "retail"]);
+
+    log.step("preview: nothing to do");
+    let dry = log.run(&scene, &with(&update, &["--dry-run"]));
+    let previewed = token(dry.ok().envelope());
+    log.json("token", &previewed);
+    log.assert_eq(
+        "nothing changes",
+        &dry.data()["summary"]["changed"],
+        &json!(0),
+    );
+
+    log.step("another install commits");
+    install_bar(&log, &scene);
+    let history = record_before(&log, &scene);
+
+    log.step("the bound run: stale, not an unchanged success");
+    let stale = log.run(&scene, &with(&update, &["--if-match", &previewed]));
+    assert_stale(
+        stale.fails(1, "plan_stale").envelope(),
+        &["targets"],
+        &strs(&preview_of(&update)),
+    );
+    assert_left_alone(&log, &scene, &history);
+
+    log.step("a matching bound run with nothing to do");
+    let previewed = token(
+        log.run(&scene, &with(&update, &["--dry-run"]))
+            .ok()
+            .envelope(),
+    );
+    log.json("token", &previewed);
+    let ran = log.run(&scene, &with(&update, &["--if-match", &previewed]));
+    log.assert_eq(
+        "an unchanged success",
+        &(
+            &ran.ok().data()["summary"]["changed"],
+            &ran.data()["precondition"],
+        ),
+        &(&json!(0), &Value::Null),
+    );
+    assert_left_alone(&log, &scene, &history);
 }
 
 const PRUNE: &[&str] = &["backup", "prune", "-t", "retail", "--keep", "2"];

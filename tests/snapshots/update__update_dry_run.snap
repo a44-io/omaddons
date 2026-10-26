@@ -7,7 +7,7 @@ expression: stable(&bare)
   "commands": [],
   "data": {
     "dry_run": true,
-    "precondition": null,
+    "precondition": "<precondition>",
     "run": null,
     "summary": {
       "changed": 3,

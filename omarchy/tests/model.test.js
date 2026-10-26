@@ -163,7 +163,8 @@ describe("buildArgv", () => {
     expect(reasonOf(() => M.buildArgv("remove", remove, opts({ token: "pc1:abc" })))).toBe("bad_token")
     expect(reasonOf(() => M.buildArgv("remove", remove, opts({ token: TOKEN.toUpperCase() })))).toBe("bad_token")
     expect(reasonOf(() => M.buildArgv("remove", remove, opts({ preview: true, token: TOKEN })))).toBe("token_in_preview")
-    expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ token: TOKEN })))).toBe("token_not_bound")
+    // `backup create` never binds (M4-D22).
+    expect(reasonOf(() => M.buildArgv("backup_all", {}, opts({ token: TOKEN })))).toBe("token_not_bound")
     expect(reasonOf(() => M.buildArgv("nosuch", {}, opts()))).toBe("unknown_template")
     expect(reasonOf(() => M.buildArgv("update_target", {}, opts()))).toBe("unfilled_slot")
     expect(reasonOf(() => M.buildArgv("update_all", { target: "retail" }, opts()))).toBe("unknown_slot")

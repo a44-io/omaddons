@@ -1,0 +1,80 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "sync",
+  "commands": [],
+  "data": {
+    "dry_run": true,
+    "precondition": "<precondition>",
+    "run": null,
+    "summary": {
+      "changed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "targets": 2,
+      "unchanged": 0
+    },
+    "targets": [
+      {
+        "atomic_swap": null,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [],
+        "kind": null,
+        "no_section": true,
+        "reload_required": "none",
+        "target": {
+          "id": "classic",
+          "key": null
+        },
+        "tx": null
+      },
+      {
+        "atomic_swap": null,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "bridge_dependencies": [],
+            "error": null,
+            "folders": {
+              "added": [
+                "Foo"
+              ],
+              "recorded": [],
+              "removed": [],
+              "replaced": [],
+              "skipped": []
+            },
+            "from_version": null,
+            "name": "Foo",
+            "reason": "explicit",
+            "ref": "gh:o/foo",
+            "request": "gh:o/foo",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "installed",
+            "to_version": "v1",
+            "unresolved": []
+          }
+        ],
+        "kind": "sync",
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "retail",
+          "key": null
+        },
+        "tx": null
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

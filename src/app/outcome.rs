@@ -589,6 +589,13 @@ impl TargetsData {
         self.summary = summary;
     }
 
+    /// `token` as `precondition`: a bound command's dry-run token, else `None`.
+    #[must_use]
+    pub fn with_precondition(mut self, token: Option<String>) -> Self {
+        self.precondition = token;
+        self
+    }
+
     /// Drops `unchanged` items unless `verbose` (`summary` keeps counting them).
     #[must_use]
     pub fn listing(mut self, verbose: bool) -> Self {
@@ -637,6 +644,7 @@ impl TargetsData {
         // A binding's refusal under the lock keeps its form: not retryable, with its
         // `details.changed`, which an item's error keeps neither of.
         let mut error = match &first_target.error {
+            // ubs:ignore — comparing error codes, not secrets
             Some(body) if body.code == ErrorCode::PlanStale => error_of(body),
             _ => first.error(),
         };
@@ -1050,8 +1058,18 @@ impl Outcome for TargetsOutcome {
         self.data.partial()
     }
 
-    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
-        render(w, self.command, &self.data, &self.notes)
+    fn render_human(&self, w: &mut dyn Write, style: &Style) -> std::io::Result<()> {
+        render(w, self.command, &self.data, &self.notes)?;
+        // Behind `-v`: D4's stored plan makes its `apply` line the default hint.
+        if let Some(token) = self
+            .data
+            .precondition
+            .as_deref()
+            .filter(|_| style.verbose > 0)
+        {
+            writeln!(w, "Run it bound to this preview: --if-match {token}")?;
+        }
+        Ok(())
     }
 }
 
@@ -1499,6 +1517,55 @@ mod tests {
         let token = format!("pc1:{}", "0".repeat(64));
         data.precondition = Some(token.clone());
         assert_eq!(serde_json::to_value(&data).unwrap()["precondition"], token);
+        let data = three().with_precondition(None);
+        assert!(data.precondition.is_none(), "with_precondition(None)");
+    }
+
+    #[test]
+    fn the_token_line_is_shown_only_under_verbose() {
+        let token = format!("pc1:{}", "0123456789abcdef".repeat(4));
+        let line = format!("Run it bound to this preview: --if-match {token}\n");
+        let outcome = |data: TargetsData| TargetsOutcome {
+            command: "update",
+            data,
+            warnings: Vec::new(),
+            commands: Vec::new(),
+            notes: vec!["a note".to_owned()],
+        };
+        let human = |o: &TargetsOutcome, verbose: u8| {
+            let mut out = Vec::new();
+            let style = Style {
+                color: false,
+                verbose,
+                quiet: false,
+            };
+            o.render_human(&mut out, &style).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        let dry = TargetsData::assemble(&[], &[], &[], true, run(), &[]);
+        let bound = outcome(dry.clone().with_precondition(Some(token.clone())));
+        let unbound = outcome(dry);
+        let real = outcome(three());
+        for (case, o, verbose, shown) in [
+            ("a bound dry run, without -v", &bound, 0, false),
+            ("a bound dry run, with -v", &bound, 1, true),
+            ("a dry run without a token, with -v", &unbound, 1, false),
+            ("a real run, with -v", &real, 1, false),
+        ] {
+            let text = human(o, verbose);
+            assert_eq!(text.ends_with(&line), shown, "{case}: {text}");
+            assert_eq!(
+                text.matches("--if-match").count(),
+                usize::from(shown),
+                "{case}: {text}"
+            );
+            assert!(text.contains("a note\n"), "{case}: the notes stay: {text}");
+        }
+        assert_eq!(
+            human(&bound, 0),
+            human(&unbound, 0),
+            "without -v the output is unchanged"
+        );
     }
 
     /// The command's error when one target's commit failed with `error` and so did its

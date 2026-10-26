@@ -1,0 +1,34 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "update",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "plan_stale",
+    "details": {
+      "changed": [
+        "targets"
+      ]
+    },
+    "fix": "omaddons update weakauras -t retail --refresh --dry-run",
+    "fix_argv": [
+      "omaddons",
+      "update",
+      "weakauras",
+      "-t",
+      "retail",
+      "--refresh",
+      "--dry-run"
+    ],
+    "message": "this update is no longer what its preview showed (targets changed); nothing was changed: preview it again",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

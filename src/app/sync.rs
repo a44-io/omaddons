@@ -15,19 +15,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use super::engine::{Engine, recover_waiting};
 use super::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetResult, TargetsData,
     TargetsOutcome, sort_keeping_dependencies,
 };
+use super::precondition::{self, Idle, PlanBinding, PlanExtras};
 use super::resolve_args::{catalog_name, resolve_entry};
 use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::engine::edit::RecordEdit;
 use crate::engine::plan::{AnyFlavorIntent, PinIntent, RequestedChange};
-use crate::engine::{TxOutcomes, TxRequest, TxTarget};
+use crate::engine::{Binding, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::model::{AddonReason, AddonRecord, Ref, RunId, Target, TxId, TxKind};
 use crate::output::{Outcome, Style};
@@ -425,6 +427,14 @@ fn read(path: &Path, given: bool) -> Result<String> {
     }
 }
 
+/// The lowercase hex SHA-256 of the desired-state file's text, as read.
+fn desired_digest(text: &str) -> String {
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// What the command decided for one target before the engine.
 #[derive(Default)]
 struct TargetWork {
@@ -618,6 +628,11 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     let mut notes = Vec::new();
     let path = file_path(&world, args);
     let text = read(&path, args.file.is_some())?;
+    // The exact bytes parsed, which the token covers (the engine never reads the file).
+    let extras = PlanExtras {
+        desired_sha256: Some(desired_digest(&text)),
+        ..PlanExtras::default()
+    };
     // A file that cannot be read as desired state changes nothing.
     let (state, parsed) = desired::parse(&text, &path)?;
     warnings.extend(parsed);
@@ -644,6 +659,8 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     let mut locks: BTreeMap<String, BTreeMap<Ref, String>> = BTreeMap::new();
     let mut locked: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut matching = 0usize;
+    // The clients the file has a section for: what a run with nothing to do is about.
+    let mut idle: Vec<Idle<'_>> = Vec::new();
     for d in &targets {
         if !has_section(&state, &d.target) {
             without.push(TargetResult {
@@ -653,6 +670,10 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
             continue;
         }
         matching += 1;
+        idle.push(Idle {
+            target: &d.target,
+            generation: records.get(&d.target.id).map_or(0, |r| r.generation),
+        });
         let work = target_work(&state, d, &records, &catalog, &world, &path, args);
         if !work.unlocked.is_empty() {
             warnings.push(not_locked(&d.target.id, &work.unlocked, &path));
@@ -669,10 +690,11 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
 
     let run = RunId::new();
     // Nothing to change anywhere: no engine, no cache, no request (unless a crash left a
-    // journal to recover).
-    let done: Option<TxOutcomes> = if changes.is_empty() {
+    // journal to recover). A stale bound run changes nothing, not even a recovery.
+    let (done, token): (Option<TxOutcomes>, Option<String>) = if changes.is_empty() {
+        let token = precondition::check_noop(ctx, "sync", &idle, &extras)?;
         recover_waiting(ctx, &world, "sync");
-        None
+        (None, token)
     } else {
         let engine = Engine::new(ctx, &world, "sync")?;
         let freshness = if ctx.offline {
@@ -700,13 +722,23 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
             kind: Some(TxKind::Sync),
             run,
             no_deps: args.no_deps,
-            witness: None,
+            // The run the token describes: a dry run's, or a bound run's to compare.
+            witness: precondition::witnessing(ctx),
         };
-        let done = engine.run(&req, Some(&cache));
+        let binding = PlanBinding::of_run(ctx, "sync", extras.clone());
+        let done = engine.run_bound(
+            &req,
+            Some(&cache),
+            binding.as_ref().map(|b| b as &dyn Binding),
+        );
         let remembered = cache.remember(done.as_ref().map_or(&[][..], |d| &d.plan.facts));
         warnings.extend(remembered.warnings);
         notes.extend(remembered.notes);
-        Some(done?)
+        let done = done?;
+        let token = ctx
+            .dry_run
+            .then(|| precondition::plan_token("sync", &done.plan, &extras));
+        (Some(done), token)
     };
 
     let mut data = match &done {
@@ -732,6 +764,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     // Every selected target is listed; items in file order, each with its dependencies
     // right after it.
     for d in &targets {
+        // ubs:ignore — comparing target ids, not secrets
         if !data.targets.iter().any(|t| t.target.id == d.target.id) {
             data.push_target(TargetResult::empty(target_ref(d)));
         }
@@ -781,7 +814,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
         .flat_map(|d| &d.outcomes)
         .filter_map(|o| Some((o.tx?, o.lock_held_ms?)))
         .collect();
-    let data = data.listing(verbose);
+    let data = data.with_precondition(token).listing(verbose);
     let commands = data.undo_commands();
     let mut unique: Vec<Warning> = Vec::new();
     for w in warnings {
@@ -885,6 +918,22 @@ fn settle_failures(data: &mut TargetsData, argv: &[String]) {
 mod tests {
     use super::*;
     use crate::model::{AddonState, Channel, TargetKey, VersionConfidence};
+
+    #[test]
+    fn the_desired_digest_is_the_files_bytes() {
+        let text = "schema_version = \"1.0\"\n";
+        // `printf 'schema_version = "1.0"\n' | sha256sum`
+        assert_eq!(
+            desired_digest(text),
+            "c78775ad9c87559888ed09f8d82522c0f210fd3faae238de83a8118502569180"
+        );
+        assert_eq!(desired_digest(text), desired_digest(text), "the same text");
+        assert_ne!(
+            desired_digest(&format!("{text}# note\n")),
+            desired_digest(text),
+            "a comment changes it"
+        );
+    }
 
     fn record(addons: &[(&str, &str, &str, Channel, bool)]) -> TargetRecord {
         let mut record = TargetRecord::empty(TargetKey::new());

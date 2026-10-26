@@ -1,0 +1,77 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "update",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "dry_run": false,
+    "precondition": null,
+    "run": "<ulid>",
+    "summary": {
+      "changed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "targets": 1,
+      "unchanged": 0
+    },
+    "targets": [
+      {
+        "atomic_swap": true,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "bridge_dependencies": [],
+            "error": null,
+            "folders": {
+              "added": [],
+              "recorded": [],
+              "removed": [],
+              "replaced": [
+                "WeakAuras"
+              ],
+              "skipped": []
+            },
+            "from_version": "5.19.2",
+            "name": "WeakAuras",
+            "reason": "explicit",
+            "ref": "gh:WeakAuras/WeakAuras2",
+            "request": "weakauras",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "updated",
+            "to_version": "5.20.0",
+            "unresolved": []
+          }
+        ],
+        "kind": "update",
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

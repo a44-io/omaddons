@@ -885,6 +885,61 @@ fn install_binding() {
     insta::assert_json_snapshot!("install_if_match_ok", s.stable(&c.envelope));
 }
 
+/// `data.precondition` of a dry run; a token.
+#[cfg(test)]
+fn precondition_of(c: &support::Checked) -> String {
+    c.envelope["data"]["precondition"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// `update` binds to its preview: a commit on the client in between stales it, and a
+/// fresh preview's token runs.
+#[test]
+fn update_binding() {
+    let s = Scene::new();
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    let both = "## Interface: 120105, 50504\n## Version: 4\n";
+    let wa: [common::http::Asset<'_>; 1] = [(
+        "WeakAuras.zip",
+        &[("mainline", 120_105), ("mists", 50_504)],
+        vec![("WeakAuras/WeakAuras.toc", both)],
+    )];
+    let base = "https://github.com/WeakAuras/WeakAuras2";
+    common::http::gh_release_v(&s.home.http, base, "5.20.0", &wa);
+    common::http::gh_latest(&s.home.http, base, "5.20.0");
+    // Named, so the addon installed in between is no skip decision of this update.
+    let update = ["update", "weakauras", "-t", "retail", "--refresh"];
+    let c = s.json(&[&update[..], &["--dry-run"]].concat(), 0);
+    insta::assert_json_snapshot!("update_dry_run", s.stable(&c.envelope));
+    let token = precondition_of(&c);
+    s.install_foo();
+    let c = s.json(&[&update[..], &["--if-match", &token]].concat(), 1);
+    insta::assert_json_snapshot!("update_if_match_stale", s.stable(&c.envelope));
+    let token = precondition_of(&s.json(&[&update[..], &["--dry-run"]].concat(), 0));
+    let c = s.json(&[&update[..], &["--if-match", &token]].concat(), 0);
+    insta::assert_json_snapshot!("update_if_match_ok", s.stable(&c.envelope));
+}
+
+/// `sync` binds to its preview and to the file's bytes: a comment added in between
+/// stales it, and a fresh preview's token runs.
+#[test]
+fn sync_binding() {
+    let s = Scene::new();
+    let desired = "[family.mainline]\naddons = [\"gh:o/foo\"]\n";
+    s.home.write_desired(desired);
+    let c = s.json(&["sync", "--dry-run"], 0);
+    insta::assert_json_snapshot!("sync_dry_run", s.stable(&c.envelope));
+    let token = precondition_of(&c);
+    s.home.write_desired(&format!("{desired}# a note\n"));
+    let c = s.json(&["sync", "--if-match", &token], 1);
+    insta::assert_json_snapshot!("sync_if_match_stale", s.stable(&c.envelope));
+    let token = precondition_of(&s.json(&["sync", "--dry-run"], 0));
+    let c = s.json(&["sync", "--if-match", &token], 0);
+    insta::assert_json_snapshot!("sync_if_match_ok", s.stable(&c.envelope));
+}
+
 #[test]
 fn backup_create() {
     let s = Scene::new();

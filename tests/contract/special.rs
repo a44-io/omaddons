@@ -287,7 +287,20 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
     ]);
     // With an install to change, remove, update and undo.
     let tx = s.install_foo();
-    let update = [
+    s.home
+        .write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
+    // A bound dry run compares its token, and writes nothing either: an install's, and
+    // the no-op tokens of an update and a sync with nothing to do.
+    let bound = |preview: &[&str]| -> Vec<String> {
+        let token = s.json(preview, 0).envelope["data"]["precondition"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut argv: Vec<String> = preview.iter().map(|a| (*a).to_owned()).collect();
+        argv.extend(["--if-match".to_owned(), token]);
+        argv
+    };
+    let install = [
         "install",
         "gh:o/foo",
         "--file",
@@ -296,17 +309,20 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
         "retail",
         "--dry-run",
     ];
-    let token = s.json(&update, 0).envelope["data"]["precondition"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    // A bound dry run compares its token, and writes nothing either.
-    let bound = [&update[..], &["--if-match", token.as_str()]].concat();
+    let update = ["update", "--all", "--dry-run"];
+    let sync = ["sync", "--dry-run"];
+    let owned = [bound(&install), bound(&update), bound(&sync)];
+    let [bound_install, bound_update, bound_sync] = owned
+        .each_ref()
+        .map(|argv| argv.iter().map(String::as_str).collect::<Vec<_>>());
     dry_runs(&[
-        &update,
-        &bound,
+        &install,
+        &bound_install,
         &["remove", "Foo", "-t", "retail", "--dry-run"],
-        &["update", "--all", "--dry-run"],
+        &update,
+        &bound_update,
+        &sync,
+        &bound_sync,
         &["undo", &tx, "--dry-run"],
         &["undo", "--dry-run"],
         &["pin", "Foo", "-t", "retail", "--dry-run"],
