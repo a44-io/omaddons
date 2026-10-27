@@ -165,7 +165,7 @@ fn a_progress_line_is_erased_before_the_result() {
     };
     let mut stdout = Vec::new();
     let mut reporter = Reporter::new(Vec::new(), &cfg);
-    reporter.progress("fetch", "gh:o/foo", Some(3), Some(3));
+    reporter.progress(Phase::Fetch, "gh:o/foo", Some(3), Some(3));
     let quiet = Demo {
         warnings: Vec::new(),
         ..demo()

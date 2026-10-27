@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use serde::Serialize;
 
 use super::term::{OutputConfig, ProgressMode, StderrMode};
+use crate::contract::events::{ErrorEvent, EventName, LogEvent, ProgressEvent, WarningEvent};
+pub use crate::contract::events::{LogLevel, Phase};
 use crate::error::{Error, Warning};
 
 /// The one stderr reporter of a run, shared by the command's progress and `dispatch`'s
@@ -32,39 +34,6 @@ pub fn shared_stderr(cfg: &OutputConfig) -> SharedReporter {
 /// no invariant a panic could break).
 pub fn lock(reporter: &SharedReporter) -> MutexGuard<'_, Reporter<Box<dyn Write + Send>>> {
     reporter.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// A phase of a long command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Phase {
-    /// Release metadata fetched from a source.
-    Fetch,
-    /// An archive downloaded.
-    Download,
-    /// An archive verified against a client's load rules, or a backup's files hashed
-    /// (under a fixed label, as for `Copy`).
-    Verify,
-    /// A target's folders staged.
-    Stage,
-    /// A target's transaction committed.
-    Commit,
-    /// Files of a `WTF/` tree copied (backups and restores); its message is a fixed
-    /// label, never a path, because paths below `WTF/Account/` name the player.
-    Copy,
-}
-
-impl Phase {
-    pub const fn wire(self) -> &'static str {
-        match self {
-            Self::Fetch => "fetch",
-            Self::Download => "download",
-            Self::Verify => "verify",
-            Self::Stage => "stage",
-            Self::Commit => "commit",
-            Self::Copy => "copy",
-        }
-    }
 }
 
 /// A phase's count so far.
@@ -104,7 +73,7 @@ impl std::fmt::Debug for Reporter<Box<dyn Write + Send>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Reporter")
             .field("mode", &self.mode)
-            .field("progress", &self.progress)
+            .field(EventName::Progress.wire(), &self.progress)
             .finish_non_exhaustive()
     }
 }
@@ -154,7 +123,7 @@ impl ProgressSink {
         }
         count.current += 1;
         let current = count.current;
-        lock(&inner.reporter).progress(phase.wire(), item, Some(current), Some(total));
+        lock(&inner.reporter).progress(phase, item, Some(current), Some(total));
     }
 
     /// Reports that `current` of `total` units of `phase` are done, under `message`, a
@@ -176,7 +145,7 @@ impl ProgressSink {
             return;
         }
         count.current = current;
-        lock(&inner.reporter).progress(phase.wire(), message, Some(current), Some(total));
+        lock(&inner.reporter).progress(phase, message, Some(current), Some(total));
     }
 
     /// Announces `phase` before any of its `total` items: one event at `current: 0`
@@ -191,7 +160,7 @@ impl ProgressSink {
             return;
         }
         let total = *count.total.get_or_insert(total);
-        lock(&inner.reporter).progress(phase.wire(), message, Some(0), Some(total));
+        lock(&inner.reporter).progress(phase, message, Some(0), Some(total));
     }
 
     /// `more` items join `phase` after its total was given (a dependency round): the
@@ -207,15 +176,6 @@ impl ProgressSink {
         let count = phases.entry(phase).or_default();
         count.total = Some(count.total.map_or(more, |t| t.saturating_add(more)));
     }
-}
-
-/// A `log` event's level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogLevel {
-    Info,
-    /// Shown only with `-v`.
-    Debug,
 }
 
 /// Writes diagnostics to stderr (or any sink, for tests).
@@ -295,21 +255,7 @@ impl<W: Write> Reporter<W> {
         }
         match self.mode {
             StderrMode::Ndjson => {
-                #[derive(Serialize)]
-                struct Event<'a> {
-                    event: &'static str,
-                    code: &'static str,
-                    message: &'a str,
-                    fix: Option<&'a str>,
-                    fix_argv: Option<&'a [String]>,
-                }
-                self.json(&Event {
-                    event: "warning",
-                    code: warning.code.wire(),
-                    message: &warning.message,
-                    fix: warning.fix.as_ref().map(|f| f.display()),
-                    fix_argv: warning.fix.as_ref().and_then(|f| f.argv()),
-                });
+                self.json(&WarningEvent::of(warning));
             }
             StderrMode::Human => {
                 let mut text = format!("{} {}\n", self.paint("33", "warning:"), warning.message);
@@ -325,25 +271,7 @@ impl<W: Write> Reporter<W> {
     pub fn error(&mut self, error: &Error) {
         match self.mode {
             StderrMode::Ndjson => {
-                #[derive(Serialize)]
-                struct Event<'a> {
-                    event: &'static str,
-                    code: &'static str,
-                    message: &'a str,
-                    fix: &'a str,
-                    fix_argv: Option<&'a [String]>,
-                    retryable: bool,
-                    exit_code: u8,
-                }
-                self.json(&Event {
-                    event: "error",
-                    code: error.code.wire(),
-                    message: &error.message,
-                    fix: error.fix.display(),
-                    fix_argv: error.fix.argv(),
-                    retryable: error.retryable,
-                    exit_code: error.exit().code(),
-                });
+                self.json(&ErrorEvent::of(error));
             }
             StderrMode::Human => {
                 let head = self.paint("31", &format!("error[{}]:", error.code.wire()));
@@ -362,24 +290,11 @@ impl<W: Write> Reporter<W> {
         }
         match self.mode {
             StderrMode::Ndjson => {
-                #[derive(Serialize)]
-                struct Event<'a> {
-                    event: &'static str,
-                    level: LogLevel,
-                    message: &'a str,
-                }
-                self.json(&Event {
-                    event: "log",
-                    level,
-                    message,
-                });
+                self.json(&LogEvent::new(level, message));
             }
             StderrMode::Human => {
-                let label = match level {
-                    LogLevel::Info => "info:",
-                    LogLevel::Debug => "debug:",
-                };
-                self.human(&format!("{} {message}\n", self.paint("2", label)));
+                let label = format!("{}:", level.wire());
+                self.human(&format!("{} {message}\n", self.paint("2", &label)));
             }
         }
     }
@@ -387,7 +302,7 @@ impl<W: Write> Reporter<W> {
     /// Reports progress of a long operation, as the progress mode allows.
     pub fn progress(
         &mut self,
-        phase: &str,
+        phase: Phase,
         message: &str,
         current: Option<u64>,
         total: Option<u64>,
@@ -398,25 +313,10 @@ impl<W: Write> Reporter<W> {
         match self.progress {
             ProgressMode::None => {}
             ProgressMode::Json => {
-                #[derive(Serialize)]
-                struct Event<'a> {
-                    event: &'static str,
-                    phase: &'a str,
-                    message: &'a str,
-                    #[serde(skip_serializing_if = "Option::is_none")]
-                    current: Option<u64>,
-                    #[serde(skip_serializing_if = "Option::is_none")]
-                    total: Option<u64>,
-                }
-                self.json(&Event {
-                    event: "progress",
-                    phase,
-                    message,
-                    current,
-                    total,
-                });
+                self.json(&ProgressEvent::new(phase, message, current, total));
             }
             ProgressMode::Human => {
+                let phase = phase.wire();
                 let count = match (current, total) {
                     (Some(c), Some(t)) => format!(" {c}/{t}"),
                     (Some(c), None) => format!(" {c}"),
@@ -697,7 +597,7 @@ mod tests {
         r.warning(&warning());
         r.log(LogLevel::Info, "checking 3 addons");
         r.log(LogLevel::Debug, "hidden without -v");
-        r.progress("download", "WeakAuras", Some(1), Some(3));
+        r.progress(Phase::Download, "WeakAuras", Some(1), Some(3));
         r.error(&error());
         String::from_utf8(r.into_sink()).unwrap()
     }
