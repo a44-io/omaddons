@@ -156,6 +156,21 @@ impl SourceId {
         }
     }
 
+    /// Whether this source needs a credential to work at all (`capabilities.sources[]`):
+    /// CurseForge and Wago (M5). GitHub's token is optional, so it does not.
+    pub const fn requires_credential(self) -> bool {
+        match self {
+            Self::Curseforge | Self::Wago => true,
+            Self::Github
+            | Self::Git
+            | Self::Url
+            | Self::Local
+            | Self::Wowi
+            | Self::Tukui
+            | Self::Wowace => false,
+        }
+    }
+
     /// The milestone a source this build lacks arrives in.
     const fn later(self) -> Option<&'static str> {
         match self {
@@ -789,6 +804,39 @@ mod tests {
         assert_eq!(SourceId::ALL.len(), 9);
         let wowace = SourceId::of(&r("wowace:bug-grabber#r152"));
         assert_eq!((wowace.wire(), wowace.name()), ("wowace", "WowAce"));
+    }
+
+    #[test]
+    fn only_curseforge_and_wago_require_a_credential() {
+        let cases = [
+            (SourceId::Github, false),
+            (SourceId::Git, false),
+            (SourceId::Url, false),
+            (SourceId::Local, false),
+            (SourceId::Wowi, false),
+            (SourceId::Tukui, false),
+            (SourceId::Curseforge, true),
+            (SourceId::Wago, true),
+            (SourceId::Wowace, false),
+        ];
+        let covered: BTreeSet<_> = cases.iter().map(|(source, _)| *source).collect();
+        assert_eq!(
+            covered,
+            SourceId::ALL.into_iter().collect(),
+            "credential cases must cover every source exactly once: {cases:?}"
+        );
+        assert_eq!(
+            covered.len(),
+            cases.len(),
+            "duplicate credential case: {cases:?}"
+        );
+        for (source, expected) in cases {
+            assert_eq!(
+                source.requires_credential(),
+                expected,
+                "{source:?}: requires_credential should be {expected}"
+            );
+        }
     }
 
     /// Until its source is registered, a `wowace:` ref is honestly unavailable.

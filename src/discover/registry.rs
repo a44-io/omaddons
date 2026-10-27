@@ -670,6 +670,7 @@ pub fn reserved_id_warning(selector: &str, resolved: &Resolved) -> Option<Warnin
 /// (every target, in id order, unless a target is named `all`), id, product code,
 /// flavor folder, game mode (`table`'s mode ids and aliases: `sod` selects the Classic
 /// Era client), family, then a path (install root, client dir or AddOns path).
+/// [`SelectorForm::ALL`] enumerates the forms and drives the individual predicates.
 /// `target_not_found` when nothing matches, naming the missing client for a known mode.
 pub fn resolve<'a>(
     selector: &str,
@@ -699,8 +700,49 @@ pub fn resolve<'a>(
         .ok_or_else(|| no_match(selector, targets, table))
 }
 
-/// The targets the first matching step selects (key, id, product code, flavor folder,
-/// game mode, family, then `path` when given), `None` when no step matches.
+/// A form a `-t` selector may take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectorForm {
+    Key,
+    Id,
+    ProductCode,
+    FlavorFolder,
+    GameMode,
+    Family,
+    Path,
+    All,
+}
+
+impl SelectorForm {
+    /// The first matching form wins. `resolve` handles `All` before the other forms
+    /// when no client id shadows it; no other form could then match that keyword.
+    pub const ALL: [Self; 8] = [
+        Self::Key,
+        Self::Id,
+        Self::ProductCode,
+        Self::FlavorFolder,
+        Self::GameMode,
+        Self::Family,
+        Self::Path,
+        Self::All,
+    ];
+
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::Key => "key",
+            Self::Id => "id",
+            Self::ProductCode => "product_code",
+            Self::FlavorFolder => "flavor_folder",
+            Self::GameMode => "game_mode",
+            Self::Family => "family",
+            Self::Path => "path",
+            Self::All => "all",
+        }
+    }
+}
+
+/// The targets the first matching form in [`SelectorForm::ALL`] selects, `None` when
+/// no form matches. The `all` keyword's sorting and id-shadow check live in `resolve`.
 fn first_match<'a>(
     selector: &str,
     targets: &'a [DiscoveredTarget],
@@ -719,29 +761,28 @@ fn first_match<'a>(
             .as_deref()
             .is_some_and(|p| modes.iter().any(|(m, _)| m.code.eq_ignore_ascii_case(p)))
     };
-    let steps: [&dyn Fn(&DiscoveredTarget) -> bool; 7] = [
-        &|d| key.is_some() && d.target.key == key,
-        &|d| d.target.id.eq_ignore_ascii_case(selector),
-        &|d| {
-            d.target
-                .product
-                .as_deref()
-                .is_some_and(|p| p.eq_ignore_ascii_case(selector))
-        },
-        &|d| {
-            d.target
-                .flavor_dir
-                .as_deref()
-                .is_some_and(|f| f.eq_ignore_ascii_case(selector))
-        },
+    let matches = |form, d: &DiscoveredTarget| match form {
+        SelectorForm::Key => key.is_some() && d.target.key == key,
+        SelectorForm::Id => d.target.id.eq_ignore_ascii_case(selector),
+        SelectorForm::ProductCode => d
+            .target
+            .product
+            .as_deref()
+            .is_some_and(|p| p.eq_ignore_ascii_case(selector)),
+        SelectorForm::FlavorFolder => d
+            .target
+            .flavor_dir
+            .as_deref()
+            .is_some_and(|f| f.eq_ignore_ascii_case(selector)),
         // A game mode selects the client that runs it (`sod` → Classic Era).
-        &|d| hosts_mode(d),
-        &|d| family.is_some_and(|f| d.target.family == f),
-        &|d| path.is_some_and(|p| path_names(p, d)),
-    ];
-    steps
+        SelectorForm::GameMode => hosts_mode(d),
+        SelectorForm::Family => family.is_some_and(|f| d.target.family == f),
+        SelectorForm::Path => path.is_some_and(|p| path_names(p, d)),
+        SelectorForm::All => is_all_keyword(selector),
+    };
+    SelectorForm::ALL
         .iter()
-        .map(|step| pick(*step))
+        .map(|form| pick(&|d| matches(*form, d)))
         .find(|found| !found.is_empty())
 }
 
@@ -1174,6 +1215,76 @@ mod tests {
             "wow_classic_era",
         ] {
             assert!(id_problem(bad, &table).is_some(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn selector_forms_follow_resolve_precedence() {
+        assert_eq!(
+            SelectorForm::ALL.map(SelectorForm::wire),
+            [
+                "key",
+                "id",
+                "product_code",
+                "flavor_folder",
+                "game_mode",
+                "family",
+                "path",
+                "all"
+            ]
+        );
+    }
+
+    #[test]
+    fn each_selector_form_selects_on_its_own() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut targets = vec![
+            discovered(
+                "forever",
+                Family::Forever,
+                Some("wowf"),
+                Some("_forever_"),
+                "/g/wow",
+            ),
+            discovered(
+                "classic-beta",
+                Family::Forever,
+                Some("wow_classic_beta"),
+                Some("_classic_beta_"),
+                "/g/wow",
+            ),
+            discovered("wotlk", Family::WrathLegacy, None, None, "/g/a"),
+            discovered("wotlk@b", Family::WrathLegacy, None, None, "/g/b"),
+            discovered(
+                "era",
+                Family::Vanilla,
+                Some("wow_classic_era"),
+                Some("_classic_era_"),
+                "/g/wow",
+            ),
+        ];
+        let key = TargetKey::new();
+        targets[2].target.key = Some(key);
+        targets[2].target.client_dir = temp.path().to_path_buf();
+        let table = RulesTable::builtin();
+        for form in SelectorForm::ALL {
+            let (selector, expected): (String, Vec<&str>) = match form {
+                SelectorForm::Key => (key.to_string().to_lowercase(), vec!["wotlk"]),
+                SelectorForm::Id => ("wotlk".into(), vec!["wotlk"]),
+                SelectorForm::ProductCode => ("wowf".into(), vec!["forever"]),
+                SelectorForm::FlavorFolder => ("_classic_beta_".into(), vec!["classic-beta"]),
+                SelectorForm::GameMode => ("sod".into(), vec!["era"]),
+                SelectorForm::Family => ("wrath-legacy".into(), vec!["wotlk", "wotlk@b"]),
+                SelectorForm::Path => (temp.path().display().to_string(), vec!["wotlk"]),
+                SelectorForm::All => (
+                    "all".into(),
+                    vec!["classic-beta", "era", "forever", "wotlk", "wotlk@b"],
+                ),
+            };
+            let found = resolve(&selector, &targets, &table)
+                .unwrap_or_else(|error| panic!("{form:?}: {selector:?}: {error}")); // ubs:ignore — test-only failure reports the selector and its error
+            let ids: Vec<_> = found.iter().map(|d| d.target.id.as_str()).collect();
+            assert_eq!(ids, expected, "{form:?}: selector {selector:?}");
         }
     }
 

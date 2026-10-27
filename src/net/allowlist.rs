@@ -4,18 +4,48 @@
 
 use std::collections::BTreeSet;
 
-/// Always allowed.
-pub const ALWAYS: &[&str] = &[
+use crate::sources::SourceId;
+
+/// GitHub's hosts: REST, web (feeds, releases), archives and release assets.
+pub const GITHUB_HOSTS: &[&str] = &[
     "api.github.com",
     "github.com",
     "codeload.github.com",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
-    "api.mmoui.com",
-    "cdn.wowinterface.com",
-    "api.tukui.org",
-    "repos.wowace.com",
 ];
+
+/// WoWInterface's metadata and archive hosts.
+pub const WOWI_HOSTS: &[&str] = &["api.mmoui.com", "cdn.wowinterface.com"];
+/// Tukui's metadata and archive host.
+pub const TUKUI_HOSTS: &[&str] = &["api.tukui.org"];
+/// WowAce's public Subversion host.
+pub const WOWACE_HOSTS: &[&str] = &["repos.wowace.com"];
+/// The HTTPS hosts `git:` refs on github.com are read from (`sources::git_github`).
+pub const GIT_GITHUB_HOSTS: &[&str] = &[GITHUB_HOSTS[1], GITHUB_HOSTS[2]];
+
+/// `parts` end to end, as an array of exactly `N` hosts (checked at compile time).
+const fn joined<const N: usize>(parts: &[&[&'static str]]) -> [&'static str; N] {
+    let mut hosts = [""; N];
+    let mut part = 0;
+    let mut k = 0;
+    while part < parts.len() {
+        let mut host = 0;
+        while host < parts[part].len() {
+            hosts[k] = parts[part][host];
+            host += 1;
+            k += 1;
+        }
+        part += 1;
+    }
+    assert!(k == N, "joined host count must match its array length");
+    hosts
+}
+
+const ALWAYS_HOSTS: [&str; 9] = joined(&[GITHUB_HOSTS, WOWI_HOSTS, TUKUI_HOSTS, WOWACE_HOSTS]);
+
+/// Always allowed: the union of the keyless sources' hosts.
+pub const ALWAYS: &[&str] = &ALWAYS_HOSTS;
 
 /// Allowed only while the CurseForge source is enabled (M5).
 pub const CURSEFORGE: &[&str] = &[
@@ -26,6 +56,22 @@ pub const CURSEFORGE: &[&str] = &[
 
 /// Allowed only while the Wago source is enabled (M5).
 pub const WAGO: &[&str] = &["addons.wago.io"];
+
+/// The hosts built into `source`. A `url:` ref may use any always-allowed host; the
+/// git binary's hosts are the configured `git_hosts`, which are config, not built in.
+pub fn hosts_for(source: SourceId) -> &'static [&'static str] {
+    match source {
+        SourceId::Github => GITHUB_HOSTS,
+        SourceId::Git => GIT_GITHUB_HOSTS,
+        SourceId::Url => ALWAYS,
+        SourceId::Local => &[],
+        SourceId::Wowi => WOWI_HOSTS,
+        SourceId::Tukui => TUKUI_HOSTS,
+        SourceId::Wowace => WOWACE_HOSTS,
+        SourceId::Curseforge => CURSEFORGE,
+        SourceId::Wago => WAGO,
+    }
+}
 
 /// The hosts one run's HTTP requests (every redirect hop included) may contact. Never a
 /// `git_hosts` host: those are [`GitHosts`]'.
@@ -102,6 +148,120 @@ pub fn is_http_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosts_for_each_source() {
+        let cases: [(SourceId, &[&str]); 9] = [
+            (
+                SourceId::Github,
+                &[
+                    "api.github.com",
+                    "github.com",
+                    "codeload.github.com",
+                    "objects.githubusercontent.com",
+                    "release-assets.githubusercontent.com",
+                ],
+            ),
+            (SourceId::Git, &["github.com", "codeload.github.com"]),
+            (
+                SourceId::Url,
+                &[
+                    "api.github.com",
+                    "github.com",
+                    "codeload.github.com",
+                    "objects.githubusercontent.com",
+                    "release-assets.githubusercontent.com",
+                    "api.mmoui.com",
+                    "cdn.wowinterface.com",
+                    "api.tukui.org",
+                    "repos.wowace.com",
+                ],
+            ),
+            (SourceId::Local, &[]),
+            (SourceId::Wowi, &["api.mmoui.com", "cdn.wowinterface.com"]),
+            (SourceId::Tukui, &["api.tukui.org"]),
+            (
+                SourceId::Curseforge,
+                &[
+                    "api.curseforge.com",
+                    "edge.forgecdn.net",
+                    "mediafilez.forgecdn.net",
+                ],
+            ),
+            (SourceId::Wago, &["addons.wago.io"]),
+            (SourceId::Wowace, &["repos.wowace.com"]),
+        ];
+        let covered: BTreeSet<_> = cases.iter().map(|(source, _)| *source).collect();
+        assert_eq!(
+            covered,
+            SourceId::ALL.into_iter().collect(),
+            "host cases must cover every source: {cases:?}"
+        );
+        assert_eq!(covered.len(), cases.len(), "duplicate host case: {cases:?}");
+        for (source, expected) in cases {
+            assert_eq!(hosts_for(source), expected, "{source:?}: built-in hosts");
+        }
+    }
+
+    #[test]
+    fn always_is_the_union_of_the_keyless_sources_hosts() {
+        assert_eq!(
+            ALWAYS,
+            [
+                "api.github.com",
+                "github.com",
+                "codeload.github.com",
+                "objects.githubusercontent.com",
+                "release-assets.githubusercontent.com",
+                "api.mmoui.com",
+                "cdn.wowinterface.com",
+                "api.tukui.org",
+                "repos.wowace.com",
+            ],
+            "the always-allowed hosts keep their existing order"
+        );
+        let always: BTreeSet<_> = ALWAYS.iter().copied().collect();
+        assert_eq!(
+            always.len(),
+            ALWAYS.len(),
+            "duplicate in ALWAYS: {ALWAYS:?}"
+        );
+        let keyless: BTreeSet<_> = SourceId::ALL
+            .into_iter()
+            .filter(|source| !source.requires_credential())
+            .flat_map(|source| hosts_for(source).iter().copied())
+            .collect();
+        assert_eq!(always, keyless, "ALWAYS must be the keyless host union");
+    }
+
+    #[test]
+    fn every_source_host_is_allowlisted() {
+        let off = Allowlist::new(false, false);
+        let on = Allowlist::new(true, true);
+        let configured: Vec<String> = SourceId::ALL
+            .into_iter()
+            .flat_map(|source| hosts_for(source).iter().copied())
+            .map(str::to_owned)
+            .collect();
+        let git = GitHosts::new(&configured);
+        for source in SourceId::ALL {
+            for host in hosts_for(source) {
+                assert_eq!(
+                    off.permits(host),
+                    !source.requires_credential(),
+                    "{source:?}: {host} with optional sources disabled"
+                );
+                assert!(
+                    on.permits(host),
+                    "{source:?}: {host} with all sources enabled"
+                );
+                assert!(
+                    !git.permits(host),
+                    "{source:?}: HTTP host {host} reached git"
+                );
+            }
+        }
+    }
 
     #[test]
     fn exact_case_insensitive_hosts_only() {
