@@ -1,6 +1,7 @@
 //! Enumerable facts of the CLI contract, shared by its descriptions and tests.
 
 pub mod actions;
+pub mod env;
 pub mod events;
 pub mod features;
 pub mod volatile;
