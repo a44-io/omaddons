@@ -16,6 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::contract::actions::Action;
 
+mod detail_spec;
+pub use detail_spec::{DetailSpec, Field, Mismatch, Nullability, Presence};
+
 // ---------------------------------------------------------------------------------------
 // The general exit dictionary.
 
@@ -111,7 +114,7 @@ impl From<Exit> for ExitCode {
 // Error codes.
 
 macro_rules! error_codes {
-    ($($(#[$doc:meta])* $variant:ident = $wire:literal, $exit:ident, $retryable:literal;)+) => {
+    ($($(#[$doc:meta])* $variant:ident = $wire:literal, $exit:ident, $retryable:literal, $meaning:literal;)+) => {
         /// A stable error code. Each maps to one [`Exit`] and a default retryability.
         #[derive(
             Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
@@ -144,65 +147,113 @@ macro_rules! error_codes {
                     $(Self::$variant => $retryable,)+
                 }
             }
+
+            /// What the code reports, in one sentence, for the CLI's self-descriptions.
+            pub const fn meaning(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $meaning,)+
+                }
+            }
         }
     };
 }
 
 #[rustfmt::skip]
 error_codes! {
-    Usage               = "usage",                 Usage,       false;
-    RefInvalid          = "ref_invalid",           Usage,       false;
+    Usage               = "usage",                 Usage,       false,
+        "The command line was not accepted: an unknown command or flag, a bad value or id, or a missing or relative `HOME`.";
+    RefInvalid          = "ref_invalid",           Usage,       false,
+        "An addon reference has invalid syntax or uses a protocol omaddons does not accept.";
     /// `addons.toml` cannot be read as desired state; `details: {path, line, key, reason}`.
-    DesiredStateInvalid = "desired_state_invalid", Usage,       false;
-    TargetNotFound      = "target_not_found",      NotFound,    false;
-    TargetAmbiguous     = "target_ambiguous",      NotFound,    false;
-    RefAmbiguous        = "ref_ambiguous",         NotFound,    false;
-    NotFound            = "not_found",             NotFound,    false;
-    NotManaged          = "not_managed",           NotFound,    false;
-    PlanNotFound        = "plan_not_found",        NotFound,    false;
-    NoCompatibleRelease = "no_compatible_release", NotFound,    false;
-    GameRunning         = "game_running",          Refused,     false;
-    ProtectedFolder     = "protected_folder",      Refused,     false;
-    OwnershipConflict   = "ownership_conflict",    Refused,     false;
-    UnmanagedFolder     = "unmanaged_folder",      Refused,     false;
-    CaseCollision       = "case_collision",        Refused,     false;
-    WrongFlavor         = "wrong_flavor",          Refused,     false;
-    UnsafeArchive       = "unsafe_archive",        Refused,     false;
-    ArchiveTooLarge     = "archive_too_large",     Refused,     false;
-    UndoConflict        = "undo_conflict",         Refused,     false;
-    HostBlocked         = "host_blocked",          Refused,     false;
+    DesiredStateInvalid = "desired_state_invalid", Usage,       false,
+        "The desired-state file or export request is invalid, ambiguous, newer than supported, or would replace unapproved content.";
+    TargetNotFound      = "target_not_found",      NotFound,    false,
+        "No client matches the selection, a required client is unavailable, or the chosen path contains no client.";
+    TargetAmbiguous     = "target_ambiguous",      NotFound,    false,
+        "The selection matches several clients where exactly one is required.";
+    RefAmbiguous        = "ref_ambiguous",         NotFound,    false,
+        "An addon, source or backup selection has several possible matches.";
+    NotFound            = "not_found",             NotFound,    false,
+        "A requested addon, release, path, transaction, run, backup or undo snapshot was not found or cannot serve that request.";
+    NotManaged          = "not_managed",           NotFound,    false,
+        "The requested addon or folder is not managed by omaddons on the selected client.";
+    PlanNotFound        = "plan_not_found",        NotFound,    false,
+        "No readable stored plan answers to the given id, or its file exceeds the size limit.";
+    NoCompatibleRelease = "no_compatible_release", NotFound,    false,
+        "No available release or archive candidate loads on the selected client or belongs to the requested release channel.";
+    GameRunning         = "game_running",          Refused,     false,
+        "The client's running state or running policy forbids the requested change.";
+    ProtectedFolder     = "protected_folder",      Refused,     false,
+        "A requested change would touch a protected `Blizzard_*` folder.";
+    OwnershipConflict   = "ownership_conflict",    Refused,     false,
+        "A folder or addon belongs to another managed addon or to another client sharing its AddOns directory.";
+    UnmanagedFolder     = "unmanaged_folder",      Refused,     false,
+        "A requested destination folder exists outside omaddons management or is a symlink that cannot be replaced.";
+    CaseCollision       = "case_collision",        Refused,     false,
+        "A client has paths whose names collide when case is ignored, or a requested folder would create such a collision.";
+    WrongFlavor         = "wrong_flavor",          Refused,     false,
+        "The supplied archive does not load on this client, an adopted group has no loadable folder, or an imported backup belongs to another family.";
+    UnsafeArchive       = "unsafe_archive",        Refused,     false,
+        "An archive or local tree failed a safety check, or a backup archive does not match the export format.";
+    ArchiveTooLarge     = "archive_too_large",     Refused,     false,
+        "An archive, download, checkout, input or tree exceeded a configured or fixed safety limit.";
+    UndoConflict        = "undo_conflict",         Refused,     false,
+        "The transaction was already undone, or later changes or unreadable history prevent its reversal.";
+    HostBlocked         = "host_blocked",          Refused,     false,
+        "An HTTP request, redirect or git reference names a host outside its allowlist.";
     /// fsx refused a write outside the write-scope table or onto the deny-list (other
     /// than a protected folder, which stays `protected_folder`).
-    ScopeDenied         = "scope_denied",          Refused,     false;
+    ScopeDenied         = "scope_denied",          Refused,     false,
+        "The filesystem writer refused an out-of-scope path, a denied target, or a journal whose client identity no longer matches.";
     /// A state file's `schema_version` is newer than this binary; writes are refused.
-    StateTooNew         = "state_too_new",         Refused,     false;
+    StateTooNew         = "state_too_new",         Refused,     false,
+        "Persisted state or an interrupted transaction uses a schema version this binary cannot safely change or recover.";
     /// A restore needs `WTF/` to be a plain directory on the client's mount, on a
     /// filesystem with atomic exchange (M3-D24); `details.reason`, `details.backup_dir`.
-    FilesystemUnsupported = "filesystem_unsupported", Refused,  false;
+    FilesystemUnsupported = "filesystem_unsupported", Refused,  false,
+        "The client or its settings paths are on mounts or a filesystem that cannot perform the restore's required atomic exchange.";
     /// A file omaddons would create already exists (at the start, or created by another
     /// process meanwhile); it is never replaced (`backup export`, M3-D34).
-    FileExists          = "file_exists",           Refused,     false;
-    Locked              = "locked",                Locked,      true;
-    CheckFailed         = "check_failed",          CheckFailed, false;
-    Network             = "network",               Failed,      true;
+    FileExists          = "file_exists",           Refused,     false,
+        "A destination that must be newly created already exists.";
+    Locked              = "locked",                Locked,      true,
+        "Another omaddons process held the lock past the acquire timeout.";
+    CheckFailed         = "check_failed",          CheckFailed, false,
+        "An explicitly requested health, update, error or completeness assertion failed.";
+    Network             = "network",               Failed,      true,
+        "A request or source response failed at the network or decoding layer, or a git subprocess timed out or failed outside download.";
     /// `details.reset_at` carries the reset time (RFC 3339).
-    RateLimited         = "rate_limited",          Failed,      true;
-    DownloadFailed      = "download_failed",       Failed,      false;
+    RateLimited         = "rate_limited",          Failed,      true,
+        "A host exhausted its request budget or kept refusing requests beyond the allowed rate-limit retries.";
+    DownloadFailed      = "download_failed",       Failed,      false,
+        "The git subprocess could not clone or fetch the requested repository or revision.";
     /// Retryable for 5xx only; see [`Error::http_status`].
-    HttpStatus          = "http_status",           Failed,      false;
+    HttpStatus          = "http_status",           Failed,      false,
+        "A host answered with an unexpected HTTP status; an instance is retryable for a 5xx status only.";
     /// Retryable once; see [`Error::hash_mismatch`].
-    HashMismatch        = "hash_mismatch",         Failed,      true;
+    HashMismatch        = "hash_mismatch",         Failed,      true,
+        "Bytes did not match the hash they were expected or recorded with; an instance is retryable on a download's first attempt only, never for a backup.";
     /// Retryable when raised by re-planning, not by `apply`; see [`Error::plan_stale`].
-    PlanStale           = "plan_stale",            Failed,      true;
-    Offline             = "offline",               Failed,      false;
-    BadArchive          = "bad_archive",           Failed,      false;
-    DistributionDisabled = "distribution_disabled", Failed,     false;
-    SourceDisabled      = "source_disabled",       Failed,      false;
-    AuthRequired        = "auth_required",         Failed,      false;
-    AuthRejected        = "auth_rejected",         Failed,      false;
-    StateCorrupt        = "state_corrupt",         Failed,      false;
-    Io                  = "io",                    Failed,      false;
-    Internal            = "internal",              Failed,      false;
+    PlanStale           = "plan_stale",            Failed,      true,
+        "What a command planned or previewed no longer matches the state it would change; an instance is retryable when re-planning raised it, never under `--if-match`.";
+    Offline             = "offline",               Failed,      false,
+        "Offline mode refused an operation that would contact the network.";
+    BadArchive          = "bad_archive",           Failed,      false,
+        "An archive is malformed, encrypted, truncated, corrupt or uses unsupported compression.";
+    DistributionDisabled = "distribution_disabled", Failed,     false,
+        "A source declined to distribute a file to third-party clients; reserved: no command raises it yet.";
+    SourceDisabled      = "source_disabled",       Failed,      false,
+        "The requested source is disabled, unavailable in this build, or requires a git binary this command cannot use.";
+    AuthRequired        = "auth_required",         Failed,      false,
+        "A configured credential cannot be read or used, or a requested credential provider is unavailable.";
+    AuthRejected        = "auth_rejected",         Failed,      false,
+        "A service rejected the credential, or the configured credential command failed.";
+    StateCorrupt        = "state_corrupt",         Failed,      false,
+        "A configuration, state file, snapshot or journal is unreadable, inconsistent or cannot be safely recovered.";
+    Io                  = "io",                    Failed,      false,
+        "A filesystem operation failed, or files changed too often to finish a consistent backup.";
+    Internal            = "internal",              Failed,      false,
+        "An internal invariant, unexpected recovery state or panic stopped the command.";
 }
 
 impl fmt::Display for ErrorCode {
@@ -215,7 +266,7 @@ impl fmt::Display for ErrorCode {
 // Warning codes.
 
 macro_rules! warning_codes {
-    ($($(#[$doc:meta])* $variant:ident = $wire:literal;)+) => {
+    ($($(#[$doc:meta])* $variant:ident = $wire:literal, $meaning:literal;)+) => {
         /// A stable warning code.
         #[derive(
             Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
@@ -240,119 +291,181 @@ macro_rules! warning_codes {
                     Self::Item(code) => code.wire(),
                 }
             }
+
+            /// What the code reports, in one sentence; item warnings use their error's meaning.
+            pub const fn meaning(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $meaning,)+
+                    Self::Item(code) => code.meaning(),
+                }
+            }
         }
     };
 }
 
 #[rustfmt::skip]
 warning_codes! {
-    JournalRecovered            = "journal_recovered";
-    JournalPending              = "journal_pending";
-    TxInProgress                = "tx_in_progress";
-    AtomicSwapUnavailable       = "atomic_swap_unavailable";
-    ReloadRequired              = "reload_required";
-    SavedVariablesDeferred      = "saved_variables_deferred";
+    JournalRecovered            = "journal_recovered",
+        "An interrupted transaction was finished or rolled back.";
+    JournalPending              = "journal_pending",
+        "An interrupted transaction waits for the next change command, or cannot be recovered by this omaddons and is left as it is.";
+    TxInProgress                = "tx_in_progress",
+        "Another omaddons process is committing a transaction.";
+    AtomicSwapUnavailable       = "atomic_swap_unavailable",
+        "The filesystem lacks atomic exchange, so the change used two journaled renames.";
+    ReloadRequired              = "reload_required",
+        "The change takes effect in game only after a `/reload`.";
+    SavedVariablesDeferred      = "saved_variables_deferred",
+        "SavedVariables could not be restored because the client was running, its state was unknown, or recovery could not finish the write.";
     /// SavedVariables in a `WTF/` reached through a symlink outside the client
     /// directory: never snapshotted or written.
-    SavedVariablesOutOfScope    = "saved_variables_out_of_scope";
+    SavedVariablesOutOfScope    = "saved_variables_out_of_scope",
+        "SavedVariables are outside the client through a symlink or under paths with conflicting case, so they were neither snapshotted nor written.";
     /// The process table could not be read, so every client is treated as running.
-    RunningUnknown              = "running_unknown";
-    SnapshotCapExceeded         = "snapshot_cap_exceeded";
+    RunningUnknown              = "running_unknown",
+        "The process table could not be read reliably, so every client is treated as running.";
+    SnapshotCapExceeded         = "snapshot_cap_exceeded",
+        "Protected transaction snapshots alone exceed the configured size cap.";
     /// Retention after a commit failed; the transaction itself stands.
-    RetentionFailed             = "retention_failed";
-    OutOfDate                   = "out_of_date";
+    RetentionFailed             = "retention_failed",
+        "Retention failed after a committed change or a completed backup, which still stands.";
+    OutOfDate                   = "out_of_date",
+        "The addon loads only with out-of-date addons enabled because its interface is old or its client-specific game type admits an off-range interface.";
     /// An archive's folder built for other clients only was left out of an install
     /// whose addon is built for this client.
-    FolderLeftOut               = "folder_left_out";
+    FolderLeftOut               = "folder_left_out",
+        "An install left out an archive folder built only for other clients while installing the addon itself.";
     /// An addon installed under `--any-flavor` although its publisher labelled the file
     /// for other clients, or its folders target other clients; the message names what.
-    AnyFlavor                   = "any_flavor";
+    AnyFlavor                   = "any_flavor",
+        "The install used `--any-flavor` to accept publisher metadata or interfaces that did not target this client.";
     /// A GitHub repository's newest release had no build for this client, so an older
     /// one, the newest that declares it, was installed.
-    OlderReleaseForClient       = "older_release_for_client";
-    MissingDependency           = "missing_dependency";
-    TocCommaOnLegacy            = "toc_comma_on_legacy";
-    ClientNotLaunchedSincePatch = "client_not_launched_since_patch";
-    WidgetOutdated              = "widget_outdated";
+    OlderReleaseForClient       = "older_release_for_client",
+        "The newest GitHub release had no build for this client, so an older release that declares it was installed.";
+    MissingDependency           = "missing_dependency",
+        "A required addon folder was not installed because it could not be resolved or installed within the dependency policy.";
+    TocCommaOnLegacy            = "toc_comma_on_legacy",
+        "A legacy client reads only the leading number of a comma-separated interface list.";
+    ClientNotLaunchedSincePatch = "client_not_launched_since_patch",
+        "The client's `Config.wtf` predates its current patch.";
+    WidgetOutdated              = "widget_outdated",
+        "The bar widget serving this omaddons state was built from different code and remains read-only.";
     /// State is migrated forward on the next write.
-    StateVersionOlder           = "state_version_older";
+    StateVersionOlder           = "state_version_older",
+        "A persisted state file uses an older schema and will migrate on its next write.";
     /// Writes are refused until omaddons is upgraded.
-    StateVersionNewer           = "state_version_newer";
-    ConfigUnknownKey            = "config_unknown_key";
-    UnknownFlavor               = "unknown_flavor";
-    DiscoveryTruncated          = "discovery_truncated";
-    TargetKeyDuplicate          = "target_key_duplicate";
-    CatalogOverrideInvalid      = "catalog_override_invalid";
-    OwnershipTransferred        = "ownership_transferred";
+    StateVersionNewer           = "state_version_newer",
+        "A persisted state file uses a newer schema, so this binary refuses to write it.";
+    ConfigUnknownKey            = "config_unknown_key",
+        "The configuration contains an unknown key that was ignored.";
+    UnknownFlavor               = "unknown_flavor",
+        "A discovered client has an unrecognized flavor or family and no family override.";
+    DiscoveryTruncated          = "discovery_truncated",
+        "Discovery reached its directory budget before scanning every candidate location.";
+    TargetKeyDuplicate          = "target_key_duplicate",
+        "Two clients carry the same identity marker.";
+    CatalogOverrideInvalid      = "catalog_override_invalid",
+        "A catalog override file was invalid and was skipped as a whole.";
+    OwnershipTransferred        = "ownership_transferred",
+        "`--force` transferred a folder or addon from its previous managed owner.";
     /// A credential file other users can read.
-    CredentialFileMode          = "credential_file_mode";
+    CredentialFileMode          = "credential_file_mode",
+        "A credential file is readable by users other than its owner.";
     /// A pinned addon was left at its pinned release; nothing was installed.
-    AddonPinned                 = "addon_pinned";
+    AddonPinned                 = "addon_pinned",
+        "A pinned addon was left at its recorded release instead of being updated.";
     /// An answer came from remembered release metadata, not from the source now.
-    StaleCheck                  = "stale_check";
+    StaleCheck                  = "stale_check",
+        "An answer came from stored metadata rather than a fresh source response.";
     /// `addons.toml` has a key omaddons does not know; it is ignored.
-    DesiredUnknownKey           = "desired_unknown_key";
+    DesiredUnknownKey           = "desired_unknown_key",
+        "The desired-state file contains an unknown key that was ignored.";
     /// An `addons.toml` `[target.<id>]` section names no known client; it is skipped.
-    DesiredUnknownTarget        = "desired_unknown_target";
+    DesiredUnknownTarget        = "desired_unknown_target",
+        "A desired-state target section names no known client, so its entries were skipped.";
     /// An adopted addon's name was taken on its target: it is recorded as
     /// `<name> (<primary folder>)`.
-    AdoptNameChanged            = "adopt_name_changed";
+    AdoptNameChanged            = "adopt_name_changed",
+        "An adopted addon was recorded under a qualified name because another addon already had its name.";
     /// `export`: a registered client whose dir is gone was exported from its records.
-    ExportMissingTarget         = "export_missing_target";
+    ExportMissingTarget         = "export_missing_target",
+        "A registered client whose directory is unavailable was exported from its stored records.";
     /// `export`: an addon from a local file or directory was not exported.
-    ExportLocalSource           = "export_local_source";
+    ExportLocalSource           = "export_local_source",
+        "An addon installed from a local file or folder was left out of the desired-state export.";
     /// Files of a replaced folder had changed on disk; undo brings them back.
-    LocalChangesReplaced        = "local_changes_replaced";
+    LocalChangesReplaced        = "local_changes_replaced",
+        "An install or update replaced locally changed files and kept them in its undo snapshot.";
     /// A transaction moved folders that exist nowhere else into its snapshot: undo can
     /// restore them only until retention prunes it.
-    SnapshotOnlyCopy            = "snapshot_only_copy";
+    SnapshotOnlyCopy            = "snapshot_only_copy",
+        "A transaction snapshot holds the only remaining copy of replaced or removed folders until retention prunes it.";
     /// `sync --locked`: entries without a version installed their newest release.
-    NotLocked                   = "not_locked";
+    NotLocked                   = "not_locked",
+        "A locked synchronization installed the newest release for entries that did not record a version.";
     /// A removed addon is still required by addons that stay; undo brings it back.
-    StillRequired               = "still_required";
+    StillRequired               = "still_required",
+        "A removed or reverted addon is still required by addons that remain installed.";
     /// Addons installed as dependencies that nothing requires any more.
-    OrphanedDependency          = "orphaned_dependency";
+    OrphanedDependency          = "orphaned_dependency",
+        "An addon installed as a dependency is no longer required by any installed addon.";
     /// A newly installed addon's other folder (a bridge or plugin) works with an addon
     /// that is not installed; nothing is installed for it.
-    BridgeDependency            = "bridge_dependency";
+    BridgeDependency            = "bridge_dependency",
+        "A newly installed addon's bridge or plugin expects another addon that is not installed.";
     /// Two or more targets share one AddOns directory (a symlink): each keeps its own
     /// records, so each sees the other's addons as unmanaged.
-    TargetAddonsShared          = "target_addons_shared";
+    TargetAddonsShared          = "target_addons_shared",
+        "Several clients share one AddOns directory while keeping separate management records.";
     /// Lines of `history.jsonl` that are not cut-short writes did not read: their
     /// transactions are lost to `history` and `undo`.
-    HistoryLinesSkipped         = "history_lines_skipped";
+    HistoryLinesSkipped         = "history_lines_skipped",
+        "Unreadable complete history lines were skipped, so their transactions cannot be listed or undone.";
     /// A download installed without the hash its source normally publishes; TLS
     /// protected the transfer, and the TOCs were verified.
-    DownloadUnverified          = "download_unverified";
+    DownloadUnverified          = "download_unverified",
+        "A download installed without a usable source hash; TLS protected the transfer and its TOCs were verified.";
     /// A settings change was made, but its history line could not be written.
-    HistoryNotRecorded          = "history_not_recorded";
+    HistoryNotRecorded          = "history_not_recorded",
+        "A settings change or backup completed but its history line could not be written.";
     /// A backup's files were byte-copied, some or all: the filesystem could not clone
     /// them, so they take their full size on disk.
-    BackupCopied                = "backup_copied";
+    BackupCopied                = "backup_copied",
+        "Some or all backup files were byte-copied because the filesystem could not clone them.";
     /// `WTF/` changed while it was copied, again on a second capture: the backup is
     /// `best_effort`.
-    BackupUnsettled             = "backup_unsettled";
+    BackupUnsettled             = "backup_unsettled",
+        "`WTF/` changed during both capture attempts, so the backup is best effort rather than a stable checkpoint.";
     /// The free space beside a client's backups is below `limits.backup_min_free_mb`.
-    BackupSpaceLow              = "backup_space_low";
+    BackupSpaceLow              = "backup_space_low",
+        "A client's backups have less than the required free space, or automatic byte copies would exceed their budget.";
     /// A BugGrabber file could not be read completely (being written, over a cap or
     /// bound, or damaged): counts are from what was read.
-    ErrorsPartial               = "errors_partial";
+    ErrorsPartial               = "errors_partial",
+        "A BugGrabber file could not be read completely, so the reported counts cover only the data read.";
     /// An interrupted restore was rolled back; what it had displaced, which no other copy
     /// held, is kept as a `recovered` backup.
-    RestoreRolledBack           = "restore_rolled_back";
+    RestoreRolledBack           = "restore_rolled_back",
+        "An interrupted settings restore was rolled back and uniquely held displaced data was preserved as a recovered backup.";
     /// A restore kept no `before_restore` backup (the filesystem cannot clone, or there
     /// was no `WTF/`): the transaction's snapshot keeps the old `WTF/` until retention.
-    BeforeRestoreSkipped        = "before_restore_skipped";
+    BeforeRestoreSkipped        = "before_restore_skipped",
+        "A restore made no before-restore backup because cloning was unavailable or no live `WTF/` existed.";
     /// An automatic backup failed; the change went ahead without it.
-    AutoBackupFailed            = "auto_backup_failed";
+    AutoBackupFailed            = "auto_backup_failed",
+        "The automatic backup before a change failed, but the change proceeded without it.";
     /// The widget is installed, but Omarchy's shell could not be told to put it on the
     /// bar (no desktop session, or the shell is not running).
-    OmarchyShellUnreachable     = "omarchy_shell_unreachable";
+    OmarchyShellUnreachable     = "omarchy_shell_unreachable",
+        "The widget's files changed, but Omarchy's shell could not update its placement on the bar.";
     /// `-t all` selected the client whose id is `all`, not every client: the id wins over
     /// the keyword.
-    TargetIdReserved            = "target_id_reserved";
+    TargetIdReserved            = "target_id_reserved",
+        "`-t all` selected a client whose id is `all` because a client id takes precedence over the keyword.";
     /// A dry run did not store its plan; the preview and its binding token stand.
-    PlanNotStored               = "plan_not_stored";
+    PlanNotStored               = "plan_not_stored",
+        "A dry run could not store its plan, but its preview and binding token remain valid.";
 }
 
 impl fmt::Display for WarningCode {
@@ -360,6 +473,9 @@ impl fmt::Display for WarningCode {
         f.write_str(self.wire())
     }
 }
+
+#[cfg(test)]
+pub(crate) mod sentence;
 
 // ---------------------------------------------------------------------------------------
 // Suggestions and command hints.
@@ -794,7 +910,104 @@ impl From<WarningBody> for Warning {
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashSet};
+
+    #[test]
+    fn every_code_has_a_one_sentence_meaning() {
+        let meanings = ErrorCode::ALL
+            .iter()
+            .map(|code| (code.wire(), code.meaning()))
+            .chain(
+                WarningCode::ALL
+                    .iter()
+                    .map(|code| (code.wire(), code.meaning())),
+            );
+        for (wire, meaning) in meanings {
+            let result = sentence::check(meaning);
+            assert_eq!(
+                result,
+                Ok(()),
+                "{wire}: {meaning:?} breaks the meaning style: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn meanings_are_distinct() {
+        let meanings = ErrorCode::ALL
+            .iter()
+            .map(|code| (code.wire(), code.meaning()))
+            .chain(
+                WarningCode::ALL
+                    .iter()
+                    .map(|code| (code.wire(), code.meaning())),
+            );
+        let mut seen = BTreeMap::new();
+        for (wire, meaning) in meanings {
+            let previous = seen.insert(meaning, wire);
+            assert!(
+                previous.is_none(),
+                "{wire} and {previous:?} share the meaning {meaning:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn item_warnings_take_their_error_meaning() {
+        for code in ErrorCode::ALL {
+            assert_eq!(
+                WarningCode::Item(*code).meaning(),
+                code.meaning(),
+                "{}: item warning meaning",
+                code.wire()
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_retryability_is_stated() {
+        for code in [
+            ErrorCode::HttpStatus,
+            ErrorCode::HashMismatch,
+            ErrorCode::PlanStale,
+        ] {
+            assert!(
+                code.meaning().contains("retryable"),
+                "{}: conditional retryability absent from {:?}",
+                code.wire(),
+                code.meaning()
+            );
+        }
+    }
+
+    #[test]
+    fn action_descriptions_are_one_sentence() {
+        for action in Action::ALL {
+            // A2 separately enforces descriptions without trailing punctuation; test
+            // their sentence content with its terminator without changing that API.
+            let sentence = format!("{}.", action.description());
+            let result = sentence::check(&sentence);
+            assert_eq!(
+                result,
+                Ok(()),
+                "{action:?}: {sentence:?} breaks the sentence style: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn readme_warning_count_matches_registry() {
+        let header = format!(
+            "<summary><strong>Every warning code ({})</strong></summary>",
+            WarningCode::ALL.len()
+        );
+        assert!(
+            include_str!("../README.md")
+                .lines()
+                .any(|line| line == header),
+            "README must describe the current warning count: {header}"
+        );
+    }
 
     /// A hand-written copy of the bead's table: wire name, exit code, default retryable.
     #[rustfmt::skip]
