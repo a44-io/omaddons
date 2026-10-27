@@ -6,7 +6,42 @@ expression: s.stable(&c.envelope)
   "command": "backup prune",
   "commands": [],
   "data": {
+    "approval": {
+      "reasons": [
+        "destructive"
+      ],
+      "routine": false,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": null,
+          "asset": null,
+          "backup": "<ulid>",
+          "channel": null,
+          "fields": [],
+          "from_version": null,
+          "op": "prune",
+          "release_id": null,
+          "source": null,
+          "target_id": "retail",
+          "target_key": null,
+          "to_version": null,
+          "tx": null
+        }
+      ]
+    },
     "dry_run": true,
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
     "precondition": "<precondition>",
     "targets": [
       {

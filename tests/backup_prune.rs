@@ -225,6 +225,22 @@ fn named_backups_go_whatever_their_age_but_never_the_newest_checkpoint() {
     // Retention alone keeps all four.
     let envelope = run(&home, &["backup", "prune", "--dry-run"], &[]).expect(0);
     assert_eq!(envelope["data"]["targets"][0]["pruned"], json!([]));
+    assert!(envelope["data"]["plan_id"].is_null(), "{envelope}");
+    assert!(envelope["data"]["plan_expires_at"].is_null(), "{envelope}");
+    assert_eq!(envelope["data"]["approval"]["selection"], json!([]));
+    assert!(
+        common::plans::plan_files(&home.env).is_empty(),
+        "{envelope}"
+    );
+    assert!(
+        envelope["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            // ubs:ignore — warning codes are public enum names, not secrets
+            .all(|warning| warning["code"] != "plan_not_stored"),
+        "{envelope}",
+    );
 
     // Ids after `--`, the template's form: one by prefix, one whole. Seeded in one
     // millisecond, the ids share their first ten characters.

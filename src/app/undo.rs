@@ -16,20 +16,24 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::approval::{Approval, ApprovalFlags};
 use super::engine::Engine;
 use super::history::{MIN_PREFIX, TargetRef, kind_name, local_time, resolve_run, short_tx};
+use super::intent::{self, Preview, Storable, StorableArgs, StoredIntent, UndoSelection};
 use super::outcome::ItemError;
 use super::precondition;
 use super::world::World;
 use crate::cli::Context;
 use crate::engine::{SvPolicy, UndoOutcome as EngineUndo, UndoRequest, UndoSelector, WtfUndo};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
-use crate::model::{Actor, FolderName, ReloadRequired, RunId, TargetKey, TxId, TxKind};
+use crate::model::{Actor, FolderName, PlanId, ReloadRequired, RunId, TargetKey, TxId, TxKind};
 use crate::output::{Outcome, Style};
 use crate::state::history::{self, HistoryEntry, HistoryFilter, SettingEntry};
+use crate::state::plans::NotStored;
 
 /// `undo`'s own flags.
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -86,6 +90,13 @@ pub struct UndoData {
     /// `--dry-run`: the token `--if-match` takes to bind the real run to this preview
     /// (M3-D46); `null` for a real run.
     pub precondition: Option<String>,
+    /// The stored preview's id; `null` on a real run or when no plan was stored.
+    pub plan_id: Option<PlanId>,
+    /// When the stored preview expires; `null` when `plan_id` is.
+    #[schemars(with = "Option<String>")]
+    pub plan_expires_at: Option<Timestamp>,
+    /// What approving this preview covers; `null` on a real run.
+    pub approval: Option<Approval>,
 }
 
 /// The transaction reverted.
@@ -166,12 +177,24 @@ enum Attempt {
 #[derive(Debug)]
 pub struct UndoOutcome {
     data: UndoData,
+    preview: Option<Box<Preview>>,
     warnings: Vec<Warning>,
     commands: Vec<CommandHint>,
     partial: bool,
     attempts: Vec<Attempt>,
     /// Each committed undo transaction's global lock hold time, for `-v` log lines.
     pub locks: Vec<(TxId, u64)>,
+}
+
+impl Storable for UndoOutcome {
+    fn take_preview(&mut self) -> Option<Preview> {
+        self.preview.take().map(|preview| *preview)
+    }
+
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+        self.data.plan_id = Some(plan_id);
+        self.data.plan_expires_at = Some(expires_at);
+    }
 }
 
 impl Outcome for UndoOutcome {
@@ -217,7 +240,11 @@ impl Outcome for UndoOutcome {
         if !single && let Some(hint) = self.commands.first() {
             writeln!(w, "undo this: {}", hint.command())?;
         }
-        Ok(())
+        intent::render_plan_line(
+            w,
+            self.data.plan_id.as_ref(),
+            self.data.plan_expires_at.as_ref(),
+        )
     }
 }
 
@@ -414,8 +441,72 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
         );
         done.push((*chosen, result));
     }
-    let token = ctx.dry_run.then(|| undo_precondition(&done).token());
-    outcome(ctx, &world, &selection, run, sv_policy, done, token)
+    let precondition = ctx.dry_run.then(|| undo_precondition(&done));
+    let token = precondition.as_ref().map(|value| value.token());
+    let mut outcome = outcome(ctx, &world, &selection, run, sv_policy, done, token)?;
+    if let Some(precondition) = precondition {
+        let reverted: Vec<_> = outcome
+            .data
+            .transactions
+            .iter()
+            .map(|tx| (Some(tx.target.key), tx.target.id.clone(), tx.reverted))
+            .collect();
+        let folders_removed: Vec<_> = outcome
+            .attempts
+            .iter()
+            .filter_map(|attempt| match attempt {
+                Attempt::Undone(undone) => Some(&undone.folders.removed),
+                Attempt::Failed(..) => None,
+            })
+            .flatten()
+            .cloned()
+            .collect();
+        let flags = ApprovalFlags {
+            while_running: ctx.while_running,
+            destructive: true,
+            ..ApprovalFlags::default()
+        };
+        let approval = Approval::of_undo(&reverted, &folders_removed, &flags);
+        outcome.data.approval = Some(approval.clone());
+        let intent = resolved_selection(&outcome.data).and_then(|selection| {
+            StoredIntent::from_args(ctx, &StorableArgs::Undo { args, selection })
+        });
+        match intent {
+            Ok(intent) => {
+                outcome.preview = Some(Box::new(Preview {
+                    intent,
+                    precondition,
+                    releases: Vec::new(),
+                    approval,
+                    changes: outcome
+                        .attempts
+                        .iter()
+                        .any(|attempt| matches!(attempt, Attempt::Undone(_))),
+                }));
+            }
+            Err(error) => {
+                ctx.notes
+                    .warn(intent::plan_not_stored(&NotStored::Io(format!(
+                        "this preview cannot be stored: {}",
+                        error.message
+                    ))));
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+/// Relative selectors have already resolved in the preview. A stored undo names only
+/// that full run or transaction, so newer history cannot retarget it.
+fn resolved_selection(data: &UndoData) -> Result<UndoSelection> {
+    match data.reverted_run {
+        Some(run) => Ok(UndoSelection::Run(run)),
+        None => data
+            .transactions
+            .first()
+            .map(|tx| UndoSelection::Tx(tx.reverted))
+            .ok_or_else(|| Error::internal("an undo preview selected no transaction")),
+    }
 }
 
 /// The precondition of the undos `planned`, each of a selected transaction.
@@ -704,6 +795,7 @@ fn outcome(
                 .resolved
                 .targets
                 .iter()
+                // ubs:ignore — client identity keys are public identifiers, not credentials
                 .find(|d| d.target.key == Some(first.reverted.target.key))
                 .map(|d| d.target.client_dir.clone())
         })
@@ -729,7 +821,11 @@ fn outcome(
             reverted_run: selection.reverted_run,
             transactions,
             precondition,
+            plan_id: None,
+            plan_expires_at: None,
+            approval: None,
         },
+        preview: None,
         warnings: unique,
         commands,
         partial,
@@ -832,6 +928,80 @@ mod tests {
         select(entries, &selector)
             .map(|s| s.entries.iter().map(|e| e.entry.tx.to_string()).collect())
             .map_err(|e| e.code)
+    }
+
+    #[test]
+    fn an_undo_preview_resolves_its_selection() {
+        let target = TargetRef {
+            id: "retail".into(),
+            key: TargetKey::new(),
+        };
+        let tx = "01JB8Q2VA00000000000000001".parse::<TxId>().unwrap();
+        let run = "01JB8Q2VC00000000000000000".parse::<RunId>().unwrap();
+        let mut data = UndoData {
+            dry_run: true,
+            reverted: Reverted {
+                tx,
+                kind: TxKind::Install,
+                at: "2026-10-14T12:00:00Z".parse().unwrap(),
+                target: target.clone(),
+                actor: Actor::Agent,
+                argv: vec!["omaddons".into(), "install".into(), "Foo".into()],
+                reason: None,
+            },
+            tx: None,
+            folders: UndoFolders::default(),
+            saved_variables: SavedVariables {
+                policy: SvPolicy::Auto,
+                restored: 0,
+                unchanged: 0,
+                deferred: 0,
+                kept: 0,
+            },
+            changed_since: None,
+            reload_required: ReloadRequired::None,
+            atomic_swap: None,
+            client_dir: None,
+            run: None,
+            reverted_run: None,
+            transactions: vec![UndoTx {
+                target,
+                reverted: tx,
+                tx: None,
+                status: UndoTxStatus::Undone,
+                error: None,
+            }],
+            precondition: None,
+            plan_id: None,
+            plan_expires_at: None,
+            approval: None,
+        };
+        for (case, reverted_run, expected) in [
+            (
+                "bare or last-by resolved a run",
+                Some(run),
+                serde_json::json!({"run": run}),
+            ),
+            (
+                "target or prefix resolved a transaction",
+                None,
+                serde_json::json!({"tx": tx}),
+            ),
+        ] {
+            data.reverted_run = reverted_run;
+            let selected = resolved_selection(&data).unwrap();
+            assert_eq!(
+                serde_json::to_value(selected).unwrap(),
+                expected,
+                "{case}: {data:?} resolved to {selected:?}"
+            );
+        }
+        data.transactions.clear();
+        assert_eq!(
+            resolved_selection(&data).unwrap_err().code,
+            ErrorCode::Internal,
+            "an incomplete preview cannot retarget a stored undo: {data:?}"
+        );
     }
 
     /// A prefix is matched against settings changes and transactions together: unique

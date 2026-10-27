@@ -22,6 +22,10 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use super::approval::Approval;
+use super::intent::{
+    self, IntentTarget, Preview, Storable, StorableArgs, StoredIntent, TargetScope,
+};
 use super::outcome::{ItemError, TargetRef};
 use super::precondition::{
     Precondition, PrunePart, RestoreBinding, RestorePart, check, of_prune, of_restore, preview_argv,
@@ -51,7 +55,7 @@ use crate::limits::{
     BACKUP_STALE_AFTER, BACKUP_TREE_MAX_DEPTH, BACKUP_TREE_MAX_ENTRIES, EffectiveLimits,
 };
 use crate::model::{
-    Actor, BackupId, FolderName, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind,
+    Actor, BackupId, FolderName, PlanId, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind,
 };
 use crate::output::{Outcome, Phase, ProgressSink, Style, table};
 use crate::privacy::WtfPathRedactor;
@@ -1584,8 +1588,15 @@ pub struct BackupRestoreData {
     /// `--dry-run`: the token `--if-match` takes to restore exactly this (M3-D46); `null`
     /// for a real run.
     pub precondition: Option<String>,
+    /// The stored preview's id; `null` on a real run or when storage declined.
+    pub plan_id: Option<PlanId>,
+    /// The stored preview's expiry; `null` when no plan was stored.
+    #[schemars(with = "Option<String>")]
+    pub plan_expires_at: Option<Timestamp>,
+    /// What approving this dry run covers; `null` on a real run.
+    pub approval: Option<Approval>,
     /// `verified` when the exchange was probed where it runs; `unverified` under
-    /// `--dry-run`, which writes nothing.
+    /// `--dry-run`, which does not probe it.
     pub exchange: Exchange,
     /// `--addon`: each addon whose settings come back; `null` for a whole restore.
     pub addons: Option<Vec<AddonRestore>>,
@@ -1643,6 +1654,7 @@ pub struct KeptBackup {
 #[derive(Debug)]
 pub struct BackupRestoreOutcome {
     pub(super) data: BackupRestoreData,
+    pub(super) preview: Option<Box<Preview>>,
     pub(super) warnings: Vec<Warning>,
     /// `undo <tx>` after a real run.
     pub(super) commands: Vec<CommandHint>,
@@ -1653,6 +1665,49 @@ pub struct BackupRestoreOutcome {
     pub(super) would_keep: bool,
     /// How long the commit held the global lock, for the `-v` log line.
     pub lock_held_ms: Option<u64>,
+}
+
+impl Storable for BackupRestoreOutcome {
+    fn take_preview(&mut self) -> Option<Preview> {
+        self.preview.take().map(|preview| *preview)
+    }
+
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+        self.data.plan_id = Some(plan_id);
+        self.data.plan_expires_at = Some(expires_at);
+    }
+}
+
+/// Keeps a command's original M3 precondition, without changing its binding rules.
+/// A normalization failure declines storage while the preview and its approval stand.
+pub(super) fn bound_preview(
+    ctx: &Context,
+    args: &StorableArgs<'_>,
+    precondition: Precondition,
+    approval: Approval,
+    changes: bool,
+) -> Option<Box<Preview>> {
+    if !changes {
+        return None;
+    }
+    match StoredIntent::from_args(ctx, args) {
+        Ok(intent) => Some(Box::new(Preview {
+            intent,
+            precondition,
+            releases: Vec::new(),
+            approval,
+            changes,
+        })),
+        Err(error) => {
+            ctx.notes.warn(intent::plan_not_stored(
+                &crate::state::plans::NotStored::Io(format!(
+                    "this preview cannot be stored: {}",
+                    error.message
+                )),
+            ));
+            None
+        }
+    }
 }
 
 impl Outcome for BackupRestoreOutcome {
@@ -1724,7 +1779,7 @@ impl Outcome for BackupRestoreOutcome {
         if let Some(token) = &d.precondition {
             writeln!(w, "Run it bound to this preview: --if-match {token}")?;
         }
-        Ok(())
+        intent::render_plan_line(w, d.plan_id.as_ref(), d.plan_expires_at.as_ref())
     }
 }
 
@@ -1869,6 +1924,9 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
         before_restore: None,
         reload_required: ReloadRequired::Restart,
         precondition: None,
+        plan_id: None,
+        plan_expires_at: None,
+        approval: None,
         exchange: Exchange::Unverified,
         addons: None,
     };
@@ -1881,8 +1939,22 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
             CloneHint::Capable
         );
         data.precondition = Some(bound.token());
+        let approval = Approval::of_restore(d.target.key, &d.target.id, backup.id, &[]);
+        data.approval = Some(approval.clone());
+        let preview = bound_preview(
+            ctx,
+            &StorableArgs::BackupRestore {
+                args,
+                backup: backup.id,
+                target: IntentTarget::of(&d.target),
+            },
+            bound,
+            approval,
+            true,
+        );
         return Ok(BackupRestoreOutcome {
             data,
+            preview,
             warnings,
             commands: Vec::new(),
             trigger: meta.trigger,
@@ -1944,6 +2016,7 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
     let tx = done.tx.to_string();
     Ok(BackupRestoreOutcome {
         data,
+        preview: None,
         warnings,
         commands: vec![CommandHint::new(
             "undo",
@@ -2180,6 +2253,13 @@ pub struct BackupPruneData {
     /// `--dry-run`: the token `--if-match` takes to delete exactly these backups
     /// (M3-D46); `null` for a real run.
     pub precondition: Option<String>,
+    /// The stored preview's id; `null` on real runs, no-ops and declined stores.
+    pub plan_id: Option<PlanId>,
+    /// The stored preview's expiry; `null` when no plan was stored.
+    #[schemars(with = "Option<String>")]
+    pub plan_expires_at: Option<Timestamp>,
+    /// What approving this dry run covers; `null` on a real run.
+    pub approval: Option<Approval>,
 }
 
 /// One client's prune.
@@ -2209,8 +2289,20 @@ pub struct BusyBackup {
 #[derive(Debug)]
 pub struct BackupPruneOutcome {
     data: BackupPruneData,
+    preview: Option<Box<Preview>>,
     warnings: Vec<Warning>,
     partial: bool,
+}
+
+impl Storable for BackupPruneOutcome {
+    fn take_preview(&mut self) -> Option<Preview> {
+        self.preview.take().map(|preview| *preview)
+    }
+
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+        self.data.plan_id = Some(plan_id);
+        self.data.plan_expires_at = Some(expires_at);
+    }
 }
 
 impl Outcome for BackupPruneOutcome {
@@ -2267,7 +2359,11 @@ impl Outcome for BackupPruneOutcome {
         if let Some(token) = &self.data.precondition {
             writeln!(w, "Run it bound to this preview: --if-match {token}")?;
         }
-        Ok(())
+        intent::render_plan_line(
+            w,
+            self.data.plan_id.as_ref(),
+            self.data.plan_expires_at.as_ref(),
+        )
     }
 }
 
@@ -2334,12 +2430,34 @@ pub fn prune_backups(ctx: &Context, args: &BackupPruneArgs) -> Result<BackupPrun
     }
     // A preview given a token previews afresh: it returns the current one.
     if ctx.dry_run {
+        let bound = prune_precondition(&plans);
+        let victims: Vec<_> = plans
+            .iter()
+            .flat_map(|p| {
+                p.victims
+                    .iter()
+                    .map(|id| (p.d.target.key, p.d.target.id.clone(), *id))
+            })
+            .collect();
+        let approval = Approval::of_prune(&victims);
+        let token = bound.token();
+        let preview = bound_preview(
+            ctx,
+            &prune_intent_args(ctx, args, &plans, &named, captured_before),
+            bound,
+            approval.clone(),
+            !victims.is_empty(),
+        );
         return Ok(BackupPruneOutcome {
             data: BackupPruneData {
                 dry_run: true,
                 targets: plans.iter().map(would_prune).collect(),
-                precondition: Some(prune_precondition(&plans).token()),
+                precondition: Some(token),
+                plan_id: None,
+                plan_expires_at: None,
+                approval: Some(approval),
             },
+            preview,
             warnings,
             partial: false,
         });
@@ -2400,13 +2518,42 @@ pub fn prune_backups(ctx: &Context, args: &BackupPruneArgs) -> Result<BackupPrun
     }
     Ok(BackupPruneOutcome {
         partial: failed > 0,
+        preview: None,
         data: BackupPruneData {
             dry_run: false,
             targets,
             precondition: None,
+            plan_id: None,
+            plan_expires_at: None,
+            approval: None,
         },
         warnings,
     })
+}
+
+/// Explicit prefixes become full ids, and a relative age becomes the cutoff the
+/// planner already used. An unnamed prune stays a retention pass over this scope.
+fn prune_intent_args<'a>(
+    ctx: &Context,
+    args: &'a BackupPruneArgs,
+    plans: &[PrunePlan<'_>],
+    named: &BTreeMap<String, BTreeSet<BackupId>>,
+    captured_before: Option<Timestamp>,
+) -> StorableArgs<'a> {
+    let ids = named
+        .values()
+        .flatten()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let selected: Vec<_> = plans.iter().map(|p| &p.d.target).collect();
+    StorableArgs::BackupPrune {
+        args,
+        ids,
+        older_than: captured_before,
+        scope: TargetScope::of(ctx.target.as_deref(), &selected),
+    }
 }
 
 /// `--older-than D`: the capture time before which the user's backups go.
@@ -2848,6 +2995,119 @@ fn pruned_target(target: TargetRef, report: PruneReport) -> BackupPruneTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_prune_preview_resolves_ids_and_age() {
+        let now: Timestamp = "2026-10-27T12:00:00Z".parse().unwrap();
+        let cutoff: Timestamp = "2026-09-27T12:00:00Z".parse().unwrap();
+        let id: BackupId = "01JB8Q2VR00000000000000001".parse().unwrap();
+        let prefix = "01JB8Q2VR";
+        let d = DiscoveredTarget {
+            target: crate::engine::testing::target(std::path::Path::new("/synthetic/_retail_")),
+            default_id: "retail".into(),
+            qualifier: "test".into(),
+            source: crate::discover::DiscoverySource::Scan,
+        };
+        let backup = BackupRef {
+            id,
+            meta: None,
+            dir: std::path::PathBuf::from("/synthetic/backups").join(id.to_string()),
+            restorable: false,
+            qualifying: false,
+            busy: false,
+        };
+        let plans = [PrunePlan {
+            d: &d,
+            backups: vec![backup.clone()],
+            victims: vec![id],
+        }];
+        let ctx = Context {
+            output: crate::output::OutputConfig::machine(),
+            command: PRUNE_COMMAND,
+            actor: Actor::Agent,
+            reason: None,
+            argv: Vec::new(),
+            offline: true,
+            offline_by_env: false,
+            dry_run: true,
+            while_running: false,
+            if_match: None,
+            target: Some("retail".into()),
+            started: std::time::Instant::now(),
+            progress: ProgressSink::none(),
+            notes: crate::output::RunNotes::default(),
+            stdin_is_tty: false,
+        };
+        for (case, args, expected_ids, expected_cutoff) in [
+            (
+                "prefix",
+                BackupPruneArgs {
+                    ids: vec![prefix.into()],
+                    ..BackupPruneArgs::default()
+                },
+                vec![id],
+                None,
+            ),
+            (
+                "relative age",
+                BackupPruneArgs {
+                    older_than: Some("30d".into()),
+                    ..BackupPruneArgs::default()
+                },
+                Vec::new(),
+                Some(cutoff),
+            ),
+        ] {
+            let mut named: BTreeMap<String, BTreeSet<BackupId>> = BTreeMap::new();
+            for prefix in &args.ids {
+                let (target, resolved) =
+                    only(&[(&d, vec![backup.clone()])], prefix, ctx.target.as_deref()).unwrap();
+                named.entry(target).or_default().insert(resolved);
+            }
+            let before = args
+                .older_than
+                .as_deref()
+                .map(|age| older_than(age, now))
+                .transpose()
+                .unwrap();
+            let intent = StoredIntent::from_args(
+                &ctx,
+                &prune_intent_args(&ctx, &args, &plans, &named, before),
+            )
+            .unwrap();
+            let prune = serde_json::to_value(&intent).unwrap();
+            assert_eq!(prune["command"], "backup_prune", "{case}: {intent:?}");
+            assert_eq!(
+                prune["ids"],
+                serde_json::to_value(&expected_ids).unwrap(),
+                "{case}: {intent:?}"
+            );
+            assert_eq!(
+                prune["older_than"],
+                serde_json::to_value(expected_cutoff).unwrap(),
+                "{case}: {intent:?}"
+            );
+            assert_eq!(
+                prune["scope"]["targets"][0]["target_id"], "retail",
+                "{case}: {intent:?}"
+            );
+            let argv = intent.display_argv();
+            if let Some(cutoff) = expected_cutoff {
+                assert!(
+                    argv.windows(2)
+                        .any(|pair| pair == ["--older-than", &cutoff.to_string()]),
+                    "{case}: {intent:?}: {argv:?}"
+                );
+                assert!(!argv.iter().any(|arg| arg == "30d"), "{case}: {argv:?}");
+            } else {
+                assert!(
+                    argv.contains(&id.to_string()),
+                    "{case}: {intent:?}: {argv:?}"
+                );
+                assert!(!argv.iter().any(|arg| arg == prefix), "{case}: {argv:?}");
+            }
+        }
+    }
 
     #[test]
     fn sizes_read_as_disks_are_sold() {

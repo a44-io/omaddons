@@ -1,0 +1,83 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "remove",
+  "commands": [],
+  "data": {
+    "approval": {
+      "reasons": [
+        "folders_removed",
+        "destructive"
+      ],
+      "routine": false,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [
+          "Foo"
+        ],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": "Foo",
+          "asset": null,
+          "backup": null,
+          "channel": null,
+          "fields": [],
+          "from_version": "1",
+          "op": "remove",
+          "release_id": null,
+          "source": "github",
+          "target_id": "retail",
+          "target_key": "<ulid>",
+          "to_version": null,
+          "tx": null
+        }
+      ]
+    },
+    "atomic_swap": null,
+    "dry_run": true,
+    "items": [
+      {
+        "error": null,
+        "folders": [
+          "Foo"
+        ],
+        "name": "Foo",
+        "ref": "gh:o/foo",
+        "request": "Foo",
+        "status": "removed",
+        "version": "1"
+      }
+    ],
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
+    "precondition": "<precondition>",
+    "reload_required": "none",
+    "target": {
+      "id": "retail",
+      "key": "<ulid>"
+    },
+    "tx": null
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "snapshot_only_copy",
+      "fix": "nothing is moved under --dry-run; after the run, its snapshot holds the only copy until retention prunes it",
+      "fix_argv": null,
+      "message": "On retail, the transaction's snapshot will hold the only copy of Foo: undo brings them back until retention prunes it (kept at least 24 hours; then pruned once 10 newer transactions on this client exist, after 7 days, or past the 2 GiB snapshot cap)"
+    }
+  ]
+}

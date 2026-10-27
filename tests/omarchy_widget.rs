@@ -15,6 +15,7 @@ use common::home::Home;
 use common::http::{gh_feed, gh_latest, gh_release, github_search};
 use common::tukui::{elvui, tukui_list};
 use common::wowi::{FileEntry, wowi_filelist};
+use omaddons::app::intent::StoredIntent;
 use omaddons::app::precondition::BINDING_COMMANDS;
 use omaddons::app::{self, command_name};
 use omaddons::cli::Cli;
@@ -47,6 +48,26 @@ fn cli_paths_mirror_the_registry() {
     }
     for path in DESTRUCTIVE.iter().chain(BINDING_COMMANDS) {
         assert!(registry.contains(path), "{path} is no registry path");
+    }
+}
+
+/// Stored previews use the same destructive policy as the widget's confirmation
+/// dialogs; the widget's other destructive path (`targets rm`) stores no plan.
+#[test]
+fn stored_intents_are_destructive_where_the_widget_confirms() {
+    let rows = cli_paths();
+    for (path, destructive) in StoredIntent::PATHS {
+        assert_eq!(
+            destructive,
+            DESTRUCTIVE.contains(&path),
+            "{path}: stored intent and confirmation policy differ"
+        );
+        assert!(rows.contains_key(path), "{path}: no widget CLI_PATHS row");
+        let row = &rows[path];
+        assert_eq!(
+            row["destructive"], destructive,
+            "{path}: stored intent and widget CLI_PATHS disagree: {row}"
+        );
     }
 }
 

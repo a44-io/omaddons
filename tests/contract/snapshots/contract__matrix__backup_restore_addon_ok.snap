@@ -34,6 +34,7 @@ expression: s.stable(&c.envelope)
         "not_in_backup": []
       }
     ],
+    "approval": null,
     "backup": {
       "captured_at": "<time>",
       "id": "<ulid>",
@@ -46,6 +47,8 @@ expression: s.stable(&c.envelope)
     "files": null,
     "kind": "restore",
     "mode": "addons",
+    "plan_expires_at": null,
+    "plan_id": null,
     "precondition": null,
     "reload_required": "none",
     "target": {

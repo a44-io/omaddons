@@ -4,10 +4,13 @@
 //! partial restore, in the whole restore's order (reserve, plan, refuse a running client,
 //! preview or compare `--if-match`, begin with the exchange probed, restore, retention).
 
+use super::approval::Approval;
 use super::backup::{
     AddonRestore, BackupRestoreArgs, BackupRestoreData, BackupRestoreOutcome, FoldersFrom,
-    RestoreMode, RestoreSource, meta_digest, named_backup, retain_source, target_ref,
+    RestoreMode, RestoreSource, bound_preview, meta_digest, named_backup, retain_source,
+    target_ref,
 };
+use super::intent::{IntentTarget, StorableArgs};
 use super::precondition::{AddonsPart, RestoreBinding, check, of_restore_addons, preview_argv};
 use super::world::World;
 use crate::backup::{AddonProvenance, AddonsFile, BackupRef, EntryKind, Manifest};
@@ -114,11 +117,15 @@ pub fn run(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutco
         before_restore: None,
         reload_required: ReloadRequired::None,
         precondition: None,
+        plan_id: None,
+        plan_expires_at: None,
+        approval: None,
         exchange: Exchange::Unverified,
         addons: Some(restored(&resolved, &plan)),
     };
-    let outcome = |data, warnings, commands, lock_held_ms| BackupRestoreOutcome {
+    let outcome = |data, warnings, commands, lock_held_ms, preview| BackupRestoreOutcome {
         data,
+        preview,
         warnings,
         commands,
         trigger: meta.trigger,
@@ -131,7 +138,21 @@ pub fn run(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutco
         let topology = restore::preflight(&client, &backup.wtf(), None)?;
         restore_addons::check_mounts(&client, &plan, topology.stage_mount, &backup.wtf())?;
         data.precondition = Some(bound.token());
-        return Ok(outcome(data, warnings, Vec::new(), None));
+        let addons: Vec<_> = resolved.iter().map(|r| r.addon.clone()).collect();
+        let approval = Approval::of_restore(d.target.key, &d.target.id, backup.id, &addons);
+        data.approval = Some(approval.clone());
+        let preview = bound_preview(
+            ctx,
+            &StorableArgs::BackupRestore {
+                args,
+                backup: backup.id,
+                target: IntentTarget::of(&d.target),
+            },
+            bound,
+            approval,
+            true,
+        );
+        return Ok(outcome(data, warnings, Vec::new(), None, preview));
     }
     let preview = preview_argv(&ctx.argv);
     check(ctx.if_match.as_deref(), &bound, &preview)?;
@@ -162,7 +183,13 @@ pub fn run(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutco
     data.exchange = Exchange::Verified;
     let tx = done.tx.to_string();
     let undo = CommandHint::new("undo", ["omaddons", "undo", tx.as_str()], false);
-    Ok(outcome(data, warnings, vec![undo], Some(done.lock_held_ms)))
+    Ok(outcome(
+        data,
+        warnings,
+        vec![undo],
+        Some(done.lock_held_ms),
+        None,
+    ))
 }
 
 /// What a backup says of its addons: its addon record (`addons.json`; empty when it has

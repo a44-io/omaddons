@@ -17,6 +17,7 @@ expression: s.stable(&c.envelope)
     }
   ],
   "data": {
+    "approval": null,
     "atomic_swap": true,
     "dry_run": false,
     "items": [
@@ -32,6 +33,8 @@ expression: s.stable(&c.envelope)
         "version": "1"
       }
     ],
+    "plan_expires_at": null,
+    "plan_id": null,
     "precondition": null,
     "reload_required": "none",
     "target": {

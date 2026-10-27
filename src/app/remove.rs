@@ -10,13 +10,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::adopt::hints::{adopt_fixes, adopting};
+use super::approval::{Approval, ApprovalFlags};
 use super::engine::Engine;
 use super::history::TargetRef;
 use super::install::all_failed;
+use super::intent::{self, IntentTarget, Preview, Storable, StorableArgs, StoredIntent};
 use super::outcome::ItemError;
 use super::precondition;
 use super::world::World;
@@ -27,8 +30,9 @@ use crate::engine::plan::RequestedChange;
 use crate::engine::{TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::inventory::{Depth, FolderClass, inventory_shared};
-use crate::model::{AddonRecord, FolderName, Ref, ReloadRequired, RunId, TxId, TxKind};
+use crate::model::{AddonRecord, FolderName, PlanId, Ref, ReloadRequired, RunId, TxId, TxKind};
 use crate::output::{Outcome, Style};
+use crate::state::plans::{NotStored, StoredRelease};
 use crate::state::records::TargetRecord;
 
 /// `remove`'s own arguments.
@@ -53,6 +57,13 @@ pub struct RemoveData {
     /// `--dry-run`: the token `--if-match` takes to bind the real run to this preview
     /// (M3-D46); `null` for a real run.
     pub precondition: Option<String>,
+    /// The stored preview's id; `null` on a real run or when no plan was stored.
+    pub plan_id: Option<PlanId>,
+    /// When the stored preview expires; `null` when `plan_id` is.
+    #[schemars(with = "Option<String>")]
+    pub plan_expires_at: Option<Timestamp>,
+    /// What approving this preview covers; `null` on a real run.
+    pub approval: Option<Approval>,
 }
 
 /// One requested addon.
@@ -81,10 +92,22 @@ pub enum RemoveStatus {
 #[derive(Debug)]
 pub struct RemoveOutcome {
     data: RemoveData,
+    preview: Option<Box<Preview>>,
     warnings: Vec<Warning>,
     commands: Vec<CommandHint>,
     /// The global lock's hold time, for the `-v` log line.
     pub lock_held_ms: Option<u64>,
+}
+
+impl Storable for RemoveOutcome {
+    fn take_preview(&mut self) -> Option<Preview> {
+        self.preview.take().map(|preview| *preview)
+    }
+
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+        self.data.plan_id = Some(plan_id);
+        self.data.plan_expires_at = Some(expires_at);
+    }
 }
 
 impl Outcome for RemoveOutcome {
@@ -149,7 +172,7 @@ impl Outcome for RemoveOutcome {
         if !tail.is_empty() {
             writeln!(w, "{}", tail.join(" · "))?;
         }
-        Ok(())
+        intent::render_plan_line(w, d.plan_id.as_ref(), d.plan_expires_at.as_ref())
     }
 }
 
@@ -271,9 +294,8 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         None,
         binding.as_ref().map(|b| b as &dyn crate::engine::Binding),
     )?;
-    let token = ctx
-        .dry_run
-        .then(|| precondition::of_remove(&done.plan).token());
+    let precondition = ctx.dry_run.then(|| precondition::of_remove(&done.plan));
+    let token = precondition.as_ref().map(|value| value.token());
     let built: Vec<(RemoveItem, Option<Error>)> =
         requests.iter().map(|r| item(r, target_id, &done)).collect();
     let errors: Vec<(String, Error)> = built
@@ -308,6 +330,42 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         .and_then(|o| o.key)
         .or(target.target.key)
         .ok_or_else(|| Error::internal("removing from an unregistered target"))?;
+    let mut approval = None;
+    let mut preview = None;
+    if let Some(precondition) = precondition {
+        let flags = ApprovalFlags {
+            while_running: ctx.while_running,
+            destructive: true,
+            ..ApprovalFlags::default()
+        };
+        let summary = Approval::of_plan(&done.plan, &records, &flags)?;
+        approval = Some(summary.clone());
+        match StoredIntent::from_args(
+            ctx,
+            &StorableArgs::Remove {
+                args,
+                target: IntentTarget::of(&target.target),
+            },
+        ) {
+            Ok(intent) => {
+                preview = Some(Box::new(Preview {
+                    intent,
+                    precondition,
+                    releases: StoredRelease::of_plan(&done.plan),
+                    approval: summary,
+                    changes: done.plan.has_ops(),
+                }));
+            }
+            Err(error) if done.plan.has_ops() => {
+                ctx.notes
+                    .warn(intent::plan_not_stored(&NotStored::Io(format!(
+                        "this preview cannot be stored: {}",
+                        error.message
+                    ))));
+            }
+            Err(_) => {}
+        }
+    }
     Ok(RemoveOutcome {
         data: RemoveData {
             dry_run: ctx.dry_run,
@@ -320,7 +378,11 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
             reload_required: outcome.map_or(ReloadRequired::None, |o| o.reload_required),
             atomic_swap: tx.and(outcome.map(|o| o.atomic_swap)),
             precondition: token,
+            plan_id: None,
+            plan_expires_at: None,
+            approval,
         },
+        preview,
         warnings: unique,
         commands: tx
             .map(|tx| {

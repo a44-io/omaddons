@@ -741,7 +741,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--json`, `--robot` | One JSON envelope on stdout (see [The JSON contract](#the-json-contract)) |
 | `--format json\|human` | Overrides `--json`; default `human`, or `OMADDONS_FORMAT=json` |
 | `-t, --target <TARGET>` (alias `--flavor`) | The client to act on: [any selector](#choosing-a-target-with--t), or `all` |
-| `--dry-run` | Show the plan without changing addons or settings. Every command accepts it; one that changes nothing ignores it. When `install`, `update`, `pin`, `unpin`, `adopt` (adopting), `sync` or `copy` would change something, its dry run also stores the preview for 24 hours: `data.plan_id`, `data.plan_expires_at` and `data.approval` (see [Stored plans](#stored-plans)) |
+| `--dry-run` | Show the plan without changing addons or settings. Every command accepts it; one that changes nothing ignores it. When `install`, `update`, `pin`, `unpin`, `adopt` (adopting), `sync`, `copy`, `remove`, `undo`, `backup restore` or `backup prune` would change something, its dry run also stores the preview for 24 hours: `data.plan_id`, `data.plan_expires_at` and `data.approval` (see [Stored plans](#stored-plans)) |
 | `--actor human\|agent\|widget` | Who is acting, recorded in history by every command that changes something. Default `OMADDONS_ACTOR`, else `human` when stdin is a terminal, else `agent`. In `history` it filters |
 | `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters); others accept and ignore it |
 | `--offline` | Fail any network access (`OMADDONS_OFFLINE=1`) |
@@ -1100,7 +1100,7 @@ omaddons remove DBM -t retail
 omaddons remove gh:BigWigsMods/BigWigs -t era
 ```
 
-Unmanaged, linked (symlinked) and `Blizzard_*` folders, and names that match no managed addon, are refused with `not_managed`. A folder or ref that several managed addons answer to is `ref_ambiguous`. Without `-t`, the client is the one that manages the named addons. A client named among the addons is a usage error (see [Choosing a target](#choosing-a-target-with--t)). `--dry-run` returns `data.precondition`, and `--if-match <it>` removes exactly what that preview showed, or nothing (see [Previews and `--if-match`](#previews-and---if-match)).
+Unmanaged, linked (symlinked) and `Blizzard_*` folders, and names that match no managed addon, are refused with `not_managed`. A folder or ref that several managed addons answer to is `ref_ambiguous`. Without `-t`, the client is the one that manages the named addons. A client named among the addons is a usage error (see [Choosing a target](#choosing-a-target-with--t)). `--dry-run` returns `data.precondition` and stores the preview as a plan (`data.plan_id`, see [Stored plans](#stored-plans)); `--if-match <it>` removes exactly what that preview showed, or nothing (see [Previews and `--if-match`](#previews-and---if-match)).
 
 An addon whose folders were all deleted by hand is forgotten: its record and index entries go, in a transaction that records each folder (`record` ops) and that `undo` reverts. Such a remove changes no folder, so it also goes through while the game runs.
 
@@ -1131,7 +1131,7 @@ omaddons undo 01M51F4QY5KB --saved-variables restore   # finish a deferred resto
 
 `TX`, `--run` and `--last-by` cannot be combined. A prefix that matches several transactions or runs is `not_found`, with the candidates in `details.candidates`.
 
-`--dry-run` returns `data.precondition`, and `--if-match <it>` reverts exactly what that preview showed, or nothing: after a newer change, bare `undo` would pick another run, and the bound run refuses with `plan_stale` instead (see [Previews and `--if-match`](#previews-and---if-match)).
+`--dry-run` returns `data.precondition` and stores the preview as a plan (`data.plan_id`, see [Stored plans](#stored-plans)); `--if-match <it>` reverts exactly what that preview showed, or nothing: after a newer change, bare `undo` would pick another run, and the bound run refuses with `plan_stale` instead (see [Previews and `--if-match`](#previews-and---if-match)). The stored intent names the full transaction or run the preview resolved, including when the request was bare `undo` or used `--last-by`.
 
 When one transaction of a run cannot be undone (`undo_conflict`, say), the others still are. The result is then `partial`, and `transactions[]` in the JSON data holds one result per transaction. The fields before it describe the first transaction undone, as they always did. When every transaction fails, `undo` fails with the first error.
 
@@ -1244,15 +1244,15 @@ Then, on a real run:
 - **One exchange.** Under the lock, the copy replaces `WTF/` in one atomic exchange, and the old tree goes to the transaction's snapshot for `undo`.
 - **Retention.** Backup retention then runs once with the restored backup kept whatever its age, so a restore never prunes its own source.
 
-`data` is `{dry_run, target, tx, kind: "restore", mode: "whole", backup: {id, captured_at, kind, integrity}, files: {restored, differed, created_since, unchanged}, before_restore: {id} | null, reload_required: "restart", precondition, exchange, addons: null}`:
+`data` is `{dry_run, target, tx, kind: "restore", mode: "whole", backup: {id, captured_at, kind, integrity}, files: {restored, differed, created_since, unchanged}, before_restore: {id} | null, reload_required: "restart", precondition, plan_id, plan_expires_at, approval, exchange, addons: null}`:
 
 - `files` compares the backup's manifest with the live `WTF/` by size and time, never content. `differed` counts the backup's files the live tree lacks or holds differently. `created_since` counts live files the backup lacks; they stay in the undo snapshot.
 - `backup.integrity` is what was proved. `verified` only when the copy matched the backup's hashes; the human view then says "verified against capture-time hashes" (or import-time, or hashes recorded later, which prove only that nothing changed since then). It says "metadata checked; content not verified" for a `metadata_only` backup, and never "verified".
-- `exchange` is `verified` when the exchange was probed, and `unverified` on a dry run, which writes nothing.
+- `exchange` is `verified` when the exchange was probed, and `unverified` on a dry run, which does not probe it.
 - `reload_required` is `restart`: the client reads `WTF/` when it starts.
 - `commands` offers `omaddons undo <tx>`.
 
-`--dry-run` stops after the plan. It reports the counts, whether the current `WTF/` would be kept as a backup, and `precondition`, which covers the client's records, the backup and its `backup.json`, and the live `WTF/`. A play session, a re-verified backup or a commit on the client between the preview and `--if-match <token>` gives `plan_stale`, and nothing changes. A commit that slips in between the copy and the lock is caught there too.
+`--dry-run` stops after the plan and stores that preview (`data.plan_id`, see [Stored plans](#stored-plans)), for both whole and `--addon` restores. It reports the counts, whether the current `WTF/` would be kept as a backup, and `precondition`, which covers the client's records, the backup and its `backup.json`, and the live `WTF/`. A play session, a re-verified backup or a commit on the client between the preview and `--if-match <token>` gives `plan_stale`, and nothing changes. A commit that slips in between the copy and the lock is caught there too.
 
 ```text
 $ omaddons backup restore 01M6K2VA -t retail
@@ -1295,9 +1295,9 @@ Deletes old backups, for each client `-t` selects or every client with backups. 
 - **With ids** (8+ character prefixes, after `--` too), it deletes exactly those, whatever their age. It refuses the client's newest checkpoint with `usage` (fix `omaddons backup create -t <id>`: make a newer one first), and deletes nothing. Ids cannot go with `--keep` or `--older-than`.
 - **Busy backups.** A backup that a restore, an export or a verify is reading holds a shared lock on its directory. Each deletion takes that lock exclusively without waiting, once more after 50 ms (so `backup list`'s own instant probe never counts). A backup still held is skipped and listed under `busy`; that never fails the run, and a later prune deletes it. A reader killed outright frees it at once.
 - **How it deletes.** Each backup is moved to `<client>/Interface/.omaddons/trash/` under the global lock, then deleted there, read-only directories included; nothing is left behind. A prune that deleted something rings the doorbell and updates `backups.json`. It appends no history line: the backups themselves are the record.
-- **Preview binding.** `--dry-run` deletes nothing. It lists what would go under `pruned` (and what is held now under `busy`) and returns `precondition`. With `--if-match <token>`, the real run deletes exactly those backups or nothing: if the set changed (a new backup moved `--keep`'s line) or one of them was rewritten since, it fails with `plan_stale`. See [Previews and `--if-match`](#previews-and---if-match).
+- **Preview binding.** `--dry-run` deletes nothing. It lists what would go under `pruned` (and what is held now under `busy`), returns `precondition`, and stores a changing preview as a plan (`data.plan_id`, see [Stored plans](#stored-plans)). A prune with no victims stores no plan. Its stored intent resolves id prefixes to full backup ids and `--older-than` to an absolute cutoff, so the selection does not shift as time passes. With `--if-match <token>`, the real run deletes exactly those backups or nothing: if the set changed (a new backup moved `--keep`'s line) or one of them was rewritten since, it fails with `plan_stale`. See [Previews and `--if-match`](#previews-and---if-match).
 
-`data` is `{dry_run, targets: [{target, pruned: [{id, kind, bytes}], busy: [{id}], kept, reclaimed_for_space, error}], precondition}`:
+`data` is `{dry_run, targets: [{target, pruned: [{id, kind, bytes}], busy: [{id}], kept, reclaimed_for_space, error}], precondition, plan_id, plan_expires_at, approval}`:
 
 - `bytes` is apparent: on btrfs and xfs a backup may still share most of its data with `WTF/`, so deleting it frees less.
 - `kept` counts the backups left.
@@ -2035,7 +2035,7 @@ omaddons update -t retail --if-match pc1:…         # exactly that update, or p
 
 ### Stored plans
 
-The dry runs of `install`, `update`, `pin`, `unpin`, `adopt` (when adopting), `sync` and `copy` keep the preview in the cache when it would change something. Their `data.plan_id` names the file, `data.plan_expires_at` gives its expiry as an RFC 3339 timestamp, and `data.approval` describes what the preview covers. The human output ends with `Plan <id> stored for 24 hours.` (the remaining time when reusing an older plan). These three keys are `null` on real runs. A no-op dry run has a `null` plan id and expiry, an empty approval selection, and no storage warning.
+The dry runs of `install`, `update`, `pin`, `unpin`, `adopt` (when adopting), `sync`, `copy`, `remove`, `undo`, `backup restore` and `backup prune` keep the preview in the cache when it would change something. Their `data.plan_id` names the file, `data.plan_expires_at` gives its expiry as an RFC 3339 timestamp, and `data.approval` describes what the preview covers. The human output ends with `Plan <id> stored for 24 hours.` (the remaining time when reusing an older plan). These three keys are `null` on real runs. A no-op dry run has a `null` plan id and expiry, an empty approval selection, and no storage warning. `remove`, `undo`, `backup restore` and `backup prune` keep their existing binding tokens; restore and prune still print their binding-token line by default. `errors dismiss` binds to an observation and stores no plan.
 
 A repeated preview of the same intent and binding token reuses the same plan and its original expiry. Each plan lasts 24 hours; the store holds at most 512 plans and 32 MiB, each plan at most 256 KiB. Admission clears expired plans, never evicts a live one, and declines a plan that would exceed a quota. If the store declines or fails, `plan_id` and `plan_expires_at` stay `null` and one `plan_not_stored` warning says why; the preview, its approval summary and its token stand. Clearing this cache is safe; preview again to recreate a plan. Plan writes do not ring the widget's doorbell.
 

@@ -17,6 +17,7 @@ expression: s.stable(&c.envelope)
     }
   ],
   "data": {
+    "approval": null,
     "atomic_swap": true,
     "dry_run": false,
     "folders": {
@@ -25,6 +26,8 @@ expression: s.stable(&c.envelope)
         "Foo"
       ]
     },
+    "plan_expires_at": null,
+    "plan_id": null,
     "precondition": null,
     "reload_required": "none",
     "reverted": {

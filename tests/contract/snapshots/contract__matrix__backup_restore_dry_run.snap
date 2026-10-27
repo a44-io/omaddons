@@ -7,6 +7,39 @@ expression: s.stable(&c.envelope)
   "commands": [],
   "data": {
     "addons": null,
+    "approval": {
+      "reasons": [
+        "destructive"
+      ],
+      "routine": false,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": null,
+          "asset": null,
+          "backup": "<ulid>",
+          "channel": null,
+          "fields": [],
+          "from_version": null,
+          "op": "restore",
+          "release_id": null,
+          "source": null,
+          "target_id": "retail",
+          "target_key": null,
+          "to_version": null,
+          "tx": null
+        }
+      ]
+    },
     "backup": {
       "captured_at": "<time>",
       "id": "<ulid>",
@@ -24,6 +57,8 @@ expression: s.stable(&c.envelope)
     },
     "kind": "restore",
     "mode": "whole",
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
     "precondition": "<precondition>",
     "reload_required": "restart",
     "target": {

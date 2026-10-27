@@ -878,6 +878,85 @@ fn remove() {
     insta::assert_json_snapshot!("remove_not_managed", s.stable(&c.envelope));
 }
 
+/// A stored destructive preview keeps the original M3 binding and the approval the
+/// command actually rendered; storing it never changes the client or durable state.
+#[test]
+fn remove_dry_run_stored() {
+    let s = Scene::new();
+    let log = common::tlog::tlog!();
+    let now = "2026-10-27T18:00:00Z";
+    log.step("install the addon to remove");
+    let zip = s.zip("foo");
+    support::check(
+        log.cmd(
+            &s.home,
+            &[
+                "install", "gh:o/foo", "--file", &zip, "-t", "retail", "--json",
+            ],
+        )
+        .env("OMADDONS_NOW", now)
+        .run()
+        .run,
+        0,
+    );
+    log.tree("client before removal preview", &s.home.root);
+    log.tree("state before removal preview", &s.home.state());
+    log.step("preview the removal and inspect its stored intent and approval");
+    let c = support::check(
+        log.cmd(
+            &s.home,
+            &["remove", "Foo", "-t", "retail", "--dry-run", "--json"],
+        )
+        .env("OMADDONS_NOW", now)
+        .run()
+        .run,
+        0,
+    );
+    let plan = stored_preview(&s, &c.envelope);
+    log.json("stored removal plan", &plan);
+    log.assert_eq("stored intent", &plan.intent.command_path(), &"remove");
+    log.assert_eq("destructive approval", &plan.approval.routine, &false);
+    // Reasons retain the approval registry's canonical order.
+    log.assert_eq(
+        "approval reasons",
+        &c.envelope["data"]["approval"]["reasons"],
+        &serde_json::json!(["folders_removed", "destructive"]),
+    );
+    log.assert_unchanged("client before removal preview", &s.home.root);
+    log.assert_unchanged("state before removal preview", &s.home.state());
+    insta::assert_json_snapshot!("remove_dry_run_stored", s.stable(&c.envelope));
+}
+
+#[cfg(test)]
+fn stored_preview(s: &Scene, envelope: &Value) -> omaddons::state::plans::StoredPlan {
+    use omaddons::state::plans;
+    let data = &envelope["data"];
+    let id: omaddons::model::PlanId = data["plan_id"].as_str().unwrap().parse().unwrap();
+    let paths = common::http::paths(&s.home.env);
+    let stored = plans::load(&paths.plan(&id)).unwrap();
+    assert_eq!(
+        stored.precondition.token, data["precondition"],
+        "{data}: {stored:?}"
+    );
+    assert_eq!(
+        serde_json::to_value(&stored.approval).unwrap(),
+        data["approval"],
+        "{data}: {stored:?}"
+    );
+    assert_eq!(
+        serde_json::to_value(stored.expires_at).unwrap(),
+        data["plan_expires_at"],
+        "{data}: {stored:?}"
+    );
+    assert!(stored.display_argv_agrees(), "{stored:?}");
+    assert_eq!(
+        stored.expires_at.duration_since(stored.created_at),
+        jiff::SignedDuration::from_hours(24),
+        "{stored:?}"
+    );
+    stored
+}
+
 /// Persisted formats fail closed (M3-D45): an undo refused for a newer history line this
 /// build cannot read, and a change refused up front for a record a newer omaddons wrote.
 #[test]
@@ -918,6 +997,15 @@ fn undo() {
     s.json(&["install", "gh:o/foo", "--file", &zip, "-t", "retail"], 0);
     let c = s.json(&["undo", &first], 4);
     insta::assert_json_snapshot!("undo_conflict", s.stable(&c.envelope));
+    let preview = s.json(&["undo", "--dry-run"], 0);
+    let plan = stored_preview(&s, &preview.envelope);
+    assert_eq!(plan.intent.command_path(), "undo", "{plan:?}");
+    assert!(plan.intent.destructive(), "{plan:?}");
+    assert_eq!(
+        serde_json::to_value(&plan.intent).unwrap()["selection"]["run"],
+        preview.envelope["data"]["reverted_run"],
+        "{plan:?}"
+    );
     let c = s.json(&["undo"], 0);
     insta::assert_json_snapshot!("undo_ok", s.stable(&c.envelope));
 }
@@ -1234,6 +1322,13 @@ fn backup_restore() {
     let id = common::backups::seed_backup(&client, BackupKind::Manual, at, 2).to_string();
     let restore = ["backup", "restore", id.as_str(), "-t", "retail"];
     let c = s.json(&[&restore[..], &["--dry-run"]].concat(), 0);
+    let plan = stored_preview(&s, &c.envelope);
+    assert_eq!(plan.intent.command_path(), "backup restore", "{plan:?}");
+    assert_eq!(
+        serde_json::to_value(&plan.intent).unwrap()["backup"],
+        id,
+        "{plan:?}"
+    );
     insta::assert_json_snapshot!("backup_restore_dry_run", s.stable(&c.envelope));
     let token = c.envelope["data"]["precondition"]
         .as_str()
@@ -1275,6 +1370,25 @@ fn backup_restore_addon() {
     // Addon0.lua and Addon1.lua for one character.
     let at = "2026-10-05T08:00:00Z".parse().unwrap();
     let id = common::backups::seed_backup(&client, BackupKind::Manual, at, 2).to_string();
+    let preview = s.json(
+        &[
+            "backup",
+            "restore",
+            &id,
+            "-t",
+            "retail",
+            "--addon",
+            "Addon0",
+            "--dry-run",
+        ],
+        0,
+    );
+    let plan = stored_preview(&s, &preview.envelope);
+    assert_eq!(
+        serde_json::to_value(&plan.intent).unwrap()["addons"],
+        serde_json::json!(["Addon0"]),
+        "{plan:?}"
+    );
     let c = s.json(
         &[
             "backup", "restore", &id, "-t", "retail", "--addon", "Addon0",
@@ -1321,6 +1435,9 @@ fn backup_prune() {
     let manual = seed_backup(&client, BackupKind::Manual, at("2026-10-05T10:00:00Z"), 1);
     let env = [("OMADDONS_NOW", "2026-10-15T18:30:00Z")];
     let c = s.json_env(&["backup", "prune", "-t", "retail", "--dry-run"], &env, 0);
+    let plan = stored_preview(&s, &c.envelope);
+    assert_eq!(plan.intent.command_path(), "backup prune", "{plan:?}");
+    assert!(plan.intent.destructive(), "{plan:?}");
     insta::assert_json_snapshot!("backup_prune_dry_run", s.stable(&c.envelope));
     let token = c.envelope["data"]["precondition"]
         .as_str()

@@ -231,15 +231,15 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("adopt", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<adopt::AdoptOutcome>, Network::Optional).storing_plan(),
     entry("sync", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<sync::SyncOutcome>, Network::Optional).storing_plan(),
     entry("copy", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<copy::CopyOutcome>, Network::Optional).storing_plan(),
-    entry("remove", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<remove::RemoveOutcome>, Network::None),
-    entry("undo", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<undo::UndoOutcome>, Network::None),
+    entry("remove", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<remove::RemoveOutcome>, Network::None).storing_plan(),
+    entry("undo", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<undo::UndoOutcome>, Network::None).storing_plan(),
     // Bare `backup` runs as `backup list`, bare `omarchy` as `omarchy status`: these two
     // names appear only on usage errors.
     entry("backup", Change, false, &[0, 1, 2], data_schema::<backup::BackupListOutcome>, Network::None),
     entry("backup list", Change, false, &[0, 1, 2, 3, 4], data_schema::<backup::BackupListOutcome>, Network::None),
     entry("backup create", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupCreateOutcome>, Network::None),
-    entry("backup restore", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupRestoreOutcome>, Network::None),
-    entry("backup prune", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupPruneOutcome>, Network::None),
+    entry("backup restore", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupRestoreOutcome>, Network::None).storing_plan(),
+    entry("backup prune", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupPruneOutcome>, Network::None).storing_plan(),
     entry("backup export", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupExportOutcome>, Network::None),
     entry("backup import", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup::BackupImportOutcome>, Network::None),
     entry("backup verify", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<backup_verify::BackupVerifyOutcome>, Network::None),
@@ -626,15 +626,21 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             out.emit(result)
         }
         Some(Command::Remove(args)) => {
-            let result = remove::run(ctx, args);
-            if let Ok(outcome) = &result {
+            let mut result = remove::run(ctx, args);
+            if let Ok(outcome) = &mut result {
+                if let Some(note) = intent::offer(ctx, outcome) {
+                    out.log(output::LogLevel::Debug, &note);
+                }
                 out.lock_released(outcome.lock_held_ms, output::Outcome::data(outcome).tx);
             }
             out.emit(result)
         }
         Some(Command::Undo(args)) => {
-            let result = undo::run(ctx, args);
-            if let Ok(outcome) = &result {
+            let mut result = undo::run(ctx, args);
+            if let Ok(outcome) = &mut result {
+                if let Some(note) = intent::offer(ctx, outcome) {
+                    out.log(output::LogLevel::Debug, &note);
+                }
                 for (tx, ms) in &outcome.locks {
                     out.lock_released(Some(*ms), Some(*tx));
                 }
@@ -648,13 +654,24 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
                 Some(BackupAction::List(list)) => out.emit(backup::list(ctx, list)),
                 Some(BackupAction::Create(create)) => out.emit(backup::create(ctx, create)),
                 Some(BackupAction::Restore(restore)) => {
-                    let result = backup::restore_backup(ctx, restore);
-                    if let Ok(outcome) = &result {
+                    let mut result = backup::restore_backup(ctx, restore);
+                    if let Ok(outcome) = &mut result {
+                        if let Some(note) = intent::offer(ctx, outcome) {
+                            out.log(output::LogLevel::Debug, &note);
+                        }
                         out.lock_released(outcome.lock_held_ms, output::Outcome::data(outcome).tx);
                     }
                     out.emit(result)
                 }
-                Some(BackupAction::Prune(prune)) => out.emit(backup::prune_backups(ctx, prune)),
+                Some(BackupAction::Prune(prune)) => {
+                    let mut result = backup::prune_backups(ctx, prune);
+                    if let Ok(outcome) = &mut result
+                        && let Some(note) = intent::offer(ctx, outcome)
+                    {
+                        out.log(output::LogLevel::Debug, &note);
+                    }
+                    out.emit(result)
+                }
                 Some(BackupAction::Export(export)) => out.emit(backup::export_backup(ctx, export)),
                 Some(BackupAction::Import(import)) => out.emit(backup::import_backup(ctx, import)),
                 Some(BackupAction::Verify(verify)) => out.emit(backup_verify::run(ctx, verify)),
@@ -1190,14 +1207,32 @@ mod tests {
         );
         assert!(command_entry("auth").is_none());
         assert!(COMMANDS.iter().all(|c| c.dictionary == Dictionary::General));
-        let storing: Vec<_> = COMMANDS
+    }
+
+    #[test]
+    fn the_storable_commands_are_the_intent_variants() {
+        use std::collections::BTreeSet;
+        let storing: BTreeSet<_> = COMMANDS
             .iter()
             .filter(|c| c.stores_plan)
             .map(|c| c.name)
             .collect();
+        let intents: BTreeSet<_> = intent::StoredIntent::PATHS
+            .iter()
+            .map(|(path, _)| *path)
+            .collect();
         assert_eq!(
             storing,
-            ["install", "update", "pin", "unpin", "adopt", "sync", "copy"]
+            intents,
+            "only in COMMANDS: {:?}; only in intents: {:?}",
+            storing.difference(&intents).collect::<Vec<_>>(),
+            intents.difference(&storing).collect::<Vec<_>>()
         );
+        for path in intents {
+            assert!(
+                command_entry(path).is_some_and(|row| row.mutates),
+                "{path}: a stored intent must name a mutating command"
+            );
+        }
     }
 }
