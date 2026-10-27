@@ -189,11 +189,65 @@ pub fn archive_error(fault: ArchiveFault, message: impl Into<String>, details: V
     Error::new(code, message, fix).details(details)
 }
 
-fn hostile(entry: &str, why: &str) -> Error {
+/// Why archive inspection refused an entry: `details.reason` of `unsafe_archive`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostileReason {
+    ControlCharacter,
+    AbsolutePath,
+    DriveLetter,
+    ParentDir,
+    Symlink,
+    SpecialFile,
+    FileAndDirectory,
+    DuplicateEntry,
+    CaseCollision,
+    NotUtf8,
+    SizeOverrun,
+    InvalidFolderName,
+    Ratio,
+}
+
+impl HostileReason {
+    pub const ALL: [Self; 13] = [
+        Self::ControlCharacter,
+        Self::AbsolutePath,
+        Self::DriveLetter,
+        Self::ParentDir,
+        Self::Symlink,
+        Self::SpecialFile,
+        Self::FileAndDirectory,
+        Self::DuplicateEntry,
+        Self::CaseCollision,
+        Self::NotUtf8,
+        Self::SizeOverrun,
+        Self::InvalidFolderName,
+        Self::Ratio,
+    ];
+
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::ControlCharacter => "control_character",
+            Self::AbsolutePath => "absolute_path",
+            Self::DriveLetter => "drive_letter",
+            Self::ParentDir => "parent_dir",
+            Self::Symlink => "symlink",
+            Self::SpecialFile => "special_file",
+            Self::FileAndDirectory => "file_and_directory",
+            Self::DuplicateEntry => "duplicate_entry",
+            Self::CaseCollision => "case_collision",
+            Self::NotUtf8 => "not_utf8",
+            Self::SizeOverrun => "size_overrun",
+            Self::InvalidFolderName => "invalid_folder_name",
+            Self::Ratio => "ratio",
+        }
+    }
+}
+
+fn hostile(entry: &str, reason: HostileReason, why: &str) -> Error {
     archive_error(
         ArchiveFault::Hostile,
         format!("the archive entry {entry:?} {why}"),
-        json!({ "entry": entry, "reason": why }),
+        json!({ "entry": entry, "reason": reason.wire() }),
     )
 }
 
@@ -219,7 +273,7 @@ fn ratio_exceeded(entry: &str, expanded: u64, compressed: u64, max_ratio: u64) -
         format!(
             "{entry} expands {expanded} bytes from {compressed}, past the {max_ratio}:1 compression ratio"
         ),
-        json!({ "entry": entry, "measured": expanded, "compressed": compressed, "limit": max_ratio, "reason": "ratio" }),
+        json!({ "entry": entry, "measured": expanded, "compressed": compressed, "limit": max_ratio, "reason": HostileReason::Ratio.wire() }),
     )
 }
 
@@ -241,21 +295,39 @@ const S_IFLNK: u32 = 0o120_000;
 pub fn normalize_entry(raw: &str) -> Result<Option<(String, bool)>> {
     let unified = raw.replace('\\', "/");
     if unified.chars().any(|c| c.is_ascii_control()) {
-        return Err(hostile(raw, "contains a control character"));
+        return Err(hostile(
+            raw,
+            HostileReason::ControlCharacter,
+            "contains a control character",
+        ));
     }
     if unified.starts_with('/') {
-        return Err(hostile(raw, "is an absolute path"));
+        return Err(hostile(
+            raw,
+            HostileReason::AbsolutePath,
+            "is an absolute path",
+        ));
     }
     let bytes = unified.as_bytes();
     if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        return Err(hostile(raw, "starts with a drive letter"));
+        return Err(hostile(
+            raw,
+            HostileReason::DriveLetter,
+            "starts with a drive letter",
+        ));
     }
     let is_dir = unified.ends_with('/');
     let mut parts = Vec::new();
     for part in unified.split('/') {
         match part {
             "" | "." => {}
-            ".." => return Err(hostile(raw, "climbs out of its folder with '..'")),
+            ".." => {
+                return Err(hostile(
+                    raw,
+                    HostileReason::ParentDir,
+                    "climbs out of its folder with '..'",
+                ));
+            }
             part => parts.push(part),
         }
     }
@@ -269,8 +341,12 @@ pub fn normalize_entry(raw: &str) -> Result<Option<(String, bool)>> {
 fn check_mode(mode: Option<u32>, raw: &str) -> Result<()> {
     match mode.map(|m| m & S_IFMT) {
         None | Some(0 | S_IFREG | S_IFDIR) => Ok(()),
-        Some(S_IFLNK) => Err(hostile(raw, "is a symlink")),
-        Some(_) => Err(hostile(raw, "is a device, FIFO or socket")),
+        Some(S_IFLNK) => Err(hostile(raw, HostileReason::Symlink, "is a symlink")),
+        Some(_) => Err(hostile(
+            raw,
+            HostileReason::SpecialFile,
+            "is a device, FIFO or socket",
+        )),
     }
 }
 
@@ -322,14 +398,20 @@ impl Tree {
             }
             Some((other, other_dir)) if dir && *other_dir && other == spelled => Ok(()),
             Some((other, other_dir)) => {
-                let why = match (dir, *other_dir) {
-                    (true, false) | (false, true) => {
-                        format!("is both a file and a directory (with {other:?})")
+                let (reason, why) = match (dir, *other_dir) {
+                    (true, false) | (false, true) => (
+                        HostileReason::FileAndDirectory,
+                        format!("is both a file and a directory (with {other:?})"),
+                    ),
+                    _ if other == spelled => {
+                        (HostileReason::DuplicateEntry, "appears twice".to_owned())
                     }
-                    _ if other == spelled => "appears twice".to_owned(),
-                    _ => format!("collides with {other:?} once case is ignored"),
+                    _ => (
+                        HostileReason::CaseCollision,
+                        format!("collides with {other:?} once case is ignored"),
+                    ),
                 };
-                Err(hostile(spelled, &why))
+                Err(hostile(spelled, reason, &why))
             }
         }
     }
@@ -390,7 +472,7 @@ pub fn inspect_zip<R: Read + Seek>(
         return Err(archive_error(
             ArchiveFault::Hostile,
             format!("the archive lists {count} entries but only {indexed} distinct names"),
-            json!({ "reason": "duplicate_entry", "measured": count, "distinct": indexed }),
+            json!({ "reason": HostileReason::DuplicateEntry.wire(), "measured": count, "distinct": indexed }),
         ));
     }
 
@@ -540,18 +622,23 @@ pub fn inspect_dir(dir: &Path, limits: &ArchiveLimits, table: &RulesTable) -> Re
             let Some(name) = item.file_name().to_str().map(str::to_owned) else {
                 return Err(hostile(
                     &full.display().to_string(),
+                    HostileReason::NotUtf8,
                     "has a name that is not UTF-8",
                 ));
             };
             let path = format!("{rel}/{name}");
             if name.chars().any(|c| c.is_ascii_control() || c == '\\') {
-                return Err(hostile(&path, "contains a control character or backslash"));
+                return Err(hostile(
+                    &path,
+                    HostileReason::ControlCharacter,
+                    "contains a control character or backslash",
+                ));
             }
             let kind = std::fs::symlink_metadata(&full)
                 .map_err(|e| Error::io(&full, &e, io_fix()))?
                 .file_type();
             if kind.is_symlink() {
-                return Err(hostile(&path, "is a symlink"));
+                return Err(hostile(&path, HostileReason::Symlink, "is a symlink"));
             }
             if kind.is_dir() {
                 if name == ".git" {
@@ -586,7 +673,11 @@ pub fn inspect_dir(dir: &Path, limits: &ArchiveLimits, table: &RulesTable) -> Re
                     source: FileSource::Disk(full),
                 });
             } else {
-                return Err(hostile(&path, "is a device, FIFO or socket"));
+                return Err(hostile(
+                    &path,
+                    HostileReason::SpecialFile,
+                    "is a device, FIFO or socket",
+                ));
             }
         }
     }
@@ -705,7 +796,11 @@ fn zip_error(e: zip::result::ZipError) -> Error {
 /// anything else is corruption.
 fn read_error(path: &str, e: &io::Error) -> Error {
     if e.kind() == io::ErrorKind::InvalidData && e.to_string().contains("declared") {
-        return hostile(path, "expands past the size its header declares");
+        return hostile(
+            path,
+            HostileReason::SizeOverrun,
+            "expands past the size its header declares",
+        );
     }
     malformed(format!("{path} cannot be read: {e}"), "corrupt")
 }
@@ -738,8 +833,13 @@ fn build_folders(
     }
     let mut folders: Vec<InspectedFolder> = Vec::new();
     for (prefix, name) in roots {
-        let name = FolderName::new(&name)
-            .map_err(|e| hostile(&prefix, &format!("cannot be an addon folder: {e}")))?;
+        let name = FolderName::new(&name).map_err(|e| {
+            hostile(
+                &prefix,
+                HostileReason::InvalidFolderName,
+                &format!("cannot be an addon folder: {e}"),
+            )
+        })?;
         if let Some(other) = folders.iter().find(|f| f.name == name) {
             return Err(malformed(
                 format!(
@@ -1108,6 +1208,98 @@ mod tests {
             .into_iter()
             .map(|(path, name)| format!("{path}={name}"))
             .collect()
+    }
+
+    #[test]
+    fn hostile_reason_wires_are_unique_snake_case() {
+        let mut seen = BTreeSet::new();
+        for reason in HostileReason::ALL {
+            let expected = match reason {
+                HostileReason::ControlCharacter => "control_character",
+                HostileReason::AbsolutePath => "absolute_path",
+                HostileReason::DriveLetter => "drive_letter",
+                HostileReason::ParentDir => "parent_dir",
+                HostileReason::Symlink => "symlink",
+                HostileReason::SpecialFile => "special_file",
+                HostileReason::FileAndDirectory => "file_and_directory",
+                HostileReason::DuplicateEntry => "duplicate_entry",
+                HostileReason::CaseCollision => "case_collision",
+                HostileReason::NotUtf8 => "not_utf8",
+                HostileReason::SizeOverrun => "size_overrun",
+                HostileReason::InvalidFolderName => "invalid_folder_name",
+                HostileReason::Ratio => "ratio",
+            };
+            let wire = reason.wire();
+            assert_eq!(wire, expected, "{reason:?}: wire code");
+            assert!(
+                wire.starts_with(|c: char| c.is_ascii_lowercase())
+                    && wire
+                        .bytes()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_'),
+                "{reason:?}: invalid wire {wire:?}"
+            );
+            assert!(seen.insert(wire), "{reason:?}: duplicate wire {wire:?}");
+        }
+        assert_eq!(seen.len(), 13, "every hostile reason is listed");
+    }
+
+    #[test]
+    fn hostile_reasons_are_closed_codes() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let table = RulesTable::builtin();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("Foo");
+        std::fs::create_dir(&dir).unwrap();
+        let bad_name = dir.join(OsString::from_vec(b"bad\xff.lua".to_vec()));
+        std::fs::write(&bad_name, "x").unwrap();
+        let not_utf8 = inspect_dir(&dir, &ArchiveLimits::default(), &table).unwrap_err();
+        let invalid_folder =
+            build_folders(&tree(&[".hidden/.hidden.toc"]).unwrap(), Vec::new(), &table)
+                .unwrap_err();
+        let cases = [
+            (HostileReason::ControlCharacter, normalize_entry("Foo/a\u{7}.lua").unwrap_err(), r#"the archive entry "Foo/a\u{7}.lua" contains a control character"#.to_owned()),
+            (HostileReason::AbsolutePath, normalize_entry("/etc/x").unwrap_err(), r#"the archive entry "/etc/x" is an absolute path"#.to_owned()),
+            (HostileReason::DriveLetter, normalize_entry("C:/x").unwrap_err(), r#"the archive entry "C:/x" starts with a drive letter"#.to_owned()),
+            (HostileReason::ParentDir, normalize_entry("Foo/../../x").unwrap_err(), r#"the archive entry "Foo/../../x" climbs out of its folder with '..'"#.to_owned()),
+            (HostileReason::Symlink, check_mode(Some(0o120777), "Foo/link").unwrap_err(), r#"the archive entry "Foo/link" is a symlink"#.to_owned()),
+            (HostileReason::SpecialFile, check_mode(Some(0o020644), "Foo/device").unwrap_err(), r#"the archive entry "Foo/device" is a device, FIFO or socket"#.to_owned()),
+            (HostileReason::FileAndDirectory, tree(&["Foo/x", "Foo/X/y"]).unwrap_err(), r#"the archive entry "Foo/X" is both a file and a directory (with "Foo/x")"#.to_owned()),
+            (HostileReason::DuplicateEntry, tree(&["Foo/a.lua", "Foo/a.lua"]).unwrap_err(), r#"the archive entry "Foo/a.lua" appears twice"#.to_owned()),
+            (HostileReason::CaseCollision, tree(&["Foo/a.lua", "Foo/A.lua"]).unwrap_err(), r#"the archive entry "Foo/A.lua" collides with "Foo/a.lua" once case is ignored"#.to_owned()),
+            (HostileReason::NotUtf8, not_utf8, format!("the archive entry {:?} has a name that is not UTF-8", bad_name.display().to_string())),
+            (HostileReason::SizeOverrun, read_error("Foo/Foo.lua", &io::Error::new(io::ErrorKind::InvalidData, "declared size was exceeded")), r#"the archive entry "Foo/Foo.lua" expands past the size its header declares"#.to_owned()),
+            (HostileReason::InvalidFolderName, invalid_folder, r#"the archive entry ".hidden" cannot be an addon folder: folder name ".hidden" starts with a dot"#.to_owned()),
+            (HostileReason::Ratio, ratio_exceeded("Foo/repeat.lua", 50_000_000, 1, 200), "Foo/repeat.lua expands 50000000 bytes from 1, past the 200:1 compression ratio".to_owned()),
+        ];
+        let mut covered = BTreeSet::new();
+        for (reason, error, expected_message) in cases {
+            covered.insert(reason.wire());
+            assert_eq!(
+                error.code,
+                ErrorCode::UnsafeArchive,
+                "{reason:?}: {error:?}"
+            );
+            assert_eq!(error.exit().code(), 4, "{reason:?}: {error:?}");
+            assert_eq!(
+                error.details["reason"],
+                reason.wire(),
+                "{reason:?}: {error:?}"
+            );
+            assert_eq!(
+                error.message, expected_message,
+                "{reason:?}: message bytes: {error:?}"
+            );
+        }
+        assert_eq!(
+            covered,
+            HostileReason::ALL
+                .map(HostileReason::wire)
+                .into_iter()
+                .collect(),
+            "every hostile reason is driven by a case"
+        );
     }
 
     #[test]
