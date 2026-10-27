@@ -49,5 +49,8 @@ expression: one
     "skipped": 0,
     "failed": 0
   },
-  "precondition": null
+  "precondition": null,
+  "plan_id": null,
+  "plan_expires_at": null,
+  "approval": null
 }

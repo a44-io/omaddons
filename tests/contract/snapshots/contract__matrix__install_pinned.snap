@@ -6,6 +6,7 @@ expression: s.stable(&c.envelope)
   "command": "install",
   "commands": [],
   "data": {
+    "approval": null,
     "atomic_swap": null,
     "creates_addons_dir": false,
     "dry_run": false,
@@ -34,6 +35,8 @@ expression: s.stable(&c.envelope)
       }
     ],
     "kind": null,
+    "plan_expires_at": null,
+    "plan_id": null,
     "precondition": null,
     "reload_required": "none",
     "target": {

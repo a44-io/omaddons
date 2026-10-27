@@ -249,7 +249,10 @@ fn copies_what_loads_skips_the_rest_and_undoes_byte_for_byte() {
     let human = home
         .exec(&["copy", "--from", "era", "--to", "anniversary", "--dry-run"].map(str::to_owned));
     assert_eq!(human.code, 0, "{}", human.context());
-    insta::assert_snapshot!("copy_dry_run_human", human.stdout);
+    insta::assert_snapshot!(
+        "copy_dry_run_human",
+        common::plans::redact_ulids(&human.stdout)
+    );
 
     // Skips are not failures: --strict still exits 0.
     let r = home.run(&["copy", "--from", "era", "--to", "anniversary", "--strict"]);

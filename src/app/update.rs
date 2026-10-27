@@ -13,12 +13,14 @@
 use std::collections::BTreeMap;
 
 use super::adopt::hints::{adopt_fixes, adopting};
+use super::approval::{Approval, ApprovalFlags};
 use super::engine::{Engine, recover_waiting};
+use super::intent::{self, Preview, Storable, StorableArgs, TargetScope};
 use super::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef, TargetResult,
     TargetsData, TargetsOutcome, sort_keeping_dependencies,
 };
-use super::precondition::{self, Idle, PlanBinding, PlanExtras};
+use super::precondition::{self, Idle, PlanBinding, PlanExtras, Precondition};
 use super::world::{World, names_addon};
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -72,6 +74,16 @@ pub struct UpdateOutcome {
     pub notes: Vec<String>,
     /// `-t all`'s first human line ([`all_line`]); not serialized.
     all_clients: Option<String>,
+}
+
+impl Storable for UpdateOutcome {
+    fn take_preview(&mut self) -> Option<Preview> {
+        self.inner.take_preview()
+    }
+
+    fn record_plan(&mut self, plan_id: crate::model::PlanId, expires_at: jiff::Timestamp) {
+        self.inner.record_plan(plan_id, expires_at);
+    }
 }
 
 impl Outcome for UpdateOutcome {
@@ -357,7 +369,11 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
         ..PlanExtras::default()
     };
     let run = RunId::new();
-    let (done, token): (Option<TxOutcomes>, Option<String>) = if changes.is_empty() {
+    let (done, token, plan_precondition): (
+        Option<TxOutcomes>,
+        Option<String>,
+        Option<Precondition>,
+    ) = if changes.is_empty() {
         // Every selected client: the preview said there was nothing to do on each. A
         // stale bound run changes nothing, not even a recovery.
         let idle: Vec<Idle<'_>> = targets
@@ -369,7 +385,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
             .collect();
         let token = precondition::check_noop(ctx, "update", &idle, &extras)?;
         recover_waiting(ctx, &world, "update");
-        (None, token)
+        (None, token, None)
     } else {
         let req = TxRequest {
             targets: targets
@@ -400,10 +416,11 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
             binding.as_ref().map(|b| b as &dyn Binding),
         ) {
             Ok(done) => {
-                let token = ctx
+                let precondition = ctx
                     .dry_run
-                    .then(|| precondition::plan_token("update", &done.plan, &extras));
-                (Some(done), token)
+                    .then(|| precondition::plan_precondition("update", &done.plan, &extras));
+                let token = precondition.as_ref().map(Precondition::token);
+                (Some(done), token, precondition)
             }
             Err(error) => {
                 // What the plan fetched is still worth remembering.
@@ -510,7 +527,40 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
         .flat_map(|d| &d.outcomes)
         .filter_map(|o| Some((o.tx?, o.lock_held_ms?)))
         .collect();
-    let data = data.with_precondition(token).listing(verbose);
+    let selected: Vec<&Target> = targets.iter().map(|d| &d.target).collect();
+    let preview = match done
+        .as_ref()
+        .filter(|done| done.plan.has_ops())
+        .zip(plan_precondition)
+    {
+        Some((done, p)) => intent::preview_plan(
+            ctx,
+            &StorableArgs::Update {
+                args,
+                scope: TargetScope::of(ctx.target.as_deref(), &selected),
+            },
+            p,
+            &done.plan,
+            &records,
+        )?,
+        None => None,
+    };
+    let flags = ApprovalFlags {
+        while_running: ctx.while_running,
+        ..ApprovalFlags::default()
+    };
+    let approval = if ctx.dry_run {
+        Some(match &done {
+            Some(done) => Approval::of_plan(&done.plan, &records, &flags)?,
+            None => Approval::nothing(&flags),
+        })
+    } else {
+        None
+    };
+    let data = data
+        .with_precondition(token)
+        .with_approval(approval)
+        .listing(verbose);
     let mut commands = data.undo_commands();
     commands.extend(super::status::adopt_hints(&world, &targets, &records));
     let mut unique: Vec<Warning> = Vec::new();
@@ -526,6 +576,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
             warnings: unique,
             commands,
             notes: Vec::new(),
+            preview,
         },
         strict: args.strict,
         locks,

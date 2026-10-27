@@ -17,12 +17,14 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use super::approval::{Approval, ApprovalFlags};
 use super::engine::{Engine, recover_waiting};
+use super::intent::{self, AbsPath, Preview, Storable, StorableArgs, TargetScope};
 use super::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetResult, TargetsData,
     TargetsOutcome, sort_keeping_dependencies,
 };
-use super::precondition::{self, Idle, PlanBinding, PlanExtras};
+use super::precondition::{self, Idle, PlanBinding, PlanExtras, Precondition};
 use super::resolve_args::{catalog_name, resolve_entry};
 use super::world::World;
 use crate::cli::Context;
@@ -71,6 +73,16 @@ pub struct SyncOutcome {
     pub locks: Vec<(TxId, u64)>,
     /// For `-v` log lines.
     pub notes: Vec<String>,
+}
+
+impl Storable for SyncOutcome {
+    fn take_preview(&mut self) -> Option<Preview> {
+        self.inner.take_preview()
+    }
+
+    fn record_plan(&mut self, plan_id: crate::model::PlanId, expires_at: jiff::Timestamp) {
+        self.inner.record_plan(plan_id, expires_at);
+    }
 }
 
 impl Outcome for SyncOutcome {
@@ -691,10 +703,14 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     let run = RunId::new();
     // Nothing to change anywhere: no engine, no cache, no request (unless a crash left a
     // journal to recover). A stale bound run changes nothing, not even a recovery.
-    let (done, token): (Option<TxOutcomes>, Option<String>) = if changes.is_empty() {
+    let (done, token, plan_precondition): (
+        Option<TxOutcomes>,
+        Option<String>,
+        Option<Precondition>,
+    ) = if changes.is_empty() {
         let token = precondition::check_noop(ctx, "sync", &idle, &extras)?;
         recover_waiting(ctx, &world, "sync");
-        (None, token)
+        (None, token, None)
     } else {
         let engine = Engine::new(ctx, &world, "sync")?;
         let freshness = if ctx.offline {
@@ -735,10 +751,11 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
         warnings.extend(remembered.warnings);
         notes.extend(remembered.notes);
         let done = done?;
-        let token = ctx
+        let precondition = ctx
             .dry_run
-            .then(|| precondition::plan_token("sync", &done.plan, &extras));
-        (Some(done), token)
+            .then(|| precondition::plan_precondition("sync", &done.plan, &extras));
+        let token = precondition.as_ref().map(Precondition::token);
+        (Some(done), token, precondition)
     };
 
     let mut data = match &done {
@@ -814,7 +831,53 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
         .flat_map(|d| &d.outcomes)
         .filter_map(|o| Some((o.tx?, o.lock_held_ms?)))
         .collect();
-    let data = data.with_precondition(token).listing(verbose);
+    let selected: Vec<&Target> = targets.iter().map(|d| &d.target).collect();
+    let preview = match done
+        .as_ref()
+        .filter(|done| done.plan.has_ops())
+        .zip(plan_precondition)
+    {
+        Some((done, p)) => match std::env::current_dir()
+            .map_err(|err| err.to_string())
+            .and_then(|cwd| AbsPath::resolve(&cwd, &path))
+        {
+            Ok(file) => intent::preview_plan(
+                ctx,
+                &StorableArgs::Sync {
+                    args,
+                    scope: TargetScope::of(ctx.target.as_deref(), &selected),
+                    file,
+                    default_file: args.file.is_none(),
+                },
+                p,
+                &done.plan,
+                &records,
+            )?,
+            Err(why) => {
+                ctx.notes.warn(intent::plan_not_stored(
+                    &crate::state::plans::NotStored::Io(why),
+                ));
+                None
+            }
+        },
+        None => None,
+    };
+    let flags = ApprovalFlags {
+        while_running: ctx.while_running,
+        ..ApprovalFlags::default()
+    };
+    let approval = if ctx.dry_run {
+        Some(match &done {
+            Some(done) => Approval::of_plan(&done.plan, &records, &flags)?,
+            None => Approval::nothing(&flags),
+        })
+    } else {
+        None
+    };
+    let data = data
+        .with_precondition(token)
+        .with_approval(approval)
+        .listing(verbose);
     let commands = data.undo_commands();
     let mut unique: Vec<Warning> = Vec::new();
     for w in warnings {
@@ -829,6 +892,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
             warnings: unique,
             commands,
             notes: footer,
+            preview,
         },
         strict: args.strict,
         locks,

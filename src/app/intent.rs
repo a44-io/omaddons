@@ -12,6 +12,7 @@
 
 use std::borrow::Cow;
 use std::fmt;
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
 use jiff::Timestamp;
@@ -19,7 +20,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::app::adopt::AdoptArgs;
-use crate::app::approval::ApprovalFlags;
+use crate::app::approval::{Approval, ApprovalFlags};
 use crate::app::backup::{BackupPruneArgs, BackupRestoreArgs};
 use crate::app::copy::CopyArgs;
 use crate::app::install::InstallArgs;
@@ -30,9 +31,195 @@ use crate::app::undo::UndoArgs;
 use crate::app::update::UpdateArgs;
 use crate::cli::Context;
 use crate::engine::SvPolicy;
-use crate::error::{Error, Result};
-use crate::model::{BackupId, Channel, Ref, RefKind, RunId, Target, TargetRef, TxId};
+use crate::error::{Error, Result, Suggestion, Warning, WarningCode};
+use crate::model::{BackupId, Channel, PlanId, Ref, RefKind, RunId, Target, TargetRef, TxId};
+use crate::output::{Outcome, Style};
 use crate::sources::refs::{MatchKind, ParsedRef};
+use crate::state::paths::Paths;
+use crate::state::plans::{
+    self, Admission, NotStored, StoredParts, StoredPlan, StoredPrecondition, StoredRelease,
+};
+
+/// What a storable dry run hands the plan store; never serialized.
+#[derive(Debug)]
+pub struct Preview {
+    pub intent: StoredIntent,
+    pub precondition: super::precondition::Precondition,
+    pub releases: Vec<StoredRelease>,
+    pub approval: Approval,
+    pub changes: bool,
+}
+
+/// A command outcome whose direct invocation may store its preview. `apply` calls
+/// command functions directly and never passes through this dispatch-only offer.
+pub trait Storable: Outcome {
+    fn take_preview(&mut self) -> Option<Preview>;
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp);
+}
+
+/// A command's final plan and the exact precondition it returned, before the plan
+/// goes out of scope. Intent normalization may decline storage; a broken approval
+/// invariant remains an error in the command's plan.
+pub fn preview_plan(
+    ctx: &Context,
+    args: &StorableArgs<'_>,
+    precondition: super::precondition::Precondition,
+    plan: &crate::engine::plan::Plan,
+    before: &std::collections::BTreeMap<String, crate::state::records::TargetRecord>,
+) -> Result<Option<Box<Preview>>> {
+    let intent = match StoredIntent::from_args(ctx, args) {
+        Ok(intent) => intent,
+        Err(err) => {
+            ctx.notes.warn(plan_not_stored(&NotStored::Io(format!(
+                "this preview cannot be stored: {}",
+                err.message,
+            ))));
+            return Ok(None);
+        }
+    };
+    let approval = Approval::of_plan(plan, before, &intent.approval_flags())?;
+    Ok(Some(Box::new(Preview {
+        intent,
+        precondition,
+        releases: StoredRelease::of_plan(plan),
+        approval,
+        changes: plan.has_ops(),
+    })))
+}
+
+/// Stores a preview that would change something; returns its `-v` note. Failure to
+/// keep a plan never fails the preview or takes away its binding token.
+pub fn offer<O: Storable>(ctx: &Context, outcome: &mut O) -> Option<String> {
+    offer_with_paths(ctx, outcome, Paths::from_env)
+}
+
+fn offer_with_paths<O: Storable>(
+    ctx: &Context,
+    outcome: &mut O,
+    paths: impl FnOnce() -> Result<Paths>,
+) -> Option<String> {
+    let preview = outcome.take_preview()?;
+    if !preview.changes {
+        return Some("plan store: nothing to store".into());
+    }
+    let mut report = plans::AdmissionReport::default();
+    let admission = (|| {
+        let mut human = Vec::new();
+        outcome
+            .render_human(&mut human, &Style::default())
+            .map_err(|err| NotStored::Io(err.to_string()))?;
+        let summary = String::from_utf8(human)
+            .map_err(|err| NotStored::Io(err.to_string()))?
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let created_at = crate::clock::now();
+        let ttl = jiff::SignedDuration::try_from(crate::limits::PLAN_TTL)
+            .map_err(|err| NotStored::Io(err.to_string()))?;
+        let expires_at = created_at
+            .checked_add(ttl)
+            .map_err(|err| NotStored::Io(err.to_string()))?;
+        let plan = StoredPlan {
+            plan_id: PlanId::new(),
+            created_at,
+            expires_at,
+            tool_version: env!("CARGO_PKG_VERSION").into(),
+            build_id: crate::build_info::BUILD_ID.into(),
+            display_argv: preview.intent.display_argv(),
+            intent: preview.intent,
+            actor: ctx.actor,
+            reason: ctx.reason.clone(),
+            precondition: StoredPrecondition {
+                token: preview.precondition.token(),
+                parts: StoredParts::of(&preview.precondition),
+            },
+            releases: preview.releases,
+            approval: preview.approval,
+            summary,
+        };
+        let paths = paths().map_err(|err| NotStored::Io(err.message.clone()))?;
+        let (admission, read) = plans::store(&paths, &plan);
+        report = read;
+        Ok(admission)
+    })()
+    .unwrap_or_else(Admission::NotStored);
+    let result = match admission {
+        Admission::Stored {
+            plan_id,
+            expires_at,
+            reused,
+        } => {
+            outcome.record_plan(plan_id, expires_at);
+            format!("{} {plan_id}", if reused { "reused" } else { "stored" })
+        }
+        Admission::NotStored(why) => {
+            ctx.notes.warn(plan_not_stored(&why));
+            format!("not stored ({why:?})")
+        }
+    };
+    Some(format!(
+        "plan store: listed {} plans ({}), swept {}, skipped {}, read {}; {result}",
+        report.listed,
+        if report.complete { "complete" } else { "cut" },
+        report.sweep.removed,
+        report.sweep.skipped_unreadable,
+        report.read,
+    ))
+}
+
+/// One cause-specific warning, shared by intent normalization and store admission.
+pub fn plan_not_stored(why: &NotStored) -> Warning {
+    let message = match why {
+        NotStored::Full { plans, bytes } => format!(
+            "the plan store is full ({plans} plans, {bytes} bytes): this preview was not stored; expired plans are cleared as they age, within 24 hours; the preview and its token stand"
+        ),
+        NotStored::TooLarge { .. } =>
+            "this preview's plan is larger than 256 KiB and was not stored; the preview and its token stand".into(),
+        NotStored::Busy =>
+            "the plan store stayed locked by another preview for 5 s; this preview was not stored; the preview and its token stand".into(),
+        NotStored::Io(err) => format!(
+            "the plan could not be stored ({err}); the preview and its token stand"
+        ),
+    };
+    Warning::new(WarningCode::PlanNotStored, message).with_fix(Suggestion::text(
+        "stored plans are kept in omaddons' cache directory, which is safe to empty",
+    ))
+}
+
+/// Ends human output only when a plan was kept, with its original expiry on reuse.
+pub fn render_plan_line(
+    w: &mut dyn Write,
+    plan_id: Option<&PlanId>,
+    expires_at: Option<&Timestamp>,
+) -> io::Result<()> {
+    render_plan_line_at(w, plan_id, expires_at, crate::clock::now())
+}
+
+fn render_plan_line_at(
+    w: &mut dyn Write,
+    plan_id: Option<&PlanId>,
+    expires_at: Option<&Timestamp>,
+    now: Timestamp,
+) -> io::Result<()> {
+    if let (Some(id), Some(expiry)) = (plan_id, expires_at) {
+        let seconds = expiry
+            .since(now)
+            .map_err(io::Error::other)?
+            .get_seconds()
+            .max(0);
+        let (n, unit) = if seconds >= 3_600 {
+            ((seconds + 1_800) / 3_600, "hour")
+        } else {
+            (((seconds + 30) / 60).max(1), "minute")
+        };
+        writeln!(
+            w,
+            "Plan {id} stored for {n} {unit}{}.",
+            if n == 1 { "" } else { "s" }
+        )?;
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------------------
 // Building blocks.
@@ -1082,6 +1269,239 @@ mod tests {
             progress: crate::output::ProgressSink::none(),
             notes: crate::output::RunNotes::default(),
             stdin_is_tty: false,
+        }
+    }
+
+    struct Offered {
+        preview: Option<Preview>,
+        data: Value,
+    }
+
+    impl Outcome for Offered {
+        type Data = Value;
+
+        fn command(&self) -> &'static str {
+            "remove"
+        }
+        fn data(&self) -> &Value {
+            &self.data
+        }
+        fn render_human(&self, w: &mut dyn Write, style: &Style) -> io::Result<()> {
+            writeln!(w, "{}", style.bold("Would remove Foo"))
+        }
+    }
+
+    impl Storable for Offered {
+        fn take_preview(&mut self) -> Option<Preview> {
+            self.preview.take()
+        }
+        fn record_plan(&mut self, id: PlanId, expiry: Timestamp) {
+            self.data["plan_id"] = json!(id);
+            self.data["plan_expires_at"] = json!(expiry);
+        }
+    }
+
+    fn offered(changes: bool) -> Offered {
+        let precondition = super::super::precondition::Precondition::new(
+            "remove",
+            vec![(TargetRef::parse("retail"), Some(7))],
+            json!(["Foo"]),
+            json!({"generation": 7}),
+        );
+        Offered {
+            data: json!({"plan_id": null, "plan_expires_at": null, "precondition": precondition.token()}),
+            preview: Some(Preview {
+                intent: StoredIntent::Remove(RemoveIntent {
+                    addons: vec!["Foo".into()],
+                    target: TargetRef::parse("retail"),
+                    target_id: "retail".into(),
+                    while_running: false,
+                }),
+                precondition,
+                releases: Vec::new(),
+                approval: Approval::nothing(&ApprovalFlags::default()),
+                changes,
+            }),
+        }
+    }
+
+    fn offer_paths(root: &Path) -> Paths {
+        Paths::with_roots(
+            root,
+            root.join("config"),
+            root.join("state"),
+            root.join("cache"),
+        )
+    }
+
+    #[test]
+    fn offer_stores_only_previews_that_change_something() {
+        for (name, preview, stored) in [
+            ("change", Some(true), true),
+            ("noop", Some(false), false),
+            ("real", None, false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = offer_paths(dir.path());
+            let ctx = ctx(false);
+            let mut outcome = offered(preview.unwrap_or(false));
+            if preview.is_none() {
+                outcome.preview = None;
+            }
+            let note = offer_with_paths(&ctx, &mut outcome, || Ok(paths.clone()));
+            assert_eq!(
+                outcome.data["plan_id"].is_string(),
+                stored,
+                "{name}: {:?}",
+                outcome.data
+            );
+            assert!(ctx.notes.snapshot().0.is_empty(), "{name}: {:?}", ctx.notes);
+            if stored {
+                let id: PlanId = serde_json::from_value(outcome.data["plan_id"].clone()).unwrap();
+                let plan = plans::load(&paths.plan(&id)).unwrap();
+                assert_eq!(
+                    plan.precondition.token, outcome.data["precondition"],
+                    "{name}: {plan:?}"
+                );
+                assert_eq!(
+                    plan.summary,
+                    ["Would remove Foo"],
+                    "plain human rendering, without ANSI or plan line"
+                );
+                assert_eq!(
+                    plan.expires_at.duration_since(plan.created_at),
+                    jiff::SignedDuration::from_hours(24)
+                );
+                assert!(note.unwrap().contains("stored "));
+            } else {
+                assert!(
+                    !paths.plans_dir().exists(),
+                    "{name}: no store should be opened"
+                );
+                assert_eq!(
+                    note.as_deref(),
+                    preview.map(|_| "plan store: nothing to store"),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn offer_warns_when_the_store_declines() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = offer_paths(dir.path());
+        let first_ctx = ctx(false);
+        let mut first = offered(true);
+        offer_with_paths(&first_ctx, &mut first, || Ok(paths.clone()));
+        let id: PlanId = serde_json::from_value(first.data["plan_id"].clone()).unwrap();
+        let mut template = plans::load(&paths.plan(&id)).unwrap();
+        // Different intent from the offered preview, so a full store cannot dedupe it.
+        if let StoredIntent::Remove(intent) = &mut template.intent {
+            intent.addons = vec!["Other".into()];
+        }
+        template.display_argv = template.intent.display_argv();
+        std::fs::remove_file(paths.plan(&id)).unwrap();
+        for _ in 0..crate::limits::PLANS_MAX_FILES {
+            template.plan_id = PlanId::new();
+            std::fs::write(
+                paths.plan(&template.plan_id),
+                plans::encode(&template).unwrap(),
+            )
+            .unwrap();
+        }
+        let ctx = ctx(false);
+        let mut outcome = offered(true);
+        let note = offer_with_paths(&ctx, &mut outcome, || Ok(paths.clone())).unwrap();
+        assert!(outcome.data["plan_id"].is_null(), "{:?}", outcome.data);
+        assert!(super::super::precondition::is_token(
+            outcome.data["precondition"].as_str().unwrap()
+        ));
+        let warnings = ctx.notes.snapshot().0;
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, WarningCode::PlanNotStored);
+        assert!(
+            warnings[0].message.contains("store is full"),
+            "{warnings:?}"
+        );
+        assert!(note.contains("not stored (Full"), "{note}");
+    }
+
+    #[test]
+    fn offer_io_failure_preserves_the_preview_and_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = offer_paths(dir.path());
+        std::fs::create_dir_all(paths.cache_dir()).unwrap();
+        std::fs::write(paths.plans_dir(), b"not a directory").unwrap();
+        let ctx = ctx(false);
+        let mut outcome = offered(true);
+        let before = outcome.data.clone();
+        let note = offer_with_paths(&ctx, &mut outcome, || Ok(paths)).unwrap();
+        assert_eq!(outcome.data, before);
+        let warnings = ctx.notes.snapshot().0;
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].message.contains("could not be stored"),
+            "{warnings:?}"
+        );
+        assert!(note.contains("not stored (Io"), "{note}");
+    }
+
+    #[test]
+    fn render_plan_line_rounds_the_time_left() {
+        let now: Timestamp = "2026-10-27T12:00:00Z".parse().unwrap();
+        let id = PlanId::new();
+        for (name, seconds, expected) in [
+            ("fresh", 86_400, "24 hours"),
+            ("23h40m", 85_200, "24 hours"),
+            ("22h20m", 80_400, "22 hours"),
+            ("hour", 3_600, "1 hour"),
+            ("59m", 3_540, "59 minutes"),
+            ("30s", 30, "1 minute"),
+        ] {
+            let expiry = now
+                .checked_add(jiff::SignedDuration::from_secs(seconds))
+                .unwrap();
+            let mut out = Vec::new();
+            render_plan_line_at(&mut out, Some(&id), Some(&expiry), now).unwrap();
+            assert_eq!(
+                String::from_utf8(out).unwrap(),
+                format!("Plan {id} stored for {expected}.\n"),
+                "{name}"
+            );
+        }
+        let mut out = Vec::new();
+        render_plan_line_at(&mut out, None, None, now).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn plan_not_stored_warns_with_a_prose_fix_for_each_cause() {
+        for (name, why, expected) in [
+            (
+                "full",
+                NotStored::Full {
+                    plans: 512,
+                    bytes: 4_096,
+                },
+                "store is full",
+            ),
+            (
+                "large",
+                NotStored::TooLarge { bytes: 300_000 },
+                "larger than 256 KiB",
+            ),
+            ("busy", NotStored::Busy, "locked by another preview"),
+            (
+                "io",
+                NotStored::Io("permission denied".into()),
+                "permission denied",
+            ),
+        ] {
+            let warning = plan_not_stored(&why);
+            assert_eq!(warning.code, WarningCode::PlanNotStored, "{name}");
+            assert!(warning.message.contains(expected), "{name}: {warning:?}");
+            assert!(warning.fix.unwrap().argv().is_none(), "{name}: prose fix");
         }
     }
 

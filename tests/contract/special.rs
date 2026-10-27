@@ -657,7 +657,21 @@ fn a_refused_json_spelling_still_prints_one_envelope() {
 #[test]
 fn repeated_runs_are_byte_identical() {
     let s = Scene::new();
-    s.install_foo();
+    let log = crate::common::tlog::tlog!();
+    let run = |args: &[&str], code| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        support::check(
+            log.cmd(&s.home, &argv)
+                .env("OMADDONS_NOW", "2026-10-27T18:00:00Z")
+                .run()
+                .run,
+            code,
+        )
+    };
+    log.step("install a current addon for the repeat matrix");
+    let zip = s.zip("foo");
+    run(&["install", "gh:o/foo", "--file", &zip, "-t", "retail"], 0);
     for (args, code) in [
         (&["list"][..], 0),
         (&["status"][..], 0),
@@ -665,13 +679,16 @@ fn repeated_runs_are_byte_identical() {
         (&["info", "nosuchaddon"][..], 3),
         (&["remove", "Nope", "-t", "retail"][..], 3),
         (&["completions", "bash"][..], 0),
+        (&["install", "gh:o/foo", "-t", "retail", "--dry-run"][..], 0),
+        (&["update", "--dry-run"][..], 0),
     ] {
-        let a = s.json(args, code);
-        let b = s.json(args, code);
-        assert_eq!(
-            support::without_meta(&a.run.stdout),
-            support::without_meta(&b.run.stdout),
-            "{args:?}"
+        log.step(&args.join(" "));
+        let a = run(args, code);
+        let b = run(args, code);
+        log.assert_eq(
+            "repeated envelopes, meta removed",
+            &support::without_meta(&a.run.stdout),
+            &support::without_meta(&b.run.stdout),
         );
     }
 }

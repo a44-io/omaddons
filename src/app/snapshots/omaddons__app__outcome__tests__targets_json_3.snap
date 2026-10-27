@@ -157,5 +157,8 @@ expression: three
     "skipped": 0,
     "failed": 2
   },
-  "precondition": null
+  "precondition": null,
+  "plan_id": null,
+  "plan_expires_at": null,
+  "approval": null
 }

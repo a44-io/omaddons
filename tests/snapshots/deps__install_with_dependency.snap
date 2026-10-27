@@ -17,6 +17,7 @@ expression: "support::stable(&r.expect(0))"
     }
   ],
   "data": {
+    "approval": null,
     "atomic_swap": true,
     "creates_addons_dir": false,
     "dry_run": false,
@@ -73,6 +74,8 @@ expression: "support::stable(&r.expect(0))"
       }
     ],
     "kind": "install",
+    "plan_expires_at": null,
+    "plan_id": null,
     "precondition": null,
     "reload_required": "none",
     "target": {

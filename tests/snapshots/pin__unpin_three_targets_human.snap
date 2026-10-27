@@ -1,6 +1,6 @@
 ---
 source: tests/pin.rs
-expression: dry.stdout
+expression: "common::plans::redact_ulids(&dry.stdout)"
 ---
 era: would unpin 1 addon
   Foo  would unpin at v1
@@ -11,3 +11,4 @@ turtle: would unpin 1 addon
 era: Foo is current
 retail: Foo is current
 turtle: Foo is current
+Plan <ulid> stored for 24 hours.

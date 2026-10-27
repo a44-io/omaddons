@@ -6,7 +6,40 @@ expression: s.stable(&c.envelope)
   "command": "adopt",
   "commands": [],
   "data": {
+    "approval": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": "Mystery",
+          "asset": null,
+          "backup": null,
+          "channel": "stable",
+          "fields": [],
+          "from_version": null,
+          "op": "adopt",
+          "release_id": null,
+          "source": "github",
+          "target_id": "retail",
+          "target_key": "<ulid>",
+          "to_version": "unknown",
+          "tx": null
+        }
+      ]
+    },
     "dry_run": true,
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
     "precondition": "<precondition>",
     "run": null,
     "summary": {

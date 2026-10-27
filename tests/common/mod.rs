@@ -41,6 +41,7 @@ pub mod netlog;
 pub mod pause;
 pub mod pe;
 pub mod planning;
+pub mod plans;
 pub mod privacy;
 pub mod procfs;
 pub mod product_db;

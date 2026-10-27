@@ -633,7 +633,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 
 ## The built-in catalog
 
-66 entries are embedded in the binary: 62 addons with one entry each, and BugGrabber's four builds. Each was checked against its publisher on 2026-10-14 (BugSack, ElvUI and Tukui on 2026-10-16; TellMeWhen through BattlePetBreedID, and the WoWInterface entries, on 2026-10-20; BugGrabber on 2026-10-22): the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip; the Tukui entries against the Tukui API's list and the folders and TOCs of the zip it hands out; the WoWInterface entries against the API's file details (the project's current file and its MD5) and the folders and TOCs of that file, MD5-checked (their families are where those TOCs load, since the site's compatibility tags lag); the legacy entries against their TOC's `## Interface` line; and BugGrabber against WowAce: the newest tag's TOC for the modern build, and trunk's TOC revision by revision for the legacy ones. The last column is the families the publisher declares (in `release.json`, or the TOCs' interfaces), less a family whose live client never loads the declared build: a mainline interface below retail 12's floor of 120000 declares no live retail client. It is shown by `info`, gives `search`'s `yes` or `no`, and orders lookups. A dependency or an adopted folder is matched first to entries declaring the client's family. For a dependency, other entries of the same generation are tried only after Tukui and WoWInterface. For an adopted folder, they claim it at catalog strength, but only when no entry declares the client's family. A built-in entry is never matched across generations, legacy on a modern client or the reverse. For a name without variants it never refuses an install: TOC verification decides. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but its TOCs also load on vanilla and mists; omaddons follows the declaration and refuses RaiderIO there.
+66 entries are embedded in the binary: 62 addons with one entry each, and BugGrabber's four builds. Each was checked against its publisher on 2026-10-14 (BugSack, ElvUI and Tukui on 2026-10-16; TellMeWhen through BattlePetBreedID, and the WoWInterface entries, on 2026-10-20; BugGrabber on 2026-10-22): the GitHub entries against their `releases/latest` tag, `release.json` and the addon roots inside the zip; the Tukui entries against the Tukui API's list and the folders and TOCs of the zip it hands out; the WoWInterface entries against the API's file details (the project's current file and its MD5) and the folders and TOCs of that file, MD5-checked (their families are where those TOCs load, since the site's compatibility tags lag); the legacy entries against their TOC's `## Interface` line; and BugGrabber against WowAce: the newest tag's TOC for the modern build, and trunk's TOC revision by revision for the legacy ones. The last column is the families the publisher declares (in `release.json`, or the TOCs' interfaces), less a family whose live client never loads the declared build: a mainline interface below retail 12's floor of 120000 declares no live retail client. It is shown by `info`, gives `search`'s `yes` or `no`, and orders lookups. A dependency or an adopted folder is matched first to entries declaring the client's family. For a dependency, other entries of the same generation are tried only after Tukui and WoWInterface. For an adopted folder, they claim it at catalog strength, but only when no entry declares the client's family. A built-in entry is never matched across generations, legacy on a modern client or the reverse. For a name without variants it never refuses an install: TOC verification decides. The live catalog probe records where publishers and their own TOCs disagree. As of 2026-10-15, Plater declares titan but ships no TOC Titan loads, and RaiderIO declares only mainline but also ships client-specific TOCs for vanilla and mists. Those in-range suffixed TOCs prove support, so RaiderIO installs on Classic Era and Mists Classic despite the incomplete declaration (see [load rules](#how-omaddons-decides-what-loads)).
 
 **Variants.** One name can have a build per set of client families. Each is a `variant`, and their families never overlap, so `omaddons install buggrabber` installs the build that client's family has: the newest WowAce tag on every modern client, trunk at r152 on 3.3.5a and at r130 on 2.4.3, and the 1.12-era tree outside trunk at r43 on 1.12.1. A client no variant covers gets what a name the catalog does not know gets (`not_found`, with `search` as the fix), never another family's build. BugGrabber has no 4.3.4 or 5.4.8 build: every 4.3 and 5.4-era revision needs the WowAce packager (`@localization` keywords, filled in from CurseForge's localization service), so none stays keyless unless a CurseForge source (milestone 5) offers packaged files for them. Without `-t`, a name with variants resolves for the default target's family; with no default target, `install` probes every live client with its own build and skips one no build is known for. `info` shows the variant of the selected client (else the default target's, else the modern one) and lists the other variants' families. `update`, `pin` and `unpin` find an installed variant by the name or any alias. `search` lists one hit per name, judging each client by the build it would get.
 
@@ -741,7 +741,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--json`, `--robot` | One JSON envelope on stdout (see [The JSON contract](#the-json-contract)) |
 | `--format json\|human` | Overrides `--json`; default `human`, or `OMADDONS_FORMAT=json` |
 | `-t, --target <TARGET>` (alias `--flavor`) | The client to act on: [any selector](#choosing-a-target-with--t), or `all` |
-| `--dry-run` | Show the plan without changing anything. Every command accepts it; one that changes nothing ignores it |
+| `--dry-run` | Show the plan without changing addons or settings. Every command accepts it; one that changes nothing ignores it. When `install`, `update`, `pin`, `unpin`, `adopt` (adopting), `sync` or `copy` would change something, its dry run also stores the preview for 24 hours: `data.plan_id`, `data.plan_expires_at` and `data.approval` (see [Stored plans](#stored-plans)) |
 | `--actor human\|agent\|widget` | Who is acting, recorded in history by every command that changes something. Default `OMADDONS_ACTOR`, else `human` when stdin is a terminal, else `agent`. In `history` it filters |
 | `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters); others accept and ignore it |
 | `--offline` | Fail any network access (`OMADDONS_OFFLINE=1`) |
@@ -1902,7 +1902,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `ref_ambiguous` | 3 | no | a name matches several addons or a local path; a folder `adopt` could take from several refs (one `--ref` alternative each); a backup id prefix matching several backups (`details: {prefix, candidates}`, one `backup list <id> -t <client>` each); a `backup restore --addon` whose folder another addon owns now (one `--addon folder:<F>` each) |
 | `not_found` | 3 | no | unknown name (fix `omaddons search <name>`, sending no request), path, tag, asset, transaction, run or backup id (`details: {prefix, target, newest}` for a backup); a transaction or run id prefix matching several (`details.candidates`); a settings change or a backup given to `undo`; a pruned snapshot (`details.reason: "snapshot_pruned"`); nothing to undo; an addon moved to another release between plan and commit; `backup create` of a client with no `WTF/` yet (`details.target`), or, without `-t`, of none |
 | `not_managed` | 3 | no | `remove` of an unmanaged, linked or `Blizzard_*` folder, or a name no managed addon answers to. When the name is an unmanaged folder (`update`, `pin`, `unpin`, `remove`), the fix adopts it: `omaddons adopt <folder> [--ref <catalog ref>] -t <id>`, other clients holding it as alternatives |
-| `plan_not_found` | 3 | no | reserved for stored plans (M4) |
+| `plan_not_found` | 3 | no | an unknown, unreadable or oversized stored plan (`details.reason: "unreadable"`, `details.path`) |
 | `no_compatible_release` | 3 | no | no candidate loads on the client (`details.tried` lists them), or the ref has no release to choose: none published, none on the channel (only prereleases: fix `--channel beta`), no zip asset or `release.json`, or a channel that needs GitHub's release API |
 | `game_running` | 4 | no | the running policy refuses (fix appends `--while-running`), or `undo --saved-variables restore` while the client runs; `details.reason` says why (`loaded_toc`, `legacy_client`, `policy_refuse` or `saved_variables`), and `details.running: "unknown"` appears when `/proc` could not be read and the client may be running. A failed item's error in `update`, `sync` or `copy` carries both too. Also a change to a client whose interrupted `WTF/` restore waits for the game to exit (`details.reason: "saved_variables"`, `details.journal_pending`) |
 | `protected_folder` | 4 | no | a change would touch a `Blizzard_*` folder: an archive containing one, `adopt` of one, an undo whose history names one, or the filesystem writer's own refusal |
@@ -1939,7 +1939,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 </details>
 
 <details>
-<summary><strong>Every warning code (53)</strong></summary>
+<summary><strong>Every warning code (54)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -1996,6 +1996,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `auto_backup_failed` | the automatic backup before a change failed; the change went ahead without it. The fix makes one by hand (`omaddons backup create -t <id>`) |
 | `omarchy_shell_unreachable` | `omarchy install` or `remove`: Omarchy's shell could not be reached (over SSH, or with the shell stopped), so the widget's files changed but its place on the bar did not; the fix runs the command again from the desktop session (for `remove`, `omarchy plugin disable a44.omaddons`) |
 | `target_id_reserved` | `-t all` selected the client whose id is `all`, not every client (an id wins over the keyword); only when `-t all` is given; the fix is advice: `omaddons targets rename all <new id>` |
+| `plan_not_stored` | a dry run could not store its preview: the store is full, the plan is too large, another preview held its lock, the intent could not be normalized, or a write failed. The preview and its binding token remain valid; expired plans are cleared as they age, within 24 hours |
 
 </details>
 
@@ -2028,9 +2029,67 @@ omaddons update -t retail --if-match pc1:…         # exactly that update, or p
 - **Per client.** The guarantee is per client. On each client a bound run commits exactly the previewed operations or none of them. A run over several clients commits one transaction per client, as every run does: when a client changes after the run's own check (another omaddons command committed there first), that client is refused and the others still commit. The run is then `partial`: `targets[].tx` names each committed transaction, `targets[].error` (`plan_stale`) each refused client, and a client with neither changed nothing. When no client committed, the run fails with that refusal. Nothing calls such a run atomic.
 - **Scope.** Everything the token covers is compared before anything is staged, whoever changed it. Between that check and the commit lock, another omaddons commit on the client is caught by its record generation. omaddons does not promise a compare-and-swap against another program writing into `AddOns` at the same moment: no filesystem primitive offers one.
 - **Nothing left to do.** A bound run that finds nothing left to do still compares its token. If the world moved since the preview it is `plan_stale`, not "nothing to do", so the second of two runs holding one token learns that the first one won.
-- **Dry runs.** `--if-match` is opt-in: commands without it behave as before. On a command that does not bind it is a usage error, and so is a malformed token. On `install`, `update`, `pin`, `unpin`, adopting `adopt`, `sync` and `copy`, a `--dry-run` given `--if-match` checks the token as the real run would and writes nothing: the same preview and token while it holds, `plan_stale` once it does not. On `remove`, `undo`, `backup restore`, `backup prune` and `errors dismiss`, a `--dry-run` given one previews afresh and returns the current token.
+- **Dry runs.** `--if-match` is opt-in: commands without it behave as before. On a command that does not bind it is a usage error, and so is a malformed token. On `install`, `update`, `pin`, `unpin`, adopting `adopt`, `sync` and `copy`, a `--dry-run` given `--if-match` checks the token as the real run would: the same preview and token while it holds, `plan_stale` once it does not. It changes no addons or settings, and may store the preview in the cache as described below. On `remove`, `undo`, `backup restore`, `backup prune` and `errors dismiss`, a `--dry-run` given one previews afresh and returns the current token.
 - The token is `pc1:` and 64 hex digits. Nothing is stored: it holds as long as what it describes is unchanged, and it is no credential.
 - Real runs of every binding command carry `precondition: null`. With `-v`, a dry run of `install`, `update`, `sync` or `copy` ends with the line `Run it bound to this preview: --if-match <token>`.
+
+### Stored plans
+
+The dry runs of `install`, `update`, `pin`, `unpin`, `adopt` (when adopting), `sync` and `copy` keep the preview in the cache when it would change something. Their `data.plan_id` names the file, `data.plan_expires_at` gives its expiry as an RFC 3339 timestamp, and `data.approval` describes what the preview covers. The human output ends with `Plan <id> stored for 24 hours.` (the remaining time when reusing an older plan). These three keys are `null` on real runs. A no-op dry run has a `null` plan id and expiry, an empty approval selection, and no storage warning.
+
+A repeated preview of the same intent and binding token reuses the same plan and its original expiry. Each plan lasts 24 hours; the store holds at most 512 plans and 32 MiB, each plan at most 256 KiB. Admission clears expired plans, never evicts a live one, and declines a plan that would exceed a quota. If the store declines or fails, `plan_id` and `plan_expires_at` stay `null` and one `plan_not_stored` warning says why; the preview, its approval summary and its token stand. Clearing this cache is safe; preview again to recreate a plan. Plan writes do not ring the widget's doorbell.
+
+Executing a stored plan with `apply` is planned for the next step of milestone 4. For now, run the original command with its preview's `--if-match` token as described above.
+
+### The approval summary
+
+`data.approval` is a typed summary of a dry run. `routine` is true exactly when `reasons` is empty. Each reason describes an effect that calls for review:
+
+| Reason | Effect |
+|---|---|
+| `dependency_added` | Adds an addon because another addon requires it |
+| `folders_removed` | Removes folders |
+| `local_changes_replaced` | Replaces files changed by hand |
+| `source_changed` | Takes an installed addon from another source |
+| `channel_changed` | Changes an installed addon's release channel |
+| `while_running` | Overrides the running-client policy |
+| `reinstall` | Reinstalls the recorded release |
+| `force` | Allows an ownership takeover or replacement of an unmanaged folder |
+| `downgrade` | Installs an older version |
+| `destructive` | Removes addons, undoes a change, restores settings or prunes backups |
+
+`selection` lists each change, sorted by client id, addon and operation. Each item carries `target_key` (`null` before registration), `target_id`, `addon`, `source`, `channel`, `release_id`, `asset`, `from_version`, `to_version`, `op`, `fields` (sorted record fields for an edit), `tx` (an undo's transaction) and `backup` (a restore or prune's backup). Inapplicable values are `null`, and lists are empty. Operations are `install`, `update`, `remove`, `adopt`, `edit`, `undo`, `restore` and `prune`.
+
+`scope` describes effects beyond those items: `dependencies_added`, `folders_removed`, `local_changes_replaced: {count, folders}`, `source_changed` and `while_running`. Name lists are sorted and deduplicated across clients. For example, an ordinary update can have:
+
+```json
+{
+  "routine": true,
+  "reasons": [],
+  "selection": [{
+    "target_key": "01JB8Q2VA00000000000000002",
+    "target_id": "retail",
+    "addon": "Foo",
+    "source": "github",
+    "channel": "stable",
+    "release_id": "gh:o/foo@v2",
+    "asset": "Foo.zip",
+    "from_version": "1",
+    "to_version": "2",
+    "op": "update",
+    "fields": [],
+    "tx": null,
+    "backup": null
+  }],
+  "scope": {
+    "dependencies_added": [],
+    "folders_removed": [],
+    "local_changes_replaced": {"count": 0, "folders": []},
+    "source_changed": [],
+    "while_running": false
+  }
+}
+```
 
 ### stderr events
 
@@ -2372,6 +2431,7 @@ Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDON
 | `~/.local/state/omaddons/net.log`, `net.log.1` | The request log | Yes |
 | `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `inflight/`, `trash/`, `git-home/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, the in-flight locks of planning and dry runs, staged deletions, git's empty home directory | Yes when no command is running; reinstalls then download again |
 | `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), failures retrying cannot change, and what downloading candidates taught (each archive's hash, and whether it loads on a client) | Yes; the next commands fetch and download again |
+| `~/.cache/omaddons/plans/` (`<plan_id>.json`, `<plan_id>.lease`, `.lock`) | Stored previews (`plan` 1.0, mode 0600): the command's typed intent, its binding token, the approval summary and the lines the dry run printed; at most 512 plans and 32 MiB, each at most 256 KiB; expired plans are deleted after 24 hours | Yes when no command is running; previewing again recreates them |
 | `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim, its text decoded and made safe (format 1.1; a 1.0 index is decoded once on load), refreshed after its hour | Yes; the next search or dependency lookup fetches it again |
 | `~/.cache/omaddons/doorbell.json` | A signal for the bar widget: rewritten (`{at, command, actor}`) by every write that can alter what `status --cached` reports, never by `status` | Yes; the next change writes it again |
 | `~/.cache/omaddons/errors.json` | The errors memo: what `errors` last observed per client and database (file stamps, sessions, first-read baselines, counts per session and addon), so `status` can tell new errors without reading BugGrabber's files. No message, stack or locals text | Yes; but deleting it forgets which older errors were new, except what `errors dismiss` acknowledged (kept in `errors_ack.json`) |

@@ -129,6 +129,11 @@ mod support {
         if let Some(token) = envelope["data"]["precondition"].as_str() {
             text = text.replace(token, "<precondition>");
         }
+        for (key, placeholder) in [("plan_id", "<plan>"), ("plan_expires_at", "<expires>")] {
+            if let Some(value) = envelope["data"][key].as_str() {
+                text = text.replace(value, placeholder);
+            }
+        }
         let mut stable: Value = serde_json::from_str(&text).unwrap();
         stable["meta"] = Value::from("<meta>");
         stable["tool_version"] = Value::from("<version>");
@@ -265,7 +270,10 @@ fn bare_update_is_update_all_and_upgrade_is_update() {
     assert!(bare["commands"].as_array().unwrap().is_empty());
     insta::assert_json_snapshot!("update_dry_run", stable(&bare));
     let human = home.exec(&["update".to_owned(), "--dry-run".to_owned()]);
-    insta::assert_snapshot!("update_dry_run_human", human.stdout);
+    insta::assert_snapshot!(
+        "update_dry_run_human",
+        common::plans::redact_ulids(&human.stdout)
+    );
 }
 
 #[test]

@@ -6,7 +6,70 @@ expression: stable(&bare)
   "command": "update",
   "commands": [],
   "data": {
+    "approval": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": "Foo",
+          "asset": "Foo.zip",
+          "backup": null,
+          "channel": "stable",
+          "fields": [],
+          "from_version": "v1",
+          "op": "update",
+          "release_id": "gh:o/foo@v2",
+          "source": "github",
+          "target_id": "classic",
+          "target_key": "<key:classic>",
+          "to_version": "v2",
+          "tx": null
+        },
+        {
+          "addon": "Bar",
+          "asset": "Bar.zip",
+          "backup": null,
+          "channel": "stable",
+          "fields": [],
+          "from_version": "v1",
+          "op": "update",
+          "release_id": "gh:o/bar@v2",
+          "source": "github",
+          "target_id": "retail",
+          "target_key": "<key:retail>",
+          "to_version": "v2",
+          "tx": null
+        },
+        {
+          "addon": "Foo",
+          "asset": "Foo.zip",
+          "backup": null,
+          "channel": "stable",
+          "fields": [],
+          "from_version": "v1",
+          "op": "update",
+          "release_id": "gh:o/foo@v2",
+          "source": "github",
+          "target_id": "retail",
+          "target_key": "<key:retail>",
+          "to_version": "v2",
+          "tx": null
+        }
+      ]
+    },
     "dry_run": true,
+    "plan_expires_at": "<expires>",
+    "plan_id": "<plan>",
     "precondition": "<precondition>",
     "run": null,
     "summary": {

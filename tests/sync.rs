@@ -748,6 +748,51 @@ fn a_dry_run_writes_only_the_cache_and_the_net_log() {
     assert!(path.is_file());
 }
 
+#[test]
+fn a_relative_desired_file_is_stored_as_the_absolute_file_the_preview_read() {
+    let home = two_clients();
+    let cwd = home.env.root().join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let file = cwd.join("desired.toml");
+    fs::write(&file, "[family.mainline]\naddons = [\"gh:o/foo\"]\n").unwrap();
+    let argv = [
+        "sync",
+        "./desired.toml",
+        "-t",
+        "retail",
+        "--dry-run",
+        "--json",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let output = home
+        .std_command(&argv, &[("OMADDONS_NOW", "2026-10-27T12:00:00Z")])
+        .current_dir(&cwd)
+        .output()
+        .unwrap();
+    let run = common::home::Run {
+        argv,
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8(output.stdout).unwrap(),
+        stderr: String::from_utf8(output.stderr).unwrap(),
+    };
+    let envelope = run.expect(0);
+    let plans = common::plans::plan_files(&home.env);
+    assert_eq!(plans.len(), 1, "{}", run.context());
+    let stored: Value = serde_json::from_slice(&fs::read(&plans[0]).unwrap()).unwrap();
+    assert_eq!(stored["intent"]["command"], "sync", "{stored}");
+    assert_eq!(stored["intent"]["file"], file.to_str().unwrap(), "{stored}");
+    assert_eq!(stored["intent"]["default_file"], false, "{stored}");
+    assert_eq!(
+        stored["precondition"]["token"], envelope["data"]["precondition"],
+        "{stored}"
+    );
+    assert_eq!(stored["approval"], envelope["data"]["approval"], "{stored}");
+    assert_eq!(stored["plan_id"], envelope["data"]["plan_id"], "{stored}");
+    assert!(file.is_file());
+    assert!(!home.addons("_retail_").join("Foo").exists());
+}
+
 /// Every file and directory under `root`.
 fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();

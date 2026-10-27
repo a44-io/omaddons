@@ -1,0 +1,73 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "update",
+  "commands": [],
+  "data": {
+    "approval": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": []
+    },
+    "dry_run": true,
+    "plan_expires_at": null,
+    "plan_id": null,
+    "precondition": "<precondition>",
+    "run": null,
+    "summary": {
+      "changed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "targets": 2,
+      "unchanged": 1
+    },
+    "targets": [
+      {
+        "atomic_swap": null,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [],
+        "kind": null,
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "classic",
+          "key": null
+        },
+        "tx": null
+      },
+      {
+        "atomic_swap": null,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [],
+        "kind": null,
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": null
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

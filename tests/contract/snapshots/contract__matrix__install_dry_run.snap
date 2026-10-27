@@ -6,6 +6,37 @@ expression: s.stable(&c.envelope)
   "command": "install",
   "commands": [],
   "data": {
+    "approval": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": "Foo",
+          "asset": "foo2.zip",
+          "backup": null,
+          "channel": "stable",
+          "fields": [],
+          "from_version": "1",
+          "op": "update",
+          "release_id": "gh:o/foo@sha256:59fe4208270fa7d13fec322d5f42d836917c2b7b60b81b471e0149e03475ba18",
+          "source": "github",
+          "target_id": "retail",
+          "target_key": "<ulid>",
+          "to_version": "2",
+          "tx": null
+        }
+      ]
+    },
     "atomic_swap": null,
     "creates_addons_dir": false,
     "dry_run": true,
@@ -36,6 +67,8 @@ expression: s.stable(&c.envelope)
       }
     ],
     "kind": "update",
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
     "precondition": "<precondition>",
     "reload_required": "none",
     "target": {

@@ -17,7 +17,10 @@ expression: stable(&envelope)
     }
   ],
   "data": {
+    "approval": null,
     "dry_run": false,
+    "plan_expires_at": null,
+    "plan_id": null,
     "precondition": null,
     "run": "<run>",
     "summary": {

@@ -13,11 +13,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
 
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::json;
 
+use super::approval::{Approval, ApprovalFlags};
 use super::engine::Engine;
+use super::intent::{
+    AbsPath, IntentTarget, NormalizedRef, Preview, Storable, StorableArgs, StoredIntent,
+};
 use super::outcome::{
     DepItem, ItemDeps, addon_identity, dependency_items, dependency_suffix, sorted,
 };
@@ -36,8 +41,8 @@ use crate::engine::plan::{
 use crate::engine::{Binding, TxOutcome, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::model::{
-    AddonReason, AddonRecord, Channel, FolderName, Ref, ReloadRequired, RunId, TxId, TxKind,
-    VersionConfidence, WowAceRev,
+    AddonReason, AddonRecord, Channel, FolderName, PlanId, Ref, ReloadRequired, RunId, TxId,
+    TxKind, VersionConfidence, WowAceRev,
 };
 use crate::output::{Outcome, Style};
 use crate::resolve::cache::{Freshness, ReleaseCache};
@@ -45,6 +50,7 @@ use crate::resolve::deps::BridgeDependency;
 use crate::rules::{RulesTable, TargetKind};
 use crate::sources::refs::ParsedRef;
 use crate::state::memo::CandidateFact;
+use crate::state::plans::{NotStored, StoredRelease};
 use crate::state::records::{TargetRecord, load_record};
 
 /// `install`'s own flags.
@@ -110,6 +116,13 @@ pub struct InstallData {
     /// `--dry-run`: the token `--if-match` takes to bind the real run to this preview
     /// (M4-D19); `null` on a real run.
     pub precondition: Option<String>,
+    /// The stored preview's id; `null` on a real run or when no plan was stored.
+    pub plan_id: Option<PlanId>,
+    /// When the stored preview expires; `null` when `plan_id` is.
+    #[schemars(with = "Option<String>")]
+    pub plan_expires_at: Option<Timestamp>,
+    /// What approving this preview covers; `null` on a real run.
+    pub approval: Option<Approval>,
     /// `-v` only: the target's client dir.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_dir: Option<PathBuf>,
@@ -209,6 +222,7 @@ impl InstallItem {
 #[derive(Debug)]
 pub struct InstallOutcome {
     data: InstallData,
+    preview: Option<Box<Preview>>,
     warnings: Vec<Warning>,
     commands: Vec<CommandHint>,
     strict: bool,
@@ -230,6 +244,17 @@ impl InstallOutcome {
             .iter()
             .filter(|i| i.status == ItemStatus::Failed)
             .count()
+    }
+}
+
+impl Storable for InstallOutcome {
+    fn take_preview(&mut self) -> Option<Preview> {
+        self.preview.take().map(|preview| *preview)
+    }
+
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+        self.data.plan_id = Some(plan_id);
+        self.data.plan_expires_at = Some(expires_at);
     }
 }
 
@@ -396,7 +421,7 @@ impl Outcome for InstallOutcome {
         if let Some(token) = d.precondition.as_deref().filter(|_| style.verbose > 0) {
             writeln!(w, "Run it bound to this preview: --if-match {token}")?;
         }
-        Ok(())
+        super::intent::render_plan_line(w, d.plan_id.as_ref(), d.plan_expires_at.as_ref())
     }
 }
 
@@ -778,6 +803,71 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
     let id = outcome.map_or_else(|| target.target.id.clone(), |o| o.target.clone());
     commands.extend(install_hints(&built, &unique, &id));
     let swapped = tx.is_some();
+    let precondition = ctx
+        .dry_run
+        .then(|| precondition::plan_precondition("install", &done.plan, &extras));
+    let mut approval = None;
+    let mut preview = None;
+    if let Some(precondition) = precondition.as_ref() {
+        let intent = (|| {
+            let refs = items
+                .iter()
+                .map(|item| match &item.parsed {
+                    Ok(parsed) => NormalizedRef::from_parsed(&item.request, parsed),
+                    // Unknown names are still part of a partial preview's invocation.
+                    // An invalid ref the intent cannot represent declines storage.
+                    Err(_) => NormalizedRef::try_from(item.request.trim().to_owned()),
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Error::internal)?;
+            let file = args
+                .file
+                .as_deref()
+                .map(|file| AbsPath::resolve(&cwd, file))
+                .transpose()
+                .map_err(Error::internal)?;
+            StoredIntent::from_args(
+                ctx,
+                &StorableArgs::Install {
+                    args,
+                    target: IntentTarget::of(&target.target),
+                    refs,
+                    file,
+                },
+            )
+        })();
+        match intent {
+            Ok(intent) => {
+                let summary = Approval::of_plan(&done.plan, &records, &intent.approval_flags())?;
+                approval = Some(summary.clone());
+                preview = Some(Box::new(Preview {
+                    intent,
+                    precondition: precondition.clone(),
+                    releases: StoredRelease::of_plan(&done.plan),
+                    approval: summary,
+                    changes: done.plan.has_ops(),
+                }));
+            }
+            Err(error) => {
+                approval = Some(Approval::of_plan(
+                    &done.plan,
+                    &records,
+                    &ApprovalFlags {
+                        reinstall: args.reinstall,
+                        force: args.force,
+                        while_running: ctx.while_running,
+                        destructive: false,
+                    },
+                )?);
+                if done.plan.has_ops() {
+                    ctx.notes
+                        .warn(super::intent::plan_not_stored(&NotStored::Io(format!(
+                            "this preview cannot be stored: {error}"
+                        ))));
+                }
+            }
+        }
+    }
     Ok(InstallOutcome {
         data: InstallData {
             dry_run: ctx.dry_run,
@@ -795,11 +885,13 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             reload_required: outcome.map_or(ReloadRequired::None, |o| o.reload_required),
             atomic_swap: swapped.then(|| outcome.is_none_or(|o| o.atomic_swap)),
             creates_addons_dir: outcome.is_some_and(|o| o.creates_addons_dir),
-            precondition: ctx
-                .dry_run
-                .then(|| precondition::plan_token("install", &done.plan, &extras)),
+            precondition: precondition.as_ref().map(|value| value.token()),
+            plan_id: None,
+            plan_expires_at: None,
+            approval,
             client_dir: verbose.then(|| target.target.client_dir.clone()),
         },
+        preview,
         warnings: unique,
         commands,
         strict: args.strict,
@@ -1462,8 +1554,12 @@ mod tests {
                 atomic_swap: None,
                 creates_addons_dir: false,
                 precondition: None,
+                plan_id: None,
+                plan_expires_at: None,
+                approval: None,
                 client_dir: None,
             },
+            preview: None,
             warnings: Vec::new(),
             commands: Vec::new(),
             strict,
@@ -1511,6 +1607,37 @@ mod tests {
                 )),
                 "{text}"
             );
+        }
+    }
+
+    #[test]
+    fn install_plan_fields_stay_present_and_follow_the_token() {
+        for dry_run in [false, true] {
+            let mut o = outcome(Vec::new(), None, dry_run, false);
+            let data = serde_json::to_value(o.data()).unwrap();
+            for key in ["plan_id", "plan_expires_at", "approval"] {
+                assert_eq!(data.get(key), Some(&json!(null)), "{dry_run}: {data}");
+            }
+            let text = serde_json::to_string(o.data()).unwrap();
+            assert!(
+                text.contains(
+                    r#""precondition":null,"plan_id":null,"plan_expires_at":null,"approval":null"#
+                ),
+                "{dry_run}: {text}"
+            );
+            let plan_id = PlanId::new();
+            let expires_at = "2026-10-28T00:00:00Z".parse::<Timestamp>().unwrap();
+            let approval = Approval::nothing(&ApprovalFlags::default());
+            o.data.approval = Some(approval.clone());
+            o.record_plan(plan_id, expires_at);
+            let data = serde_json::to_value(o.data()).unwrap();
+            assert_eq!(data["plan_id"], json!(plan_id), "{dry_run}: {data}");
+            assert_eq!(
+                data["plan_expires_at"],
+                json!(expires_at),
+                "{dry_run}: {data}"
+            );
+            assert_eq!(data["approval"], json!(approval), "{dry_run}: {data}");
         }
     }
 

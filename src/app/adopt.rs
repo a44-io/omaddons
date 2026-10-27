@@ -27,6 +27,7 @@ use serde::Serialize;
 
 use self::apply::{Act, Mode};
 use super::engine::Engine;
+use super::intent::{self, Preview, Storable, StorableArgs, TargetScope};
 use super::outcome::{TargetRef, TargetsData};
 use super::resolve_args::aimed_at_option;
 use super::status::modes_or_family;
@@ -81,7 +82,7 @@ pub enum AdoptData {
     /// No folders and no `--apply`.
     Report(AdoptReport),
     /// `--apply`, named folders or `--ref`: the multi-target result.
-    Adopted(TargetsData),
+    Adopted(Box<TargetsData>),
 }
 
 /// The report.
@@ -187,6 +188,7 @@ pub enum FailReason {
 #[derive(Debug)]
 pub struct AdoptOutcome {
     data: AdoptData,
+    preview: Option<Box<Preview>>,
     warnings: Vec<Warning>,
     commands: Vec<CommandHint>,
     partial: bool,
@@ -198,6 +200,18 @@ pub struct AdoptOutcome {
     pub locks: Vec<(TxId, u64)>,
     /// For `-v` log lines.
     pub notes: Vec<String>,
+}
+
+impl Storable for AdoptOutcome {
+    fn take_preview(&mut self) -> Option<Preview> {
+        self.preview.take().map(|p| *p)
+    }
+
+    fn record_plan(&mut self, plan_id: crate::model::PlanId, expires_at: jiff::Timestamp) {
+        if let AdoptData::Adopted(data) = &mut self.data {
+            data.with_plan(plan_id, expires_at);
+        }
+    }
 }
 
 impl Outcome for AdoptOutcome {
@@ -232,7 +246,10 @@ impl Outcome for AdoptOutcome {
         }
         match &self.data {
             AdoptData::Report(report) => self.render_report(w, report),
-            AdoptData::Adopted(data) => super::outcome::render(w, "adopt", data, &[]),
+            AdoptData::Adopted(data) => {
+                super::outcome::render(w, "adopt", data, &[])?;
+                intent::render_plan_line(w, data.plan_id.as_ref(), data.plan_expires_at.as_ref())
+            }
         }
     }
 }
@@ -628,16 +645,45 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
         let remembered = cache.remember(&facts);
         warnings.extend(remembered.warnings);
         notes.extend(remembered.notes);
-        let committed = committed?;
+        let mut committed = committed?;
         warnings.extend(committed.warnings.iter().cloned());
         notes.extend(committed.notes.iter().cloned());
         if let Some(error) = committed.failure() {
             return Err(error);
         }
+        let preview = if let Some(plan) = committed.preview_plan.take() {
+            let (plan, p) = *plan;
+            let normalized = over.as_ref().map(|o| o.normalized.clone()).transpose();
+            match normalized {
+                Ok(r#ref) => {
+                    let selected: Vec<_> = targets.iter().map(|d| &d.target).collect();
+                    intent::preview_plan(
+                        ctx,
+                        &StorableArgs::Adopt {
+                            args,
+                            scope: TargetScope::of(ctx.target.as_deref(), &selected),
+                            r#ref,
+                        },
+                        p,
+                        &plan,
+                        &records,
+                    )?
+                }
+                Err(why) => {
+                    ctx.notes.warn(intent::plan_not_stored(
+                        &crate::state::plans::NotStored::Io(why),
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let data = committed.data.listing(ctx.output.style.verbose > 0);
         let commands = data.undo_commands();
         return Ok(AdoptOutcome {
-            data: AdoptData::Adopted(data),
+            data: AdoptData::Adopted(Box::new(data)),
+            preview,
             warnings: unique(warnings),
             commands,
             partial: false,
@@ -697,6 +743,7 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
             targets: out_targets,
             sources_skipped,
         }),
+        preview: None,
         warnings: unique(warnings),
         commands,
         partial: verified.partial,

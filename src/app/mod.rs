@@ -224,13 +224,13 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("export", Look, true, &[0, 1, 2, 3, 4, 5], data_schema::<export::ExportOutcome>, Network::None),
     entry("history", Look, false, &[0, 1, 2, 3, 4], data_schema::<history::HistoryOutcome>, Network::None),
     entry("net-log", Look, false, &[0, 1, 2], data_schema::<net_log::NetLogOutcome>, Network::None),
-    entry("install", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<install::InstallOutcome>, Network::Optional),
-    entry("update", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<update::UpdateOutcome>, Network::Optional),
-    entry("pin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional),
-    entry("unpin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional),
-    entry("adopt", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<adopt::AdoptOutcome>, Network::Optional),
-    entry("sync", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<sync::SyncOutcome>, Network::Optional),
-    entry("copy", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<copy::CopyOutcome>, Network::Optional),
+    entry("install", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<install::InstallOutcome>, Network::Optional).storing_plan(),
+    entry("update", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<update::UpdateOutcome>, Network::Optional).storing_plan(),
+    entry("pin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional).storing_plan(),
+    entry("unpin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional).storing_plan(),
+    entry("adopt", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<adopt::AdoptOutcome>, Network::Optional).storing_plan(),
+    entry("sync", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<sync::SyncOutcome>, Network::Optional).storing_plan(),
+    entry("copy", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<copy::CopyOutcome>, Network::Optional).storing_plan(),
     entry("remove", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<remove::RemoveOutcome>, Network::None),
     entry("undo", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<undo::UndoOutcome>, Network::None),
     // Bare `backup` runs as `backup list`, bare `omarchy` as `omarchy status`: these two
@@ -473,8 +473,15 @@ impl Out<'_> {
 }
 
 /// `pin`'s and `unpin`'s `-v` lines, then the outcome.
-fn out_pin(out: &Out<'_>, result: crate::error::Result<pin::PinOutcome>) -> Exit {
-    if let Ok(outcome) = &result {
+fn out_pin(
+    ctx: &Context,
+    out: &Out<'_>,
+    mut result: crate::error::Result<pin::PinOutcome>,
+) -> Exit {
+    if let Ok(outcome) = &mut result {
+        if let Some(note) = intent::offer(ctx, outcome) {
+            out.log(output::LogLevel::Debug, &note);
+        }
         for note in &outcome.notes {
             out.log(output::LogLevel::Debug, note);
         }
@@ -559,8 +566,11 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             out.emit(result)
         }
         Some(Command::Install(args)) => {
-            let result = install::run(ctx, args);
-            if let Ok(outcome) = &result {
+            let mut result = install::run(ctx, args);
+            if let Ok(outcome) = &mut result {
+                if let Some(note) = intent::offer(ctx, outcome) {
+                    out.log(output::LogLevel::Debug, &note);
+                }
                 for note in &outcome.notes {
                     out.log(output::LogLevel::Debug, note);
                 }
@@ -569,8 +579,11 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             out.emit(result)
         }
         Some(Command::Update(args)) => {
-            let result = update::run(ctx, args);
-            if let Ok(outcome) = &result {
+            let mut result = update::run(ctx, args);
+            if let Ok(outcome) = &mut result {
+                if let Some(note) = intent::offer(ctx, outcome) {
+                    out.log(output::LogLevel::Debug, &note);
+                }
                 for note in &outcome.notes {
                     out.log(output::LogLevel::Debug, note);
                 }
@@ -580,11 +593,14 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             }
             out.emit(result)
         }
-        Some(Command::Pin(args)) => out_pin(out, pin::pin(ctx, args)),
-        Some(Command::Unpin(args)) => out_pin(out, pin::unpin(ctx, args)),
+        Some(Command::Pin(args)) => out_pin(ctx, out, pin::pin(ctx, args)),
+        Some(Command::Unpin(args)) => out_pin(ctx, out, pin::unpin(ctx, args)),
         Some(Command::Sync(args)) => {
-            let result = sync::run(ctx, args);
-            if let Ok(outcome) = &result {
+            let mut result = sync::run(ctx, args);
+            if let Ok(outcome) = &mut result {
+                if let Some(note) = intent::offer(ctx, outcome) {
+                    out.log(output::LogLevel::Debug, &note);
+                }
                 for note in &outcome.notes {
                     out.log(output::LogLevel::Debug, note);
                 }
@@ -595,8 +611,11 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             out.emit(result)
         }
         Some(Command::Copy(args)) => {
-            let result = copy::run(ctx, args);
-            if let Ok(outcome) = &result {
+            let mut result = copy::run(ctx, args);
+            if let Ok(outcome) = &mut result {
+                if let Some(note) = intent::offer(ctx, outcome) {
+                    out.log(output::LogLevel::Debug, &note);
+                }
                 for note in &outcome.notes {
                     out.log(output::LogLevel::Debug, note);
                 }
@@ -660,8 +679,11 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             out.emit(result)
         }
         Some(Command::Adopt(args)) => {
-            let result = adopt::run(ctx, args);
-            if let Ok(outcome) = &result {
+            let mut result = adopt::run(ctx, args);
+            if let Ok(outcome) = &mut result {
+                if let Some(note) = intent::offer(ctx, outcome) {
+                    out.log(output::LogLevel::Debug, &note);
+                }
                 for note in &outcome.notes {
                     out.log(output::LogLevel::Debug, note);
                 }
@@ -1167,10 +1189,15 @@ mod tests {
             Some((Group::Setup, true))
         );
         assert!(command_entry("auth").is_none());
-        assert!(
-            COMMANDS
-                .iter()
-                .all(|c| c.dictionary == Dictionary::General && !c.stores_plan)
+        assert!(COMMANDS.iter().all(|c| c.dictionary == Dictionary::General));
+        let storing: Vec<_> = COMMANDS
+            .iter()
+            .filter(|c| c.stores_plan)
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(
+            storing,
+            ["install", "update", "pin", "unpin", "adopt", "sync", "copy"]
         );
     }
 }

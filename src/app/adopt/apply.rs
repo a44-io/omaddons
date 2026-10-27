@@ -14,18 +14,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::json;
 
 use super::{AdoptArgs, GroupWork, TargetWork, index_group, toc_version};
+use crate::app::approval::{Approval, ApprovalFlags};
 use crate::app::engine::Engine;
+use crate::app::intent::NormalizedRef;
 use crate::app::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetsData,
 };
-use crate::app::precondition::{self, Idle, PlanBinding, PlanExtras};
+use crate::app::precondition::{self, Idle, PlanBinding, PlanExtras, Precondition};
 use crate::app::resolve_args::{for_family, parse_ref};
 use crate::app::world::World;
 use crate::cli::{Context, fix_argv, without_flag};
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::{resolve_one_in, with_target};
 use crate::engine::edit::{AdoptSpec, RecordEdit};
-use crate::engine::plan::RequestedChange;
+use crate::engine::plan::{Plan, RequestedChange};
 use crate::engine::{TxRequest, TxTarget};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::inventory::FolderClass;
@@ -135,6 +137,8 @@ pub(super) enum Act {
 pub(super) struct Override {
     r#ref: Ref,
     name: Option<String>,
+    /// The same parsed override, retained for a stored preview without reparsing it.
+    pub normalized: std::result::Result<NormalizedRef, String>,
 }
 
 /// `request` read as `install` reads an argument (catalog names and aliases, URLs,
@@ -155,6 +159,7 @@ pub(super) fn parse_override(
         .find(|e| e.r#ref.identity() == parsed.r#ref.identity())
         .map(|e| e.name.clone());
     Ok(Override {
+        normalized: NormalizedRef::from_parsed(request, &parsed),
         r#ref: parsed.r#ref,
         name,
     })
@@ -575,6 +580,8 @@ pub(super) struct Committed {
     pub notes: Vec<String>,
     pub locks: Vec<(TxId, u64)>,
     pub facts: Vec<CandidateFact>,
+    /// The dry run's exact plan and binding, before its parent builds the intent.
+    pub preview_plan: Option<Box<(Plan, Precondition)>>,
     /// Each failure decided here, by target id and request: with its details and
     /// alternatives, which an item's error does not keep.
     errors: Vec<(String, String, Error)>,
@@ -623,6 +630,7 @@ pub(super) fn commit(
         notes: Vec::new(),
         locks: Vec::new(),
         facts: Vec::new(),
+        preview_plan: None,
         errors: Vec::new(),
     };
     let limits = engine.archive_limits();
@@ -631,6 +639,10 @@ pub(super) fn commit(
     let mut decided: Vec<(TargetRef, ItemResult)> = Vec::new();
     let mut tx_targets: Vec<TxTarget> = Vec::new();
     let scope = noop_scope(&works, records);
+    let flags = ApprovalFlags {
+        while_running: ctx.while_running,
+        ..ApprovalFlags::default()
+    };
     for work in works {
         let TargetWork {
             discovered,
@@ -797,9 +809,15 @@ pub(super) fn commit(
         )?;
         out.facts.extend(done.plan.facts.iter().cloned());
         out.data = TargetsData::build(&done, run, &requested);
-        out.data.precondition = ctx
+        let plan_precondition = ctx
             .dry_run
-            .then(|| precondition::plan_token("adopt", &done.plan, &extras));
+            .then(|| precondition::plan_precondition("adopt", &done.plan, &extras));
+        out.data.precondition = plan_precondition.as_ref().map(Precondition::token);
+        if ctx.dry_run {
+            out.data = out
+                .data
+                .with_approval(Some(Approval::of_plan(&done.plan, records, &flags)?));
+        }
         for o in &done.outcomes {
             out.warnings.extend(o.warnings.iter().cloned());
             out.notes.extend(o.notes.iter().cloned());
@@ -808,11 +826,17 @@ pub(super) fn commit(
             }
         }
         out.warnings.extend(done.warnings.iter().cloned());
+        if let Some(p) = plan_precondition.filter(|_| done.plan.has_ops()) {
+            out.preview_plan = Some(Box::new((done.plan, p)));
+        }
     } else {
         // Even a run with nothing to adopt checks its token before any recovery.
         out.data.precondition =
             precondition::check_noop(ctx, "adopt", &scope, &PlanExtras::default())?;
         engine.recover_waiting(ctx);
+        if ctx.dry_run {
+            out.data = out.data.with_approval(Some(Approval::nothing(&flags)));
+        }
     }
     for (target, item) in decided {
         out.data.push_item(target, item);

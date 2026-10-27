@@ -98,6 +98,11 @@ mod support {
         if let Some(token) = envelope["data"]["precondition"].as_str() {
             text = text.replace(token, "<precondition>");
         }
+        for (key, placeholder) in [("plan_id", "<plan>"), ("plan_expires_at", "<expires>")] {
+            if let Some(value) = envelope["data"][key].as_str() {
+                text = text.replace(value, placeholder);
+            }
+        }
         let mut stable: Value = serde_json::from_str(&text).unwrap();
         stable["meta"] = Value::from("<meta>");
         stable["tool_version"] = Value::from("<version>");
@@ -128,7 +133,10 @@ fn a_pin_is_a_records_only_transaction_that_update_respects_and_undo_reverts() {
     home.retail_running();
     let addons = tree_hash(&home.addons("_retail_"));
     let dry = home.exec(&["pin".to_owned(), "foo".to_owned(), "--dry-run".to_owned()]);
-    insta::assert_snapshot!("pin_one_target_human", dry.stdout);
+    insta::assert_snapshot!(
+        "pin_one_target_human",
+        common::plans::redact_ulids(&dry.stdout)
+    );
     let r = home.run(&["pin", "foo"]);
     let envelope = r.expect(0);
     assert_eq!(
@@ -305,7 +313,10 @@ fn pins_fan_out_to_the_clients_that_have_the_addon() {
     let all = home.run(&["pin", "foo", "-v"]).expect(0);
     assert_eq!(all["data"]["summary"]["changed"], 1);
     let dry = home.exec(&["unpin".to_owned(), "foo".to_owned(), "--dry-run".to_owned()]);
-    insta::assert_snapshot!("unpin_three_targets_human", dry.stdout);
+    insta::assert_snapshot!(
+        "unpin_three_targets_human",
+        common::plans::redact_ulids(&dry.stdout)
+    );
     let unpinned = home.run(&["unpin", "foo"]).expect(0);
     assert_eq!(unpinned["data"]["summary"]["changed"], 3);
     insta::assert_json_snapshot!("unpin_three_targets", stable(&unpinned));

@@ -6,7 +6,40 @@ expression: s.stable(&c.envelope)
   "command": "update",
   "commands": [],
   "data": {
+    "approval": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": "WeakAuras",
+          "asset": "WeakAuras.zip",
+          "backup": null,
+          "channel": "stable",
+          "fields": [],
+          "from_version": "5.19.2",
+          "op": "update",
+          "release_id": "gh:WeakAuras/WeakAuras2@5.20.0",
+          "source": "github",
+          "target_id": "retail",
+          "target_key": "<ulid>",
+          "to_version": "5.20.0",
+          "tx": null
+        }
+      ]
+    },
     "dry_run": true,
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
     "precondition": "<precondition>",
     "run": null,
     "summary": {

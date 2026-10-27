@@ -489,13 +489,21 @@ fn a_bound_install_dry_run_compares() {
     let verbose = log.run(&scene, &[human.as_slice(), &argv(&["-v"])].concat());
     let line = format!("Run it bound to this preview: --if-match {previewed}\n");
     log.assert_eq(
-        "(without -v, with -v) ends with the token line",
+        "(without -v, with -v) contains the token line",
         &(
-            plain.ok().stdout().ends_with(&line),
-            verbose.ok().stdout().ends_with(&line),
+            plain.ok().stdout().contains(&line),
+            verbose.ok().stdout().contains(&line),
         ),
         &(false, true),
     );
+    for (name, output) in [("plain", plain.ok()), ("verbose", verbose.ok())] {
+        let text = common::plans::redact_ulids(output.stdout());
+        log.assert_eq(
+            &format!("{name} preview ends with the stored-plan line"),
+            &text.lines().last(),
+            &Some("Plan <ulid> stored for 24 hours."),
+        );
+    }
 
     log.step("bound dry run, matching");
     let bound_dry = [dry_run.as_slice(), &argv(&["--if-match", &previewed])].concat();

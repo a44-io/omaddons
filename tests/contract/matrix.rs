@@ -175,6 +175,193 @@ fn update() {
     assert_eq!(c.envelope["error"]["code"], "not_managed");
 }
 
+#[test]
+fn install_dry_run_stored() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use omaddons::state::plans;
+
+    let s = Scene::new();
+    let log = crate::common::tlog::tlog!();
+    let now = "2026-10-27T18:00:00Z";
+    let argv = ["install", "gh:o/foo", "-t", "retail", "--dry-run", "--json"];
+    let run = || {
+        support::check(
+            log.cmd(&s.home, &argv).env("OMADDONS_NOW", now).run().run,
+            0,
+        )
+    };
+    log.step("warm the source metadata and candidate facts");
+    run();
+    for path in common::plans::plan_files(&s.home.env) {
+        fs::remove_file(path).unwrap();
+    }
+    let doorbell = s.home.env.cache().join("omaddons/doorbell.json");
+    let before = fs::read(&doorbell).ok();
+    log.tree("client before preview", &s.home.root);
+
+    log.step("the completed preview stores a typed plan and rings no doorbell");
+    let c = run();
+    let data = &c.envelope["data"];
+    let id = data["plan_id"].as_str().unwrap();
+    assert!(id.parse::<ulid::Ulid>().is_ok(), "{data}");
+    let files = common::plans::plan_files(&s.home.env);
+    log.json("stored plan paths", &files);
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files[0].file_stem().unwrap().to_str(), Some(id));
+    let plan = plans::load(&files[0]).unwrap();
+    log.json("stored plan", &plan);
+    assert_eq!(plan.precondition.token, data["precondition"]);
+    assert_eq!(
+        serde_json::to_value(&plan.approval).unwrap(),
+        data["approval"]
+    );
+    assert_eq!(plan.plan_id.to_string(), id);
+    assert_eq!(
+        serde_json::to_value(plan.expires_at).unwrap(),
+        data["plan_expires_at"]
+    );
+    assert!(plan.display_argv_agrees(), "{plan:?}");
+    assert_eq!(
+        plan.display_argv,
+        ["omaddons", "install", "gh:o/foo", "-t", "retail"]
+    );
+    assert_eq!(plan.created_at, now.parse::<jiff::Timestamp>().unwrap());
+    assert_eq!(
+        plan.expires_at.duration_since(plan.created_at),
+        jiff::SignedDuration::from_hours(24)
+    );
+    assert_eq!(data["approval"]["selection"][0]["addon"], "Foo");
+    assert_eq!(data["approval"]["selection"][0]["target_id"], "retail");
+    assert_eq!(
+        fs::metadata(&files[0]).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    log.assert_eq("doorbell unchanged", &fs::read(&doorbell).ok(), &before);
+    log.assert_unchanged("client before preview", &s.home.root);
+    insta::assert_json_snapshot!("install_dry_run_stored", s.stable(&c.envelope));
+}
+
+#[test]
+fn update_dry_run_nothing() {
+    let s = Scene::new();
+    let log = crate::common::tlog::tlog!();
+    let now = "2026-10-27T18:00:00Z";
+    log.step("install the current upstream release");
+    support::check(
+        log.cmd(&s.home, &["install", "gh:o/foo", "-t", "retail", "--json"])
+            .env("OMADDONS_NOW", now)
+            .run()
+            .run,
+        0,
+    );
+    log.step("a preview with everything current stores nothing and warns nothing");
+    let c = support::check(
+        log.cmd(&s.home, &["update", "--dry-run", "--json"])
+            .env("OMADDONS_NOW", now)
+            .run()
+            .run,
+        0,
+    );
+    let data = &c.envelope["data"];
+    assert_eq!(data["plan_id"], Value::Null, "{data}");
+    assert_eq!(data["plan_expires_at"], Value::Null, "{data}");
+    assert_eq!(data["approval"]["selection"], serde_json::json!([]));
+    assert_eq!(c.envelope["warnings"], serde_json::json!([]));
+    let files = common::plans::plan_files(&s.home.env);
+    log.assert_eq("plan files", &files, &Vec::<std::path::PathBuf>::new());
+    assert!(omaddons::app::precondition::is_token(
+        data["precondition"].as_str().unwrap()
+    ));
+    insta::assert_json_snapshot!("update_dry_run_nothing", s.stable(&c.envelope));
+}
+
+#[test]
+fn install_dry_run_not_stored() {
+    use sha2::{Digest, Sha256};
+
+    let s = Scene::new();
+    let log = crate::common::tlog::tlog!();
+    let now = "2026-10-27T18:00:00Z";
+    log.step("fill the live-plan quota with a different intent");
+    let seed = support::check(
+        log.cmd(
+            &s.home,
+            &[
+                "install",
+                "gh:o/foo",
+                "-t",
+                "retail",
+                "--force",
+                "--dry-run",
+                "--json",
+            ],
+        )
+        .env("OMADDONS_NOW", now)
+        .run()
+        .run,
+        0,
+    );
+    let seed_path = common::plans::plan_files(&s.home.env).pop().unwrap();
+    let template: Value = serde_json::from_slice(&fs::read(&seed_path).unwrap()).unwrap();
+    fs::remove_file(seed_path).unwrap();
+    common::plans::plant_live(&s.home.env, &template, omaddons::limits::PLANS_MAX_FILES, 0);
+    log.json("quota template", &seed.envelope["data"]);
+    let plan_hashes = || {
+        common::plans::plan_files(&s.home.env)
+            .into_iter()
+            .map(|path| {
+                let hash: String = Sha256::digest(fs::read(&path).unwrap())
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                (path, hash)
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = plan_hashes();
+    log.json("live plan hashes", &before);
+    log.step("the ordinary preview and token survive declined admission");
+    let c = support::check(
+        log.cmd(
+            &s.home,
+            &["install", "gh:o/foo", "-t", "retail", "--dry-run", "--json"],
+        )
+        .env("OMADDONS_NOW", now)
+        .run()
+        .run,
+        0,
+    );
+    let data = &c.envelope["data"];
+    assert_eq!(data["plan_id"], Value::Null, "{data}");
+    assert_eq!(data["plan_expires_at"], Value::Null, "{data}");
+    assert!(data["approval"]["selection"].is_array(), "{data}");
+    assert!(omaddons::app::precondition::is_token(
+        data["precondition"].as_str().unwrap()
+    ));
+    let warnings = c.envelope["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0]["code"], "plan_not_stored");
+    assert!(
+        warnings[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("store is full")
+    );
+    assert_eq!(
+        c.run
+            .stderr
+            .lines()
+            .filter(|line| line.contains("plan_not_stored"))
+            .count(),
+        1,
+        "{}",
+        c.run.context()
+    );
+    log.assert_eq("live plan files unchanged", &plan_hashes(), &before);
+    insta::assert_json_snapshot!("install_dry_run_not_stored", s.stable(&c.envelope));
+}
+
 /// The M2 flags and aliases the per-command rows leave out, each with a success and a
 /// failure (the contract audit, omad-m2-updates-adoption-2hp.8.1).
 #[test]

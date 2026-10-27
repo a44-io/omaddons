@@ -6,7 +6,42 @@ expression: s.stable(&c.envelope)
   "command": "pin",
   "commands": [],
   "data": {
+    "approval": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": "Foo",
+          "asset": null,
+          "backup": null,
+          "channel": "stable",
+          "fields": [
+            "pinned"
+          ],
+          "from_version": "1",
+          "op": "edit",
+          "release_id": "gh:o/foo@sha256:7d368d9716a47c82e9f352818e9171bd38e5bbe8a93f51cfe92f8e410f0f886f",
+          "source": "github",
+          "target_id": "retail",
+          "target_key": "<ulid>",
+          "to_version": "1",
+          "tx": null
+        }
+      ]
+    },
     "dry_run": true,
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
     "precondition": "<precondition>",
     "run": null,
     "summary": {

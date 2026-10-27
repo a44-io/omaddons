@@ -12,12 +12,14 @@
 
 use std::collections::BTreeMap;
 
+use super::approval::{Approval, ApprovalFlags};
 use super::engine::{Engine, recover_waiting};
+use super::intent::{self, IntentTarget, Preview, Storable, StorableArgs};
 use super::outcome::{
     ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef, TargetResult,
     TargetsData, TargetsOutcome, header, item_detail, item_name, sort_keeping_dependencies,
 };
-use super::precondition::{self, Idle, PlanBinding, PlanExtras};
+use super::precondition::{self, Idle, PlanBinding, PlanExtras, Precondition};
 use super::resolve_args::catalog_name;
 use super::world::{World, names_addon};
 use crate::cli::Context;
@@ -69,6 +71,16 @@ pub struct CopyOutcome {
     pub locks: Vec<(TxId, u64)>,
     /// For `-v` log lines.
     pub notes: Vec<String>,
+}
+
+impl Storable for CopyOutcome {
+    fn take_preview(&mut self) -> Option<Preview> {
+        self.inner.take_preview()
+    }
+
+    fn record_plan(&mut self, plan_id: crate::model::PlanId, expires_at: jiff::Timestamp) {
+        self.inner.record_plan(plan_id, expires_at);
+    }
 }
 
 impl Outcome for CopyOutcome {
@@ -160,7 +172,7 @@ impl Outcome for CopyOutcome {
         if let Some(token) = data.precondition.as_deref().filter(|_| style.verbose > 0) {
             writeln!(w, "Run it bound to this preview: --if-match {token}")?;
         }
-        Ok(())
+        intent::render_plan_line(w, data.plan_id.as_ref(), data.plan_expires_at.as_ref())
     }
 }
 
@@ -303,7 +315,11 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
         copy_source: copy_source(&from.target, source),
         ..PlanExtras::default()
     };
-    let (done, token): (Option<TxOutcomes>, Option<String>) = if changes.is_empty() {
+    let (done, token, plan_precondition): (
+        Option<TxOutcomes>,
+        Option<String>,
+        Option<Precondition>,
+    ) = if changes.is_empty() {
         // `--to`, the one client a copy changes. A stale bound run changes nothing, not
         // even a recovery.
         let idle = [Idle {
@@ -312,7 +328,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
         }];
         let token = precondition::check_noop(ctx, "copy", &idle, &extras)?;
         recover_waiting(ctx, &world, "copy");
-        (None, token)
+        (None, token, None)
     } else {
         // The run the token describes: a dry run's, or a bound run's to compare.
         let witness = precondition::witnessing(ctx).map(|mut scope| {
@@ -345,10 +361,11 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             binding.as_ref().map(|b| b as &dyn Binding),
         ) {
             Ok(done) => {
-                let token = ctx
+                let precondition = ctx
                     .dry_run
-                    .then(|| precondition::plan_token("copy", &done.plan, &extras));
-                (Some(done), token)
+                    .then(|| precondition::plan_precondition("copy", &done.plan, &extras));
+                let token = precondition.as_ref().map(Precondition::token);
+                (Some(done), token, precondition)
             }
             Err(error) => {
                 // What the plan fetched is still worth remembering.
@@ -404,7 +421,40 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
         .flat_map(|d| &d.outcomes)
         .filter_map(|o| Some((o.tx?, o.lock_held_ms?)))
         .collect();
-    let data = data.with_precondition(token).listing(verbose);
+    let preview = match done
+        .as_ref()
+        .filter(|done| done.plan.has_ops())
+        .zip(plan_precondition)
+    {
+        Some((done, p)) => intent::preview_plan(
+            ctx,
+            &StorableArgs::Copy {
+                args,
+                from: IntentTarget::of(&from.target),
+                to: IntentTarget::of(&to.target),
+            },
+            p,
+            &done.plan,
+            &records,
+        )?,
+        None => None,
+    };
+    let flags = ApprovalFlags {
+        while_running: ctx.while_running,
+        ..ApprovalFlags::default()
+    };
+    let approval = if ctx.dry_run {
+        Some(match &done {
+            Some(done) => Approval::of_plan(&done.plan, &records, &flags)?,
+            None => Approval::nothing(&flags),
+        })
+    } else {
+        None
+    };
+    let data = data
+        .with_precondition(token)
+        .with_approval(approval)
+        .listing(verbose);
     let commands = data.undo_commands();
     let mut unique: Vec<Warning> = Vec::new();
     for w in warnings {
@@ -419,6 +469,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
             warnings: unique,
             commands,
             notes: Vec::new(),
+            preview,
         },
         strict: args.strict,
         family: to.target.family,
@@ -737,6 +788,7 @@ mod tests {
                 warnings: Vec::new(),
                 commands: Vec::new(),
                 notes: Vec::new(),
+                preview: None,
             },
             strict: false,
             family: Family::Tbc,

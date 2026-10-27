@@ -17,6 +17,7 @@ expression: "support::stable(&envelope)"
     }
   ],
   "data": {
+    "approval": null,
     "atomic_swap": true,
     "creates_addons_dir": false,
     "dry_run": false,
@@ -53,6 +54,8 @@ expression: "support::stable(&envelope)"
       }
     ],
     "kind": "install",
+    "plan_expires_at": null,
+    "plan_id": null,
     "precondition": null,
     "reload_required": "none",
     "target": {

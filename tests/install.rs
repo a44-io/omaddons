@@ -66,6 +66,8 @@ mod support {
             (&envelope["data"]["tx"], "<tx>"),
             (&envelope["data"]["target"]["key"], "<key>"),
             (&envelope["data"]["precondition"], "<precondition>"),
+            (&envelope["data"]["plan_id"], "<plan>"),
+            (&envelope["data"]["plan_expires_at"], "<expires>"),
         ] {
             if let Some(v) = value.as_str() {
                 text = text.replace(v, placeholder);

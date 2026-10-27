@@ -13,7 +13,9 @@
 use std::collections::BTreeMap;
 
 use super::adopt::hints::{adopt_fixes, adopting};
+use super::approval::{Approval, ApprovalFlags};
 use super::engine::{Engine, recover_waiting};
+use super::intent::{self, Preview, Storable, StorableArgs, TargetScope};
 use super::outcome::{
     ItemDeps, ItemRequest, ItemResult, ItemStatus, TargetRef, TargetsData, TargetsOutcome,
 };
@@ -83,6 +85,16 @@ pub struct PinOutcome {
     pub locks: Vec<(TxId, u64)>,
     /// For `-v` log lines.
     pub notes: Vec<String>,
+}
+
+impl Storable for PinOutcome {
+    fn take_preview(&mut self) -> Option<Preview> {
+        self.inner.take_preview()
+    }
+
+    fn record_plan(&mut self, plan_id: crate::model::PlanId, expires_at: jiff::Timestamp) {
+        self.inner.record_plan(plan_id, expires_at);
+    }
 }
 
 impl Outcome for PinOutcome {
@@ -246,6 +258,11 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
     let records_only = !matches!(mode, Mode::Pin { version: Some(_) });
     let mut data = TargetsData::assemble(&[], &[], &[], ctx.dry_run, run, &[]);
     let mut locks = Vec::new();
+    let mut preview = None;
+    let flags = ApprovalFlags {
+        while_running: ctx.while_running,
+        ..ApprovalFlags::default()
+    };
     let token;
     if !changes.is_empty() {
         let engine = Engine::new(ctx, &world, command)?;
@@ -289,12 +306,41 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
         );
         let remembered = cache.remember(done.as_ref().map_or(&[][..], |d| &d.plan.facts));
         let done = done?;
-        token = ctx
+        let plan_precondition = ctx
             .dry_run
-            .then(|| precondition::plan_token(command, &done.plan, &extras));
+            .then(|| precondition::plan_precondition(command, &done.plan, &extras));
+        token = plan_precondition.as_ref().map(|p| p.token());
         warnings.extend(remembered.warnings);
         notes.extend(remembered.notes);
         data = TargetsData::build(&done, run, &requested);
+        if ctx.dry_run {
+            data = data.with_approval(Some(Approval::of_plan(&done.plan, &records, &flags)?));
+            if let Some(p) = plan_precondition.filter(|_| done.plan.has_ops()) {
+                let selected: Vec<_> = targets.iter().map(|d| &d.target).collect();
+                let scope = TargetScope::of(ctx.target.as_deref(), &selected);
+                let pin_args = PinArgs {
+                    addon: addon.to_owned(),
+                    version: match mode {
+                        Mode::Pin { version } => version.map(str::to_owned),
+                        Mode::Unpin => None,
+                    },
+                };
+                let unpin_args = UnpinArgs {
+                    addon: addon.to_owned(),
+                };
+                let args = match mode {
+                    Mode::Pin { .. } => StorableArgs::Pin {
+                        args: &pin_args,
+                        scope,
+                    },
+                    Mode::Unpin => StorableArgs::Unpin {
+                        args: &unpin_args,
+                        scope,
+                    },
+                };
+                preview = intent::preview_plan(ctx, &args, p, &done.plan, &records)?;
+            }
+        }
         for o in &done.outcomes {
             warnings.extend(o.warnings.iter().cloned());
             notes.extend(o.notes.iter().cloned());
@@ -326,6 +372,9 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
             &PlanExtras::default(),
         )?;
         recover_waiting(ctx, &world, command);
+        if ctx.dry_run {
+            data = data.with_approval(Some(Approval::nothing(&flags)));
+        }
     }
     for (target, item) in unchanged {
         data.push_item(target, item);
@@ -362,6 +411,7 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
             warnings: unique,
             commands,
             notes: hints,
+            preview,
         },
         locks,
         notes,

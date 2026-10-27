@@ -1,7 +1,6 @@
 ---
 source: tests/copy.rs
-assertion_line: 200
-expression: human.stdout
+expression: "common::plans::redact_ulids(&human.stdout)"
 ---
 anniversary: would install 4 addons
   Foo  v1 (would install)
@@ -9,3 +8,4 @@ anniversary: would install 4 addons
   Req  v1 (would install)
   Lib  v1 (would install) (dependency of Req)
   skipped: Bar (no build for tbc), Loc (local source), Qux (already installed)
+Plan <ulid> stored for 24 hours.

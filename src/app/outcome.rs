@@ -12,9 +12,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use crate::app::approval::Approval;
+use crate::app::intent::{Preview, Storable, render_plan_line};
 use crate::engine::TxOutcome;
 use crate::engine::TxOutcomes;
 use crate::engine::edit::EditField;
@@ -23,7 +26,8 @@ use crate::engine::plan::{
 };
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Suggestion, Warning};
 use crate::model::{
-    AddonReason, AddonRecord, FolderName, Ref, ReloadRequired, RunId, TargetKey, TxId, TxKind,
+    AddonReason, AddonRecord, FolderName, PlanId, Ref, ReloadRequired, RunId, TargetKey, TxId,
+    TxKind,
 };
 use crate::output::{Outcome, Style};
 use crate::resolve::deps::BridgeDependency;
@@ -271,6 +275,13 @@ pub struct TargetsData {
     /// `--dry-run`: the token `--if-match` takes to bind the real run to this preview (one
     /// token for the whole run); `null` for a real run, and until the command binds.
     pub precondition: Option<String>,
+    /// The stored preview's id; `null` on real runs, no-ops and declined stores.
+    pub plan_id: Option<PlanId>,
+    /// The stored preview's expiry; `null` when no plan was stored.
+    #[schemars(with = "Option<String>")]
+    pub plan_expires_at: Option<Timestamp>,
+    /// What approving this dry run covers; `null` on a real run.
+    pub approval: Option<Approval>,
 }
 
 /// One target's result.
@@ -547,6 +558,9 @@ impl TargetsData {
             targets,
             summary: Summary::default(),
             precondition: None,
+            plan_id: None,
+            plan_expires_at: None,
+            approval: None,
         };
         data.recount();
         data
@@ -594,6 +608,19 @@ impl TargetsData {
     pub fn with_precondition(mut self, token: Option<String>) -> Self {
         self.precondition = token;
         self
+    }
+
+    /// Adds the dry run's typed approval, without storing its preview.
+    #[must_use]
+    pub fn with_approval(mut self, approval: Option<Approval>) -> Self {
+        self.approval = approval;
+        self
+    }
+
+    /// Records the plan only after its file was stored successfully.
+    pub fn with_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+        self.plan_id = Some(plan_id);
+        self.plan_expires_at = Some(expires_at);
     }
 
     /// Drops `unchanged` items unless `verbose` (`summary` keeps counting them).
@@ -1050,6 +1077,18 @@ pub struct TargetsOutcome {
     pub commands: Vec<CommandHint>,
     /// Lines the command adds after the targets (`sync does not update; …`).
     pub notes: Vec<String>,
+    /// Kept until dispatch offers this dry run to the plan store.
+    pub(crate) preview: Option<Box<Preview>>,
+}
+
+impl Storable for TargetsOutcome {
+    fn take_preview(&mut self) -> Option<Preview> {
+        self.preview.take().map(|preview| *preview)
+    }
+
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+        self.data.with_plan(plan_id, expires_at);
+    }
 }
 
 impl Outcome for TargetsOutcome {
@@ -1086,7 +1125,11 @@ impl Outcome for TargetsOutcome {
         {
             writeln!(w, "Run it bound to this preview: --if-match {token}")?;
         }
-        Ok(())
+        render_plan_line(
+            w,
+            self.data.plan_id.as_ref(),
+            self.data.plan_expires_at.as_ref(),
+        )
     }
 }
 
@@ -1539,6 +1582,57 @@ mod tests {
     }
 
     #[test]
+    fn targets_data_keys_are_null_until_set() {
+        let outcomes = TxOutcomes {
+            plan: crate::engine::plan::Plan::idle(&[], &[], crate::model::Actor::Agent),
+            outcomes: Vec::new(),
+            failures: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let approval = Approval::nothing(&crate::app::approval::ApprovalFlags::default());
+        let plan_id: PlanId = "01JB8Q2VR00000000000000001".parse().unwrap();
+        let expires: Timestamp = "2026-10-28T00:00:00Z".parse().unwrap();
+        for (case, data) in [
+            ("build", TargetsData::build(&outcomes, run(), &[])),
+            (
+                "assemble",
+                TargetsData::assemble(&[], &[], &[], true, run(), &[]),
+            ),
+        ] {
+            let json = serde_json::to_value(&data).unwrap();
+            for key in ["plan_id", "plan_expires_at", "approval"] {
+                assert!(
+                    json.as_object().unwrap().contains_key(key),
+                    "{case}: {json}"
+                );
+                assert!(json[key].is_null(), "{case}: {key}: {json}");
+            }
+            let text = serde_json::to_string(&data).unwrap();
+            let keys = ["precondition", "plan_id", "plan_expires_at", "approval"];
+            for pair in keys.windows(2) {
+                let before = text.find(&format!("\"{}\":", pair[0])).unwrap();
+                let after = text.find(&format!("\"{}\":", pair[1])).unwrap();
+                assert!(before < after, "{case}: {pair:?}: {text}");
+            }
+            let mut set = data.with_approval(Some(approval.clone()));
+            set.with_plan(plan_id, expires);
+            let json = serde_json::to_value(&set).unwrap();
+            assert_eq!(json["plan_id"], plan_id.to_string(), "{case}: {json}");
+            assert_eq!(
+                json["plan_expires_at"],
+                expires.to_string(),
+                "{case}: {json}"
+            );
+            assert_eq!(
+                json["approval"],
+                serde_json::to_value(&approval).unwrap(),
+                "{case}: {json}"
+            );
+            assert!(set.with_approval(None).approval.is_none(), "{case}");
+        }
+    }
+
+    #[test]
     fn the_token_line_is_shown_only_under_verbose() {
         let token = format!("pc1:{}", "0123456789abcdef".repeat(4));
         let line = format!("Run it bound to this preview: --if-match {token}\n");
@@ -1548,6 +1642,7 @@ mod tests {
             warnings: Vec::new(),
             commands: Vec::new(),
             notes: vec!["a note".to_owned()],
+            preview: None,
         };
         let human = |o: &TargetsOutcome, verbose: u8| {
             let mut out = Vec::new();
@@ -1583,6 +1678,24 @@ mod tests {
             human(&unbound, 0),
             "without -v the output is unchanged"
         );
+        let mut stored = bound;
+        let plan_id: PlanId = "01JB8Q2VR00000000000000001".parse().unwrap();
+        let expires = crate::clock::now()
+            .checked_add(jiff::SignedDuration::from_hours(24))
+            .unwrap();
+        stored.data.with_plan(plan_id, expires);
+        for verbose in [0, 1] {
+            let text = human(&stored, verbose);
+            assert!(
+                text.ends_with(&format!("Plan {plan_id} stored for 24 hours.\n")),
+                "verbose {verbose}: {text}"
+            );
+            assert_eq!(
+                text.contains(&line),
+                verbose > 0,
+                "verbose {verbose}: {text}"
+            );
+        }
     }
 
     /// The command's error when one target's commit failed with `error` and so did its

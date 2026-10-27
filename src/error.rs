@@ -349,6 +349,8 @@ warning_codes! {
     /// `-t all` selected the client whose id is `all`, not every client: the id wins over
     /// the keyword.
     TargetIdReserved            = "target_id_reserved";
+    /// A dry run did not store its plan; the preview and its binding token stand.
+    PlanNotStored               = "plan_not_stored";
 }
 
 impl fmt::Display for WarningCode {
@@ -896,7 +898,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 53);
+        assert_eq!(WarningCode::ALL.len(), 54);
         assert_eq!(WarningCode::TargetIdReserved.wire(), "target_id_reserved");
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());

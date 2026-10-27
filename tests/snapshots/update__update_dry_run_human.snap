@@ -1,6 +1,6 @@
 ---
 source: tests/update.rs
-expression: human.stdout
+expression: "common::plans::redact_ulids(&human.stdout)"
 ---
 classic: would update 1 addon
   Foo  v1 → v2
@@ -8,3 +8,4 @@ era: nothing to update
 retail: would update 2 addons
   Bar  v1 → v2
   Foo  v1 → v2
+Plan <ulid> stored for 24 hours.

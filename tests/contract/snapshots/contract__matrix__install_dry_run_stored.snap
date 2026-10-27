@@ -1,0 +1,86 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "data": {
+    "approval": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": "Foo",
+          "asset": "Foo.zip",
+          "backup": null,
+          "channel": "stable",
+          "fields": [],
+          "from_version": null,
+          "op": "install",
+          "release_id": "gh:o/foo@v1",
+          "source": "github",
+          "target_id": "retail",
+          "target_key": null,
+          "to_version": "v1",
+          "tx": null
+        }
+      ]
+    },
+    "atomic_swap": null,
+    "creates_addons_dir": false,
+    "dry_run": true,
+    "items": [
+      {
+        "bridge_dependencies": [],
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [
+            "Foo"
+          ],
+          "recorded": [],
+          "removed": [],
+          "replaced": [],
+          "skipped": []
+        },
+        "from_version": null,
+        "name": "Foo",
+        "reason": "explicit",
+        "ref": "gh:o/foo",
+        "request": "gh:o/foo",
+        "required_by": [],
+        "status": "installed",
+        "to_version": "v1",
+        "unresolved": [],
+        "version_confidence": "release"
+      }
+    ],
+    "kind": "install",
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
+    "precondition": "<precondition>",
+    "reload_required": "none",
+    "target": {
+      "id": "retail",
+      "key": null
+    },
+    "tx": null
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

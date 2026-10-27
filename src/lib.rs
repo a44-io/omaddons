@@ -13,6 +13,7 @@ pub mod backup;
 pub mod build_info;
 pub mod cli;
 pub mod clock;
+pub mod contract;
 pub mod discover;
 pub mod drift;
 pub mod engine;
