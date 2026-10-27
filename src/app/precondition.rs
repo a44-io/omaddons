@@ -115,13 +115,14 @@ impl Precondition {
     }
 
     /// The four parts' canonical JSON texts, in token order: what each field hashes (for
-    /// test logs, and a stored plan's `precondition.parts`).
+    /// test logs).
     pub fn parts(&self) -> [String; 4] {
         self.canonical()
     }
 
-    /// Each part's canonical JSON, in token order. Keys sort before provisional ids.
-    fn canonical(&self) -> [String; 4] {
+    /// The four parts' values, in token order, as a stored plan keeps them
+    /// (`precondition.parts`): [`token_of_parts`] of them is this token.
+    pub fn part_values(&self) -> [Value; 4] {
         let mut targets = self.targets.clone();
         targets.sort();
         targets.dedup();
@@ -140,12 +141,29 @@ impl Precondition {
             self.selection.clone(),
             self.observed.clone(),
         ]
-        .map(|value| {
-            let mut text = String::new();
-            canonical(&value, &mut text);
-            text
-        })
     }
+
+    /// Each part's canonical JSON, in token order. Keys sort before provisional ids.
+    fn canonical(&self) -> [String; 4] {
+        self.part_values().map(|value| canonical_text(&value))
+    }
+}
+
+/// The token of four stored parts ([`Precondition::part_values`]): a stored plan's token
+/// is checked against it on load, so an edited part is an unreadable plan.
+pub fn token_of_parts(parts: &[Value; 4]) -> String {
+    let mut token = PREFIX.to_owned();
+    for part in parts {
+        token.push_str(&field(&canonical_text(part)));
+    }
+    token
+}
+
+/// `value`'s canonical JSON text.
+fn canonical_text(value: &Value) -> String {
+    let mut text = String::new();
+    canonical(value, &mut text);
+    text
 }
 
 /// The first 64 bits of the SHA-256 of a part's canonical JSON, in hex.
@@ -569,9 +587,19 @@ impl Binding for PlanBinding<'_> {
     }
 }
 
-/// A dry run's token: [`of_plan`] over the plan it ran, its witnesses and `extras`.
+/// A dry run's token: [`plan_precondition`]'s.
 pub fn plan_token(command: &'static str, plan: &Plan, extras: &PlanExtras<'_>) -> String {
-    of_plan(command, plan, &plan.witnesses, extras).token()
+    plan_precondition(command, plan, extras).token()
+}
+
+/// A dry run's precondition: [`of_plan`] over the plan it ran, its witnesses and
+/// `extras`. A stored plan keeps its parts.
+pub fn plan_precondition(
+    command: &'static str,
+    plan: &Plan,
+    extras: &PlanExtras<'_>,
+) -> Precondition {
+    of_plan(command, plan, &plan.witnesses, extras)
 }
 
 /// The witness scope of this run: the default scope for a dry run or a bound run, `None`
@@ -1605,6 +1633,45 @@ mod tests {
         );
         assert!(is_token(&token));
         assert_eq!(fixture().token(), token, "the same inputs, the same token");
+    }
+
+    /// A stored plan's parts give back its token, read back from JSON too: every pinned
+    /// fixture.
+    #[test]
+    fn stored_parts_recompute_the_token() {
+        let pinned = [
+            ("fixture", fixture()),
+            ("of_remove", of_remove(&remove_plan(Some(key(KEY))))),
+            ("of_plan", inputs().precondition()),
+        ];
+        for (name, p) in pinned {
+            assert_eq!(token_of_parts(&p.part_values()), p.token(), "{name}");
+            let text = serde_json::to_string(&p.part_values()).unwrap();
+            let stored: [Value; 4] = serde_json::from_str(&text).unwrap();
+            assert_eq!(
+                token_of_parts(&stored),
+                p.token(),
+                "{name}, read back: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_changed_part_changes_the_recomputed_token() {
+        let p = fixture();
+        let token = p.token();
+        // Field `n` is the 16 hex digits after `pc1:` and the fields before it.
+        let field = |t: &str, n: usize| t[4 + 16 * n..4 + 16 * (n + 1)].to_owned();
+        for (i, part) in Part::ALL.iter().enumerate() {
+            let mut parts = p.part_values();
+            parts[i] = json!("edited");
+            let edited = token_of_parts(&parts);
+            let moved: Vec<bool> = (0..4)
+                .map(|n| field(&edited, n) != field(&token, n)) // ubs:ignore — public digest fields in a token-format test
+                .collect();
+            let expected: Vec<bool> = (0..4).map(|n| n == i).collect();
+            assert_eq!(moved, expected, "{part:?} edited: {edited} against {token}");
+        }
     }
 
     #[test]

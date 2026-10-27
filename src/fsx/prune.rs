@@ -366,17 +366,26 @@ fn only_expired(
             }
         }
     }
-    let mut leases = Vec::new();
+    let mut lease_paths: BTreeSet<PathBuf> = plans
+        .iter()
+        .map(|plan| plan.with_extension("lease"))
+        .collect();
     for p in planned.iter().filter(|p| p.kind == Kind::PlanLease) {
         // An orphan lease guards nothing: no plan of its id exists or will again.
         let plan = p.victim.with_extension("json");
         if !plans.contains(plan.as_path()) && fs::symlink_metadata(&plan).is_ok() {
             return refuse(&p.victim, "its plan is not pruned with it");
         }
-        match Lease::try_acquire(scopes, &p.victim, "prune") {
+        lease_paths.insert(p.victim.clone());
+    }
+    let mut leases = Vec::new();
+    for path in lease_paths {
+        // Guard every plan, even if its lease appeared after the caller listed it.
+        // Creating a missing lease also prevents an applier from entering mid-prune.
+        match Lease::try_acquire(scopes, &path, "prune") {
             Ok(Some(guard)) => leases.push(guard),
-            Ok(None) => return refuse(&p.victim, "a held lease is never unlinked"),
-            Err(err) => return refuse(&p.victim, &format!("its lease cannot be taken: {err}")),
+            Ok(None) => return refuse(&path, "a held lease is never unlinked"),
+            Err(err) => return refuse(&path, &format!("its lease cannot be taken: {err}")),
         }
     }
     Ok(leases)
@@ -1346,6 +1355,15 @@ mod tests {
                 Refused("a held lease is never unlinked"),
             ),
             (
+                "expired plan with a held lease omitted from victims",
+                |f| {
+                    let plan = plan(f, TX, "2026-10-24T11:00:00Z");
+                    let held = held_lease(f, &lease(f, TX));
+                    (vec![plan], vec![held])
+                },
+                Refused("a held lease is never unlinked"),
+            ),
+            (
                 "orphan free lease",
                 |f| (vec![lease(f, TX)], vec![]),
                 Removed,
@@ -1521,6 +1539,31 @@ mod tests {
         );
         assert_eq!(report.removed, std::slice::from_ref(&victim));
         assert!(!victim.exists());
+    }
+
+    #[test]
+    fn expired_guards_a_lease_that_did_not_exist() {
+        let f = fixture();
+        let victim = plan(&f, TX, "2026-10-24T11:00:00Z");
+        let lease = f.paths.plan_lease(&TX.parse().unwrap());
+        assert!(!lease.exists());
+        let planned = classify(&f.scopes, PruneReason::PlanExpiry, &victim)
+            .unwrap()
+            .unwrap();
+        let guards = only_expired(&f.scopes, &[planned], now()).unwrap();
+        assert!(lease.exists());
+        assert!(
+            Lease::try_acquire(&f.scopes, &lease, "apply")
+                .unwrap()
+                .is_none()
+        );
+        drop(guards);
+        assert!(
+            Lease::try_acquire(&f.scopes, &lease, "apply")
+                .unwrap()
+                .is_some()
+        );
+        assert!(victim.exists());
     }
 
     #[test]

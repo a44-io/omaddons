@@ -860,6 +860,10 @@ const PRUNE_CALLERS: &[(&str, &str)] = &[
         "src/omarchy/remove.rs",
         "the removed widget, parked under its own operation, and that operation's in-flight lock",
     ),
+    (
+        "src/state/plans.rs",
+        "expired plans and their leases, under LockUse::Expired, without the global lock",
+    ),
 ];
 
 #[test]

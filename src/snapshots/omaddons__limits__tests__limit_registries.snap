@@ -321,6 +321,33 @@ expression: "(politeness, REGISTRY)"
       "notes": "Largest stored plan file; reads of one stop past it"
     },
     {
+      "name": "PLANS_MAX_FILES",
+      "value": {
+        "count": 512
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Hard cap on stored plans; at it, a dry run stores nothing (plan_not_stored)"
+    },
+    {
+      "name": "PLANS_MAX_BYTES",
+      "value": {
+        "bytes": 33554432
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Hard cap on the plan store's total size"
+    },
+    {
+      "name": "PLANS_SWEEP_MAX",
+      "value": {
+        "count": 64
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Expired plans one cleanup batch deletes at most"
+    },
+    {
       "name": "ORPHAN_MIN_AGE",
       "value": {
         "millis": 3600000

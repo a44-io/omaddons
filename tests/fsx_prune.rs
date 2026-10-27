@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use omaddons::error::ErrorCode;
 use omaddons::fsx::{
-    GlobalLock, InflightLock, LockState, LockUse, PruneReason, probe_global, prune,
+    GlobalLock, InflightLock, Lease, LockState, LockUse, PruneReason, probe_global, prune,
 };
 
 const TX: &str = "01JB8Q2VA00000000000000000";
@@ -104,7 +104,81 @@ fn child_prune() {
     let victim = PathBuf::from(std::env::var_os("OMADDONS_PRUNE_TEST_VICTIM").unwrap());
     let l = layout(&root);
     let s = scopes(&l.paths, &l.client);
-    prune(&s, PruneReason::Retention, &[victim], LockUse::Acquire).unwrap();
+    if victim.parent() == Some(l.paths.plans_dir().as_path()) {
+        prune(
+            &s,
+            PruneReason::PlanExpiry,
+            &[victim],
+            LockUse::Expired {
+                now: "2026-10-26T12:00:00Z".parse().unwrap(),
+            },
+        )
+        .unwrap();
+    } else {
+        prune(&s, PruneReason::Retention, &[victim], LockUse::Acquire).unwrap();
+    }
+}
+
+#[cfg(test)]
+fn expired_plan(l: &support::Layout) -> PathBuf {
+    let path = l.paths.plan(&TX.parse().unwrap());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, br#"{"expires_at":"2026-10-25T12:00:00Z"}"#).unwrap();
+    path
+}
+
+#[test]
+fn expired_prune_holds_an_initially_absent_lease_through_deletion() {
+    let dir = tempfile::tempdir().unwrap();
+    let l = layout(dir.path());
+    let victim = expired_plan(&l);
+    let lease = l.paths.plan_lease(&TX.parse().unwrap());
+    assert!(!lease.exists());
+    let mut child = spawn_prune(&l.root, &victim, "fsx.prune.deleting=pause");
+    reached(&l.root, "fsx.prune.deleting");
+    let s = scopes(&l.paths, &l.client);
+    let blocked = Lease::try_acquire(&s, &lease, "apply").unwrap().is_none();
+    fs::write(l.root.join("fsx.prune.deleting.resume"), b"").unwrap();
+    assert!(child.wait().unwrap().success());
+    assert!(blocked, "an applier acquired the lease while pruning");
+    assert!(!victim.exists());
+    assert!(Lease::try_acquire(&s, &lease, "apply").unwrap().is_some());
+}
+
+#[test]
+fn expired_prune_releases_its_new_lease_after_crashes_and_io_failures() {
+    for point in [
+        "fsx.rename_with.before",
+        "fsx.prune.renamed",
+        "fsx.prune.deleting",
+    ] {
+        for action in ["abort", "error"] {
+            let dir = tempfile::tempdir().unwrap();
+            let l = layout(dir.path());
+            let victim = expired_plan(&l);
+            let failpoint = format!("{point}={action}");
+            let status = spawn_prune(&l.root, &victim, &failpoint).wait().unwrap();
+            assert!(!status.success(), "{failpoint}: injection did not fire");
+            let s = scopes(&l.paths, &l.client);
+            let lease = l.paths.plan_lease(&TX.parse().unwrap());
+            assert!(lease.exists(), "{failpoint}: no deletion lease was created");
+            let guard = Lease::try_acquire(&s, &lease, "apply").unwrap();
+            assert!(guard.is_some(), "{failpoint}: lease stayed held after exit");
+            drop(guard);
+            if point == "fsx.rename_with.before" {
+                assert!(victim.exists(), "{failpoint}: should still be live");
+            } else {
+                assert!(!victim.exists(), "{failpoint}: should already be in trash");
+            }
+            // Cleanup is repeatable whether the plan survived or only its lease did.
+            for _ in 0..2 {
+                omaddons::state::plans::sweep(&l.paths, "2026-10-26T12:00:00Z".parse().unwrap())
+                    .unwrap();
+            }
+            assert!(!victim.exists(), "{failpoint}");
+            assert!(!lease.exists(), "{failpoint}: orphan lease was not swept");
+        }
+    }
 }
 
 #[test]

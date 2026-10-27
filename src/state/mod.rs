@@ -10,6 +10,7 @@ pub mod history;
 pub mod history_tail;
 pub mod memo;
 pub mod paths;
+pub mod plans;
 pub mod records;
 pub mod registry;
 pub mod status;

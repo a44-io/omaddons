@@ -181,6 +181,10 @@ pub const KINDS: &[(&str, SchemaVersion)] = &[
         <crate::errors::ack::ErrorsAck as Versioned>::KIND,
         <crate::errors::ack::ErrorsAck as Versioned>::CURRENT,
     ),
+    (
+        <super::plans::StoredPlan as Versioned>::KIND,
+        <super::plans::StoredPlan as Versioned>::CURRENT,
+    ),
     ("history", super::history::CURRENT),
 ];
 
