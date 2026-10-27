@@ -15,6 +15,8 @@ mod exit_sites;
 mod intent_corpus;
 mod matrix;
 mod recommendations;
+#[cfg(test)]
+mod registries;
 mod special;
 mod usage_fixes;
 
@@ -32,8 +34,13 @@ use support::Scene;
 #[cfg(test)]
 mod support {
     use super::*;
+    use omaddons::contract::actions::Action;
+    use omaddons::contract::events::{EventName, LogLevel, Phase};
     use serde::Deserialize;
     use serde::de::{IgnoredAny, MapAccess, Visitor};
+
+    /// Actions whose instances may differ from their published destructive default.
+    const VARIES: &[Action] = &[];
 
     /// The envelope's keys in wire order.
     const ORDER: &[&str] = &[
@@ -202,10 +209,21 @@ mod support {
                 command["action"].is_string() && command["destructive"].is_boolean(),
                 "{ctx}"
             );
+            let name = command["action"].as_str().unwrap_or_default();
+            let action = Action::from_wire(name);
+            assert!(action.is_some(), "unregistered action {name}\n{ctx}");
+            let action = action.unwrap();
+            if !VARIES.contains(&action) {
+                assert_eq!(
+                    command["destructive"],
+                    action.destructive(),
+                    "{name}: destructive default\n{ctx}"
+                );
+            }
             // An agent trusts `action` without parsing argv: these name the verb run.
-            for verb in ["install", "search"] {
-                if command["action"] == verb {
-                    assert_eq!(argv.get(1).map(String::as_str), Some(verb), "{ctx}");
+            for verb in [Action::Install, Action::Search] {
+                if action == verb {
+                    assert_eq!(argv.get(1).map(String::as_str), Some(verb.wire()), "{ctx}");
                 }
             }
         }
@@ -218,10 +236,28 @@ mod support {
             let event = event.unwrap();
             let kind = event["event"].as_str().unwrap_or_default();
             assert!(
-                matches!(kind, "progress" | "log" | "warning" | "error"),
+                EventName::ALL.iter().any(|name| name.wire() == kind),
                 "event {kind}\n{ctx}"
             );
-            errors += usize::from(kind.eq("error"));
+            if kind == EventName::Progress.wire() {
+                assert!(
+                    Phase::ALL
+                        .iter()
+                        .any(|phase| event["phase"] == phase.wire()),
+                    "unregistered progress phase {}\n{ctx}",
+                    event["phase"]
+                );
+            }
+            if kind == EventName::Log.wire() {
+                assert!(
+                    LogLevel::ALL
+                        .iter()
+                        .any(|level| event["level"] == level.wire()),
+                    "unregistered log level {}\n{ctx}",
+                    event["level"]
+                );
+            }
+            errors += usize::from(kind == EventName::Error.wire());
         }
         assert_eq!(
             errors,

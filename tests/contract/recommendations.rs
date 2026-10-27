@@ -10,6 +10,8 @@
 
 use std::collections::BTreeSet;
 
+use omaddons::contract::actions::Action;
+
 use scenarios::{
     Builder, adoptable, behind, degraded, edited, errors_partial, errors_stale, errors_unread,
     orphaned, stale_backups, target, unchecked, unmanaged, unplugged, unprotected,
@@ -211,17 +213,17 @@ mod scenarios {
 
 #[test]
 fn every_status_recommendation_runs_on_a_fresh_home() {
-    let scenarios: [(&str, Builder, &str); 10] = [
-        ("edited", edited, "reinstall"),
-        ("behind", behind, "update"),
-        ("adoptable", adoptable, "adopt"),
-        ("unchecked", unchecked, "check_updates"),
-        ("orphaned", orphaned, "remove_orphans"),
-        ("unplugged", unplugged, "forget_target"),
-        ("degraded", degraded, "inspect"),
-        ("unmanaged", unmanaged, "list_unmanaged"),
-        ("unprotected", unprotected, "backup_create"),
-        ("stale_backups", stale_backups, "refresh_backups"),
+    let scenarios: [(&str, Builder, Action); 10] = [
+        ("edited", edited, Action::Reinstall),
+        ("behind", behind, Action::Update),
+        ("adoptable", adoptable, Action::Adopt),
+        ("unchecked", unchecked, Action::CheckUpdates),
+        ("orphaned", orphaned, Action::RemoveOrphans),
+        ("unplugged", unplugged, Action::ForgetTarget),
+        ("degraded", degraded, Action::Inspect),
+        ("unmanaged", unmanaged, Action::ListUnmanaged),
+        ("unprotected", unprotected, Action::BackupCreate),
+        ("stale_backups", stale_backups, Action::RefreshBackups),
     ];
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut fixed: BTreeSet<String> = BTreeSet::new();
@@ -241,32 +243,31 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
             })
             .collect();
         assert!(
-            commands.iter().any(|(a, ..)| a == expected),
+            commands.iter().any(|(a, ..)| a == expected.wire()),
             "{name}: no {expected} in {commands:?}"
         );
         for (action, argv, destructive) in &commands {
             seen.insert(action.clone());
-            assert_eq!(
-                *destructive,
-                matches!(action.as_str(), "remove_orphans" | "forget_target"),
-                "{name}: {action}"
-            );
+            let registered = Action::from_wire(action);
+            assert!(registered.is_some(), "{name}: unregistered action {action}");
+            let registered = registered.unwrap();
+            assert_eq!(*destructive, registered.destructive(), "{name}: {action}");
             let fresh = build();
             let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
             fresh.json(&args, 0);
             let after = fresh.json(&["status"], 0).envelope;
-            match action.as_str() {
-                "reinstall" => {
+            match registered {
+                Action::Reinstall => {
                     let id = &argv[argv.len() - 2];
                     let drift = &target(&after, id).unwrap()["drift"];
                     assert_eq!(drift, &json!([]), "{name}: {after:#}");
                 }
-                "update" => {
+                Action::Update => {
                     for t in after["data"]["targets"].as_array().unwrap() {
                         assert_eq!(t["updates"]["available"], 0, "{name}: {t:#}");
                     }
                 }
-                "remove_orphans" => {
+                Action::RemoveOrphans => {
                     let retail = target(&after, "retail").unwrap();
                     assert_eq!(retail["orphans"], 0, "{name}: {retail:#}");
                     let listed = fresh.json(&["list", "-t", "retail"], 0).envelope;
@@ -275,7 +276,7 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
                         "the explicit addon stays: {listed:#}"
                     );
                 }
-                "forget_target" => {
+                Action::ForgetTarget => {
                     let targets = fresh.json(&["targets"], 0).envelope;
                     let ids: Vec<&str> = targets["data"]["targets"]
                         .as_array()
@@ -285,7 +286,7 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
                         .collect();
                     assert!(!ids.contains(&"classic"), "{name}: {ids:?}");
                 }
-                "backup_create" | "refresh_backups" => {
+                Action::BackupCreate | Action::RefreshBackups => {
                     let id = &argv[argv.len() - 1];
                     let backups = &target(&after, id).unwrap()["backups"];
                     assert!(
@@ -335,21 +336,10 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
     .collect();
     let missing: Vec<&String> = expected.difference(&fixed).collect();
     assert!(missing.is_empty(), "no remediation ran for: {missing:?}");
-    let expected: BTreeSet<String> = [
-        "reinstall",
-        "update",
-        "adopt",
-        "check_updates",
-        "remove_orphans",
-        "forget_target",
-        "inspect",
-        "list_unmanaged",
-        "backup_create",
-        "refresh_backups",
-    ]
-    .iter()
-    .map(|a| (*a).to_owned())
-    .collect();
+    let expected: BTreeSet<String> = scenarios
+        .iter()
+        .map(|(_, _, action)| action.wire().to_owned())
+        .collect();
     let missing: Vec<&String> = expected.difference(&seen).collect();
     assert!(missing.is_empty(), "never recommended: {missing:?}");
 }
@@ -445,7 +435,7 @@ fn reinstall_widget_runs_and_clears_the_widget_issue() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|c| c["action"] == "reinstall_widget")
+        .find(|c| c["action"] == Action::ReinstallWidget.wire())
         .cloned();
     assert!(recommended.is_some(), "no reinstall_widget: {status:#}");
     let recommended = recommended.unwrap();
@@ -473,7 +463,7 @@ fn reinstall_widget_runs_and_clears_the_widget_issue() {
         };
         assert!(
             !named("warnings", "code", "widget_outdated")
-                && !named("commands", "action", "reinstall_widget"),
+                && !named("commands", "action", Action::ReinstallWidget.wire()),
             "{after:#}"
         );
     }
@@ -492,7 +482,7 @@ fn check_errors_runs_and_settles_the_cached_view() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|c| c["action"] == "check_errors")
+            .find(|c| c["action"] == Action::CheckErrors.wire())
             .cloned()
     };
     for (name, build, state) in [
