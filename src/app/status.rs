@@ -36,6 +36,7 @@ use super::remembered::Remembered;
 use super::world::World;
 use crate::backup::inventory;
 use crate::cli::Context;
+use crate::contract::actions::Action;
 use crate::discover::DiscoveredTarget;
 use crate::discover::cache::{CacheStats, DiscoveryMode};
 use crate::discover::running::detect_running;
@@ -931,7 +932,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         scope_update(&mut commands, selector);
     }
     if args.cached && !world.paths.discovery_cache().exists() {
-        commands.push(CommandHint::new("status", ["omaddons", "status"], false));
+        commands.push(CommandHint::new(Action::Status, ["omaddons", "status"]));
     }
     let needs_attention = unattributed || targets.iter().any(|t| !t.attention.is_empty());
     let summary = summary(&targets, &issues, &commands, widget_outdated);
@@ -1018,7 +1019,7 @@ fn is_stale(checked_at: Option<Timestamp>, now: Timestamp, interval: Duration) -
 /// The `adopt` recommendation for one target: the report of what its unmanaged folders
 /// are, which changes nothing.
 pub(crate) fn adopt_hint(target: &str) -> CommandHint {
-    CommandHint::new("adopt", ["omaddons", "adopt", "-t", target], false)
+    CommandHint::new(Action::Adopt, ["omaddons", "adopt", "-t", target])
 }
 
 /// `outdated`'s and `update`'s `adopt` hints: one per target of `targets` that manages
@@ -1115,7 +1116,7 @@ fn summary(
         updates,
         issues,
         errors,
-        check_due: commands.iter().any(|c| c.action() == "check_updates"),
+        check_due: commands.iter().any(|c| c.action() == Action::CheckUpdates),
         widget_outdated,
         state,
     }
@@ -1222,12 +1223,12 @@ fn change_of(world: &World, entries: &[&HistoryEntry]) -> LastChange {
 
 /// `targets rm <id>`, the fix for a client whose directory is gone.
 pub(super) fn forget_target_hint(target: &str) -> CommandHint {
-    CommandHint::new("forget_target", ["omaddons", "targets", "rm", target], true)
+    CommandHint::new(Action::ForgetTarget, ["omaddons", "targets", "rm", target])
 }
 
 /// `list -t <id> -v`, the look at a target's degraded addons.
 pub(super) fn inspect_hint(target: &str) -> CommandHint {
-    CommandHint::new("inspect", ["omaddons", "list", "-t", target, "-v"], false)
+    CommandHint::new(Action::Inspect, ["omaddons", "list", "-t", target, "-v"])
 }
 
 /// The commands `status` recommends, in M2's order: (1) journal and state fixes (none
@@ -1243,9 +1244,9 @@ pub(super) fn inspect_hint(target: &str) -> CommandHint {
 pub(super) fn scope_update(commands: &mut [CommandHint], selector: &str) {
     for hint in commands
         .iter_mut()
-        .filter(|h| h.action() == "update" && h.argv() == ["omaddons", "update"])
+        .filter(|h| h.action() == Action::Update && h.argv() == ["omaddons", "update"])
     {
-        *hint = CommandHint::new("update", ["omaddons", "update", "-t", selector], false);
+        *hint = CommandHint::new(Action::Update, ["omaddons", "update", "-t", selector]);
     }
 }
 
@@ -1270,11 +1271,10 @@ fn recommendations(
     match with_updates.as_slice() {
         [] => {}
         [one] => commands.push(CommandHint::new(
-            "update",
+            Action::Update,
             ["omaddons", "update", "-t", one.id.as_str()],
-            false,
         )),
-        _ => commands.push(CommandHint::new("update", ["omaddons", "update"], false)),
+        _ => commands.push(CommandHint::new(Action::Update, ["omaddons", "update"])),
     }
     // A catalog addon found unmanaged: the adopt report says what it is. Unknown-only
     // folders keep the plain look below.
@@ -1283,17 +1283,15 @@ fn recommendations(
     }
     if check_due {
         commands.push(CommandHint::new(
-            "check_updates",
+            Action::CheckUpdates,
             ["omaddons", "outdated"],
-            false,
         ));
     }
     // Never for a read that was incomplete: reading it again would not complete it.
     if targets.iter().any(|t| t.errors.worth_checking()) {
         commands.push(CommandHint::new(
-            "check_errors",
+            Action::CheckErrors,
             ["omaddons", "errors"],
-            false,
         ));
     }
     for t in targets {
@@ -1309,7 +1307,7 @@ fn recommendations(
             .into_iter()
             .chain(t.orphan_names.iter().map(String::as_str))
             .chain(["-t", t.id.as_str()]);
-        commands.push(CommandHint::new("remove_orphans", argv, true));
+        commands.push(CommandHint::new(Action::RemoveOrphans, argv));
     }
     commands.extend(fixes);
     for t in targets
@@ -1317,9 +1315,8 @@ fn recommendations(
         .filter(|t| t.folders.unmanaged > 0 && t.adoptable == 0)
     {
         commands.push(CommandHint::new(
-            "list_unmanaged",
+            Action::ListUnmanaged,
             ["omaddons", "list", "-t", t.id.as_str(), "--unmanaged"],
-            false,
         ));
     }
     (commands, first)
@@ -1516,7 +1513,7 @@ mod tests {
         let mut retail = target("retail", 2, &[], 0);
         retail.running = Some(true);
         let classic = target("classic", 1, &[], 0);
-        let check = CommandHint::new("check_updates", ["omaddons", "outdated"], false);
+        let check = CommandHint::new(Action::CheckUpdates, ["omaddons", "outdated"]);
         let s = summary(&[classic, gone, retail], &[], &[check], false);
         assert_eq!(s.targets, 3);
         assert_eq!(s.running, ["retail"]);
@@ -1621,7 +1618,10 @@ mod tests {
     }
 
     fn actions(commands: &[CommandHint]) -> Vec<String> {
-        commands.iter().map(|c| c.action().to_owned()).collect()
+        commands
+            .iter()
+            .map(|c| c.action().wire().to_owned())
+            .collect()
     }
 
     /// Under `-t`, the update hint for several clients names the same selector; one
@@ -1629,9 +1629,9 @@ mod tests {
     #[test]
     fn the_update_hint_is_never_wider_than_the_selection() {
         let mut commands = vec![
-            CommandHint::new("update", ["omaddons", "update"], false),
-            CommandHint::new("update", ["omaddons", "update", "-t", "era"], false),
-            CommandHint::new("check_updates", ["omaddons", "outdated"], false),
+            CommandHint::new(Action::Update, ["omaddons", "update"]),
+            CommandHint::new(Action::Update, ["omaddons", "update", "-t", "era"]),
+            CommandHint::new(Action::CheckUpdates, ["omaddons", "outdated"]),
         ];
         scope_update(&mut commands, "vanilla");
         let argvs: Vec<Vec<String>> = commands.iter().map(|c| c.argv().to_vec()).collect();

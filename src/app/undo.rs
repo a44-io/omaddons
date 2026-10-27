@@ -28,6 +28,7 @@ use super::outcome::ItemError;
 use super::precondition;
 use super::world::World;
 use crate::cli::Context;
+use crate::contract::actions::Action;
 use crate::engine::{SvPolicy, UndoOutcome as EngineUndo, UndoRequest, UndoSelector, WtfUndo};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{Actor, FolderName, PlanId, ReloadRequired, RunId, TargetKey, TxId, TxKind};
@@ -772,21 +773,19 @@ fn outcome(
     let mut commands = Vec::new();
     if committed.len() > 1 {
         commands.push(CommandHint::new(
-            "undo_run",
+            Action::UndoRun,
             [
                 "omaddons".to_owned(),
                 "undo".to_owned(),
                 "--run".to_owned(),
                 run.to_string(),
             ],
-            false,
         ));
     }
     for tx in &committed {
         commands.push(CommandHint::new(
-            "undo",
+            Action::Undo,
             ["omaddons".to_owned(), "undo".to_owned(), tx.to_string()],
-            false,
         ));
     }
     let client_dir = verbose

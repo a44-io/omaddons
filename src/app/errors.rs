@@ -23,6 +23,7 @@ use super::precondition::{DismissPart, check, of_dismiss, preview_argv};
 use super::remembered::Remembered;
 use super::world::World;
 use crate::cli::Context;
+use crate::contract::actions::Action;
 use crate::discover::running::detect_running;
 use crate::engine::journal::{no_saved_variables, recover_under};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
@@ -660,7 +661,7 @@ impl Outcome for ErrorsOutcome {
         let updates: Vec<String> = self
             .commands
             .iter()
-            .filter(|c| c.action() == "update")
+            .filter(|c| c.action() == Action::Update)
             .map(|c| c.command().to_owned())
             .collect();
         if !updates.is_empty() {
@@ -669,7 +670,7 @@ impl Outcome for ErrorsOutcome {
         for c in self
             .commands
             .iter()
-            .filter(|c| c.action() == "install_buggrabber")
+            .filter(|c| c.action() == Action::InstallBuggrabber)
         {
             writeln!(w, "Capture Lua errors: {}", c.command())?;
         }
@@ -1159,7 +1160,7 @@ impl View<'_> {
             let mut argv = vec!["omaddons".to_owned(), "update".to_owned()];
             argv.extend(to_update);
             argv.extend(["-t".to_owned(), t.id.clone()]);
-            self.commands.push(CommandHint::new("update", argv, false));
+            self.commands.push(CommandHint::new(Action::Update, argv));
         }
         // A dismissal acknowledges only databases read whole: offered when it would clear
         // something.
@@ -1168,9 +1169,8 @@ impl View<'_> {
             .any(|e| e.new && observation.databases[e.database].state.complete());
         if dismissable {
             self.commands.push(CommandHint::new(
-                "dismiss_errors",
+                Action::DismissErrors,
                 ["omaddons", "errors", "dismiss", "-t", t.id.as_str()],
-                false,
             ));
         }
         // Without BugGrabber: the catalog's build for this client, or none known (never
@@ -1179,9 +1179,8 @@ impl View<'_> {
         if observation.capture == Capture::None {
             if self.catalog.resolve("buggrabber", Some(t.family)).is_some() {
                 self.commands.push(CommandHint::new(
-                    "install_buggrabber",
+                    Action::InstallBuggrabber,
                     ["omaddons", "install", "buggrabber", "-t", t.id.as_str()],
-                    false,
                 ));
             } else {
                 capture_note = Some(NO_BUGGRABBER_BUILD.to_owned());

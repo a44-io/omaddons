@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::*;
+use crate::contract::actions::Action;
 use crate::error::{ErrorCode, Suggestion, WarningCode};
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -69,9 +70,8 @@ fn demo() -> Demo {
                 .with_fix(Suggestion::text("/reload in game")),
         ],
         commands: vec![CommandHint::new(
-            "undo",
+            Action::Undo,
             ["omaddons", "undo", "01JB8Q2VA00000000000000000"],
-            false,
         )],
         partial: false,
         assertion: None,

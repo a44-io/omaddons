@@ -33,6 +33,7 @@ use super::resolve_args::aimed_at_option;
 use super::status::modes_or_family;
 use super::world::World;
 use crate::cli::Context;
+use crate::contract::actions::Action;
 use crate::discover::DiscoveredTarget;
 use crate::engine::inspect::ArchiveLimits;
 use crate::engine::plan::{Checked, ReleaseCheck};
@@ -296,7 +297,7 @@ impl AdoptOutcome {
                 )?;
             }
         }
-        if let Some(apply) = self.commands.iter().find(|c| c.action() == "adopt") {
+        if let Some(apply) = self.commands.iter().find(|c| c.action() == Action::Adopt) {
             writeln!(w, "Apply exact + identified: {}", apply.command())?;
         }
         Ok(())
@@ -796,7 +797,7 @@ fn report_commands(ctx: &Context, targets: &[AdoptTarget]) -> Vec<CommandHint> {
             (_, Some(selector)) => argv.extend(["-t".to_owned(), selector.clone()]),
             _ => {}
         }
-        commands.push(CommandHint::new("adopt", argv, false));
+        commands.push(CommandHint::new(Action::Adopt, argv));
     }
     for t in targets {
         let id = t.target.id.as_str();
@@ -804,17 +805,15 @@ fn report_commands(ctx: &Context, targets: &[AdoptTarget]) -> Vec<CommandHint> {
             let folder = g.primary.as_str();
             if g.alternatives.is_empty() {
                 commands.push(CommandHint::new(
-                    "adopt_folder",
+                    Action::AdoptFolder,
                     ["omaddons", "adopt", folder, "-t", id],
-                    false,
                 ));
                 continue;
             }
             for r in apply::ref_choices(g.r#ref.as_ref(), &g.alternatives) {
                 commands.push(CommandHint::new(
-                    "adopt_with_ref",
+                    Action::AdoptWithRef,
                     apply::with_ref_argv(folder, &r, id),
-                    false,
                 ));
             }
         }

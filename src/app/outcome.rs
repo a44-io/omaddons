@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use crate::app::approval::Approval;
 use crate::app::intent::{Preview, Storable, render_plan_line};
+use crate::contract::actions::Action;
 use crate::engine::TxOutcome;
 use crate::engine::TxOutcomes;
 use crate::engine::edit::EditField;
@@ -705,21 +706,19 @@ impl TargetsData {
         let mut commands = Vec::new();
         if let (true, Some(run)) = (committed.len() > 1, self.run) {
             commands.push(CommandHint::new(
-                "undo_run",
+                Action::UndoRun,
                 [
                     "omaddons".to_owned(),
                     "undo".to_owned(),
                     "--run".to_owned(),
                     run.to_string(),
                 ],
-                false,
             ));
         }
         for tx in committed {
             commands.push(CommandHint::new(
-                "undo",
+                Action::Undo,
                 ["omaddons".to_owned(), "undo".to_owned(), tx.to_string()],
-                false,
             ));
         }
         commands
@@ -1478,7 +1477,7 @@ mod tests {
         let hints: Vec<(String, String)> = data
             .undo_commands()
             .iter()
-            .map(|c| (c.action().to_owned(), c.command().to_owned()))
+            .map(|c| (c.action().wire().to_owned(), c.command().to_owned()))
             .collect();
         assert_eq!(
             hints,

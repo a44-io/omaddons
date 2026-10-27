@@ -24,6 +24,7 @@ use super::outcome::ItemError;
 use super::precondition;
 use super::world::World;
 use crate::cli::Context;
+use crate::contract::actions::Action;
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::{resolve_one_in, with_target};
 use crate::engine::plan::RequestedChange;
@@ -387,9 +388,8 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         commands: tx
             .map(|tx| {
                 vec![CommandHint::new(
-                    "undo",
+                    Action::Undo,
                     ["omaddons".to_owned(), "undo".to_owned(), tx.to_string()],
-                    false,
                 )]
             })
             .unwrap_or_default(),

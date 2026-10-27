@@ -43,6 +43,7 @@ use crate::backup::{
     Integrity, Reflinked, Trigger,
 };
 use crate::cli::Context;
+use crate::contract::actions::Action;
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::LockedRegistry;
 use crate::discover::running::{RunningScan, detect_running};
@@ -565,9 +566,8 @@ pub fn list(ctx: &Context, args: &BackupListArgs) -> Result<BackupListOutcome> {
         targets.push(target(&world.paths, d, &backups, &view, ring));
         if stale(d, &backups, crate::clock::now()) {
             commands.push(CommandHint::new(
-                "backup_create",
+                Action::BackupCreate,
                 ["omaddons", "backup", "create", "-t", d.target.id.as_str()],
-                false,
             ));
         }
     }
@@ -2019,9 +2019,8 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
         preview: None,
         warnings,
         commands: vec![CommandHint::new(
-            "undo",
+            Action::Undo,
             ["omaddons", "undo", tx.as_str()],
-            false,
         )],
         trigger: meta.trigger,
         baseline: meta.baseline,

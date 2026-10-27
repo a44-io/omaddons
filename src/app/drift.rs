@@ -5,6 +5,7 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use crate::contract::actions::Action;
 use crate::drift::{AddonDrift, DriftMode, DriftReport, DriftState, FolderDrift, check};
 use crate::error::CommandHint;
 use crate::model::{Target, TargetKey};
@@ -87,9 +88,8 @@ pub fn report(
 /// `omaddons install <addon> -t <id> --reinstall`: puts back what drifted.
 pub fn reinstall_hint(addon: &str, target: &str) -> CommandHint {
     CommandHint::new(
-        "reinstall",
+        Action::Reinstall,
         ["omaddons", "install", addon, "-t", target, "--reinstall"],
-        false,
     )
 }
 

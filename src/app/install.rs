@@ -31,6 +31,7 @@ use super::precondition::{self, PlanBinding, PlanExtras};
 use super::resolve_args::{aimed_at, catalog_name, for_family, parse_ref};
 use super::world::World;
 use crate::cli::Context;
+use crate::contract::actions::Action;
 use crate::discover::DiscoveredTarget;
 use crate::discover::registry::{resolve_one_in, with_target};
 use crate::engine::edit::EditField;
@@ -775,9 +776,8 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
     let mut commands: Vec<CommandHint> = tx
         .map(|tx| {
             vec![CommandHint::new(
-                "undo",
+                Action::Undo,
                 ["omaddons".to_owned(), "undo".to_owned(), tx.to_string()],
-                false,
             )]
         })
         .unwrap_or_default();
@@ -798,7 +798,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
             .into_iter()
             .chain(unmanaged.iter().map(|f| f.as_str()))
             .chain(["-t", id.as_str()]);
-        commands.push(CommandHint::new("adopt", argv, false));
+        commands.push(CommandHint::new(Action::Adopt, argv));
     }
     let id = outcome.map_or_else(|| target.target.id.clone(), |o| o.target.clone());
     commands.extend(install_hints(&built, &unique, &id));
@@ -1445,8 +1445,11 @@ fn install_hints(items: &[InstallItem], warnings: &[Warning], target: &str) -> V
     argvs
         .into_iter()
         .map(|argv| {
-            let verb = argv.get(1).cloned().unwrap_or_default();
-            CommandHint::new(verb, argv, false)
+            let action = match argv.get(1).map(String::as_str) {
+                Some("search") => Action::Search,
+                _ => Action::Install,
+            };
+            CommandHint::new(action, argv)
         })
         .collect()
 }

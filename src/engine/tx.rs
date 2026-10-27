@@ -44,6 +44,7 @@ use crate::backup::auto::{self, AutoResult, AutoRun};
 use crate::backup::create::Created;
 use crate::backup::inventory::Ring;
 use crate::backup::prune::{self, PruneOpts};
+use crate::contract::actions::Action;
 use crate::discover::registry::{LockedRegistry, same_dir};
 use crate::discover::running::{RunningScan, detect_running, running_unknown};
 use crate::discover::target::DiscoveredTarget;
@@ -214,7 +215,7 @@ pub trait Binding {
 pub(super) fn note_undo(ctx: &EngineCtx<'_>, tx: &TxId) {
     if let Some(notes) = ctx.notes {
         let argv = ["omaddons".to_owned(), "undo".to_owned(), tx.to_string()];
-        notes.hint(crate::error::CommandHint::new("undo", argv, false));
+        notes.hint(crate::error::CommandHint::new(Action::Undo, argv));
     }
 }
 

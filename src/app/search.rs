@@ -15,6 +15,7 @@ use serde::Serialize;
 use super::engine::Engine;
 use super::world::World;
 use crate::cli::Context;
+use crate::contract::actions::Action;
 use crate::discover::DiscoveredTarget;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::Ref;
@@ -616,7 +617,7 @@ fn install_hints(
                 .min_by_key(|(id, c)| (**c, rank(id), (*id).clone()))?;
             let by_name = r.source == HitSource::Catalog && variants.contains(&r.name);
             Some(CommandHint::new(
-                "install",
+                Action::Install,
                 [
                     "omaddons".to_owned(),
                     "install".to_owned(),
@@ -628,7 +629,6 @@ fn install_hints(
                     "-t".to_owned(),
                     target.clone(),
                 ],
-                false,
             ))
         })
         .take(INSTALL_HINTS)

@@ -380,7 +380,7 @@ fn a_failed_commit_on_one_target_leaves_the_others_committed_and_undoable() {
     let hints: Vec<(String, Vec<String>)> = data
         .undo_commands()
         .iter()
-        .map(|c| (c.action().to_owned(), c.argv().to_vec()))
+        .map(|c| (c.action().wire().to_owned(), c.argv().to_vec()))
         .collect();
     assert_eq!(hints.len(), 3);
     assert_eq!(

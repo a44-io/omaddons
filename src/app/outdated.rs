@@ -27,6 +27,7 @@ use super::outcome::TargetRef;
 use super::status::modes_or_family;
 use super::world::World;
 use crate::cli::Context;
+use crate::contract::actions::Action;
 use crate::discover::DiscoveredTarget;
 use crate::engine::plan::RequestedChange;
 use crate::engine::{TxRequest, TxTarget};
@@ -268,8 +269,8 @@ impl Outcome for OutdatedOutcome {
         // hints, which install nothing.
         for hint in &self.commands {
             match hint.action() {
-                "update" => writeln!(w, "Run `{}` to install them.", hint.command())?,
-                "adopt" => writeln!(
+                Action::Update => writeln!(w, "Run `{}` to install them.", hint.command())?,
+                Action::Adopt => writeln!(
                     w,
                     "Run `{}` to see the folders installed by hand that omaddons can manage.",
                     hint.command()
@@ -827,7 +828,7 @@ fn hints(targets: &[OutdatedTarget]) -> Vec<CommandHint> {
             .to_vec(),
         _ => ["omaddons", "update"].map(str::to_owned).to_vec(),
     };
-    vec![CommandHint::new("update", argv, false)]
+    vec![CommandHint::new(Action::Update, argv)]
 }
 
 fn dedup(warnings: Vec<Warning>) -> Vec<Warning> {

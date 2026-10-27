@@ -14,6 +14,8 @@ use std::process::ExitCode;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
+use crate::contract::actions::Action;
+
 // ---------------------------------------------------------------------------------------
 // The general exit dictionary.
 
@@ -445,15 +447,16 @@ impl fmt::Display for Suggestion {
 /// A recommended next command in an envelope's `commands` list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CommandHint {
-    action: String,
+    action: Action,
     command: String,
     argv: Vec<String>,
     destructive: bool,
 }
 
 impl CommandHint {
-    /// `argv` must start with `omaddons`; `command` is its shell-quoted display.
-    pub fn new<I, S>(action: impl Into<String>, argv: I, destructive: bool) -> Self
+    /// `argv` must start with `omaddons`; `command` is its shell-quoted display and
+    /// `destructive` the action's default.
+    pub fn new<I, S>(action: Action, argv: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -464,15 +467,15 @@ impl CommandHint {
             "command argv must start with omaddons: {argv:?}"
         );
         Self {
-            action: action.into(),
+            action,
             command: shell_words::join(&argv),
             argv,
-            destructive,
+            destructive: action.destructive(),
         }
     }
 
-    pub fn action(&self) -> &str {
-        &self.action
+    pub fn action(&self) -> Action {
+        self.action
     }
 
     pub fn command(&self) -> &str {
@@ -1057,14 +1060,39 @@ mod tests {
     #[test]
     fn command_hints_carry_argv_and_display() {
         let hint = CommandHint::new(
-            "undo",
+            Action::Undo,
             ["omaddons", "undo", "01JB8Q2VA00000000000000000"],
-            false,
         );
         assert_eq!(
             serde_json::to_string(&hint).unwrap(),
             r#"{"action":"undo","command":"omaddons undo 01JB8Q2VA00000000000000000","argv":["omaddons","undo","01JB8Q2VA00000000000000000"],"destructive":false}"#
         );
+    }
+
+    #[test]
+    fn a_hint_takes_its_destructiveness_from_its_action() {
+        let cases = [
+            (
+                Action::RemoveOrphans,
+                vec!["omaddons", "remove", "Foo", "-t", "retail"],
+                true,
+            ),
+            (
+                Action::ForgetTarget,
+                vec!["omaddons", "targets", "rm", "classic"],
+                true,
+            ),
+            (Action::Undo, vec!["omaddons", "undo"], false),
+        ];
+        for (action, argv, expected) in cases {
+            let hint = CommandHint::new(action, argv);
+            assert_eq!(hint.action(), action, "{action:?}: action accessor");
+            assert_eq!(
+                hint.destructive(),
+                expected,
+                "{action:?}: default in {hint:?}"
+            );
+        }
     }
 
     #[test]

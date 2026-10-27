@@ -13,6 +13,7 @@ use super::backup::{AutoView, size, when};
 use crate::backup::fs::{CloneHint, clone_hint, free_bytes};
 use crate::backup::inventory::{self, Capability, Inventory, InventoryFile, Latest, Qualifying};
 use crate::backup::{self, BackupKind, Trigger};
+use crate::contract::actions::Action;
 use crate::error::CommandHint;
 use crate::limits::BACKUP_STALE_AFTER;
 use crate::model::TargetKey;
@@ -111,16 +112,14 @@ pub fn hints(id: &str, s: &BackupSummary) -> Vec<CommandHint> {
     let mut hints = Vec::new();
     if s.stale {
         hints.push(CommandHint::new(
-            "refresh_backups",
+            Action::RefreshBackups,
             ["omaddons", "backup", "list", "-t", id],
-            false,
         ));
     }
     if s.due {
         hints.push(CommandHint::new(
-            "backup_create",
+            Action::BackupCreate,
             ["omaddons", "backup", "create", "-t", id],
-            false,
         ));
     }
     hints
@@ -302,7 +301,7 @@ mod tests {
         s.due = true;
         let actions: Vec<(String, Vec<String>)> = hints("retail", &s)
             .iter()
-            .map(|h| (h.action().to_owned(), h.argv().to_vec()))
+            .map(|h| (h.action().wire().to_owned(), h.argv().to_vec()))
             .collect();
         assert_eq!(
             actions,

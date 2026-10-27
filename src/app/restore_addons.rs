@@ -15,6 +15,7 @@ use super::precondition::{AddonsPart, RestoreBinding, check, of_restore_addons, 
 use super::world::World;
 use crate::backup::{AddonProvenance, AddonsFile, BackupRef, EntryKind, Manifest};
 use crate::cli::Context;
+use crate::contract::actions::Action;
 use crate::engine::Binding;
 use crate::engine::restore::{self, Exchange};
 use crate::engine::restore_addons::{self, AddonPlan, AddonSv, AddonsRequest};
@@ -182,7 +183,7 @@ pub fn run(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutco
     data.backup.integrity = done.integrity;
     data.exchange = Exchange::Verified;
     let tx = done.tx.to_string();
-    let undo = CommandHint::new("undo", ["omaddons", "undo", tx.as_str()], false);
+    let undo = CommandHint::new(Action::Undo, ["omaddons", "undo", tx.as_str()]);
     Ok(outcome(
         data,
         warnings,

@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use super::install::{self, PluginInfo};
 use super::{shell, validate};
+use crate::contract::actions::Action;
 use crate::error::{CommandHint, Result};
 use crate::state::paths::Paths;
 
@@ -121,9 +122,8 @@ fn recommendations(plugin: &PluginInfo) -> Vec<CommandHint> {
     }
     if !plugin.enabled {
         return vec![CommandHint::new(
-            "enable_widget",
+            Action::EnableWidget,
             ["omaddons", "omarchy", "install"],
-            false,
         )];
     }
     Vec::new()
@@ -132,11 +132,7 @@ fn recommendations(plugin: &PluginInfo) -> Vec<CommandHint> {
 /// `omarchy install` for an outdated widget, as `omarchy status` and `status` recommend
 /// it.
 pub fn reinstall_hint() -> CommandHint {
-    CommandHint::new(
-        "reinstall_widget",
-        ["omaddons", "omarchy", "install"],
-        false,
-    )
+    CommandHint::new(Action::ReinstallWidget, ["omaddons", "omarchy", "install"])
 }
 
 #[cfg(test)]
