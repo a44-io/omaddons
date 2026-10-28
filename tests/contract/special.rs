@@ -250,51 +250,121 @@ fn state_tree(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
 
 #[test]
 fn a_dry_run_leaves_the_state_directory_as_it_was() {
+    use std::collections::BTreeSet;
+
+    use common::backups::seed_backup;
+    use common::privacy::assert_private_all;
+    use omaddons::backup::BackupKind;
+
+    let log = common::tlog::tlog!();
+    log.step("prepare a fresh home");
     let s = Scene::new();
     let state = s.home.env.state();
     let (foo, foo2) = (s.zip("foo"), s.zip("foo2"));
-    let dry_runs = |runs: &[&[&str]]| {
+    let run = |args: &[&str]| {
+        let mut argv: Vec<&str> = args.to_vec();
+        argv.extend(["--json", "--progress", "json"]);
+        let ran = log.run(&s.home, &argv);
+        ran.ok();
+        assert_private_all(ran.stdout(), ran.stderr());
+        check(ran.to_run(), 0)
+    };
+    let mut stored = BTreeSet::new();
+    let mut dry_runs = |runs: &[(&[&str], bool)]| {
         let before = state_tree(&state);
-        for args in runs {
-            let r = s.home.run(args);
-            assert_eq!(r.code, 0, "{args:?}\n{}", r.context());
-            assert_eq!(
-                state_tree(&state)
-                    .iter()
-                    .map(|(n, _)| n)
-                    .collect::<Vec<_>>(),
-                before.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-                "{args:?}"
+        log.json("state before previews (net.log excepted)", &before);
+        for (args, stores_plan) in runs {
+            log.step(&format!("preview {}", args.join(" ")));
+            let checked = run(args);
+            let after = state_tree(&state);
+            log.assert_eq(
+                "state entry names",
+                &after.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+                &before.iter().map(|(n, _)| n).collect::<Vec<_>>(),
             );
-            assert!(state_tree(&state) == before, "{args:?}: a file changed");
+            log.assert_eq("state bytes", &after, &before);
+            let data = &checked.envelope["data"];
+            if *stores_plan {
+                assert!(
+                    data["plan_id"].is_string(),
+                    "{args:?}: changing preview stored no plan: {data}"
+                );
+                let id = data["plan_id"].as_str().unwrap();
+                assert!(id.parse::<omaddons::model::PlanId>().is_ok(), "{id}");
+                let path = s
+                    .home
+                    .env
+                    .cache()
+                    .join("omaddons/plans")
+                    .join(format!("{id}.json"));
+                let plan: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                log.json("stored plan", &plan);
+                log.assert_eq(
+                    "stored precondition",
+                    &plan["precondition"]["token"],
+                    &data["precondition"],
+                );
+                log.assert_eq("stored approval", &plan["approval"], &data["approval"]);
+                assert!(
+                    data["approval"]["selection"]
+                        .as_array()
+                        .is_some_and(|items| !items.is_empty()),
+                    "{args:?}: changing preview selected nothing: {data}"
+                );
+                stored.insert(checked.envelope["command"].as_str().unwrap().to_owned());
+            } else {
+                log.assert_eq("no stored plan", &data["plan_id"], &Value::Null);
+            }
+            assert!(
+                checked.envelope["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    // ubs:ignore — comparing a warning code, not a credential
+                    .all(|w| w["code"] != "plan_not_stored"),
+                "{args:?}: {}",
+                checked.envelope
+            );
         }
     };
     // A fresh home: nothing registered, nothing installed.
     dry_runs(&[
-        &[
-            "install",
-            "gh:o/foo",
-            "--file",
-            &foo,
-            "-t",
-            "retail",
-            "--dry-run",
-        ],
-        &["install", "gh:o/foo", "-t", "retail", "--dry-run"],
-        &["install", "weakauras", "-t", "classic", "--dry-run"],
-        &["targets", "default", "retail", "--dry-run"],
-        &["backup", "create", "--dry-run"],
-        &["backup", "prune", "--dry-run"],
+        (
+            &[
+                "install",
+                "gh:o/foo",
+                "--file",
+                &foo,
+                "-t",
+                "retail",
+                "--dry-run",
+            ],
+            true,
+        ),
+        (&["install", "gh:o/foo", "-t", "retail", "--dry-run"], true),
+        (
+            &["install", "weakauras", "-t", "classic", "--dry-run"],
+            true,
+        ),
+        (&["targets", "default", "retail", "--dry-run"], false),
+        (&["backup", "create", "--dry-run"], false),
+        (&["backup", "prune", "--dry-run"], false),
     ]);
     // With an install to change, remove, update and undo.
-    let tx = s.install_foo();
+    log.step("install Foo for changing and no-op previews");
+    let installed = run(&["install", "gh:o/foo", "--file", &foo, "-t", "retail"]);
+    let tx = installed.envelope["data"]["tx"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     s.home
         .write_desired("[family.mainline]\naddons = [\"gh:o/foo\"]\n");
     // A bound dry run compares its token, and writes nothing either: an install's, a
     // copy's (Foo has no build for classic), and the no-op tokens of an update and a
     // sync with nothing to do.
     let bound = |preview: &[&str]| -> Vec<String> {
-        let token = s.json(preview, 0).envelope["data"]["precondition"]
+        log.step(&format!("bind {}", preview.join(" ")));
+        let token = run(preview).envelope["data"]["precondition"]
             .as_str()
             .unwrap()
             .to_owned();
@@ -327,21 +397,21 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
         .each_ref()
         .map(|argv| argv.iter().map(String::as_str).collect::<Vec<_>>());
     dry_runs(&[
-        &install,
-        &bound_install,
-        &["remove", "Foo", "-t", "retail", "--dry-run"],
-        &update,
-        &bound_update,
-        &sync,
-        &bound_sync,
-        &copy,
-        &bound_copy,
-        &["undo", &tx, "--dry-run"],
-        &["undo", "--dry-run"],
-        &["pin", "Foo", "-t", "retail", "--dry-run"],
+        (&install, true),
+        (&bound_install, true),
+        (&["remove", "Foo", "-t", "retail", "--dry-run"], true),
+        (&update, false),
+        (&bound_update, false),
+        (&sync, false),
+        (&bound_sync, false),
+        (&copy, false),
+        (&bound_copy, false),
+        (&["undo", &tx, "--dry-run"], true),
+        (&["undo", "--dry-run"], true),
+        (&["pin", "Foo", "-t", "retail", "--dry-run"], true),
         // No-op dry runs: a token over a bare witness.
-        &["unpin", "Foo", "-t", "retail", "--dry-run"],
-        &adopt,
+        (&["unpin", "Foo", "-t", "retail", "--dry-run"], false),
+        (&adopt, false),
     ]);
     // An adoption's dry runs through the engine, witnessing the folder they record.
     let mystery = s.home.addons("_retail_").join("Mystery");
@@ -363,7 +433,85 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
         "--no-verify",
         "--dry-run",
     ];
-    dry_runs(&[&adopt, &folder]);
+    dry_runs(&[(&adopt, true), (&folder, true)]);
+
+    log.step("pin Foo so unpin has a record change to preview");
+    run(&["pin", "Foo", "-t", "retail"]);
+    dry_runs(&[(&["unpin", "Foo", "-t", "retail", "--dry-run"], true)]);
+
+    log.step("add a desired addon so sync has an install to preview");
+    s.home
+        .write_desired("[family.mainline]\naddons = [\"gh:o/foo\", \"weakauras\"]\n");
+    dry_runs(&[(&sync, true)]);
+
+    log.step("install a source with builds for both clients so copy can change classic");
+    run(&["install", "weakauras", "-t", "retail"]);
+    dry_runs(&[(&copy, true)]);
+
+    log.step("seed a restorable backup and an old backup eligible for pruning");
+    let retail = s.home.client("_retail_");
+    let at = |time: &str| time.parse().unwrap();
+    let old = seed_backup(&retail, BackupKind::Manual, at("2026-01-01T00:00:00Z"), 1);
+    let newest = seed_backup(&retail, BackupKind::Manual, at("2026-01-02T00:00:00Z"), 2);
+    log.json(
+        "seeded backups",
+        &serde_json::json!({"old": old, "newest": newest}),
+    );
+    dry_runs(&[
+        (
+            &[
+                "backup",
+                "restore",
+                &newest.to_string(),
+                "-t",
+                "retail",
+                "--dry-run",
+            ],
+            true,
+        ),
+        (
+            &[
+                "backup",
+                "prune",
+                "--older-than",
+                "1d",
+                "-t",
+                "retail",
+                "--dry-run",
+            ],
+            true,
+        ),
+    ]);
+
+    log.step("unpin Foo and replace its static --file release with upstream v1");
+    run(&["unpin", "Foo", "-t", "retail"]);
+    run(&["install", "gh:o/foo", "-t", "retail"]);
+    log.step("publish v2 so the update preview truly changes Foo");
+    gh_release(
+        &s.home.http,
+        "https://github.com/o/foo",
+        "v2",
+        &[(
+            "Foo.zip",
+            &[("mainline", 120_105)],
+            vec![("Foo/Foo.toc", "## Interface: 120105\n## Version: 2\n")],
+        )],
+    );
+    dry_runs(&[(
+        &["update", "Foo", "-t", "retail", "--refresh", "--dry-run"],
+        true,
+    )]);
+
+    let expected: BTreeSet<String> = omaddons::app::COMMANDS
+        .iter()
+        .filter(|entry| entry.stores_plan)
+        .map(|entry| entry.name.to_owned())
+        .collect();
+    log.assert_eq(
+        "every storable command had a changing preview",
+        &stored,
+        &expected,
+    );
 }
 
 /// Every path in `BINDING_COMMANDS` carries `data.precondition`: a token on its dry run,

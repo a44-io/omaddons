@@ -53,6 +53,64 @@ pub fn plan_files(env: &TestEnv) -> Vec<PathBuf> {
     paths
 }
 
+pub fn plans_dir(env: &TestEnv) -> PathBuf {
+    env.cache().join("omaddons/plans")
+}
+
+pub fn lease_files(env: &TestEnv) -> Vec<PathBuf> {
+    let dir = plans_dir(env);
+    if !dir.exists() {
+        return Vec::new();
+    }
+    let mut files: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "lease"))
+        .collect();
+    files.sort();
+    files
+}
+
+pub fn read_plan(env: &TestEnv, id: &str) -> Value {
+    serde_json::from_slice(&fs::read(plans_dir(env).join(format!("{id}.json"))).unwrap()).unwrap()
+}
+
+/// Physical counts, including files beyond the library listing's bounded window.
+pub fn store_listing(env: &TestEnv) -> (usize, usize, u64) {
+    let plans = plan_files(env);
+    let bytes = plans
+        .iter()
+        .map(|path| fs::metadata(path).unwrap().len())
+        .sum();
+    (plans.len(), lease_files(env).len(), bytes)
+}
+
+pub fn edit_plan(env: &TestEnv, id: &str, edit: impl FnOnce(&mut Value)) {
+    let mut plan = read_plan(env, id);
+    edit(&mut plan);
+    fs::write(
+        plans_dir(env).join(format!("{id}.json")),
+        serde_json::to_vec(&plan).unwrap(),
+    )
+    .unwrap();
+}
+
+/// Oldest first, with distinct fixed-time ids and a millisecond between creations.
+pub fn plant_expired(env: &TestEnv, template: &Value, n: usize) {
+    let created: Timestamp = template["created_at"].as_str().unwrap().parse().unwrap();
+    let start = created.checked_sub(SignedDuration::from_hours(48)).unwrap();
+    for index in 0..n {
+        let at = start
+            .checked_add(SignedDuration::from_millis(i64::try_from(index).unwrap()))
+            .unwrap();
+        let id = Ulid::from_parts(
+            u64::try_from(at.as_millisecond()).unwrap(),
+            u128::try_from(index + 1).unwrap(),
+        );
+        age_plan(env, template, id, at);
+    }
+}
+
 /// Writes a copy at `id`, dated `created_at`, with the ordinary 24-hour lifetime.
 /// Everything else in the real plan is preserved, and the copy remains owner-only.
 pub fn age_plan(env: &TestEnv, template: &Value, id: Ulid, created_at: Timestamp) {
@@ -70,6 +128,13 @@ pub fn age_plan(env: &TestEnv, template: &Value, id: Ulid, created_at: Timestamp
     let path = dir.join(format!("{id}.json"));
     fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let loaded = omaddons::state::plans::load(&path).unwrap();
+    assert_eq!(
+        loaded.plan_id.to_string(),
+        id.to_string(),
+        "planted plan must load: {}",
+        path.display()
+    );
 }
 
 /// Plants `n` live copies of `template`, each with `padding` extra summary bytes.
