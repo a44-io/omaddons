@@ -1,0 +1,5430 @@
+---
+source: src/error/specs.rs
+expression: schemas
+---
+{
+  "archive_too_large": {
+    "properties": {
+      "config_key": {
+        "type": "string"
+      },
+      "constant": {
+        "type": "string"
+      },
+      "folder": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer"
+      },
+      "measured": {
+        "type": "integer"
+      },
+      "reason": {
+        "enum": [
+          "limit_exceeded"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "auth_rejected": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "auth_required": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "bad_archive": {
+    "properties": {
+      "actual": {
+        "properties": {
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sha256",
+          "size"
+        ],
+        "type": "object"
+      },
+      "expected": {
+        "properties": {
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sha256",
+          "size"
+        ],
+        "type": "object"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "path": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "reason": {
+        "enum": [
+          "not_a_zip",
+          "encrypted",
+          "unsupported_compression",
+          "corrupt",
+          "no_addon_root",
+          "duplicate_folder",
+          "changed",
+          "decoder_window",
+          "truncated",
+          "metadata_unreadable",
+          "packaging_unsupported",
+          "tree_collision",
+          "not_a_listing",
+          "duplicate_name",
+          "bad_name"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "unsupported": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "case_collision": {
+    "properties": {
+      "folders": {
+        "items": {
+          "properties": {
+            "class": {
+              "enum": [
+                "protected",
+                "managed",
+                "shared",
+                "linked",
+                "unmanaged",
+                "invalid"
+              ]
+            },
+            "code": {
+              "type": "string"
+            },
+            "existing": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              ]
+            },
+            "folder": {
+              "type": "string"
+            },
+            "owner": {
+              "type": "string"
+            },
+            "owner_target": {
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "protected",
+                "linked",
+                "case_duplicates",
+                "owned_on_shared_target",
+                "case_collision",
+                "owned_by_another",
+                "unmanaged",
+                "same_name_other_ref"
+              ]
+            },
+            "ref": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "folder"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "paths": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "check_failed": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "incomplete",
+          "new_errors"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "desired_state_invalid": {
+    "properties": {
+      "first_line": {
+        "type": "integer"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "key": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      },
+      "other_line": {
+        "type": "integer"
+      },
+      "path": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "bad_value",
+          "unknown_family",
+          "newer_schema",
+          "duplicate",
+          "unknown_target_section",
+          "empty",
+          "edited"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "path",
+      "reason"
+    ],
+    "type": "object"
+  },
+  "distribution_disabled": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "download_failed": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "file_exists": {
+    "properties": {
+      "file": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "file"
+    ],
+    "type": "object"
+  },
+  "filesystem_unsupported": {
+    "properties": {
+      "backup_dir": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "wtf_is_mount_point",
+          "stage_cross_mount",
+          "no_rename_exchange"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "backup_dir",
+      "reason"
+    ],
+    "type": "object"
+  },
+  "game_running": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "ops": {
+        "items": {
+          "properties": {
+            "files": {
+              "type": "integer"
+            },
+            "folder": {
+              "type": "string"
+            },
+            "op": {
+              "enum": [
+                "add",
+                "replace",
+                "remove",
+                "restore_saved_variables"
+              ]
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "reason": {
+        "enum": [
+          "loaded_toc",
+          "legacy_client",
+          "policy_refuse",
+          "saved_variables"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "running": {
+        "enum": [
+          "unknown"
+        ]
+      },
+      "target": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "hash_mismatch": {
+    "properties": {
+      "actual": {
+        "type": "string"
+      },
+      "backup": {
+        "type": "string"
+      },
+      "expected": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "tried": {
+        "items": {
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "asset",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "host_blocked": {
+    "properties": {
+      "hop": {
+        "type": "integer"
+      },
+      "host": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "url": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "http_status": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "status": {
+        "type": "integer"
+      }
+    },
+    "type": "object"
+  },
+  "internal": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "problems": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "reason": {
+        "enum": [
+          "plugin_invalid",
+          "unexpected_state",
+          "step_unrecognized"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "io": {
+    "properties": {
+      "backup": {
+        "type": "string"
+      },
+      "folder": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "path": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "reason": {
+        "enum": [
+          "unindexable",
+          "unattributed"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "locked": {
+    "properties": {
+      "holder": {
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "started_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command",
+          "pid",
+          "started_at"
+        ],
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "network": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "no_compatible_release": {
+    "properties": {
+      "checked": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ref": {
+        "type": "string"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "type": "string"
+      },
+      "tried": {
+        "items": {
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "asset",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "not_found": {
+    "properties": {
+      "addon": {
+        "type": "string"
+      },
+      "addons": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "asset": {
+        "type": "string"
+      },
+      "assets": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "backup": {
+        "type": "string"
+      },
+      "candidates": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "family": {
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "newest": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "owner": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "prefix": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "snapshot_pruned",
+          "omarchy_missing",
+          "widget_not_installed"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ref": {
+        "type": "string"
+      },
+      "repository": {
+        "type": "string"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "rev": {
+        "type": "string"
+      },
+      "target": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tx": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "not_managed": {
+    "properties": {
+      "class": {
+        "enum": [
+          "protected",
+          "managed",
+          "shared",
+          "linked",
+          "unmanaged",
+          "invalid"
+        ]
+      },
+      "folder": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "offline": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "not_cached"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ref": {
+        "type": "string"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "ownership_conflict": {
+    "properties": {
+      "folder": {
+        "type": "string"
+      },
+      "folders": {
+        "items": {
+          "properties": {
+            "class": {
+              "enum": [
+                "protected",
+                "managed",
+                "shared",
+                "linked",
+                "unmanaged",
+                "invalid"
+              ]
+            },
+            "code": {
+              "type": "string"
+            },
+            "existing": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              ]
+            },
+            "folder": {
+              "type": "string"
+            },
+            "owner": {
+              "type": "string"
+            },
+            "owner_target": {
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "protected",
+                "linked",
+                "case_duplicates",
+                "owned_on_shared_target",
+                "case_collision",
+                "owned_by_another",
+                "unmanaged",
+                "same_name_other_ref"
+              ]
+            },
+            "ref": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "folder"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "owner": {
+        "type": "string"
+      },
+      "owner_target": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "owned_on_shared_target"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "within_transaction": {
+        "type": "boolean"
+      }
+    },
+    "type": "object"
+  },
+  "plan_not_found": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "plan_id": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "unreadable"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "path",
+      "plan_id",
+      "reason"
+    ],
+    "type": "object"
+  },
+  "plan_stale": {
+    "properties": {
+      "cause": {
+        "type": "string"
+      },
+      "cause_message": {
+        "type": "string"
+      },
+      "changed": {
+        "items": {
+          "enum": [
+            "command",
+            "targets",
+            "selection",
+            "observed"
+          ]
+        },
+        "type": "array"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "protected_folder": {
+    "properties": {
+      "folders": {
+        "items": {
+          "properties": {
+            "class": {
+              "enum": [
+                "protected",
+                "managed",
+                "shared",
+                "linked",
+                "unmanaged",
+                "invalid"
+              ]
+            },
+            "code": {
+              "type": "string"
+            },
+            "existing": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              ]
+            },
+            "folder": {
+              "type": "string"
+            },
+            "owner": {
+              "type": "string"
+            },
+            "owner_target": {
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "protected",
+                "linked",
+                "case_duplicates",
+                "owned_on_shared_target",
+                "case_collision",
+                "owned_by_another",
+                "unmanaged",
+                "same_name_other_ref"
+              ]
+            },
+            "ref": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "folder"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "rate_limited": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "reset_at": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "reset_at"
+    ],
+    "type": "object"
+  },
+  "ref_ambiguous": {
+    "properties": {
+      "addon": {
+        "type": "string"
+      },
+      "candidates": {
+        "items": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "from",
+                "ref"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "folder": {
+        "type": "string"
+      },
+      "input": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "owned_now": {
+        "items": {
+          "properties": {
+            "folder": {
+              "type": "string"
+            },
+            "owner": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "folder",
+            "owner"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "prefix": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "refs": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "ref_invalid": {
+    "properties": {
+      "host": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "scope_denied": {
+    "properties": {
+      "backup_dir": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "wtf_symlinked",
+          "marker_mismatch"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "source_disabled": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "state_corrupt": {
+    "properties": {
+      "backup": {
+        "type": "string"
+      },
+      "column": {
+        "type": "integer"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "key": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      },
+      "path": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "snapshot_mismatch",
+          "journal_unreadable",
+          "preservation_incomplete",
+          "unattributed"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tx": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "state_too_new": {
+    "properties": {
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "journal_too_new",
+          "unattributed"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "schema_version": {
+        "type": "string"
+      },
+      "target": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "type": "object"
+  },
+  "target_ambiguous": {
+    "properties": {
+      "candidates": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "flag": {
+        "type": "string"
+      },
+      "folder": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "selector": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "candidates"
+    ],
+    "type": "object"
+  },
+  "target_not_found": {
+    "properties": {
+      "candidates": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "key": {
+        "type": "string"
+      },
+      "missing": {
+        "type": "boolean"
+      },
+      "mode": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "product": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "selector": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "undo_conflict": {
+    "properties": {
+      "conflicting": {
+        "items": {
+          "properties": {
+            "folders": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "tx": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "folders",
+            "kind",
+            "tx"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "folder": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "lines": {
+        "type": "integer"
+      },
+      "reason": {
+        "enum": [
+          "history_unreadable"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "tx": {
+        "type": "string"
+      },
+      "undone_by": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "tx"
+    ],
+    "type": "object"
+  },
+  "unmanaged_folder": {
+    "properties": {
+      "class": {
+        "enum": [
+          "linked",
+          "invalid",
+          "unmanaged"
+        ]
+      },
+      "folder": {
+        "type": "string"
+      },
+      "folders": {
+        "items": {
+          "properties": {
+            "class": {
+              "enum": [
+                "protected",
+                "managed",
+                "shared",
+                "linked",
+                "unmanaged",
+                "invalid"
+              ]
+            },
+            "code": {
+              "type": "string"
+            },
+            "existing": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              ]
+            },
+            "folder": {
+              "type": "string"
+            },
+            "owner": {
+              "type": "string"
+            },
+            "owner_target": {
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "protected",
+                "linked",
+                "case_duplicates",
+                "owned_on_shared_target",
+                "case_collision",
+                "owned_by_another",
+                "unmanaged",
+                "same_name_other_ref"
+              ]
+            },
+            "ref": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "folder"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "unsafe_archive": {
+    "properties": {
+      "compressed": {
+        "type": "integer"
+      },
+      "distinct": {
+        "type": "integer"
+      },
+      "entry": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer"
+      },
+      "measured": {
+        "type": "integer"
+      },
+      "path": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "reason": {
+        "enum": [
+          "control_character",
+          "absolute_path",
+          "drive_letter",
+          "parent_dir",
+          "symlink",
+          "special_file",
+          "file_and_directory",
+          "duplicate_entry",
+          "case_collision",
+          "not_utf8",
+          "size_overrun",
+          "invalid_folder_name",
+          "ratio",
+          "unsupported_entry",
+          "bad_name",
+          "duplicate_name",
+          "duplicate_metadata",
+          "missing_metadata",
+          "manifest_mismatch",
+          "symlink_escape"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "usage": {
+    "properties": {
+      "command": {
+        "type": "string"
+      },
+      "holder": {
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "partial": {
+        "type": "boolean"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "wrong_flavor": {
+    "properties": {
+      "family": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ref": {
+        "type": "string"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "type": "string"
+      },
+      "target_family": {
+        "type": "string"
+      },
+      "tried": {
+        "items": {
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "asset",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "unloaded_folders": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  }
+}

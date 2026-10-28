@@ -18,6 +18,7 @@ use crate::contract::actions::Action;
 
 mod detail_spec;
 pub use detail_spec::{DetailSpec, Field, Mismatch, Nullability, Presence};
+mod specs;
 
 // ---------------------------------------------------------------------------------------
 // The general exit dictionary.
@@ -114,7 +115,7 @@ impl From<Exit> for ExitCode {
 // Error codes.
 
 macro_rules! error_codes {
-    ($($(#[$doc:meta])* $variant:ident = $wire:literal, $exit:ident, $retryable:literal, $meaning:literal;)+) => {
+    ($($(#[$doc:meta])* $variant:ident = $wire:literal, $exit:ident, $retryable:literal, $meaning:literal, $spec:path;)+) => {
         /// A stable error code. Each maps to one [`Exit`] and a default retryability.
         #[derive(
             Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
@@ -154,6 +155,11 @@ macro_rules! error_codes {
                     $(Self::$variant => $meaning,)+
                 }
             }
+
+            /// This code's own details, without the shared wrapper keys.
+            pub const fn detail_spec(self) -> &'static DetailSpec {
+                match self { $(Self::$variant => &$spec,)+ }
+            }
         }
     };
 }
@@ -161,99 +167,116 @@ macro_rules! error_codes {
 #[rustfmt::skip]
 error_codes! {
     Usage               = "usage",                 Usage,       false,
-        "The command line was not accepted: an unknown command or flag, a bad value or id, or a missing or relative `HOME`.";
+        "The command line was not accepted: an unknown command or flag, a bad value or id, or a missing or relative `HOME`.", specs::USAGE;
     RefInvalid          = "ref_invalid",           Usage,       false,
-        "An addon reference has invalid syntax or uses a protocol omaddons does not accept.";
-    /// `addons.toml` cannot be read as desired state; `details: {path, line, key, reason}`.
+        "An addon reference has invalid syntax or uses a protocol omaddons does not accept.", specs::REF_INVALID;
+    /// `addons.toml` cannot be read as desired state.
     DesiredStateInvalid = "desired_state_invalid", Usage,       false,
-        "The desired-state file or export request is invalid, ambiguous, newer than supported, or would replace unapproved content.";
+        "The desired-state file or export request is invalid, ambiguous, newer than supported, or would replace unapproved content.", specs::DESIRED_STATE_INVALID;
     TargetNotFound      = "target_not_found",      NotFound,    false,
-        "No client matches the selection, a required client is unavailable, or the chosen path contains no client.";
+        "No client matches the selection, a required client is unavailable, or the chosen path contains no client.", specs::TARGET_NOT_FOUND;
     TargetAmbiguous     = "target_ambiguous",      NotFound,    false,
-        "The selection matches several clients where exactly one is required.";
+        "The selection matches several clients where exactly one is required.", specs::TARGET_AMBIGUOUS;
     RefAmbiguous        = "ref_ambiguous",         NotFound,    false,
-        "An addon, source or backup selection has several possible matches.";
+        "An addon, source or backup selection has several possible matches.", specs::REF_AMBIGUOUS;
     NotFound            = "not_found",             NotFound,    false,
-        "A requested addon, release, path, transaction, run, backup or undo snapshot was not found or cannot serve that request.";
+        "A requested addon, release, path, transaction, run, backup or undo snapshot was not found or cannot serve that request.", specs::NOT_FOUND;
     NotManaged          = "not_managed",           NotFound,    false,
-        "The requested addon or folder is not managed by omaddons on the selected client.";
+        "The requested addon or folder is not managed by omaddons on the selected client.", specs::NOT_MANAGED;
     PlanNotFound        = "plan_not_found",        NotFound,    false,
-        "No readable stored plan answers to the given id, or its file exceeds the size limit.";
+        "No readable stored plan answers to the given id, or its file exceeds the size limit.", specs::PLAN_NOT_FOUND;
     NoCompatibleRelease = "no_compatible_release", NotFound,    false,
-        "No available release or archive candidate loads on the selected client or belongs to the requested release channel.";
+        "No available release or archive candidate loads on the selected client or belongs to the requested release channel.", specs::NO_COMPATIBLE_RELEASE;
     GameRunning         = "game_running",          Refused,     false,
-        "The client's running state or running policy forbids the requested change.";
+        "The client's running state or running policy forbids the requested change.", specs::GAME_RUNNING;
     ProtectedFolder     = "protected_folder",      Refused,     false,
-        "A requested change would touch a protected `Blizzard_*` folder.";
+        "A requested change would touch a protected `Blizzard_*` folder.", specs::PROTECTED_FOLDER;
     OwnershipConflict   = "ownership_conflict",    Refused,     false,
-        "A folder or addon belongs to another managed addon or to another client sharing its AddOns directory.";
+        "A folder or addon belongs to another managed addon or to another client sharing its AddOns directory.", specs::OWNERSHIP_CONFLICT;
     UnmanagedFolder     = "unmanaged_folder",      Refused,     false,
-        "A requested destination folder exists outside omaddons management or is a symlink that cannot be replaced.";
+        "A requested destination folder exists outside omaddons management or is a symlink that cannot be replaced.", specs::UNMANAGED_FOLDER;
     CaseCollision       = "case_collision",        Refused,     false,
-        "A client has paths whose names collide when case is ignored, or a requested folder would create such a collision.";
+        "A client has paths whose names collide when case is ignored, or a requested folder would create such a collision.", specs::CASE_COLLISION;
     WrongFlavor         = "wrong_flavor",          Refused,     false,
-        "The supplied archive does not load on this client, an adopted group has no loadable folder, or an imported backup belongs to another family.";
+        "The supplied archive does not load on this client, an adopted group has no loadable folder, or an imported backup belongs to another family.", specs::WRONG_FLAVOR;
     UnsafeArchive       = "unsafe_archive",        Refused,     false,
-        "An archive or local tree failed a safety check, or a backup archive does not match the export format.";
+        "An archive or local tree failed a safety check, or a backup archive does not match the export format.", specs::UNSAFE_ARCHIVE;
     ArchiveTooLarge     = "archive_too_large",     Refused,     false,
-        "An archive, download, checkout, input or tree exceeded a configured or fixed safety limit.";
+        "An archive, download, checkout, input or tree exceeded a configured or fixed safety limit.", specs::ARCHIVE_TOO_LARGE;
     UndoConflict        = "undo_conflict",         Refused,     false,
-        "The transaction was already undone, or later changes or unreadable history prevent its reversal.";
+        "The transaction was already undone, or later changes or unreadable history prevent its reversal.", specs::UNDO_CONFLICT;
     HostBlocked         = "host_blocked",          Refused,     false,
-        "An HTTP request, redirect or git reference names a host outside its allowlist.";
+        "An HTTP request, redirect or git reference names a host outside its allowlist.", specs::HOST_BLOCKED;
     /// fsx refused a write outside the write-scope table or onto the deny-list (other
     /// than a protected folder, which stays `protected_folder`).
     ScopeDenied         = "scope_denied",          Refused,     false,
-        "The filesystem writer refused an out-of-scope path, a denied target, or a journal whose client identity no longer matches.";
+        "The filesystem writer refused an out-of-scope path, a denied target, or a journal whose client identity no longer matches.", specs::SCOPE_DENIED;
     /// A state file's `schema_version` is newer than this binary; writes are refused.
     StateTooNew         = "state_too_new",         Refused,     false,
-        "Persisted state or an interrupted transaction uses a schema version this binary cannot safely change or recover.";
+        "Persisted state or an interrupted transaction uses a schema version this binary cannot safely change or recover.", specs::STATE_TOO_NEW;
     /// A restore needs `WTF/` to be a plain directory on the client's mount, on a
-    /// filesystem with atomic exchange (M3-D24); `details.reason`, `details.backup_dir`.
+    /// filesystem with atomic exchange (M3-D24).
     FilesystemUnsupported = "filesystem_unsupported", Refused,  false,
-        "The client or its settings paths are on mounts or a filesystem that cannot perform the restore's required atomic exchange.";
+        "The client or its settings paths are on mounts or a filesystem that cannot perform the restore's required atomic exchange.", specs::FILESYSTEM_UNSUPPORTED;
     /// A file omaddons would create already exists (at the start, or created by another
     /// process meanwhile); it is never replaced (`backup export`, M3-D34).
     FileExists          = "file_exists",           Refused,     false,
-        "A destination that must be newly created already exists.";
+        "A destination that must be newly created already exists.", specs::FILE_EXISTS;
     Locked              = "locked",                Locked,      true,
-        "Another omaddons process held the lock past the acquire timeout.";
+        "Another omaddons process held the lock past the acquire timeout.", specs::LOCKED;
     CheckFailed         = "check_failed",          CheckFailed, false,
-        "An explicitly requested health, update, error or completeness assertion failed.";
+        "An explicitly requested health, update, error or completeness assertion failed.", specs::CHECK_FAILED;
     Network             = "network",               Failed,      true,
-        "A request or source response failed at the network or decoding layer, or a git subprocess timed out or failed outside download.";
-    /// `details.reset_at` carries the reset time (RFC 3339).
+        "A request or source response failed at the network or decoding layer, or a git subprocess timed out or failed outside download.", specs::NETWORK;
+    /// The host's request budget or rate-limit retries were exhausted.
     RateLimited         = "rate_limited",          Failed,      true,
-        "A host exhausted its request budget or kept refusing requests beyond the allowed rate-limit retries.";
+        "A host exhausted its request budget or kept refusing requests beyond the allowed rate-limit retries.", specs::RATE_LIMITED;
     DownloadFailed      = "download_failed",       Failed,      false,
-        "The git subprocess could not clone or fetch the requested repository or revision.";
+        "The git subprocess could not clone or fetch the requested repository or revision.", specs::DOWNLOAD_FAILED;
     /// Retryable for 5xx only; see [`Error::http_status`].
     HttpStatus          = "http_status",           Failed,      false,
-        "A host answered with an unexpected HTTP status; an instance is retryable for a 5xx status only.";
+        "A host answered with an unexpected HTTP status; an instance is retryable for a 5xx status only.", specs::HTTP_STATUS;
     /// Retryable once; see [`Error::hash_mismatch`].
     HashMismatch        = "hash_mismatch",         Failed,      true,
-        "Bytes did not match the hash they were expected or recorded with; an instance is retryable on a download's first attempt only, never for a backup.";
+        "Bytes did not match the hash they were expected or recorded with; an instance is retryable on a download's first attempt only, never for a backup.", specs::HASH_MISMATCH;
     /// Retryable when raised by re-planning, not by `apply`; see [`Error::plan_stale`].
     PlanStale           = "plan_stale",            Failed,      true,
-        "What a command planned or previewed no longer matches the state it would change; an instance is retryable when re-planning raised it, never under `--if-match`.";
+        "What a command planned or previewed no longer matches the state it would change; an instance is retryable when re-planning raised it, never under `--if-match`.", specs::PLAN_STALE;
     Offline             = "offline",               Failed,      false,
-        "Offline mode refused an operation that would contact the network.";
+        "Offline mode refused an operation that would contact the network.", specs::OFFLINE;
     BadArchive          = "bad_archive",           Failed,      false,
-        "An archive is malformed, encrypted, truncated, corrupt or uses unsupported compression.";
+        "An archive is malformed, encrypted, truncated, corrupt or uses unsupported compression.", specs::BAD_ARCHIVE;
     DistributionDisabled = "distribution_disabled", Failed,     false,
-        "A source declined to distribute a file to third-party clients; reserved: no command raises it yet.";
+        "A source declined to distribute a file to third-party clients; reserved: no command raises it yet.", specs::DISTRIBUTION_DISABLED;
     SourceDisabled      = "source_disabled",       Failed,      false,
-        "The requested source is disabled, unavailable in this build, or requires a git binary this command cannot use.";
+        "The requested source is disabled, unavailable in this build, or requires a git binary this command cannot use.", specs::SOURCE_DISABLED;
     AuthRequired        = "auth_required",         Failed,      false,
-        "A configured credential cannot be read or used, or a requested credential provider is unavailable.";
+        "A configured credential cannot be read or used, or a requested credential provider is unavailable.", specs::AUTH_REQUIRED;
     AuthRejected        = "auth_rejected",         Failed,      false,
-        "A service rejected the credential, or the configured credential command failed.";
+        "A service rejected the credential, or the configured credential command failed.", specs::AUTH_REJECTED;
     StateCorrupt        = "state_corrupt",         Failed,      false,
-        "A configuration, state file, snapshot or journal is unreadable, inconsistent or cannot be safely recovered.";
+        "A configuration, state file, snapshot or journal is unreadable, inconsistent or cannot be safely recovered.", specs::STATE_CORRUPT;
     Io                  = "io",                    Failed,      false,
-        "A filesystem operation failed, or files changed too often to finish a consistent backup.";
+        "A filesystem operation failed, or files changed too often to finish a consistent backup.", specs::IO;
     Internal            = "internal",              Failed,      false,
-        "An internal invariant, unexpected recovery state or panic stopped the command.";
+        "An internal invariant, unexpected recovery state or panic stopped the command.", specs::INTERNAL;
+}
+
+impl ErrorCode {
+    /// An open JSON Schema fragment of the own and shared details keys.
+    pub fn details_schema(self) -> serde_json::Value {
+        specs::details_schema(self)
+    }
+
+    /// Match own and shared keys strictly, rejecting undeclared details.
+    pub fn check_details(self, details: &serde_json::Value) -> std::result::Result<(), Mismatch> {
+        specs::check_details(self, details)
+    }
+
+    /// Sorted key positions from the own specification and shared wrappers.
+    pub fn declared_detail_paths(self) -> Vec<String> {
+        specs::declared_detail_paths(self)
+    }
 }
 
 impl fmt::Display for ErrorCode {
