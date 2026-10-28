@@ -16,7 +16,7 @@ use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
-use schemars::JsonSchema;
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +92,14 @@ pub trait Versioned: Serialize + DeserializeOwned + JsonSchema {
     /// The version this binary writes.
     const CURRENT: SchemaVersion;
 
+    /// The schema of the document `save` writes: `schema_version`, then this type's fields.
+    fn schema(g: &mut SchemaGenerator) -> Schema
+    where
+        Self: Sized + 'static,
+    {
+        g.root_schema_for::<Document<'static, Self>>()
+    }
+
     /// Rewrites an older document (`schema_version` already removed) into the current
     /// shape. Pure, so the doctor's `state-version-older` fixer (M4) can reuse it. The
     /// default suits additive minor bumps, whose new fields have serde defaults.
@@ -101,91 +109,51 @@ pub trait Versioned: Serialize + DeserializeOwned + JsonSchema {
     }
 }
 
-/// Every persisted format and its current version, for capabilities (M4) and the
-/// wire-name golden. Each `Versioned` impl adds its row here (`history` lines carry
-/// their own version, `history::CURRENT`).
-pub const KINDS: &[(&str, SchemaVersion)] = &[
-    (
-        <super::records::TargetRecord as Versioned>::KIND,
-        <super::records::TargetRecord as Versioned>::CURRENT,
-    ),
-    (
-        <super::files_index::FilesIndex as Versioned>::KIND,
-        <super::files_index::FilesIndex as Versioned>::CURRENT,
-    ),
-    (
-        <super::status::StatusFile as Versioned>::KIND,
-        <super::status::StatusFile as Versioned>::CURRENT,
-    ),
-    (
-        <super::registry::Registry as Versioned>::KIND,
-        <super::registry::Registry as Versioned>::CURRENT,
-    ),
-    (
-        <super::registry::TargetMarker as Versioned>::KIND,
-        <super::registry::TargetMarker as Versioned>::CURRENT,
-    ),
-    (
-        <crate::discover::cache::DiscoveryCache as Versioned>::KIND,
-        <crate::discover::cache::DiscoveryCache as Versioned>::CURRENT,
-    ),
-    (
-        <crate::net::validators::CachedMeta as Versioned>::KIND,
-        <crate::net::validators::CachedMeta as Versioned>::CURRENT,
-    ),
-    (
-        <super::memo::ReleaseMemo as Versioned>::KIND,
-        <super::memo::ReleaseMemo as Versioned>::CURRENT,
-    ),
-    (
-        <crate::sources::wowi::index::StoredIndex as Versioned>::KIND,
-        <crate::sources::wowi::index::StoredIndex as Versioned>::CURRENT,
-    ),
-    (
-        <super::export_memo::ExportMemo as Versioned>::KIND,
-        <super::export_memo::ExportMemo as Versioned>::CURRENT,
-    ),
-    (
-        <super::doorbell::Doorbell as Versioned>::KIND,
-        <super::doorbell::Doorbell as Versioned>::CURRENT,
-    ),
-    (
-        <crate::backup::BackupMeta as Versioned>::KIND,
-        <crate::backup::BackupMeta as Versioned>::CURRENT,
-    ),
-    (
-        <crate::backup::Manifest as Versioned>::KIND,
-        <crate::backup::Manifest as Versioned>::CURRENT,
-    ),
-    (
-        <crate::backup::export::ExportedMeta as Versioned>::KIND,
-        <crate::backup::export::ExportedMeta as Versioned>::CURRENT,
-    ),
-    (
-        <crate::backup::AddonsFile as Versioned>::KIND,
-        <crate::backup::AddonsFile as Versioned>::CURRENT,
-    ),
-    (
-        <crate::backup::inventory::InventoryFile as Versioned>::KIND,
-        <crate::backup::inventory::InventoryFile as Versioned>::CURRENT,
-    ),
-    (
-        <super::history_tail::HistoryTail as Versioned>::KIND,
-        <super::history_tail::HistoryTail as Versioned>::CURRENT,
-    ),
-    (
-        <crate::errors::memo::ErrorsMemo as Versioned>::KIND,
-        <crate::errors::memo::ErrorsMemo as Versioned>::CURRENT,
-    ),
-    (
-        <crate::errors::ack::ErrorsAck as Versioned>::KIND,
-        <crate::errors::ack::ErrorsAck as Versioned>::CURRENT,
-    ),
-    (
-        <super::plans::StoredPlan as Versioned>::KIND,
-        <super::plans::StoredPlan as Versioned>::CURRENT,
-    ),
-    ("history", super::history::CURRENT),
+/// One saved format: its name, written version and the schema of what it writes.
+#[derive(Debug, Clone, Copy)]
+pub struct KindRow {
+    pub kind: &'static str,
+    pub current: SchemaVersion,
+    pub schema: fn(&mut SchemaGenerator) -> Schema,
+}
+
+impl KindRow {
+    pub const fn of<T: Versioned + 'static>() -> Self {
+        Self {
+            kind: T::KIND,
+            current: T::CURRENT,
+            schema: T::schema,
+        }
+    }
+}
+
+/// Every persisted format, declared once with its version and schema.
+pub const KINDS: &[KindRow] = &[
+    KindRow::of::<super::records::TargetRecord>(),
+    KindRow::of::<super::files_index::FilesIndex>(),
+    KindRow::of::<super::status::StatusFile>(),
+    KindRow::of::<super::registry::Registry>(),
+    KindRow::of::<super::registry::TargetMarker>(),
+    KindRow::of::<crate::discover::cache::DiscoveryCache>(),
+    KindRow::of::<crate::net::validators::CachedMeta>(),
+    KindRow::of::<super::memo::ReleaseMemo>(),
+    KindRow::of::<crate::sources::wowi::index::StoredIndex>(),
+    KindRow::of::<super::export_memo::ExportMemo>(),
+    KindRow::of::<super::doorbell::Doorbell>(),
+    KindRow::of::<crate::backup::BackupMeta>(),
+    KindRow::of::<crate::backup::Manifest>(),
+    KindRow::of::<crate::backup::export::ExportedMeta>(),
+    KindRow::of::<crate::backup::AddonsFile>(),
+    KindRow::of::<crate::backup::inventory::InventoryFile>(),
+    KindRow::of::<super::history_tail::HistoryTail>(),
+    KindRow::of::<crate::errors::memo::ErrorsMemo>(),
+    KindRow::of::<crate::errors::ack::ErrorsAck>(),
+    KindRow::of::<super::plans::StoredPlan>(),
+    KindRow {
+        kind: "history",
+        current: super::history::CURRENT,
+        schema: super::history::line_schema,
+    },
 ];
 
 /// How a loaded file's version compared with this binary's.
@@ -322,12 +290,6 @@ pub fn save<T: Versioned>(
 /// The bytes `save` writes: pretty JSON with `schema_version` first and a trailing
 /// newline. For derived files that may replace a corrupt predecessor (status.json).
 pub fn encode<T: Versioned>(value: &T) -> Result<Vec<u8>> {
-    #[derive(Serialize)]
-    struct Document<'a, T> {
-        schema_version: SchemaVersion,
-        #[serde(flatten)]
-        value: &'a T,
-    }
     let mut json = serde_json::to_vec_pretty(&Document {
         schema_version: T::CURRENT,
         value,
@@ -335,6 +297,14 @@ pub fn encode<T: Versioned>(value: &T) -> Result<Vec<u8>> {
     .map_err(|err| Error::internal(format!("serializing {}: {err}", T::KIND)))?;
     json.push(b'\n');
     Ok(json)
+}
+
+/// The same document supplies the saved bytes and the published schema.
+#[derive(Serialize, JsonSchema)]
+struct Document<'a, T> {
+    schema_version: SchemaVersion,
+    #[serde(flatten)]
+    value: &'a T,
 }
 
 /// A document at `T::CURRENT`, decoded straight from its bytes, without the JSON value
@@ -446,12 +416,12 @@ mod tests {
         let rows = rows.split("];").next().unwrap_or_default();
         for name in &found {
             assert!(
-                rows.contains(&format!("::{name} as Versioned>::KIND")),
+                rows.contains(&format!("::{name}>()")),
                 "{name} implements Versioned but has no KINDS row"
             );
         }
         assert_eq!(found.len() + 1, KINDS.len(), "every row but history's");
-        let kinds: Vec<&str> = KINDS.iter().map(|(kind, _)| *kind).collect();
+        let kinds: Vec<&str> = KINDS.iter().map(|row| row.kind).collect();
         assert!(kinds.contains(&"release_memo") && kinds.contains(&"http_validators"));
     }
 
@@ -477,6 +447,50 @@ mod tests {
             }
             Ok(raw)
         }
+    }
+
+    #[test]
+    fn kind_rows_match_their_types() {
+        let row = KindRow::of::<TestDoc>();
+        assert_eq!(row.kind, "test_doc", "{row:?}");
+        assert_eq!(row.current, SchemaVersion::new(1, 1), "{row:?}");
+    }
+
+    #[test]
+    fn encode_matches_the_document_schema_shape() {
+        let document = TestDoc {
+            name: "sample".into(),
+            count: 0,
+            items: BTreeMap::new(),
+        };
+        let bytes = encode(&document).unwrap();
+        assert!(
+            bytes.starts_with(b"{\n  \"schema_version\": \"1.1\","),
+            "schema_version is first: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let schema = TestDoc::schema(&mut crate::contract::schema::generator()).to_value();
+        let keys = |v: &serde_json::Value| {
+            v.as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(
+            keys(&value),
+            keys(&schema["properties"]),
+            "bytes: {value}; schema: {schema}"
+        );
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|key| key == "schema_version"),
+            "{schema}"
+        );
     }
 
     struct Fixture {

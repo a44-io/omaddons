@@ -2,6 +2,7 @@
 //! keys in declaration order. Data is serialized generically, never through
 //! `serde_json::Value`, which would sort its keys.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::error::{CommandHint, Error, ErrorBody, Warning};
@@ -10,14 +11,15 @@ use crate::error::{CommandHint, Error, ErrorBody, Warning};
 pub const SCHEMA_VERSION: &str = "1.0";
 
 /// Volatile per-run facts; golden diffs strip this object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Meta {
     pub elapsed_ms: u64,
     pub offline: bool,
 }
 
 /// One stdout document.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
+#[schemars(rename = "Envelope")]
 pub struct Envelope<'a, D: Serialize> {
     pub ok: bool,
     pub schema_version: &'static str,
@@ -27,6 +29,8 @@ pub struct Envelope<'a, D: Serialize> {
     /// Present whenever the command produced data.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partial: Option<bool>,
+    /// Omitted on a failure, except an exit-6 assertion failure (`--check`, `--strict`),
+    /// which keeps it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<&'a D>,
     /// Present iff `ok` is false.

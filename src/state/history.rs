@@ -31,6 +31,11 @@ use crate::model::{Actor, BackupId, FolderName, RunId, TargetKey, TxId, TxKind};
 /// The version of the line format.
 pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
 
+/// The schema of one line of `history.jsonl`.
+pub fn line_schema(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    g.root_schema_for::<HistoryEntry>()
+}
+
 /// One transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HistoryEntry {

@@ -764,7 +764,11 @@ mod tests {
         assert_eq!(load(&plant(&f, &plan)).unwrap(), plan);
         assert_eq!(load_id(&f.paths, &plan.plan_id).unwrap(), Some(plan));
         assert_eq!(load_id(&f.paths, &id(1)).unwrap(), None);
-        assert!(store::KINDS.contains(&("plan", SchemaVersion::new(1, 0))));
+        assert!(
+            store::KINDS
+                .iter()
+                .any(|row| row.kind == "plan" && row.current == SchemaVersion::new(1, 0))
+        );
     }
 
     #[test]

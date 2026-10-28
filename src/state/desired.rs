@@ -34,6 +34,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde_json::json;
 use toml::Spanned;
 use toml::de::{DeString, DeTable, DeValue};
@@ -44,6 +45,100 @@ use crate::rules::{Family, TargetKind};
 
 /// The format this build writes; it reads every 1.x.
 pub const SCHEMA_VERSION: &str = "1.0";
+
+/// The file keys `parse` reads; every other key warns as `desired_unknown_key`.
+pub const FILE_KEYS: &[&str] = &["schema_version", "family", "target"];
+/// The keys of one family or target section.
+pub const SECTION_KEYS: &[&str] = &["addons", "addon"];
+/// The keys of one table-form addon entry.
+pub const ENTRY_KEYS: &[&str] = &[
+    "name",
+    "ref",
+    "version",
+    "channel",
+    "pinned",
+    "dependency",
+    "sha256",
+    "revision",
+    "any_flavor",
+];
+
+/// `addons.toml` represented as JSON; documentation only, since [`parse`] reads it.
+/// Every key may be omitted.
+#[derive(JsonSchema)]
+pub struct DesiredStateSchema {
+    /// The format version, normally `1.0`; omitted reads as `1.0`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<String>,
+    /// Addon sets for each live client family; omitted when no family set is given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<BTreeMap<DesiredFamilyKey, DesiredSectionSchema>>")]
+    pub family: Option<BTreeMap<Family, DesiredSectionSchema>>,
+    /// Addon sets by client id; omitted when no individual client set is given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<BTreeMap<String, DesiredSectionSchema>>,
+}
+
+/// One section; either key may be omitted.
+#[derive(JsonSchema)]
+pub struct DesiredSectionSchema {
+    /// Names or refs to install; omitted when no string-form entries are given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addons: Option<Vec<String>>,
+    /// Entries with individual options; omitted when no table-form entries are given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addon: Option<Vec<DesiredEntrySchema>>,
+}
+
+/// One table-form addon; every key may be omitted, but `name` or `ref` is needed.
+#[derive(JsonSchema)]
+pub struct DesiredEntrySchema {
+    /// An addon name; may be omitted when `ref` is given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// A canonical source ref; may be omitted when `name` is given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#ref: Option<String>,
+    /// A release version; omitted selects the newest compatible release.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// A release channel; omitted means `stable`, independent of default_channel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<Channel>,
+    /// Whether to pin the addon; omitted means false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
+    /// A dependency version lock rather than a request; omitted means false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dependency: Option<bool>,
+    /// The archive's 64 lowercase hexadecimal SHA-256 digits; omitted leaves it unlocked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// The release's source revision; omitted leaves the revision unlocked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u32>,
+    /// Whether to accept a build the publisher made for another client; omitted means false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub any_flavor: Option<bool>,
+}
+
+/// A schema-only map key: `unknown` is a discovery fallback, never a desired family.
+struct DesiredFamilyKey;
+
+impl JsonSchema for DesiredFamilyKey {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "DesiredFamily".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let names: Vec<_> = Family::ALL
+            .into_iter()
+            .filter(|family| *family != Family::Unknown)
+            .map(Family::as_str)
+            .collect();
+        schemars::json_schema!({ "type": "string", "enum": names })
+    }
+}
 
 /// The first line [`render`] writes.
 const HEADER: &str =
@@ -739,6 +834,171 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    fn schema_keys(value: &serde_json::Value) -> std::collections::BTreeSet<&str> {
+        value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect()
+    }
+
+    #[test]
+    fn desired_state_schema_names_the_parser_keys() {
+        let schema = crate::contract::schema::generator()
+            .root_schema_for::<DesiredStateSchema>()
+            .to_value();
+        let section = &schema["properties"]["target"]["additionalProperties"];
+        let section = schema
+            .pointer(&section["$ref"].as_str().unwrap()[1..])
+            .unwrap();
+        let entry = &section["properties"]["addon"]["items"];
+        let entry = schema
+            .pointer(&entry["$ref"].as_str().unwrap()[1..])
+            .unwrap();
+        for (case, properties, listed) in [
+            ("file", &schema["properties"], FILE_KEYS),
+            ("section", &section["properties"], SECTION_KEYS),
+            ("entry", &entry["properties"], ENTRY_KEYS),
+        ] {
+            assert_eq!(
+                schema_keys(properties),
+                listed.iter().copied().collect(),
+                "{case}: {schema}"
+            );
+        }
+        for (case, value) in [("file", &schema), ("section", section), ("entry", entry)] {
+            assert!(
+                value.get("required").is_none(),
+                "{case}: every key may be omitted: {schema}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_listed_key_parses_without_a_warning() {
+        let mut cases = Vec::new();
+        for &key in FILE_KEYS {
+            let template = match key {
+                "schema_version" => "KEY = \"1.0\"\n",
+                "family" => "[KEY.mainline]\naddons = [\"Foo\"]\n",
+                "target" => "[KEY.retail]\naddons = [\"Foo\"]\n",
+                _ => "",
+            };
+            assert!(!template.is_empty(), "file key {key} needs a fixture");
+            cases.push((format!("file_{key}"), key, template.to_owned()));
+        }
+        for &key in SECTION_KEYS {
+            let template = match key {
+                "addons" => "[target.retail]\nKEY = [\"Foo\"]\n",
+                "addon" => "[[target.retail.KEY]]\nname = \"Foo\"\n",
+                _ => "",
+            };
+            assert!(!template.is_empty(), "section key {key} needs a fixture");
+            cases.push((format!("section_{key}"), key, template.to_owned()));
+        }
+        for &key in ENTRY_KEYS {
+            let value = match key {
+                "name" => "\"Foo\"".into(),
+                "ref" => "\"gh:o/foo\"".into(),
+                "version" => "\"v1\"".into(),
+                "channel" => "\"beta\"".into(),
+                "pinned" | "dependency" | "any_flavor" => "true".into(),
+                "sha256" => format!("\"{}\"", "a".repeat(64)),
+                "revision" => "1".into(),
+                _ => String::new(),
+            };
+            assert!(!value.is_empty(), "entry key {key} needs a fixture");
+            let identity = if key == "name" {
+                "ref = \"gh:o/foo\""
+            } else {
+                "name = \"Foo\""
+            };
+            let template = format!("[[target.retail.addon]]\n{identity}\nKEY = {value}\n");
+            cases.push((format!("entry_{key}"), key, template));
+        }
+        for (case, key, template) in cases {
+            for (variant, spelling, warning_count) in [
+                ("known", key.to_owned(), 0),
+                ("unknown", format!("{key}x"), 1),
+            ] {
+                let text = template.replace("KEY", &spelling);
+                let result = parse(&text, Path::new("addons.toml"));
+                assert!(result.is_ok(), "{case}/{variant}: {text}\n{result:?}");
+                let (_, warnings) = result.unwrap();
+                assert_eq!(
+                    warnings.len(),
+                    warning_count,
+                    "{case}/{variant}: {text}\n{warnings:?}"
+                );
+                for warning in warnings {
+                    assert_eq!(
+                        warning.code,
+                        WarningCode::DesiredUnknownKey,
+                        "{case}/{variant}: {warning:?}"
+                    );
+                    assert!(
+                        warning.message.contains(&spelling),
+                        "{case}/{variant}: {warning:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_parser_match_arms_are_the_listed_keys() {
+        use crate::source_scan::{Literals, production_code};
+        let code = production_code(include_str!("desired.rs"), Literals::Keep).unwrap();
+        for (case, start, end, indent, listed) in [
+            ("file", "pub fn parse(", "fn key_str", 12, FILE_KEYS),
+            (
+                "section",
+                "    fn section(",
+                "    fn strings(",
+                16,
+                SECTION_KEYS,
+            ),
+            ("entry", "    fn entry(", "    fn text(", 16, ENTRY_KEYS),
+        ] {
+            let body = code.split(start).nth(1).unwrap().split(end).next().unwrap();
+            let prefix = format!("{}\"", " ".repeat(indent));
+            let actual: std::collections::BTreeSet<_> = body
+                .lines()
+                .filter_map(|line| {
+                    let rest = line.strip_prefix(&prefix)?;
+                    let (literal, tail) = rest.split_once('"')?;
+                    tail.trim_start().starts_with("=>").then_some(literal)
+                })
+                .collect();
+            let expected: std::collections::BTreeSet<_> = listed.iter().copied().collect();
+            assert_eq!(
+                expected.len(),
+                listed.len(),
+                "{case}: duplicate key declaration"
+            );
+            assert_eq!(actual, expected, "{case}: parser match arms\n{body}");
+        }
+    }
+
+    #[test]
+    fn desired_state_family_keys_exclude_unknown() {
+        let schema = crate::contract::schema::generator()
+            .root_schema_for::<DesiredStateSchema>()
+            .to_value();
+        let expected: std::collections::BTreeSet<_> = Family::ALL
+            .into_iter()
+            .filter(|family| *family != Family::Unknown)
+            .map(Family::as_str)
+            .collect();
+        assert_eq!(
+            schema_keys(&schema["properties"]["family"]["properties"]),
+            expected,
+            "{schema}"
+        );
+        assert!(parse("[family.unknown]\n", Path::new("addons.toml")).is_err());
+    }
 
     /// The documented example.
     const EXAMPLE: &str = r#"# Desired addon sets for omaddons. `omaddons sync` makes each client match this file.

@@ -4,6 +4,7 @@ pub mod actions;
 pub mod env;
 pub mod events;
 pub mod features;
+pub mod schema;
 pub mod volatile;
 
 pub use volatile::VOLATILE;
