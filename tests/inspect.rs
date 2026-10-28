@@ -14,7 +14,8 @@ use common::env::TestEnv;
 use common::targets::{battlenet, legacy_335};
 use common::trees::tree_hash;
 use omaddons::engine::inspect::{
-    ArchiveLimits, Inspected, accepts, inspect, inspect_dir, inspect_zip, partition, verify,
+    ArchiveLimits, HostileReason, Inspected, accepts, inspect, inspect_dir, inspect_zip, partition,
+    verify,
 };
 use omaddons::engine::plan::primary_folder;
 use omaddons::error::{Error, ErrorCode};
@@ -28,6 +29,41 @@ use support::{folders, inspect_bytes, inspect_with, refused, verdicts};
 #[cfg(test)]
 mod support {
     use super::*;
+
+    pub const ARCHIVE_REASONS: &[(&str, HostileReason)] = &[
+        ("traversal", HostileReason::ParentDir),
+        ("backslash traversal", HostileReason::ParentDir),
+        ("absolute", HostileReason::AbsolutePath),
+        ("drive letter", HostileReason::DriveLetter),
+        ("lowercase drive", HostileReason::DriveLetter),
+        ("symlink", HostileReason::Symlink),
+        ("char device", HostileReason::SpecialFile),
+        ("block device", HostileReason::SpecialFile),
+        ("fifo", HostileReason::SpecialFile),
+        ("socket", HostileReason::SpecialFile),
+        ("nul", HostileReason::ControlCharacter),
+        ("control", HostileReason::ControlCharacter),
+        ("case collision", HostileReason::CaseCollision),
+        ("dir case collision", HostileReason::CaseCollision),
+        ("file/dir collision", HostileReason::FileAndDirectory),
+        ("duplicate", HostileReason::DuplicateEntry),
+        ("ratio bomb", HostileReason::Ratio),
+        ("invalid root name", HostileReason::InvalidFolderName),
+    ];
+
+    pub fn check_reason(label: &str, error: &Error, reason: HostileReason) {
+        assert_eq!(error.code, ErrorCode::UnsafeArchive, "{label}: {error:?}");
+        assert_eq!(
+            error.details["reason"],
+            reason.wire(),
+            "{label}: expected {reason:?}, got {error:?}"
+        );
+        assert_eq!(
+            error.code.check_details(&error.details),
+            Ok(()),
+            "{label}: {error:?}"
+        );
+    }
 
     pub fn inspect_with(bytes: Vec<u8>, limits: ArchiveLimits) -> Result<Inspected, Error> {
         inspect_zip(Cursor::new(bytes), &limits, &RulesTable::builtin())
@@ -150,9 +186,17 @@ fn hostile_entries_are_refused() {
             )],
         ),
     ];
+    let mut seen = std::collections::BTreeSet::new();
     for (label, mut entries) in cases {
         entries.insert(0, RawEntry::stored(FOO_TOC.0, FOO_TOC.1));
         let err = refused(label, inspect_bytes(raw_zip(&entries)));
+        let reason = support::ARCHIVE_REASONS
+            .iter()
+            .find(|(case, _)| *case == label)
+            .unwrap()
+            .1;
+        support::check_reason(label, &err, reason);
+        assert!(seen.insert(label), "fixture label {label} occurs twice");
         assert_eq!(
             (err.code, err.exit().code()),
             (ErrorCode::UnsafeArchive, 4),
@@ -160,6 +204,11 @@ fn hostile_entries_are_refused() {
             err.message
         );
     }
+    assert_eq!(
+        seen.len(),
+        support::ARCHIVE_REASONS.len(),
+        "every named archive case was driven"
+    );
 }
 
 #[test]
@@ -177,6 +226,7 @@ fn lying_headers_stop_at_the_real_size() {
     ] {
         let zip = raw_zip(&[RawEntry::stored(FOO_TOC.0, FOO_TOC.1), entry]);
         let err = refused(label, inspect_bytes(zip));
+        support::check_reason(label, &err, HostileReason::SizeOverrun);
         assert_eq!(
             err.code,
             ErrorCode::UnsafeArchive,
@@ -468,13 +518,44 @@ fn directories() {
 
     symlink("/etc/passwd", repo.join("A/link")).unwrap();
     let err = inspect_dir(&repo, &ArchiveLimits::default(), &RulesTable::builtin()).unwrap_err();
+    support::check_reason("directory symlink", &err, HostileReason::Symlink);
     assert_eq!(err.code, ErrorCode::UnsafeArchive, "{}", err.message);
     fs::remove_file(repo.join("A/link")).unwrap();
 
     fs::write(repo.join("A/x.lua"), "1").unwrap();
     fs::write(repo.join("A/X.lua"), "2").unwrap();
     let err = inspect_dir(&repo, &ArchiveLimits::default(), &RulesTable::builtin()).unwrap_err();
+    support::check_reason(
+        "directory case collision",
+        &err,
+        HostileReason::CaseCollision,
+    );
     assert_eq!(err.code, ErrorCode::UnsafeArchive, "{}", err.message);
+
+    use std::os::unix::ffi::OsStrExt;
+    let bad = env.root().join("NonUtf8");
+    fs::create_dir(&bad).unwrap();
+    fs::write(bad.join(std::ffi::OsStr::from_bytes(b"\xff.lua")), "x").unwrap();
+    let err = inspect_dir(&bad, &ArchiveLimits::default(), &RulesTable::builtin()).unwrap_err();
+    support::check_reason("directory name not UTF-8", &err, HostileReason::NotUtf8);
+}
+
+#[test]
+fn hostile_cases_reach_every_reason() {
+    let mut covered: std::collections::BTreeSet<_> = support::ARCHIVE_REASONS
+        .iter()
+        .map(|(_, reason)| reason.wire())
+        .collect();
+    covered.insert(HostileReason::SizeOverrun.wire()); // both lying-header cases
+    covered.insert(HostileReason::NotUtf8.wire()); // directory inspection
+    assert_eq!(
+        covered,
+        HostileReason::ALL
+            .map(HostileReason::wire)
+            .into_iter()
+            .collect(),
+        "archive, size and directory cases cover every hostile reason"
+    );
 }
 
 #[test]

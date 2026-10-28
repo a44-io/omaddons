@@ -153,3 +153,166 @@ fn the_process_exits_only_through_exit() {
         }
     }
 }
+
+/// Reason enums may occur inside refused-folder arrays as well as at the root.
+fn declared_reasons(spec: &omaddons::error::DetailSpec, out: &mut BTreeSet<&'static str>) {
+    use omaddons::error::DetailSpec;
+    match spec {
+        DetailSpec::Object(fields) => {
+            for field in *fields {
+                if field.key == "reason"
+                    && let DetailSpec::Enum(values) = field.spec
+                {
+                    out.extend(values.iter().copied());
+                }
+                declared_reasons(field.spec, out);
+            }
+        }
+        DetailSpec::Array(element) => declared_reasons(element, out),
+        DetailSpec::OneOf(arms) => {
+            for arm in *arms {
+                declared_reasons(arm, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// One ordinary quoted literal, including escaped quotes in its boundary scan.
+fn reason_literal(text: &str) -> Option<String> {
+    let text = text.trim_start();
+    if !text.starts_with('"') {
+        return None;
+    }
+    let mut escaped = false;
+    for (at, c) in text.char_indices().skip(1) {
+        match (escaped, c) {
+            (true, _) => escaped = false,
+            (false, '\\') => escaped = true,
+            (false, '"') => return serde_json::from_str(&text[..=at]).ok(),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The nth argument, balanced like `text_fix_literals`, with commas inside nested
+/// calls, arrays, objects and quoted strings kept in their argument.
+fn reason_argument(code: &str, nth: usize) -> Option<String> {
+    let (mut depth, mut in_str, mut escaped) = (0usize, false, false);
+    let (mut start, mut argument) = (0, 0);
+    for (at, c) in code.char_indices() {
+        if in_str {
+            match (escaped, c) {
+                (true, _) => escaped = false,
+                (false, '\\') => escaped = true,
+                (false, '"') => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            ')' if depth == 0 => {
+                return (argument == nth)
+                    .then(|| reason_literal(&code[start..at]))
+                    .flatten();
+            }
+            ',' if depth == 0 => {
+                if argument == nth {
+                    return reason_literal(&code[start..at]);
+                }
+                argument += 1;
+                start = at + 1;
+            }
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.checked_sub(1)?,
+            _ => {}
+        }
+    }
+    None
+}
+
+#[test]
+fn every_details_reason_literal_is_declared() {
+    // No production data shape currently has a reason literal unrelated to errors.
+    const NOT_ERROR_DETAILS: &[(&str, &str)] = &[];
+    let mut declared = BTreeSet::new();
+    for code in ErrorCode::ALL {
+        declared_reasons(code.detail_spec(), &mut declared);
+    }
+    let mut used = Vec::new();
+    for (path, text) in sources() {
+        if matches!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("tests.rs" | "testing.rs")
+        ) {
+            continue;
+        }
+        let code = text
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap_or(&text);
+        let mut found = Vec::new();
+        for (at, token) in code.match_indices("\"reason\"") {
+            let rest = code[at + token.len()..].trim_start();
+            if let Some(value) = rest.strip_prefix(':').and_then(reason_literal) {
+                found.push((at, value));
+            }
+        }
+        let helpers: &[(&str, usize)] = if path.ends_with("engine/inspect.rs") {
+            &[("malformed(", 1)]
+        } else if path.ends_with("backup/import.rs") {
+            &[("refused(", 0), ("bad(", 0)]
+        } else if path.ends_with("engine/ownership.rs") {
+            &[("refuse(", 2)]
+        } else {
+            &[]
+        };
+        for &(call, argument) in helpers {
+            for (at, _) in code.match_indices(call) {
+                if let Some(value) = reason_argument(&code[at + call.len()..], argument) {
+                    found.push((at, value));
+                }
+            }
+        }
+        for (at, value) in found {
+            let file = path
+                .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            let line = code[..at].bytes().filter(|b| *b == b'\n').count() + 1;
+            if !NOT_ERROR_DETAILS.contains(&(file.as_str(), value.as_str())) {
+                used.push((file, line, value));
+            }
+        }
+    }
+    let missing: Vec<_> = used
+        .iter()
+        .filter(|(_, _, value)| !declared.contains(value.as_str()))
+        .map(|(file, line, value)| format!("{file}:{line}: undeclared reason {value:?}"))
+        .collect();
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
+    assert!(
+        used.len() >= 30,
+        "reason scan found only {} literals: {used:?}",
+        used.len()
+    );
+    assert_eq!(
+        reason_argument(r#"format!("nested, {}", call([1, 2])), "corrupt")"#, 1),
+        Some("corrupt".into())
+    );
+    assert_eq!(
+        reason_argument(r#"&a, &b, "unmanaged", json!({"x": [1, 2]}))"#, 2),
+        Some("unmanaged".into())
+    );
+    assert_eq!(
+        reason_argument(r#""bad_name", other())"#, 0),
+        Some("bad_name".into())
+    );
+    assert_eq!(
+        reason_literal(r#""escaped\"quote""#),
+        Some("escaped\"quote".into())
+    );
+}
