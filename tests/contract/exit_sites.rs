@@ -18,9 +18,13 @@ fn every_error_code_used_in_src_is_registered() {
             let rest = &text[at + "ErrorCode::".len()..];
             let name: String = rest
                 .chars()
-                .take_while(|c| c.is_ascii_alphanumeric())
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();
-            if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && name != "ALL" {
+            // Associated constants (`ALL`, `CONDITIONALLY_RETRYABLE`) are no variants.
+            let constant = name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+            if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && !constant {
                 used.insert(name);
             }
         }

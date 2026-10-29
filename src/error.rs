@@ -18,6 +18,7 @@ use crate::contract::actions::Action;
 
 mod detail_spec;
 pub use detail_spec::{DetailSpec, Field, Mismatch, Nullability, Presence};
+mod fix_pattern;
 mod specs;
 
 // ---------------------------------------------------------------------------------------
@@ -227,7 +228,7 @@ error_codes! {
     CheckFailed         = "check_failed",          CheckFailed, false,
         "An explicitly requested health, update, error or completeness assertion failed.", specs::CHECK_FAILED;
     Network             = "network",               Failed,      true,
-        "A request or source response failed at the network or decoding layer, or a git subprocess timed out or failed outside download.", specs::NETWORK;
+        "A request failed at the network or decoding layer, or a git subprocess timed out or failed outside download; an instance is retryable except after too many redirects or an undecodable encoding.", specs::NETWORK;
     /// The host's request budget or rate-limit retries were exhausted.
     RateLimited         = "rate_limited",          Failed,      true,
         "A host exhausted its request budget or kept refusing requests beyond the allowed rate-limit retries.", specs::RATE_LIMITED;
@@ -257,7 +258,7 @@ error_codes! {
     StateCorrupt        = "state_corrupt",         Failed,      false,
         "A configuration, state file, snapshot or journal is unreadable, inconsistent or cannot be safely recovered.", specs::STATE_CORRUPT;
     Io                  = "io",                    Failed,      false,
-        "A filesystem operation failed, or files changed too often to finish a consistent backup.", specs::IO;
+        "A filesystem operation failed, or files changed too often to finish a consistent backup; an instance is retryable only when `WTF/` changed while a backup copied it.", specs::IO;
     Internal            = "internal",              Failed,      false,
         "An internal invariant, unexpected recovery state or panic stopped the command.", specs::INTERNAL;
 }
@@ -277,6 +278,47 @@ impl ErrorCode {
     pub fn declared_detail_paths(self) -> Vec<String> {
         specs::declared_detail_paths(self)
     }
+
+    /// The codes whose construction sites decide retryability per instance: each one's
+    /// meaning says when an instance is retryable.
+    pub const CONDITIONALLY_RETRYABLE: &[ErrorCode] = &[
+        ErrorCode::Network,
+        ErrorCode::HttpStatus,
+        ErrorCode::HashMismatch,
+        ErrorCode::PlanStale,
+        ErrorCode::Io,
+    ];
+
+    /// The code's retryability as the registry publishes it: `Conditional` for
+    /// [`Self::CONDITIONALLY_RETRYABLE`], else `Fixed` at the code's default. An error
+    /// instance keeps its own boolean `retryable`.
+    pub const fn retryability(self) -> Retryability {
+        let mut index = 0;
+        while index < Self::CONDITIONALLY_RETRYABLE.len() {
+            if Self::CONDITIONALLY_RETRYABLE[index] as u8 == self as u8 {
+                return Retryability::Conditional(ConditionalTag::Conditional);
+            }
+            index += 1;
+        }
+        Retryability::Fixed(self.default_retryable())
+    }
+}
+
+/// Whether a code's errors can be retried, as the registry publishes it (`capabilities`,
+/// `robot-docs errors`, the manifest): `true`, `false`, or `"conditional"` where each
+/// instance decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Retryability {
+    Fixed(bool),
+    Conditional(ConditionalTag),
+}
+
+/// The one string of [`Retryability::Conditional`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConditionalTag {
+    Conditional,
 }
 
 impl fmt::Display for ErrorCode {
@@ -1026,12 +1068,8 @@ mod tests {
     }
 
     #[test]
-    fn conditional_retryability_is_stated() {
-        for code in [
-            ErrorCode::HttpStatus,
-            ErrorCode::HashMismatch,
-            ErrorCode::PlanStale,
-        ] {
+    fn conditional_codes_say_when_in_their_meaning() {
+        for code in ErrorCode::CONDITIONALLY_RETRYABLE {
             assert!(
                 code.meaning().contains("retryable"),
                 "{}: conditional retryability absent from {:?}",
@@ -1561,5 +1599,225 @@ mod tests {
                 .is_some_and(|variants| variants.len() == ErrorCode::ALL.len())),
             "targets[].error reaches the union: {nodes:#?}"
         );
+    }
+
+    #[test]
+    fn retryability_is_true_false_or_conditional() {
+        for code in ErrorCode::ALL {
+            let expected = if ErrorCode::CONDITIONALLY_RETRYABLE.contains(code) {
+                serde_json::json!("conditional")
+            } else {
+                serde_json::json!(code.default_retryable())
+            };
+            assert_eq!(
+                serde_json::to_value(code.retryability()).unwrap(),
+                expected,
+                "{code}"
+            );
+        }
+        let schema = crate::contract::schema::generator()
+            .root_schema_for::<Retryability>()
+            .to_value();
+        let branches = schema["anyOf"].as_array().unwrap();
+        let mut kinds: Vec<String> = branches
+            .iter()
+            .map(|branch| {
+                let branch = branch
+                    .get("$ref")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|r| schema.pointer(&r[1..]))
+                    .unwrap_or(branch);
+                branch["enum"]
+                    .as_array()
+                    .map(|values| format!("{values:?}"))
+                    .or_else(|| branch["type"].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| branch.to_string())
+            })
+            .collect();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            [r#"[String("conditional")]"#, "boolean"],
+            "a boolean or the one closed string: {schema:#}"
+        );
+    }
+
+    /// Run-level writes of an error's retryability that no code's construction makes, as
+    /// `(file, the write, why)`.
+    const RUN_LEVEL_OVERRIDES: &[(&str, &str, &str)] = &[
+        (
+            "src/app/outcome.rs",
+            ".retryable(body.retryable)",
+            "an error rebuilt from its own wire body keeps the retryability its instance had",
+        ),
+        (
+            "src/engine/tx.rs",
+            "error.retryable = false",
+            "an error whose in-process recovery failed too is final, whatever its code",
+        ),
+        (
+            "src/error.rs",
+            "self.retryable = retryable",
+            "the setter itself",
+        ),
+    ];
+
+    /// The code whose error a `.retryable(…)` call at `at` sets: the nearest `ErrorCode`
+    /// variant or named constructor before it in its statement.
+    fn attributed(code: &str, at: usize) -> Option<ErrorCode> {
+        const CONSTRUCTORS: &[(&str, ErrorCode)] = &[
+            ("Error::http_status(", ErrorCode::HttpStatus),
+            ("Error::plan_stale(", ErrorCode::PlanStale),
+            ("Error::hash_mismatch(", ErrorCode::HashMismatch),
+            ("Error::io(", ErrorCode::Io),
+            ("Error::internal(", ErrorCode::Internal),
+            ("Error::rate_limited(", ErrorCode::RateLimited),
+        ];
+        let bytes = code.as_bytes();
+        let mut depth = 0usize;
+        let mut index = at;
+        while index > 0 {
+            index -= 1;
+            match bytes[index] {
+                b')' | b']' | b'}' => depth += 1,
+                b'(' | b'[' => depth = depth.saturating_sub(1),
+                b'{' if depth == 0 => return None,
+                b'{' => depth -= 1,
+                b';' if depth == 0 => return None,
+                _ => {}
+            }
+            let rest = &code[index..];
+            if let Some(variant) = rest.strip_prefix("ErrorCode::") {
+                let name: String = variant
+                    .chars()
+                    .take_while(char::is_ascii_alphanumeric)
+                    .collect();
+                if let Some(found) = ErrorCode::ALL.iter().find(|c| format!("{c:?}") == name) {
+                    return Some(*found);
+                }
+            }
+            if let Some((_, found)) = CONSTRUCTORS.iter().find(|(c, _)| rest.starts_with(c)) {
+                return Some(*found);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn retryable_overrides_are_on_conditional_codes() {
+        use crate::source_scan::{Literals, production_code, sources};
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut problems = Vec::new();
+        let mut listed_seen = vec![false; RUN_LEVEL_OVERRIDES.len()];
+        for (path, text) in sources(&root.join("src")) {
+            let Some(code) = production_code(&text, Literals::Blank) else {
+                continue;
+            };
+            let file = path.strip_prefix(root).unwrap().display().to_string();
+            let line_of = |at: usize| code[..at].matches('\n').count() + 1;
+            let listed = |write: &str| {
+                RUN_LEVEL_OVERRIDES
+                    .iter()
+                    .position(|(f, w, _)| *f == file && write.starts_with(w))
+            };
+            // Assignments: only the run-level list may write `retryable` directly.
+            for (at, _) in code.match_indices("retryable = ") {
+                let start = code[..at]
+                    .rfind(|c: char| c.is_whitespace())
+                    .map_or(0, |s| s + 1);
+                let write = code[start..].lines().next().unwrap_or_default().trim();
+                if !write.contains(".retryable = ") {
+                    continue;
+                }
+                match listed(write) {
+                    Some(index) => listed_seen[index] = true,
+                    None => problems.push(format!(
+                        "{file}:{}: `{write}` writes retryability directly: list it in \
+                         RUN_LEVEL_OVERRIDES with why",
+                        line_of(at)
+                    )),
+                }
+            }
+            for (at, _) in code.match_indices(".retryable(") {
+                let rest = &code[at + ".retryable(".len()..];
+                let Some(close) = rest.find(')') else {
+                    continue;
+                };
+                let argument = rest[..close].trim();
+                if argument.is_empty() {
+                    continue;
+                }
+                let write = format!(".retryable({argument})");
+                if let Some(index) = listed(&write) {
+                    listed_seen[index] = true;
+                    continue;
+                }
+                let Some(error) = attributed(&code, at) else {
+                    problems.push(format!(
+                        "{file}:{}: `{write}` belongs to no code this scan can name: list it \
+                         in RUN_LEVEL_OVERRIDES with why",
+                        line_of(at)
+                    ));
+                    continue;
+                };
+                let no_op = argument == error.default_retryable().to_string();
+                if !no_op && !ErrorCode::CONDITIONALLY_RETRYABLE.contains(&error) {
+                    problems.push(format!(
+                        "{file}:{} sets {error} {write}; {error}'s default is {}: add it to \
+                         ErrorCode::CONDITIONALLY_RETRYABLE and say when in its meaning",
+                        line_of(at),
+                        error.default_retryable()
+                    ));
+                }
+            }
+        }
+        for ((file, write, _), seen) in RUN_LEVEL_OVERRIDES.iter().zip(listed_seen) {
+            if !seen {
+                problems.push(format!(
+                    "RUN_LEVEL_OVERRIDES lists `{write}` in {file}, which no longer exists"
+                ));
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    #[test]
+    fn the_retryability_scan_attributes_each_shape() {
+        let cases = [
+            (
+                "a_constructor_then_the_call",
+                "Error::new(ErrorCode::Network, m, f).retryable(false)",
+                Some(ErrorCode::Network),
+            ),
+            (
+                "details_between",
+                "Error::new(ErrorCode::Io, m, f).details(json!({ \"a\": 1 })).retryable(true)",
+                Some(ErrorCode::Io),
+            ),
+            (
+                "a_named_constructor",
+                "Error::http_status(500, m, f).retryable(x)",
+                Some(ErrorCode::HttpStatus),
+            ),
+            (
+                "a_match_guard",
+                "Err(e) if e.code == ErrorCode::HashMismatch => return Err(e.retryable(false)),",
+                Some(ErrorCode::HashMismatch),
+            ),
+            (
+                "another_statement_does_not_count",
+                "let a = ErrorCode::Io; f(e).retryable(true)",
+                None,
+            ),
+            (
+                "an_enclosing_block_stops_it",
+                "{ ErrorCode::Io } { e.retryable(true) }",
+                None,
+            ),
+        ];
+        for (name, code, expected) in cases {
+            let at = code.find(".retryable(").unwrap();
+            assert_eq!(attributed(code, at), expected, "case {name}: {code}");
+        }
     }
 }
