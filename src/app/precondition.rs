@@ -365,6 +365,10 @@ impl Binding for RemoveBinding {
             &why,
         ))
     }
+
+    fn operation_refused(&self, _target: &str, why: &str) -> Error {
+        stale_because("remove", &[Part::Observed], &self.preview, why)
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -668,6 +672,12 @@ impl Binding for PlanBinding<'_> {
             &self.preview,
             &why,
         ))
+    }
+
+    /// A rename that found its folder changed after the checks under the lock, once the
+    /// transaction rolled back: not retryable, since the same token can only fail again.
+    fn operation_refused(&self, _target: &str, why: &str) -> Error {
+        stale_because(self.command, &[Part::Observed], &self.preview, why)
     }
 }
 
@@ -2677,6 +2687,35 @@ mod tests {
             &preview,
         );
         assert!(message.starts_with("this remove is no longer"), "{message}");
+    }
+
+    #[test]
+    fn operation_refused_is_observed_and_not_retryable() {
+        let why = "/c/Interface/AddOns/Foo changed after the approval was checked";
+        let remove_preview = ["omaddons", "remove", "Foo", "--dry-run"];
+        let remove = RemoveBinding {
+            // ubs:ignore — a placeholder precondition token, not a secret
+            token: "pc1:token".into(),
+            preview: argv(&remove_preview),
+        };
+        for (case, refused, preview) in [
+            (
+                "install",
+                install_binding(Some("pc1:token")).operation_refused("retail", why),
+                PREVIEW,
+            ),
+            (
+                "remove",
+                remove.operation_refused("retail", why),
+                &remove_preview[..],
+            ),
+        ] {
+            let message = refusal_of(refused, "observed", preview);
+            assert!(
+                message.starts_with(&format!("this {case} is no longer")) && message.contains(why),
+                "{case}: {message}"
+            );
+        }
     }
 
     #[test]

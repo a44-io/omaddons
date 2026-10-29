@@ -35,8 +35,8 @@ use super::plan::{
 };
 use super::stage::{Staged, stage};
 use super::swap::{
-    SvSkipped, SwapOp, finish_saved_variables, out_of_scope_warnings, predigest,
-    prestage_saved_variables, snapshot_state, swap, with_predigests,
+    Seen, SvSkipped, SwapOp, finish_saved_variables, out_of_scope_warnings, predigest,
+    prestage_saved_variables, snapshot_state, swap_checked, with_predigests,
 };
 use super::witness::{ApprovalWitness, Operations, RecheckCost, WitnessScope};
 use crate::backup::Trigger;
@@ -223,6 +223,12 @@ pub trait Binding {
         _rejudged: &Operations,
     ) -> Result<()> {
         Ok(())
+    }
+    /// The refusal for the target `target`, one of whose renames found its folder changed
+    /// after the checks under the lock (`why`), once the transaction rolled back: by
+    /// default what [`Self::observed`] says.
+    fn operation_refused(&self, target: &str, _why: &str) -> Error {
+        self.observed(target)
     }
 }
 
@@ -1200,8 +1206,10 @@ fn locked(
     if changed && let Some(binding) = ctx.binding {
         return Err(binding.moved(&target.id));
     }
-    // D8 part 2 captures here, in front of the witness check, the identities each rename
-    // checks again.
+    // The identities each rename will require, taken before the content checks, so those
+    // checks validate the very folders the renames move (M4-D60 check 3): a folder
+    // replaced after this fails at its rename, bound run or not.
+    let seen = Seen::capture(&client.addons(), &planned_ops, staged);
     let planned = TargetRef::of(tp.key, &tp.target);
     let at = UnderLock {
         id: &target.id,
@@ -1360,7 +1368,15 @@ fn locked(
         sv_skipped =
             finish_saved_variables(&mut s, tx, &snapshot, &client, &touched, prestage)?.sv_skipped;
         snapshot_state(&mut s, paths, &paths.state_snapshot(tx), &key)?;
-        let report = swap(&mut s, &mut journal, &swap_ops, staged, &client, &snapshot)?;
+        let report = swap_checked(
+            &mut s,
+            &mut journal,
+            &swap_ops,
+            staged,
+            &client,
+            &snapshot,
+            &seen,
+        )?;
         ensure_dir_all(&mut s, &paths.targets_dir())?;
         store::save(
             &mut s,
@@ -1415,6 +1431,15 @@ fn locked(
                 (Ok(None), Some(atomic_swap)) => {
                     note_undo(ctx, tx);
                     super::swap::rolled_forward(atomic_swap, Vec::new())
+                }
+                // Rolled back cleanly: a bound run's rename that found its folder changed
+                // is its binding's refusal (M4-D60).
+                // ubs:ignore — comparing error codes, not secrets
+                (Ok(_), _) if error.code == ErrorCode::PlanStale => {
+                    return Err(match ctx.binding {
+                        Some(binding) => binding.operation_refused(&target.id, &error.message),
+                        None => error,
+                    });
                 }
                 (Ok(_), _) => return Err(error),
                 (Err(failed), _) => return Err(recovery_failed(error, tx, &failed)),
@@ -3062,6 +3087,9 @@ mod tests {
         refuse_operations: bool,
         strict: bool,
         seen: std::sync::Mutex<Vec<(Operations, Operations)>>,
+        /// A folder `witness` replaces with an identical copy, after the identities the
+        /// renames require were taken.
+        replace_in_witness: Option<PathBuf>,
     }
 
     impl Recording {
@@ -3103,6 +3131,9 @@ mod tests {
 
         fn witness(&self, _at: &UnderLock<'_>) -> Result<Option<RecheckCost>> {
             self.call("witness");
+            if let Some(dir) = &self.replace_in_witness {
+                replace_with_copy(dir);
+            }
             if self.refuse_witness {
                 return Err(refused_by("witness"));
             }
@@ -3125,6 +3156,32 @@ mod tests {
             }
             Ok(())
         }
+
+        fn operation_refused(&self, _target: &str, _why: &str) -> Error {
+            self.call("operation_refused");
+            refused_by("operation_refused")
+        }
+    }
+
+    fn copy_tree(from: &Path, to: &Path) {
+        std::fs::create_dir(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// Replaces the folder at `dir` with an identical copy: only its identity changes.
+    fn replace_with_copy(dir: &Path) {
+        let copy = dir.with_extension("copy");
+        copy_tree(dir, &copy);
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::rename(&copy, dir).unwrap();
     }
 
     /// `changes` run for real, bound to `binding`.
@@ -3472,5 +3529,112 @@ mod tests {
             .map(|s| s.parse().unwrap())
             .collect();
         assert_eq!(numbers, [77, 2, 13, 1, 4, 512], "{note}");
+    }
+
+    // ---- Each rename requires what the checks saw (M4-D60 check 3) -------------------
+
+    #[test]
+    fn identities_are_captured_before_the_witness_check() {
+        // The witness check passes (the binding's replaces Foo with identical bytes and
+        // accepts), and Foo's exchange refuses: the identities were taken before it.
+        let (scene, changes, kind, default_kind) = update_to_v2();
+        let foo = scene.client.addons().join("Foo");
+        let tree = scene.addons();
+        let record = serde_json::to_value(scene.record()).unwrap();
+        let binding = Recording {
+            replace_in_witness: Some(foo),
+            ..Recording::default()
+        };
+        let done = bound(&scene, changes, kind, default_kind, &binding);
+        let refused = done.failures[0].cause.as_ref().unwrap();
+        assert_eq!(
+            refused.message,
+            refused_by("operation_refused").message,
+            "a bound run's refused rename is its binding's refusal"
+        );
+        assert_eq!(
+            binding.calls(),
+            ["plan", "witness", "operations", "operation_refused"]
+        );
+        assert!(
+            scene.addons() == tree,
+            "rolled back: every folder as it was"
+        );
+        assert_eq!(serde_json::to_value(scene.record()).unwrap(), record);
+        assert_eq!(leftovers(&scene), Vec::<String>::new());
+    }
+
+    /// `changes` run unbound, paused once everything was re-judged (after the identities
+    /// were taken), while `meanwhile` runs.
+    fn paused_after_revalidation(
+        scene: &TxScene,
+        changes: Vec<RequestedChange>,
+        spec: &str,
+        binding: Option<&Recording>,
+        meanwhile: impl FnOnce(),
+    ) -> TxOutcomes {
+        let pause = Pause::new();
+        std::thread::scope(|s| {
+            let slow = s.spawn(|| {
+                failpoint::with_spec_in(pause.dir(), spec, || {
+                    let binding = binding.map(|b| b as &dyn Binding);
+                    scene
+                        .run_bound(changes, None, TxKind::Install, false, None, binding)
+                        .unwrap()
+                })
+            });
+            pause.reached("engine.revalidated");
+            meanwhile();
+            pause.resume("engine.revalidated");
+            slow.join().unwrap()
+        })
+    }
+
+    #[test]
+    fn an_unbound_runs_refused_rename_stays_retryable() {
+        let (scene, changes, _, _) = update_to_v2();
+        let foo = scene.client.addons().join("Foo");
+        let tree = scene.addons();
+        let done =
+            paused_after_revalidation(&scene, changes, "engine.revalidated=pause", None, || {
+                replace_with_copy(&foo)
+            });
+        let refused = done.failures[0].cause.as_ref().unwrap();
+        assert_eq!(
+            (refused.code, refused.retryable),
+            (ErrorCode::PlanStale, true),
+            "{refused:?}"
+        );
+        assert!(
+            refused
+                .message
+                .contains("changed after the approval was checked"),
+            "{refused:?}"
+        );
+        assert!(scene.addons() == tree, "rolled back");
+    }
+
+    #[test]
+    fn a_refused_rename_whose_rollback_failed_stays_a_recovery_failure() {
+        let (scene, changes, _, _) = update_to_v2();
+        let foo = scene.client.addons().join("Foo");
+        let binding = Recording::default();
+        let done = paused_after_revalidation(
+            &scene,
+            changes,
+            "engine.revalidated=pause,engine.recover.step=error",
+            Some(&binding),
+            || replace_with_copy(&foo),
+        );
+        let failed = ErrorBody::from(done.failures[0].cause.clone().unwrap());
+        assert!(
+            failed.details.get("journal_pending").is_some(),
+            "the journal is kept for the next change: {failed:?}"
+        );
+        assert!(
+            !binding.calls().contains(&"operation_refused"),
+            "not the binding's refusal: {:?}",
+            binding.calls()
+        );
     }
 }

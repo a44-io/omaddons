@@ -33,8 +33,9 @@ use super::stage::Staged;
 use crate::discover::find_children;
 use crate::error::{Error, PlanStaleSource, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
-    CloneKind, ClonePolicy, FileStamp, FsxError, MutateOpts, Op, RenameMode, TreeDigest, TreeStamp,
-    WriteSession, ensure_dir_all, failpoint, mutate, mutate_with,
+    CloneKind, ClonePolicy, Expect, FileId, FileKind, FileStamp, FsxError, MutateOpts, Op,
+    Predicate, RenameMode, TreeDigest, TreeStamp, WriteSession, ensure_dir_all, failpoint, mutate,
+    mutate_with,
 };
 use crate::limits::RACY_SLACK_NS;
 use crate::model::{FolderName, MutableFolderName, TargetKey, TxId};
@@ -665,9 +666,52 @@ pub fn snapshot_state(
 // ---------------------------------------------------------------------------------------
 // The swap.
 
-/// Swaps the staged folders in, old versions and removals out (to `<snapshot>/AddOns/`,
-/// the transaction's client snapshot), in folder-key order, journaling each rename
-/// first; ends with `swapped`.
+/// The identities the commit window's checks saw of everything the swap moves (M4-D60
+/// check 3), by folder key: every live folder a replace or remove moves, and every
+/// staged folder. Each rename requires its endpoints to still be these.
+#[derive(Debug, Default, Clone)]
+pub struct Seen {
+    live: BTreeMap<String, Option<FileId>>,
+    staged: BTreeMap<String, Option<FileId>>,
+}
+
+impl Seen {
+    /// The identities of what `ops` move out of `addons`, and of every staged folder, now.
+    pub fn capture(addons: &Path, ops: &[SwapOp], staged: &Staged) -> Self {
+        let mut seen = Self::default();
+        for op in ops {
+            if let SwapOp::Replace { live, .. } | SwapOp::Remove { live, .. } = op {
+                let id = FileId::of(&addons.join(live.as_str()));
+                seen.live.insert(live.key().to_owned(), id);
+            }
+        }
+        for folder in &staged.folders {
+            let id = FileId::of(&folder.path);
+            seen.staged.insert(folder.name.key().to_owned(), id);
+        }
+        seen
+    }
+
+    /// The live folder `live`'s identity as seen; one the checks never saw (a run whose
+    /// re-judge added it) is taken now.
+    fn live(&self, addons: &Path, live: &MutableFolderName) -> Option<FileId> {
+        match self.live.get(live.key()) {
+            Some(id) => *id,
+            None => FileId::of(&addons.join(live.as_str())),
+        }
+    }
+
+    /// The staged folder `name`'s identity as seen, else now.
+    fn staged(&self, name: &MutableFolderName, path: &Path) -> Option<FileId> {
+        match self.staged.get(name.key()) {
+            Some(id) => *id,
+            None => FileId::of(path),
+        }
+    }
+}
+
+/// [`swap_checked`] against identities taken now: undo's swaps, whose checks ran just
+/// before.
 pub fn swap(
     s: &mut WriteSession<'_>,
     journal: &mut Journal,
@@ -675,6 +719,25 @@ pub fn swap(
     staged: &Staged,
     client: &ClientPaths,
     snapshot: &Path,
+) -> Result<SwapReport> {
+    let seen = Seen::capture(&client.addons(), ops, staged);
+    swap_checked(s, journal, ops, staged, client, snapshot, &seen)
+}
+
+/// Swaps the staged folders in, old versions and removals out (to `<snapshot>/AddOns/`,
+/// the transaction's client snapshot), in folder-key order, journaling each rename
+/// first; ends with `swapped`. Each rename requires its endpoints to be what `seen`
+/// recorded: compared with the identities its journal line took before it renames (a
+/// mismatch leaves the step as not run, so the rollback is clean), and again by fsx
+/// immediately before the rename.
+pub fn swap_checked(
+    s: &mut WriteSession<'_>,
+    journal: &mut Journal,
+    ops: &[SwapOp],
+    staged: &Staged,
+    client: &ClientPaths,
+    snapshot: &Path,
+    seen: &Seen,
 ) -> Result<SwapReport> {
     let addons = client.addons();
     let snapshot = snapshot.join("AddOns");
@@ -699,7 +762,8 @@ pub fn swap(
                 let (from, new_tree) = staged_folder(staged, name)?;
                 let to = addons.join(name.as_str());
                 absent(&addons, name)?;
-                let m = Move::new(&from, &to, StepPurpose::SwapIn, Some(new_tree), None);
+                let m = Move::new(&from, &to, StepPurpose::SwapIn, Some(new_tree), None)
+                    .expecting(seen.staged(name, &from), None);
                 run.flagged(s, StepOp::Noreplace, &m, || absent(&addons, name))?;
                 counts.added += 1;
             }
@@ -716,8 +780,10 @@ pub fn swap(
                         live.as_str()
                     )));
                 }
+                let (new_id, live_id) = (seen.staged(name, &from), seen.live(&addons, live));
                 if run.atomic {
-                    let m = Move::new(&from, &to, StepPurpose::SwapIn, Some(new_tree), *old_tree);
+                    let m = Move::new(&from, &to, StepPurpose::SwapIn, Some(new_tree), *old_tree)
+                        .expecting(new_id, live_id);
                     if run.try_flagged(s, StepOp::Exchange, &m)? {
                         exchanged.push((name, live, *old_tree));
                         counts.replaced += 1;
@@ -726,9 +792,11 @@ pub fn swap(
                 }
                 let old = snapshot.join(live.as_str());
                 let out = StepPurpose::FallbackLiveToSnapshot;
-                run.plain(s, &Move::new(&to, &old, out, *old_tree, None))?;
+                let m = Move::new(&to, &old, out, *old_tree, None).expecting(live_id, None);
+                run.plain(s, &m)?;
                 let back = StepPurpose::FallbackStageToLive;
-                run.plain(s, &Move::new(&from, &to, back, Some(new_tree), None))?;
+                let m = Move::new(&from, &to, back, Some(new_tree), None).expecting(new_id, None);
+                run.plain(s, &m)?;
                 counts.replaced += 1;
             }
             SwapOp::Remove { .. } => {}
@@ -740,7 +808,9 @@ pub fn swap(
     for (name, live, old_tree) in exchanged {
         let from = staged.stage_dir.join(name.as_str());
         let to = snapshot.join(live.as_str());
-        let m = Move::new(&from, &to, StepPurpose::OldToSnapshot, old_tree, None);
+        // The live folder's identity, at the stage path since the exchange.
+        let m = Move::new(&from, &to, StepPurpose::OldToSnapshot, old_tree, None)
+            .expecting(seen.live(&addons, live), None);
         run.flagged(s, StepOp::Noreplace, &m, || Ok(()))?;
     }
 
@@ -755,7 +825,8 @@ pub fn swap(
                 )));
             }
             let to = snapshot.join(live.as_str());
-            let m = Move::new(&from, &to, StepPurpose::RemoveToSnapshot, *old_tree, None);
+            let m = Move::new(&from, &to, StepPurpose::RemoveToSnapshot, *old_tree, None)
+                .expecting(seen.live(&addons, live), None);
             run.flagged(s, StepOp::Noreplace, &m, || Ok(()))?;
             counts.removed += 1;
         }
@@ -786,6 +857,10 @@ struct Move<'a> {
     tree_before: Option<TreeDigest>,
     /// What is at `from` afterwards (the other side of an exchange).
     tree_after: Option<TreeDigest>,
+    /// The folder the rename must move: what the checks saw.
+    want_from: Option<FileId>,
+    /// What must be at `to`: nothing, or (an exchange) the folder the checks saw.
+    want_to: Option<FileId>,
 }
 
 impl<'a> Move<'a> {
@@ -802,13 +877,34 @@ impl<'a> Move<'a> {
             purpose,
             tree_before,
             tree_after,
+            want_from: None,
+            want_to: None,
         }
     }
 
+    /// The identities its endpoints must have: `from`'s folder, and `to`'s (`None`:
+    /// nothing there).
+    const fn expecting(mut self, from: Option<FileId>, to: Option<FileId>) -> Self {
+        self.want_from = from;
+        self.want_to = to;
+        self
+    }
+
+    /// The rename's options: its digests, and fsx's endpoint predicates (a directory of
+    /// the identity seen at `from`; at `to` nothing, or the identity seen there).
     fn opts(&self) -> MutateOpts {
+        let folder = |id: FileId| {
+            Expect::Present(Predicate {
+                file_type: Some(FileKind::Directory),
+                identity: Some(id),
+                ..Predicate::default()
+            })
+        };
         MutateOpts {
             tree_before: self.tree_before,
             tree_after: self.tree_after,
+            expect: self.want_from.map(folder),
+            expect_to: Some(self.want_to.map_or(Expect::Absent, folder)),
             ..MutateOpts::default()
         }
     }
@@ -838,7 +934,7 @@ impl Run<'_> {
             StepOp::Exchange => RenameMode::Exchange,
             StepOp::Noreplace | StepOp::Rename => RenameMode::NoReplace,
         };
-        let (to, purpose) = (m.to, m.purpose);
+        let to = m.to;
         self.step(s, op, m)?;
         match mutate_with(s, m.from, Op::Rename { to, mode }, m.opts()) {
             Ok(_) => Ok(true),
@@ -847,9 +943,10 @@ impl Run<'_> {
                 self.warnings.push(atomic_swap_unavailable());
                 Ok(false)
             }
-            Err(FsxError::Precondition(why)) if purpose == StepPurpose::SwapIn => Err(stale(
-                format!("{} changed after planning: {why}", to.display()),
-            )),
+            Err(FsxError::Precondition(why)) => Err(stale(format!(
+                "{} changed after planning: {why}",
+                to.display()
+            ))),
             Err(e) => Err(e.into()),
         }
     }
@@ -864,10 +961,19 @@ impl Run<'_> {
             to: m.to,
             mode: RenameMode::Replace,
         };
-        mutate_with(s, m.from, op, m.opts())?;
-        Ok(())
+        match mutate_with(s, m.from, op, m.opts()) {
+            Ok(_) => Ok(()),
+            Err(FsxError::Precondition(why)) => Err(stale(format!(
+                "{} changed after planning: {why}",
+                m.to.display()
+            ))),
+            Err(e) => Err(e.into()),
+        }
     }
 
+    /// Journals the rename, then compares the identities its line recorded with what the
+    /// checks saw: a folder replaced since is refused here, before its rename, so the
+    /// step reads as not run and the rollback is clean.
     fn step(&mut self, s: &mut WriteSession<'_>, op: StepOp, m: &Move<'_>) -> Result<()> {
         let step = Step {
             op,
@@ -875,7 +981,18 @@ impl Run<'_> {
             to: m.to.to_path_buf(),
             purpose: m.purpose,
         };
-        self.journal.step(s, step)?;
+        let record = self.journal.step(s, step)?;
+        for (path, recorded, wanted) in [
+            (m.from, record.from_id, m.want_from),
+            (m.to, record.to_id, m.want_to),
+        ] {
+            if !FileId::same(recorded, wanted) {
+                return Err(stale(format!(
+                    "{} changed after the approval was checked",
+                    path.display()
+                )));
+            }
+        }
         failpoint::hit("engine.swap.before_rename").map_err(|e| fail(m.from, &e))
     }
 }
@@ -1750,6 +1867,299 @@ mod tests {
         assert!(
             !dir.join(format!("{}.files.json", scene.key)).exists(),
             "absent files are skipped"
+        );
+    }
+
+    // ---- Each rename requires what the checks saw (M4-D60 check 3) -------------------
+
+    /// [`swap_checked`] of `ops` against `seen`.
+    fn run_seen(scene: &Scene, ops: &[SwapOp], seen: &Seen) -> Result<SwapReport> {
+        let lock = scene.lock();
+        let mut s = scene.session();
+        let mut journal = scene.journal(&mut s, &lock);
+        let snapshot = scene.snapshot();
+        swap_checked(
+            &mut s,
+            &mut journal,
+            ops,
+            &scene.staged,
+            &scene.client,
+            &snapshot,
+            seen,
+        )
+    }
+
+    fn seen(scene: &Scene) -> Seen {
+        Seen::capture(&scene.client.addons(), &ops(), &scene.staged)
+    }
+
+    fn copy_tree(from: &Path, to: &Path) {
+        std::fs::create_dir(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// Replaces the folder at `dir` with a copy of it: the same names and bytes, another
+    /// identity.
+    fn replace_with_copy(dir: &Path) {
+        let copy = dir.with_extension("copy");
+        copy_tree(dir, &copy);
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::rename(&copy, dir).unwrap();
+    }
+
+    fn staged_path(scene: &Scene, name: &str) -> PathBuf {
+        scene
+            .staged
+            .folders
+            .iter()
+            .find(|f| f.name.as_str() == name)
+            .map(|f| f.path.clone())
+            .unwrap()
+    }
+
+    #[test]
+    fn seen_captures_every_moving_and_staged_folder() {
+        let scene = Scene::new();
+        let seen = seen(&scene);
+        let addons = scene.client.addons();
+        let live: Vec<(&str, Option<FileId>)> =
+            seen.live.iter().map(|(k, id)| (k.as_str(), *id)).collect();
+        assert_eq!(
+            live,
+            [
+                ("foo", FileId::of(&addons.join("Foo"))),
+                ("gone", FileId::of(&addons.join("Gone")))
+            ],
+            "a replace and a remove, not the add"
+        );
+        assert_eq!(seen.staged.len(), scene.staged.folders.len());
+        for folder in &scene.staged.folders {
+            assert_eq!(
+                seen.staged[folder.name.key()],
+                FileId::of(&folder.path),
+                "{}",
+                folder.name
+            );
+        }
+        assert!(live.iter().all(|(_, id)| id.is_some()));
+    }
+
+    /// A swap refused at the step of `purpose`: `plan_stale`, and that step reads as not
+    /// run.
+    fn assert_refused_at(
+        scene: &Scene,
+        case: &str,
+        got: &Result<SwapReport>,
+        purpose: StepPurpose,
+    ) {
+        let Err(err) = got else {
+            panic!("{case}: the swap went through"); // ubs:ignore — fails the test
+        };
+        assert_eq!(err.code, ErrorCode::PlanStale, "{case}: {err:?}");
+        let (steps, _) = steps(scene);
+        let last = steps.last().unwrap();
+        assert_eq!(last.purpose, purpose, "{case}: refused at {last:?}");
+        let state = crate::engine::journal::step_state(&mut crate::engine::journal::Disk, last);
+        assert_eq!(
+            state,
+            crate::engine::journal::StepState::Before,
+            "{case}: the step never ran: {last:?}, error {err:?}"
+        );
+    }
+
+    #[test]
+    fn each_rename_refuses_an_endpoint_that_is_not_what_was_seen() {
+        type Change = fn(&Scene);
+        let cases: [(&str, Change, StepPurpose); 3] = [
+            (
+                "exchange_live_replaced",
+                |scene| replace_with_copy(&scene.client.addons().join("Foo")),
+                StepPurpose::SwapIn,
+            ),
+            (
+                "exchange_staged_replaced",
+                |scene| replace_with_copy(&staged_path(scene, "Foo")),
+                StepPurpose::SwapIn,
+            ),
+            (
+                "remove_live_replaced",
+                |scene| replace_with_copy(&scene.client.addons().join("Gone")),
+                StepPurpose::RemoveToSnapshot,
+            ),
+        ];
+        for (case, change, purpose) in cases {
+            let scene = Scene::new();
+            let seen = seen(&scene);
+            change(&scene);
+            let got = run_seen(&scene, &ops(), &seen);
+            assert_refused_at(&scene, case, &got, purpose);
+        }
+
+        // A new folder's destination: taken before its step, refused by the check that
+        // runs before it is journaled.
+        let scene = Scene::new();
+        let seen = seen(&scene);
+        folder(&scene.client.addons().join("Bar"), "someone else's");
+        let err = run_seen(&scene, &ops(), &seen).unwrap_err();
+        assert_eq!(
+            err.code,
+            ErrorCode::PlanStale,
+            "add_destination_taken: {err:?}"
+        );
+        assert!(steps(&scene).0.is_empty(), "add_destination_taken: no step");
+        assert_eq!(scene.notes("Bar").as_deref(), Some("someone else's"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn each_fallback_rename_refuses_an_endpoint_that_is_not_what_was_seen() {
+        type Change = fn(&Scene);
+        let cases: [(&str, Change, StepPurpose); 2] = [
+            (
+                "fallback_live_replaced",
+                |scene| replace_with_copy(&scene.client.addons().join("Foo")),
+                StepPurpose::FallbackLiveToSnapshot,
+            ),
+            (
+                "fallback_stage_replaced",
+                |scene| replace_with_copy(&staged_path(scene, "Foo")),
+                StepPurpose::FallbackStageToLive,
+            ),
+        ];
+        for (case, change, purpose) in cases {
+            let scene = Scene::new();
+            let seen = seen(&scene);
+            change(&scene);
+            let got =
+                failpoint::with_spec("fsx.renameat2.einval", || run_seen(&scene, &ops(), &seen));
+            assert_refused_at(&scene, case, &got, purpose);
+        }
+    }
+
+    /// The old version, at the stage path once exchanged, replaced before it moves on:
+    /// refused at its step. (Its rollback is not asserted: no supported writer replaces
+    /// a folder inside the transaction's own stage.)
+    #[cfg(debug_assertions)]
+    #[test]
+    fn old_to_snapshot_source_replaced() {
+        let scene = Scene::new();
+        let seen = seen(&scene);
+        let pause = crate::engine::testing::Pause::new();
+        std::thread::scope(|s| {
+            let slow = s.spawn(|| {
+                failpoint::with_spec_in(pause.dir(), "engine.swap.after_exchange=pause", || {
+                    run_seen(&scene, &ops(), &seen)
+                })
+            });
+            pause.reached("engine.swap.after_exchange");
+            replace_with_copy(&staged_path(&scene, "Foo"));
+            pause.resume("engine.swap.after_exchange");
+            let got = slow.join().unwrap();
+            assert_refused_at(
+                &scene,
+                "old_to_snapshot_source_replaced",
+                &got,
+                StepPurpose::OldToSnapshot,
+            );
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_refused_rename_after_earlier_steps_rolls_back_cleanly() {
+        let mut scene = Scene::new();
+        let before = tree(&scene.client.addons());
+        let seen = seen(&scene);
+        // Bar is added and Foo exchanged first; Gone, removed last, is replaced.
+        replace_with_copy(&scene.client.addons().join("Gone"));
+        let got = run_seen(&scene, &ops(), &seen);
+        assert_refused_at(&scene, "third", &got, StepPurpose::RemoveToSnapshot);
+        assert_eq!(scene.notes("Foo").as_deref(), Some("new foo"), "mid-swap");
+        scene.release_inflight();
+        let lock = scene.lock();
+        let warnings = recover_all(&RecoveryEnv {
+            lock: &lock,
+            paths: &scene.paths,
+            scopes: &scene.scopes,
+            own: std::slice::from_ref(&scene.key),
+            sv_writable: &|_| false,
+        })
+        .unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(
+            tree(&scene.client.addons()),
+            before,
+            "every folder wholly old"
+        );
+    }
+
+    /// Replaced after its step line and before its rename (the residual window): fsx's
+    /// predicate refuses the rename, as `plan_stale` whatever the purpose, and the step
+    /// reads as neither state, for repair.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_predicate_failure_is_plan_stale_for_every_purpose() {
+        let removal = [SwapOp::Remove {
+            live: name("Gone"),
+            old_tree: None,
+        }];
+        let scene = Scene::new();
+        let seen = Seen::capture(&scene.client.addons(), &removal, &scene.staged);
+        let pause = crate::engine::testing::Pause::new();
+        std::thread::scope(|s| {
+            let slow = s.spawn(|| {
+                failpoint::with_spec_in(pause.dir(), "engine.swap.before_rename=pause", || {
+                    run_seen(&scene, &removal, &seen)
+                })
+            });
+            pause.reached("engine.swap.before_rename");
+            replace_with_copy(&scene.client.addons().join("Gone"));
+            pause.resume("engine.swap.before_rename");
+            let err = slow.join().unwrap().unwrap_err();
+            assert_eq!(
+                (err.code, err.retryable),
+                (ErrorCode::PlanStale, true),
+                "{err:?}"
+            );
+            assert!(err.message.contains("changed after planning"), "{err:?}");
+        });
+        let (steps, _) = steps(&scene);
+        let state =
+            crate::engine::journal::step_state(&mut crate::engine::journal::Disk, &steps[0]);
+        assert_eq!(
+            state,
+            crate::engine::journal::StepState::Neither,
+            "{steps:?}"
+        );
+        assert_eq!(
+            scene.notes("Gone").as_deref(),
+            Some("gone"),
+            "the copy stays live"
+        );
+    }
+
+    #[test]
+    fn swap_without_seen_captures_at_its_start() {
+        // The undo path: identities taken as the swap starts, so a folder replaced
+        // earlier is the one moved.
+        let scene = Scene::new();
+        replace_with_copy(&scene.client.addons().join("Foo"));
+        run(&scene, &ops()).unwrap();
+        assert_eq!(
+            (
+                scene.notes("Foo").as_deref(),
+                scene.notes("Bar").as_deref(),
+                scene.notes("Gone")
+            ),
+            (Some("new foo"), Some("new bar"), None)
         );
     }
 }
