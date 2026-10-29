@@ -470,7 +470,8 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
         };
         let approval = Approval::of_undo(&reverted, &folders_removed, &flags);
         outcome.data.approval = Some(approval.clone());
-        let intent = resolved_selection(&outcome.data).and_then(|selection| {
+        let narrowed = ctx.target.is_some();
+        let intent = resolved_selection(&outcome.data, narrowed).and_then(|selection| {
             StoredIntent::from_args(ctx, &StorableArgs::Undo { args, selection })
         });
         match intent {
@@ -499,10 +500,19 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
 }
 
 /// Relative selectors have already resolved in the preview. A stored undo names only
-/// that full run or transaction, so newer history cannot retarget it.
-fn resolved_selection(data: &UndoData) -> Result<UndoSelection> {
+/// that full run or transaction, so newer history cannot retarget it. A run `-t`
+/// `narrowed` to one client is that client's transaction: a run commits at most one
+/// per client, and the run alone would name every client's.
+fn resolved_selection(data: &UndoData, narrowed: bool) -> Result<UndoSelection> {
     match data.reverted_run {
-        Some(run) => Ok(UndoSelection::Run(run)),
+        Some(run) if !narrowed => Ok(UndoSelection::Run(run)),
+        Some(run) => match data.transactions.as_slice() {
+            [one] => Ok(UndoSelection::Tx(one.reverted)),
+            other => Err(Error::internal(format!(
+                "run {run} narrowed to one client selected {} transactions",
+                other.len()
+            ))),
+        },
         None => data
             .transactions
             .first()
@@ -977,32 +987,57 @@ mod tests {
             plan_expires_at: None,
             approval: None,
         };
-        for (case, reverted_run, expected) in [
+        for (case, reverted_run, narrowed, expected) in [
             (
-                "bare or last-by resolved a run",
+                "bare, last-by or --run resolved a run",
                 Some(run),
+                false,
                 serde_json::json!({"run": run}),
             ),
             (
-                "target or prefix resolved a transaction",
+                "--run narrowed by -t is its client's transaction",
+                Some(run),
+                true,
+                serde_json::json!({"tx": tx}),
+            ),
+            (
+                "a prefix resolved a transaction",
                 None,
+                false,
+                serde_json::json!({"tx": tx}),
+            ),
+            (
+                "-t resolved a transaction",
+                None,
+                true,
                 serde_json::json!({"tx": tx}),
             ),
         ] {
             data.reverted_run = reverted_run;
-            let selected = resolved_selection(&data).unwrap();
+            let selected = resolved_selection(&data, narrowed).unwrap();
             assert_eq!(
                 serde_json::to_value(selected).unwrap(),
                 expected,
-                "{case}: {data:?} resolved to {selected:?}"
+                "{case}: narrowed={narrowed}, {data:?} resolved to {selected:?}"
             );
         }
-        data.transactions.clear();
+        // A narrowed run names exactly one transaction, never the run again.
+        data.reverted_run = Some(run);
+        data.transactions.push(data.transactions[0].clone());
         assert_eq!(
-            resolved_selection(&data).unwrap_err().code,
+            resolved_selection(&data, true).unwrap_err().code,
             ErrorCode::Internal,
-            "an incomplete preview cannot retarget a stored undo: {data:?}"
+            "two transactions of a narrowed run: {data:?}"
         );
+        data.transactions.clear();
+        for (reverted_run, narrowed) in [(None, false), (None, true), (Some(run), true)] {
+            data.reverted_run = reverted_run;
+            assert_eq!(
+                resolved_selection(&data, narrowed).unwrap_err().code,
+                ErrorCode::Internal,
+                "an incomplete preview cannot retarget a stored undo: narrowed={narrowed}, {data:?}"
+            );
+        }
     }
 
     /// A prefix is matched against settings changes and transactions together: unique

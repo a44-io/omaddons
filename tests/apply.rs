@@ -614,3 +614,128 @@ fn apply_smoke_install_plan_round_trip() {
     log.assert_eq("txs", &details["txs"], &json!([tx]));
     log.assert_unchanged("addons", &addons);
 }
+
+/// A stored `undo --run R -t retail` keeps its client (omad-bjiw): the plan names
+/// retail's transaction of the run and binds as `undo <tx>` does, and applying it
+/// reverts retail alone, leaving the run's other client as it was.
+#[test]
+fn apply_an_undo_of_one_client_of_a_run() {
+    let log = tlog!();
+    log.step("prepare a home with retail and Mists Classic");
+    let home = Home::new(&["wow", "wow_classic"]);
+    let zip = home.env.root().join("foo.zip");
+    fs::write(
+        &zip,
+        common::archives::zip_text(&[(
+            "Foo/Foo.toc",
+            "## Interface: 120105, 50504\n## Version: 1\n",
+        )]),
+    )
+    .unwrap();
+    log.env(&home);
+    let zip = zip.display().to_string();
+    let run = |args: &[&str]| {
+        let mut argv: Vec<&str> = args.to_vec();
+        argv.extend(["--offline", "--json", "--progress", "json"]);
+        let ran = log.cmd(&home, &argv).env("OMADDONS_NOW", NOW).run();
+        ran.ok().assert_private();
+        ran
+    };
+    for target in ["retail", "classic"] {
+        log.step(&format!("install Foo on {target}"));
+        run(&["install", "gh:o/foo", "--file", &zip, "-t", target]);
+    }
+
+    log.step("pin Foo on both clients: one run, a transaction on each");
+    let pinned = run(&["pin", "Foo"]);
+    let data = pinned.data();
+    let run_id = data["run"].as_str().unwrap().to_owned();
+    let tx_of = |id: &str| -> String {
+        let target = data["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["target"]["id"] == id)
+            .unwrap_or_else(|| panic!("no {id} in {data}")); // ubs:ignore — the test's own failure
+        target["tx"].as_str().unwrap().to_owned()
+    };
+    let (retail_tx, classic_tx) = (tx_of("retail"), tx_of("classic"));
+    log.json(
+        "the run",
+        &json!({"run": run_id, "retail": retail_tx, "classic": classic_tx}),
+    );
+    assert_ne!(retail_tx, classic_tx);
+
+    log.step("preview undo --run R -t retail");
+    let preview = run(&["undo", "--run", &run_id, "-t", "retail", "--dry-run"]);
+    let id = preview.data()["plan_id"].as_str().unwrap().to_owned();
+    let token = preview.data()["precondition"].clone();
+    log.assert_eq(
+        "the preview still names the run",
+        &preview.data()["reverted_run"],
+        &json!(run_id),
+    );
+    let plan = read_plan(&home.env, &id);
+    log.json("plan file", &plan);
+    log.assert_eq(
+        "stored selection",
+        &plan["intent"]["selection"],
+        &json!({"tx": retail_tx}),
+    );
+    log.assert_eq(
+        "display argv",
+        &plan["display_argv"],
+        &json!(["omaddons", "undo", retail_tx]),
+    );
+
+    log.step("undo of retail's transaction by its id binds alike");
+    let direct = run(&["undo", &retail_tx, "--dry-run"]);
+    log.assert_eq("token", &direct.data()["precondition"], &token);
+    log.assert_eq(
+        "the same intent and token reuse the plan",
+        &direct.data()["plan_id"],
+        &json!(id),
+    );
+
+    log.step("apply it: retail's pin is undone, classic's stays");
+    let applied = run(&["apply", &id]);
+    let data = applied.data();
+    log.assert_eq(
+        "applied command",
+        &data["applied"]["command"],
+        &json!("undo"),
+    );
+    let outcomes: Vec<(Value, Value)> = data["outcomes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| (o["target"].clone(), o["status"].clone()))
+        .collect();
+    log.assert_eq(
+        "outcomes",
+        &outcomes,
+        &vec![(json!("retail"), json!("committed"))],
+    );
+    log.assert_eq(
+        "the reverted transaction",
+        &data["result"]["reverted"]["tx"],
+        &json!(retail_tx),
+    );
+    let listed = run(&["list"]);
+    let pinned_on = |id: &str| -> Value {
+        listed.data()["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .and_then(|t| t["addons"].as_array())
+            .and_then(|addons| addons.iter().find(|a| a["name"] == "Foo"))
+            .map(|foo| foo["pinned"].clone())
+            .unwrap_or(Value::Null)
+    };
+    log.assert_eq(
+        "Foo pinned (retail, classic)",
+        &(pinned_on("retail"), pinned_on("classic")),
+        &(json!(false), json!(true)),
+    );
+}
