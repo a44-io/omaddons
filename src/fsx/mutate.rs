@@ -1,7 +1,8 @@
 //! `mutate()`: the one function that changes the filesystem (vision §5.5, D26).
 //!
 //! Steps, in the doctor contract's order: (1) normalize the path, run the deny-list,
-//! the scope table and the operation's preconditions; (2) before-digest; (3) verbatim
+//! the scope table, the operation's preconditions and the caller's endpoint predicates
+//! (`fsx::expect`); (2) before-digest; (3) verbatim
 //! backup, verified byte-identical; (4) plan; (5) atomic execution through `fsx::sys`;
 //! (6) after-digest; (7) an fsync'd `actions.jsonl` line. Untracked sessions skip
 //! steps 2, 3, 6 and 7. Failpoints `fsx.mutate.{checked,backed_up,executed,logged}`
@@ -18,6 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use super::expect::Expect;
 use super::failpoint;
 use super::op::Op;
 use super::scope::{Access, Refusal};
@@ -80,19 +82,14 @@ fn io_err(path: &Path) -> impl FnOnce(io::Error) -> FsxError + '_ {
     }
 }
 
-/// A compare-and-swap precondition on the target.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Expect {
-    /// Nothing exists at the path.
-    Absent,
-    /// The path is a regular file with this SHA-256.
-    Hash([u8; 32]),
-}
-
 /// Options for [`mutate_with`].
 #[derive(Debug, Clone, Default)]
 pub struct MutateOpts {
+    /// The predicate on the operation's own path, checked at step 1.
     pub expect: Option<Expect>,
+    /// The predicate on a rename's destination, checked with `expect`; refused on any
+    /// other operation.
+    pub expect_to: Option<Expect>,
     /// The tree digest of a directory at the path before the operation, from the
     /// caller's per-file index, so large folders need not be re-hashed.
     pub tree_before: Option<TreeDigest>,
@@ -369,7 +366,13 @@ pub fn mutate_with(
             )));
         }
     }
-    preconditions(&target, to.as_deref(), &op, opts.expect.as_ref())?;
+    preconditions(
+        &target,
+        to.as_deref(),
+        &op,
+        opts.expect.as_ref(),
+        opts.expect_to.as_ref(),
+    )?;
     failpoint::hit("fsx.mutate.checked").map_err(io_err(&target))?;
 
     let SessionKind::Tx(state) = &mut s.kind else {
@@ -621,6 +624,7 @@ fn preconditions(
     to: Option<&Path>,
     op: &Op<'_>,
     expect: Option<&Expect>,
+    expect_to: Option<&Expect>,
 ) -> Result<(), FsxError> {
     let fail = |what: &str| {
         Err(FsxError::Precondition(format!(
@@ -668,22 +672,27 @@ fn preconditions(
         }
         _ => {}
     }
-    match expect {
-        Some(Expect::Absent) if exists => fail("expected nothing at this path"),
-        Some(Expect::Hash(expected)) => {
-            let actual = if is_file {
-                Some(hash_file(target).map_err(io_err(target))?)
-            } else {
-                None
-            };
-            // ubs:ignore — a content hash for compare-and-swap, not a secret
-            if actual.as_ref() == Some(expected) {
-                Ok(())
-            } else {
-                fail("its content changed (hash mismatch)")
-            }
-        }
-        _ => Ok(()),
+    if expect_to.is_some() && !matches!(op, Op::Rename { .. }) {
+        return fail("a destination predicate needs a rename");
+    }
+    endpoint(target, expect)?;
+    match to {
+        Some(to) => endpoint(to, expect_to),
+        None => Ok(()),
+    }
+}
+
+/// Checks the caller's predicate on one endpoint, naming that endpoint when it fails.
+fn endpoint(path: &Path, expect: Option<&Expect>) -> Result<(), FsxError> {
+    let Some(expect) = expect else {
+        return Ok(());
+    };
+    match expect.check(path).map_err(io_err(path))? {
+        Some(mismatch) => Err(FsxError::Precondition(format!(
+            "{}: {mismatch}",
+            path.display()
+        ))),
+        None => Ok(()),
     }
 }
 
@@ -889,7 +898,7 @@ pub(crate) fn count_hashed() {
     FILES_HASHED.with(|n| n.set(n.get() + 1));
 }
 
-fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
+pub(super) fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
     count_hashed();
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
@@ -940,6 +949,7 @@ mod tests {
     use crate::fsx::scope::{OwnedFolders, ScopeTable, Writer};
     use crate::fsx::session::SnapshotRoots;
     use crate::fsx::sys::Content;
+    use crate::fsx::{FileKind, Parts, Predicate};
     use crate::model::FolderName;
     use crate::state::paths::Paths;
     use std::collections::BTreeSet;
@@ -1275,7 +1285,7 @@ mod tests {
         mutate(&mut s, &file, write(b"v1")).unwrap();
 
         let stale = MutateOpts {
-            expect: Some(Expect::Hash(sha(b"v0"))),
+            expect: Some(Expect::hash(sha(b"v0"))),
             ..MutateOpts::default()
         };
         let err = mutate_with(&mut s, &file, write(b"v2"), stale).unwrap_err();
@@ -1291,7 +1301,7 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), b"v1");
 
         let fresh = MutateOpts {
-            expect: Some(Expect::Hash(sha(b"v1"))),
+            expect: Some(Expect::hash(sha(b"v1"))),
             ..MutateOpts::default()
         };
         mutate_with(&mut s, &file, write(b"v2"), fresh).unwrap();
@@ -1300,6 +1310,423 @@ mod tests {
             mutate(&mut s, &state, Op::CreateDir),
             Err(FsxError::Precondition(_))
         ));
+    }
+
+    /// Every path under `dir`, to compare what a refused operation left.
+    fn listing(dir: &Path) -> BTreeSet<PathBuf> {
+        let mut out = BTreeSet::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path.clone());
+                }
+                out.insert(path);
+            }
+        }
+        out
+    }
+
+    fn identity_of(path: &Path) -> Expect {
+        let parts = Parts {
+            identity: true,
+            ..Parts::default()
+        };
+        Expect::capture(path, parts).unwrap()
+    }
+
+    /// Puts another file with the same bytes and mode at `path`: only its identity
+    /// changes.
+    fn replace_with_a_copy(path: &Path) {
+        let copy = path.with_extension("copy");
+        fs::copy(path, &copy).unwrap();
+        fs::rename(&copy, path).unwrap();
+    }
+
+    fn expecting(expect: Expect) -> MutateOpts {
+        MutateOpts {
+            expect: Some(expect),
+            ..MutateOpts::default()
+        }
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    fn refused_with(result: Result<ActionRecord, FsxError>, path: &Path, text: &str) -> bool {
+        matches!(&result, Err(FsxError::Precondition(message))
+            if message.starts_with(&*path.to_string_lossy()) && message.ends_with(text))
+    }
+
+    #[test]
+    fn a_predicate_failure_is_a_precondition_and_changes_nothing() {
+        let f = Fixture::new();
+        let mut s = f.tx_session(Writer::Mutating);
+        let state = f.paths.state_dir().to_path_buf();
+        ensure_dir_all(&mut s, &state).unwrap();
+        let file = state.join("registry.json");
+        mutate(&mut s, &file, write(b"v1")).unwrap();
+        let stale = identity_of(&file);
+        replace_with_a_copy(&file);
+        let snapshot = f.paths.state_snapshot(&f.tx);
+        let (lines, backups, mode) = (f.actions().len(), listing(&snapshot), mode_of(&file));
+        let got = mutate_with(&mut s, &file, write(b"v2"), expecting(stale));
+        assert!(
+            refused_with(
+                got,
+                &file,
+                "another file is at this path (its identity changed)"
+            ),
+            "a stale identity is refused"
+        );
+        assert_eq!(f.actions().len(), lines, "no actions line");
+        assert_eq!(listing(&snapshot), backups, "no backup");
+        assert_eq!(fs::read(&file).unwrap(), b"v1");
+        assert_eq!(mode_of(&file), mode);
+    }
+
+    /// Each part refuses its own kind of change through `mutate_with`, naming the path and
+    /// the part, and the refused operation logs nothing. Each case's operation passes its
+    /// own rules, so the predicate is what refuses.
+    #[test]
+    fn every_part_refuses_through_mutate_with() {
+        let f = Fixture::new();
+        let mut s = f.tx_session(Writer::Mutating);
+        let state = f.paths.state_dir().to_path_buf();
+        ensure_dir_all(&mut s, &state).unwrap();
+        let moved = state.join("moved");
+        let rename = Op::Rename {
+            to: &moved,
+            mode: RenameMode::NoReplace,
+        };
+        let link_target = state.join("elsewhere");
+        let symlink = Op::SymlinkAtomic {
+            target: &link_target,
+        };
+        // (case, subject, operation, expectation, change, refusal)
+        type Setup = fn(&Path);
+        type Capture = fn(&Path) -> Expect;
+        let cases: [(&str, Setup, Op<'_>, Capture, Setup, &str); 8] = [
+            (
+                "identity",
+                |p| fs::write(p, b"v1").unwrap(),
+                write(b"v2"),
+                |p| identity_of(p),
+                replace_with_a_copy,
+                "another file is at this path (its identity changed)",
+            ),
+            (
+                "sha256",
+                |p| fs::write(p, b"v1").unwrap(),
+                write(b"v2"),
+                |_| Expect::hash(sha(b"v1")),
+                |p| fs::write(p, b"v0").unwrap(),
+                "its content changed (hash mismatch)",
+            ),
+            (
+                "mode",
+                |p| {
+                    fs::write(p, b"v1").unwrap();
+                    fs::set_permissions(p, fs::Permissions::from_mode(0o644)).unwrap();
+                },
+                write(b"v2"),
+                |p| {
+                    let parts = Parts {
+                        mode: true,
+                        ..Parts::default()
+                    };
+                    Expect::capture(p, parts).unwrap()
+                },
+                |p| fs::set_permissions(p, fs::Permissions::from_mode(0o600)).unwrap(),
+                "its mode is 0600, expected 0644",
+            ),
+            (
+                "stamp",
+                |p| {
+                    fs::create_dir(p).unwrap();
+                    fs::write(p.join("a"), b"a").unwrap();
+                },
+                rename,
+                |p| {
+                    let parts = Parts {
+                        stamp: true,
+                        ..Parts::default()
+                    };
+                    Expect::capture(p, parts).unwrap()
+                },
+                |p| fs::write(p.join("b"), b"b").unwrap(),
+                "the directory's contents changed (stamp mismatch)",
+            ),
+            (
+                "link_target",
+                |p| std::os::unix::fs::symlink("first", p).unwrap(),
+                symlink,
+                |p| {
+                    let parts = Parts {
+                        link_target: true,
+                        ..Parts::default()
+                    };
+                    Expect::capture(p, parts).unwrap()
+                },
+                |p| {
+                    fs::remove_file(p).unwrap();
+                    std::os::unix::fs::symlink("second", p).unwrap();
+                },
+                "the symlink points elsewhere",
+            ),
+            (
+                "file_type",
+                |p| fs::create_dir(p).unwrap(),
+                Op::Rename {
+                    to: &moved,
+                    mode: RenameMode::NoReplace,
+                },
+                |_| {
+                    Expect::Present(Predicate {
+                        file_type: Some(FileKind::Directory),
+                        ..Predicate::default()
+                    })
+                },
+                |p| {
+                    fs::remove_dir(p).unwrap();
+                    fs::write(p, b"a file now").unwrap();
+                },
+                "is a regular file, expected a directory",
+            ),
+            (
+                "absent",
+                |_| {},
+                write(b"v1"),
+                |_| Expect::Absent,
+                |p| fs::write(p, b"another writer").unwrap(),
+                "expected nothing at this path",
+            ),
+            (
+                "present",
+                |p| fs::write(p, b"v1").unwrap(),
+                write(b"v2"),
+                |_| Expect::Present(Predicate::default()),
+                |p| fs::remove_file(p).unwrap(),
+                "expected something at this path",
+            ),
+        ];
+        for (case, setup, op, capture, change, refusal) in cases {
+            let subject = state.join(case);
+            setup(&subject);
+            let expect = capture(&subject);
+            change(&subject);
+            let lines = f.actions().len();
+            let before = listing(&state);
+            let got = mutate_with(&mut s, &subject, op, expecting(expect));
+            assert!(
+                refused_with(got, &subject, refusal),
+                "{case}: refused with {refusal:?}"
+            );
+            assert_eq!(f.actions().len(), lines, "{case}: no actions line");
+            assert_eq!(listing(&state), before, "{case}: nothing moved");
+        }
+    }
+
+    #[test]
+    fn predicates_are_checked_in_untracked_sessions_too() {
+        let f = Fixture::new();
+        let mut s = WriteSession::untracked(Writer::Mutating, &f.scopes, "status.json");
+        let state = f.paths.state_dir().to_path_buf();
+        ensure_dir_all(&mut s, &state).unwrap();
+        let status = state.join("status.json");
+        mutate(&mut s, &status, write(b"{}")).unwrap();
+        let stale = identity_of(&status);
+        replace_with_a_copy(&status);
+        for (case, expect) in [("absent", Expect::Absent), ("stale_identity", stale)] {
+            let got = mutate_with(&mut s, &status, write(b"{\"v\":2}"), expecting(expect));
+            assert!(
+                matches!(got, Err(FsxError::Precondition(_))),
+                "{case}: {got:?}"
+            );
+        }
+        assert_eq!(fs::read(&status).unwrap(), b"{}");
+    }
+
+    #[test]
+    fn a_rename_checks_its_destination() {
+        let f = Fixture::new();
+        let mut s = f.tx_session(Writer::Mutating);
+        let state = f.paths.state_dir().to_path_buf();
+        ensure_dir_all(&mut s, &state).unwrap();
+        let (a, b) = (state.join("a"), state.join("b"));
+        mutate(&mut s, &a, write(b"A")).unwrap();
+        mutate(&mut s, &b, write(b"B")).unwrap();
+        let rename = |s: &mut WriteSession<'_>, mode, expect_to| {
+            let opts = MutateOpts {
+                expect_to: Some(expect_to),
+                ..MutateOpts::default()
+            };
+            mutate_with(s, &a, Op::Rename { to: &b, mode }, opts)
+        };
+
+        let recorded = identity_of(&b);
+        replace_with_a_copy(&b);
+        let got = rename(&mut s, RenameMode::Exchange, recorded);
+        assert!(
+            refused_with(got, &b, "(its identity changed)"),
+            "exchange_with_a_replaced_destination: refused, naming the destination"
+        );
+        assert_eq!(
+            (fs::read(&a).unwrap(), fs::read(&b).unwrap()),
+            (b"A".to_vec(), b"B".to_vec())
+        );
+
+        let recorded = identity_of(&b);
+        let got = rename(&mut s, RenameMode::Exchange, recorded);
+        assert!(
+            got.is_ok(),
+            "exchange_with_the_recorded_destination: {got:?}"
+        );
+        assert_eq!(fs::read(&b).unwrap(), b"A");
+
+        fs::remove_file(&b).unwrap();
+        let got = rename(&mut s, RenameMode::NoReplace, Expect::Absent);
+        assert!(got.is_ok(), "noreplace_with_an_absent_destination: {got:?}");
+        assert_eq!(fs::read(&b).unwrap(), b"B");
+
+        mutate(&mut s, &a, write(b"new")).unwrap();
+        let got = rename(&mut s, RenameMode::Replace, Expect::hash(sha(b"edited")));
+        assert!(
+            refused_with(got, &b, "its content changed (hash mismatch)"),
+            "replace_with_the_destinations_sha256: refused once the destination changed"
+        );
+        let got = rename(&mut s, RenameMode::Replace, Expect::hash(sha(b"B")));
+        assert!(got.is_ok(), "replace_with_the_destinations_sha256: {got:?}");
+        assert_eq!(fs::read(&b).unwrap(), b"new");
+    }
+
+    #[test]
+    fn a_destination_predicate_needs_a_rename() {
+        let f = Fixture::new();
+        let mut s = f.tx_session(Writer::Mutating);
+        let state = f.paths.state_dir().to_path_buf();
+        ensure_dir_all(&mut s, &state).unwrap();
+        let file = state.join("registry.json");
+        let opts = MutateOpts {
+            expect_to: Some(Expect::Absent),
+            ..MutateOpts::default()
+        };
+        let got = mutate_with(&mut s, &file, write(b"v1"), opts);
+        assert!(
+            refused_with(got, &file, "a destination predicate needs a rename"),
+            "a WriteFile with expect_to"
+        );
+        assert!(!file.exists(), "nothing was written");
+    }
+
+    #[test]
+    fn the_existing_messages_are_kept() {
+        let f = Fixture::new();
+        let mut s = f.tx_session(Writer::Mutating);
+        let state = f.paths.state_dir().to_path_buf();
+        ensure_dir_all(&mut s, &state).unwrap();
+        let file = state.join("registry.json");
+        mutate(&mut s, &file, write(b"v1")).unwrap();
+        for (case, expect, text) in [
+            ("absent", Expect::Absent, "expected nothing at this path"),
+            (
+                "sha256",
+                Expect::hash(sha(b"v0")),
+                "its content changed (hash mismatch)",
+            ),
+        ] {
+            let got = mutate_with(&mut s, &file, write(b"v2"), expecting(expect));
+            assert!(refused_with(got, &file, text), "{case}");
+        }
+    }
+
+    #[test]
+    fn a_present_predicate_replaces_as_hash_did() {
+        let f = Fixture::new();
+        let mut s = f.tx_session(Writer::Mutating);
+        let state = f.paths.state_dir().to_path_buf();
+        ensure_dir_all(&mut s, &state).unwrap();
+        let file = state.join("registry.json");
+        mutate(&mut s, &file, write(b"v1")).unwrap();
+        let lines = f.actions().len();
+        let record = mutate_with(
+            &mut s,
+            &file,
+            write(b"v2"),
+            expecting(Expect::hash(sha(b"v1"))),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(record.backup.unwrap()).unwrap(),
+            b"v1",
+            "verified backup"
+        );
+        assert_eq!(fs::read(&file).unwrap(), b"v2");
+        assert_eq!(f.actions().len(), lines + 1, "one action logged");
+    }
+
+    /// M4-D31's compound chmod predicate: a regular file of the recorded identity with the
+    /// old mode, so a same-mode replacement is never taken for the file inspected.
+    #[test]
+    fn a_chmod_checks_identity_and_old_mode_together() {
+        let f = Fixture::new();
+        let mut s = f.tx_session(Writer::Mutating);
+        let state = f.paths.state_dir().to_path_buf();
+        ensure_dir_all(&mut s, &state).unwrap();
+        let parts = Parts {
+            identity: true,
+            mode: true,
+            ..Parts::default()
+        };
+        type Change = fn(&Path);
+        let cases: [(&str, Change, Option<&str>); 3] = [
+            ("unchanged", |_| {}, None),
+            (
+                "replaced_by_a_same_mode_copy",
+                replace_with_a_copy,
+                Some("(its identity changed)"),
+            ),
+            (
+                "mode_already_changed",
+                |p| fs::set_permissions(p, fs::Permissions::from_mode(0o640)).unwrap(),
+                Some("its mode is 0640, expected 0644"),
+            ),
+        ];
+        for (case, change, refusal) in cases {
+            let file = state.join(case);
+            mutate(&mut s, &file, write(b"token")).unwrap();
+            let expect = Expect::capture(&file, parts).unwrap();
+            assert!(
+                matches!(
+                    &expect,
+                    Expect::Present(Predicate {
+                        file_type: Some(FileKind::Regular),
+                        identity: Some(_),
+                        mode: Some(0o644),
+                        ..
+                    })
+                ),
+                "{case}: {expect:?}"
+            );
+            change(&file);
+            let before = mode_of(&file);
+            let got = mutate_with(&mut s, &file, Op::Chmod { mode: 0o600 }, expecting(expect));
+            match refusal {
+                None => {
+                    assert!(got.is_ok(), "{case}: {got:?}");
+                    assert_eq!(mode_of(&file), 0o600, "{case}");
+                }
+                Some(text) => {
+                    assert!(refused_with(got, &file, text), "{case}");
+                    assert_eq!(mode_of(&file), before, "{case}: the mode is untouched");
+                }
+            }
+        }
     }
 
     #[test]

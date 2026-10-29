@@ -2,6 +2,7 @@
 //! `Op` enum, `mutate()`, `prune()`, the write-scope table, the deny-list, renameat2 and
 //! reflink primitives, and the lock files.
 
+mod expect;
 pub(crate) mod failpoint;
 mod identity;
 mod lock;
@@ -13,6 +14,7 @@ mod session;
 mod stamp;
 pub(crate) mod sys;
 
+pub use expect::{Expect, FileKind, Found, Mismatch, Parts, Predicate};
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use failpoint::{with_spec, with_spec_in};
@@ -25,7 +27,7 @@ pub(crate) use mutate::count_hashed;
 #[cfg(test)]
 pub(crate) use mutate::files_hashed;
 pub use mutate::{
-    ActionRecord, Expect, FsxError, MutateOpts, StampDigest, TreeDigest, ensure_dir_all, mutate,
+    ActionRecord, FsxError, MutateOpts, StampDigest, TreeDigest, ensure_dir_all, mutate,
     mutate_with, probe_exchange, sha256_from_hex, sync_filesystem,
 };
 pub use op::Op;
