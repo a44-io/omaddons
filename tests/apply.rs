@@ -1,9 +1,11 @@
-//! e2e suite: stored previews, bounded admission, concurrency and crash recovery.
+//! e2e suite: stored previews, bounded admission, concurrency and crash recovery; and bound runs that commit exactly what their preview approved, or nothing (M4-D60): the approval witness and the re-judged operations checked again under the commit lock, and each rename's identity.
 #![cfg(test)]
 
 #[path = "apply/commands.rs"]
 mod commands;
 mod common;
+#[path = "apply/witness.rs"]
+mod witness;
 
 use std::collections::BTreeMap;
 use std::fs;

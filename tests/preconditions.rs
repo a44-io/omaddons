@@ -3186,3 +3186,172 @@ fn a_noop_preview_goes_stale_when_its_target_moves() {
         guard.unchanged(&log);
     }
 }
+
+// ---- `remove` checked again under the lock (D8, M4-D60) -------------------------------------
+
+/// `run` stopped at `point`, `act` done while it waits, then resumed; returns the run.
+#[cfg(test)]
+fn paused_at(
+    log: &common::tlog::TestLog,
+    scene: &Scene,
+    run: &[String],
+    point: &str,
+    act: impl FnOnce(),
+) -> common::tlog::Ran {
+    log.step("the run stops at its pause");
+    let pause = Pause::new(scene.home.env.root());
+    let child = log
+        .cmd(scene, run)
+        .failpoints(&format!("{point}=pause"))
+        .pause(&pause)
+        .spawn();
+    log.reached(&pause, point);
+    act();
+    log.step("the run goes on");
+    log.resume(&pause, point);
+    child.wait()
+}
+
+/// Foo 1 installed, then both its folders deleted by hand: `remove Foo` forgets it, a
+/// records-only change that moves no folder.
+#[cfg(test)]
+fn foo_forgettable(log: &common::tlog::TestLog) -> Scene {
+    let scene = foo_installed(log);
+    log.note("Foo's folders deleted by hand");
+    for folder in common::engine::FOLDERS {
+        std::fs::remove_dir_all(scene.addons().join(folder)).unwrap();
+    }
+    scene
+}
+
+/// `Foo/Foo.toc` put back by hand.
+#[cfg(test)]
+fn put_foo_back(scene: &Scene) {
+    let folder = scene.addons().join("Foo");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("Foo.toc"), "## Interface: 120105\n").unwrap();
+}
+
+/// A forget whose folder is put back after the bound run's own check no longer applies:
+/// the operations re-judged under the lock are not the approved ones (`selection`). A
+/// forget moves no folder, so the witness has nothing to refuse first. Unbound, the same
+/// race changes nothing either; what it reports is `omad-z60g`.
+#[test]
+fn a_bound_remove_whose_forget_no_longer_applies_changes_nothing() {
+    let log = common::tlog::tlog!();
+    let scene = foo_forgettable(&log);
+    log.step("preview: Foo forgotten");
+    let (dry, token) = b::preview(&log, &scene, "remove", REMOVE);
+    log.assert_eq(
+        "the preview's item: (status, folders it moves)",
+        &(
+            &dry.data()["items"][0]["status"],
+            &dry.data()["items"][0]["folders"],
+        ),
+        &(&json!("removed"), &json!([])),
+    );
+    let generation = scene.generation();
+    let mut guard = None;
+    let ran = paused_at(
+        &log,
+        &scene,
+        &b::bound(REMOVE, &token),
+        "engine.snapshot.prestaged",
+        || {
+            log.step("Foo/Foo.toc put back by hand");
+            put_foo_back(&scene);
+            guard = Some(b::guard(&log, &scene.home, "after the edit"));
+        },
+    );
+    b::assert_stale(&log, &ran, &["selection"], &argv(REMOVE_PREVIEW));
+    guard.unwrap().unchanged(&log);
+    log.assert_eq(
+        "(Foo recorded, the generation)",
+        &(scene.record("foo").is_object(), scene.generation()),
+        &(true, generation),
+    );
+
+    log.step("unbound, the same race");
+    let scene = foo_forgettable(&log);
+    let generation = scene.generation();
+    let mut unbound = argv(REMOVE);
+    unbound.push("--json".to_owned());
+    let mut guard = None;
+    let ran = paused_at(&log, &scene, &unbound, "engine.snapshot.prestaged", || {
+        log.step("Foo/Foo.toc put back by hand");
+        put_foo_back(&scene);
+        guard = Some(b::guard(&log, &scene.home, "unbound, after the edit"));
+    });
+    log.json("the unbound run's envelope", ran.envelope());
+    log.step("nothing changed: Foo still recorded, its folder as put back");
+    guard.unwrap().unchanged(&log);
+    log.assert_eq(
+        "(Foo recorded, the generation)",
+        &(scene.record("foo").is_object(), scene.generation()),
+        &(true, generation),
+    );
+}
+
+/// Foo's last folder (in the swap's folder-key order, after Bar's and Foo's) replaced by
+/// an exact copy after both under-lock checks: its rename's identity check refuses, the
+/// two removals before it are rolled back, and the bound run is `observed`.
+#[test]
+fn a_bound_remove_whose_folder_was_replaced_at_the_last_moment_changes_nothing() {
+    let log = common::tlog::tlog!();
+    let scene = foo_installed(&log);
+    commit_bar(&log, &scene);
+    let remove = ["remove", "Foo", "Bar", "-t", "retail"];
+    log.step("preview");
+    let (_, token) = b::preview(&log, &scene, "remove", &remove);
+    let generation = scene.generation();
+    let guard = b::guard(&log, &scene.home, "before the run");
+    let ran = paused_at(
+        &log,
+        &scene,
+        &b::bound(&remove, &token),
+        "engine.revalidated",
+        || {
+            log.step("FooOld replaced by an exact copy: another identity");
+            let live = scene.addons().join("FooOld");
+            let aside = scene.home.env.root().join("FooOld-aside");
+            std::fs::rename(&live, &aside).unwrap();
+            common::trees::copy_tree_exact(&aside, &live);
+        },
+    );
+    b::assert_stale(&log, &ran, &["observed"], &b::preview_argv(&remove));
+    log.step("rolled back: every folder in place, records and history as before");
+    guard.unchanged(&log);
+    log.assert_eq("the generation", &scene.generation(), &generation);
+    log.assert_eq(
+        "(journals, orphan snapshots)",
+        &(scene.journals().len(), scene.orphan_snapshots().len()),
+        &(0, 0),
+    );
+}
+
+/// `remove`'s token has no witness: only its operations are compared under the lock, so
+/// a bound remove logs no cost note.
+#[test]
+fn a_bound_remove_logs_no_approval_check() {
+    let log = common::tlog::tlog!();
+    let scene = foo_installed(&log);
+    log.step("preview");
+    let (_, token) = b::preview(&log, &scene, "remove", REMOVE);
+    log.step("bound run, -v");
+    let mut run = b::bound(REMOVE, &token);
+    run.push("-v".to_owned());
+    let ran = log.run(&scene, &run);
+    ran.ok();
+    let notes = ran
+        .events()
+        .iter()
+        .filter(|e| e["event"] == "log")
+        .filter_map(|e| e["message"].as_str())
+        .filter(|m| m.contains("approval checked under the lock"))
+        .count();
+    log.assert_eq(
+        "(Foo removed, cost notes)",
+        &(&ran.data()["items"][0]["status"], notes),
+        &(&json!("removed"), 0),
+    );
+}
