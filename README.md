@@ -1528,7 +1528,7 @@ Each item is `adopted`, `edited` (re-pointed), `unchanged` or `failed`. A folder
 | a symlink or not an addon folder | `unmanaged_folder` (`details.class`) | `omaddons list -t <id> --unmanaged` |
 | unreadable, or larger than the archive limits | the indexer's error | `omaddons list -t <id> --unmanaged` |
 
-Folders are hashed before the lock and checked again under it: one that changed in between makes its client's transaction `plan_stale` (retryable), and nothing of it is recorded. Under `--if-match`, a folder that changes after the run's own check and before its lock is still this retryable `plan_stale`: running the same bound command again checks the content.
+Folders are hashed before the lock and checked again under it: one that changed in between makes its client's transaction `plan_stale` (retryable), and nothing of it is recorded. Under `--if-match`, a folder that changes after the run's own check and before its lock is caught first by the approval checked again under the lock: `plan_stale` with `observed`, not retryable, naming the folder (see [Previews and `--if-match`](#previews-and---if-match)).
 
 ### `targets`
 
@@ -2049,6 +2049,7 @@ omaddons update -t retail --if-match pc1:…         # exactly that update, or p
 ```
 
 - **When it is checked.** The real run plans again and computes the token from its own plan before it stages anything. Under the commit lock, a commit by another omaddons process on that client since then is caught too.
+- **Checked again under the lock.** A bound `install`, `update`, `sync`, `copy`, `pin`, `unpin` or `adopt` checks its approval twice: when it plans, before anything is staged, and again inside the commit window, after it takes the global lock and before it moves anything. The second check re-reads every folder the run replaces, removes, copies from or adopts (one `stat` per entry; a folder whose entries changed is hashed again), checks that every name it creates is still free, that every unmanaged folder a dependency relies on is still there and that the client's marker is unchanged, and requires the operations it re-judges there to equal the approved ones. A file edited, added or deleted in any of those folders after the first check, by anything, still refuses the run: `plan_stale` with `observed`, or `selection` when the operations differ (a run left with nothing to do while its preview approved something included). The message names what changed, by folder. `remove`'s re-judged operations are compared too. With `-v`, each checked target logs what the check cost (`approval checked under the lock in … us`).
 - **The refusal.** A difference is `plan_stale`, not retryable (the same token can only fail again), and nothing is changed. (A run refused under the commit lock keeps the day's [automatic `WTF/` checkpoint](#automatic-backups) it made before the lock, as any change does: a backup is no change.) `fix_argv` is the same command with `--dry-run` in place of `--if-match <token>`: preview again. `details.changed` names the parts that differ:
   - `command`: the token is another command's;
   - `targets`: a client's records changed, with their generation (for `install`, `update`, `sync` and `copy`: another change committed on the client, or the client registered, since the preview);
@@ -2064,7 +2065,7 @@ omaddons update -t retail --if-match pc1:…         # exactly that update, or p
   - `adopt`'s covers the folders it records, file by file (each file's path, size and SHA-256, symlinks and empty directories included), the records it writes, and the rules that identified them. A managed folder re-pointed with `--ref` changes only its record, so its token witnesses no folder. When nothing would change, the token covers every examined client's identity and generation.
 - **Releases between preview and run.** A bound run keeps its command's freshness. `install` and `copy` always ask their sources again, so a release published since the preview makes the bound run `plan_stale` (`selection`). `update` and `sync` answer from releases remembered in the last 15 minutes, as they do without `--if-match` (unless `--refresh`), so inside that window a bound run installs exactly the previewed version even when a newer one appeared: it does what you saw.
 - **Per client.** The guarantee is per client. On each client a bound run commits exactly the previewed operations or none of them. A run over several clients commits one transaction per client, as every run does: when a client changes after the run's own check (another omaddons command committed there first), that client is refused and the others still commit. The run is then `partial`: `targets[].tx` names each committed transaction, `targets[].error` (`plan_stale`) each refused client, and a client with neither changed nothing. When no client committed, the run fails with that refusal. Nothing calls such a run atomic.
-- **Scope.** Everything the token covers is compared before anything is staged, whoever changed it. Between that check and the commit lock, another omaddons commit on the client is caught by its record generation. omaddons does not promise a compare-and-swap against another program writing into `AddOns` at the same moment: no filesystem primitive offers one.
+- **What the guarantee covers.** Other omaddons processes are serialized by the global lock. Every change, by anyone, to what the preview covered is caught up to the second check. omaddons does not promise a compare-and-swap against another program writing into `AddOns` between that check and a rename, because Linux offers no "rename this directory only if nothing inside it changed"; what such a write changed is kept in the transaction's snapshot, and `omaddons undo <tx>` brings it back.
 - **Nothing left to do.** A bound run that finds nothing left to do still compares its token. If the world moved since the preview it is `plan_stale`, not "nothing to do", so the second of two runs holding one token learns that the first one won.
 - **Dry runs.** `--if-match` is opt-in: commands without it behave as before. On a command that does not bind it is a usage error, and so is a malformed token. On `install`, `update`, `pin`, `unpin`, adopting `adopt`, `sync` and `copy`, a `--dry-run` given `--if-match` checks the token as the real run would: the same preview and token while it holds, `plan_stale` once it does not. It changes no addons or settings, and may store the preview in the cache as described below. On `remove`, `undo`, `backup restore`, `backup prune` and `errors dismiss`, a `--dry-run` given one previews afresh and returns the current token.
 - The token is `pc1:` and 64 hex digits. Nothing is stored: it holds as long as what it describes is unchanged, and it is no credential.
@@ -2158,14 +2159,16 @@ The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the cont
  inspect the archive           stage/<tx>/<Folder>/           re-check the target's generation:
  judge every TOC against     verify each file's size            changed and conflicting → plan_stale
    the client's rules          and SHA-256                      already done by another run → no-op
- ownership + running-        one syncfs per archive           re-check the running state
-   policy checks             wait (≤ 20 ms) for timestamps    journal: prepared
-                               to settle                      create Interface/AddOns if never launched
-                             digest folders the files         SavedVariables: keep each copy whose file's
-                               index does not cover             stat is unchanged, copy the rest
-                             copy touched SavedVariables      snapshot state files
-                               to .omaddons/snapshots/<tx>/
-                               WTF/, hashing each once
+ ownership + running-        one syncfs per archive           bound runs: check the approval again
+   policy checks             wait (≤ 20 ms) for timestamps      (witnessed folders, created names,
+                               to settle                        marker, dependencies), then the
+                             digest folders the files           re-judged operations
+                               index does not cover           re-check the running state
+                             copy touched SavedVariables      journal: prepared
+                               to .omaddons/snapshots/<tx>/   create Interface/AddOns if never launched
+                               WTF/, hashing each once        SavedVariables: keep each copy whose file's
+                                                                stat is unchanged, copy the rest
+                                                              snapshot state files
                                                               swap each folder (journal step per rename):
                                                                 new      → RENAME_NOREPLACE
                                                                 replaced → RENAME_EXCHANGE

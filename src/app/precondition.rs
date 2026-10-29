@@ -18,7 +18,10 @@ use sha2::{Digest, Sha256};
 use crate::app::outcome::SkipReason;
 use crate::cli::Context;
 use crate::engine::plan::{Change, Plan, PlannedOp, PlannedRelease, TargetPlan};
-use crate::engine::witness::{self, ApprovalWitness, WitnessScope};
+use crate::engine::tx::UnderLock;
+use crate::engine::witness::{
+    self, ApprovalWitness, Operations, RecheckAt, RecheckCost, WitnessScope,
+};
 use crate::engine::{Binding, UndoOutcome as EngineUndo};
 use crate::error::{Error, PlanStaleSource, Result, Suggestion};
 pub use crate::model::TargetRef;
@@ -262,6 +265,18 @@ pub fn stale(command: &str, changed: &[Part], preview: &[String]) -> Error {
     .details(json!({ "changed": names }))
 }
 
+/// [`stale`], its message also saying what changed (`why`, by folder key): the refusal
+/// of a check made under the commit lock (M4-D60).
+pub fn stale_because(command: &str, changed: &[Part], preview: &[String], why: &str) -> Error {
+    let names: Vec<&str> = changed.iter().map(|p| p.wire()).collect();
+    let mut error = stale(command, changed, preview);
+    error.message = format!(
+        "this {command} is no longer what its preview showed ({} changed: {why}); nothing was changed: preview it again",
+        names.join(", ")
+    );
+    error
+}
+
 /// The preview of the run `argv`: the same command without `--if-match` and its token,
 /// with `--dry-run`, and without presentation flags.
 pub fn preview_argv(argv: &[String]) -> Vec<String> {
@@ -329,6 +344,26 @@ impl Binding for RemoveBinding {
 
     fn moved(&self, _target: &str) -> Error {
         stale("remove", &[Part::Targets], &self.preview)
+    }
+
+    /// `remove` collects no witness (its M3 token is unchanged, M4-D60), so only its
+    /// re-judged operations are compared.
+    fn operations(
+        &self,
+        _at: &UnderLock<'_>,
+        approved: &Operations,
+        rejudged: &Operations,
+    ) -> Result<()> {
+        if approved == rejudged {
+            return Ok(());
+        }
+        let why = approved.describe_difference(rejudged);
+        Err(stale_because(
+            "remove",
+            &[Part::Selection],
+            &self.preview,
+            &why,
+        ))
     }
 }
 
@@ -534,9 +569,9 @@ pub fn witness_digest(w: &ApprovalWitness) -> String {
 
 /// An engine command's run bound to its preview's token (M4-D19): its own plan's token,
 /// witnesses and extras included, must be the preview's before anything is staged (on a
-/// dry run too), and its targets' generations must not have moved under the lock. D8
-/// adds the under-lock witness and operation checks to this type; its fields stay
-/// private so it can, without touching a call site.
+/// dry run too). Under the lock, its targets' generations must not have moved, its
+/// approval witness must hold again, and its re-judged operations must be the ones it
+/// planned (M4-D60).
 pub struct PlanBinding<'a> {
     command: &'static str,
     expected: Option<String>,
@@ -584,6 +619,55 @@ impl Binding for PlanBinding<'_> {
 
     fn moved(&self, _target: &str) -> Error {
         stale(self.command, &[Part::Targets], &self.preview)
+    }
+
+    /// The approval witness checked again under the lock (M4-D60): a bound run without
+    /// one fails closed, since nothing could prove its world unchanged.
+    fn witness(&self, at: &UnderLock<'_>) -> Result<Option<RecheckCost>> {
+        if self.expected.is_none() {
+            return Ok(None);
+        }
+        let Some(approved) = at.witness else {
+            return Err(Error::internal(format!(
+                "the bound run collected no approval witness for {}",
+                at.id
+            )));
+        };
+        let rechecked = witness::recheck(
+            approved,
+            &RecheckAt {
+                client: at.client,
+                registered_key: at.registered_here.then_some(at.key),
+                limits: at.limits,
+            },
+        );
+        match rechecked.drift {
+            Some(drift) => Err(stale_because(
+                self.command,
+                &[Part::Observed],
+                &self.preview,
+                &drift.describe(),
+            )),
+            None => Ok(Some(rechecked.cost)),
+        }
+    }
+
+    fn operations(
+        &self,
+        _at: &UnderLock<'_>,
+        approved: &Operations,
+        rejudged: &Operations,
+    ) -> Result<()> {
+        if self.expected.is_none() || approved == rejudged {
+            return Ok(());
+        }
+        let why = approved.describe_difference(rejudged);
+        Err(stale_because(
+            self.command,
+            &[Part::Selection],
+            &self.preview,
+            &why,
+        ))
     }
 }
 
@@ -971,7 +1055,7 @@ pub fn of_prune(parts: &[PrunePart<'_>]) -> Precondition {
 mod tests {
     use super::*;
     use crate::engine::edit::EditField;
-    use crate::engine::inspect::SkippedFolder;
+    use crate::engine::inspect::{ArchiveLimits, SkippedFolder};
     use crate::engine::plan::{ChangeKind, DeferredAsset, FolderSummary, OpKind, SCHEMA_VERSION};
     use crate::engine::witness::{
         DependencyBy, DependencyChoice, EntryDigest, FolderWitness, InputKind, InputWitness,
@@ -980,6 +1064,7 @@ mod tests {
     use crate::error::{ErrorBody, ErrorCode, Warning, WarningCode};
     use crate::model::{Actor, ExpectedHash, ReloadRequired, TxKind};
     use crate::sources::SourceId;
+    use crate::state::paths::ClientPaths;
     use crate::toc::WrongFlavorReason;
 
     const KEY: &str = "01JB8Q2V9W0000000000000000";
@@ -2449,5 +2534,185 @@ mod tests {
         let stale = ErrorBody::from(bound_pin(&scene, true, &token).unwrap_err());
         assert_eq!(stale.code, ErrorCode::PlanStale);
         assert_eq!(stale.details["changed"], json!(["targets"]), "{stale:?}");
+    }
+
+    // ---- The checks under the commit lock (M4-D60) -----------------------------------
+
+    /// A registered client and its bare witness (its marker and judge).
+    fn witnessed_client() -> (tempfile::TempDir, ClientPaths, ApprovalWitness) {
+        let dir = tempfile::tempdir().unwrap();
+        let client = dir.path().join("_retail_");
+        std::fs::create_dir_all(client.join("Interface/AddOns")).unwrap();
+        crate::engine::testing::mark(&client, key(KEY));
+        let w = witness::bare(&crate::engine::testing::target(&client)).unwrap();
+        (dir, ClientPaths::new(&client), w)
+    }
+
+    fn under_lock<'a>(
+        client: &'a ClientPaths,
+        witness: Option<&'a ApprovalWitness>,
+        planned: &'a TargetRef,
+        limits: &'a ArchiveLimits,
+    ) -> UnderLock<'a> {
+        UnderLock {
+            id: "retail",
+            planned,
+            key: key(KEY),
+            registered_here: false,
+            client,
+            witness,
+            limits,
+        }
+    }
+
+    fn install_binding(expected: Option<&str>) -> PlanBinding<'static> {
+        PlanBinding::new(
+            "install",
+            expected.map(str::to_owned),
+            PlanExtras::default(),
+            argv(PREVIEW),
+        )
+    }
+
+    /// One install of Foo, approved; nothing, re-judged.
+    fn approved_and_none() -> (Operations, Operations) {
+        let approved = Operations {
+            ops: vec![op(OpKind::Add, "Foo", "Foo")],
+            changes: vec![change(
+                "Foo",
+                "gh:o/foo",
+                ChangeKind::Install,
+                FolderSummary::default(),
+            )],
+        };
+        let none = Operations {
+            ops: Vec::new(),
+            changes: Vec::new(),
+        };
+        (approved, none)
+    }
+
+    /// The refusal's code, retryability, details and fix.
+    fn refusal_of(error: Error, changed: &str, preview: &[&str]) -> String {
+        let body = ErrorBody::from(error);
+        assert_eq!(body.code, ErrorCode::PlanStale, "{body:?}");
+        assert!(!body.retryable, "{body:?}");
+        assert_eq!(body.details, json!({ "changed": [changed] }), "{body:?}");
+        assert_eq!(body.fix_argv, Some(argv(preview)), "{body:?}");
+        body.message
+    }
+
+    #[test]
+    fn plan_binding_refuses_a_drift_as_observed() {
+        let (_dir, client, w) = witnessed_client();
+        let (planned, limits) = (by_key(KEY), ArchiveLimits::default());
+        let binding = install_binding(Some("pc1:token"));
+        let at = under_lock(&client, Some(&w), &planned, &limits);
+        let checked = binding.witness(&at).unwrap();
+        // ubs:ignore — comparing a folder count, not secrets
+        assert!(checked.is_some_and(|cost| cost.folders == 0), "{checked:?}");
+        crate::engine::testing::mark(client.client_dir(), key(OTHER));
+        let message = refusal_of(binding.witness(&at).unwrap_err(), "observed", PREVIEW);
+        assert_eq!(
+            message,
+            "this install is no longer what its preview showed (observed changed: the client's marker changed); nothing was changed: preview it again"
+        );
+    }
+
+    #[test]
+    fn plan_binding_refuses_other_operations_as_selection() {
+        let (_dir, client, w) = witnessed_client();
+        let (planned, limits) = (by_key(KEY), ArchiveLimits::default());
+        let binding = install_binding(Some("pc1:token"));
+        let at = under_lock(&client, Some(&w), &planned, &limits);
+        let (approved, none) = approved_and_none();
+        assert!(binding.operations(&at, &approved, &approved).is_ok());
+        let refused = binding.operations(&at, &approved, &none).unwrap_err();
+        let message = refusal_of(refused, "selection", PREVIEW);
+        assert!(
+            message.contains("(selection changed: Foo: install no longer planned)"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn plan_binding_without_a_token_checks_nothing() {
+        let (_dir, client, _) = witnessed_client();
+        let (planned, limits) = (by_key(KEY), ArchiveLimits::default());
+        let binding = install_binding(None);
+        let at = under_lock(&client, None, &planned, &limits);
+        assert!(matches!(binding.witness(&at), Ok(None)));
+        let (approved, none) = approved_and_none();
+        assert!(binding.operations(&at, &approved, &none).is_ok());
+    }
+
+    #[test]
+    fn plan_binding_without_a_witness_fails_closed() {
+        let (_dir, client, _) = witnessed_client();
+        let (planned, limits) = (by_key(KEY), ArchiveLimits::default());
+        let binding = install_binding(Some("pc1:token"));
+        let at = under_lock(&client, None, &planned, &limits);
+        let refused = binding.witness(&at).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Internal, "{refused:?}");
+        assert!(refused.message.contains("retail"), "{refused:?}");
+    }
+
+    #[test]
+    fn remove_binding_compares_operations_and_binds_no_witness() {
+        let (_dir, client, _) = witnessed_client();
+        let (planned, limits) = (by_key(KEY), ArchiveLimits::default());
+        let preview = ["omaddons", "remove", "Foo", "-t", "retail", "--dry-run"];
+        let binding = RemoveBinding {
+            // ubs:ignore — a placeholder precondition token, not a secret
+            token: "pc1:token".into(),
+            preview: argv(&preview),
+        };
+        let at = under_lock(&client, None, &planned, &limits);
+        assert!(matches!(binding.witness(&at), Ok(None)), "no witness bound");
+        let (approved, none) = approved_and_none();
+        assert!(binding.operations(&at, &approved, &approved).is_ok());
+        let message = refusal_of(
+            binding.operations(&at, &approved, &none).unwrap_err(),
+            "selection",
+            &preview,
+        );
+        assert!(message.starts_with("this remove is no longer"), "{message}");
+    }
+
+    #[test]
+    fn stale_because_keeps_details_retryability_and_fix() {
+        let preview = argv(PREVIEW);
+        let plain = ErrorBody::from(stale("install", &[Part::Observed], &preview));
+        let because = ErrorBody::from(stale_because(
+            "install",
+            &[Part::Observed],
+            &preview,
+            "foo changed after the preview",
+        ));
+        assert_eq!(
+            (
+                &because.code,
+                &because.details,
+                because.retryable,
+                &because.fix,
+                &because.fix_argv,
+                &because.alternatives
+            ),
+            (
+                &plain.code,
+                &plain.details,
+                plain.retryable,
+                &plain.fix,
+                &plain.fix_argv,
+                &plain.alternatives
+            )
+        );
+        assert!(
+            because
+                .message
+                .contains("(observed changed: foo changed after the preview)"),
+            "{}",
+            because.message
+        );
     }
 }

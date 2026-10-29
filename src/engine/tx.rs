@@ -38,7 +38,7 @@ use super::swap::{
     SvSkipped, SwapOp, finish_saved_variables, out_of_scope_warnings, predigest,
     prestage_saved_variables, snapshot_state, swap, with_predigests,
 };
-use super::witness::WitnessScope;
+use super::witness::{ApprovalWitness, Operations, RecheckCost, WitnessScope};
 use crate::backup::Trigger;
 use crate::backup::auto::{self, AutoResult, AutoRun};
 use crate::backup::create::Created;
@@ -57,7 +57,7 @@ use crate::fsx::{
 };
 use crate::model::{
     Actor, AddonState, Channel, FolderName, MutableFolderName, Ref, ReloadRequired, RunId, Target,
-    TargetKey, TxId, TxKind,
+    TargetKey, TargetRef, TxId, TxKind,
 };
 use crate::net::Http;
 use crate::output::{Phase, ProgressSink};
@@ -208,6 +208,39 @@ pub trait Binding {
     fn observed(&self, target: &str) -> Error {
         self.moved(target)
     }
+    /// Checks the approval witness again under the commit lock, before the re-judge
+    /// (M4-D60): `Ok(Some(cost))` when it checked and it holds, `Ok(None)` when this
+    /// binding checks no witness. By default nothing is checked.
+    fn witness(&self, _at: &UnderLock<'_>) -> Result<Option<RecheckCost>> {
+        Ok(None)
+    }
+    /// Refuses a target whose operations, re-judged under the lock, are not the ones its
+    /// run planned (and its first check proved the preview's). By default they agree.
+    fn operations(
+        &self,
+        _at: &UnderLock<'_>,
+        _approved: &Operations,
+        _rejudged: &Operations,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// One target's commit window as a [`Binding`] sees it under the lock: the engine owns
+/// these mechanics, the binding the policy and the refusal.
+pub struct UnderLock<'a> {
+    /// The target's id, for messages.
+    pub id: &'a str,
+    /// The target as the plan named it.
+    pub planned: &'a TargetRef,
+    /// Its key now.
+    pub key: TargetKey,
+    /// This window registered it, so its marker is new.
+    pub registered_here: bool,
+    pub client: &'a ClientPaths,
+    /// The run's own pre-lock witness of this target, when it collected one.
+    pub witness: Option<&'a ApprovalWitness>,
+    pub limits: &'a ArchiveLimits,
 }
 
 /// Notes `omaddons undo <tx>` for a transaction whose history line is written: it
@@ -451,8 +484,12 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
                 continue;
             }
             let discovered = &tt.discovered;
+            // Found by the target it names, never by position.
+            let planned = TargetRef::of(tp.key, &tp.target);
+            // ubs:ignore — comparing target refs, not secrets
+            let witness = plan.witnesses.iter().find(|w| w.target == planned);
             match commit_target(
-                req, ctx, &scopes, &plan_req, &blobs, discovered, tp, with_work,
+                req, ctx, &scopes, &plan_req, &blobs, discovered, tp, witness, with_work,
             ) {
                 Ok((outcome, recovered)) => {
                     if outcome.tx.is_some() {
@@ -833,6 +870,7 @@ fn commit_target(
     blobs: &BlobCache,
     discovered: &DiscoveredTarget,
     tp: &TargetPlan,
+    witness: Option<&ApprovalWitness>,
     with_work: u64,
 ) -> Result<(TxOutcome, Vec<Warning>)> {
     let target = &discovered.target;
@@ -865,6 +903,7 @@ fn commit_target(
         blobs,
         discovered,
         tp,
+        witness,
         &tx,
         &staged,
         auto_line.as_ref(),
@@ -975,6 +1014,104 @@ fn stage_all(
     Ok(merged)
 }
 
+/// What re-judging one target's planned work under the lock leaves to commit.
+struct Rejudged {
+    works: Vec<AddonWork>,
+    changes: Vec<Change>,
+    warnings: Vec<Warning>,
+    notes: Vec<String>,
+    reload_required: ReloadRequired,
+}
+
+/// The planned work of `tp` judged again offline, over one fresh look at the target and
+/// with running state as it is now: what still commits, handovers settled. `changed`: a
+/// commit moved the target's records since planning, so a failure is `plan_stale`.
+fn rejudge_target(
+    plan_req: &PlanRequest,
+    plan_ctx: &PlanCtx<'_>,
+    target: &Target,
+    tp: &TargetPlan,
+    changed: bool,
+) -> Result<Rejudged> {
+    let mut works = Vec::new();
+    let mut changes = Vec::new();
+    let mut reload_required = ReloadRequired::None;
+    // The addons planning left unchanged keep their warnings and notes; the work is
+    // judged again.
+    let mut warnings = tp.unchanged_warnings.clone();
+    let mut notes = tp.notes.clone();
+    // One fresh look at the target, and the planned works replayed over it in order:
+    // releases first, then each claim (M2-D6).
+    let state = TargetState::now(plan_ctx, target)?;
+    let mut view = released_view(&tp.work);
+    // The addons whose works still commit: a dependency (or a `required_by` edit) whose
+    // every requester was planned and dropped out goes too.
+    let planned_addons: BTreeSet<String> = tp
+        .work
+        .iter()
+        .map(|w| TargetRecord::addon_key(&w.addon))
+        .collect();
+    let mut kept: BTreeSet<String> = BTreeSet::new();
+    for planned in &tp.work {
+        if requesters_dropped(&requesters_of(planned), &planned_addons, &kept) {
+            continue;
+        }
+        match rejudge(
+            plan_req,
+            plan_ctx,
+            target,
+            &state,
+            planned,
+            tp.generation,
+            &view,
+        ) {
+            Ok(Planned::Change(p)) => {
+                let p = *p;
+                claim(&mut view, &p.work);
+                kept.insert(TargetRecord::addon_key(&p.work.addon));
+                reload_required = reload_required.max(p.reload_required);
+                push_new(&mut warnings, p.warnings);
+                changes.push(p.change);
+                works.push(p.work);
+            }
+            // A pinned no-op is not a refusal: never plan_stale.
+            Ok(Planned::Unchanged {
+                warnings: dropped,
+                notes: noted,
+            }) => {
+                push_new(&mut warnings, dropped);
+                notes.extend(noted);
+            }
+            // An adoption whose folders changed is stale whatever the generation.
+            // ubs:ignore — comparing error codes, not secrets
+            Err(error) if error.code == ErrorCode::PlanStale => return Err(error),
+            Err(error) if changed => return Err(stale(&error)),
+            Err(error) => return Err(error),
+        }
+    }
+    plan::settle_handovers(&mut works, &mut changes, None);
+    Ok(Rejudged {
+        works,
+        changes,
+        warnings,
+        notes,
+        reload_required,
+    })
+}
+
+/// The `-v` note on what checking a target's approval under the lock cost.
+fn recheck_note(target: &str, cost: &RecheckCost) -> String {
+    format!(
+        "{target}: approval checked under the lock in {} us: folders {}, entries {}, rehashed {}, files {}, bytes {}",
+        cost.elapsed_us,
+        cost.folders,
+        cost.entries_stamped,
+        cost.folders_rehashed,
+        cost.files_hashed,
+        cost.bytes_hashed
+    )
+}
+
 /// The planned folders' SavedVariables cloned, then the commit window under the global
 /// lock.
 #[expect(
@@ -989,6 +1126,7 @@ fn locked(
     blobs: &BlobCache,
     discovered: &DiscoveredTarget,
     tp: &TargetPlan,
+    witness: Option<&ApprovalWitness>,
     tx: &TxId,
     staged: &Staged,
     auto_line: Option<&HistoryEntry>,
@@ -1062,6 +1200,21 @@ fn locked(
     if changed && let Some(binding) = ctx.binding {
         return Err(binding.moved(&target.id));
     }
+    // D8 part 2 captures here, in front of the witness check, the identities each rename
+    // checks again.
+    let planned = TargetRef::of(tp.key, &tp.target);
+    let at = UnderLock {
+        id: &target.id,
+        planned: &planned,
+        key,
+        registered_here: discovered.target.key.is_none(),
+        client: &client,
+        witness,
+        limits: &ctx.limits,
+    };
+    // A bound run commits only over what its preview approved (M4-D60): a refusal here
+    // has moved nothing.
+    let checked = ctx.binding.map(|b| b.witness(&at)).transpose()?.flatten();
     let running = running_now(ctx, std::slice::from_ref(&target));
     // Re-judging is offline: it never fetches, resolves or downloads, so it needs no
     // memo, no catalog and no downloads.
@@ -1091,63 +1244,22 @@ fn locked(
         downloads: &no_downloads,
         indexes: None,
     };
-    let mut works = Vec::new();
-    let mut changes = Vec::new();
-    let mut reload_required = ReloadRequired::None;
-    // The addons planning left unchanged keep their warnings and notes; the work is
-    // judged again.
-    let mut warnings = tp.unchanged_warnings.clone();
-    let mut notes = tp.notes.clone();
-    // One fresh look at the target, and the planned works replayed over it in order:
-    // releases first, then each claim (M2-D6).
-    let state = TargetState::now(&plan_ctx, &target)?;
-    let mut view = released_view(&tp.work);
-    // The addons whose works still commit: a dependency (or a `required_by` edit) whose
-    // every requester was planned and dropped out goes too.
-    let planned_addons: BTreeSet<String> = tp
-        .work
-        .iter()
-        .map(|w| TargetRecord::addon_key(&w.addon))
-        .collect();
-    let mut kept: BTreeSet<String> = BTreeSet::new();
-    for planned in &tp.work {
-        if requesters_dropped(&requesters_of(planned), &planned_addons, &kept) {
-            continue;
-        }
-        match rejudge(
-            plan_req,
-            &plan_ctx,
-            &target,
-            &state,
-            planned,
-            tp.generation,
-            &view,
-        ) {
-            Ok(Planned::Change(p)) => {
-                let p = *p;
-                claim(&mut view, &p.work);
-                kept.insert(TargetRecord::addon_key(&p.work.addon));
-                reload_required = reload_required.max(p.reload_required);
-                push_new(&mut warnings, p.warnings);
-                changes.push(p.change);
-                works.push(p.work);
-            }
-            // A pinned no-op is not a refusal: never plan_stale.
-            Ok(Planned::Unchanged {
-                warnings: dropped,
-                notes: noted,
-            }) => {
-                push_new(&mut warnings, dropped);
-                notes.extend(noted);
-            }
-            // An adoption whose folders changed is stale whatever the generation.
-            // ubs:ignore — comparing error codes, not secrets
-            Err(error) if error.code == ErrorCode::PlanStale => return Err(error),
-            Err(error) if changed => return Err(stale(&error)),
-            Err(error) => return Err(error),
-        }
+    let Rejudged {
+        works,
+        changes,
+        mut warnings,
+        mut notes,
+        reload_required,
+    } = rejudge_target(plan_req, &plan_ctx, &target, tp, changed)?;
+    if let Some(binding) = ctx.binding {
+        // Exactly the approved operations, or none: a run left with nothing to do while
+        // its preview approved something is refused here, not reported unchanged.
+        let approved = Operations::of(&tp.work, &tp.changes);
+        binding.operations(&at, &approved, &Operations::of(&works, &changes))?;
     }
-    plan::settle_handovers(&mut works, &mut changes, None);
+    if let Some(cost) = checked {
+        notes.push(recheck_note(&target.id, &cost));
+    }
     failpoint::hit("engine.revalidated").map_err(fail)?;
     let kind = target_kind(&changes, plan_req.kind, tp.default_kind);
     let Some(kind) = kind else {
@@ -1814,6 +1926,7 @@ mod tests {
             Some(&refusing),
         );
         assert!(
+            // ubs:ignore — comparing error codes, not secrets
             matches!(&refused, Err(e) if e.code == ErrorCode::PlanStale),
             "{refused:?}"
         );
@@ -2841,6 +2954,7 @@ mod tests {
                 rolled_forward.push(*name);
             }
             let entries = history(&scene);
+            // ubs:ignore — comparing transaction kinds, not secrets
             let logged = entries.iter().any(|e| e.kind == TxKind::Pin);
             assert_eq!(
                 pinned, logged,
@@ -2933,5 +3047,430 @@ mod tests {
         );
         let note = format!("the only copy of Hand is kept in {}", kept.display());
         assert!(outcome.notes.contains(&note), "{:?}", outcome.notes);
+    }
+
+    // ---- The approval checked again under the lock (M4-D60) --------------------------
+
+    /// A binding that accepts its preview's plan and records each call: `witness`
+    /// answers `witness_cost` (or refuses), `operations` keeps both sides and refuses
+    /// when told to, or when `strict` and they differ.
+    #[derive(Default)]
+    struct Recording {
+        calls: std::sync::Mutex<Vec<&'static str>>,
+        witness_cost: Option<RecheckCost>,
+        refuse_witness: bool,
+        refuse_operations: bool,
+        strict: bool,
+        seen: std::sync::Mutex<Vec<(Operations, Operations)>>,
+    }
+
+    impl Recording {
+        fn call(&self, name: &'static str) {
+            self.calls.lock().unwrap().push(name);
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        fn seen(&self) -> Vec<(Operations, Operations)> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    fn refused_by(check: &str) -> Error {
+        Error::plan_stale(
+            crate::error::PlanStaleSource::Apply,
+            format!("refused by the test binding's {check}"),
+            Suggestion::text("preview again"),
+        )
+    }
+
+    impl Binding for Recording {
+        fn plan(&self, _plan: &Plan) -> Result<()> {
+            self.call("plan");
+            Ok(())
+        }
+
+        fn undo(&self, _planned: &super::super::undo::UndoOutcome) -> Result<()> {
+            Ok(())
+        }
+
+        fn moved(&self, _target: &str) -> Error {
+            self.call("moved");
+            refused_by("moved")
+        }
+
+        fn witness(&self, _at: &UnderLock<'_>) -> Result<Option<RecheckCost>> {
+            self.call("witness");
+            if self.refuse_witness {
+                return Err(refused_by("witness"));
+            }
+            Ok(self.witness_cost)
+        }
+
+        fn operations(
+            &self,
+            _at: &UnderLock<'_>,
+            approved: &Operations,
+            rejudged: &Operations,
+        ) -> Result<()> {
+            self.call("operations");
+            self.seen
+                .lock()
+                .unwrap()
+                .push((approved.clone(), rejudged.clone()));
+            if self.refuse_operations || (self.strict && approved != rejudged) {
+                return Err(refused_by("operations"));
+            }
+            Ok(())
+        }
+    }
+
+    /// `changes` run for real, bound to `binding`.
+    fn bound(
+        scene: &TxScene,
+        changes: Vec<RequestedChange>,
+        kind: Option<TxKind>,
+        default_kind: TxKind,
+        binding: &dyn Binding,
+    ) -> TxOutcomes {
+        scene
+            .run_bound(changes, kind, default_kind, false, None, Some(binding))
+            .unwrap()
+    }
+
+    /// The scene, its changes, the kind override and the command's default kind.
+    type Shape = (TxScene, Vec<RequestedChange>, Option<TxKind>, TxKind);
+
+    fn install_v1() -> Shape {
+        let scene = TxScene::new();
+        let v1 = scene.zip("v1.zip", V1);
+        let changes = vec![scene.install("gh:o/foo", &v1)];
+        (scene, changes, None, TxKind::Install)
+    }
+
+    fn update_to_v2() -> Shape {
+        let scene = with_v1();
+        let v2 = scene.zip("v2.zip", V2);
+        let changes = vec![scene.install("gh:o/foo", &v2)];
+        (scene, changes, None, TxKind::Install)
+    }
+
+    /// A at v1 (A and Old), then A at v2 (A alone) with B (B and Old): Old is handed
+    /// from A to B in the one transaction.
+    fn update_with_a_handover() -> Shape {
+        let scene = TxScene::new();
+        let toc = |name: &str, v: &str| {
+            (
+                name.to_owned(),
+                format!("## Interface: 120105\n## Version: {v}\n"),
+            )
+        };
+        let zip = |scene: &TxScene, file: &str, entries: &[(String, String)]| {
+            let entries: Vec<(&str, &str)> = entries
+                .iter()
+                .map(|(p, t)| (p.as_str(), t.as_str()))
+                .collect();
+            scene.zip(file, &entries)
+        };
+        let a1 = zip(
+            &scene,
+            "a1.zip",
+            &[toc("A/A.toc", "1"), toc("Old/Old.toc", "1")],
+        );
+        let done = scene.run(vec![scene.install("gh:o/a", &a1)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let a2 = zip(&scene, "a2.zip", &[toc("A/A.toc", "2")]);
+        let b = zip(
+            &scene,
+            "b.zip",
+            &[toc("B/B.toc", "1"), toc("Old/Old.toc", "2")],
+        );
+        let changes = vec![scene.install("gh:o/a", &a2), scene.install("gh:o/b", &b)];
+        (scene, changes, None, TxKind::Install)
+    }
+
+    fn install_with_an_unmanaged_dependency() -> Shape {
+        let scene = TxScene::new();
+        crate::engine::testing::folder(&scene.client.addons().join("LibFoo"), "lib");
+        let zip = scene.zip(
+            "foo.zip",
+            &[(
+                "Foo/Foo.toc",
+                "## Interface: 120105\n## Dependencies: LibFoo\n",
+            )],
+        );
+        let changes = vec![scene.install("gh:o/foo", &zip)];
+        (scene, changes, None, TxKind::Install)
+    }
+
+    fn remove_foo() -> Shape {
+        let scene = with_v1();
+        let changes = vec![scene.remove("Foo")];
+        (scene, changes, None, TxKind::Remove)
+    }
+
+    fn forget_foo() -> Shape {
+        let scene = with_v1();
+        for folder in ["Foo", "FooOld"] {
+            std::fs::remove_dir_all(scene.client.addons().join(folder)).unwrap();
+        }
+        let changes = vec![scene.remove("Foo")];
+        (scene, changes, None, TxKind::Remove)
+    }
+
+    fn adopt_baz() -> Shape {
+        let scene = with_v1();
+        crate::engine::testing::folder(&scene.client.addons().join("Baz"), "mine");
+        let changes = vec![scene.adopt("Baz")];
+        (scene, changes, Some(TxKind::Adopt), TxKind::Install)
+    }
+
+    fn pin_foo() -> Shape {
+        let scene = with_v1();
+        let changes = vec![scene.edit("Foo", RecordEdit::SetPinned(true))];
+        (scene, changes, None, TxKind::Install)
+    }
+
+    fn unpin_foo() -> Shape {
+        let scene = with_v1();
+        let done = pin(&scene).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let changes = vec![scene.edit("Foo", RecordEdit::SetPinned(false))];
+        (scene, changes, None, TxKind::Install)
+    }
+
+    fn first_install_creating_addons() -> Shape {
+        let (scene, changes, kind, default_kind) = install_v1();
+        std::fs::remove_dir(scene.client.addons()).unwrap();
+        (scene, changes, kind, default_kind)
+    }
+
+    fn force_over_an_unmanaged_folder() -> Shape {
+        let (mut scene, changes, kind, default_kind) = install_v1();
+        scene.force = true;
+        crate::engine::testing::folder(&scene.client.addons().join("Foo"), "by hand");
+        (scene, changes, kind, default_kind)
+    }
+
+    fn sync_prune() -> Shape {
+        let scene = with_v1();
+        let changes = vec![scene.remove("Foo")];
+        (scene, changes, Some(TxKind::Sync), TxKind::Remove)
+    }
+
+    #[test]
+    fn an_unchanged_world_rejudges_to_the_approved_operations() {
+        type Build = fn() -> Shape;
+        let shapes: [(&str, Build); 12] = [
+            ("install_new", install_v1),
+            ("update", update_to_v2),
+            ("update_with_a_handover", update_with_a_handover),
+            (
+                "install_with_an_unmanaged_dependency",
+                install_with_an_unmanaged_dependency,
+            ),
+            ("remove", remove_foo),
+            ("forget", forget_foo),
+            ("adopt", adopt_baz),
+            ("pin", pin_foo),
+            ("unpin", unpin_foo),
+            (
+                "first_install_creating_addons",
+                first_install_creating_addons,
+            ),
+            (
+                "force_over_an_unmanaged_folder",
+                force_over_an_unmanaged_folder,
+            ),
+            ("sync_prune", sync_prune),
+        ];
+        for (case, shape) in shapes {
+            let (scene, changes, kind, default_kind) = shape();
+            let binding = Recording::default();
+            let done = bound(&scene, changes, kind, default_kind, &binding);
+            assert!(done.failures.is_empty(), "{case}: {:?}", done.failures);
+            assert!(done.outcomes[0].tx.is_some(), "{case}: committed");
+            let seen = binding.seen();
+            assert_eq!(seen.len(), 1, "{case}: one target, one comparison");
+            let (approved, rejudged) = &seen[0];
+            assert!(!approved.changes.is_empty(), "{case}: {approved:#?}");
+            assert_eq!(
+                approved, rejudged,
+                "{case}: approved {approved:#?}\nre-judged {rejudged:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bound_checks_run_after_the_generation_and_around_the_rejudge() {
+        let (scene, changes, kind, default_kind) = update_to_v2();
+        let binding = Recording::default();
+        bound(&scene, changes, kind, default_kind, &binding);
+        assert_eq!(binding.calls(), ["plan", "witness", "operations"]);
+
+        // The record's generation moved between planning and the lock: `moved`, and
+        // neither check.
+        let (scene, changes, kind, default_kind) = update_to_v2();
+        let binding = Recording::default();
+        let pause = Pause::new();
+        std::thread::scope(|s| {
+            let slow = s.spawn(|| {
+                failpoint::with_spec_in(pause.dir(), "engine.plan.done=pause", || {
+                    bound(&scene, changes, kind, default_kind, &binding)
+                })
+            });
+            pause.reached("engine.plan.done");
+            let pinned = pin(&scene).unwrap();
+            assert!(pinned.failures.is_empty(), "{:?}", pinned.failures);
+            pause.resume("engine.plan.done");
+            let slow = slow.join().unwrap();
+            let refused = slow.failures[0].cause.as_ref().unwrap();
+            assert!(refused.message.contains("moved"), "{refused:?}");
+        });
+        assert_eq!(binding.calls(), ["plan", "moved"]);
+    }
+
+    /// What a refused bound run must leave as it found.
+    fn untouched(scene: &TxScene) -> (Vec<TreeEntry>, serde_json::Value, serde_json::Value, usize) {
+        (
+            scene.addons(),
+            serde_json::to_value(scene.record()).unwrap(),
+            serde_json::to_value(scene.index()).unwrap(),
+            history(scene).len(),
+        )
+    }
+
+    #[test]
+    fn a_refusal_under_the_lock_moves_nothing() {
+        let witness = Recording {
+            refuse_witness: true,
+            ..Recording::default()
+        };
+        let operations = Recording {
+            refuse_operations: true,
+            ..Recording::default()
+        };
+        for (case, binding, calls) in [
+            ("witness", &witness, &["plan", "witness"][..]),
+            (
+                "operations",
+                &operations,
+                &["plan", "witness", "operations"][..],
+            ),
+        ] {
+            let (scene, changes, kind, default_kind) = update_to_v2();
+            let before = untouched(&scene);
+            let done = bound(&scene, changes, kind, default_kind, binding);
+            let refused = done.failures[0].cause.as_ref().unwrap();
+            assert_eq!(
+                refused.message,
+                refused_by(case).message,
+                "{case}: the binding's own refusal"
+            );
+            assert_eq!(done.outcomes.len(), 0, "{case}: {:?}", done.outcomes);
+            // ubs:ignore — comparing trees and records, not secrets
+            assert!(untouched(&scene) == before, "{case}: something moved");
+            assert_eq!(leftovers(&scene), Vec::<String>::new(), "{case}");
+            assert_eq!(binding.calls(), calls, "{case}");
+        }
+    }
+
+    #[test]
+    fn a_bound_run_left_with_nothing_to_do_is_refused_not_unchanged() {
+        let (scene, changes, kind, default_kind) = forget_foo();
+        let binding = Recording {
+            strict: true,
+            ..Recording::default()
+        };
+        let pause = Pause::new();
+        std::thread::scope(|s| {
+            let slow = s.spawn(|| {
+                failpoint::with_spec_in(pause.dir(), "engine.plan.done=pause", || {
+                    bound(&scene, changes, kind, default_kind, &binding)
+                })
+            });
+            pause.reached("engine.plan.done");
+            crate::engine::testing::folder(&scene.client.addons().join("FooOld"), "back");
+            pause.resume("engine.plan.done");
+            let slow = slow.join().unwrap();
+            let refused = slow.failures[0].cause.as_ref().unwrap();
+            assert_eq!(refused.message, refused_by("operations").message);
+        });
+        let seen = binding.seen();
+        let (approved, rejudged) = &seen[0];
+        assert_eq!(approved.changes.len(), 1, "{approved:#?}");
+        assert!(
+            rejudged.ops.is_empty() && rejudged.changes.is_empty(),
+            "{rejudged:#?}"
+        );
+        assert!(
+            scene.record().addons.contains_key("foo"),
+            "nothing forgotten"
+        );
+    }
+
+    fn checked_notes(outcome: &TxOutcome) -> Vec<&String> {
+        outcome
+            .notes
+            .iter()
+            .filter(|n| n.contains("approval checked under the lock"))
+            .collect()
+    }
+
+    #[test]
+    fn an_unbound_commit_calls_no_check() {
+        let (scene, changes, kind, default_kind) = update_to_v2();
+        let done = scene.run_as(changes, kind, default_kind).unwrap();
+        assert!(done.outcomes[0].tx.is_some());
+        assert!(checked_notes(&done.outcomes[0]).is_empty());
+    }
+
+    #[test]
+    fn m3_bindings_accept_by_default() {
+        let (scene, changes, kind, default_kind) = update_to_v2();
+        let binding = Counting {
+            refuse: false,
+            asked: std::cell::Cell::new(0),
+        };
+        let done = bound(&scene, changes, kind, default_kind, &binding);
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        assert!(done.outcomes[0].tx.is_some(), "committed");
+        assert!(
+            checked_notes(&done.outcomes[0]).is_empty(),
+            "no check, no note"
+        );
+    }
+
+    #[test]
+    fn a_checked_window_notes_its_cost() {
+        let (scene, changes, kind, default_kind) = update_to_v2();
+        let cost = RecheckCost {
+            folders: 2,
+            entries_stamped: 13,
+            folders_rehashed: 1,
+            files_hashed: 4,
+            bytes_hashed: 512,
+            elapsed_us: 77,
+        };
+        let binding = Recording {
+            witness_cost: Some(cost),
+            ..Recording::default()
+        };
+        let done = bound(&scene, changes, kind, default_kind, &binding);
+        let notes = checked_notes(&done.outcomes[0]);
+        assert_eq!(notes.len(), 1, "{:?}", done.outcomes[0].notes);
+        let note = notes[0];
+        assert!(
+            note.starts_with("retail: approval checked under the lock in "),
+            "{note}"
+        );
+        let numbers: Vec<u64> = note
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.parse().unwrap())
+            .collect();
+        assert_eq!(numbers, [77, 2, 13, 1, 4, 512], "{note}");
     }
 }

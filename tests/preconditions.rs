@@ -3039,13 +3039,12 @@ fn a_bound_adopt_ref_repoint_is_stale_after_a_commit() {
     );
 }
 
-/// The edit lands after the bound run's own check, so adopt's guard under the lock
-/// refuses it, retryable (`details.cause: "hash_mismatch"`), and running the same bound
-/// command again is the non-retryable `observed`. D8
-/// (`omad-m4-agent-surface-doctor-c6cm.4.8`) changes the first refusal to the
-/// non-retryable `observed` of its under-lock witness check, and updates this assertion.
-/// Foo is installed first: a refusal under the lock comes after the commit window
-/// registers a new client, which would rename it in the re-run's token.
+/// The edit lands after the bound run's own check, so the approval witness checked again
+/// under the lock (D8, `omad-m4-agent-surface-doctor-c6cm.4.8`) refuses it, as the
+/// non-retryable `observed` naming the folder, before adopt's own guard is reached; and
+/// running the same bound command again is `observed` too. Foo is installed first: a
+/// refusal under the lock comes after the commit window registers a new client, which
+/// would rename it in the re-run's token.
 #[test]
 fn a_bound_adopt_edited_before_its_lock_records_nothing_and_converges() {
     let log = common::tlog::tlog!();
@@ -3075,11 +3074,14 @@ fn a_bound_adopt_edited_before_its_lock_records_nothing_and_converges() {
     log.resume(&pause, "engine.snapshot.prestaged");
     let ran = child.wait();
     log.json("bound run (child)", ran.envelope());
-    let error = &ran.fails(1, "plan_stale").envelope()["error"];
+    b::assert_stale(&log, &ran, &["observed"], &b::preview_argv(ADOPT_APPLY));
+    let message = ran.envelope()["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
     log.assert_eq(
-        "adopt's guard under the lock: (retryable, details.cause)",
-        &(&error["retryable"], &error["details"]["cause"]),
-        &(&json!(true), &json!("hash_mismatch")),
+        "the refusal names the folder that changed",
+        &message.contains("echo changed after the preview"),
+        &true,
     );
     assert_left_alone(&log, &scene, &history);
     nothing_recorded(&log, &scene);

@@ -15,7 +15,7 @@
 //! approved against, [`collect`]ed at the end of its planning when the command asks for
 //! one (`TxRequest.witness`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::FileType;
 use std::io::{self, Read};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -28,15 +28,17 @@ use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
 use super::inspect::ArchiveLimits;
-use super::plan::{ChangeKind, DepReport, TargetPlan, UnresolvedReason};
+use super::plan::{
+    AddonWork, Change, ChangeKind, DepReport, OpKind, PlannedOp, TargetPlan, UnresolvedReason,
+};
 use super::swap::SwapOp;
-use crate::error::{Error, Result, Suggestion};
+use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::fsx::{FileStamp, TreeStamp, WalkError};
-use crate::model::{AssetLocation, FolderName, Target, TargetRef};
+use crate::model::{AssetLocation, FolderName, Target, TargetKey, TargetRef};
 use crate::state::files_index::{
     FilesIndex, FolderIndex, hash_reader, limit_exceeded, unindexable,
 };
-use crate::state::paths::Paths;
+use crate::state::paths::{ClientPaths, Paths};
 use crate::state::store;
 
 /// The content of one folder, every entry kind counted: a SHA-256 over length-prefixed
@@ -427,6 +429,9 @@ pub struct ApprovalWitness {
     /// Each witnessed folder's settled stamp, by its directory: the under-lock check's
     /// shortcut, never hashed.
     stamps: Vec<(PathBuf, TreeStamp)>,
+    /// Where each witnessed folder was read, by (key, role): where the under-lock check
+    /// reads it again. Never hashed, so no token moves with it.
+    dirs: BTreeMap<(String, WitnessRole), PathBuf>,
     cost: WitnessCost,
 }
 
@@ -456,8 +461,18 @@ impl ApprovalWitness {
             dependencies,
             judge,
             stamps: Vec::new(),
+            dirs: BTreeMap::new(),
             cost: WitnessCost::default(),
         }
+    }
+
+    /// Each witnessed folder, in witness order, with the directory it was read at (`None`
+    /// for a witness made without one, which the under-lock check refuses).
+    pub(crate) fn folder_dirs(&self) -> impl Iterator<Item = (&FolderWitness, Option<&Path>)> {
+        self.folders.iter().map(|folder| {
+            let dir = self.dirs.get(&(folder.key.clone(), folder.role));
+            (folder, dir.map(PathBuf::as_path))
+        })
     }
 
     /// The settled stamp of the witnessed folder at `dir`, when it had one: what D8 (the
@@ -656,7 +671,7 @@ pub fn collect(tp: &TargetPlan, ctx: &WitnessCtx<'_>) -> Result<ApprovalWitness>
         }
     }
     if tp.creates_addons_dir {
-        absent.push("Interface/AddOns".to_owned());
+        absent.push(ADDONS_ABSENT.to_owned());
     }
     let mut witness = ApprovalWitness::new(
         TargetRef::of(target.key, &target.id),
@@ -668,9 +683,14 @@ pub fn collect(tp: &TargetPlan, ctx: &WitnessCtx<'_>) -> Result<ApprovalWitness>
         target.judge.clone(),
     );
     witness.stamps = gathered.stamps;
+    witness.dirs = gathered.dirs;
     witness.cost = gathered.cost;
     Ok(witness)
 }
+
+/// The name [`ApprovalWitness::absent`] holds when the plan creates the client's
+/// `Interface/AddOns`.
+const ADDONS_ABSENT: &str = "Interface/AddOns";
 
 /// The witness of a target with no folder plan: its marker and judge.
 pub fn bare(target: &Target) -> Result<ApprovalWitness> {
@@ -762,6 +782,7 @@ struct Seen<'a> {
 struct Gathered {
     folders: Vec<FolderWitness>,
     stamps: Vec<(PathBuf, TreeStamp)>,
+    dirs: BTreeMap<(String, WitnessRole), PathBuf>,
     cost: WitnessCost,
 }
 
@@ -786,8 +807,9 @@ impl Gathered {
         if let Some(stamp) = found.stamp
             && !self.stamps.iter().any(|(at, _)| *at == dir)
         {
-            self.stamps.push((dir, stamp));
+            self.stamps.push((dir.clone(), stamp));
         }
+        self.dirs.insert((key.to_owned(), role), dir);
         self.folders.push(FolderWitness {
             role,
             key: key.to_owned(),
@@ -835,6 +857,300 @@ fn marker(client_dir: &Path, limits: &ArchiveLimits) -> Result<Option<String>> {
     };
     let (_, sha256) = hash_reader(file.take(limits.max_uncompressed)).map_err(|e| fail(&e))?;
     Ok(Some(format!("sha256:{sha256}")))
+}
+
+// ---------------------------------------------------------------------------------------
+// The witness checked again under the commit lock (M4-D60, check 2.2).
+
+/// Where [`recheck`] reads.
+pub struct RecheckAt<'a> {
+    pub client: &'a ClientPaths,
+    /// The key this commit window registered the target under, when it did: the preview
+    /// saw no marker, so the marker must now name this key.
+    pub registered_key: Option<TargetKey>,
+    pub limits: &'a ArchiveLimits,
+}
+
+/// What [`recheck`] found, and what it cost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rechecked {
+    pub drift: Option<Drift>,
+    pub cost: RecheckCost,
+}
+
+/// The first way the world moved away from a witness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Drift {
+    Marker,
+    /// A folder the plan creates (or `Interface/AddOns`) is there now.
+    Appeared {
+        name: String,
+    },
+    /// `AddOns` could not be listed, so no created name can be shown absent.
+    AddOnsUnreadable,
+    /// An unmanaged folder a requester relies on is gone.
+    DependencyGone {
+        requester: String,
+        folder: String,
+    },
+    Folder {
+        role: WitnessRole,
+        key: String,
+        why: FolderDrift,
+    },
+}
+
+/// How a witnessed folder drifted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderDrift {
+    Changed,
+    /// Read within the limits at the preview, unreadable now: fails closed.
+    Unreadable,
+    /// Read within the limits at the preview, past them now: fails closed.
+    TooLarge,
+}
+
+impl Drift {
+    /// What changed, by folder key: never file content, a digest or a path.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Marker => "the client's marker changed".to_owned(),
+            Self::Appeared { name } if name == ADDONS_ABSENT => {
+                "Interface/AddOns now exists".to_owned()
+            }
+            Self::Appeared { name } => format!("a folder named {name} appeared in AddOns"),
+            Self::AddOnsUnreadable => "AddOns cannot be listed now".to_owned(),
+            Self::DependencyGone { requester, folder } => {
+                format!("{folder}, which {requester} requires, is no longer in AddOns")
+            }
+            Self::Folder { key, why, .. } => match why {
+                FolderDrift::Changed => format!("{key} changed after the preview"),
+                FolderDrift::Unreadable => format!("{key} cannot be read now"),
+                FolderDrift::TooLarge => format!("{key} grew past the archive limits"),
+            },
+        }
+    }
+}
+
+/// What the under-lock check cost: folders checked, entries stamped, folders hashed
+/// again (their stamp moved, or never settled), files and bytes hashed, and the time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecheckCost {
+    pub folders: u64,
+    pub entries_stamped: u64,
+    pub folders_rehashed: u64,
+    pub files_hashed: u64,
+    pub bytes_hashed: u64,
+    pub elapsed_us: u64,
+}
+
+/// The witness checked against the world as it is now, under the commit lock, cheapest
+/// first, stopping at the first drift: the marker; the names the plan creates, and the
+/// unmanaged folders its dependencies rely on (one listing of `AddOns`); then each
+/// witnessed folder, unchanged when its stamp equals the settled one the witness kept,
+/// else hashed again and compared by digest (a `touch` or `chmod` passes there). Reads
+/// only. Local inputs are not read again (staging verified every file against the
+/// inspection), nor is the judge (the re-judge uses the rules this process loaded).
+pub fn recheck(witness: &ApprovalWitness, at: &RecheckAt<'_>) -> Rechecked {
+    let started = std::time::Instant::now();
+    let mut cost = RecheckCost::default();
+    let drift = first_drift(witness, at, &mut cost);
+    cost.elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    Rechecked { drift, cost }
+}
+
+fn first_drift(
+    witness: &ApprovalWitness,
+    at: &RecheckAt<'_>,
+    cost: &mut RecheckCost,
+) -> Option<Drift> {
+    let client_dir = at.client.client_dir();
+    let marker_holds = match at.registered_key {
+        Some(key) => crate::discover::registry::read_marker(client_dir) == Some(key),
+        None => marker(client_dir, at.limits).is_ok_and(|now| now == witness.marker),
+    };
+    if !marker_holds {
+        return Some(Drift::Marker);
+    }
+
+    let addons = at.client.addons();
+    let listed: BTreeSet<String> = match std::fs::read_dir(&addons) {
+        Ok(entries) => entries
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().to_ascii_lowercase())
+            .collect(),
+        // ubs:ignore — an io::ErrorKind, not a secret
+        Err(e) if e.kind() == io::ErrorKind::NotFound => BTreeSet::new(),
+        Err(_) => return Some(Drift::AddOnsUnreadable),
+    };
+    for name in &witness.absent {
+        let there = if name == ADDONS_ABSENT {
+            std::fs::symlink_metadata(&addons).is_ok()
+                || !at.client.addons_case_variants().is_empty()
+        } else {
+            listed.contains(name)
+        };
+        if there {
+            return Some(Drift::Appeared { name: name.clone() });
+        }
+    }
+    for choice in &witness.dependencies {
+        // ubs:ignore — comparing dependency choices, not secrets
+        if choice.by == DependencyBy::Unmanaged && !listed.contains(&choice.folder) {
+            return Some(Drift::DependencyGone {
+                requester: choice.requester.clone(),
+                folder: choice.folder.clone(),
+            });
+        }
+    }
+
+    for (seen, dir) in witness.folder_dirs() {
+        cost.folders += 1;
+        let drifted = |why| {
+            Some(Drift::Folder {
+                role: seen.role,
+                key: seen.key.clone(),
+                why,
+            })
+        };
+        let Some(dir) = dir else {
+            return drifted(FolderDrift::Unreadable);
+        };
+        match TreeStamp::read_at_most(dir, at.limits.max_entries) {
+            Ok(None) => return drifted(FolderDrift::TooLarge),
+            Ok(Some(now)) => {
+                cost.entries_stamped += now.entries().len() as u64;
+                if witness.stamp(dir) == Some(&now) {
+                    continue;
+                }
+            }
+            // Gone: its digest decides (a folder absent at the preview stays absent).
+            // ubs:ignore — an io::ErrorKind, not a secret
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return drifted(FolderDrift::Unreadable),
+        }
+        cost.folders_rehashed += 1;
+        let now_ns = Timestamp::now().as_nanosecond();
+        match folder(dir, None, at.limits, now_ns, &mut || {}) {
+            Ok(found) => {
+                cost.files_hashed += found.cost.files_hashed;
+                cost.bytes_hashed = cost.bytes_hashed.saturating_add(found.cost.bytes_hashed);
+                // ubs:ignore — comparing folder digests, not secrets
+                if found.digest != seen.digest {
+                    return drifted(FolderDrift::Changed);
+                }
+            }
+            // ubs:ignore — comparing error codes, not secrets
+            Err(e) if e.code == ErrorCode::ArchiveTooLarge => {
+                return drifted(FolderDrift::TooLarge);
+            }
+            Err(_) => return drifted(FolderDrift::Unreadable),
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------------------
+// The re-judged operations compared with the approved ones (M4-D60, check 2.4).
+
+/// One target's commit in the token's selection terms: its folder operations and its
+/// changes, each sorted. Both sides of the comparison come from this one renderer over
+/// the engine's own works and changes, so an unchanged world agrees by construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Operations {
+    pub ops: Vec<PlannedOp>,
+    pub changes: Vec<Change>,
+}
+
+impl Operations {
+    /// The operations of `works` (by planning's rule: an add by its name, a replace and a
+    /// remove by the live spelling) sorted by folder key, op and addon, and `changes`
+    /// sorted by addon (ASCII lowercase, then as written) and ref.
+    pub fn of(works: &[AddonWork], changes: &[Change]) -> Self {
+        let mut ops: Vec<PlannedOp> = works
+            .iter()
+            .flat_map(|work| {
+                work.swap().iter().map(|op| {
+                    let (op, folder) = match op {
+                        SwapOp::Add { name } => (OpKind::Add, name),
+                        SwapOp::Replace { live, .. } => (OpKind::Replace, live),
+                        SwapOp::Remove { live, .. } => (OpKind::Remove, live),
+                    };
+                    PlannedOp {
+                        op,
+                        folder: folder.as_folder().clone(),
+                        addon: work.addon.clone(),
+                    }
+                })
+            })
+            .collect();
+        ops.sort_by_cached_key(|op| {
+            let rank = match op.op {
+                OpKind::Add => 0,
+                OpKind::Replace => 1,
+                OpKind::Remove => 2,
+            };
+            (op.folder.key().to_owned(), rank, op.addon.clone())
+        });
+        let mut changes = changes.to_vec();
+        changes.sort_by_cached_key(|c| {
+            (
+                c.addon.to_ascii_lowercase(),
+                c.addon.clone(),
+                c.r#ref.to_string(),
+            )
+        });
+        Self { ops, changes }
+    }
+
+    /// The first addon whose entry differs between `self` (the approved operations) and
+    /// `other` (the re-judged ones), in words.
+    pub fn describe_difference(&self, other: &Self) -> String {
+        let addons: BTreeSet<(String, &str)> = [self, other]
+            .into_iter()
+            .flat_map(|o| {
+                let changed = o.changes.iter().map(|c| c.addon.as_str());
+                changed.chain(o.ops.iter().map(|op| op.addon.as_str()))
+            })
+            .map(|addon| (addon.to_ascii_lowercase(), addon))
+            .collect();
+        let kinds = |o: &Self, addon: &str| -> Vec<ChangeKind> {
+            o.changes
+                .iter()
+                .filter(|c| c.addon == addon)
+                .map(|c| c.kind)
+                .collect()
+        };
+        let entry = |o: &Self, addon: &str| -> (Vec<Change>, Vec<PlannedOp>) {
+            let changes = o.changes.iter().filter(|c| c.addon == addon).cloned();
+            let ops = o.ops.iter().filter(|op| op.addon == addon).cloned();
+            (changes.collect(), ops.collect())
+        };
+        for (_, addon) in addons {
+            let (approved, rejudged) = (kinds(self, addon), kinds(other, addon));
+            if let Some(kind) = approved.iter().find(|k| !rejudged.contains(k)) {
+                return format!("{addon}: {} no longer planned", change_kind(*kind));
+            }
+            if let Some(kind) = rejudged.iter().find(|k| !approved.contains(k)) {
+                return format!("{addon}: {} now planned", change_kind(*kind));
+            }
+            // ubs:ignore — comparing planned operations, not secrets
+            if entry(self, addon) != entry(other, addon) {
+                return format!("{addon}: its folders differ");
+            }
+        }
+        "the planned operations differ".to_owned()
+    }
+}
+
+const fn change_kind(kind: ChangeKind) -> &'static str {
+    match kind {
+        ChangeKind::Install => "install",
+        ChangeKind::Update => "update",
+        ChangeKind::Remove => "remove",
+        ChangeKind::Adopt => "adopt",
+        ChangeKind::Edit => "edit",
+    }
 }
 
 #[cfg(test)]
@@ -1477,6 +1793,7 @@ mod tests {
         );
         let cost = w.cost();
         assert!(
+            // ubs:ignore — comparing file counts, not secrets
             cost.files_reused > 0 && cost.files_hashed == 0,
             "clean files come from the index\n{}",
             shown(w)
@@ -1510,6 +1827,7 @@ mod tests {
         );
         let cost = w.cost();
         assert!(
+            // ubs:ignore — comparing file counts, not secrets
             cost.files_hashed > 0 && cost.files_reused == 0,
             "{}",
             shown(w)
@@ -1991,5 +2309,629 @@ mod tests {
             before == after,
             "a witnessed dry run changed <state> or the client dir"
         );
+    }
+
+    // ---- The witness checked again under the lock ------------------------------------
+
+    /// Longer than the racy slack, so what was written before it has settled.
+    fn settle() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    /// `scene` with Foo installed from a zip of its TOC and eleven Lua files (13 entries
+    /// with the folder itself), settled.
+    fn with_settled_foo() -> TxScene {
+        let scene = TxScene::new();
+        let mut files = vec![("Foo/Foo.toc".to_owned(), TOC.to_owned())];
+        for i in 1..=11 {
+            files.push((format!("Foo/f{i:02}.lua"), format!("-- {i:02}\n")));
+        }
+        let entries: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(path, text)| (path.as_str(), text.as_str()))
+            .collect();
+        let zip = scene.zip("foo.zip", &entries);
+        let done = scene.run(vec![scene.install("gh:o/foo", &zip)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        settle();
+        scene
+    }
+
+    /// The witness of a dry-run removal of Foo: one `Removed` folder.
+    fn removal(scene: &TxScene) -> ApprovalWitness {
+        let plan = witnessed(scene, vec![scene.remove("Foo")], WitnessScope::default());
+        plan.witnesses.into_iter().next().unwrap()
+    }
+
+    /// The same witness with no private stamp, so every folder is hashed again.
+    fn unstamped(w: ApprovalWitness) -> ApprovalWitness {
+        let cost = w.cost();
+        w.with_private(Vec::new(), cost)
+    }
+
+    /// [`recheck`] at the scene's client, asserting it wrote nothing under the scene.
+    fn rechecked_with(
+        scene: &TxScene,
+        w: &ApprovalWitness,
+        registered_key: Option<TargetKey>,
+        limits: &ArchiveLimits,
+    ) -> Rechecked {
+        let before = testing::tree_snapshot(&scene.base);
+        let at = RecheckAt {
+            client: &scene.client,
+            registered_key,
+            limits,
+        };
+        let got = recheck(w, &at);
+        assert!(
+            testing::tree_snapshot(&scene.base) == before,
+            "recheck wrote under the scene"
+        );
+        got
+    }
+
+    fn rechecked(scene: &TxScene, w: &ApprovalWitness) -> Rechecked {
+        rechecked_with(scene, w, None, &ArchiveLimits::default())
+    }
+
+    fn foo_dir(scene: &TxScene) -> PathBuf {
+        scene.client.addons().join("Foo")
+    }
+
+    fn removed_foo(why: FolderDrift) -> Option<Drift> {
+        Some(Drift::Folder {
+            role: WitnessRole::Removed,
+            key: "foo".into(),
+            why,
+        })
+    }
+
+    /// Rewrites `path` with `bytes`, its mtime put back.
+    fn rewrite_keeping_mtime(path: &Path, bytes: &[u8]) {
+        let mtime = fs::metadata(path).unwrap().modified().unwrap();
+        fs::write(path, bytes).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    fn copy_dir(from: &Path, to: &Path) {
+        fs::create_dir(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn recheck_passes_an_unchanged_settled_folder_by_stamps_alone() {
+        let scene = with_settled_foo();
+        let w = removal(&scene);
+        assert!(
+            w.stamp(&foo_dir(&scene)).is_some(),
+            "settled: {}",
+            shown(&w)
+        );
+        let got = rechecked(&scene, &w);
+        assert_eq!(got.drift, None, "{}", shown(&w));
+        let cost = got.cost;
+        assert_eq!(
+            (
+                cost.folders,
+                cost.entries_stamped,
+                cost.folders_rehashed,
+                cost.files_hashed
+            ),
+            (1, 13, 0, 0),
+            "{cost:?}"
+        );
+    }
+
+    #[test]
+    fn recheck_rehashes_a_folder_without_a_private_stamp_and_passes_equal_bytes() {
+        let scene = with_settled_foo();
+        let w = unstamped(removal(&scene));
+        let got = rechecked(&scene, &w);
+        assert_eq!(got.drift, None, "{}", shown(&w));
+        assert_eq!(
+            (got.cost.folders_rehashed, got.cost.files_hashed),
+            (1, 12),
+            "{:?}",
+            got.cost
+        );
+    }
+
+    #[test]
+    fn recheck_passes_a_touched_or_chmodded_folder_after_rehashing_it() {
+        type Edit = fn(&Path);
+        let cases: [(&str, Edit); 2] = [
+            ("touch_one_file", |dir| {
+                let later = std::time::SystemTime::now() + Duration::from_secs(5);
+                fs::File::options()
+                    .write(true)
+                    .open(dir.join("f01.lua"))
+                    .unwrap()
+                    .set_modified(later)
+                    .unwrap();
+            }),
+            ("chmod_one_file", |dir| {
+                fs::set_permissions(dir.join("f01.lua"), fs::Permissions::from_mode(0o600))
+                    .unwrap();
+            }),
+        ];
+        for (case, edit) in cases {
+            let scene = with_settled_foo();
+            let w = removal(&scene);
+            edit(&foo_dir(&scene));
+            let got = rechecked(&scene, &w);
+            assert_eq!(got.drift, None, "{case}: {}", shown(&w));
+            assert_eq!(got.cost.folders_rehashed, 1, "{case}: {:?}", got.cost);
+        }
+    }
+
+    #[test]
+    fn recheck_finds_each_drift() {
+        type Edit = fn(&Path);
+        let changed = removed_foo(FolderDrift::Changed);
+        let cases: [(&str, Edit, Option<Drift>); 10] = [
+            (
+                "clean_file_edited",
+                |dir| {
+                    fs::write(dir.join("Foo.toc"), "## Interface: 120105\n## Version: 2\n").unwrap()
+                },
+                changed.clone(),
+            ),
+            (
+                "same_size_edit_with_mtime_restored",
+                |dir| rewrite_keeping_mtime(&dir.join("f01.lua"), b"-- 0X\n"),
+                changed.clone(),
+            ),
+            (
+                "file_deleted",
+                |dir| fs::remove_file(dir.join("f01.lua")).unwrap(),
+                changed.clone(),
+            ),
+            (
+                "file_replaced",
+                |dir| {
+                    fs::write(dir.join("f01.new"), "-- replaced\n").unwrap();
+                    fs::rename(dir.join("f01.new"), dir.join("f01.lua")).unwrap();
+                },
+                changed.clone(),
+            ),
+            (
+                "symlink_added",
+                |dir| std::os::unix::fs::symlink("f01.lua", dir.join("link")).unwrap(),
+                changed.clone(),
+            ),
+            (
+                "empty_dir_added",
+                |dir| fs::create_dir(dir.join("empty")).unwrap(),
+                changed.clone(),
+            ),
+            (
+                "empty_file_added",
+                |dir| fs::write(dir.join("empty.lua"), "").unwrap(),
+                changed.clone(),
+            ),
+            (
+                "folder_deleted",
+                |dir| fs::remove_dir_all(dir).unwrap(),
+                changed.clone(),
+            ),
+            (
+                "folder_replaced_by_a_file",
+                |dir| {
+                    fs::remove_dir_all(dir).unwrap();
+                    fs::write(dir, "not a folder").unwrap();
+                },
+                changed.clone(),
+            ),
+            (
+                "folder_replaced_by_identical_copy",
+                |dir| {
+                    let copy = dir.with_file_name("Foo.copy");
+                    copy_dir(dir, &copy);
+                    fs::remove_dir_all(dir).unwrap();
+                    fs::rename(&copy, dir).unwrap();
+                },
+                None,
+            ),
+        ];
+        for (case, edit, want) in cases {
+            let scene = with_settled_foo();
+            let w = removal(&scene);
+            edit(&foo_dir(&scene));
+            let got = rechecked(&scene, &w);
+            assert_eq!(
+                got.drift,
+                want,
+                "{case}: {}\ncost {:?}",
+                shown(&w),
+                got.cost
+            );
+        }
+    }
+
+    #[test]
+    fn recheck_finds_a_created_name_appearing() {
+        for (case, created) in [("exact_case", "Foo_Extra"), ("other_case", "foo_extra")] {
+            let scene = TxScene::new();
+            let zip = scene.zip("x.zip", &[("Foo_Extra/Foo_Extra.toc", TOC)]);
+            let plan = witnessed(
+                &scene,
+                vec![scene.install("gh:o/x", &zip)],
+                WitnessScope::default(),
+            );
+            let w = &plan.witnesses[0];
+            assert_eq!(w.absent, ["foo_extra"], "{case}: {}", shown(w));
+            fs::create_dir(scene.client.addons().join(created)).unwrap();
+            let got = rechecked(&scene, w);
+            let want = Some(Drift::Appeared {
+                name: "foo_extra".into(),
+            });
+            assert_eq!(got.drift, want, "{case}: {} created", created);
+        }
+    }
+
+    #[test]
+    fn recheck_finds_addons_appearing_when_the_plan_creates_it() {
+        for created in ["Interface/AddOns", "interface/addons"] {
+            let scene = TxScene::new();
+            fs::remove_dir(scene.client.addons()).unwrap();
+            let zip = scene.zip("foo.zip", &[("Foo/Foo.toc", TOC)]);
+            let plan = witnessed(
+                &scene,
+                vec![scene.install("gh:o/foo", &zip)],
+                WitnessScope::default(),
+            );
+            let w = &plan.witnesses[0];
+            assert!(
+                // ubs:ignore — comparing folder names, not secrets
+                w.absent.iter().any(|n| n == "Interface/AddOns"),
+                "{created}: {}",
+                shown(w)
+            );
+            fs::create_dir_all(scene.client.client_dir().join(created)).unwrap();
+            let got = rechecked(&scene, w);
+            let want = Drift::Appeared {
+                name: "Interface/AddOns".into(),
+            };
+            assert_eq!(got.drift, Some(want.clone()), "{created} created");
+            assert_eq!(want.describe(), "Interface/AddOns now exists");
+        }
+    }
+
+    #[test]
+    fn recheck_finds_a_changed_marker() {
+        type Edit = fn(&Path);
+        let cases: [(&str, Edit); 3] = [
+            ("bytes_changed", |marker| {
+                let mut bytes = fs::read(marker).unwrap();
+                bytes.push(b' ');
+                fs::write(marker, bytes).unwrap();
+            }),
+            ("replaced_by_a_symlink", |marker| {
+                fs::remove_file(marker).unwrap();
+                std::os::unix::fs::symlink("elsewhere", marker).unwrap();
+            }),
+            ("deleted", |marker| fs::remove_file(marker).unwrap()),
+        ];
+        for (case, edit) in cases {
+            let scene = with_settled_foo();
+            let w = removal(&scene);
+            edit(&crate::discover::registry::marker_path(
+                scene.client.client_dir(),
+            ));
+            let got = rechecked(&scene, &w);
+            assert_eq!(got.drift, Some(Drift::Marker), "{case}");
+        }
+    }
+
+    #[test]
+    fn recheck_accepts_the_marker_this_window_registered() {
+        let scene = TxScene::new();
+        let zip = scene.zip("foo.zip", &[("Foo/Foo.toc", TOC)]);
+        let plan = witnessed(
+            &scene,
+            vec![scene.install("gh:o/foo", &zip)],
+            WitnessScope::default(),
+        );
+        let w = &plan.witnesses[0];
+        assert_eq!(w.marker, None, "unregistered at the preview");
+        let key = TargetKey::new();
+        testing::mark(scene.client.client_dir(), key);
+        let limits = ArchiveLimits::default();
+        for (case, registered, want) in [
+            ("registered_here", Some(key), None),
+            ("another_key", Some(TargetKey::new()), Some(Drift::Marker)),
+            ("registered_elsewhere", None, Some(Drift::Marker)),
+        ] {
+            let got = rechecked_with(&scene, w, registered, &limits);
+            assert_eq!(got.drift, want, "{case}");
+        }
+    }
+
+    #[test]
+    fn recheck_finds_an_unmanaged_dependency_gone() {
+        let scene = TxScene::new();
+        testing::folder(&scene.client.addons().join("LibFoo"), TOC);
+        let zip = scene.zip(
+            "foo.zip",
+            &[(
+                "Foo/Foo.toc",
+                "## Interface: 120105\n## Dependencies: LibFoo\n",
+            )],
+        );
+        let plan = witnessed(
+            &scene,
+            vec![scene.install("gh:o/foo", &zip)],
+            WitnessScope::default(),
+        );
+        let w = &plan.witnesses[0];
+        assert_eq!(rechecked(&scene, w).drift, None, "{}", shown(w));
+        fs::remove_dir_all(scene.client.addons().join("LibFoo")).unwrap();
+        let want = Drift::DependencyGone {
+            requester: "Foo".into(),
+            folder: "libfoo".into(),
+        };
+        assert_eq!(rechecked(&scene, w).drift, Some(want), "{}", shown(w));
+    }
+
+    #[test]
+    fn recheck_fails_closed_on_an_unreadable_entry() {
+        let scene = with_settled_foo();
+        let w = unstamped(removal(&scene));
+        let file = foo_dir(&scene).join("f01.lua");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        // Directly: the tree snapshot that proves "wrote nothing" cannot read the file.
+        let at = RecheckAt {
+            client: &scene.client,
+            registered_key: None,
+            limits: &ArchiveLimits::default(),
+        };
+        let got = recheck(&w, &at);
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        if rustix::process::geteuid().is_root() {
+            // Root reads a mode-000 file, so the folder is as it was.
+            assert_eq!(got.drift, None, "as root, mode bits do not stop the read");
+        } else {
+            assert_eq!(got.drift, removed_foo(FolderDrift::Unreadable));
+        }
+    }
+
+    #[test]
+    fn recheck_fails_closed_past_the_limits() {
+        let scene = with_settled_foo();
+        // 4 KiB in one file: past a byte cap the client marker (well under 1 KiB, read
+        // with the same limits) stays within.
+        fs::write(foo_dir(&scene).join("big.lua"), vec![b'-'; 4096]).unwrap();
+        let w = unstamped(removal(&scene));
+        let marker = crate::discover::registry::marker_path(scene.client.client_dir());
+        assert!(fs::metadata(marker).unwrap().len() < 1024);
+        for (case, limits) in [
+            (
+                "max_entries",
+                ArchiveLimits {
+                    max_entries: 5,
+                    ..ArchiveLimits::default()
+                },
+            ),
+            (
+                "max_uncompressed",
+                ArchiveLimits {
+                    max_uncompressed: 1024,
+                    ..ArchiveLimits::default()
+                },
+            ),
+        ] {
+            let got = rechecked_with(&scene, &w, None, &limits);
+            assert_eq!(
+                got.drift,
+                removed_foo(FolderDrift::TooLarge),
+                "{case}: {:?}",
+                got.cost
+            );
+        }
+    }
+
+    /// A witnessed copy from `_classic_` of Bar, Foo and Gone (absent at the preview).
+    fn copy_witness(scene: &TxScene) -> (ApprovalWitness, PathBuf) {
+        let other = scene.base.join("_classic_");
+        let from = other.join("Interface/AddOns");
+        testing::folder(&from.join("Foo"), TOC);
+        testing::folder(&from.join("Bar"), TOC);
+        let mut source = testing::target(&other);
+        source.id = "classic".into();
+        let scope = WitnessScope {
+            copy_from: Some(CopyFrom {
+                target: source,
+                folders: ["Bar", "Foo", "Gone"]
+                    .map(|n| FolderName::new(n).unwrap())
+                    .to_vec(),
+            }),
+        };
+        let mut plan = witnessed(scene, Vec::new(), scope);
+        (plan.witnesses.remove(0), from)
+    }
+
+    #[test]
+    fn recheck_reads_copy_sources_where_the_witness_read_them() {
+        let scene = TxScene::new();
+        let (w, from) = copy_witness(&scene);
+        assert_eq!(rechecked(&scene, &w).drift, None, "{}", shown(&w));
+        fs::write(
+            from.join("Foo/Foo.toc"),
+            "## Interface: 120105\n## Version: 9\n",
+        )
+        .unwrap();
+        let want = Drift::Folder {
+            role: WitnessRole::CopySource,
+            key: "foo".into(),
+            why: FolderDrift::Changed,
+        };
+        assert_eq!(rechecked(&scene, &w).drift, Some(want), "{}", shown(&w));
+    }
+
+    #[test]
+    fn recheck_stops_at_the_first_drift() {
+        let scene = TxScene::new();
+        let (w, from) = copy_witness(&scene);
+        for folder in ["Bar", "Foo"] {
+            fs::write(from.join(folder).join("extra.lua"), "--").unwrap();
+        }
+        let got = rechecked(&scene, &w);
+        let want = Drift::Folder {
+            role: WitnessRole::CopySource,
+            key: "bar".into(),
+            why: FolderDrift::Changed,
+        };
+        assert_eq!(got.drift, Some(want), "{}", shown(&w));
+        assert_eq!(got.cost.folders, 1, "{:?}", got.cost);
+    }
+
+    #[test]
+    fn drifts_describe_what_changed_by_folder_key() {
+        let folder = |why| Drift::Folder {
+            role: WitnessRole::Replaced,
+            key: "foo".into(),
+            why,
+        };
+        for (drift, text) in [
+            (Drift::Marker, "the client's marker changed"),
+            (
+                Drift::Appeared { name: "bar".into() },
+                "a folder named bar appeared in AddOns",
+            ),
+            (Drift::AddOnsUnreadable, "AddOns cannot be listed now"),
+            (
+                Drift::DependencyGone {
+                    requester: "Foo".into(),
+                    folder: "libfoo".into(),
+                },
+                "libfoo, which Foo requires, is no longer in AddOns",
+            ),
+            (
+                folder(FolderDrift::Changed),
+                "foo changed after the preview",
+            ),
+            (folder(FolderDrift::Unreadable), "foo cannot be read now"),
+            (
+                folder(FolderDrift::TooLarge),
+                "foo grew past the archive limits",
+            ),
+        ] {
+            assert_eq!(drift.describe(), text, "{drift:?}");
+        }
+    }
+
+    // ---- Operations -----------------------------------------------------------------
+
+    /// The dry-run plan of `changes` on `scene`'s one target.
+    fn planned(scene: &TxScene, changes: Vec<RequestedChange>) -> TargetPlan {
+        let mut req = scene.request(changes, None, TxKind::Install);
+        req.dry_run = true;
+        let done = scene
+            .with_ctx("install", |ctx| crate::engine::tx::run(&req, ctx))
+            .unwrap();
+        assert!(done.plan.failures.is_empty(), "{:?}", done.plan.failures);
+        done.plan.targets.into_iter().next().unwrap()
+    }
+
+    /// An install of Bar (new) and an update of Foo, over `with_foo`.
+    fn bar_and_foo(scene: &TxScene) -> TargetPlan {
+        let bar = scene.zip("bar.zip", &[("Bar/Bar.toc", TOC)]);
+        let v2 = scene.zip(
+            "v2.zip",
+            &[("Foo/Foo.toc", "## Interface: 120105\n## Version: 2\n")],
+        );
+        planned(
+            scene,
+            vec![
+                scene.install("gh:o/foo", &v2),
+                scene.install("gh:o/bar", &bar),
+            ],
+        )
+    }
+
+    #[test]
+    fn operations_of_sorts_ops_and_changes() {
+        let scene = with_foo();
+        let tp = bar_and_foo(&scene);
+        let ordered = Operations::of(&tp.work, &tp.changes);
+        let mut work = tp.work.clone();
+        work.reverse();
+        let mut changes = tp.changes.clone();
+        changes.reverse();
+        assert_eq!(Operations::of(&work, &changes), ordered, "{ordered:#?}");
+        let keys: Vec<&str> = ordered.ops.iter().map(|op| op.folder.key()).collect();
+        assert_eq!(keys, ["bar", "foo"], "{ordered:#?}");
+        let addons: Vec<&str> = ordered.changes.iter().map(|c| c.addon.as_str()).collect();
+        assert_eq!(addons, ["Bar", "Foo"], "{ordered:#?}");
+    }
+
+    #[test]
+    fn operations_render_swap_ops_as_planning_renders_planned_ops() {
+        let scene = with_foo();
+        let removing = planned(&scene, vec![scene.remove("Foo")]);
+        for (case, tp) in [
+            ("add_and_replace", bar_and_foo(&scene)),
+            ("remove", removing),
+        ] {
+            let mut ops = tp.ops.clone();
+            ops.sort_by_cached_key(|op| (op.folder.key().to_owned(), op.addon.clone()));
+            let rendered = Operations::of(&tp.work, &tp.changes).ops;
+            assert_eq!(rendered, ops, "{case}");
+        }
+    }
+
+    #[test]
+    fn describe_difference_names_the_first_difference() {
+        let scene = with_foo();
+        let tp = bar_and_foo(&scene);
+        let approved = Operations::of(&tp.work, &tp.changes);
+        let without_foo = Operations {
+            ops: approved
+                .ops
+                .iter()
+                .filter(|op| op.addon != "Foo")
+                .cloned()
+                .collect(),
+            changes: approved
+                .changes
+                .iter()
+                .filter(|c| c.addon != "Foo")
+                .cloned()
+                .collect(),
+        };
+        let foo_unswapped = Operations {
+            ops: without_foo.ops.clone(),
+            changes: approved.changes.clone(),
+        };
+        for (case, from, to, text) in [
+            (
+                "dropped",
+                &approved,
+                &without_foo,
+                "Foo: update no longer planned",
+            ),
+            ("added", &without_foo, &approved, "Foo: update now planned"),
+            (
+                "folders_differ",
+                &approved,
+                &foo_unswapped,
+                "Foo: its folders differ",
+            ),
+        ] {
+            assert_eq!(from.describe_difference(to), text, "{case}");
+        }
     }
 }
