@@ -655,6 +655,14 @@ impl CommandHint {
         }
     }
 
+    /// The hint with `destructive` set for this instance: an `apply` hint is as
+    /// destructive as the plan's command.
+    #[must_use]
+    pub fn with_destructive(mut self, destructive: bool) -> Self {
+        self.destructive = destructive;
+        self
+    }
+
     pub fn action(&self) -> Action {
         self.action
     }

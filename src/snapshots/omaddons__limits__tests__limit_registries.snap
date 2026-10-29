@@ -312,6 +312,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Stored plans"
     },
     {
+      "name": "PLAN_LEASE_TIMEOUT",
+      "value": {
+        "millis": 30000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "How long a second apply of one plan waits for its lease, then locked (exit 5)"
+    },
+    {
       "name": "PLAN_MAX_BYTES",
       "value": {
         "bytes": 262144

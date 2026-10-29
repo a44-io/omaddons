@@ -100,9 +100,9 @@ There is no packaged release, installer or prebuilt binary yet; see [Installatio
 # Every client on the machine, no setup
 omaddons status
 
-# Preview, then install boss mods into retail
-omaddons install dbm bigwigs -t retail --dry-run
-omaddons install dbm bigwigs -t retail
+# Preview, then install exactly what the preview showed (its plan id)
+omaddons install dbm bigwigs -t retail --dry-run    # Plan 01M8Q2VA… stored for 24 hours
+omaddons apply 01M8Q2VA
 
 # Season of Discovery runs in the Classic Era client: -t sod selects it
 omaddons install questie -t sod
@@ -156,11 +156,12 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | Automatic `WTF/` checkpoints: before the day's first change and after a play session (`backup create --auto`, which the widget runs when a client stops and for every stopped client when it starts), skipped when nothing changed, clone-only by default, within the free-space floor | ✅ Done (milestone 3) |
 | WowAce: `wowace:` refs and links, keyless, every tree fetched at one pinned revision; projects that need nothing from the packager but `package-as` and `@project-version@` (BugGrabber). `omaddons install buggrabber` installs each client's own build (catalog variants), and `errors` offers exactly that command where BugGrabber is missing | ✅ Done (milestone 3) |
 | `status` as triage for the widget and agents: a summary of every client, issues with a failure-mode id, a severity and a remediation, each client's Lua errors and backups, the last change and its undo, and the bar widget; `--cached` answers in a few milliseconds, without a scan | ✅ Done (milestone 3) |
-| Previews that bind: a `--dry-run` of `install`, `update`, `sync`, `copy`, `remove`, `undo`, `backup restore`, `backup prune` or `errors dismiss` returns a token, and the real run with `--if-match` does exactly what it showed, client by client, or nothing (`plan_stale`) | ✅ Done (milestone 3; `install`, `update`, `sync` and `copy` in milestone 4) |
+| Previews that bind: a `--dry-run` of `install`, `update`, `sync`, `copy`, `remove`, `undo`, `backup restore`, `backup prune` or `errors dismiss` returns a token, and the real run with `--if-match` does exactly what it showed, client by client, or nothing (`plan_stale`). Stored plans: the dry run keeps its preview, and `apply <plan_id>` runs exactly it | ✅ Done (milestone 3; `install`, `update`, `sync` and `copy`, stored plans and `apply` in milestone 4) |
 | The Omarchy bar widget: `omarchy install` renders it for this binary, validates it, swaps it in atomically and puts it on the bar; `omarchy status` says whether it is current and on the bar, and `status` reports it on every call (an outdated one is warned about and turns read-only); `omarchy remove` takes it away. The button shows a badge for updates (urgent for problems and new Lua errors) and a summary on hover, and right-click checks for updates; its keyboard panel has its frame (summary, Check now, Undo last, the client filter, the view switcher, progress and results, the confirm dialog) and its five views (Updates, Installed, Issues, Backups, Search, with the restore chooser); on its own it follows a game starting and exiting, takes the after-play checkpoint and reads the session's Lua errors, checks for updates when due, and notifies about new errors (and, when asked, new updates); its safety rules are scanned on every gate | ✅ Done (milestone 3) |
 | `completions`: a static completion script for bash, zsh, fish, elvish and PowerShell (commands, subcommands, aliases, flags and fixed values), generated from the command tree; `--json` gives `{shell, script}` | ✅ Done (milestone 4) |
 | `robot-docs guide`, `robot-docs schema` and `robot-docs errors`: the agent guide, every output's JSON Schema and the error and warning catalog, from the binary | ✅ Done (milestone 4) |
-| `capabilities`, `doctor`, `apply` for stored plans, installing the agent skill, the first tag | 🗓️ Milestone 4 |
+| `apply <plan_id>`: a stored preview run exactly, by one applier at a time, every source checked again, each client reported (`committed`, `unchanged`, `stale`, `failed`) | ✅ Done (milestone 4) |
+| `capabilities`, `doctor`, installing the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
 `omaddons outdated` lists what has updates, and `omaddons update` installs them on every client, one transaction per client, all undone by one `omaddons undo`. Two kinds of addon are left alone. A `url:` ref's release is the URL itself, so there is nothing newer to fetch. A pinned addon (by `pin`, or installed with `--version`) stays where it is (`skipped`, reason `pinned`) until `unpin`.
@@ -747,7 +748,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters); others accept and ignore it |
 | `--offline` | Fail any network access (`OMADDONS_OFFLINE=1`) |
 | `--while-running` | Allow folder changes while the client runs (never SavedVariables) |
-| `--if-match <TOKEN>` | Change nothing unless the plan is still the one the `--dry-run` that returned this token showed (`data.precondition`); see [Previews and `--if-match`](#previews-and---if-match). Only `remove`, `undo`, `backup restore`, `backup prune`, `errors dismiss`, `install`, `update`, `pin`, `unpin`, `adopt` (when it adopts), `sync` and `copy` take it; on any other command it is a usage error |
+| `--if-match <TOKEN>` | Change nothing unless the plan is still the one the `--dry-run` that returned this token showed (`data.precondition`); see [Previews, plans and `--if-match`](#previews-plans-and---if-match). Only `remove`, `undo`, `backup restore`, `backup prune`, `errors dismiss`, `install`, `update`, `pin`, `unpin`, `adopt` (when it adopts), `sync` and `copy` take it; on any other command it is a usage error |
 | `--no-color` | No ANSI color (also `NO_COLOR`). Color is also off with `--json`, in CI, with `TERM=dumb` and when stderr is not a terminal |
 | `--quiet` | Only errors on stderr |
 | `-v, --verbose` | More detail: paths, and debug `log` events on stderr (repeatable) |
@@ -857,7 +858,7 @@ omaddons install Plater -t retail --reinstall   # put back modified or deleted f
 
 Each item's `status` is `installed`, `updated`, `unchanged`, `skipped` (the same addon requested twice: `skip_reason: "duplicate"`, with `duplicate_of`) or `failed`, or, when only its record changed, `pinned`, `unpinned` or `edited` (with `fields`). A partial result (some addons failed) is still exit 0, with `partial: true` and each failure in `data.items[].error`. With `--strict` it is exit 6. When every addon fails, the command fails with the first item's error, and `error.details.items` lists them all. `-v` adds each item's `asset_url`. Never-launched clients have no `Interface/AddOns` yet: the first install creates it inside its transaction and reports `creates_addons_dir: true`.
 
-`--dry-run` returns `data.precondition`, and `--if-match <it>` installs exactly what that preview showed, or nothing (`plan_stale`). `install` asks its sources again, so a release published since the preview makes the bound run stale; see [Previews and `--if-match`](#previews-and---if-match). Without `-t`, `install` chooses the client as it always does, and the token binds that choice: a run that would now choose another client is stale. With `-v`, a dry run's human output ends with the `--if-match` it takes.
+`--dry-run` returns `data.precondition`, and `--if-match <it>` installs exactly what that preview showed, or nothing (`plan_stale`). `install` asks its sources again, so a release published since the preview makes the bound run stale; see [Previews, plans and `--if-match`](#previews-plans-and---if-match). Without `-t`, `install` chooses the client as it always does, and the token binds that choice: a run that would now choose another client is stale. With `-v`, a dry run's human output ends with the `--if-match` it takes.
 
 **Reinstalling.** `--reinstall` installs the recorded release again, even when it is current, and replaces the addon's folders: files modified by hand come back as released, and deleted folders come back. The archive comes from the download cache when it is still there, with no request (offline too). Otherwise that exact release is fetched again, never a newer one. A pinned addon stays pinned, and a dependency stays a dependency. The item is `updated` from and to the same version, in an `update` transaction, so `undo` brings the replaced files back. Only an installed addon can be reinstalled (`not_managed`, fix `omaddons install <addon> -t <id>`). `omaddons reinstall X` is a usage error whose fix is `omaddons install X --reinstall`.
 
@@ -943,7 +944,7 @@ Files you changed in an addon's folders do not stop its update: they are replace
 
 There is no `--version` and no `--force`: a given version is an install (`omaddons install <addon> --version V` or `omaddons pin <addon> --version V`, which pin it), and taking over another addon's folder is `omaddons install <addon> --force -t <target>`, which an `ownership_conflict` names as its fix.
 
-`--dry-run` returns `data.precondition`, and `--if-match <it>` updates exactly what that preview showed, or nothing (`plan_stale`). The token also covers what the preview left alone and why (each `skipped` item's `skip_reason`), and with nothing to update it covers every selected client, so a change on any of them makes the bound run stale. Inside the 15-minute window in which `update` answers from remembered releases, a bound run installs the previewed version even if a newer one appeared since; with `--refresh` it asks again, and a newer release makes it stale. See [Previews and `--if-match`](#previews-and---if-match). With `-v`, a dry run's human output ends with the `--if-match` it takes.
+`--dry-run` returns `data.precondition`, and `--if-match <it>` updates exactly what that preview showed, or nothing (`plan_stale`). The token also covers what the preview left alone and why (each `skipped` item's `skip_reason`), and with nothing to update it covers every selected client, so a change on any of them makes the bound run stale. Inside the 15-minute window in which `update` answers from remembered releases, a bound run installs the previewed version even if a newer one appeared since; with `--refresh` it asks again, and a newer release makes it stale. See [Previews, plans and `--if-match`](#previews-plans-and---if-match). With `-v`, a dry run's human output ends with the `--if-match` it takes.
 
 ### `pin <ADDON>` and `unpin <ADDON>`
 
@@ -970,7 +971,7 @@ omaddons unpin dbm
 
 A pin without `--version` changes only the record, never a game file, so it works while the game runs. Like every change it is a transaction (kind `pin`), with one per client under one run, so `omaddons undo` reverts it. `pin --version` installs that release first, as `install --version` does: it replaces folders, and its transaction is an `update` (or an `install`). An addon installed nowhere is `not_managed` (fix `omaddons install <addon>`). An addon already pinned (or unpinned) is left as it is, with no transaction. A pin keeps the addon's channel and its reason (a pinned dependency stays a dependency). `--version` takes a tag (`gh:` refs) or a rev (`git:` refs). `url:` and local installs have no other release to choose, so `--version` is refused for them. After `unpin`, the last line says what `update` would install, from the remembered metadata and without a request.
 
-`--dry-run` returns `data.precondition`, and `--if-match <it>` pins (or unpins) exactly what that preview showed, or nothing (`plan_stale`; see [Previews and `--if-match`](#previews-and---if-match)). A bound run with nothing left to do still checks its token: a pin made by someone else in between is `plan_stale` (`targets`), not `unchanged`. With `--version`, the token also covers the release and every file of each folder it replaces.
+`--dry-run` returns `data.precondition`, and `--if-match <it>` pins (or unpins) exactly what that preview showed, or nothing (`plan_stale`; see [Previews, plans and `--if-match`](#previews-plans-and---if-match)). A bound run with nothing left to do still checks its token: a pin made by someone else in between is `plan_stale` (`targets`), not `unchanged`. With `--version`, the token also covers the release and every file of each folder it replaces.
 
 ### `sync [FILE]`
 
@@ -1027,7 +1028,7 @@ addons = ["DBM"]
 
 So a second `sync` changes nothing and sends no request; its human output says "nothing to do", and reminds you that `sync` does not update (`omaddons update` does). Each client with changes gets one transaction of kind `sync`, all under one run, and `omaddons undo` reverts the whole sync. An entry that cannot be resolved fails on its own (`partial: true`), and so do two entries that name the same addon. What an addon's TOC requires installs with it, as for `install`.
 
-`--dry-run` returns `data.precondition`, and `--if-match <it>` syncs exactly what that preview showed, or nothing (`plan_stale`). The token covers the file's exact bytes: editing it after the preview, even a comment, makes the bound run stale. With nothing to do it covers every selected client the file has a section for. Like `update`, a bound run inside the 15-minute window installs the previewed releases even if newer ones appeared since. See [Previews and `--if-match`](#previews-and---if-match). With `-v`, a dry run's human output ends with the `--if-match` it takes.
+`--dry-run` returns `data.precondition`, and `--if-match <it>` syncs exactly what that preview showed, or nothing (`plan_stale`). The token covers the file's exact bytes: editing it after the preview, even a comment, makes the bound run stale. With nothing to do it covers every selected client the file has a section for. Like `update`, a bound run inside the 15-minute window installs the previewed releases even if newer ones appeared since. See [Previews, plans and `--if-match`](#previews-plans-and---if-match). With `-v`, a dry run's human output ends with the `--if-match` it takes.
 
 **`--locked`** reproduces versions, not only refs: `omaddons export` on one machine, then `omaddons sync <file> --locked` on another.
 
@@ -1090,7 +1091,7 @@ omaddons copy --from era --to anniversary --no-deps # only the addons copied, no
 
 Each side is exactly one client: a selector that matches two is `target_ambiguous`, with one fix per candidate, and `-t` is a usage error, as are `--from` and `--to` naming the same client. A named addon missing on `--from` is a failed `not_managed` item (fix `omaddons list -t <from>`). Each addon installs from its ref on its recorded channel, the way `install` would: the newest release that loads on `--to`, unpinned, because versions differ between flavors. Dependency records are not copied; what `--to`'s own TOCs require installs with it, as for `install`. Nor is `--any-flavor`: it is a decision about one client. Three kinds of addon are skipped, never failed: one already on `--to` (by ref, `already_installed`), one installed from a local file or folder (`local_source`), and one with no build that loads on `--to` (`no_build_for_target`). Any other failure, such as a source that cannot be reached, makes the run `partial`. `omaddons undo <tx>` from `commands` reverts the copy.
 
-`--dry-run` returns `data.precondition`, and `--if-match <it>` copies exactly what that preview showed, or nothing (`plan_stale`). The token covers the source client too: an edit in a folder of an addon being copied, or another change committed on `--from`, makes the bound run stale (`details.changed` names `observed`), as does a change on `--to` (`targets`). `copy` asks its sources again, so a newer release does too. With nothing to copy, it covers `--to` and `--from`'s record. See [Previews and `--if-match`](#previews-and---if-match). With `-v`, a dry run's human output ends with the `--if-match` it takes.
+`--dry-run` returns `data.precondition`, and `--if-match <it>` copies exactly what that preview showed, or nothing (`plan_stale`). The token covers the source client too: an edit in a folder of an addon being copied, or another change committed on `--from`, makes the bound run stale (`details.changed` names `observed`), as does a change on `--to` (`targets`). `copy` asks its sources again, so a newer release does too. With nothing to copy, it covers `--to` and `--from`'s record. See [Previews, plans and `--if-match`](#previews-plans-and---if-match). With `-v`, a dry run's human output ends with the `--if-match` it takes.
 
 ### `remove <ADDON>...`
 
@@ -1101,7 +1102,7 @@ omaddons remove DBM -t retail
 omaddons remove gh:BigWigsMods/BigWigs -t era
 ```
 
-Unmanaged, linked (symlinked) and `Blizzard_*` folders, and names that match no managed addon, are refused with `not_managed`. A folder or ref that several managed addons answer to is `ref_ambiguous`. Without `-t`, the client is the one that manages the named addons. A client named among the addons is a usage error (see [Choosing a target](#choosing-a-target-with--t)). `--dry-run` returns `data.precondition` and stores the preview as a plan (`data.plan_id`, see [Stored plans](#stored-plans)); `--if-match <it>` removes exactly what that preview showed, or nothing (see [Previews and `--if-match`](#previews-and---if-match)).
+Unmanaged, linked (symlinked) and `Blizzard_*` folders, and names that match no managed addon, are refused with `not_managed`. A folder or ref that several managed addons answer to is `ref_ambiguous`. Without `-t`, the client is the one that manages the named addons. A client named among the addons is a usage error (see [Choosing a target](#choosing-a-target-with--t)). `--dry-run` returns `data.precondition` and stores the preview as a plan (`data.plan_id`, see [Stored plans](#stored-plans)); `--if-match <it>` removes exactly what that preview showed, or nothing (see [Previews, plans and `--if-match`](#previews-plans-and---if-match)).
 
 An addon whose folders were all deleted by hand is forgotten: its record and index entries go, in a transaction that records each folder (`record` ops) and that `undo` reverts. Such a remove changes no folder, so it also goes through while the game runs.
 
@@ -1132,7 +1133,7 @@ omaddons undo 01M51F4QY5KB --saved-variables restore   # finish a deferred resto
 
 `TX`, `--run` and `--last-by` cannot be combined. A prefix that matches several transactions or runs is `not_found`, with the candidates in `details.candidates`.
 
-`--dry-run` returns `data.precondition` and stores the preview as a plan (`data.plan_id`, see [Stored plans](#stored-plans)); `--if-match <it>` reverts exactly what that preview showed, or nothing: after a newer change, bare `undo` would pick another run, and the bound run refuses with `plan_stale` instead (see [Previews and `--if-match`](#previews-and---if-match)). The stored intent names the full transaction or run the preview resolved, including when the request was bare `undo` or used `--last-by`.
+`--dry-run` returns `data.precondition` and stores the preview as a plan (`data.plan_id`, see [Stored plans](#stored-plans)); `--if-match <it>` reverts exactly what that preview showed, or nothing: after a newer change, bare `undo` would pick another run, and the bound run refuses with `plan_stale` instead (see [Previews, plans and `--if-match`](#previews-plans-and---if-match)). The stored intent names the full transaction or run the preview resolved, including when the request was bare `undo` or used `--last-by`.
 
 When one transaction of a run cannot be undone (`undo_conflict`, say), the others still are. The result is then `partial`, and `transactions[]` in the JSON data holds one result per transaction. The fields before it describe the first transaction undone, as they always did. When every transaction fails, `undo` fails with the first error.
 
@@ -1147,6 +1148,29 @@ A newer history line this omaddons cannot read (one a newer version wrote, or on
 Settings changes in the history (`config`, `target`, `auth` and `export` lines) are never undone: bare `undo`, `--last-by` and `--run` step over them, and `undo <tx>` of one is `not_found` ("transaction <tx> is a config change, which undo does not revert"). The same goes for a `backup` line: a backup is no change to undo ("transaction <tx> made a backup, which undo does not revert", fix `omaddons backup list`).
 
 A later transaction that only added or dropped a requester in a dependency's `required_by` never conflicts. An addon the undo brings back keeps those later requesters. Undoing a transaction that installed a dependency an addon installed later still requires goes ahead with `still_required`, as `remove` does, and its fix undoes the undo. A dependency the undo leaves required by nothing warns `orphaned_dependency`.
+
+### `apply <PLAN_ID>`
+
+Run exactly what a `--dry-run` stored: the plan its `data.plan_id` names (the `Plan … stored` line of its human output). `apply` executes the plan's typed intent through its command's own code, bound to the plan's token, one transaction per client, as the preview showed or not at all.
+
+```bash
+omaddons install weakauras -t era --dry-run    # Plan 01M8Q2VA… stored for 24 hours
+omaddons apply 01M8Q2VA                        # exactly that install, or plan_stale
+omaddons apply 01M8Q2VA --dry-run              # check it against the world now; changes nothing
+```
+
+- **Which plan.** The full id or a unique prefix of 8+ characters, in any case. A prefix several plans share is `ref_ambiguous` (one `omaddons apply <id>` per candidate); an unknown one is `plan_not_found` (`details.prefix`), as is a plan file that does not read (`details.reason: "unreadable"`). Plans last 24 hours, and emptying the cache removes them: run the command again with `--dry-run`. Transactions already committed stay in history.
+- **What it checks first**, each refusal a `plan_stale` that is not retryable, whose fix is the plan's own command with `--dry-run`, with `details.reason`: `already_applied` (history records a transaction of this plan: `details.txs`), `expired` (past its 24 hours), `binary_changed` (another omaddons build made it), `input_missing` (a local archive, folder or `sync` file it installs from is gone: `details.path`). Then the run itself is bound: anything it finds changed since the preview is `plan_stale` with `details.changed`, and nothing changes.
+- **Every source again.** `apply` checks every source the plan installs from, whatever its command's 15-minute window: a release published since the preview makes it `plan_stale`, never a different install.
+- **One applier per plan.** A real `apply` holds the plan's lease (`<plan_id>.lease`) from before its checks until every client's outcome is known. A second `apply` of the same plan waits up to 30 seconds, then fails `locked` (exit 5, retryable, `details.lease` and its holder); once it gets the lease it finds `already_applied`, or runs when the first committed nothing.
+- **Per client.** `data.outcomes[]` reports each client, sorted by id: `committed` (with its `tx`), `unchanged`, `stale` or `failed` (with its `error_code`). A run over several clients is never called atomic; a client that failed is reported beside the ones that committed.
+- **`--dry-run`** checks the plan against the world now and shows what it would do: `data.approved` (the approval stored with the plan) beside `data.result` (the fresh preview), every outcome `unchanged`, and the `omaddons apply <id>` hint. It takes no lease and no lock, and writes nothing, not even a plan of its own.
+- **Offline.** A plan that installs releases from their sources cannot be checked again offline: `offline`, before anything runs. A plan of local files, or a `remove`, `undo` or `backup` plan, applies offline.
+- **History.** Each transaction records the plan's command line as its argv and the plan's id as `plan`. `--actor` is the applier's, and `--reason` the applier's, else the preview's.
+- **Refused flags.** `--if-match` (the plan carries its own token), `-t` (the plan names its clients) and `--while-running` (the policy was part of what was approved: preview again with it) are usage errors.
+- `data` is `{plan_id, applied: {command, display_argv}, approved, result, outcomes}`: `result` is the executed command's own data, and its schema is one variant per storable command, `applied.command` naming which. The envelope's `command` is `apply`; its exit code is the executed command's.
+
+To adopt addons installed by hand, the command is `omaddons adopt --apply`.
 
 ### `backup`
 
@@ -1296,7 +1320,7 @@ Deletes old backups, for each client `-t` selects or every client with backups. 
 - **With ids** (8+ character prefixes, after `--` too), it deletes exactly those, whatever their age. It refuses the client's newest checkpoint with `usage` (fix `omaddons backup create -t <id>`: make a newer one first), and deletes nothing. Ids cannot go with `--keep` or `--older-than`.
 - **Busy backups.** A backup that a restore, an export or a verify is reading holds a shared lock on its directory. Each deletion takes that lock exclusively without waiting, once more after 50 ms (so `backup list`'s own instant probe never counts). A backup still held is skipped and listed under `busy`; that never fails the run, and a later prune deletes it. A reader killed outright frees it at once.
 - **How it deletes.** Each backup is moved to `<client>/Interface/.omaddons/trash/` under the global lock, then deleted there, read-only directories included; nothing is left behind. A prune that deleted something rings the doorbell and updates `backups.json`. It appends no history line: the backups themselves are the record.
-- **Preview binding.** `--dry-run` deletes nothing. It lists what would go under `pruned` (and what is held now under `busy`), returns `precondition`, and stores a changing preview as a plan (`data.plan_id`, see [Stored plans](#stored-plans)). A prune with no victims stores no plan. Its stored intent resolves id prefixes to full backup ids and `--older-than` to an absolute cutoff, so the selection does not shift as time passes. With `--if-match <token>`, the real run deletes exactly those backups or nothing: if the set changed (a new backup moved `--keep`'s line) or one of them was rewritten since, it fails with `plan_stale`. See [Previews and `--if-match`](#previews-and---if-match).
+- **Preview binding.** `--dry-run` deletes nothing. It lists what would go under `pruned` (and what is held now under `busy`), returns `precondition`, and stores a changing preview as a plan (`data.plan_id`, see [Stored plans](#stored-plans)). A prune with no victims stores no plan. Its stored intent resolves id prefixes to full backup ids and `--older-than` to an absolute cutoff, so the selection does not shift as time passes. With `--if-match <token>`, the real run deletes exactly those backups or nothing: if the set changed (a new backup moved `--keep`'s line) or one of them was rewritten since, it fails with `plan_stale`. See [Previews, plans and `--if-match`](#previews-plans-and---if-match).
 
 `data` is `{dry_run, targets: [{target, pruned: [{id, kind, bytes}], busy: [{id}], kept, reclaimed_for_space, error}], precondition, plan_id, plan_expires_at, approval}`:
 
@@ -1390,7 +1414,7 @@ omaddons history -t retail -v --json       # each folder operation (ops) instead
 
 `--limit` defaults to 20, and `truncated` says more lines matched. `--since` takes `30m`, `12h`, `1d`, `2w` or an RFC 3339 time. An explicit `--actor` filters too (`OMADDONS_ACTOR` never does); given with a different `--by`, it is a usage error. In JSON every line has its `run` (`null` for transactions from before milestone 2, each of which is a run by itself), and an undo has `reverts`; the human table names a run only on rows whose run holds more than one line.
 
-Every line also has `plan`: the [stored plan](#stored-plans) its transaction was committed from, `null` on every other line. A transaction `apply` commits records the plan's `display_argv` as its argv and the plan's id as `plan`. `apply` is planned for the next step of milestone 4, so today every line's `plan` is `null`. With `-v`, the human table adds a column naming the plan (`plan 01M9P0000000000…`) when some row has one.
+Every line also has `plan`: the [stored plan](#stored-plans) its transaction was committed from, `null` on every other line. A transaction [`apply`](#apply-plan_id) commits records the plan's `display_argv` as its argv and the plan's id as `plan`. With `-v`, the human table adds a column naming the plan (`plan 01M9P0000000000…`) when some row has one.
 
 Each line counts the folders added (`+`), replaced (`~`) and removed (`-`). A transaction that changed records without moving a folder, such as forgetting an addon whose folders were gone, also shows `=N` for the folders it recorded (`changes.recorded` in JSON). A `backup restore` is a transaction of kind `restore`, undone like any other. `changes.restored` counts the settings files the restore put back (`· N files restored`), and its ops name settings, not AddOns folders: `wtf` for a whole `WTF/` (`{"op":"wtf","folder":"WTF","addon":"","backup":…,"from":"backup","files":N}`) and `saved_variables` for one addon's files.
 
@@ -1530,7 +1554,7 @@ Each item is `adopted`, `edited` (re-pointed), `unchanged` or `failed`. A folder
 | a symlink or not an addon folder | `unmanaged_folder` (`details.class`) | `omaddons list -t <id> --unmanaged` |
 | unreadable, or larger than the archive limits | the indexer's error | `omaddons list -t <id> --unmanaged` |
 
-Folders are hashed before the lock and checked again under it: one that changed in between makes its client's transaction `plan_stale` (retryable), and nothing of it is recorded. Under `--if-match`, a folder that changes after the run's own check and before its lock is caught first by the approval checked again under the lock: `plan_stale` with `observed`, not retryable, naming the folder (see [Previews and `--if-match`](#previews-and---if-match)).
+Folders are hashed before the lock and checked again under it: one that changed in between makes its client's transaction `plan_stale` (retryable), and nothing of it is recorded. Under `--if-match`, a folder that changes after the run's own check and before its lock is caught first by the approval checked again under the lock: `plan_stale` with `observed`, not retryable, naming the folder (see [Previews, plans and `--if-match`](#previews-plans-and---if-match)).
 
 ### `targets`
 
@@ -1907,7 +1931,7 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 | `data` | object | the command's result (success, and `check_failed`) |
 | `error` | object | `code`, `message`, `fix` (display string), `fix_argv` (argv array, or `null` when the fix is prose or needs a value only you can supply; such a fix shows the command with each missing value as a `<placeholder>`, as in `omaddons targets add <path>`), `alternatives` (`[{display, argv}]`), `retryable`, `details` (always an object) |
 | `warnings` | array | `{code, message, fix, fix_argv}`. On a partial run, each failed item is mirrored here. On a failure, it holds what the run found before it failed (a `journal_pending`, a `config_unknown_key`), and stderr carries each as a `warning` event before the `error` event |
-| `commands` | array | suggested next steps: `{action, command, argv, destructive}`. The actions: `undo` (`undo <tx>` after a change), `undo_run` (`undo --run <run>` after a change on several clients), `update`, `check_updates`, `adopt`, `adopt_folder` and `adopt_with_ref` (`adopt`'s guesses), `install` (search results, missing or bridge dependencies), `search` (a bridge dependency nothing resolves), `reinstall`, `inspect` (`list -v` for degraded addons), `status` (after `status --cached` with no cache), `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive), `backup_create` (`backup list` and `status`, for a client with no recent qualifying backup), `refresh_backups` (`status`, `backup list -t <id>` when a client's backup inventory is stale), `check_errors` (`omaddons errors`, when `status --cached` finds a client's Lua errors stale or unchecked), `dismiss_errors` and `install_buggrabber` (`errors`), `reinstall_widget` (`status` and `omarchy status`, for an outdated bar widget) and `enable_widget` (`omarchy status`, for one that is not on the bar) |
+| `commands` | array | suggested next steps: `{action, command, argv, destructive}`. The actions: `undo` (`undo <tx>` after a change), `undo_run` (`undo --run <run>` after a change on several clients), `update`, `check_updates`, `adopt`, `adopt_folder` and `adopt_with_ref` (`adopt`'s guesses), `install` (search results, missing or bridge dependencies), `search` (a bridge dependency nothing resolves), `reinstall`, `inspect` (`list -v` for degraded addons), `status` (after `status --cached` with no cache), `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive), `backup_create` (`backup list` and `status`, for a client with no recent qualifying backup), `refresh_backups` (`status`, `backup list -t <id>` when a client's backup inventory is stale), `check_errors` (`omaddons errors`, when `status --cached` finds a client's Lua errors stale or unchecked), `dismiss_errors` and `install_buggrabber` (`errors`), `reinstall_widget` (`status` and `omarchy status`, for an outdated bar widget), `enable_widget` (`omarchy status`, for one that is not on the bar) and `apply` (`apply <plan_id> --dry-run`, for the plan it checked: as destructive as the plan's command) |
 | `meta` | object | `elapsed_ms`, `offline` (`--offline` or `OMADDONS_OFFLINE=1`, usage errors included) |
 
 `check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status. On every other failure `commands` is empty, except a panic's, which can offer `undo` (below). Long commands also stream NDJSON `progress` events on stderr with `--progress json` (see [stderr events](#stderr-events)); stdout stays one envelope.
@@ -1941,7 +1965,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `ref_ambiguous` | 3 | no | a name matches several addons or a local path; a folder `adopt` could take from several refs (one `--ref` alternative each); a backup id prefix matching several backups (`details: {prefix, candidates}`, one `backup list <id> -t <client>` each); a `backup restore --addon` whose folder another addon owns now (one `--addon folder:<F>` each) |
 | `not_found` | 3 | no | unknown name (fix `omaddons search <name>`, sending no request), path, tag, asset, transaction, run or backup id (`details: {prefix, target, newest}` for a backup); a transaction or run id prefix matching several (`details.candidates`); a settings change or a backup given to `undo`; a pruned snapshot (`details.reason: "snapshot_pruned"`); nothing to undo; an addon moved to another release between plan and commit; `backup create` of a client with no `WTF/` yet (`details.target`), or, without `-t`, of none |
 | `not_managed` | 3 | no | `remove` of an unmanaged, linked or `Blizzard_*` folder, or a name no managed addon answers to. When the name is an unmanaged folder (`update`, `pin`, `unpin`, `remove`), the fix adopts it: `omaddons adopt <folder> [--ref <catalog ref>] -t <id>`, other clients holding it as alternatives |
-| `plan_not_found` | 3 | no | an unknown, unreadable or oversized stored plan (`details.reason: "unreadable"`, `details.path`) |
+| `plan_not_found` | 3 | no | a stored plan `apply` cannot find or read: an unknown id or prefix (`details.prefix`; a prefix several plans share is `ref_ambiguous`), an unreadable or oversized file (`details.reason: "unreadable"`, `details.plan_id`, `details.path`), or one removed while `apply` waited for its lease |
 | `no_compatible_release` | 3 | no | no candidate loads on the client (`details.tried` lists them), or the ref has no release to choose: none published, none on the channel (only prereleases: fix `--channel beta`), no zip asset or `release.json`, or a channel that needs GitHub's release API |
 | `game_running` | 4 | no | the running policy refuses (fix appends `--while-running`), or `undo --saved-variables restore` while the client runs; `details.reason` says why (`loaded_toc`, `legacy_client`, `policy_refuse` or `saved_variables`), and `details.running: "unknown"` appears when `/proc` could not be read and the client may be running. A failed item's error in `update`, `sync` or `copy` carries both too. Also a change to a client whose interrupted `WTF/` restore waits for the game to exit (`details.reason: "saved_variables"`, `details.journal_pending`) |
 | `protected_folder` | 4 | no | a change would touch a `Blizzard_*` folder: an archive containing one, `adopt` of one, an undo whose history names one, or the filesystem writer's own refusal |
@@ -1957,14 +1981,14 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `state_too_new` | 4 | no | a state file written by a newer omaddons: a change is refused before anything is staged when its client's record or files index, or (to register a client) the registry, is newer; a journal a newer omaddons started (`details.reason: "journal_too_new"`, `details.journal_pending`); a failure recovery cannot attribute to one client, which fails every change on every client (`details.reason: "unattributed"`): here, such a journal that does not say which client it is for |
 | `file_exists` | 4 | no | a file omaddons would create exists, at the start or created by another program meanwhile, and is never replaced (`backup export`'s destination); `details.file` |
 | `filesystem_unsupported` | 4 | no | a `WTF/` restore cannot run on this client: `WTF/` is a mount point (`details.reason: "wtf_is_mount_point"`), the client's `Interface/.omaddons/` is on another mount (`stage_cross_mount`), or the filesystem cannot exchange two directories atomically (`no_rename_exchange`); `details.backup_dir` is the backup's folder to copy from by hand, with the game closed. Checked before anything is copied |
-| `locked` | 5 | yes | lock held past 5 s; `details.holder` |
+| `locked` | 5 | yes | lock held past 5 s; `details.holder`. Also a plan's lease another `apply` held past 30 s (`details.lease`, the plan id; `details.holder` with `age_s`) |
 | `check_failed` | 6 | no | `--check` or `--strict` |
 | `network` | 1 | yes (no for too many redirects or an undecodable encoding) | connection failure, also mid-body; more than 5 redirects; a `Content-Encoding` omaddons does not decode; a source response it cannot read; a git run that times out, or fails outside clone and fetch |
 | `rate_limited` | 1 | yes | GitHub REST budget exhausted, or any host's rate-limit answer (403/429 with no requests remaining, `Retry-After` over 60 s, a 429 that outlasts the retries); `details.reset_at` |
 | `download_failed` | 1 | no | the git binary could not clone or fetch a `git:` ref on another host: it needs a login (private repositories are not supported), the server refused to send the commit (fix: name a branch or tag), or another git failure |
 | `http_status` | 1 | 5xx only | unexpected status; `details.status` |
 | `hash_mismatch` | 1 | first attempt (never a backup's) | downloaded bytes did not match the expected hash, or a backup's file differs from the hash it was recorded with (`details.backup`): recorded `damaged`, fix `backup verify <id> -t <target>` |
-| `plan_stale` | 1 | yes (no under `--if-match`) | another run changed the target between plan and commit, a folder `adopt` hashed changed before the lock, or a `git:` branch moved between resolve and checkout; under `--if-match`, the run is no longer what its preview showed (`details.changed`, fix the `--dry-run` form; see [Previews and `--if-match`](#previews-and---if-match)) |
+| `plan_stale` | 1 | yes (no under `--if-match`) | another run changed the target between plan and commit, a folder `adopt` hashed changed before the lock, or a `git:` branch moved between resolve and checkout; under `--if-match`, the run is no longer what its preview showed (`details.changed`, fix the `--dry-run` form; see [Previews, plans and `--if-match`](#previews-plans-and---if-match)); `apply` refusing a plan that can no longer apply, never retryable (`details.reason`: `already_applied` with `details.txs`, `expired`, `binary_changed`, `input_missing` with `details.path`) |
 | `offline` | 1 | no | `--offline` blocked a request |
 | `bad_archive` | 1 | no | malformed, encrypted, or not Stored/Deflate |
 | `distribution_disabled` | 1 | no | reserved for CurseForge (M5) |
@@ -2039,9 +2063,11 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 
 </details>
 
-### Previews and `--if-match`
+### Previews, plans and `--if-match`
 
 A confirm dialog, or an agent that previews before it acts, must not run something other than what it showed. A `--dry-run` of a command that changes addons, or of a destructive command, returns `data.precondition`, a token describing exactly what the run would do and what it saw, and the real run with `--if-match <token>` does that, client by client, or nothing. `install`, `update`, `pin`, `unpin`, `adopt` (when it adopts), `sync`, `copy`, `remove`, `undo`, `backup restore`, `backup prune` and `errors dismiss` bind. An `errors` read carries its own token for each client (`dismiss.precondition`), so a dismissal can be bound to the read the user saw, not to a later preview.
+
+The storable commands' previews also store a plan ([Stored plans](#stored-plans)), and [`omaddons apply <plan_id>`](#apply-plan_id) runs exactly it: the stored intent bound to its stored token, every source it installs from checked again, one applier per plan at a time (its lease), and each client reported in `data.outcomes[]`. No command needs to be typed again. `apply` refuses `--if-match`: the plan carries its own token.
 
 ```bash
 omaddons remove Foo -t retail --dry-run --json     # data.precondition: "pc1:…"
@@ -2079,7 +2105,7 @@ The dry runs of `install`, `update`, `pin`, `unpin`, `adopt` (when adopting), `s
 
 A repeated preview of the same intent and binding token reuses the same plan and its original expiry. Each plan lasts 24 hours; the store holds at most 512 plans and 32 MiB, each plan at most 256 KiB. Admission clears expired plans, never evicts a live one, and declines a plan that would exceed a quota. If the store declines or fails, `plan_id` and `plan_expires_at` stay `null` and one `plan_not_stored` warning says why; the preview, its approval summary and its token stand. Clearing this cache is safe; preview again to recreate a plan. Plan writes do not ring the widget's doorbell.
 
-Executing a stored plan with `apply` is planned for the next step of milestone 4. For now, run the original command with its preview's `--if-match` token as described above.
+`omaddons apply <plan_id>` executes a stored plan ([`apply`](#apply-plan_id)). A plan file is never edited or deleted by `apply`; it expires with its 24 hours, and history records which transactions it committed.
 
 ### The approval summary
 
@@ -2472,14 +2498,14 @@ A test fails when the binary reads a variable this section does not list.
 | `~/.local/state/omaddons/registry.json` | Registered targets and the default | Loses ids and registrations |
 | `~/.local/state/omaddons/targets/<key>.json`, `<key>.files.json` | Per-target addon records, and every managed file's size and hash | Loses management |
 | `~/.local/state/omaddons/errors_ack.json` | Dismissed Lua errors: per client and database (named by a hash of its path, never the path), the session acknowledged and when. No error text | Yes; but every dismissed error is new again |
-| `~/.local/state/omaddons/history.jsonl` | One line per committed transaction, and per settings change (`config`, `target`, `auth`, `export`, `dismiss`, `widget`, never undone; `target` is `null` when it names no client). A repair's line, and the undo of one, has `target: null` and lists its clients in `targets`, its operations in `repairs` and its doctor run in `doctor_run_id`. A transaction `apply` committed (planned) also records the stored plan it came from, as `plan`. A line a crash cut short is closed off by the next write, and recovery appends that transaction's line again; other unreadable lines are skipped and counted in a `history_lines_skipped` warning on `history` and `undo` | Loses history |
+| `~/.local/state/omaddons/history.jsonl` | One line per committed transaction, and per settings change (`config`, `target`, `auth`, `export`, `dismiss`, `widget`, never undone; `target` is `null` when it names no client). A repair's line, and the undo of one, has `target: null` and lists its clients in `targets`, its operations in `repairs` and its doctor run in `doctor_run_id`. A transaction `apply` committed also records the stored plan it came from, as `plan`. A line a crash cut short is closed off by the next write, and recovery appends that transaction's line again; other unreadable lines are skipped and counted in a `history_lines_skipped` warning on `history` and `undo` | Loses history |
 | `~/.local/state/omaddons/snapshots/<tx>/` (`<tx>.wtf/` for a transaction that puts settings back), `journal/`, `inflight/`, `trash/` | Undo data for state files, journals, in-flight locks, staged deletions | No |
 | `~/.local/state/omaddons/lock` | The global lock (never delete while running) | No |
 | `~/.local/state/omaddons/status.json` | A derived summary, rewritten after each commit and undo | Yes |
 | `~/.local/state/omaddons/net.log`, `net.log.1` | The request log | Yes |
 | `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `inflight/`, `trash/`, `git-home/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, the in-flight locks of planning and dry runs, staged deletions, git's empty home directory | Yes when no command is running; reinstalls then download again |
 | `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), failures retrying cannot change, and what downloading candidates taught (each archive's hash, and whether it loads on a client) | Yes; the next commands fetch and download again |
-| `~/.cache/omaddons/plans/` (`<plan_id>.json`, `<plan_id>.lease`, `.lock`) | Stored previews (`plan` 1.0, mode 0600): the command's typed intent, its binding token, the approval summary and the lines the dry run printed; at most 512 plans and 32 MiB, each at most 256 KiB; expired plans are deleted after 24 hours | Yes when no command is running; previewing again recreates them |
+| `~/.cache/omaddons/plans/` (`<plan_id>.json`, `<plan_id>.lease`, `.lock`) | Stored previews (`plan` 1.0, mode 0600): the command's typed intent, its binding token, the approval summary and the lines the dry run printed; at most 512 plans and 32 MiB, each at most 256 KiB; expired plans are deleted after 24 hours. A `<plan_id>.lease` is the lock `apply` holds while it runs that plan, naming the applier's pid | Yes when no command is running (a lease, when no `apply` runs); previewing again recreates them |
 | `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim, its text decoded and made safe (format 1.1; a 1.0 index is decoded once on load), refreshed after its hour | Yes; the next search or dependency lookup fetches it again |
 | `~/.cache/omaddons/doorbell.json` | A signal for the bar widget: rewritten (`{at, command, actor}`) by every write that can alter what `status --cached` reports, never by `status` | Yes; the next change writes it again |
 | `~/.cache/omaddons/errors.json` | The errors memo: what `errors` last observed per client and database (file stamps, sessions, first-read baselines, counts per session and addon), so `status` can tell new errors without reading BugGrabber's files. No message, stack or locals text | Yes; but deleting it forgets which older errors were new, except what `errors dismiss` acknowledged (kept in `errors_ack.json`) |
@@ -2670,7 +2696,17 @@ omaddons undo <tx> --saved-variables restore
 
 ### `locked` (exit 5)
 
-Another omaddons process held the lock for more than 5 seconds. `error.details.holder` names its pid and command. It is retryable: run the command again.
+Another omaddons process held the lock for more than 5 seconds. `error.details.holder` names its pid and command. It is retryable: run the command again. A second `apply` of one plan waits 30 seconds for the first instead, and its `locked` names the plan (`details.lease`).
+
+### `plan_stale` after `apply`
+
+`apply` refuses a plan that can no longer apply; `error.details.reason` says why, and the fix previews the plan's command again:
+
+- `already_applied`: it ran. `details.txs` names its transactions; `omaddons history` shows them, with the plan in `plan`.
+- `expired`: plans last 24 hours.
+- `binary_changed`: another omaddons build made it; preview it again with this one.
+- `input_missing`: a local archive, folder or `sync` file it installs from is gone (`details.path`).
+- No `reason`, with `details.changed`: the world changed since the preview (a newer release, another change on the client, an edited folder), so the plan no longer describes what would happen.
 
 ### `rate_limited`
 
@@ -2729,7 +2765,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 | Capability | State | Planned |
 |---|---|---|
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
-| `capabilities`, `doctor`, `apply` for stored plans, installing the agent skill | ❌ | M4 |
+| `capabilities`, `doctor`, installing the agent skill | ❌ | M4 |
 | CurseForge, Wago | ❌ | M5, optional, bring your own key |
 | Packages, man page | ❌ build from source | M5 |
 | Windows, macOS | ❌ | Never (non-goal) |
@@ -2967,6 +3003,10 @@ Yes: `omaddons backup restore <id> --addon <name> -t <client>` puts back only th
 
 That is a primary design goal. Use `--json`, read `error.fix_argv` and `commands[].argv`, pass `--actor agent --reason "…"`, and keep `undo --last-by agent` as the escape hatch. An agent is also detected automatically: without `--actor`, a run whose stdin is not a terminal is recorded as `agent`. See [For coding agents](#for-coding-agents).
 
+### Why did `apply` refuse?
+
+Because running the plan would no longer do what its preview showed: it already ran (`already_applied`), its 24 hours passed (`expired`), another omaddons build made it (`binary_changed`), a local file it installs from is gone (`input_missing`), or the world changed since (`details.changed`). Nothing was changed. Preview again: the error's fix is the plan's command with `--dry-run`. See [`plan_stale` after `apply`](#plan_stale-after-apply).
+
 ### Why does `omarchy plugin remove a44.omaddons` not work?
 
 Omarchy's own remove looks for a plugin folder named after the plugin's id, and the widget's folder is `omaddons` (its id is `a44.omaddons`). The widget is omaddons' to manage: `omaddons omarchy remove` takes it off the bar, deletes it and records the removal.
@@ -2992,6 +3032,7 @@ Core loop
   omaddons status --json                         # every client (target), running state, attention
   omaddons install <ref>... -t <target> --dry-run --json
   omaddons install <ref>... -t <target> --json --actor agent --reason "<why>"
+  omaddons apply <data.plan_id> --json --actor agent   # or: exactly the preview a person saw
   omaddons outdated --json                       # what has updates, on every client
   omaddons update --all --dry-run --json         # then without --dry-run
   omaddons undo --last-by agent --json           # the escape hatch
@@ -3024,6 +3065,8 @@ Exit codes  0 ok (check partial) · 1 failed (see retryable) · 2 usage · 3 not
 
 Rules
   - --dry-run first for anything destructive; --force only after reading the refusal.
+  - Prefer apply <plan_id> for an approval a person saw: a plan_stale from apply means preview
+    again, and already_applied means it ran.
   - --any-flavor (offered among a refusal's alternatives) only when the user asks for that addon
     on that client; it persists until --no-any-flavor.
   - Bind the real remove, undo, backup restore or backup prune to that preview, and errors dismiss

@@ -2164,6 +2164,9 @@ expression: schemas
     "properties": {
       "holder": {
         "properties": {
+          "age_s": {
+            "type": "integer"
+          },
           "command": {
             "type": "string"
           },
@@ -2264,6 +2267,9 @@ expression: schemas
         "type": "array"
       },
       "journal_pending": {
+        "type": "string"
+      },
+      "lease": {
         "type": "string"
       },
       "recovery_error": {
@@ -3239,6 +3245,9 @@ expression: schemas
       "plan_id": {
         "type": "string"
       },
+      "prefix": {
+        "type": "string"
+      },
       "reason": {
         "enum": [
           "unreadable"
@@ -3266,11 +3275,6 @@ expression: schemas
         "type": "array"
       }
     },
-    "required": [
-      "path",
-      "plan_id",
-      "reason"
-    ],
     "type": "object"
   },
   "plan_stale": {
@@ -3374,6 +3378,17 @@ expression: schemas
       "journal_pending": {
         "type": "string"
       },
+      "path": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "already_applied",
+          "expired",
+          "binary_changed",
+          "input_missing"
+        ]
+      },
       "recovery_error": {
         "properties": {
           "code": {
@@ -3390,6 +3405,12 @@ expression: schemas
         "type": "object"
       },
       "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "txs": {
         "items": {
           "type": "string"
         },
@@ -5204,6 +5225,9 @@ expression: schemas
   "usage": {
     "properties": {
       "command": {
+        "type": "string"
+      },
+      "flag": {
         "type": "string"
       },
       "holder": {

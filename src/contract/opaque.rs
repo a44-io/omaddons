@@ -44,6 +44,8 @@ const PRECONDITION_PART: &str = "A binding token's part is kept as the canonical
 #[rustfmt::skip]
 pub const OPAQUE: &[Opaque] = &[
     Opaque { scope: "command *", path: "**.items[].error.details", source: "ItemError.details", reason: ITEM_ERROR_DETAILS },
+    Opaque { scope: "command apply", path: "result.targets[].error.details", source: "ItemError.details", reason: ITEM_ERROR_DETAILS },
+    Opaque { scope: "command apply", path: "result.transactions[].error.details", source: "ItemError.details", reason: ITEM_ERROR_DETAILS },
     Opaque { scope: "command backup create", path: "targets[].error.details", source: "ItemError.details", reason: ITEM_ERROR_DETAILS },
     Opaque { scope: "command backup prune", path: "targets[].error.details", source: "ItemError.details", reason: ITEM_ERROR_DETAILS },
     Opaque { scope: "command config", path: "settings[].value", source: "Setting.value", reason: CONFIG_VALUE },

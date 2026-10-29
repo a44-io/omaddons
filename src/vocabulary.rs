@@ -201,8 +201,8 @@ pub const SELECTS_CLIENT: &[&str] = &[
     "update", "pin", "unpin", "adopt", "sync", "remove", "undo", "backup",
 ];
 
-/// First words of command paths whose run never reads -t (or refuses it: copy): a
-/// misplaced client keeps the fix it had before M4-D12.
+/// First words of command paths whose run never reads -t (or refuses it: copy, and apply,
+/// whose plan names its clients): a misplaced client keeps the fix it had before M4-D12.
 pub const CLIENT_FREE: &[&str] = &[
     "help",
     "config",
@@ -211,6 +211,7 @@ pub const CLIENT_FREE: &[&str] = &[
     "auth",
     "omarchy",
     "copy",
+    "apply",
     "completions",
     "robot-docs",
 ];

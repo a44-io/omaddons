@@ -502,6 +502,39 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
         true,
     )]);
 
+    log.step("apply --dry-run of that stored plan writes nothing, not even a plan");
+    let preview = run(&["update", "Foo", "-t", "retail", "--refresh", "--dry-run"]);
+    let id = preview.envelope["data"]["plan_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let plans = s.home.env.cache().join("omaddons/plans");
+    let plan_names = || -> BTreeSet<String> {
+        fs::read_dir(&plans)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    };
+    let (state_before, plans_before) = (state_tree(&state), plan_names());
+    let checked = run(&["apply", &id, "--dry-run"]);
+    log.assert_eq("state bytes", &state_tree(&state), &state_before);
+    log.assert_eq(
+        "plan files (no lease, no new plan)",
+        &plan_names(),
+        &plans_before,
+    );
+    let data = &checked.envelope["data"];
+    log.assert_eq(
+        "the applied plan",
+        &data["plan_id"],
+        &Value::String(id.clone()),
+    );
+    log.assert_eq(
+        "no plan of its own",
+        &data["result"]["plan_id"],
+        &Value::Null,
+    );
+
     let expected: BTreeSet<String> = omaddons::app::COMMANDS
         .iter()
         .filter(|entry| entry.stores_plan)

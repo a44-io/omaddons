@@ -7,6 +7,7 @@ pub const FEATURES: &[&str] = &[
     "ndjson_stderr",
     "dry_run_everywhere",
     "preconditions",
+    "stored_plans",
     "offline",
     "progress_ndjson",
     "undo",

@@ -177,6 +177,9 @@ pub enum Command {
     /// Revert the last change (or one by id), SavedVariables included
     #[command(visible_aliases = ["revert", "rollback"])]
     Undo(crate::app::undo::UndoArgs),
+    /// Run exactly what a --dry-run stored (its plan id), target by target
+    #[command(after_long_help = APPLY_HELP)]
+    Apply(crate::app::apply::ApplyArgs),
     /// Each client's WTF/ backups: copies of its settings (bare: list them)
     Backup(crate::app::backup::BackupArgs),
     /// Show what changed, when, by whom and why
@@ -527,6 +530,17 @@ Examples:
   omaddons adopt                                  where each unmanaged folder comes from
   omaddons adopt --apply -t retail                adopt what is identified, folders unchanged
   omaddons adopt MyFoo --ref gh:o/foo -t retail   say which ref a folder is";
+
+/// `apply`'s long help.
+const APPLY_HELP: &str = "\
+Examples:
+  omaddons install weakauras -t era --dry-run    the preview stores a plan: Plan 01M8Q2… stored for 24 hours
+  omaddons apply 01M8Q2VA                        exactly that install, or plan_stale
+  omaddons apply 01M8Q2VA --dry-run              check it against the world now; changes nothing
+
+A plan holds for 24 hours, for the build that made it. apply re-checks every source the
+plan installs from: a release that landed since the preview is plan_stale, never a
+different install. To adopt addons installed by hand, use adopt --apply.";
 
 /// `export`'s long help.
 const EXPORT_HELP: &str = "\

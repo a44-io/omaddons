@@ -758,6 +758,35 @@ pub const CORPUS: &[Row] = &[
         error(2, "usage", &["omaddons", "adopt", "-t", "retail"], &[0]),
     )
     .by_leaf("D3"),
+    // `apply` and `adopt --apply` (M4-D27).
+    row(
+        ApplyForAdopt,
+        &["apply"],
+        &["apply", "adopt"],
+        "help first; the alternative is adopt --apply (M4-D27)",
+        error(2, "usage", &["omaddons", "help", "apply"], &[0]),
+    ),
+    row(
+        ApplyForAdopt,
+        &["apply", "nosuchid0"],
+        &["apply", "adopt"],
+        "no such plan; the alternative is adopt --apply, the command apply is mistaken for",
+        error(3, "plan_not_found", &["omaddons", "help", "apply"], &[0]),
+    ),
+    row(
+        ApplyForAdopt,
+        &["adopt", "apply"],
+        &["adopt"],
+        "the user's own verb; nothing to adopt on the corpus home",
+        error(2, "usage", &["omaddons", "adopt", "--apply"], &[0]),
+    ),
+    row(
+        ApplyForAdopt,
+        &["aply", "01M8Q2VA"],
+        &[],
+        "a mutating guess becomes help",
+        error(2, "usage", &["omaddons", "help", "apply"], &[0]),
+    ),
     // A warning whose fix is a rerun.
     row(
         WarningFix,
@@ -842,50 +871,6 @@ pub const PENDING: &[Pending] = &[
             ),
         )
         .by_leaf("B3"),
-    ),
-    pending(
-        "D5",
-        &["apply"],
-        row(
-            ApplyForAdopt,
-            &["apply"],
-            &["apply", "adopt"],
-            "help first; the alternative is adopt --apply (M4-D27)",
-            error(2, "usage", &["omaddons", "help", "apply"], &[0]),
-        ),
-    ),
-    pending(
-        "D5",
-        &["apply"],
-        row(
-            ApplyForAdopt,
-            &["apply", "nosuchid0"],
-            &["apply"],
-            "no such plan",
-            error(3, "plan_not_found", &["omaddons", "help", "apply"], &[0]),
-        ),
-    ),
-    pending(
-        "D5",
-        &["apply"],
-        row(
-            ApplyForAdopt,
-            &["adopt", "apply"],
-            &["adopt"],
-            "the user's own verb; nothing to adopt on the corpus home",
-            error(2, "usage", &["omaddons", "adopt", "--apply"], &[0]),
-        ),
-    ),
-    pending(
-        "D5",
-        &["apply"],
-        row(
-            ApplyForAdopt,
-            &["aply", "01M8Q2VA"],
-            &[],
-            "a mutating guess becomes help",
-            error(2, "usage", &["omaddons", "help", "apply"], &[0]),
-        ),
     ),
     pending(
         "D9",

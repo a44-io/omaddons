@@ -539,3 +539,78 @@ fn crash_between_a_sweeps_renames() {
     assert!(!orphan.exists(), "retention performed its cache-side prune");
     assert!(empty(&trash));
 }
+
+/// `apply` (D5): a stored install preview applied once commits exactly the previewed
+/// folders and records the plan in history; applied again, it is `already_applied`.
+#[test]
+fn apply_smoke_install_plan_round_trip() {
+    let log = tlog!();
+    let home = home(&log);
+    let addons = home.addons("_retail_");
+
+    log.step("preview");
+    let ran = preview(&log, &home, "foo");
+    let id = ran.data()["plan_id"].as_str().unwrap().to_owned();
+    let plan = read_plan(&home.env, &id);
+    log.json("plan file", &plan);
+    log.tree("addons", &addons);
+
+    log.step("apply");
+    let applied = log
+        .cmd(
+            &home,
+            &["apply", id.as_str(), "--json", "--progress", "json"],
+        )
+        .env("OMADDONS_NOW", NOW)
+        .run();
+    applied.ok().assert_private();
+    let data = applied.data();
+    log.assert_eq(
+        "applied command",
+        &data["applied"]["command"],
+        &json!("install"),
+    );
+    log.assert_eq(
+        "outcome",
+        &data["outcomes"][0]["status"],
+        &json!("committed"),
+    );
+    let tx = data["result"]["tx"].clone();
+    log.assert_eq("outcome tx", &data["outcomes"][0]["tx"], &tx);
+    let diff = log.diff("addons", &addons);
+    assert!(
+        diff.removed.is_empty() && diff.changed.is_empty() && !diff.added.is_empty(),
+        "{diff:?}"
+    );
+    assert!(
+        diff.added.iter().all(|path| path.starts_with("Foo")),
+        "only Foo's folders: {diff:?}"
+    );
+    log.tree("addons", &addons);
+
+    log.step("history");
+    let history = log
+        .cmd(&home, &["history", "--json"])
+        .env("OMADDONS_NOW", NOW)
+        .run();
+    history.ok();
+    let newest = &history.data()["entries"][0];
+    log.json("newest history line", newest);
+    log.assert_eq("plan", &newest["plan"], &json!(id));
+    log.assert_eq("argv", &newest["argv"], &plan["display_argv"]);
+    log.assert_eq("tx", &newest["tx"], &tx);
+
+    log.step("apply again");
+    let again = log
+        .cmd(
+            &home,
+            &["apply", id.as_str(), "--json", "--progress", "json"],
+        )
+        .env("OMADDONS_NOW", NOW)
+        .run();
+    again.fails(1, "plan_stale");
+    let details = &again.envelope()["error"]["details"];
+    log.assert_eq("reason", &details["reason"], &json!("already_applied"));
+    log.assert_eq("txs", &details["txs"], &json!([tx]));
+    log.assert_unchanged("addons", &addons);
+}

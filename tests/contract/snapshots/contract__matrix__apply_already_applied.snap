@@ -1,0 +1,37 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "apply",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "plan_stale",
+    "details": {
+      "changed": [],
+      "reason": "already_applied",
+      "txs": [
+        "<ulid>"
+      ]
+    },
+    "fix": "omaddons install gh:o/foo -t retail --file <root>/dl/foo.zip --dry-run",
+    "fix_argv": [
+      "omaddons",
+      "install",
+      "gh:o/foo",
+      "-t",
+      "retail",
+      "--file",
+      "<root>/dl/foo.zip",
+      "--dry-run"
+    ],
+    "message": "plan <ulid> was already applied: history records tx <ulid>; nothing was changed",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

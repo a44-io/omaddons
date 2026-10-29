@@ -151,6 +151,7 @@ var CLI_PATHS = {
   "copy":              { "mutates": true,  "destructive": false, "binds": true },
   "remove":            { "mutates": true,  "destructive": true,  "binds": true },
   "undo":              { "mutates": true,  "destructive": true,  "binds": true },
+  "apply":             { "mutates": true,  "destructive": false, "binds": false },
   "backup":            { "mutates": false, "destructive": false, "binds": false },
   "backup list":       { "mutates": false, "destructive": false, "binds": false },
   "backup create":     { "mutates": true,  "destructive": false, "binds": false },

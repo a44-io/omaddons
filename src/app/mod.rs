@@ -235,6 +235,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("copy", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<copy::CopyOutcome>, Network::Optional).storing_plan(),
     entry("remove", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<remove::RemoveOutcome>, Network::None).storing_plan(),
     entry("undo", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<undo::UndoOutcome>, Network::None).storing_plan(),
+    entry("apply", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<apply::ApplyOutcome>, Network::Optional),
     // Bare `backup` runs as `backup list`, bare `omarchy` as `omarchy status`: these two
     // names appear only on usage errors.
     entry("backup", Change, false, &[0, 1, 2], data_schema::<backup::BackupListOutcome>, Network::None),
@@ -364,6 +365,7 @@ pub fn canonical_path(command: &Command) -> &'static str {
         Command::Copy(_) => "copy",
         Command::Remove(_) => "remove",
         Command::Undo(_) => "undo",
+        Command::Apply(_) => "apply",
         Command::Backup(args) => args
             .action
             .as_ref()
@@ -513,7 +515,7 @@ fn out_storable<O: intent::Storable + SideEvents>(
 }
 
 /// A command's arm that logs only its side events, then the outcome.
-fn out_read<O: output::Outcome + SideEvents>(
+fn out_logged<O: output::Outcome + SideEvents>(
     out: &Out<'_>,
     result: crate::error::Result<O>,
 ) -> Exit {
@@ -690,6 +692,7 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
         Some(Command::Copy(args)) => out_storable(ctx, out, copy::run(ctx, args)),
         Some(Command::Remove(args)) => out_storable(ctx, out, remove::run(ctx, args)),
         Some(Command::Undo(args)) => out_storable(ctx, out, undo::run(ctx, args)),
+        Some(Command::Apply(args)) => out_logged(out, apply::run(ctx, args)),
         Some(Command::Backup(args)) => {
             use backup::BackupAction;
             match &args.action {
@@ -707,15 +710,15 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
                 Some(BackupAction::Verify(verify)) => out.emit(backup_verify::run(ctx, verify)),
             }
         }
-        Some(Command::Info(args)) => out_read(out, info::run(ctx, args)),
-        Some(Command::Export(args)) => out_read(out, export::run(ctx, args)),
+        Some(Command::Info(args)) => out_logged(out, info::run(ctx, args)),
+        Some(Command::Export(args)) => out_logged(out, export::run(ctx, args)),
         Some(Command::Adopt(args)) => out_storable(ctx, out, adopt::run(ctx, args)),
-        Some(Command::Outdated(args)) => out_read(out, outdated::run(ctx, args)),
-        Some(Command::Search(args)) => out_read(out, search::run(ctx, args)),
+        Some(Command::Outdated(args)) => out_logged(out, outdated::run(ctx, args)),
+        Some(Command::Search(args)) => out_logged(out, search::run(ctx, args)),
         Some(Command::NetLog(args)) => out.emit(net_log::run(ctx, args)),
         Some(Command::Errors(args)) => match &args.action {
             Some(errors::ErrorsAction::Dismiss(_)) => out.emit(errors::dismiss(ctx)),
-            None => out_read(out, errors::run(ctx, args)),
+            None => out_logged(out, errors::run(ctx, args)),
         },
         Some(Command::History(args)) => {
             let result = history::run(ctx, args, cli.global.actor.as_deref());

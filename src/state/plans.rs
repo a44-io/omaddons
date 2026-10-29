@@ -250,6 +250,53 @@ pub fn load_id(paths: &Paths, id: &PlanId) -> Result<Option<StoredPlan>> {
     }
 }
 
+/// What [`find`] found for an id or a prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    One {
+        id: PlanId,
+        path: PathBuf,
+    },
+    /// No plan; `cut` when the listing stopped at its bound, so a match may be unread.
+    None {
+        cut: bool,
+    },
+    /// Several, sorted.
+    Many(Vec<PlanId>),
+}
+
+/// The stored plan `given` names (`apply <plan_id>`): a full id, read directly with no
+/// listing, or a prefix of 8 to 25 characters, matched against the bounded listing's
+/// names (no plan is read). Case is ignored. A symlink is never a plan.
+pub fn find(paths: &Paths, given: &str) -> Result<Found> {
+    let wanted = given.to_ascii_uppercase();
+    if let Ok(id) = wanted.parse::<PlanId>()
+        && id.to_string() == wanted
+    {
+        let path = paths.plan(&id);
+        return Ok(match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() => Found::One { id, path },
+            _ => Found::None { cut: false },
+        });
+    }
+    let listing = list(paths)?;
+    let matching: Vec<&ListedPlan> = listing
+        .plans
+        .iter()
+        .filter(|p| p.id.to_string().starts_with(&wanted))
+        .collect();
+    Ok(match matching.as_slice() {
+        [] => Found::None {
+            cut: !listing.complete,
+        },
+        [one] => Found::One {
+            id: one.id,
+            path: one.path.clone(),
+        },
+        many => Found::Many(many.iter().map(|p| p.id).collect()),
+    })
+}
+
 /// A plan file's bytes, at most `PLAN_MAX_BYTES`, never through a symlink.
 fn read_plan(path: &Path) -> std::result::Result<Vec<u8>, String> {
     use rustix::fs::{Mode, OFlags};
@@ -755,6 +802,120 @@ mod tests {
             _dir: dir,
             paths,
             scopes,
+        }
+    }
+
+    #[test]
+    fn find_cases() {
+        const A: &str = "01M9P00000000000000000000A";
+        const B: &str = "01M9P00000000000000000000B";
+        const C: &str = "01M9Q00000000000000000000C";
+        let ids =
+            |list: &[&str]| -> Vec<PlanId> { list.iter().map(|s| s.parse().unwrap()).collect() };
+        // Each case: its name, the files in `<cache>/plans/` (`None`: no directory), what
+        // `find` is given, and what it should find.
+        let one = |id: &str| Some(id.parse::<PlanId>().unwrap());
+        let lowercase = C.to_ascii_lowercase();
+        type Want = std::result::Result<Option<PlanId>, Vec<PlanId>>;
+        let cases: Vec<(&str, Option<Vec<String>>, &str, Want)> = vec![
+            ("full_id", Some(vec![format!("{A}.json")]), A, Ok(one(A))),
+            (
+                "prefix",
+                Some(vec![format!("{A}.json"), format!("{C}.json")]),
+                "01M9P000",
+                Ok(one(A)),
+            ),
+            (
+                "lowercase_prefix",
+                Some(vec![format!("{C}.json")]),
+                "01m9q000",
+                Ok(one(C)),
+            ),
+            (
+                "lowercase_full_id",
+                Some(vec![format!("{C}.json")]),
+                &lowercase,
+                Ok(one(C)),
+            ),
+            (
+                "none",
+                Some(vec![format!("{A}.json")]),
+                "01M9Z000",
+                Ok(None),
+            ),
+            (
+                "many_sorted",
+                Some(vec![format!("{B}.json"), format!("{A}.json")]),
+                "01M9P000",
+                Err(ids(&[A, B])),
+            ),
+            ("directory_missing", None, "01M9P000", Ok(None)),
+            ("full_id_missing", Some(Vec::new()), A, Ok(None)),
+            (
+                "non_plan_names_ignored",
+                Some(vec![
+                    ".lock".into(),
+                    format!("{A}.lease"),
+                    "notes.txt".into(),
+                ]),
+                "01M9P000",
+                Ok(None),
+            ),
+        ];
+        for (name, files, given, want) in cases {
+            let f = fixture();
+            if let Some(files) = &files {
+                fs::create_dir_all(f.paths.plans_dir()).unwrap();
+                for file in files {
+                    fs::write(f.paths.plans_dir().join(file), b"{}").unwrap();
+                }
+            }
+            let got = find(&f.paths, given).unwrap();
+            let got = match got {
+                Found::One { id, path } => {
+                    assert_eq!(path, f.paths.plan(&id), "{name}");
+                    Ok(Some(id))
+                }
+                Found::None { cut } => {
+                    assert!(!cut, "{name}: a short listing is never cut");
+                    Ok(None)
+                }
+                Found::Many(ids) => Err(ids),
+            };
+            assert_eq!(got, want, "{name}: files {files:?}, given {given:?}");
+        }
+    }
+
+    #[test]
+    fn find_reports_a_listing_cut_by_its_bound() {
+        let f = fixture();
+        fs::create_dir_all(f.paths.plans_dir()).unwrap();
+        // More plan names than one listing reads, and none matching what is asked.
+        for _ in 0..=PLANS_MAX_FILES + PLANS_SWEEP_MAX {
+            let id = PlanId::new();
+            fs::write(f.paths.plan(&id), b"{}").unwrap();
+        }
+        assert_eq!(
+            find(&f.paths, "7ZZZZZZZ").unwrap(),
+            Found::None { cut: true },
+            "a match may be among the names not read"
+        );
+    }
+
+    #[test]
+    fn a_symlinked_plan_is_not_one() {
+        const A: &str = "01M9P00000000000000000000A";
+        let f = fixture();
+        fs::create_dir_all(f.paths.plans_dir()).unwrap();
+        let elsewhere = f.paths.plans_dir().join("elsewhere");
+        fs::write(&elsewhere, b"{}").unwrap();
+        symlink(&elsewhere, f.paths.plans_dir().join(format!("{A}.json"))).unwrap();
+        for given in [A, "01M9P000"] {
+            assert_eq!(
+                find(&f.paths, given).unwrap(),
+                Found::None { cut: false },
+                "{given}"
+            );
         }
     }
 

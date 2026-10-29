@@ -225,6 +225,21 @@ fn fields_of(token: &str) -> Option<[&str; 4]> {
     Some([0, 1, 2, 3].map(|i| &hex[i * FIELD..(i + 1) * FIELD]))
 }
 
+/// The parts in which two tokens differ, in part order: none when they are equal, every
+/// part when either is malformed (`apply --dry-run`'s comparison of the stored token with
+/// a fresh preview's, M4-D23).
+pub fn changed_parts(stored: &str, fresh: &str) -> Vec<Part> {
+    match (fields_of(stored), fields_of(fresh)) {
+        (Some(a), Some(b)) => Part::ALL
+            .into_iter()
+            .zip(a.iter().zip(b.iter()))
+            .filter(|(_, (a, b))| a != b)
+            .map(|(part, _)| part)
+            .collect(),
+        _ => Part::ALL.to_vec(),
+    }
+}
+
 /// `Ok` when `expected` (`--if-match`) is `actual`'s token or absent; otherwise
 /// `plan_stale` naming the parts that differ, whose fix is `preview`.
 pub fn check(expected: Option<&str>, actual: &Precondition, preview: &[String]) -> Result<()> {
@@ -1064,6 +1079,44 @@ pub fn of_prune(parts: &[PrunePart<'_>]) -> Precondition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_parts_of_two_tokens() {
+        let token = |fields: [char; 4]| -> String {
+            let hex: String = fields.iter().map(|c| c.to_string().repeat(FIELD)).collect();
+            format!("{PREFIX}{hex}")
+        };
+        let base = token(['0', '1', '2', '3']);
+        let cases = [
+            ("equal", token(['0', '1', '2', '3']), vec![]),
+            ("command", token(['f', '1', '2', '3']), vec![Part::Command]),
+            ("targets", token(['0', 'f', '2', '3']), vec![Part::Targets]),
+            (
+                "selection",
+                token(['0', '1', 'f', '3']),
+                vec![Part::Selection],
+            ),
+            (
+                "observed",
+                token(['0', '1', '2', 'f']),
+                vec![Part::Observed],
+            ),
+            ("all", token(['f', 'e', 'd', 'c']), Part::ALL.to_vec()),
+            ("malformed_fresh", "pc1:nope".to_owned(), Part::ALL.to_vec()),
+        ];
+        for (name, fresh, want) in cases {
+            assert_eq!(
+                changed_parts(&base, &fresh),
+                want,
+                "{name}: {base} vs {fresh}"
+            );
+        }
+        assert_eq!(
+            changed_parts("garbage", &base),
+            Part::ALL.to_vec(),
+            "a malformed stored token: every part"
+        );
+    }
     use crate::engine::edit::EditField;
     use crate::engine::inspect::{ArchiveLimits, SkippedFolder};
     use crate::engine::plan::{ChangeKind, DeferredAsset, FolderSummary, OpKind, SCHEMA_VERSION};

@@ -1,0 +1,37 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "apply",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "adopt",
+          "--apply"
+        ],
+        "display": "omaddons adopt --apply"
+      }
+    ],
+    "code": "plan_not_found",
+    "details": {
+      "prefix": "<ulid>"
+    },
+    "fix": "omaddons help apply",
+    "fix_argv": [
+      "omaddons",
+      "help",
+      "apply"
+    ],
+    "message": "no stored plan has an id starting with <ulid>; plans last 24 hours and an emptied cache removes them: run the command again with --dry-run",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

@@ -1,0 +1,152 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "apply",
+  "commands": [
+    {
+      "action": "apply",
+      "argv": [
+        "omaddons",
+        "apply",
+        "<ulid>"
+      ],
+      "command": "omaddons apply <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "applied": {
+      "command": "install",
+      "display_argv": [
+        "omaddons",
+        "install",
+        "gh:o/foo",
+        "-t",
+        "retail",
+        "--file",
+        "<root>/dl/foo.zip"
+      ]
+    },
+    "approved": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": "Foo",
+          "asset": "foo.zip",
+          "backup": null,
+          "channel": "stable",
+          "fields": [],
+          "from_version": null,
+          "op": "install",
+          "release_id": "gh:o/foo@sha256:7d368d9716a47c82e9f352818e9171bd38e5bbe8a93f51cfe92f8e410f0f886f",
+          "source": "github",
+          "target_id": "retail",
+          "target_key": null,
+          "to_version": "1",
+          "tx": null
+        }
+      ]
+    },
+    "outcomes": [
+      {
+        "error_code": null,
+        "key": null,
+        "status": "unchanged",
+        "target": "retail",
+        "tx": null
+      }
+    ],
+    "plan_id": "<ulid>",
+    "result": {
+      "approval": {
+        "reasons": [],
+        "routine": true,
+        "scope": {
+          "dependencies_added": [],
+          "folders_removed": [],
+          "local_changes_replaced": {
+            "count": 0,
+            "folders": []
+          },
+          "source_changed": [],
+          "while_running": false
+        },
+        "selection": [
+          {
+            "addon": "Foo",
+            "asset": "foo.zip",
+            "backup": null,
+            "channel": "stable",
+            "fields": [],
+            "from_version": null,
+            "op": "install",
+            "release_id": "gh:o/foo@sha256:7d368d9716a47c82e9f352818e9171bd38e5bbe8a93f51cfe92f8e410f0f886f",
+            "source": "github",
+            "target_id": "retail",
+            "target_key": null,
+            "to_version": "1",
+            "tx": null
+          }
+        ]
+      },
+      "atomic_swap": null,
+      "creates_addons_dir": false,
+      "dry_run": true,
+      "items": [
+        {
+          "bridge_dependencies": [],
+          "channel": "stable",
+          "error": null,
+          "folders": {
+            "added": [
+              "Foo"
+            ],
+            "recorded": [],
+            "removed": [],
+            "replaced": [],
+            "skipped": []
+          },
+          "from_version": null,
+          "name": "Foo",
+          "reason": "explicit",
+          "ref": "gh:o/foo",
+          "request": "gh:o/foo",
+          "required_by": [],
+          "status": "installed",
+          "to_version": "1",
+          "unresolved": [],
+          "version_confidence": "toc"
+        }
+      ],
+      "kind": "install",
+      "plan_expires_at": null,
+      "plan_id": null,
+      "precondition": "<precondition>",
+      "reload_required": "none",
+      "target": {
+        "id": "retail",
+        "key": null
+      },
+      "tx": null
+    }
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

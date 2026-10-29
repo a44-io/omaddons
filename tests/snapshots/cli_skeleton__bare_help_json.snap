@@ -137,6 +137,12 @@ expression: envelope
         "name": "undo"
       },
       {
+        "about": "Run exactly what a --dry-run stored (its plan id), target by target",
+        "aliases": [],
+        "group": "change",
+        "name": "apply"
+      },
+      {
         "about": "Each client's WTF/ backups: copies of its settings (bare: list them)",
         "aliases": [],
         "group": "change",

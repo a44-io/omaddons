@@ -61,6 +61,8 @@ pub(crate) const ITEM_ERROR: DetailSpec = DetailSpec::Object(&[
 
 /// `fsx/lock.rs::busy` serializes `HolderInfo`.
 pub(crate) const HOLDER: DetailSpec = DetailSpec::Object(&[
+    // A plan lease's holder (`apply`): how long it has held it, in whole seconds.
+    Field::opt("age_s", &INT),
     Field::req("command", &STR),
     Field::req("pid", &INT),
     Field::req("started_at", &STR),
@@ -101,6 +103,8 @@ pub(crate) const COMMON: DetailSpec = DetailSpec::Object(&[
 /// `cli.rs::misplaced`, `discover/registry.rs::validate_name`, and backup refusals.
 pub(crate) const USAGE: DetailSpec = DetailSpec::Object(&[
     Field::opt("command", &STR),
+    // `apply`'s refusal of a flag the plan already decides (`--target`, `--while-running`).
+    Field::opt("flag", &STR),
     Field::opt("holder", &STR),
     Field::opt("id", &STR),
     Field::opt("partial", &BOOL),
@@ -209,11 +213,14 @@ pub(crate) const NOT_MANAGED: DetailSpec = DetailSpec::Object(&[
     Field::opt("target", &STR),
 ]);
 
-/// `state/plans.rs::load`: every failure, including missing and oversized files.
+/// `state/plans.rs::load` (every failure, including missing and oversized files:
+/// `{plan_id, path, reason}`), `apply`'s lookup of an id or prefix (`{prefix}`) and its
+/// reload of a plan removed while it waited (`{plan_id, path}`).
 pub(crate) const PLAN_NOT_FOUND: DetailSpec = DetailSpec::Object(&[
-    Field::req("path", &STR),
-    Field::req("plan_id", &STR),
-    Field::req("reason", &DetailSpec::Enum(&["unreadable"])),
+    Field::opt("path", &STR),
+    Field::opt("plan_id", &STR),
+    Field::opt("prefix", &STR),
+    Field::opt("reason", &DetailSpec::Enum(&["unreadable"])),
 ]);
 
 /// `app/install.rs` client probing and `engine/plan.rs` candidate exhaustion.
@@ -397,9 +404,12 @@ pub(crate) const FILESYSTEM_UNSUPPORTED: DetailSpec = DetailSpec::Object(&[
 /// `backup/export.rs::file_exists` and the equivalent dry-run check in `app/backup.rs`.
 pub(crate) const FILE_EXISTS: DetailSpec = DetailSpec::Object(&[Field::req("file", &STR)]);
 
-/// `fsx/lock.rs::busy`; item aggregation can discard its holder evidence.
-pub(crate) const LOCKED: DetailSpec =
-    DetailSpec::Object(&[Field::opt("holder", &HOLDER).nullable()]);
+/// `fsx/lock.rs::busy`, and `apply`'s plan lease (`lease`, the plan id); item
+/// aggregation can discard its holder evidence.
+pub(crate) const LOCKED: DetailSpec = DetailSpec::Object(&[
+    Field::opt("holder", &HOLDER).nullable(),
+    Field::opt("lease", &STR),
+]);
 
 /// `app/errors.rs` incomplete/new error checks; other checks carry no details.
 pub(crate) const CHECK_FAILED: DetailSpec = DetailSpec::Object(&[
@@ -424,7 +434,9 @@ pub(crate) const HASH_MISMATCH: DetailSpec = DetailSpec::Object(&[
     Field::opt("tried", &TRIED),
 ]);
 
-/// Bound previews (`app/precondition.rs`) and re-planning (`engine/tx.rs`); `{}` elsewhere.
+/// Bound previews (`app/precondition.rs`), re-planning (`engine/tx.rs`) and `apply`'s
+/// refusal of a plan that can no longer apply (`reason`, with `txs` or `path`); `{}`
+/// elsewhere.
 pub(crate) const PLAN_STALE: DetailSpec = DetailSpec::Object(&[
     Field::opt("cause", &STR),
     Field::opt("cause_message", &STR),
@@ -437,6 +449,17 @@ pub(crate) const PLAN_STALE: DetailSpec = DetailSpec::Object(&[
             "observed",
         ])),
     ),
+    Field::opt("path", &STR),
+    Field::opt(
+        "reason",
+        &DetailSpec::Enum(&[
+            "already_applied",
+            "expired",
+            "binary_changed",
+            "input_missing",
+        ]),
+    ),
+    Field::opt("txs", &STRINGS),
 ]);
 
 /// `engine/plan.rs::offline_archive`; other offline refusals have no own details.

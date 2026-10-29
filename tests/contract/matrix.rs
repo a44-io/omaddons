@@ -692,6 +692,7 @@ fn install_with_dependencies() {
     // Every hint runs.
     for hint in c.envelope["commands"].as_array().unwrap() {
         let argv = support::strings(&hint["argv"]);
+        // ubs:ignore — comparing an action name, not a secret
         if hint["action"] == "install" {
             let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
             s.json(&args, 0);
@@ -925,6 +926,118 @@ fn remove_dry_run_stored() {
     log.assert_unchanged("client before removal preview", &s.home.root);
     log.assert_unchanged("state before removal preview", &s.home.state());
     insta::assert_json_snapshot!("remove_dry_run_stored", s.stable(&c.envelope));
+}
+
+/// `apply` (D5): a stored install applied, previewed again, applied twice, refused for
+/// an unknown id and for `--if-match`; and its data's wrapper union holding each
+/// command to its own result.
+#[test]
+fn apply() {
+    let s = Scene::new();
+    let c = s.json(&["apply", "01ZZZZZZZZZZZZZZZZZZZZZZZZ"], 3);
+    assert_eq!(c.envelope["error"]["code"], "plan_not_found");
+    insta::assert_json_snapshot!("apply_plan_not_found", s.stable(&c.envelope));
+
+    let zip = s.zip("foo");
+    let preview = s.json(
+        &[
+            "install",
+            "gh:o/foo",
+            "--file",
+            &zip,
+            "-t",
+            "retail",
+            "--dry-run",
+        ],
+        0,
+    );
+    let plan = stored_preview(&s, &preview.envelope);
+    let id = plan.plan_id.to_string();
+    let token = format!("pc1:{}", "0".repeat(64));
+    let c = s.json(&["apply", &id, "--if-match", &token], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+    insta::assert_json_snapshot!("apply_if_match", s.stable(&c.envelope));
+
+    let c = s.json(&["apply", &id, "--dry-run"], 0);
+    let data = &c.envelope["data"];
+    assert_eq!(data["applied"]["command"], "install", "{data}");
+    assert_eq!(
+        data["approved"],
+        serde_json::to_value(&plan.approval).unwrap()
+    );
+    assert_eq!(data["result"]["dry_run"], true, "{data}");
+    assert_eq!(data["outcomes"][0]["status"], "unchanged", "{data}");
+    let hint = c.envelope["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["action"] == "apply");
+    assert_eq!(
+        hint.map(|h| &h["argv"]),
+        Some(&serde_json::json!(["omaddons", "apply", id])),
+        "{}",
+        c.envelope["commands"]
+    );
+    insta::assert_json_snapshot!("apply_dry_run", s.stable(&c.envelope));
+
+    let c = s.json(&["apply", &id], 0);
+    let data = &c.envelope["data"];
+    assert_eq!(data["applied"]["command"], "install", "{data}");
+    assert_eq!(data["approved"], Value::Null, "{data}");
+    assert_eq!(data["outcomes"][0]["status"], "committed", "{data}");
+    assert_eq!(data["outcomes"][0]["tx"], data["result"]["tx"], "{data}");
+    insta::assert_json_snapshot!("apply_ok", s.stable(&c.envelope));
+    let applied = c.envelope.clone();
+
+    let c = s.json(&["apply", &id], 1);
+    assert_eq!(c.envelope["error"]["code"], "plan_stale");
+    assert_eq!(c.envelope["error"]["details"]["reason"], "already_applied");
+    assert_eq!(
+        c.envelope["error"]["details"]["txs"],
+        serde_json::json!([applied["data"]["result"]["tx"]])
+    );
+    insta::assert_json_snapshot!("apply_already_applied", s.stable(&c.envelope));
+
+    // The wrapper union: each command with its own result only.
+    assert_eq!(validate::validate_envelope(&applied, ""), Ok(()));
+    let mut mismatched = applied.clone();
+    mismatched["data"]["applied"]["command"] = serde_json::json!("update");
+    assert!(
+        validate::validate_envelope(&mismatched, "").is_err(),
+        "an install's result under applied.command update validates: {mismatched}"
+    );
+    let mut unknown = applied.clone();
+    unknown["data"]["result"]["bogus"] = serde_json::json!(true);
+    let refused = validate::validate_envelope(&unknown, "").unwrap_err();
+    assert!(refused.contains("/result"), "{refused}");
+
+    // An applied update validates too.
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    let both = "## Interface: 120105, 50504\n## Version: 4\n";
+    let wa: [common::http::Asset<'_>; 1] = [(
+        "WeakAuras.zip",
+        &[("mainline", 120_105), ("mists", 50_504)],
+        vec![("WeakAuras/WeakAuras.toc", both)],
+    )];
+    let base = "https://github.com/WeakAuras/WeakAuras2";
+    common::http::gh_release_v(&s.home.http, base, "5.20.0", &wa);
+    common::http::gh_latest(&s.home.http, base, "5.20.0");
+    let preview = s.json(
+        &[
+            "update",
+            "WeakAuras",
+            "-t",
+            "retail",
+            "--refresh",
+            "--dry-run",
+        ],
+        0,
+    );
+    let id = stored_preview(&s, &preview.envelope).plan_id.to_string();
+    let c = s.json(&["apply", &id], 0);
+    assert_eq!(c.envelope["data"]["applied"]["command"], "update");
+    assert_eq!(c.envelope["data"]["outcomes"][0]["status"], "committed");
+    assert_eq!(validate::validate_envelope(&c.envelope, ""), Ok(()));
 }
 
 #[cfg(test)]
@@ -1796,6 +1909,7 @@ fn target_all() {
     let mut doc: Value = serde_json::from_str(&text).unwrap();
     log.json("registry before", &doc);
     for target in doc["targets"].as_array_mut().into_iter().flatten() {
+        // ubs:ignore — comparing a target id, not a secret
         if target["id"] == "classic" {
             target["id"] = Value::from("all");
         }

@@ -1,0 +1,26 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "apply",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons help apply",
+    "fix_argv": [
+      "omaddons",
+      "help",
+      "apply"
+    ],
+    "message": "--if-match binds a run to its preview, and only remove, undo, backup restore, backup prune, errors dismiss, install, update, pin, unpin, adopt, sync and copy take it, not apply",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

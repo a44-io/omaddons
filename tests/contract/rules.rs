@@ -221,6 +221,13 @@ fn line(rule: &str, scope: &str, path: &str) -> String {
 }
 
 /// Whether `path` lies strictly below `prefix`.
+/// Whether `value` is a registered command's canonical path.
+fn is_command_path(value: &str) -> bool {
+    omaddons::app::COMMANDS
+        .iter()
+        .any(|entry| entry.name == value)
+}
+
 fn below(path: &str, prefix: &str) -> bool {
     path.strip_prefix(prefix)
         .is_some_and(|rest| rest.starts_with(['.', '[', '{']))
@@ -365,9 +372,14 @@ fn property_rules(kind: Kind, name: &str, required: bool, facts: &Facts) -> Vec<
 fn violations(roots: &[Root], file_kinds: &[String]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for root in roots {
-        // The frame's `data` is each command's schema, and its `error` each code's.
+        // The frame's `data` is each command's schema, and its `error` each code's;
+        // `apply`'s `result` is each storable command's data and its `approved` the
+        // approval those carry, each checked in its own root.
         let mut pruned: Vec<String> = match root.kind {
             Kind::Envelope => vec!["data".to_owned(), "error".to_owned()],
+            Kind::Command if root.scope == "command apply" => {
+                vec!["result".to_owned(), "approved".to_owned()]
+            }
             _ => Vec::new(),
         };
         walk(&root.schema, &mut |visit| {
@@ -386,8 +398,10 @@ fn violations(roots: &[Root], file_kinds: &[String]) -> BTreeSet<String> {
                             .into_iter()
                             .flatten(),
                     );
+                    // A command path (`backup restore`) is a command name (rule 5), the
+                    // string the envelope's `command` holds, never an enumeration value.
                     for value in values.filter_map(Value::as_str) {
-                        if !snake(value) {
+                        if !snake(value) && !is_command_path(value) {
                             out.insert(line("r4-value-case", &root.scope, path));
                         }
                     }

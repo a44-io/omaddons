@@ -7,9 +7,13 @@
 
 use std::borrow::Cow;
 use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use jiff::Timestamp;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::Serialize;
+use serde_json::json;
 
 use super::adopt::{self, AdoptArgs, AdoptData, AdoptOutcome};
 use super::approval::Approval;
@@ -18,18 +22,26 @@ use super::backup::{
     BackupRestoreData, BackupRestoreOutcome,
 };
 use super::copy::{self, CopyArgs, CopyOutcome};
+use super::history::MIN_PREFIX;
 use super::install::{self, InstallArgs, InstallData, InstallOutcome};
-use super::intent::StoredIntent;
+use super::intent::{AbsPath, StoredIntent};
 use super::outcome::{ItemStatus, TargetsData};
 use super::pin::{self, PinArgs, PinOutcome, UnpinArgs};
+use super::precondition;
 use super::remove::{self, RemoveArgs, RemoveData, RemoveOutcome, RemoveStatus};
 use super::sync::{self, SyncArgs, SyncOutcome};
 use super::undo::{self, UndoArgs, UndoData, UndoOutcome, UndoTxStatus};
 use super::update::{self, UpdateArgs, UpdateOutcome};
 use crate::cli::Context;
-use crate::error::{CommandHint, Error, ErrorCode, Result, Warning};
+use crate::contract::actions::Action;
+use crate::error::{CommandHint, Error, ErrorCode, PlanStaleSource, Result, Suggestion, Warning};
+use crate::fsx::{HolderInfo, Lease, LeaseError, LeaseGuard, ScopeTable};
+use crate::limits::{PLAN_EVIDENCE_LINES_MAX, PLAN_LEASE_TIMEOUT};
 use crate::model::{PlanId, TargetKey, TxId};
 use crate::output::{Outcome, Style};
+use crate::state::history::{self, PlanEvidence};
+use crate::state::paths::Paths;
+use crate::state::plans::{self, Found, StoredPlan};
 
 /// One row per storable command, in the plan's order (M4-D22): its intent variant and
 /// path, its arguments, its own `run`, the outcome that returns and that outcome's data.
@@ -525,6 +537,476 @@ impl ResultData for BackupPruneData {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// The command (M4-D23, M4-D61).
+
+/// `apply`'s own arguments.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct ApplyArgs {
+    /// The plan a --dry-run stored (data.plan_id): its id, or a unique prefix of 8+
+    /// characters
+    #[arg(value_name = "PLAN_ID")]
+    pub plan_id: String,
+}
+
+/// `apply`'s outcome: the executed command's, wrapped.
+#[derive(Debug)]
+pub struct ApplyOutcome {
+    data: ApplyData,
+    executed: StorableOutcome,
+    /// The executed outcome's, then (a dry run) the `apply` hint.
+    commands: Vec<CommandHint>,
+    /// `apply`'s own `-v` notes, then the executed outcome's.
+    notes: Vec<String>,
+    /// A dry run's last human line.
+    dry_run_hint: Option<String>,
+}
+
+impl ApplyOutcome {
+    fn new(
+        plan: &StoredPlan,
+        dry_run: bool,
+        executed: StorableOutcome,
+        outcomes: Vec<TargetOutcome>,
+        mut notes: Vec<String>,
+    ) -> Self {
+        let data = ApplyData::new(
+            plan.plan_id,
+            plan.display_argv.clone(),
+            dry_run.then(|| plan.approval.clone()),
+            &executed,
+            outcomes,
+        );
+        let mut commands = executed.commands().to_vec();
+        let dry_run_hint = dry_run.then(|| {
+            commands.push(apply_hint(plan.plan_id, plan.intent.destructive()));
+            format!(
+                "Plan {} still applies: omaddons apply {}",
+                super::history::short_id(&plan.plan_id.to_string()),
+                plan.plan_id
+            )
+        });
+        notes.extend(super::SideEvents::notes(&executed).iter().cloned());
+        Self {
+            data,
+            executed,
+            commands,
+            notes,
+            dry_run_hint,
+        }
+    }
+}
+
+/// `omaddons apply <plan_id>`, as destructive as the plan's command.
+pub fn apply_hint(plan_id: PlanId, destructive: bool) -> CommandHint {
+    CommandHint::new(
+        Action::Apply,
+        [
+            "omaddons".to_owned(),
+            "apply".to_owned(),
+            plan_id.to_string(),
+        ],
+    )
+    .with_destructive(destructive)
+}
+
+impl Outcome for ApplyOutcome {
+    type Data = ApplyData;
+
+    fn command(&self) -> &'static str {
+        "apply"
+    }
+
+    fn data(&self) -> &ApplyData {
+        &self.data
+    }
+
+    fn warnings(&self) -> &[Warning] {
+        self.executed.warnings()
+    }
+
+    fn commands(&self) -> &[CommandHint] {
+        &self.commands
+    }
+
+    fn partial(&self) -> bool {
+        self.executed.partial()
+    }
+
+    fn assertion_failure(&self) -> Option<Error> {
+        self.executed.assertion_failure()
+    }
+
+    /// The executed command's own output, then a dry run's hint line.
+    fn render_human(&self, w: &mut dyn Write, style: &Style) -> std::io::Result<()> {
+        self.executed.render_human(w, style)?;
+        if let Some(line) = &self.dry_run_hint {
+            writeln!(w, "{line}")?;
+        }
+        Ok(())
+    }
+}
+
+impl super::SideEvents for ApplyOutcome {
+    fn notes(&self) -> &[String] {
+        &self.notes
+    }
+
+    fn locks(&self) -> Vec<(TxId, u64)> {
+        super::SideEvents::locks(&self.executed)
+    }
+}
+
+/// Runs `apply`: the plan `args` names, checked, executed by its command's own `run` in
+/// a context derived from it, and wrapped. A real run holds the plan's lease from before
+/// its checks until every target's outcome is known, and releases it before rendering.
+pub fn run(ctx: &Context, args: &ApplyArgs) -> Result<ApplyOutcome> {
+    refuse_own_flags(ctx)?;
+    let paths = Paths::from_env()?;
+    let path = resolve(ctx, &paths, &args.plan_id)?;
+    let mut plan = plans::load(&path)?;
+    let lease = if ctx.dry_run {
+        None
+    } else {
+        let guard = take_lease(&paths, &plan.plan_id, PLAN_LEASE_TIMEOUT)?;
+        // What the wait may have let another applier commit is read again.
+        plan = reload(&path, &plan.plan_id)?;
+        Some(guard)
+    };
+    let mut notes = Vec::new();
+    check_lifecycle_now(&paths, &plan, &mut notes)?;
+    refuse_offline(ctx, &plan)?;
+    let applied = applied_context(ctx, &plan);
+    let executed = plan.intent.execute(&applied)?;
+    if ctx.dry_run {
+        check_dry_run_token(&plan, &executed)?;
+    }
+    let outcomes = executed.target_outcomes();
+    drop(lease);
+    Ok(ApplyOutcome::new(
+        &plan,
+        ctx.dry_run,
+        executed,
+        outcomes,
+        notes,
+    ))
+}
+
+/// `-t` and `--while-running` refused before anything is read: the plan names its
+/// clients and the running policy it was approved under. (`--if-match` never gets here:
+/// `Context::new` refuses it, the plan carrying its own token.)
+fn refuse_own_flags(ctx: &Context) -> Result<()> {
+    if ctx.target.is_some() {
+        let fix = crate::cli::without_target(&ctx.argv).map_or_else(
+            || Suggestion::text("drop the -t option"),
+            Suggestion::command,
+        );
+        return Err(Error::new(
+            ErrorCode::Usage,
+            "apply runs the plan's own targets: drop -t",
+            fix,
+        )
+        .user_verb()
+        .details(json!({ "flag": "--target" })));
+    }
+    if ctx.while_running {
+        let argv = crate::cli::without_switch(&ctx.argv, "--while-running");
+        return Err(Error::new(
+            ErrorCode::Usage,
+            "a plan's running-client policy is part of what was approved: drop --while-running, or preview again with it",
+            Suggestion::command(crate::cli::fix_argv(&argv)),
+        )
+        .user_verb()
+        .details(json!({ "flag": "--while-running" })));
+    }
+    Ok(())
+}
+
+/// The plan file `given` names: a full id or a unique prefix of 8+ characters.
+fn resolve(ctx: &Context, paths: &Paths, given: &str) -> Result<PathBuf> {
+    let found = if given.chars().count() < MIN_PREFIX {
+        None
+    } else {
+        Some(plans::find(paths, given)?)
+    };
+    let cut = match found {
+        Some(Found::One { path, .. }) => return Ok(path),
+        Some(Found::Many(ids)) => return Err(ambiguous(given, &ids)),
+        Some(Found::None { cut }) => cut,
+        None => false,
+    };
+    if let Some(hint) = folder_hint(ctx, given)? {
+        return Err(hint);
+    }
+    if found.is_none() {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            format!("a plan id prefix needs at least {MIN_PREFIX} characters, not {given:?}"),
+            Suggestion::command(["omaddons", "help", "apply"]),
+        ));
+    }
+    let more = if cut {
+        "; the plan directory holds more files than one listing reads, so give the full id"
+    } else {
+        ""
+    };
+    Err(Error::new(
+        ErrorCode::PlanNotFound,
+        format!(
+            "no stored plan has an id starting with {given}; plans last 24 hours and an emptied cache removes them: run the command again with --dry-run{more}"
+        ),
+        Suggestion::command(["omaddons", "help", "apply"]),
+    )
+    .alternative(Suggestion::command(["omaddons", "adopt", "--apply"]))
+    .details(json!({ "prefix": given })))
+}
+
+/// What `apply <word>` meant when `word` names no plan (M4-D27): `None` until the hints
+/// subtask (omad-m4-agent-surface-doctor-c6cm.4.5.5) fills it in.
+fn folder_hint(_ctx: &Context, _given: &str) -> Result<Option<Error>> {
+    Ok(None)
+}
+
+/// Several plans start with `given`: the first's dry run is the fix, each an alternative.
+fn ambiguous(given: &str, ids: &[PlanId]) -> Error {
+    let names: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    let apply = |id: &str| Suggestion::command(["omaddons", "apply", id]);
+    let first = names.first().cloned().unwrap_or_default();
+    let mut error = Error::new(
+        ErrorCode::RefAmbiguous,
+        format!(
+            "{} stored plans have ids starting with {given}: {}",
+            names.len(),
+            names.join(", ")
+        ),
+        Suggestion::command(["omaddons", "apply", first.as_str(), "--dry-run"]),
+    )
+    .details(json!({ "prefix": given, "candidates": names }));
+    for id in &names {
+        error = error.alternative(apply(id));
+    }
+    error
+}
+
+/// The plan's lease (M4-D61): one applier at a time, waiting at most `timeout`.
+fn take_lease(paths: &Paths, id: &PlanId, timeout: Duration) -> Result<LeaseGuard> {
+    let path = paths.plan_lease(id);
+    let scopes = ScopeTable::new(paths, &[], None)?;
+    Lease::acquire(&scopes, &path, "apply", timeout).map_err(|err| match err {
+        LeaseError::Busy { holder, waited } => {
+            busy(id, holder.as_ref(), waited, crate::clock::now())
+        }
+        LeaseError::Refused(why) => Error::new(
+            ErrorCode::ScopeDenied,
+            format!("plan {id}'s lease cannot be taken: {why}"),
+            Suggestion::command(["omaddons", "status"]),
+        ),
+        LeaseError::Io(err) => Error::io(&path, &err, Suggestion::command(["omaddons", "status"])),
+    })
+}
+
+/// `locked`: another `apply` held the plan's lease for the whole wait.
+fn busy(id: &PlanId, holder: Option<&HolderInfo>, waited: Duration, now: Timestamp) -> Error {
+    let by = holder.map_or_else(
+        || "another omaddons process".to_owned(),
+        |h| {
+            let age = age_s(h.started_at, now);
+            format!("omaddons {} (pid {}, for {age} s)", h.command, h.pid)
+        },
+    );
+    let holder = holder.map(|h| {
+        json!({
+            "pid": h.pid,
+            "command": h.command,
+            "started_at": h.started_at.to_string(),
+            "age_s": age_s(h.started_at, now),
+        })
+    });
+    Error::new(
+        ErrorCode::Locked,
+        format!(
+            "plan {id} is being applied by {by}; waited {} s",
+            waited.as_secs()
+        ),
+        Suggestion::text("wait for the other apply to finish, then retry"),
+    )
+    .details(json!({ "lease": id.to_string(), "holder": holder }))
+}
+
+/// Whole seconds from `started_at` to `now`, never negative.
+fn age_s(started_at: Timestamp, now: Timestamp) -> i64 {
+    now.duration_since(started_at).as_secs().max(0)
+}
+
+/// The plan read again under its lease; a plan removed while it waited is
+/// `plan_not_found`.
+fn reload(path: &Path, id: &PlanId) -> Result<StoredPlan> {
+    match std::fs::symlink_metadata(path) {
+        // ubs:ignore — an io::ErrorKind, not a secret
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(Error::new(
+            ErrorCode::PlanNotFound,
+            format!("plan {id} was removed while this apply waited for it"),
+            Suggestion::text("preview the change again: run its command with --dry-run"),
+        )
+        .details(json!({ "plan_id": id.to_string(), "path": path.display().to_string() }))),
+        _ => plans::load(path),
+    }
+}
+
+/// [`check_lifecycle`] with what it reads: the history scan, the clock, this build and
+/// the plan's local inputs. An incomplete scan that found nothing is a `-v` note, not a
+/// refusal: the token's generations still refuse a second application.
+fn check_lifecycle_now(paths: &Paths, plan: &StoredPlan, notes: &mut Vec<String>) -> Result<()> {
+    let evidence = history::plan_evidence(
+        paths,
+        &plan.plan_id,
+        plan.created_at,
+        PLAN_EVIDENCE_LINES_MAX,
+    )?;
+    if !evidence.complete && evidence.lines.is_empty() {
+        notes.push(format!(
+            "the history scan for plan {} stopped after {} lines; the token's generations still refuse a second application",
+            plan.plan_id, evidence.scanned
+        ));
+    }
+    let missing = plan.intent.inputs().into_iter().find(|input| {
+        std::fs::metadata(input.as_path()).is_err_and(|err| {
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            )
+        })
+    });
+    check_lifecycle(
+        plan,
+        crate::clock::now(),
+        crate::build_info::BUILD_ID,
+        &evidence,
+        missing,
+    )
+}
+
+/// The refusals of a plan that can no longer apply, in order: `already_applied`,
+/// `expired`, `binary_changed`, `input_missing`. Each is `plan_stale`, never retryable,
+/// whose fix is the plan's dry run.
+fn check_lifecycle(
+    plan: &StoredPlan,
+    now: Timestamp,
+    build_id: &str,
+    evidence: &PlanEvidence,
+    missing: Option<&AbsPath>,
+) -> Result<()> {
+    let id = plan.plan_id;
+    let stale = |message: String, details: serde_json::Value| {
+        Error::plan_stale(
+            PlanStaleSource::Apply,
+            message,
+            Suggestion::command(precondition::preview_argv(&plan.display_argv)),
+        )
+        .details(details)
+    };
+    if !evidence.lines.is_empty() {
+        let txs: Vec<String> = evidence.lines.iter().map(|l| l.tx.to_string()).collect();
+        return Err(stale(
+            format!(
+                "plan {id} was already applied: history records tx {}; nothing was changed",
+                txs.join(", ")
+            ),
+            json!({ "changed": [], "reason": "already_applied", "txs": txs }),
+        ));
+    }
+    if now > plan.expires_at {
+        return Err(stale(
+            format!(
+                "plan {id} expired at {} (plans last 24 hours); nothing was changed",
+                plan.expires_at
+            ),
+            json!({ "changed": [], "reason": "expired" }),
+        ));
+    }
+    if plan.build_id != build_id {
+        return Err(stale(
+            format!(
+                "plan {id} was made by another omaddons build; nothing was changed: preview it again with this one"
+            ),
+            json!({ "changed": [], "reason": "binary_changed" }),
+        ));
+    }
+    if let Some(path) = missing {
+        return Err(stale(
+            format!("plan {id} installs from {path}, which is gone; nothing was changed"),
+            json!({ "changed": [], "reason": "input_missing", "path": path.as_str() }),
+        ));
+    }
+    Ok(())
+}
+
+/// Whether applying `plan` needs the network: a release it installs from a URL, or
+/// from a deferred asset resolved for each download. Local files and records need none.
+fn needs_network(plan: &StoredPlan) -> bool {
+    plan.releases
+        .iter()
+        .any(|r| r.url.is_some() || r.source.is_some())
+}
+
+/// `offline` before anything runs, when an offline `apply` could not check the plan's
+/// sources again (M4-D20): offline-ness is `apply`'s own, never the preview's.
+fn refuse_offline(ctx: &Context, plan: &StoredPlan) -> Result<()> {
+    if ctx.offline && needs_network(plan) {
+        return Err(Error::new(
+            ErrorCode::Offline,
+            format!(
+                "plan {} installs releases from their sources, which apply checks again first; --offline forbids that",
+                plan.plan_id
+            ),
+            Suggestion::text("run without --offline and with OMADDONS_OFFLINE unset"),
+        ));
+    }
+    Ok(())
+}
+
+/// The context the plan's command runs in: its own path and approved argv, the clients
+/// and running policy the plan names, bound to its token, revalidating every source,
+/// recording the plan (M4-D20, M4-D25). The actor, the output, offline-ness and the dry
+/// run are `apply`'s; the reason is `apply`'s, else the preview's.
+fn applied_context(ctx: &Context, plan: &StoredPlan) -> Context {
+    Context {
+        command: plan.intent.command_path(),
+        argv: plan.display_argv.clone(),
+        target: plan.intent.target_selector(),
+        while_running: plan.intent.while_running(),
+        if_match: Some(plan.precondition.token.clone()),
+        force_revalidate: true,
+        applying: Some(plan.plan_id),
+        reason: ctx.reason.clone().or_else(|| plan.reason.clone()),
+        ..ctx.clone()
+    }
+}
+
+/// `apply --dry-run`'s staleness: the fresh preview's token against the stored one. The
+/// engine commands' bound dry runs refuse on their own; `remove`, `undo` and the backup
+/// commands preview afresh, so this is how a changed world reaches them.
+fn check_dry_run_token(plan: &StoredPlan, executed: &StorableOutcome) -> Result<()> {
+    let changed = match executed.precondition() {
+        Some(fresh) => precondition::changed_parts(&plan.precondition.token, fresh),
+        None => precondition::Part::ALL.to_vec(),
+    };
+    if changed.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<&str> = changed.iter().map(|p| p.wire()).collect();
+    Err(Error::plan_stale(
+        PlanStaleSource::Apply,
+        format!(
+            "plan {} no longer describes the world ({} changed); nothing was changed: preview it again",
+            plan.plan_id,
+            names.join(", ")
+        ),
+        Suggestion::command(precondition::preview_argv(&plan.display_argv)),
+    )
+    .details(json!({ "changed": names })))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
@@ -817,6 +1299,433 @@ mod tests {
             tx,
             error_code,
         }
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The command.
+
+    const PLAN: &str = "01M9P0000000000000000000PA";
+    const CREATED: &str = "2026-10-27T12:00:00Z";
+    const BUILD: &str = "build-a";
+
+    fn install_intent(while_running: bool) -> crate::app::intent::InstallIntent {
+        crate::app::intent::InstallIntent {
+            refs: vec![crate::app::intent::NormalizedRef::File(
+                AbsPath::new("/home/u/Foo.zip".into()).unwrap(),
+            )],
+            target: crate::model::TargetRef::Key(key(RETAIL)),
+            target_id: "retail".into(),
+            channel: None,
+            version: None,
+            file: None,
+            reinstall: false,
+            no_deps: false,
+            force: false,
+            strict: false,
+            refresh: false,
+            any_flavor: false,
+            no_any_flavor: false,
+            while_running,
+        }
+    }
+
+    fn stored_plan(intent: StoredIntent, releases: Vec<plans::StoredRelease>) -> StoredPlan {
+        let created_at: Timestamp = CREATED.parse().unwrap();
+        StoredPlan {
+            plan_id: PLAN.parse().unwrap(),
+            created_at,
+            expires_at: created_at
+                .checked_add(jiff::SignedDuration::from_hours(24))
+                .unwrap(),
+            tool_version: "0.1.0".into(),
+            build_id: BUILD.into(),
+            display_argv: intent.display_argv(),
+            intent,
+            actor: crate::model::Actor::Agent,
+            reason: Some("from the preview".into()),
+            precondition: plans::StoredPrecondition {
+                token: format!("pc1:{}", "a".repeat(64)),
+                parts: plans::StoredParts {
+                    command: serde_json::json!("install"),
+                    targets: serde_json::json!([]),
+                    selection: serde_json::json!(null),
+                    observed: serde_json::json!(null),
+                },
+            },
+            releases,
+            approval: Approval::nothing(&crate::app::approval::ApprovalFlags::default()),
+            summary: Vec::new(),
+        }
+    }
+
+    fn release(
+        url: Option<&str>,
+        source: Option<crate::sources::SourceId>,
+    ) -> plans::StoredRelease {
+        plans::StoredRelease {
+            release_id: "gh:o/foo@v1".into(),
+            source,
+            key: source.map(|_| "elvui".to_owned()),
+            url: url.map(str::to_owned),
+            expected_hash: None,
+            blob_sha256: None,
+        }
+    }
+
+    fn ctx(argv: &[&str], reason: Option<&str>) -> Context {
+        Context {
+            output: crate::output::OutputConfig::machine(),
+            command: "apply",
+            actor: crate::model::Actor::Human,
+            reason: reason.map(str::to_owned),
+            argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+            offline: false,
+            offline_by_env: false,
+            dry_run: false,
+            while_running: false,
+            if_match: None,
+            target: None,
+            started: std::time::Instant::now(),
+            progress: crate::output::ProgressSink::none(),
+            notes: crate::output::RunNotes::default(),
+            stdin_is_tty: false,
+            force_revalidate: false,
+            applying: None,
+        }
+    }
+
+    fn evidence(txs: &[TxId]) -> PlanEvidence {
+        PlanEvidence {
+            lines: txs
+                .iter()
+                .map(|tx| history::PlanLine {
+                    tx: *tx,
+                    target: Some(key(RETAIL)),
+                    kind: TxKind::Install,
+                    at: "2026-10-27T13:00:00Z".parse().unwrap(),
+                    run: None,
+                })
+                .collect(),
+            complete: true,
+            scanned: txs.len(),
+        }
+    }
+
+    /// A lifecycle case: its name, now, the running build, the transactions history holds
+    /// for the plan, whether its input is gone, and the refusal's details (`None`: none).
+    type LifecycleCase = (
+        &'static str,
+        &'static str,
+        &'static str,
+        Vec<TxId>,
+        bool,
+        Option<Value>,
+    );
+
+    #[test]
+    fn lifecycle_checks_in_order() {
+        let plan = stored_plan(StoredIntent::Install(install_intent(false)), Vec::new());
+        let gone = AbsPath::new("/home/u/Foo.zip".into()).unwrap();
+        let (fresh, late) = ("2026-10-27T18:00:00Z", "2026-10-29T00:00:00Z");
+        let applied = vec![tx(1)];
+        let cases: Vec<LifecycleCase> = vec![
+            ("all_clear", fresh, BUILD, vec![], false, None),
+            (
+                "already_applied",
+                fresh,
+                BUILD,
+                applied.clone(),
+                false,
+                Some(
+                    serde_json::json!({"changed": [], "reason": "already_applied", "txs": [tx(1).to_string()]}),
+                ),
+            ),
+            (
+                "expired",
+                late,
+                BUILD,
+                vec![],
+                false,
+                Some(serde_json::json!({"changed": [], "reason": "expired"})),
+            ),
+            (
+                "binary_changed",
+                fresh,
+                "build-b",
+                vec![],
+                false,
+                Some(serde_json::json!({"changed": [], "reason": "binary_changed"})),
+            ),
+            (
+                "input_missing",
+                fresh,
+                BUILD,
+                vec![],
+                true,
+                Some(
+                    serde_json::json!({"changed": [], "reason": "input_missing", "path": "/home/u/Foo.zip"}),
+                ),
+            ),
+            (
+                "applied_and_expired_is_already_applied",
+                late,
+                BUILD,
+                applied.clone(),
+                false,
+                Some(
+                    serde_json::json!({"changed": [], "reason": "already_applied", "txs": [tx(1).to_string()]}),
+                ),
+            ),
+            (
+                "expired_and_rebuilt_is_expired",
+                late,
+                "build-b",
+                vec![],
+                false,
+                Some(serde_json::json!({"changed": [], "reason": "expired"})),
+            ),
+            (
+                "rebuilt_and_input_gone_is_binary_changed",
+                fresh,
+                "build-b",
+                vec![],
+                true,
+                Some(serde_json::json!({"changed": [], "reason": "binary_changed"})),
+            ),
+        ];
+        for (name, now, build, txs, missing, want) in cases {
+            let got = check_lifecycle(
+                &plan,
+                now.parse().unwrap(),
+                build,
+                &evidence(&txs),
+                missing.then_some(&gone),
+            );
+            match (got, want) {
+                (Ok(()), None) => {}
+                (Err(error), Some(details)) => {
+                    assert_eq!(
+                        (error.code, error.retryable, &error.details),
+                        (ErrorCode::PlanStale, false, &details),
+                        "{name}: {error:?}"
+                    );
+                    assert_eq!(
+                        error.fix.argv(),
+                        Some(&precondition::preview_argv(&plan.display_argv)[..]),
+                        "{name}: the plan's dry run"
+                    );
+                }
+                (got, want) => unreachable!("{name}: got {got:?}, wanted {want:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn applied_context_sets_each_field() {
+        let plan = stored_plan(StoredIntent::Install(install_intent(true)), Vec::new());
+        let mut own = ctx(&["omaddons", "apply", PLAN], None);
+        own.dry_run = true;
+        own.offline = true;
+        let applied = applied_context(&own, &plan);
+        assert_eq!(applied.command, "install");
+        assert_eq!(applied.argv, plan.display_argv);
+        assert_eq!(
+            applied.target.as_deref(),
+            Some(RETAIL),
+            "the plan's client, by key"
+        );
+        assert!(applied.while_running, "the approved policy");
+        assert_eq!(applied.if_match.as_ref(), Some(&plan.precondition.token));
+        assert!(applied.force_revalidate);
+        assert_eq!(applied.applying, Some(plan.plan_id));
+        assert_eq!(
+            applied.reason.as_deref(),
+            Some("from the preview"),
+            "the preview's"
+        );
+        assert_eq!(
+            (applied.actor, applied.dry_run, applied.offline),
+            (crate::model::Actor::Human, true, true),
+            "apply's own"
+        );
+        let with_reason = applied_context(&ctx(&["omaddons", "apply", PLAN], Some("now")), &plan);
+        assert_eq!(
+            with_reason.reason.as_deref(),
+            Some("now"),
+            "apply's own --reason wins"
+        );
+    }
+
+    #[test]
+    fn needs_network_cases() {
+        use crate::sources::SourceId;
+        let intent = || StoredIntent::Install(install_intent(false));
+        for (name, releases, want) in [
+            (
+                "direct_url",
+                vec![release(
+                    Some("https://github.com/o/foo/releases/download/v1/Foo.zip"),
+                    None,
+                )],
+                true,
+            ),
+            (
+                "deferred_asset",
+                vec![release(None, Some(SourceId::Tukui))],
+                true,
+            ),
+            ("local_zip", vec![release(None, None)], false),
+            ("no_release", vec![], false),
+            (
+                "mixed",
+                vec![
+                    release(None, None),
+                    release(Some("https://example.invalid/x.zip"), None),
+                ],
+                true,
+            ),
+        ] {
+            assert_eq!(
+                needs_network(&stored_plan(intent(), releases)),
+                want,
+                "{name}"
+            );
+        }
+    }
+
+    /// A refused flag's case: its name, the argv, whether the flag is `--while-running`
+    /// (else `-t`), the fix's argv (`None`: prose) and `details.flag`.
+    type FlagCase = (
+        &'static str,
+        &'static [&'static str],
+        bool,
+        Option<&'static [&'static str]>,
+        &'static str,
+    );
+
+    #[test]
+    fn refused_flags() {
+        let cases: [FlagCase; 5] = [
+            (
+                "short_t",
+                &["omaddons", "apply", PLAN, "-t", "retail"],
+                false,
+                Some(&["omaddons", "apply", PLAN]),
+                "--target",
+            ),
+            (
+                "long_equals",
+                &["omaddons", "apply", PLAN, "--target=retail"],
+                false,
+                Some(&["omaddons", "apply", PLAN]),
+                "--target",
+            ),
+            (
+                "flavor",
+                &["omaddons", "apply", PLAN, "--flavor", "retail"],
+                false,
+                Some(&["omaddons", "apply", PLAN]),
+                "--target",
+            ),
+            (
+                "cluster",
+                &["omaddons", "apply", PLAN, "-vt", "retail"],
+                false,
+                None,
+                "--target",
+            ),
+            (
+                "while_running",
+                &["omaddons", "apply", PLAN, "--while-running"],
+                true,
+                Some(&["omaddons", "apply", PLAN]),
+                "--while-running",
+            ),
+        ];
+        for (name, argv, while_running, fix, flag) in cases {
+            let mut c = ctx(argv, None);
+            if while_running {
+                c.while_running = true;
+            } else {
+                c.target = Some("retail".into());
+            }
+            let error = refuse_own_flags(&c).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Usage, "{name}");
+            assert_eq!(error.details, serde_json::json!({ "flag": flag }), "{name}");
+            let want: Option<Vec<String>> =
+                fix.map(|f| f.iter().map(|a| (*a).to_owned()).collect());
+            assert_eq!(
+                error.fix.argv().map(<[String]>::to_vec),
+                want,
+                "{name}: {:?}",
+                error.fix
+            );
+        }
+        assert!(refuse_own_flags(&ctx(&["omaddons", "apply", PLAN], None)).is_ok());
+    }
+
+    #[test]
+    fn lease_timeout_is_locked_with_the_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::with_roots(&root, root.join("c"), root.join("s"), root.join("k"));
+        std::fs::create_dir_all(paths.plans_dir()).unwrap();
+        let id: PlanId = PLAN.parse().unwrap();
+        let held = take_lease(&paths, &id, Duration::from_millis(50)).unwrap();
+        let error = take_lease(&paths, &id, Duration::from_millis(50)).unwrap_err();
+        drop(held);
+        assert_eq!(
+            (error.code, error.retryable),
+            (ErrorCode::Locked, true),
+            "{error:?}"
+        );
+        assert_eq!(error.details["lease"], PLAN, "{}", error.details);
+        let holder = &error.details["holder"];
+        assert_eq!(holder["pid"], std::process::id(), "{holder}");
+        assert_eq!(holder["command"], "apply", "{holder}");
+        assert!(
+            holder["age_s"].as_i64().is_some_and(|age| age >= 0),
+            "{holder}"
+        );
+        assert!(
+            take_lease(&paths, &id, Duration::from_millis(50)).is_ok(),
+            "released"
+        );
+    }
+
+    #[test]
+    fn lease_with_an_unreadable_holder_line_reports_null() {
+        let id: PlanId = PLAN.parse().unwrap();
+        let error = busy(
+            &id,
+            None,
+            Duration::from_millis(50),
+            CREATED.parse().unwrap(),
+        );
+        assert_eq!(
+            error.details,
+            serde_json::json!({ "lease": PLAN, "holder": null })
+        );
+        assert!(
+            error.message.contains("another omaddons process"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn lease_age_never_negative() {
+        let id: PlanId = PLAN.parse().unwrap();
+        let now: Timestamp = CREATED.parse().unwrap();
+        let ahead = HolderInfo {
+            pid: 7,
+            command: "apply".into(),
+            started_at: now
+                .checked_add(jiff::SignedDuration::from_hours(1))
+                .unwrap(),
+        };
+        let error = busy(&id, Some(&ahead), Duration::from_millis(50), now);
+        assert_eq!(error.details["holder"]["age_s"], 0, "{}", error.details);
     }
 
     #[test]

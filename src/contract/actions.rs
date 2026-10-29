@@ -75,6 +75,9 @@ actions! {
     ReinstallWidget = "reinstall_widget", false, "Bring the bar widget up to date";
     /// Offered by omarchy status for a widget absent from the bar.
     EnableWidget = "enable_widget", false, "Put the omaddons widget on the bar";
+    /// Offered by a dry run that stored its plan, and by apply's own dry run; as
+    /// destructive as the plan's command.
+    Apply = "apply", false, "Run exactly what a dry run stored";
 }
 
 impl fmt::Display for Action {
@@ -98,7 +101,7 @@ mod tests {
     fn every_action_has_a_unique_snake_case_wire_name() {
         assert_eq!(
             Action::ALL.len(),
-            22,
+            23,
             "registered actions: {:?}",
             Action::ALL
         );
@@ -163,7 +166,7 @@ mod tests {
             ("capitalized", "Undo"),
             ("trailing_space", "undo "),
             ("unknown", "no_such_action"),
-            ("future_action", "apply"),
+            ("a_command_not_an_action", "remove"),
         ] {
             assert_eq!(Action::from_wire(wire), None, "{case}: {wire:?}");
         }
@@ -209,6 +212,7 @@ mod tests {
             (Action::InstallBuggrabber, false),
             (Action::ReinstallWidget, false),
             (Action::EnableWidget, false),
+            (Action::Apply, false),
         ];
         for action in Action::ALL {
             assert!(

@@ -54,8 +54,9 @@ mod support {
     use serde::Deserialize;
     use serde::de::{IgnoredAny, MapAccess, Visitor};
 
-    /// Actions whose instances may differ from their published destructive default.
-    const VARIES: &[Action] = &[];
+    /// Actions whose instances may differ from their published destructive default:
+    /// an `apply` hint is as destructive as its plan's command.
+    const VARIES: &[Action] = &[Action::Apply];
 
     /// The envelope's keys in wire order.
     pub const ORDER: &[&str] = &[

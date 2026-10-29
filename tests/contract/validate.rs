@@ -392,18 +392,36 @@ fn explain_unions(failures: Vec<Failure>, data: &Value) -> Vec<Failure> {
         let Some(value) = data.pointer(&failure.instance_path) else {
             continue;
         };
-        let Ok(code) = serde_json::from_value::<ErrorCode>(value["code"].clone()) else {
-            continue;
-        };
-        let Some(validator) = schemas.errors.get(&code) else {
-            continue;
-        };
+        // An error union by its `code`; `apply`'s wrapper union by the command it names,
+        // whose own data its `result` must be.
+        let (name, validator, inner_value, inner_path) =
+            match serde_json::from_value::<ErrorCode>(value["code"].clone()) {
+                Ok(code) => match schemas.errors.get(&code) {
+                    Some(validator) => (format!("`{code}` error"), validator, value, ""),
+                    None => continue,
+                },
+                Err(_) => match value["applied"]["command"]
+                    .as_str()
+                    .and_then(|command| Some((command, schemas.data.get(command)?)))
+                {
+                    Some((command, validator)) => (
+                        format!("`{command}` result"),
+                        validator,
+                        &value["result"],
+                        "/result",
+                    ),
+                    None => continue,
+                },
+            };
         let inner: Vec<Failure> = validator
-            .validate_all(value)
+            .validate_all(inner_value)
             .into_iter()
             .map(|inner| Failure {
-                instance_path: format!("{}{}", failure.instance_path, inner.instance_path),
-                schema_path: format!("`{code}` error {}", inner.schema_path),
+                instance_path: format!(
+                    "{}{inner_path}{}",
+                    failure.instance_path, inner.instance_path
+                ),
+                schema_path: format!("{name} {}", inner.schema_path),
                 message: inner.message,
             })
             .collect();

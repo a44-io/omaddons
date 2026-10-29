@@ -69,6 +69,22 @@ impl<'a> Mode<'a> {
                 Suggestion::command(argv),
             ));
         }
+        // `adopt apply` (M4-D27): the flag the user meant, not a folder named `apply`
+        // (one really named so is adopted with `--ref`).
+        if !args.apply
+            && args.r#ref.is_none()
+            && let [word] = args.folders.as_slice()
+            && word.eq_ignore_ascii_case("apply")
+        {
+            let fix = crate::cli::fix_argv_replacing(&ctx.argv, word, "--apply")
+                .unwrap_or_else(|| vec!["omaddons".into(), "adopt".into(), "--apply".into()]);
+            return Err(Error::new(
+                ErrorCode::Usage,
+                "'apply' is a flag of adopt here: adopt --apply adopts every exact and identified addon",
+                Suggestion::command(fix),
+            )
+            .user_verb());
+        }
         let mode = match (&args.r#ref, args.folders.as_slice()) {
             (Some(r), [folder]) => Ok(Self::Ref {
                 folder: folder.as_str(),
