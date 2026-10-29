@@ -6,10 +6,13 @@
 //! from the code, never kept by hand, and it reads no environment, file, clock or
 //! `config.toml`.
 
+mod classify;
 pub mod ids;
 mod inputs;
 mod outputs;
 mod registries;
+
+pub use classify::{Bump, Change, ChangeKind, Changes, KindBump, Label, classify};
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
