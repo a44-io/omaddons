@@ -126,7 +126,14 @@ pub fn push_map(path: &str) -> String {
 
 /// `path<tag=value>`: a tagged variant.
 pub fn push_variant(path: &str, tag: &str, value: &str) -> String {
-    join(path, &format!("<{}={}>", quote(tag), quote(value)))
+    push_variant_at(path, &[tag], value)
+}
+
+/// `path<a.b=value>`: a variant tagged by a nested property, each part of its path quoted
+/// on its own, so a nested tag is never read as a top-level one.
+pub fn push_variant_at(path: &str, tag: &[&str], value: &str) -> String {
+    let tag: Vec<String> = tag.iter().map(|part| quote(part)).collect();
+    join(path, &format!("<{}={}>", tag.join("."), quote(value)))
 }
 
 /// `path<untagged=k1,k2|o1,o2>`: an untagged variant by its required and optional keys,
@@ -213,6 +220,17 @@ fn data_start(rest: &str) -> Option<usize> {
             .next()
             .is_none_or(|c| matches!(c, '.' | '[' | '{' | '<'))
     })
+}
+
+/// `position`'s segments, in order (`data`, `.items`, `[]`, `<type=a>`).
+pub(crate) fn segments(position: &str) -> Vec<&str> {
+    let starts = segment_starts(position);
+    let ends = starts.iter().skip(1).copied().chain([position.len()]);
+    starts
+        .iter()
+        .zip(ends)
+        .map(|(&start, end)| &position[start..end])
+        .collect()
 }
 
 /// `position` without its last segment; empty when it has one segment.

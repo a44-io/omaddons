@@ -264,7 +264,7 @@ fn walk_at<'a>(
 }
 
 /// A local reference's target: `#` or a JSON pointer into the root (`#/$defs/Name`).
-fn resolve<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+pub(crate) fn resolve<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
     let pointer = reference.strip_prefix('#')?;
     if pointer.is_empty() {
         Some(root)

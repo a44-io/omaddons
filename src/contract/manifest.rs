@@ -7,6 +7,7 @@
 //! `config.toml`.
 
 pub mod ids;
+mod outputs;
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -445,13 +446,6 @@ impl Builder {
     /// Records `id`. `None` facts are skipped; an identical duplicate is a no-op; one with
     /// another kind or other facts keeps the first and records `"<id>: <first> vs
     /// <second>"`, as does a fact given twice with different values.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "subtasks 2 and 3's collectors are its first callers"
-        )
-    )]
     pub(crate) fn insert(
         &mut self,
         id: String,
@@ -501,9 +495,11 @@ impl Builder {
 }
 
 /// Every section of the manifest, and the ids two collectors produced differently.
-pub fn build_checked(_registry: &Registry) -> (Manifest, Vec<String>) {
+pub fn build_checked(registry: &Registry) -> (Manifest, Vec<String>) {
     // The collectors (outputs, inputs, registries) each add one call here.
-    Builder::default().finish()
+    let mut builder = Builder::default();
+    outputs::collect(&mut builder, registry);
+    builder.finish()
 }
 
 /// The manifest (M4-D56). Infallible: what a collector cannot model becomes a `keywords`
