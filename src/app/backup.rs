@@ -1480,6 +1480,8 @@ fn backup_line(ctx: &Context, created: &Created, run: RunId) -> HistoryEntry {
             files: meta.files,
             bytes: meta.bytes,
         }),
+        // A backup is never applied from a stored plan.
+        plan: None,
         doctor_run_id: None,
         repairs: Vec::new(),
     }

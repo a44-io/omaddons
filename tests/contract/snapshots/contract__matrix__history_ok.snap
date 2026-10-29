@@ -28,6 +28,7 @@ expression: s.stable(&c.envelope)
           "restored": 0
         },
         "kind": "install",
+        "plan": null,
         "reason": null,
         "result": "committed",
         "run": "<ulid>",

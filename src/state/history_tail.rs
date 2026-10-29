@@ -448,6 +448,7 @@ mod tests {
             created_addons_dir: false,
             run: Some(run),
             backup: None,
+            plan: None,
             doctor_run_id: None,
             repairs: Vec::new(),
         }

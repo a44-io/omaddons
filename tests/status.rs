@@ -337,6 +337,7 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
                 created_addons_dir: false,
                 run: None,
                 backup: None,
+                plan: None,
                 doctor_run_id: None,
                 repairs: Vec::new(),
             },

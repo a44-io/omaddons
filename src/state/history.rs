@@ -26,7 +26,7 @@ use crate::backup::BackupKind;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{Op, WriteSession, ensure_dir_all, mutate};
 use crate::limits::{DISCOVERY_FILE_MAX_BYTES, REASON_MAX_CHARS};
-use crate::model::{Actor, BackupId, FolderName, RunId, TargetKey, TxId, TxKind};
+use crate::model::{Actor, BackupId, FolderName, PlanId, RunId, TargetKey, TxId, TxKind};
 
 /// The version of the line format.
 pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
@@ -100,6 +100,10 @@ pub struct HistoryEntry {
     /// The backup a `backup` line published (M3-D33); absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<BackupNote>,
+    /// The stored plan `apply` committed this transaction from (M4-D25); absent on every
+    /// other line. `apply`'s `already_applied` and `plans show` read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<PlanId>,
     /// A repair's doctor run directory, named `<UTC time>Z__<ULID>` (never a run id);
     /// absent on every other line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -898,6 +902,226 @@ pub fn last(paths: &Paths, filter: &HistoryFilter) -> Result<Option<HistoryEntry
     Ok(read(paths, &filter)?.entries.pop())
 }
 
+/// What history records of one stored plan (M4-D25): the evidence `apply`'s
+/// `already_applied` and `plans show` read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlanEvidence {
+    /// Every transaction line whose `plan` is the plan's id, oldest first.
+    pub lines: Vec<PlanLine>,
+    /// The scan reached the start of the file, or a line older than `since`, within its
+    /// bound, and skipped no line too long to read.
+    pub complete: bool,
+    /// Complete lines read (each counts toward the bound).
+    pub scanned: usize,
+}
+
+/// One transaction a stored plan committed, as its history line records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanLine {
+    pub tx: TxId,
+    /// `None` on a target-less line (a repair).
+    pub target: Option<TargetKey>,
+    pub kind: TxKind,
+    pub at: Timestamp,
+    pub run: Option<RunId>,
+}
+
+/// How much of `history.jsonl` [`plan_evidence`] reads at a time, from its end: a read
+/// buffer, neither a safety limit (`limits.rs`) nor a politeness constant
+/// (`politeness.rs`).
+const SCAN_BLOCK: usize = 64 * 1024;
+
+/// Reads `history.jsonl` backwards in blocks for the lines of `plan`, stopping at the
+/// start of the file, at the first line older than `since` (a `backup` line never stops
+/// it), or after `max_lines` complete lines (M4-D63). It never loads the whole history,
+/// and holds at most one line of [`DISCOVERY_FILE_MAX_BYTES`]; a longer line is skipped,
+/// and makes the evidence incomplete.
+///
+/// A line's `at` orders it: a transaction's and a settings change's are taken under the
+/// global lock as they are appended. A `backup` line's is its capture time, and an
+/// automatic backup's line can follow newer lines, so it never stops the scan.
+///
+/// No evidence is no proof that nothing committed. A journal rolled forward appends its
+/// line with the `at` it was prepared with. Recovery runs at the start of every commit
+/// window, so a journal pending when the plan's own commit ran was rolled forward before
+/// that commit's line; a `WTF/` restore journal that waits while its game runs is the
+/// exception. A caller that finds nothing must not take that as proof: `apply` relies on
+/// the token's generations as well.
+pub fn plan_evidence(
+    paths: &Paths,
+    plan: &PlanId,
+    since: Timestamp,
+    max_lines: usize,
+) -> Result<PlanEvidence> {
+    let path = paths.history_file();
+    let fail =
+        |err: std::io::Error| Error::io(&path, &err, Suggestion::command(["omaddons", "status"]));
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        // ubs:ignore — an io::ErrorKind, not a secret
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PlanEvidence {
+                complete: true,
+                ..PlanEvidence::default()
+            });
+        }
+        Err(err) => return Err(fail(err)),
+    };
+    scan_with_block(&mut file, SCAN_BLOCK, plan, since, max_lines).map_err(fail)
+}
+
+/// [`plan_evidence`] over `history`, read `block` bytes at a time from its end.
+fn scan_with_block<R: Read + Seek>(
+    history: &mut R,
+    block: usize,
+    plan: &PlanId,
+    since: Timestamp,
+    max_lines: usize,
+) -> std::io::Result<PlanEvidence> {
+    let max_line = usize::try_from(DISCOVERY_FILE_MAX_BYTES).unwrap_or(usize::MAX);
+    let mut scan = PlanScan {
+        plan: *plan,
+        since,
+        max_lines,
+        evidence: PlanEvidence::default(),
+        skipped_long: false,
+    };
+    let mut buf = vec![0u8; block.max(1)];
+    let mut pos = history.seek(SeekFrom::End(0))?;
+    // The line being assembled, its bytes reversed, from where the reads have reached to
+    // its end; `None` once it is too long to read.
+    let mut line: Option<Vec<u8>> = Some(Vec::new());
+    // It is the file's last line, which no newline ends: a torn tail (or a line being
+    // written), or nothing when the file ends with a newline. Never read.
+    let mut tail = true;
+    while pos > 0 {
+        let len = usize::try_from(pos).map_or(buf.len(), |pos| pos.min(buf.len()));
+        pos -= u64::try_from(len).unwrap_or(pos);
+        history.seek(SeekFrom::Start(pos))?;
+        let chunk = &mut buf[..len];
+        history.read_exact(chunk)?;
+        let mut end = len;
+        while let Some(newline) = chunk[..end].iter().rposition(|byte| *byte == b'\n') {
+            gather(&mut line, &chunk[newline + 1..end], max_line);
+            let complete = line.replace(Vec::new());
+            if !std::mem::replace(&mut tail, false)
+                && let Some(stop) = scan.line(complete)
+            {
+                return Ok(scan.finish(stop));
+            }
+            end = newline;
+        }
+        gather(&mut line, &chunk[..end], max_line);
+    }
+    // The file's first line, which a newline ends unless it is also its last.
+    if !tail && let Some(stop) = scan.line(line) {
+        return Ok(scan.finish(stop));
+    }
+    Ok(scan.finish(Stop::Start))
+}
+
+/// Adds `part`, the bytes just before what `line` holds, to the line assembled backwards
+/// (its bytes reversed); it becomes `None` once it passes `max` bytes.
+fn gather(line: &mut Option<Vec<u8>>, part: &[u8], max: usize) {
+    match line {
+        Some(bytes) if bytes.len() + part.len() <= max => bytes.extend(part.iter().rev()),
+        _ => *line = None,
+    }
+}
+
+/// Why a [`plan_evidence`] scan stopped.
+enum Stop {
+    /// It reached the start of the file.
+    Start,
+    /// It read a line older than `since`.
+    Older,
+    /// It read `max_lines` lines and there was another.
+    Bound,
+}
+
+/// A [`plan_evidence`] scan's state.
+struct PlanScan {
+    plan: PlanId,
+    since: Timestamp,
+    max_lines: usize,
+    evidence: PlanEvidence,
+    /// A line too long to read was skipped: it may have been evidence.
+    skipped_long: bool,
+}
+
+impl PlanScan {
+    /// Reads one complete line (`None`: too long to read; else its bytes, reversed), and
+    /// says whether the scan stops before or at it.
+    fn line(&mut self, reversed: Option<Vec<u8>>) -> Option<Stop> {
+        if reversed
+            .as_ref()
+            .is_some_and(|bytes| bytes.iter().all(u8::is_ascii_whitespace))
+        {
+            return None;
+        }
+        if self.evidence.scanned >= self.max_lines {
+            return Some(Stop::Bound);
+        }
+        self.evidence.scanned += 1;
+        let Some(mut bytes) = reversed else {
+            self.skipped_long = true;
+            return None;
+        };
+        bytes.reverse();
+        // A line that does not read is never evidence, and never stops the scan.
+        let fields = plan_fields(&String::from_utf8_lossy(&bytes))?;
+        if fields.kind != TxKind::Backup && fields.at < self.since {
+            return Some(Stop::Older);
+        }
+        if fields.plan == Some(self.plan)
+            && fields.kind != TxKind::Backup
+            && !fields.kind.is_setting()
+        {
+            self.evidence.lines.push(PlanLine {
+                tx: fields.tx,
+                target: fields.target,
+                kind: fields.kind,
+                at: fields.at,
+                run: fields.run,
+            });
+        }
+        None
+    }
+
+    fn finish(mut self, stop: Stop) -> PlanEvidence {
+        self.evidence.complete = match stop {
+            Stop::Start | Stop::Older => !self.skipped_long,
+            Stop::Bound => false,
+        };
+        self.evidence.lines.reverse();
+        self.evidence
+    }
+}
+
+/// The fields of a line [`plan_evidence`] reads; the rest (a transaction's ops) is
+/// skipped without being built. `target` is `null` on a repair and a settings line.
+#[derive(Deserialize)]
+struct PlanFields {
+    tx: TxId,
+    kind: TxKind,
+    at: Timestamp,
+    #[serde(default)]
+    target: Option<TargetKey>,
+    #[serde(default)]
+    run: Option<RunId>,
+    #[serde(default)]
+    plan: Option<PlanId>,
+}
+
+/// One complete line's [`PlanFields`], salvaged like [`read_line`] does; `None` for a
+/// line that does not read.
+fn plan_fields(line: &str) -> Option<PlanFields> {
+    serde_json::from_str::<PlanFields>(line).ok().or_else(|| {
+        let at = line.rfind(LINE_START).filter(|at| *at > 0)?;
+        serde_json::from_str::<PlanFields>(&line[at..]).ok()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -958,6 +1182,7 @@ mod tests {
             created_addons_dir: false,
             run: None,
             backup: None,
+            plan: None,
             doctor_run_id: None,
             repairs: Vec::new(),
         }
@@ -2154,6 +2379,469 @@ mod tests {
             found.is_empty(),
             "a history target may be null (a repair): read it through `undo::target_of` or `touches_target`\n{}",
             found.join("\n")
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The plan a transaction was applied from (M4-D25), and the scan for it (M4-D63).
+
+    const PLAN: &str = "01M9P0000000000000000000PA";
+    const OTHER_PLAN: &str = "01M9P0000000000000000000PB";
+    /// The cases' `since`: lines at [`NEW`] are newer, lines at [`OLD`] older.
+    const SINCE: &str = "2026-10-20T00:00:00Z";
+    const NEW: &str = "2026-10-21T18:00:00Z";
+    const OLD: &str = "2026-10-19T18:00:00Z";
+
+    fn plan_id(text: &str) -> PlanId {
+        text.parse().unwrap()
+    }
+
+    /// Transaction `n` of `kind` at `at` on `target`, applied from `from`.
+    fn applied(n: u8, kind: TxKind, at: &str, target: &str, from: Option<&str>) -> HistoryEntry {
+        HistoryEntry {
+            tx: format!("01JB8Q2VA000000000000000{n:02}").parse().unwrap(),
+            target: Some(key(target)),
+            run: Some(format!("01JB8Q2VB000000000000000{n:02}").parse().unwrap()),
+            plan: from.map(plan_id),
+            ..entry(1, Actor::Agent, kind, at)
+        }
+    }
+
+    /// `entry` as its history line, newline included.
+    fn line_of(entry: &HistoryEntry) -> String {
+        format!("{}\n", json(entry))
+    }
+
+    /// A `config set` line `n` at `at`, carrying `from` as a `plan` key no settings line
+    /// has.
+    fn setting_at(n: u8, at: &str, from: Option<&str>) -> String {
+        let mut setting = SettingEntry::now(
+            TxKind::Config,
+            None,
+            Actor::Human,
+            None,
+            vec!["omaddons".into(), "config".into(), "set".into()],
+        );
+        setting.tx = format!("01JB8Q2VC000000000000000{n:02}").parse().unwrap();
+        setting.at = at.parse().unwrap();
+        let mut value = serde_json::to_value(&setting).unwrap();
+        if let Some(from) = from {
+            value["plan"] = serde_json::json!(from);
+        }
+        format!("{}\n", serde_json::to_string(&value).unwrap())
+    }
+
+    /// A `backup` line `n` at `at`, carrying `from` as its plan.
+    fn backup_at(n: u8, at: &str, from: Option<&str>) -> HistoryEntry {
+        let mut line = applied(n, TxKind::Backup, at, KEY_A, from);
+        line.ops.clear();
+        line.backup = Some(BackupNote {
+            id: "01M6Q2VA000000000000000000".parse().unwrap(),
+            kind: BackupKind::Auto,
+            files: 3,
+            bytes: 30,
+        });
+        line
+    }
+
+    fn tx_of(n: u8) -> TxId {
+        format!("01JB8Q2VA000000000000000{n:02}").parse().unwrap()
+    }
+
+    /// `text`'s lines, numbered, each cut at 120 bytes, for an assertion message.
+    fn numbered(text: &str) -> String {
+        text.split_inclusive('\n')
+            .enumerate()
+            .map(|(i, line)| {
+                let mut end = line.len().min(120);
+                while !line.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let more = if end < line.len() { " …" } else { "" };
+                format!("{:>3} {}{more}\n", i + 1, line[..end].trim_end())
+            })
+            .collect()
+    }
+
+    struct EvidenceCase {
+        name: &'static str,
+        /// The history's text; `None`: no file at all.
+        text: Option<String>,
+        since: &'static str,
+        max_lines: usize,
+        /// The evidence's transactions, oldest first; `complete`; `scanned`.
+        want: (Vec<TxId>, bool, usize),
+    }
+
+    fn evidence_cases() -> Vec<EvidenceCase> {
+        let max_line = usize::try_from(DISCOVERY_FILE_MAX_BYTES).unwrap();
+        let mine = |n, at| line_of(&applied(n, TxKind::Install, at, KEY_A, Some(PLAN)));
+        let other = |n, at| line_of(&applied(n, TxKind::Update, at, KEY_A, Some(OTHER_PLAN)));
+        let plain = |n, at| line_of(&applied(n, TxKind::Remove, at, KEY_A, None));
+        let case = |name, text: Vec<String>, max_lines, want| EvidenceCase {
+            name,
+            text: Some(text.concat()),
+            since: SINCE,
+            max_lines,
+            want,
+        };
+        let mut repair_line = repair(30, &[KEY_A], vec![chmod()]);
+        repair_line.tx = tx_of(30);
+        repair_line.plan = Some(plan_id(PLAN));
+        let merged = format!(
+            "{}{}",
+            &json(&applied(1, TxKind::Install, NEW, KEY_A, None))[..40],
+            mine(2, NEW)
+        );
+        vec![
+            EvidenceCase {
+                name: "missing_file",
+                text: None,
+                since: SINCE,
+                max_lines: 100,
+                want: (vec![], true, 0),
+            },
+            case("empty_file", vec![], 100, (vec![], true, 0)),
+            case(
+                "no_matching_line",
+                vec![other(1, NEW), plain(2, NEW), plain(3, NEW)],
+                100,
+                (vec![], true, 3),
+            ),
+            case(
+                "one_matching_line",
+                vec![plain(1, NEW), mine(2, NEW), plain(3, NEW)],
+                100,
+                (vec![tx_of(2)], true, 3),
+            ),
+            case(
+                "matching_lines_on_two_targets_oldest_first",
+                vec![
+                    line_of(&applied(1, TxKind::Update, NEW, KEY_A, Some(PLAN))),
+                    line_of(&applied(2, TxKind::Update, NEW, KEY_B, Some(PLAN))),
+                ],
+                100,
+                (vec![tx_of(1), tx_of(2)], true, 2),
+            ),
+            case(
+                "other_plans_ignored",
+                vec![other(1, NEW), mine(2, NEW), other(3, NEW)],
+                100,
+                (vec![tx_of(2)], true, 3),
+            ),
+            case(
+                "stops_at_an_older_commit_line",
+                vec![mine(1, OLD), plain(2, OLD), mine(3, NEW)],
+                100,
+                (vec![tx_of(3)], true, 2),
+            ),
+            case(
+                "an_older_backup_line_does_not_stop_it",
+                vec![
+                    mine(1, NEW),
+                    line_of(&backup_at(2, OLD, None)),
+                    plain(3, NEW),
+                ],
+                100,
+                (vec![tx_of(1)], true, 3),
+            ),
+            case(
+                "an_older_settings_line_stops_it",
+                vec![mine(1, NEW), setting_at(2, OLD, None), plain(3, NEW)],
+                100,
+                (vec![], true, 2),
+            ),
+            case(
+                "bound_reached_is_incomplete",
+                (1..=5).map(|n| plain(n, NEW)).collect(),
+                3,
+                (vec![], false, 3),
+            ),
+            case(
+                "start_of_file_is_complete",
+                vec![mine(1, NEW), plain(2, NEW), plain(3, NEW)],
+                3,
+                (vec![tx_of(1)], true, 3),
+            ),
+            case(
+                "a_zero_bound_reads_nothing",
+                vec![mine(1, NEW)],
+                0,
+                (vec![], false, 0),
+            ),
+            case(
+                "torn_tail_skipped",
+                vec![plain(1, NEW), mine(2, NEW).trim_end().to_owned()],
+                100,
+                (vec![], true, 1),
+            ),
+            case(
+                "a_file_without_a_newline_is_all_tail",
+                vec![mine(1, NEW).trim_end().to_owned()],
+                100,
+                (vec![], true, 0),
+            ),
+            case(
+                "merged_line_salvaged",
+                vec![merged],
+                100,
+                (vec![tx_of(2)], true, 1),
+            ),
+            case(
+                "unreadable_line_skipped_and_counted",
+                vec![mine(1, NEW), "{not json}\n".into(), mine(3, NEW)],
+                100,
+                (vec![tx_of(1), tx_of(3)], true, 3),
+            ),
+            case(
+                "empty_lines_are_not_counted",
+                vec![mine(1, NEW), "\n".into(), "   \n".into(), plain(2, NEW)],
+                100,
+                (vec![tx_of(1)], true, 2),
+            ),
+            case(
+                "oversized_line_makes_it_incomplete",
+                vec![
+                    mine(1, NEW),
+                    format!("{}\n", "x".repeat(max_line + 1)),
+                    mine(3, NEW),
+                ],
+                100,
+                (vec![tx_of(1), tx_of(3)], false, 3),
+            ),
+            case(
+                "a_line_at_the_size_bound_reads",
+                vec![
+                    mine(1, NEW),
+                    format!("{}\n", "x".repeat(max_line)),
+                    mine(3, NEW),
+                ],
+                100,
+                (vec![tx_of(1), tx_of(3)], true, 3),
+            ),
+            case(
+                "an_oversized_torn_tail_is_only_a_tail",
+                vec![mine(1, NEW), "x".repeat(max_line + 1)],
+                100,
+                (vec![tx_of(1)], true, 1),
+            ),
+            case(
+                "a_target_less_line_reads",
+                vec![line_of(&repair_line)],
+                100,
+                (vec![tx_of(30)], true, 1),
+            ),
+            case(
+                "backup_lines_are_never_evidence",
+                vec![line_of(&backup_at(1, NEW, Some(PLAN)))],
+                100,
+                (vec![], true, 1),
+            ),
+            case(
+                "settings_lines_are_never_evidence",
+                vec![setting_at(1, NEW, Some(PLAN))],
+                100,
+                (vec![], true, 1),
+            ),
+        ]
+    }
+
+    #[test]
+    fn plan_evidence_cases() {
+        let plan = plan_id(PLAN);
+        for case in evidence_cases() {
+            let f = fixture();
+            let path = f.paths.history_file();
+            if let Some(text) = &case.text {
+                std::fs::write(&path, text).unwrap();
+            }
+            let since: Timestamp = case.since.parse().unwrap();
+            let got = plan_evidence(&f.paths, &plan, since, case.max_lines).unwrap();
+            let summary = |e: &PlanEvidence| {
+                let txs: Vec<TxId> = e.lines.iter().map(|l| l.tx).collect();
+                (txs, e.complete, e.scanned)
+            };
+            let text = case
+                .text
+                .as_deref()
+                .map_or_else(|| "(no file)".to_owned(), numbered);
+            assert_eq!(
+                summary(&got),
+                case.want,
+                "{}: since {}, max_lines {}, history:\n{text}got {got:?}",
+                case.name,
+                case.since,
+                case.max_lines
+            );
+            // Every block size reads the same: 64 bytes split every line across reads.
+            if case.text.is_some() {
+                for block in [64, 1000, SCAN_BLOCK] {
+                    let mut file = std::fs::File::open(&path).unwrap();
+                    let small =
+                        scan_with_block(&mut file, block, &plan, since, case.max_lines).unwrap();
+                    assert_eq!(
+                        small, got,
+                        "{}: {block}-byte blocks differ from one large read; history:\n{text}",
+                        case.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plan_lines_carry_what_their_line_records() {
+        let f = fixture();
+        let on_b = applied(4, TxKind::Update, NEW, KEY_B, Some(PLAN));
+        let mut target_less = repair(5, &[KEY_A], vec![chmod()]);
+        target_less.tx = tx_of(5);
+        target_less.plan = Some(plan_id(PLAN));
+        std::fs::write(
+            f.paths.history_file(),
+            [line_of(&on_b), line_of(&target_less)].concat(),
+        )
+        .unwrap();
+        let got = plan_evidence(&f.paths, &plan_id(PLAN), SINCE.parse().unwrap(), 10).unwrap();
+        assert_eq!(
+            got.lines,
+            [
+                PlanLine {
+                    tx: on_b.tx,
+                    target: Some(key(KEY_B)),
+                    kind: TxKind::Update,
+                    at: NEW.parse().unwrap(),
+                    run: on_b.run,
+                },
+                PlanLine {
+                    tx: target_less.tx,
+                    target: None,
+                    kind: TxKind::Repair,
+                    at: target_less.at,
+                    run: target_less.run,
+                },
+            ],
+            "{got:?}"
+        );
+    }
+
+    /// A reader that counts the bytes read through it.
+    struct Counting<R> {
+        inner: R,
+        read: u64,
+    }
+
+    impl<R: Read> Read for Counting<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.read += n as u64;
+            Ok(n)
+        }
+    }
+
+    impl<R: Seek> Seek for Counting<R> {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    #[test]
+    fn plan_evidence_reads_no_more_than_its_bound() {
+        let f = fixture();
+        let line = line_of(&applied(1, TxKind::Update, NEW, KEY_A, None));
+        let text = line.repeat(30_000);
+        std::fs::write(f.paths.history_file(), &text).unwrap();
+        let mut file = Counting {
+            inner: std::fs::File::open(f.paths.history_file()).unwrap(),
+            read: 0,
+        };
+        let since: Timestamp = "2000-01-01T00:00:00Z".parse().unwrap();
+        let got = scan_with_block(&mut file, SCAN_BLOCK, &plan_id(PLAN), since, 100).unwrap();
+        assert_eq!(
+            (got.lines.len(), got.complete, got.scanned),
+            (0, false, 100),
+            "{got:?}"
+        );
+        let size = text.len() as u64;
+        assert!(
+            file.read <= 2 * SCAN_BLOCK as u64 && file.read * 20 < size,
+            "read {} bytes of a {size}-byte history for 100 lines",
+            file.read
+        );
+        assert_eq!(
+            plan_evidence(&f.paths, &plan_id(PLAN), since, 100).unwrap(),
+            got
+        );
+    }
+
+    #[test]
+    fn plan_evidence_fails_closed_on_an_unreadable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        if rustix::process::geteuid().is_root() {
+            eprintln!("skipped: root reads a mode-000 file");
+            return;
+        }
+        let f = fixture();
+        let path = f.paths.history_file();
+        std::fs::write(
+            &path,
+            line_of(&applied(1, TxKind::Install, NEW, KEY_A, Some(PLAN))),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let got = plan_evidence(&f.paths, &plan_id(PLAN), SINCE.parse().unwrap(), 10);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let err = got.unwrap_err();
+        assert_eq!(err.code, ErrorCode::Io, "{err:?}");
+        assert_eq!(
+            err.fix.argv(),
+            Some(&["omaddons".into(), "status".into()][..])
+        );
+    }
+
+    #[test]
+    fn a_line_without_plan_serializes_as_before() {
+        // Lines as the build at c0ab5e9 wrote them: an install, and a backup, whose note
+        // was the last key then.
+        for written in [
+            concat!(
+                r#"{"schema_version":"1.0","tx":"01JB8Q2VA00000000000000001","kind":"install","#,
+                r#""at":"2026-10-14T21:00:00Z","target":"01JB8Q2V9W0000000000000000","#,
+                r#""actor":"agent","reason":"keep raid addons current","#,
+                r#""argv":["omaddons","install","weakauras"],"#,
+                r#""ops":[{"op":"add","folder":"WeakAuras","addon":"WeakAuras"}],"#,
+                r#""result":"committed","reverts":null,"run":"01JB8Q2VB00000000000000000"}"#
+            ),
+            concat!(
+                r#"{"schema_version":"1.0","tx":"01JB8Q2VA00000000000000002","kind":"backup","#,
+                r#""at":"2026-10-21T18:00:00Z","target":"01JB8Q2V9W0000000000000000","#,
+                r#""actor":"human","argv":["omaddons","backup","create"],"ops":[],"#,
+                r#""result":"committed","reverts":null,"run":"01JB8Q2VB00000000000000001","#,
+                r#""backup":{"id":"01M6Q2VA000000000000000000","kind":"manual","files":412,"bytes":15937536}}"#
+            ),
+        ] {
+            let parsed: HistoryEntry = serde_json::from_str(written).unwrap();
+            assert_eq!(parsed.plan, None, "{written}");
+            assert_eq!(serde_json::to_string(&parsed).unwrap(), written);
+        }
+    }
+
+    #[test]
+    fn a_line_with_plan_round_trips() {
+        let e = applied(1, TxKind::Update, NEW, KEY_A, Some(PLAN));
+        let line = json(&e);
+        assert!(
+            line.ends_with(&format!(
+                r#","run":"01JB8Q2VB00000000000000001","plan":"{PLAN}"}}"#
+            )),
+            "after the run, where a backup's note would be: {line}"
+        );
+        assert_eq!(serde_json::from_str::<HistoryEntry>(&line).unwrap(), e);
+        let mut with_note = backup_at(2, NEW, Some(PLAN));
+        with_note.kind = TxKind::Update;
+        let line = json(&with_note);
+        assert!(
+            line.ends_with(&format!(r#""bytes":30}},"plan":"{PLAN}"}}"#)),
+            "after backup's position: {line}"
         );
     }
 

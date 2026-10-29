@@ -348,6 +348,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Expired plans one cleanup batch deletes at most"
     },
     {
+      "name": "PLAN_EVIDENCE_LINES_MAX",
+      "value": {
+        "count": 20000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "History lines apply's already_applied check and plans show read backwards at most"
+    },
+    {
       "name": "ORPHAN_MIN_AGE",
       "value": {
         "millis": 3600000

@@ -861,6 +861,9 @@ fn backup_line(
             files: meta.files,
             bytes: meta.bytes,
         }),
+        // Never the plan being applied: a backup is no part of what a plan previews, and
+        // `plan_evidence` never counts a backup line.
+        plan: None,
         doctor_run_id: None,
         repairs: Vec::new(),
     }
@@ -1326,6 +1329,7 @@ fn locked(
         created_addons_dir: creates_addons_dir,
         run: Some(req.run),
         backup: None,
+        plan: None,
         doctor_run_id: None,
         repairs: Vec::new(),
     };

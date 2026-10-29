@@ -656,6 +656,7 @@ mod tests {
                 created_addons_dir: false,
                 run: None,
                 backup: None,
+                plan: None,
                 doctor_run_id: None,
                 repairs: Vec::new(),
             };
@@ -742,6 +743,7 @@ mod tests {
                 files: 1,
                 bytes: 1,
             }),
+            plan: None,
             doctor_run_id: None,
             repairs: Vec::new(),
         };
@@ -777,6 +779,7 @@ mod tests {
             created_addons_dir: false,
             run: Some(crate::model::RunId::new()),
             backup: None,
+            plan: None,
             doctor_run_id: Some("2026-10-25T12:00:00Z__01M9Z00000000000000000000".into()),
             repairs: Vec::new(),
         }

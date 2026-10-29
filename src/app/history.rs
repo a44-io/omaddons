@@ -16,7 +16,7 @@ use serde::Serialize;
 use super::world::World;
 use crate::cli::Context;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
-use crate::model::{Actor, RunId, TargetKey, TxId, TxKind};
+use crate::model::{Actor, PlanId, RunId, TargetKey, TxId, TxKind};
 use crate::output::{Outcome, Style, table};
 use crate::state::history::{
     self, BackupNote, Dismissed, FolderOp, HistoryEntry, HistoryFilter, HistoryOp, RepairEndpoints,
@@ -88,6 +88,8 @@ pub struct HistoryLine {
     /// What an `errors dismiss` line acknowledged, as counts. Omitted on other kinds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dismissed: Option<Dismissed>,
+    /// The stored plan `apply` committed it from; `null` for every other line.
+    pub plan: Option<PlanId>,
     /// Target-less lines only: the doctor run directory it belongs to. Omitted on a line
     /// with a target, on a settings change, and on a target-less line that recorded none.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -177,7 +179,7 @@ impl Outcome for HistoryOutcome {
         &self.warnings
     }
 
-    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
+    fn render_human(&self, w: &mut dyn Write, style: &Style) -> std::io::Result<()> {
         if self.data.entries.is_empty() {
             return writeln!(w, "No transactions yet.");
         }
@@ -187,6 +189,8 @@ impl Outcome for HistoryOutcome {
             .entries
             .iter()
             .any(|e| e.run.is_some_and(|r| self.shared_runs.contains(&r)));
+        // With `-v`, a plan column when some row was applied from a stored plan.
+        let with_plans = style.verbose > 0 && self.data.entries.iter().any(|e| e.plan.is_some());
         let rows: Vec<Vec<String>> = self
             .data
             .entries
@@ -248,11 +252,18 @@ impl Outcome for HistoryOutcome {
                     kind_name(e.kind),
                     target,
                     what,
+                ]);
+                if with_plans {
+                    row.push(e.plan.map_or_else(String::new, |p| {
+                        format!("plan {}", short_id(&p.to_string()))
+                    }));
+                }
+                row.push(
                     e.reason
                         .as_ref()
                         .map(|r| format!("{r:?}"))
                         .unwrap_or_default(),
-                ]);
+                );
                 row
             })
             .collect();
@@ -404,13 +415,22 @@ fn shared_runs(lines: &[HistoryLine]) -> BTreeSet<RunId> {
 }
 
 fn setting_line(world: &World, e: &SettingEntry, verbose: bool) -> HistoryLine {
+    setting_line_with(e, verbose, &|key| world.target_id(key))
+}
+
+/// The settings change `e` as `history` lists it, naming its client by `id_of`.
+fn setting_line_with(
+    e: &SettingEntry,
+    verbose: bool,
+    id_of: &dyn Fn(TargetKey) -> String,
+) -> HistoryLine {
     HistoryLine {
         tx: e.tx,
         run: Some(e.run),
         kind: e.kind,
         at: e.at,
         target: e.target.map(|key| TargetRef {
-            id: world.target_id(key),
+            id: id_of(key),
             key,
         }),
         targets: None,
@@ -423,6 +443,7 @@ fn setting_line(world: &World, e: &SettingEntry, verbose: bool) -> HistoryLine {
         result: e.result,
         backup: None,
         dismissed: e.dismissed,
+        plan: None,
         doctor_run_id: None,
         repairs: None,
     }
@@ -462,6 +483,7 @@ fn line_with(e: &HistoryEntry, verbose: bool, id_of: &dyn Fn(TargetKey) -> Strin
         result: e.result,
         backup: e.backup.clone(),
         dismissed: None,
+        plan: e.plan,
         doctor_run_id: target_less.then(|| e.doctor_run_id.clone()).flatten(),
         repairs: target_less.then(|| e.repairs.iter().map(shown).collect()),
     }
@@ -779,6 +801,7 @@ mod tests {
             created_addons_dir: false,
             run: None,
             backup: None,
+            plan: None,
             doctor_run_id: run_dir.map(str::to_owned),
             repairs,
         }
@@ -786,6 +809,11 @@ mod tests {
 
     /// The table `history` prints for `lines`.
     fn rendered(lines: Vec<HistoryLine>) -> String {
+        rendered_with(lines, &Style::default())
+    }
+
+    /// The table `history` prints for `lines` in `style`.
+    fn rendered_with(lines: Vec<HistoryLine>, style: &Style) -> String {
         let outcome = HistoryOutcome {
             data: HistoryData {
                 entries: lines,
@@ -796,7 +824,7 @@ mod tests {
             shared_runs: BTreeSet::new(),
         };
         let mut out = Vec::new();
-        outcome.render_human(&mut out, &Style::default()).unwrap();
+        outcome.render_human(&mut out, style).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -969,6 +997,90 @@ mod tests {
         assert!(
             table.contains("retail") && table.contains("+1 ~0 -0"),
             "{table}"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The plan a transaction was applied from (M4-D25).
+
+    const PLAN: &str = "01M9P0000000000000000000PA";
+
+    /// An install on `A`, applied from `plan`.
+    fn install(tx: &str, plan: Option<&str>) -> HistoryEntry {
+        HistoryEntry {
+            tx: tx.parse().unwrap(),
+            target: Some(key(KEY_A)),
+            kind: TxKind::Install,
+            plan: plan.map(|p| p.parse().unwrap()),
+            ..repair(&[], Vec::new(), None)
+        }
+    }
+
+    #[test]
+    fn plan_is_null_on_lines_without_one() {
+        let setting = SettingEntry::now(
+            TxKind::Config,
+            None,
+            Actor::Human,
+            None,
+            vec!["omaddons".into(), "config".into(), "set".into()],
+        );
+        let lines = [
+            (
+                "transaction",
+                line_with(&install("01M9Q00000000000000000000B", None), false, &id_of),
+            ),
+            (
+                "repair",
+                line_with(&repair(&[KEY_A], Vec::new(), None), true, &id_of),
+            ),
+            ("setting", setting_line_with(&setting, false, &id_of)),
+        ];
+        for (name, line) in lines {
+            let json = serde_json::to_value(&line).unwrap();
+            assert_eq!(
+                json.get("plan"),
+                Some(&serde_json::Value::Null),
+                "{name}: the key is always there, null: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_is_shown_on_lines_with_one() {
+        let applied = line_with(
+            &install("01M9Q00000000000000000000B", Some(PLAN)),
+            false,
+            &id_of,
+        );
+        let json = serde_json::to_value(&applied).unwrap();
+        assert_eq!(json["plan"], PLAN, "{json}");
+        let other = line_with(&install("01M9Q00000000000000000000C", None), false, &id_of);
+        let lines = vec![applied, other];
+        let verbose = Style {
+            verbose: 1,
+            ..Style::default()
+        };
+        let table = rendered_with(lines.clone(), &verbose);
+        let rows: Vec<&str> = table.lines().collect();
+        assert!(
+            rows[0].contains("plan 01M9P00000000000…"),
+            "-v names the plan on its row: {table}"
+        );
+        assert!(!rows[1].contains("plan"), "and on no other row: {table}");
+        let plain = rendered(lines);
+        assert!(!plain.contains("plan"), "only under -v: {plain}");
+        let without = rendered_with(
+            vec![line_with(
+                &install("01M9Q00000000000000000000C", None),
+                true,
+                &id_of,
+            )],
+            &verbose,
+        );
+        assert!(
+            !without.contains("plan"),
+            "no column without a plan: {without}"
         );
     }
 }

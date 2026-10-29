@@ -24,6 +24,7 @@ expression: s.stable(&c.envelope)
         },
         "doctor_run_id": "2026-10-30T18-03-40Z__<ulid>",
         "kind": "repair",
+        "plan": null,
         "reason": null,
         "repairs": [
           {
@@ -82,6 +83,7 @@ expression: s.stable(&c.envelope)
           "restored": 0
         },
         "kind": "install",
+        "plan": null,
         "reason": null,
         "result": "committed",
         "run": "<ulid>",

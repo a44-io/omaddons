@@ -1060,6 +1060,7 @@ impl Window<'_> {
             created_addons_dir: false,
             run: Some(self.run),
             backup: None,
+            plan: None,
             doctor_run_id: None,
             repairs: Vec::new(),
         }

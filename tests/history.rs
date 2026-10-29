@@ -640,14 +640,21 @@ fn lines_with_a_target_read_and_print_exactly_as_before() {
             line.starts_with(r#"{"schema_version":"1.0","tx":"#),
             "{line}"
         );
-        for absent in ["\"targets\"", "\"repairs\"", "\"doctor_run_id\""] {
+        // No line here was applied from a stored plan, so none carries `plan` (M4-D25).
+        for absent in [
+            "\"targets\"",
+            "\"repairs\"",
+            "\"doctor_run_id\"",
+            "\"plan\"",
+        ] {
             assert!(!line.contains(absent), "{absent} in {line}");
         }
     }
     log.step("history --json");
     let ran = json(&log, &c.home, &["history"]);
+    // `plan` is always listed, `null` on a line no plan committed.
     let expected: Vec<&str> = vec![
-        "actor", "argv", "at", "changes", "kind", "reason", "result", "run", "target", "tx",
+        "actor", "argv", "at", "changes", "kind", "plan", "reason", "result", "run", "target", "tx",
     ];
     for entry in ran.ok().data()["entries"].as_array().unwrap() {
         let mut keys: Vec<&str> = entry
@@ -658,6 +665,7 @@ fn lines_with_a_target_read_and_print_exactly_as_before() {
             .collect();
         keys.sort_unstable();
         log.assert_eq("keys", &keys, &expected);
+        log.assert_eq("plan", &entry["plan"], &serde_json::Value::Null);
     }
 }
 

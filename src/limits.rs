@@ -57,6 +57,9 @@ pub const PLANS_MAX_FILES: usize = 512;
 pub const PLANS_MAX_BYTES: u64 = 32 * MIB;
 /// Expired plans one cleanup batch deletes at most (M4-D24).
 pub const PLANS_SWEEP_MAX: usize = 64;
+/// History lines `apply`'s `already_applied` check and `plans show` read backwards at
+/// most; past it the evidence is incomplete, never "none".
+pub const PLAN_EVIDENCE_LINES_MAX: usize = 20_000;
 /// Retention sweeps a stage dir or in-flight lock whose transaction is dead (lock free,
 /// no journal) only once it is this old: a margin against clocks and races.
 pub const ORPHAN_MIN_AGE: Duration = Duration::from_secs(60 * 60);
@@ -393,6 +396,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "count",
         None,
         "Expired plans one cleanup batch deletes at most",
+    ),
+    limit(
+        "PLAN_EVIDENCE_LINES_MAX",
+        LimitValue::Count(PLAN_EVIDENCE_LINES_MAX as u64),
+        "count",
+        None,
+        "History lines apply's already_applied check and plans show read backwards at most",
     ),
     limit(
         "ORPHAN_MIN_AGE",
@@ -1055,7 +1065,7 @@ mod tests {
         "ARCHIVE_MAX_ENTRIES", "ARCHIVE_MAX_UNCOMPRESSED", "ARCHIVE_MAX_RATIO",
         "ARCHIVE_RATIO_FLOOR", "DOWNLOAD_MAX_BYTES", "LOCK_ACQUIRE_TIMEOUT", "TX_RETENTION", "SNAPSHOT_MAX_BYTES",
         "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "PLAN_MAX_BYTES", "PLANS_MAX_FILES", "PLANS_MAX_BYTES",
-        "PLANS_SWEEP_MAX", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS",
+        "PLANS_SWEEP_MAX", "PLAN_EVIDENCE_LINES_MAX", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS",
         "AUTH_TOKEN_MAX_BYTES", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",

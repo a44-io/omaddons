@@ -224,6 +224,7 @@ mod support {
                         created_addons_dir: false,
                         run: None,
                         backup: None,
+                        plan: None,
                         doctor_run_id: None,
                         repairs: Vec::new(),
                     },
