@@ -18,7 +18,11 @@ mod recommendations;
 #[cfg(test)]
 mod registries;
 mod special;
+#[cfg(test)]
+mod strict;
 mod usage_fixes;
+#[cfg(test)]
+mod validate;
 
 use std::collections::BTreeMap;
 use std::fs;

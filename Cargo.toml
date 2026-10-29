@@ -49,6 +49,9 @@ assert_cmd = "2.2.2"
 # to the passwd entry when HOME is unset.
 etcetera = "0.11.0"
 insta ={ version = "1.49.0", features = ["json"] }
+# The contract suite's JSON Schema validator (M4-D9): default features off, so no
+# reqwest or TLS backend (deny.toml); pinned so a release cannot change what passes.
+jsonschema = { version = "=0.60.2", default-features = false }
 predicates = "3.1.4"
 proptest = "1.12.0"
 # tests/terminal.rs: a pseudo-terminal for the binary's stderr, so human progress draws
