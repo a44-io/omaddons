@@ -212,6 +212,27 @@ pub enum KeyKind {
 }
 
 impl KeyKind {
+    /// Its name in the contract manifest (`config_type`): a name per kind, never the
+    /// `accepts` prose, whose wording may be polished without a contract change.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::PathList => "path_list",
+            Self::Text => "text",
+            Self::Channel => "channel",
+            Self::RunningPolicy => "running_policy",
+            Self::AutoBackup => "auto_backup",
+            Self::Hours => "hours",
+            Self::HostList => "host_list",
+            Self::Count => "count",
+            Self::Size => "size",
+            Self::Mebibytes => "mebibytes",
+            Self::Bool => "bool",
+            Self::Credential => "credential",
+            Self::Family => "family",
+            Self::RulesField => "rules_field",
+        }
+    }
+
     /// What `config set` accepts, for error messages.
     pub fn accepts(self) -> &'static str {
         match self {
@@ -1064,6 +1085,45 @@ fn run_credential_command(argv: &[String]) -> Result<Secret> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_kind_names_are_distinct_snake_case_and_total() {
+        // `name` is an exhaustive match, so a new kind is named before it compiles.
+        let all = [
+            KeyKind::PathList,
+            KeyKind::Text,
+            KeyKind::Channel,
+            KeyKind::RunningPolicy,
+            KeyKind::AutoBackup,
+            KeyKind::Hours,
+            KeyKind::HostList,
+            KeyKind::Count,
+            KeyKind::Size,
+            KeyKind::Mebibytes,
+            KeyKind::Bool,
+            KeyKind::Credential,
+            KeyKind::Family,
+            KeyKind::RulesField,
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for kind in all {
+            let name = kind.name();
+            let snake = !name.is_empty()
+                && !name.starts_with('_')
+                && !name.ends_with('_')
+                && !name.contains("__")
+                && name.bytes().all(|b| matches!(b, b'a'..=b'z' | b'_'));
+            assert!(snake, "{kind:?}: {name:?} is not snake case");
+            assert!(seen.insert(name), "{kind:?}: {name:?} is not distinct");
+        }
+        for key in KEYS {
+            assert!(
+                all.contains(&key.kind),
+                "{}: its kind is listed above",
+                key.key
+            );
+        }
+    }
 
     const FULL: &str = r#"
 # My omaddons setup.

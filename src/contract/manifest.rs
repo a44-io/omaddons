@@ -7,7 +7,9 @@
 //! `config.toml`.
 
 pub mod ids;
+mod inputs;
 mod outputs;
+mod registries;
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -499,6 +501,8 @@ pub fn build_checked(registry: &Registry) -> (Manifest, Vec<String>) {
     // The collectors (outputs, inputs, registries) each add one call here.
     let mut builder = Builder::default();
     outputs::collect(&mut builder, registry);
+    inputs::collect(&mut builder, registry);
+    registries::collect(&mut builder);
     builder.finish()
 }
 

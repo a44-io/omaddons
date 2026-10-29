@@ -134,9 +134,10 @@ pub fn command_info(entry: &CommandEntry, cmd: &clap::Command) -> CommandInfo {
             required: arg.is_required_set(),
             multiple: multiple(arg),
             default: default(arg),
-            values: values(arg),
+            values: values_of(arg),
             help: help(arg),
             conflicts_with: conflicts(arg),
+            // `REQUIRES` is keyed by long name: a positional has none.
             requires: Vec::new(),
         })
         .collect();
@@ -176,9 +177,12 @@ pub fn command_info(entry: &CommandEntry, cmd: &clap::Command) -> CommandInfo {
                 takes_value,
                 multiple: multiple(arg),
                 default: if takes_value { default(arg) } else { None },
-                values: values(arg),
+                values: values_of(arg),
                 conflicts_with: conflicts(arg),
-                requires: Vec::new(),
+                requires: arg
+                    .get_long()
+                    .map(|long| requires_of(entry.name, long))
+                    .unwrap_or_default(),
                 global: program_wide(arg),
                 help: help(arg),
             }
@@ -264,7 +268,9 @@ fn default(arg: &clap::Arg) -> Option<String> {
         .map(|value| value.to_string_lossy().into_owned())
 }
 
-fn values(arg: &clap::Arg) -> Values {
+/// What a value may be, as capabilities and the manifest both publish it: clap's possible
+/// values, hidden ones left out, else any text.
+pub(crate) fn values_of(arg: &clap::Arg) -> Values {
     let words: Vec<String> = arg
         .get_possible_values()
         .iter()
@@ -284,10 +290,14 @@ fn help(arg: &clap::Arg) -> String {
         .unwrap_or_default()
 }
 
-/// The symmetric closure of clap's conflicts for `arg` among the published arguments:
-/// those `arg` names and those that name `arg`, in argument order. clap enforces a
-/// conflict both ways but records it on one side.
-fn conflicts_of(cmd: &clap::Command, published: &[&clap::Arg], arg: &clap::Arg) -> Vec<String> {
+/// The symmetric closure of clap's conflicts for `arg` among `among`: those `arg` names and
+/// those that name `arg`, in argument order. clap enforces a conflict both ways but records
+/// it on one side.
+fn conflicting<'c>(
+    cmd: &clap::Command,
+    among: &[&'c clap::Arg],
+    arg: &clap::Arg,
+) -> Vec<&'c clap::Arg> {
     let names_of = |a: &clap::Arg| -> Vec<String> {
         cmd.get_arg_conflicts_with(a)
             .iter()
@@ -296,15 +306,376 @@ fn conflicts_of(cmd: &clap::Command, published: &[&clap::Arg], arg: &clap::Arg) 
     };
     let own = names_of(arg);
     let id = arg.get_id().as_str();
-    published
+    among
         .iter()
+        .copied()
         .filter(|other| other.get_id() != arg.get_id())
         .filter(|other| {
             own.iter().any(|named| named == other.get_id().as_str())
                 || names_of(other).iter().any(|named| named == id)
         })
-        .map(|other| name(other))
         .collect()
+}
+
+/// [`conflicting`], each named by long name or positional id, as capabilities publishes
+/// them.
+pub(crate) fn conflicts_of(
+    cmd: &clap::Command,
+    published: &[&clap::Arg],
+    arg: &clap::Arg,
+) -> Vec<String> {
+    conflicting(cmd, published, arg)
+        .into_iter()
+        .map(name)
+        .collect()
+}
+
+/// The flags `--<long>` of `path` requires, by long name: the declared [`REQUIRES`].
+pub(crate) fn requires_of(path: &str, long: &str) -> Vec<String> {
+    REQUIRES
+        .iter()
+        .filter(|row| row.path == path && row.long == long)
+        .flat_map(|row| row.requires.iter().map(|required| (*required).to_owned()))
+        .collect()
+}
+
+/// A flag clap requires another argument with, declared because clap gives no public
+/// getter for requirements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Requirement {
+    pub path: &'static str,
+    pub long: &'static str,
+    /// The long names it requires.
+    pub requires: &'static [&'static str],
+}
+
+/// Every requirement between arguments. Empty today; `doctor fix --force` → `yes` will be
+/// the first row. `requirements_are_declared_and_true` holds it equal to clap's behaviour.
+pub const REQUIRES: &[Requirement] = &[];
+
+/// Every way `table` disagrees with what `cmd` (the command at `path`) enforces: a flag
+/// that needs another argument to parse without a row saying so, and a row whose flag
+/// parses alone. Each flag is probed with the command's required positionals sampled (the
+/// first possible value, else `1`).
+pub fn requirement_violations(
+    path: &str,
+    cmd: &clap::Command,
+    table: &[Requirement],
+) -> Vec<String> {
+    let sample = |arg: &clap::Arg| {
+        arg.get_possible_values()
+            .first()
+            .map_or_else(|| "1".to_owned(), |value| value.get_name().to_owned())
+    };
+    let mut required: Vec<&clap::Arg> = cmd
+        .get_arguments()
+        .filter(|arg| arg.is_positional() && arg.is_required_set())
+        .collect();
+    required.sort_by_key(|arg| arg.get_index());
+    // A required flag is not a requirement: each probe passes every other one too
+    // (`copy --from` with `--to`).
+    let required_flags: Vec<&clap::Arg> = cmd
+        .get_arguments()
+        .filter(|arg| !arg.is_positional() && arg.is_required_set() && arg.get_long().is_some())
+        .collect();
+    let mut violations = Vec::new();
+    for flag in cmd.get_arguments().filter(|arg| !arg.is_positional()) {
+        let Some(long) = flag.get_long() else {
+            continue;
+        };
+        let mut argv = vec![cmd.get_name().to_owned()];
+        argv.extend(required.iter().map(|arg| sample(arg)));
+        for other in required_flags
+            .iter()
+            .filter(|other| other.get_id() != flag.get_id())
+        {
+            argv.push(format!("--{}", other.get_long().unwrap_or_default()));
+            if other.get_action().takes_values() {
+                argv.push(sample(other));
+            }
+        }
+        argv.push(format!("--{long}"));
+        if flag.get_action().takes_values() {
+            argv.push(sample(flag));
+        }
+        let declared: Vec<&str> = table
+            .iter()
+            .filter(|row| row.path == path && row.long == long)
+            .flat_map(|row| row.requires.iter().copied())
+            .collect();
+        match cmd.clone().try_get_matches_from(&argv) {
+            Ok(_) if !declared.is_empty() => violations.push(format!(
+                "`{path} --{long}` parses alone, but REQUIRES says it needs {}",
+                declared.join(", ")
+            )),
+            Err(e) if e.kind() == clap::error::ErrorKind::MissingRequiredArgument => {
+                let missing: Vec<String> = match e.get(clap::error::ContextKind::InvalidArg) {
+                    Some(clap::error::ContextValue::Strings(names)) => names.clone(),
+                    Some(clap::error::ContextValue::String(name)) => vec![name.clone()],
+                    _ => Vec::new(),
+                };
+                for name in missing {
+                    let long_name = name
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_start_matches('-')
+                        .to_owned();
+                    if !declared.contains(&long_name.as_str()) {
+                        violations.push(format!(
+                            "`{path} --{long}` needs `{name}` to parse: declare it in contract::commands::REQUIRES"
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    violations
+}
+
+/// Facts the manifest records about one built clap command: any path, the root and pure
+/// parents included. Never serialized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandFacts {
+    /// Every alias, hidden ones included (they parse).
+    pub aliases: Vec<String>,
+    pub subcommand_required: bool,
+    pub args_conflict_with_subcommands: bool,
+}
+
+pub fn command_facts(cmd: &clap::Command) -> CommandFacts {
+    let mut aliases: Vec<String> = cmd.get_all_aliases().map(str::to_owned).collect();
+    aliases.sort();
+    CommandFacts {
+        aliases,
+        subcommand_required: cmd.is_subcommand_required_set(),
+        args_conflict_with_subcommands: cmd.is_args_conflicts_with_subcommands_set(),
+    }
+}
+
+/// A value grammar, from a closed vocabulary: clap names no parser stably in release
+/// builds, so parsers are told apart by type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grammar {
+    Flag,
+    Count,
+    Enum,
+    DurationOrTime,
+    Path,
+    Integer,
+    String,
+    Other,
+}
+
+impl Grammar {
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::Flag => "flag",
+            Self::Count => "count",
+            Self::Enum => "enum",
+            Self::DurationOrTime => "duration_or_time",
+            Self::Path => "path",
+            Self::Integer => "integer",
+            Self::String => "string",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Facts the manifest records about one argument of the command at a path: the whole
+/// accepted input, hidden values and aliases included. Never serialized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgFacts {
+    /// `--long` (`-c` without a long), or `@<index>` for a positional.
+    pub identity: String,
+    /// A positional's 1-based index.
+    pub index: Option<usize>,
+    /// A positional's first value name, else its id upper-cased.
+    pub value_name: Option<String>,
+    pub short: Option<char>,
+    pub short_aliases: Vec<char>,
+    pub aliases: Vec<String>,
+    pub grammar: Grammar,
+    /// Sorted accepted spellings, aliases included.
+    pub values: Vec<String>,
+    pub ignore_case: bool,
+    /// clap's recorded defaults (`false` for a switch and `0` for a count, once built).
+    pub default: Vec<String>,
+    /// `(min, max)`; `None` when unbounded.
+    pub arity: (usize, Option<usize>),
+    pub action: &'static str,
+    pub repeat: bool,
+    pub required: bool,
+    pub global: bool,
+    /// Identities, both directions.
+    pub conflicts: Vec<String>,
+    /// Identities.
+    pub requires: Vec<String>,
+    pub env: Option<String>,
+    /// The set ones of: `allow_hyphen_values`, `allow_negative_numbers`,
+    /// `trailing_var_arg`, `require_equals`, `exclusive`, `last`.
+    pub switches: Vec<&'static str>,
+    pub value_delimiter: Option<char>,
+}
+
+/// `arg`'s identity: `--long`, `-c`, or `@<index>`.
+fn identity(arg: &clap::Arg) -> String {
+    match (arg.get_long(), arg.get_short(), arg.get_index()) {
+        (Some(long), _, _) => format!("--{long}"),
+        (None, Some(short), _) => format!("-{short}"),
+        (None, None, Some(index)) => format!("@{index}"),
+        (None, None, None) => arg.get_id().to_string(),
+    }
+}
+
+fn action_name(action: &ArgAction) -> &'static str {
+    match action {
+        ArgAction::Set => "set",
+        ArgAction::Append => "append",
+        ArgAction::SetTrue => "set_true",
+        ArgAction::SetFalse => "set_false",
+        ArgAction::Count => "count",
+        ArgAction::Help => "help",
+        ArgAction::HelpShort => "help_short",
+        ArgAction::HelpLong => "help_long",
+        ArgAction::Version => "version",
+        _ => "other",
+    }
+}
+
+fn grammar(arg: &clap::Arg) -> Grammar {
+    use std::any::TypeId;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+    match arg.get_action() {
+        ArgAction::SetTrue
+        | ArgAction::SetFalse
+        | ArgAction::Help
+        | ArgAction::HelpShort
+        | ArgAction::HelpLong
+        | ArgAction::Version => return Grammar::Flag,
+        ArgAction::Count => return Grammar::Count,
+        _ => {}
+    }
+    if matches!(values_of(arg), Values::Words(_)) || !arg.get_possible_values().is_empty() {
+        return Grammar::Enum;
+    }
+    let parser = arg.get_value_parser().type_id();
+    let is = |id: TypeId| parser == id;
+    if is(TypeId::of::<PathBuf>()) || is(TypeId::of::<OsString>()) {
+        return Grammar::Path;
+    }
+    let integers = [
+        TypeId::of::<u8>(),
+        TypeId::of::<u16>(),
+        TypeId::of::<u32>(),
+        TypeId::of::<u64>(),
+        TypeId::of::<usize>(),
+        TypeId::of::<i8>(),
+        TypeId::of::<i16>(),
+        TypeId::of::<i32>(),
+        TypeId::of::<i64>(),
+        TypeId::of::<isize>(),
+    ];
+    if integers.into_iter().any(is) {
+        Grammar::Integer
+    } else if is(TypeId::of::<String>()) {
+        Grammar::String
+    } else {
+        Grammar::Other
+    }
+}
+
+/// The manifest's facts about `arg` of `cmd`, the command at `path`. Conflicts are taken
+/// among every argument of `cmd`.
+pub fn arg_facts(path: &str, cmd: &clap::Command, arg: &clap::Arg) -> ArgFacts {
+    let all: Vec<&clap::Arg> = cmd.get_arguments().collect();
+    let mut conflicts: Vec<String> = conflicting(cmd, &all, arg)
+        .into_iter()
+        .map(identity)
+        .collect();
+    conflicts.sort();
+    let mut requires: Vec<String> = arg
+        .get_long()
+        .map(|long| requires_of(path, long))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|long| format!("--{long}"))
+        .collect();
+    requires.sort();
+    let mut values: Vec<String> = arg
+        .get_possible_values()
+        .iter()
+        .flat_map(|value| {
+            value
+                .get_name_and_aliases()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    values.sort();
+    values.dedup();
+    let mut aliases: Vec<String> = arg
+        .get_all_aliases()
+        .unwrap_or_default()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    aliases.sort();
+    let mut short_aliases = arg.get_all_short_aliases().unwrap_or_default();
+    short_aliases.sort_unstable();
+    let range = arg.get_num_args();
+    let arity = range.map_or((0, Some(0)), |range| {
+        let max = range.max_values();
+        (range.min_values(), (max != usize::MAX).then_some(max))
+    });
+    let switches: Vec<&'static str> = [
+        ("allow_hyphen_values", arg.is_allow_hyphen_values_set()),
+        (
+            "allow_negative_numbers",
+            arg.is_allow_negative_numbers_set(),
+        ),
+        ("trailing_var_arg", arg.is_trailing_var_arg_set()),
+        ("require_equals", arg.is_require_equals_set()),
+        ("exclusive", arg.is_exclusive_set()),
+        ("last", arg.is_last_set()),
+    ]
+    .into_iter()
+    .filter_map(|(name, set)| set.then_some(name))
+    .collect();
+    ArgFacts {
+        identity: identity(arg),
+        index: if arg.is_positional() {
+            arg.get_index()
+        } else {
+            None
+        },
+        value_name: arg
+            .is_positional()
+            .then(|| value_name(arg).unwrap_or_else(|| upper_id(arg))),
+        short: arg.get_short(),
+        short_aliases,
+        aliases,
+        grammar: grammar(arg),
+        values,
+        ignore_case: arg.is_ignore_case_set(),
+        default: arg
+            .get_default_values()
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect(),
+        arity,
+        action: action_name(arg.get_action()),
+        repeat: matches!(arg.get_action(), ArgAction::Append | ArgAction::Count),
+        required: arg.is_required_set(),
+        global: arg.is_global_set(),
+        conflicts,
+        requires,
+        env: arg.get_env().map(|env| env.to_string_lossy().into_owned()),
+        switches,
+        value_delimiter: arg.get_value_delimiter(),
+    }
 }
 
 #[cfg(test)]
@@ -555,5 +926,138 @@ mod tests {
     #[test]
     fn registry_builtin_holds_commands() {
         assert_eq!(Registry::builtin().commands, commands());
+    }
+
+    #[test]
+    fn requirements_are_declared_and_true() {
+        let root = built();
+        let violations: Vec<String> = COMMANDS
+            .iter()
+            .filter_map(|row| {
+                at_path(&root, row.name).map(|cmd| requirement_violations(row.name, cmd, REQUIRES))
+            })
+            .flatten()
+            .collect();
+        assert_eq!(violations, Vec::<String>::new());
+    }
+
+    #[test]
+    fn requirement_violations_finds_each_fault() {
+        let switch =
+            |name: &'static str| clap::Arg::new(name).long(name).action(ArgAction::SetTrue);
+        let requiring = clap::Command::new("x")
+            .arg(switch("force").requires("yes"))
+            .arg(switch("yes"));
+        let free = clap::Command::new("x")
+            .arg(switch("force"))
+            .arg(switch("yes"));
+        let declared = [Requirement {
+            path: "x",
+            long: "force",
+            requires: &["yes"],
+        }];
+        let cases: [(&str, &clap::Command, &[Requirement], usize); 3] = [
+            ("undeclared", &requiring, &[], 1),
+            ("declared_not_enforced", &free, &declared, 1),
+            ("correct", &requiring, &declared, 0),
+        ];
+        for (case, cmd, table, want) in cases {
+            let got = requirement_violations("x", cmd, table);
+            assert_eq!(got.len(), want, "{case}: {got:?}");
+        }
+        let message = requirement_violations("x", &requiring, &[]).join("");
+        assert!(
+            message.contains("`x --force` needs") && message.contains("REQUIRES"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn manifest_requires_equal_the_requires_table() {
+        let nodes = crate::contract::manifest::build(&Registry::builtin()).nodes;
+        let with_requires: Vec<&String> = nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.facts
+                    .contains_key(crate::contract::manifest::fact::REQUIRES)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let declared: Vec<String> = REQUIRES
+            .iter()
+            .map(|row| crate::contract::manifest::ids::flag(row.path, row.long))
+            .collect();
+        assert_eq!(
+            with_requires,
+            declared.iter().collect::<Vec<_>>(),
+            "every REQUIRES row, and no other flag"
+        );
+    }
+
+    /// Lines of `text`'s production code that set a default-missing value.
+    fn default_missing(text: &str) -> Vec<usize> {
+        use crate::source_scan::{Literals, production_code};
+        production_code(text, Literals::Blank)
+            .unwrap_or_default()
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.contains("default_missing_value"))
+            .map(|(n, _)| n + 1)
+            .collect()
+    }
+
+    #[test]
+    fn no_argument_sets_a_default_missing_value() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let found: Vec<String> = crate::source_scan::sources(&root)
+            .into_iter()
+            .flat_map(|(path, text)| {
+                default_missing(&text)
+                    .into_iter()
+                    .map(move |n| format!("{}:{n}", path.display()))
+            })
+            .collect();
+        assert!(
+            found.is_empty(),
+            "clap keeps default-missing values private, so the manifest cannot record them: declare them beside the argument in a contract::commands table first: {found:?}"
+        );
+    }
+
+    #[test]
+    fn default_missing_scan_catches_planted_text() {
+        let cases = [
+            (
+                "attribute",
+                "#[arg(long, default_missing_value = \"x\")]\nstruct A;\n",
+                1,
+            ),
+            (
+                "plural",
+                "#[arg(long, default_missing_values = [\"x\"])]\nstruct A;\n",
+                1,
+            ),
+            (
+                "builder",
+                "fn f(a: Arg) -> Arg { a.default_missing_value(\"x\") }\n",
+                1,
+            ),
+            (
+                "commented",
+                "// default_missing_value = \"x\"\nfn f() {}\n",
+                0,
+            ),
+            (
+                "string_literal",
+                "fn f() -> &'static str { \"default_missing_value\" }\n",
+                0,
+            ),
+        ];
+        for (case, text, want) in cases {
+            let got = default_missing(text).len();
+            assert_eq!(
+                got, want,
+                "{case}: {text:?} gave {got} lines, expected {want}"
+            );
+        }
     }
 }
