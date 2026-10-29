@@ -22,7 +22,8 @@ pub enum DetailSpec {
     Object(&'static [Field]),
     /// A value matching exactly one branch.
     OneOf(&'static [&'static DetailSpec]),
-    /// An object with unconstrained keys; the text explains why.
+    /// An object with unconstrained keys; the text explains why. It renders structurally
+    /// open (`additionalProperties: true`), which the contract suite's strict form keeps.
     Opaque(&'static str),
 }
 
@@ -156,7 +157,9 @@ impl DetailSpec {
             Self::OneOf(branches) => {
                 json!({"oneOf": branches.iter().map(|branch| branch.to_json_schema()).collect::<Vec<_>>()})
             }
-            Self::Opaque(reason) => json!({"type": "object", "description": reason}),
+            Self::Opaque(reason) => {
+                json!({"type": "object", "description": reason, "additionalProperties": true})
+            }
         };
         if nullable && let Some(object) = schema.as_object_mut() {
             if let Some(Value::Array(values)) = object.get_mut("enum") {
@@ -469,6 +472,9 @@ pub(crate) fn check_rendered(schema: &Value) -> Result<(), String> {
             }
             "description" if value.as_str().is_some_and(|value| !value.trim().is_empty()) => {}
             "description" => return Err("description must be a non-empty string".to_owned()),
+            // Only an opaque object opens its keys; nothing renders a closed one.
+            "additionalProperties" if value == &Value::Bool(true) => {}
+            "additionalProperties" => return Err("additionalProperties must be true".to_owned()),
             _ => return Err(format!("unknown schema keyword {key:?}")),
         }
     }
@@ -563,12 +569,12 @@ mod tests {
             (
                 "opaque",
                 OPAQUE,
-                json!({"type":"object","description":"Nested error details are specified by their own code."}),
+                json!({"type":"object","description":"Nested error details are specified by their own code.","additionalProperties":true}),
             ),
             (
                 "nullable_opaque",
                 const { DetailSpec::Object(&[Field::opt("a", &OPAQUE).nullable()]) },
-                json!({"type":"object","properties":{"a":{"type":["object","null"],"description":"Nested error details are specified by their own code."}}}),
+                json!({"type":"object","properties":{"a":{"type":["object","null"],"description":"Nested error details are specified by their own code.","additionalProperties":true}}}),
             ),
             (
                 "nested_array_of_objects",
@@ -883,7 +889,15 @@ mod tests {
     #[test]
     fn the_structural_check_rejects_each_fault() {
         let cases = [
-            ("unknown_keyword", json!({"additionalProperties":false})),
+            ("unknown_keyword", json!({"pattern":"^a$"})),
+            (
+                "closed_additional_properties",
+                json!({"additionalProperties":false}),
+            ),
+            (
+                "additional_properties_schema",
+                json!({"additionalProperties":{"type":"string"}}),
+            ),
             ("bad_type_name", json!({"type":"float"})),
             ("empty_type_array", json!({"type":[]})),
             ("duplicate_type", json!({"type":["string","string"]})),

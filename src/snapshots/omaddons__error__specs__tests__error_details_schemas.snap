@@ -44,6 +44,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -162,6 +163,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -269,6 +271,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -406,6 +409,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -605,6 +609,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -718,6 +723,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -837,6 +843,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -971,6 +978,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -1078,6 +1086,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -1188,6 +1197,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -1301,6 +1311,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -1419,6 +1430,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -1576,6 +1588,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -1707,6 +1720,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -1817,6 +1831,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -1927,6 +1942,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -2056,6 +2072,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -2197,6 +2214,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -2304,6 +2322,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -2417,6 +2436,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -2581,6 +2601,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -2747,6 +2768,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -2857,6 +2879,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -3036,6 +3059,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -3157,6 +3181,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -3297,6 +3322,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -3465,6 +3491,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -3572,6 +3599,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -3719,6 +3747,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -3859,6 +3888,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -3969,6 +3999,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -4085,6 +4116,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -4198,6 +4230,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -4331,6 +4364,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -4468,6 +4502,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -4587,6 +4622,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -4740,6 +4776,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -4935,6 +4972,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -5051,6 +5089,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -5203,6 +5242,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },
@@ -5319,6 +5359,7 @@ expression: schemas
                       "type": "string"
                     },
                     "details": {
+                      "additionalProperties": true,
                       "description": "An item error's kept details: the subset of its own code's details an item keeps",
                       "type": "object"
                     },

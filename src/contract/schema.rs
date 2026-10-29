@@ -7,10 +7,11 @@ use std::collections::BTreeMap;
 
 use schemars::generate::SchemaSettings;
 use schemars::{Schema, SchemaGenerator};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::app::{self, CommandEntry};
 use crate::engine::journal::JournalLine;
+use crate::error::{ErrorBody, ErrorCode, Suggestion, error_variant_value};
 use crate::output::Envelope;
 use crate::state::{desired::DesiredStateSchema, store};
 
@@ -57,6 +58,33 @@ pub fn envelope_schema() -> Schema {
     generator().root_schema_for::<Envelope<'static, serde_json::Value>>()
 }
 
+/// The error union (M4-D10): one variant per code, discriminated by `code`.
+pub fn error_schema() -> Schema {
+    let mut schema = generator().root_schema_for::<ErrorBody>();
+    schema.insert("title".into(), json!("ErrorBody"));
+    schema
+}
+
+/// One code's variant of the union as a root of its own, so a failure can be checked
+/// against its code alone.
+pub fn error_variant(code: ErrorCode) -> Schema {
+    let mut generator = generator();
+    let alternatives = generator.subschema_for::<Vec<Suggestion>>();
+    let mut root = serde_json::Map::new();
+    if let Value::Object(variant) = error_variant_value(code, &alternatives) {
+        root.extend(variant);
+    }
+    root.insert("title".into(), json!(format!("{} error", code.wire())));
+    if let Some(meta_schema) = generator.settings().meta_schema.as_deref() {
+        root.insert("$schema".into(), json!(meta_schema));
+    }
+    let definitions = generator.take_definitions(true);
+    if !definitions.is_empty() {
+        root.insert("$defs".into(), Value::Object(definitions));
+    }
+    Schema::from(root)
+}
+
 /// Each stderr event, with its discriminator pinned to the event's wire name.
 pub fn event_schemas() -> BTreeMap<&'static str, Schema> {
     super::events::EventName::ALL
@@ -95,6 +123,164 @@ pub fn file_schemas() -> BTreeMap<&'static str, Schema> {
         schema.insert("title".into(), json!(kind));
     }
     schemas
+}
+
+/// What [`walk`] reports.
+#[derive(Debug, Clone, Copy)]
+pub enum Visit<'a> {
+    /// A schema position: the root, a property value, array items, a map's values, and
+    /// each `$ref` target and in-place branch found there, at the same path.
+    Position { path: &'a str, node: &'a Value },
+    /// A property of an object node, at the property's own path.
+    Property {
+        path: &'a str,
+        name: &'a str,
+        node: &'a Value,
+        required: bool,
+        parent: &'a Value,
+    },
+}
+
+/// Walks one published schema with every local `$ref` resolved in place.
+///
+/// Paths use the details syntax: `a`, `a.b`, `a[]` for an array's items (`prefixItems`
+/// entries too), `a{}` for a map's values (`additionalProperties` or `patternProperties`
+/// schemas); the root is the empty string. The branches of `allOf`, `anyOf` and `oneOf`
+/// are walked at their node's path. A definition already being walked (the root from the
+/// start) is not entered again, so every walk terminates. It does not validate, and
+/// ignores the keywords it does not need.
+pub fn walk(root: &Value, visit: &mut dyn FnMut(&Visit<'_>)) {
+    let mut entered = vec!["#"];
+    walk_at(root, root, "", &mut entered, visit);
+}
+
+fn walk_at<'a>(
+    root: &'a Value,
+    node: &'a Value,
+    path: &str,
+    entered: &mut Vec<&'a str>,
+    visit: &mut dyn FnMut(&Visit<'_>),
+) {
+    visit(&Visit::Position { path, node });
+    let Some(object) = node.as_object() else {
+        return;
+    };
+    if let Some(reference) = object.get("$ref").and_then(Value::as_str)
+        && !entered.contains(&reference)
+        && let Some(target) = resolve(root, reference)
+    {
+        entered.push(reference);
+        walk_at(root, target, path, entered, visit);
+        entered.pop();
+    }
+    for keyword in ["allOf", "anyOf", "oneOf"] {
+        for branch in object
+            .get(keyword)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            walk_at(root, branch, path, entered, visit);
+        }
+    }
+    if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+        let required: Vec<&str> = object
+            .get("required")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        for (name, property) in properties {
+            let child = if path.is_empty() {
+                name.clone()
+            } else {
+                format!("{path}.{name}")
+            };
+            visit(&Visit::Property {
+                path: &child,
+                name,
+                node: property,
+                required: required.contains(&name.as_str()),
+                parent: node,
+            });
+            walk_at(root, property, &child, entered, visit);
+        }
+    }
+    let values = format!("{path}{{}}");
+    for value in object
+        .get("patternProperties")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(serde_json::Map::values)
+    {
+        walk_at(root, value, &values, entered, visit);
+    }
+    // A boolean opens or closes this node's own keys; only a schema is a position.
+    if let Some(value) = object.get("additionalProperties")
+        && value.is_object()
+    {
+        walk_at(root, value, &values, entered, visit);
+    }
+    let items = format!("{path}[]");
+    for entry in object
+        .get("prefixItems")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        walk_at(root, entry, &items, entered, visit);
+    }
+    match object.get("items") {
+        Some(Value::Array(entries)) => {
+            for entry in entries {
+                walk_at(root, entry, &items, entered, visit);
+            }
+        }
+        Some(schema) => walk_at(root, schema, &items, entered, visit),
+        None => {}
+    }
+}
+
+/// A local reference's target: `#` or a JSON pointer into the root (`#/$defs/Name`).
+fn resolve<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+    let pointer = reference.strip_prefix('#')?;
+    if pointer.is_empty() {
+        Some(root)
+    } else {
+        root.pointer(pointer)
+    }
+}
+
+/// Keywords that annotate a schema without constraining what it admits.
+const ANNOTATIONS: &[&str] = &[
+    "$comment",
+    "default",
+    "deprecated",
+    "description",
+    "examples",
+    "readOnly",
+    "title",
+    "writeOnly",
+];
+
+/// Whether a schema node admits any value, or any keys, on purpose: the boolean `true`,
+/// a schema of annotations only (`{}`, or the `description` schemars gives a documented
+/// `Value` field), or an object schema whose `additionalProperties` or
+/// `unevaluatedProperties` is `true`. `contract::OPAQUE` names every such position.
+pub fn is_open(node: &Value) -> bool {
+    match node {
+        Value::Bool(open) => *open,
+        Value::Object(object) => {
+            object
+                .keys()
+                .all(|keyword| ANNOTATIONS.contains(&keyword.as_str()))
+                || ["additionalProperties", "unevaluatedProperties"]
+                    .iter()
+                    .any(|keyword| object.get(*keyword) == Some(&Value::Bool(true)))
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -260,6 +446,325 @@ mod tests {
             BTreeSet::from(["elapsed_ms", "offline"]),
             "{schema}"
         );
+    }
+
+    #[test]
+    fn the_envelope_error_is_the_union() {
+        let schema = envelope_schema().to_value();
+        let union = &schema["$defs"]["ErrorBody"]["oneOf"];
+        assert_eq!(
+            union.as_array().map(Vec::len),
+            Some(ErrorCode::ALL.len()),
+            "$defs.ErrorBody: {schema:#}"
+        );
+        let mut reached = false;
+        walk(&schema, &mut |visit| {
+            if let Visit::Position {
+                path: "error",
+                node,
+            } = visit
+            {
+                reached |= node.get("oneOf") == Some(union);
+            }
+        });
+        assert!(reached, "error reaches the union: {schema:#}");
+    }
+
+    #[test]
+    fn error_schemas_are_rooted_and_titled() {
+        let union = error_schema().to_value();
+        assert_eq!(union["title"], "ErrorBody", "{union:#}");
+        assert_eq!(
+            union["$schema"], "https://json-schema.org/draft/2020-12/schema",
+            "{union:#}"
+        );
+        for code in ErrorCode::ALL {
+            let variant = error_variant(*code).to_value();
+            assert_eq!(
+                variant["title"],
+                format!("{} error", code.wire()),
+                "{variant:#}"
+            );
+            assert_eq!(
+                variant["$schema"], "https://json-schema.org/draft/2020-12/schema",
+                "{code}: {variant:#}"
+            );
+            assert_eq!(
+                variant["properties"]["code"]["const"],
+                code.wire(),
+                "{code}: {variant:#}"
+            );
+            assert_eq!(
+                variant["properties"]["alternatives"],
+                json!({"type": "array", "items": {"$ref": "#/$defs/Suggestion"}}),
+                "{code}: {variant:#}"
+            );
+            assert!(
+                variant
+                    .pointer("/$defs/Suggestion/properties/argv")
+                    .is_some(),
+                "{code}: $defs holds Suggestion: {variant:#}"
+            );
+            let in_union = &union["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["properties"]["code"]["const"] == code.wire())
+                .unwrap()["properties"];
+            assert_eq!(
+                &variant["properties"], in_union,
+                "{code}: the root variant is the union's"
+            );
+        }
+    }
+
+    /// The visits of one walk, as sorted `position <path>` and `property <path>` lines
+    /// (`(required)` on a required property's), the root shown as `.`.
+    fn visits(schema: &Value) -> Vec<String> {
+        let mut out = Vec::new();
+        walk(schema, &mut |visit| {
+            let shown = |path: &str| {
+                if path.is_empty() {
+                    ".".to_owned()
+                } else {
+                    path.to_owned()
+                }
+            };
+            out.push(match visit {
+                Visit::Position { path, .. } => format!("position {}", shown(path)),
+                Visit::Property {
+                    path,
+                    name,
+                    required,
+                    parent,
+                    ..
+                } => {
+                    assert!(
+                        parent["properties"].get(*name).is_some(),
+                        "{name}: its parent holds it: {parent}"
+                    );
+                    format!(
+                        "property {}{}",
+                        shown(path),
+                        if *required { " (required)" } else { "" }
+                    )
+                }
+            });
+        });
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn walk_visits_every_position() {
+        let inner =
+            json!({"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]});
+        let cases: Vec<(&str, Value, Vec<&str>)> = vec![
+            (
+                "ref_used_twice",
+                json!({
+                    "properties": {"a": {"$ref": "#/$defs/I"}, "b": {"$ref": "#/$defs/I"}},
+                    "$defs": {"I": inner},
+                }),
+                vec![
+                    "position .",
+                    "position a",
+                    "position a",
+                    "position a.x",
+                    "position b",
+                    "position b",
+                    "position b.x",
+                    "property a",
+                    "property a.x (required)",
+                    "property b",
+                    "property b.x (required)",
+                ],
+            ),
+            (
+                "self_recursive_definition",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "v": {"type": "integer"},
+                        "children": {"type": "array", "items": {"$ref": "#"}},
+                    },
+                    "required": ["v"],
+                }),
+                vec![
+                    "position .",
+                    "position children",
+                    "position children[]",
+                    "position v",
+                    "property children",
+                    "property v (required)",
+                ],
+            ),
+            (
+                "recursive_definition_in_defs",
+                json!({
+                    "properties": {"n": {"$ref": "#/$defs/Node"}},
+                    "$defs": {"Node": {"properties": {"next": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}]}}}},
+                }),
+                vec![
+                    "position .",
+                    "position n",
+                    "position n",
+                    "position n.next",
+                    "position n.next",
+                    "position n.next",
+                    "property n",
+                    "property n.next",
+                ],
+            ),
+            (
+                "any_of_with_null",
+                json!({
+                    "properties": {"n": {"anyOf": [{"$ref": "#/$defs/I"}, {"type": "null"}]}},
+                    "$defs": {"I": inner},
+                }),
+                vec![
+                    "position .",
+                    "position n",
+                    "position n",
+                    "position n",
+                    "position n",
+                    "position n.x",
+                    "property n",
+                    "property n.x (required)",
+                ],
+            ),
+            (
+                "one_of_sharing_a_field",
+                json!({"oneOf": [
+                    {"properties": {"a": {"type": "string"}, "b": {}}, "required": ["a"]},
+                    {"properties": {"a": {"type": "integer"}}},
+                ]}),
+                vec![
+                    "position .",
+                    "position .",
+                    "position .",
+                    "position a",
+                    "position a",
+                    "position b",
+                    "property a",
+                    "property a (required)",
+                    "property b",
+                ],
+            ),
+            (
+                "map_additional_properties",
+                json!({
+                    "properties": {"m": {"type": "object", "additionalProperties": {"$ref": "#/$defs/I"}}},
+                    "$defs": {"I": inner},
+                }),
+                vec![
+                    "position .",
+                    "position m",
+                    "position m{}",
+                    "position m{}",
+                    "position m{}.x",
+                    "property m",
+                    "property m{}.x (required)",
+                ],
+            ),
+            (
+                "map_pattern_properties",
+                json!({"properties": {"m": {
+                    "type": "object",
+                    "patternProperties": {"^[0-9]+$": {"type": "integer"}},
+                    "additionalProperties": false,
+                }}}),
+                vec!["position .", "position m", "position m{}", "property m"],
+            ),
+            (
+                "open_map_is_its_own_position",
+                json!({"properties": {"m": {"type": "object", "additionalProperties": true}}}),
+                vec!["position .", "position m", "property m"],
+            ),
+            (
+                "prefix_items",
+                json!({"properties": {"t": {
+                    "type": "array",
+                    "prefixItems": [{"type": "integer"}, {"$ref": "#/$defs/I"}],
+                }}, "$defs": {"I": inner}}),
+                vec![
+                    "position .",
+                    "position t",
+                    "position t[]",
+                    "position t[]",
+                    "position t[]",
+                    "position t[].x",
+                    "property t",
+                    "property t[].x (required)",
+                ],
+            ),
+            (
+                "nested_paths",
+                json!({"properties": {"a": {"type": "array", "items": {"properties": {"b": {
+                    "type": "object", "additionalProperties": {"type": "array", "items": true},
+                }}}}}}),
+                vec![
+                    "position .",
+                    "position a",
+                    "position a[]",
+                    "position a[].b",
+                    "position a[].b{}",
+                    "position a[].b{}[]",
+                    "property a",
+                    "property a[].b",
+                ],
+            ),
+            (
+                "non_local_reference_is_not_followed",
+                json!({"properties": {"r": {"$ref": "https://example.com/schema"}}}),
+                vec!["position .", "position r", "property r"],
+            ),
+        ];
+        for (name, schema, expected) in cases {
+            assert_eq!(visits(&schema), expected, "case {name}: walking {schema:#}");
+        }
+    }
+
+    #[test]
+    fn open_nodes() {
+        for (name, node, expected) in [
+            ("true", json!(true), true),
+            ("false", json!(false), false),
+            ("empty", json!({}), true),
+            (
+                "annotations_only",
+                json!({"description": "d", "title": "t"}),
+                true,
+            ),
+            ("typed", json!({"type": "object"}), false),
+            (
+                "open_keys",
+                json!({"type": "object", "additionalProperties": true}),
+                true,
+            ),
+            (
+                "open_unevaluated",
+                json!({"unevaluatedProperties": true}),
+                true,
+            ),
+            (
+                "closed_keys",
+                json!({"type": "object", "additionalProperties": false}),
+                false,
+            ),
+            (
+                "map_of_values",
+                json!({"type": "object", "additionalProperties": {"type": "string"}}),
+                false,
+            ),
+            (
+                "reference",
+                json!({"$ref": "#/$defs/X", "description": "d"}),
+                false,
+            ),
+        ] {
+            assert_eq!(is_open(&node), expected, "case {name}: {node}");
+        }
     }
 
     #[test]

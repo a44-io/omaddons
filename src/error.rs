@@ -810,7 +810,7 @@ impl Error {
 }
 
 /// The wire form of an [`Error`]: `fix` is the display string and `fix_argv` its argv.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ErrorBody {
     pub code: ErrorCode,
     pub message: String,
@@ -834,6 +834,44 @@ impl From<Error> for ErrorBody {
             details: error.details,
         }
     }
+}
+
+/// An error's schema: one variant per code, discriminated by `code`, each with that code's
+/// typed `details` (M4-D10). Every `ErrorBody` (the envelope's `error`, a
+/// `TargetResult.error` inside `data`) and every `Error` (through its impl below) carries
+/// it.
+impl JsonSchema for ErrorBody {
+    fn schema_name() -> Cow<'static, str> {
+        "ErrorBody".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let alternatives = generator.subschema_for::<Vec<Suggestion>>();
+        let variants: Vec<serde_json::Value> = ErrorCode::ALL
+            .iter()
+            .map(|code| error_variant_value(*code, &alternatives))
+            .collect();
+        schemars::json_schema!({ "oneOf": variants })
+    }
+}
+
+/// One code's variant of the error union; `alternatives` is the schema of the
+/// suggestions list, as the generator that holds `Suggestion` renders it.
+pub fn error_variant_value(code: ErrorCode, alternatives: &Schema) -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "description": code.meaning(),
+        "properties": {
+            "code": {"type": "string", "const": code.wire()},
+            "message": {"type": "string"},
+            "fix": {"type": "string"},
+            "fix_argv": {"type": ["array", "null"], "items": {"type": "string"}},
+            "alternatives": alternatives,
+            "retryable": {"type": "boolean"},
+            "details": code.details_schema(),
+        },
+        "required": ["code", "message", "fix", "fix_argv", "alternatives", "retryable", "details"],
+    })
 }
 
 /// An `Error`'s schema is its wire body's. Written by hand because schemars derives the
@@ -1422,15 +1460,106 @@ mod tests {
     #[test]
     fn error_schema_is_the_wire_body() {
         let schema = serde_json::to_value(schemars::schema_for!(Error)).unwrap();
-        let props = schema["properties"].as_object().unwrap();
-        assert!(props.contains_key("fix_argv"), "{schema}");
-        assert!(!props.contains_key("argv"), "{schema}");
+        for variant in schema["oneOf"].as_array().unwrap() {
+            let props = variant["properties"].as_object().unwrap();
+            assert!(props.contains_key("fix_argv"), "{variant}");
+            assert!(!props.contains_key("argv"), "{variant}");
+        }
         let warning = serde_json::to_value(schemars::schema_for!(Warning)).unwrap();
         assert!(
             warning["properties"]
                 .as_object()
                 .unwrap()
                 .contains_key("fix_argv")
+        );
+    }
+
+    #[test]
+    fn error_union_has_one_variant_per_code() {
+        let schema = crate::contract::schema::error_schema().to_value();
+        let variants = schema["oneOf"].as_array().unwrap();
+        assert_eq!(
+            variants.len(),
+            ErrorCode::ALL.len(),
+            "one variant per code: {:?}",
+            ErrorCode::ALL
+        );
+        for (variant, code) in variants.iter().zip(ErrorCode::ALL) {
+            let properties = &variant["properties"];
+            assert_eq!(
+                properties["code"],
+                serde_json::json!({"type": "string", "const": code.wire()}),
+                "{code}: discriminator: {variant:#}"
+            );
+            assert_eq!(
+                properties["details"],
+                code.details_schema(),
+                "{code}: details: {variant:#}"
+            );
+            assert_eq!(
+                variant["description"],
+                code.meaning(),
+                "{code}: meaning: {variant:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn error_variant_properties_equal_the_serialized_body() {
+        use std::collections::BTreeSet;
+        let keys = |value: &serde_json::Value| -> BTreeSet<String> {
+            value.as_object().unwrap().keys().cloned().collect()
+        };
+        let alternatives = Schema::from(true);
+        for code in ErrorCode::ALL {
+            let body = serde_json::to_value(ErrorBody::from(Error::new(
+                *code,
+                "m",
+                Suggestion::text("f"),
+            )))
+            .unwrap();
+            let variant = error_variant_value(*code, &alternatives);
+            let required: BTreeSet<String> = variant["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|key| key.as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(
+                keys(&variant["properties"]),
+                keys(&body),
+                "{code}: properties against the body {body}"
+            );
+            assert_eq!(
+                required,
+                keys(&body),
+                "{code}: required against the body {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn target_result_error_uses_the_union() {
+        use crate::contract::schema::{Visit, command_schema, walk};
+        // `update`'s data is `TargetsData`; `install`'s names one target, with no `targets`.
+        let schema = command_schema(crate::app::command_entry("update").unwrap()).to_value();
+        let mut nodes = Vec::new();
+        walk(&schema, &mut |visit| {
+            if let Visit::Position { path, node } = visit
+                && *path == "targets[].error"
+            {
+                nodes.push((*node).clone());
+            }
+        });
+        assert!(
+            nodes.iter().any(|node| node["$ref"] == "#/$defs/ErrorBody"),
+            "targets[].error names ErrorBody: {nodes:#?}"
+        );
+        assert!(
+            nodes.iter().any(|node| node["oneOf"]
+                .as_array()
+                .is_some_and(|variants| variants.len() == ErrorCode::ALL.len())),
+            "targets[].error reaches the union: {nodes:#?}"
         );
     }
 }
