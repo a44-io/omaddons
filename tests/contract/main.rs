@@ -15,6 +15,7 @@ mod canonical_names;
 mod details_report;
 mod exit_sites;
 mod intent_corpus;
+mod manifest_report;
 mod matrix;
 mod recommendations;
 #[cfg(test)]
