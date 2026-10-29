@@ -1,0 +1,18 @@
+---
+source: tests/contract/matrix.rs
+expression: redacted
+---
+{
+  "command": "robot-docs guide",
+  "commands": [],
+  "data": {
+    "content": "<guide>",
+    "format": "markdown"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

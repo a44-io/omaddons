@@ -1,7 +1,7 @@
 //! `omaddons robot-docs`: documentation for programs and agents, generated from the code
-//! (M4-D2). `schema [<command>]` publishes `contract::schema`'s JSON Schemas unchanged, and
-//! `errors` the error and warning catalog. Both read no file, need no `HOME`, send no
-//! request and write nothing.
+//! (M4-D2). `guide` (and bare `robot-docs`) prints the agent guide, `schema [<command>]`
+//! publishes `contract::schema`'s JSON Schemas unchanged, and `errors` the error and
+//! warning catalog. None reads a file, needs `HOME`, sends a request or writes anything.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -26,6 +26,9 @@ pub struct RobotDocsArgs {
 /// What `robot-docs` documents.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum RobotDocsAction {
+    /// The agent guide as Markdown: the same text as the skill
+    #[command(after_long_help = GUIDE_HELP)]
+    Guide,
     /// The JSON Schema of every command's data, the envelope, the stderr events and the
     /// files, or of one command's data
     Schema(SchemaArgs),
@@ -38,14 +41,71 @@ impl RobotDocsAction {
     /// The envelope `command`.
     pub fn command(&self) -> &'static str {
         match self {
+            Self::Guide => GUIDE_COMMAND,
             Self::Schema(_) => SCHEMA_COMMAND,
             Self::Errors => ERRORS_COMMAND,
         }
     }
 }
 
+/// The envelope `command` of `robot-docs guide` and of bare `robot-docs`.
+pub const GUIDE_COMMAND: &str = "robot-docs guide";
 const SCHEMA_COMMAND: &str = "robot-docs schema";
 const ERRORS_COMMAND: &str = "robot-docs errors";
+
+const GUIDE_HELP: &str = "\
+The guide reads no file or setting, so it prints the same bytes on every machine:
+the same text as skills/omaddons/SKILL.md, opening with YAML frontmatter. With
+--json, data is {\"format\":\"markdown\",\"content\":\"...\"}.";
+
+/// The format of a `robot-docs` document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DocFormat {
+    Markdown,
+}
+
+/// `robot-docs guide`'s data: the guide, whole.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct GuideData {
+    pub format: DocFormat,
+    /// The guide's text: YAML frontmatter, its stamp, then Markdown.
+    pub content: String,
+}
+
+#[derive(Debug)]
+pub struct GuideOutcome {
+    data: GuideData,
+}
+
+impl Outcome for GuideOutcome {
+    type Data = GuideData;
+
+    fn command(&self) -> &'static str {
+        GUIDE_COMMAND
+    }
+
+    fn data(&self) -> &GuideData {
+        &self.data
+    }
+
+    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
+        w.write_all(self.data.content.as_bytes())
+    }
+}
+
+/// `robot-docs guide` and bare `robot-docs`: the embedded guide, rendered from the
+/// registries. It reads no file and writes nothing.
+pub fn guide() -> Result<GuideOutcome> {
+    let content = crate::contract::guide::render_guide()
+        .map_err(|e| Error::internal(format!("the embedded guide does not render: {e}")))?;
+    Ok(GuideOutcome {
+        data: GuideData {
+            format: DocFormat::Markdown,
+            content,
+        },
+    })
+}
 
 /// `robot-docs schema`'s arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -754,5 +814,40 @@ mod tests {
         let twice = |f: &dyn Fn() -> Vec<u8>| assert_eq!(f(), f());
         twice(&|| serde_json::to_vec(&schema(&[]).unwrap().data).unwrap());
         twice(&|| serde_json::to_vec(&errors().unwrap().data).unwrap());
+        twice(&|| serde_json::to_vec(&guide().unwrap().data).unwrap());
+    }
+
+    #[test]
+    fn guide_human_output_is_the_content_raw() {
+        let outcome = guide().unwrap();
+        let mut out = Vec::new();
+        outcome.render_human(&mut out, &Style::default()).unwrap();
+        assert!(
+            out == outcome.data.content.as_bytes(),
+            "the human form is the content, byte for byte: {} vs {} bytes",
+            out.len(),
+            outcome.data.content.len()
+        );
+        assert!(outcome.data.content.starts_with("---\nname: omaddons\n"));
+    }
+
+    #[test]
+    fn guide_data_serializes_format_then_content() {
+        let data = GuideData {
+            format: DocFormat::Markdown,
+            content: "# x\n".to_owned(),
+        };
+        let got = serde_json::to_string(&data).unwrap();
+        assert_eq!(got, r##"{"format":"markdown","content":"# x\n"}"##);
+    }
+
+    #[test]
+    fn bare_robot_docs_and_guide_share_the_canonical_path() {
+        for argv in [&["robot-docs"][..], &["robot-docs", "guide"]] {
+            let parsed =
+                Cli::try_parse_from(std::iter::once("omaddons").chain(argv.iter().copied()));
+            let got = parsed.map(|cli| super::super::command_name(cli.command.as_ref()));
+            assert_eq!(got.ok(), Some(GUIDE_COMMAND), "{argv:?}");
+        }
     }
 }

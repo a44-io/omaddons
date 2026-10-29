@@ -173,7 +173,7 @@ expression: envelope
         "name": "completions"
       },
       {
-        "about": "Documentation for programs and agents: the JSON Schema of every output, and the error catalog",
+        "about": "Documentation for agents: the guide (bare), the JSON Schemas and the error catalog",
         "aliases": [],
         "group": "setup",
         "name": "robot-docs"

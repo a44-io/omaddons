@@ -512,7 +512,7 @@ pub const CORPUS: &[Row] = &[
         CommandTypo,
         &["robotdocs"],
         &[],
-        "bare robot-docs runs its help",
+        "bare robot-docs runs the guide",
         error(2, "usage", &["omaddons", "robot-docs"], &[0]),
     ),
     row(
@@ -536,6 +536,13 @@ pub const CORPUS: &[Row] = &[
         error(2, "usage", &["omaddons", "robot-docs", "errors"], &[0]),
     )
     .by_leaf("A5"),
+    row(
+        CommandTypo,
+        &["robot-docs", "gide"],
+        &[],
+        "a read-only guess runs",
+        error(2, "usage", &["omaddons", "robot-docs", "guide"], &[0]),
+    ),
     // A mistyped flag.
     row(
         FlagTypo,
@@ -800,17 +807,6 @@ pub const PENDING: &[Pending] = &[
             &[],
             "a read-only guess runs",
             error(2, "usage", &["omaddons", "capabilities"], &[0]),
-        ),
-    ),
-    pending(
-        "B1",
-        &["robot-docs guide"],
-        row(
-            CommandTypo,
-            &["robot-docs", "gide"],
-            &[],
-            "a read-only guess runs",
-            error(2, "usage", &["omaddons", "robot-docs", "guide"], &[0]),
         ),
     ),
     pending(

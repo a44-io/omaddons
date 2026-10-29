@@ -177,7 +177,8 @@ var CLI_PATHS = {
   "robot-docs":        { "mutates": false, "destructive": false, "binds": false },
   "robot-docs schema": { "mutates": false, "destructive": false, "binds": false },
   "robot-docs errors": { "mutates": false, "destructive": false, "binds": false },
-  "help":              { "mutates": false, "destructive": false, "binds": false }
+  "robot-docs guide":  { "mutates": false, "destructive": false, "binds": false },
+  "help":             { "mutates": false, "destructive": false, "binds": false }
 }
 // END CLI_PATHS
 

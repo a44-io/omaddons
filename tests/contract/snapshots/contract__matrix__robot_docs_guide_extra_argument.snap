@@ -1,0 +1,27 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "robot-docs guide",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons help robot-docs guide",
+    "fix_argv": [
+      "omaddons",
+      "help",
+      "robot-docs",
+      "guide"
+    ],
+    "message": "unexpected argument 'extra' found",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

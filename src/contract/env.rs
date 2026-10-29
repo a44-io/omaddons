@@ -240,6 +240,12 @@ pub const ENV_VARS: &[EnvVar] = &[
         "verbose echoes each test-log record to stderr; unset writes logs only (tests/common/tlog.rs)",
         None,
     ),
+    var(
+        "OMADDONS_UPDATE_SKILL",
+        EnvKind::Harness,
+        "1 makes tests/skill.rs rewrite skills/omaddons/SKILL.md from the rendered guide",
+        None,
+    ),
 ];
 
 /// The rows capabilities publishes.

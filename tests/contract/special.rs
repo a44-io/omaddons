@@ -685,6 +685,7 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             "robot-docs" => &["robot-docs"],
             "robot-docs schema" => &["robot-docs", "schema"],
             "robot-docs errors" => &["robot-docs", "errors"],
+            "robot-docs guide" => &["robot-docs", "guide"],
             "help" => &["help"],
             _ => return None,
         })

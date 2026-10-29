@@ -2063,11 +2063,51 @@ fn robot_docs() {
 
     log.step("bare");
     let c = run(&["robot-docs"], 0);
-    assert_eq!(c.envelope["command"], "help");
-    assert_eq!(c.envelope["data"]["command"], "robot-docs");
+    assert_eq!(c.envelope["command"], "robot-docs guide");
+    assert_eq!(c.envelope["data"]["format"], "markdown");
 
     log.step("usage at the parent");
     let c = run(&["robot-docs", "--bogus"], 2);
     assert_eq!(c.envelope["command"], "robot-docs");
     assert_eq!(c.envelope["error"]["code"], "usage");
+}
+
+#[test]
+fn robot_docs_guide() {
+    use common::tlog::tlog;
+    let log = tlog!();
+    let s = Scene::new();
+    let run = |args: &[&str], code: i32| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        support::check(log.run(&s.home, &argv).to_run(), code)
+    };
+    let without_meta = |envelope: &Value| {
+        let mut envelope = envelope.clone();
+        if let Some(object) = envelope.as_object_mut() {
+            object.remove("meta");
+        }
+        envelope
+    };
+
+    log.step("the guide");
+    let guide = run(&["robot-docs", "guide"], 0);
+    assert_eq!(guide.envelope["command"], "robot-docs guide");
+    assert_eq!(guide.envelope["data"]["format"], "markdown");
+    let content = guide.envelope["data"]["content"].as_str().unwrap_or("");
+    assert!(content.starts_with("---\nname: omaddons\n"), "{content}");
+    // tests/skill.rs pins the content whole; here it is redacted, so a guide change
+    // re-accepts no contract snapshot.
+    let mut redacted = s.stable(&guide.envelope);
+    redacted["data"]["content"] = json!("<guide>");
+    insta::assert_json_snapshot!("robot_docs_guide_ok", redacted);
+
+    log.step("bare robot-docs is the guide");
+    let bare = run(&["robot-docs"], 0);
+    assert_eq!(without_meta(&bare.envelope), without_meta(&guide.envelope));
+
+    log.step("an extra argument");
+    let c = run(&["robot-docs", "guide", "extra"], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+    insta::assert_json_snapshot!("robot_docs_guide_extra_argument", s.stable(&c.envelope));
 }

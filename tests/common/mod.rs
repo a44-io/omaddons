@@ -29,6 +29,7 @@ pub mod engine;
 pub mod env;
 pub mod exec;
 pub mod graph;
+pub mod guide;
 pub mod history;
 pub mod home;
 pub mod http;

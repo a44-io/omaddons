@@ -159,8 +159,8 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | Previews that bind: a `--dry-run` of `install`, `update`, `sync`, `copy`, `remove`, `undo`, `backup restore`, `backup prune` or `errors dismiss` returns a token, and the real run with `--if-match` does exactly what it showed, client by client, or nothing (`plan_stale`) | ✅ Done (milestone 3; `install`, `update`, `sync` and `copy` in milestone 4) |
 | The Omarchy bar widget: `omarchy install` renders it for this binary, validates it, swaps it in atomically and puts it on the bar; `omarchy status` says whether it is current and on the bar, and `status` reports it on every call (an outdated one is warned about and turns read-only); `omarchy remove` takes it away. The button shows a badge for updates (urgent for problems and new Lua errors) and a summary on hover, and right-click checks for updates; its keyboard panel has its frame (summary, Check now, Undo last, the client filter, the view switcher, progress and results, the confirm dialog) and its five views (Updates, Installed, Issues, Backups, Search, with the restore chooser); on its own it follows a game starting and exiting, takes the after-play checkpoint and reads the session's Lua errors, checks for updates when due, and notifies about new errors (and, when asked, new updates); its safety rules are scanned on every gate | ✅ Done (milestone 3) |
 | `completions`: a static completion script for bash, zsh, fish, elvish and PowerShell (commands, subcommands, aliases, flags and fixed values), generated from the command tree; `--json` gives `{shell, script}` | ✅ Done (milestone 4) |
-| `robot-docs schema` and `robot-docs errors`: every output's JSON Schema and the error and warning catalog, from the binary | ✅ Done (milestone 4) |
-| `capabilities`, `doctor`, `robot-docs guide`, `apply` for stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
+| `robot-docs guide`, `robot-docs schema` and `robot-docs errors`: the agent guide, every output's JSON Schema and the error and warning catalog, from the binary | ✅ Done (milestone 4) |
+| `capabilities`, `doctor`, `apply` for stored plans, installing the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
 `omaddons outdated` lists what has updates, and `omaddons update` installs them on every client, one transaction per client, all undone by one `omaddons undo`. Two kinds of addon are left alone. A `url:` ref's release is the URL itself, so there is nothing newer to fetch. A pinned addon (by `pin`, or installed with `--version`) stays where it is (`skipped`, reason `pinned`) until `unpin`.
@@ -1818,14 +1818,19 @@ Prints a completion script for `bash`, `zsh`, `fish`, `elvish` or `powershell` o
 
 ### `robot-docs`
 
-Documentation for programs and agents, generated from the code, so it cannot drift from what the binary does. Both subcommands read no file, need no `HOME`, send no request and change nothing. Bare `omaddons robot-docs` shows this help, as `omaddons help robot-docs` does.
+Documentation for programs and agents, generated from the code, so it cannot drift from what the binary does. No subcommand reads a file or a setting, needs `HOME`, sends a request or changes anything. Bare `omaddons robot-docs` prints the agent guide, as `omaddons robot-docs guide` does.
 
 ```bash
+omaddons robot-docs                           # the agent guide, as Markdown
 omaddons robot-docs schema --json             # every schema: envelope, events, commands, files
 omaddons robot-docs schema install --json     # the data of one command
 omaddons robot-docs schema backup restore     # a nested command, by its path
 omaddons robot-docs errors --json             # every error and warning code
 ```
+
+#### `robot-docs guide`
+
+The agent guide: Markdown that opens with YAML frontmatter, the same bytes as `skills/omaddons/SKILL.md` in this repository (a test holds them equal) and as an installed skill. It reads no file or setting, so it prints the same bytes on every machine. With `--json`, `data` is `{"format":"markdown","content":"…"}`. The line after the frontmatter is the stamp `<!-- omaddons guide sha256:<hex> -->`, the SHA-256 of the document without that line; it names no version or build.
 
 #### `robot-docs schema [COMMAND]`
 
@@ -2443,7 +2448,7 @@ Every rules edit applies on the next command. The discovery cache records the ru
 | `OMARCHY_PATH` | Where `omarchy install` also looks for Omarchy's shell (`$OMARCHY_PATH/shell`) when `omarchy-shell` is not on `PATH`. Omarchy's tools get it, with the rest of the environment, unchanged |
 | `PATH` | Where `gh`, `git` and `omarchy-shell` are found; `git` runs with only `PATH` from your environment |
 
-Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT`, `OMADDONS_NOW` (an RFC 3339 time that freezes the clock), `OMADDONS_FS_CLONE` (`yes` or `no`: whether the filesystem under a client clones files), `OMADDONS_FS_FREE_MB` (the free space backups see) and `OMADDONS_WIDGET_ID` (a suffix of up to 32 lowercase letters, digits and `-` that installs a separate copy of the bar widget) for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE`, `OMADDONS_LIVE`, `OMADDONS_REAL_CUSTOM_ROOT`, `OMADDONS_WRITE_SEEDS`, `OMADDONS_WIDGET_OUT`, `OMADDONS_TEST_LOG`, `BENCH_HOME`, `LIVE_HOME` and `COVERAGE_HOME` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate) and [Test logs and `argc e2e`](#test-logs-and-argc-e2e)).
+Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT`, `OMADDONS_NOW` (an RFC 3339 time that freezes the clock), `OMADDONS_FS_CLONE` (`yes` or `no`: whether the filesystem under a client clones files), `OMADDONS_FS_FREE_MB` (the free space backups see) and `OMADDONS_WIDGET_ID` (a suffix of up to 32 lowercase letters, digits and `-` that installs a separate copy of the bar widget) for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE`, `OMADDONS_LIVE`, `OMADDONS_REAL_CUSTOM_ROOT`, `OMADDONS_WRITE_SEEDS`, `OMADDONS_WIDGET_OUT`, `OMADDONS_TEST_LOG`, `OMADDONS_UPDATE_SKILL`, `BENCH_HOME`, `LIVE_HOME` and `COVERAGE_HOME` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate) and [Test logs and `argc e2e`](#test-logs-and-argc-e2e)).
 
 A test fails when the binary reads a variable this section does not list.
 
@@ -2717,7 +2722,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 | Capability | State | Planned |
 |---|---|---|
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
-| `capabilities`, `doctor`, `robot-docs guide`, `apply` for stored plans, agent skill | ❌ | M4 |
+| `capabilities`, `doctor`, `apply` for stored plans, installing the agent skill | ❌ | M4 |
 | CurseForge, Wago | ❌ | M5, optional, bring your own key |
 | Packages, man page | ❌ build from source | M5 |
 | Windows, macOS | ❌ | Never (non-goal) |
@@ -2785,7 +2790,7 @@ br ready                     # work that is ready now
 
 ### The local gate
 
-There is no CI (decision D16). Every commit that changes code (`*.rs`, `Cargo.*`, `rust-toolchain.toml`, `deny.toml`, lint config, the catalog, the bar widget under `omarchy/`, test fixtures and snapshots) passes the gate first:
+There is no CI (decision D16). Every commit that changes code (`*.rs`, `Cargo.*`, `rust-toolchain.toml`, `deny.toml`, lint config, the catalog, the bar widget under `omarchy/`, the agent guide (`src/contract/guide/*.md`, `skills/omaddons/SKILL.md`), test fixtures and snapshots) passes the gate first:
 
 ```bash
 argc gate          # cargo fmt --check, clippy --all-targets -D warnings, cargo test, the widget
@@ -2799,6 +2804,10 @@ argc widget-test   # the widget pipeline alone, QML step included
 The widget pipeline (`scripts/widget-test.sh`) runs four ordered steps over a fresh temporary directory: the real binary writes the envelopes the widget reads, `bun` tests `omarchy/Model.js` over them, the binary's own argument parser checks every command line bun built, and, when anything under `omarchy/` changed, `qmltestrunner` runs the QML tests over a copy of the plugin. The first three run on every gate, because a renamed flag or a changed envelope key breaks the widget as surely as a QML edit. Nothing generated is committed.
 
 Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`, `argc e2e [filter]` (the end-to-end suites with their logs turned up, below), `argc fuzz <target>`, `argc fuzz-all` and `argc bench` (the last three are checkpoint tasks, below).
+
+### The agent guide
+
+`skills/omaddons/SKILL.md` is generated: it is what `omaddons robot-docs guide` prints. Edit `src/contract/guide/guide.md` for its prose, or the registries for its tables, then run `OMADDONS_UPDATE_SKILL=1 cargo test --test skill` and commit both. Never edit or merge the file by hand; after a rebase, regenerate it. `.rumdl.toml` keeps the Markdown formatter from putting a blank line between the frontmatter and the stamp in either file.
 
 ### Tests
 
@@ -2822,6 +2831,7 @@ With milestone 3's features in, there are 2,279 Rust tests: 1,154 unit tests in 
 | `tests/omarchy.rs`, `tests/omarchy_widget.rs`, `omarchy/tests/` | The bar widget: `omarchy install`, `status` and `remove` over stub Omarchy tools (never this machine's shell), `status`'s widget block; and the widget pipeline: envelopes from the real binary, `bun` over `Model.js` and the source's security scans, the binary's parser over every argv `bun` built, `qmltestrunner` over the QML |
 | `tests/completions.rs` | `omaddons completions`: each shell's script snapshot-tested; `bash -n` and bash's own completion function over the whole command tree in every gate; the scripts static, the same bytes on every terminal, and pure (no state read, no write, no request); `zsh -n` and `fish --no-execute` at checkpoints |
 | `tests/robot_docs.rs` | `robot-docs schema` and `robot-docs errors` end to end: every path, the envelope, the events and the files listed and equal to the library's schemas; one path's entry and every path's own schema command; unknown paths' fixes run; the catalog equal to the registries; the published schemas validating live output, strictly too; byte-identical repeats in other environments; no reads, writes or requests, and no `HOME` needed |
+| `tests/skill.rs` | The committed skill is the guide, byte for byte; its frontmatter and stamp; the regeneration's fixed point |
 | `tests/fsx_lock.rs` | The global lock and the in-flight locks |
 | `tests/tlog_selftest.rs` | The test log itself: both files and every field, `net.log` and failpoint capture, redaction, truncation, tree differences, the failure output and the live echo (in child processes), and the e2e marker convention |
 
@@ -2962,6 +2972,8 @@ No, by design. It relies on Linux specifics: `renameat2`, `/proc`, Wine prefix l
 ---
 
 ## For coding agents
+
+The full agent guide is `omaddons robot-docs guide` (the same text as `skills/omaddons/SKILL.md`).
 
 ```text
 omaddons: WoW addon manager for Linux. One JSON envelope per command, typed errors with fixes as argv.

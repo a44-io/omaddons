@@ -29,6 +29,8 @@ const PLACEHOLDERS: &[(&str, Sample)] = &[
     ("<bytes>", Sample::Zero),
     ("<checked_at>", Sample::Time),
     ("<expires>", Sample::Time),
+    // `robot-docs guide`'s content: tests/skill.rs pins it whole.
+    ("<guide>", Sample::Keep),
     ("<key>", Sample::Ulid),
     ("<meta>", Sample::Meta),
     ("<plan>", Sample::Ulid),
