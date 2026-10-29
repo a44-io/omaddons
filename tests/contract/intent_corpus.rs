@@ -508,6 +508,34 @@ pub const CORPUS: &[Row] = &[
         error(2, "usage", &["omaddons", "completions", "bash"], &[0]),
     )
     .by_leaf("A7"),
+    row(
+        CommandTypo,
+        &["robotdocs"],
+        &[],
+        "bare robot-docs runs its help",
+        error(2, "usage", &["omaddons", "robot-docs"], &[0]),
+    ),
+    row(
+        CommandTypo,
+        &["robot-docs", "schema", "instal"],
+        &["robot-docs schema"],
+        "a schema's command name, corrected",
+        error(
+            2,
+            "usage",
+            &["omaddons", "robot-docs", "schema", "install"],
+            &[0],
+        ),
+    )
+    .by_leaf("A5"),
+    row(
+        CommandTypo,
+        &["robot-docs", "erors"],
+        &[],
+        "a read-only guess runs",
+        error(2, "usage", &["omaddons", "robot-docs", "errors"], &[0]),
+    )
+    .by_leaf("A5"),
     // A mistyped flag.
     row(
         FlagTypo,
@@ -773,46 +801,6 @@ pub const PENDING: &[Pending] = &[
             "a read-only guess runs",
             error(2, "usage", &["omaddons", "capabilities"], &[0]),
         ),
-    ),
-    pending(
-        "A5",
-        &["robot-docs"],
-        row(
-            CommandTypo,
-            &["robotdocs"],
-            &[],
-            "bare robot-docs runs its help",
-            error(2, "usage", &["omaddons", "robot-docs"], &[0]),
-        ),
-    ),
-    pending(
-        "A5",
-        &["robot-docs schema"],
-        row(
-            CommandTypo,
-            &["robot-docs", "schema", "instal"],
-            &["robot-docs schema"],
-            "a schema's command name, corrected",
-            error(
-                2,
-                "usage",
-                &["omaddons", "robot-docs", "schema", "install"],
-                &[0],
-            ),
-        )
-        .by_leaf("A5"),
-    ),
-    pending(
-        "A5",
-        &["robot-docs errors"],
-        row(
-            CommandTypo,
-            &["robot-docs", "erors"],
-            &[],
-            "a read-only guess runs",
-            error(2, "usage", &["omaddons", "robot-docs", "errors"], &[0]),
-        )
-        .by_leaf("A5"),
     ),
     pending(
         "B1",

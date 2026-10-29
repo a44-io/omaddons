@@ -32,6 +32,7 @@ pub mod remembered;
 pub mod remove;
 pub mod resolve_args;
 pub mod restore_addons;
+pub mod robot_docs;
 pub mod search;
 pub mod status;
 pub mod sync;
@@ -258,6 +259,9 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("omarchy install", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<omarchy::InstallOutcome>, Network::None),
     entry("omarchy remove", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<omarchy::RemoveOutcome>, Network::None),
     entry("completions", Setup, false, &[0, 1, 2], data_schema::<completions::CompletionsOutcome>, Network::None),
+    entry("robot-docs", Setup, false, &[0, 1, 2], data_schema::<help::HelpOutcome>, Network::None),
+    entry("robot-docs schema", Setup, false, &[0, 1, 2], data_schema::<robot_docs::SchemaOutcome>, Network::None),
+    entry("robot-docs errors", Setup, false, &[0, 1, 2], data_schema::<robot_docs::ErrorsOutcome>, Network::None),
     entry("help", Setup, false, &[0, 1, 2], data_schema::<help::HelpOutcome>, Network::None),
 ];
 
@@ -387,6 +391,10 @@ pub fn canonical_path(command: &Command) -> &'static str {
             .as_ref()
             .map_or("omarchy status", omarchy::OmarchyAction::command),
         Command::Completions(_) => "completions",
+        Command::RobotDocs(args) => args
+            .action
+            .as_ref()
+            .map_or("help", robot_docs::RobotDocsAction::command),
     }
 }
 
@@ -782,6 +790,13 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             }
         }
         Some(Command::Completions(args)) => out.emit(completions::run(args)),
+        Some(Command::RobotDocs(args)) => match &args.action {
+            None => out.emit(help::for_command(Some("robot-docs"), &ctx.argv)),
+            Some(robot_docs::RobotDocsAction::Schema(schema)) => {
+                out.emit(robot_docs::schema(&schema.command))
+            }
+            Some(robot_docs::RobotDocsAction::Errors) => out.emit(robot_docs::errors()),
+        },
     }
 }
 

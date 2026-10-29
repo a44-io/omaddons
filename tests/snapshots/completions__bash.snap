@@ -98,6 +98,9 @@ _omaddons() {
             omaddons,rm)
                 cmd="omaddons__subcmd__remove"
                 ;;
+            omaddons,robot-docs)
+                cmd="omaddons__subcmd__robot__subcmd__docs"
+                ;;
             omaddons,rollback)
                 cmd="omaddons__subcmd__undo"
                 ;;
@@ -176,6 +179,12 @@ _omaddons() {
             omaddons__subcmd__omarchy,status)
                 cmd="omaddons__subcmd__omarchy__subcmd__status"
                 ;;
+            omaddons__subcmd__robot__subcmd__docs,errors)
+                cmd="omaddons__subcmd__robot__subcmd__docs__subcmd__errors"
+                ;;
+            omaddons__subcmd__robot__subcmd__docs,schema)
+                cmd="omaddons__subcmd__robot__subcmd__docs__subcmd__schema"
+                ;;
             omaddons__subcmd__targets,add)
                 cmd="omaddons__subcmd__targets__subcmd__add"
                 ;;
@@ -195,7 +204,7 @@ _omaddons() {
 
     case "${cmd}" in
         omaddons)
-            opts="-t -v -h -V --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help --version help status install add update upgrade pin unpin adopt sync copy remove uninstall rm delete undo revert rollback backup history log outdated check info show search find errors export net-log list ls targets config auth omarchy completions"
+            opts="-t -v -h -V --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help --version help status install add update upgrade pin unpin adopt sync copy remove uninstall rm delete undo revert rollback backup history log outdated check info show search find errors export net-log list ls targets config auth omarchy completions robot-docs"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1799,6 +1808,144 @@ _omaddons() {
         omaddons__subcmd__remove)
             opts="-t -v -h --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --format)
+                    COMPREPLY=($(compgen -W "json human" -- "${cur}"))
+                    return 0
+                    ;;
+                --target)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --flavor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                -t)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --actor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --reason)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --if-match)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --progress)
+                    COMPREPLY=($(compgen -W "json human none" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        omaddons__subcmd__robot__subcmd__docs)
+            opts="-t -v -h --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help schema errors"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --format)
+                    COMPREPLY=($(compgen -W "json human" -- "${cur}"))
+                    return 0
+                    ;;
+                --target)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --flavor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                -t)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --actor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --reason)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --if-match)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --progress)
+                    COMPREPLY=($(compgen -W "json human none" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        omaddons__subcmd__robot__subcmd__docs__subcmd__errors)
+            opts="-t -v -h --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --format)
+                    COMPREPLY=($(compgen -W "json human" -- "${cur}"))
+                    return 0
+                    ;;
+                --target)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --flavor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                -t)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --actor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --reason)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --if-match)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --progress)
+                    COMPREPLY=($(compgen -W "json human none" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        omaddons__subcmd__robot__subcmd__docs__subcmd__schema)
+            opts="-t -v -h --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi

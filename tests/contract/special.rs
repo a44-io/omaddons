@@ -682,6 +682,9 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             "omarchy" => &["omarchy"],
             "omarchy status" => &["omarchy", "status"],
             "completions" => &["completions", "bash"],
+            "robot-docs" => &["robot-docs"],
+            "robot-docs schema" => &["robot-docs", "schema"],
+            "robot-docs errors" => &["robot-docs", "errors"],
             "help" => &["help"],
             _ => return None,
         })
@@ -827,6 +830,8 @@ fn repeated_runs_are_byte_identical() {
         (&["info", "nosuchaddon"][..], 3),
         (&["remove", "Nope", "-t", "retail"][..], 3),
         (&["completions", "bash"][..], 0),
+        (&["robot-docs", "schema", "install"][..], 0),
+        (&["robot-docs", "errors"][..], 0),
         (&["install", "gh:o/foo", "-t", "retail", "--dry-run"][..], 0),
         (&["update", "--dry-run"][..], 0),
     ] {

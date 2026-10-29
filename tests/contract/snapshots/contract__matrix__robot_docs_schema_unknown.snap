@@ -1,0 +1,27 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "robot-docs schema",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons help robot-docs schema",
+    "fix_argv": [
+      "omaddons",
+      "help",
+      "robot-docs",
+      "schema"
+    ],
+    "message": "there is no command \"nosuch\" to describe",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

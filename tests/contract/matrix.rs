@@ -1948,3 +1948,126 @@ fn completions() {
         serde_json::json!(["omaddons", "completions", "bash"])
     );
 }
+
+#[test]
+fn robot_docs() {
+    use common::tlog::tlog;
+    let log = tlog!();
+    let s = Scene::new();
+    let run = |args: &[&str], code: i32| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        support::check(log.run(&s.home, &argv).to_run(), code)
+    };
+
+    log.step("one schema");
+    let c = run(&["robot-docs", "schema", "config", "path"], 0);
+    assert_eq!(c.envelope["command"], "robot-docs schema");
+    let data = &c.envelope["data"];
+    assert!(
+        data["envelope"].is_null() && data["events"].is_null() && data["files"].is_null(),
+        "{data}"
+    );
+    assert_eq!(data["commands"]["config path"]["title"], "config path");
+    insta::assert_json_snapshot!("robot_docs_schema_one", s.stable(&c.envelope));
+
+    log.step("the full listing");
+    let c = run(&["robot-docs", "schema"], 0);
+    let data = &c.envelope["data"];
+    let keys = |value: &Value| -> Vec<String> {
+        value
+            .as_object()
+            .map(|object| object.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    let mut expected: Vec<String> = omaddons::app::COMMANDS
+        .iter()
+        .map(|row| row.name.to_owned())
+        .collect();
+    expected.sort();
+    assert_eq!(
+        keys(&data["commands"]),
+        expected,
+        "commands are the COMMANDS paths"
+    );
+    let events: Vec<String> = omaddons::contract::events::EventName::ALL
+        .iter()
+        .map(|name| name.wire().to_owned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(keys(&data["events"]), events);
+    let files: Vec<String> = omaddons::contract::schema::file_schemas()
+        .keys()
+        .map(|kind| (*kind).to_owned())
+        .collect();
+    assert_eq!(keys(&data["files"]), files);
+    assert!(
+        data["envelope"]["properties"].is_object(),
+        "the envelope's schema"
+    );
+    log.json(
+        "counts",
+        &json!({
+            "commands": data["commands"].as_object().map(serde_json::Map::len),
+            "events": data["events"].as_object().map(serde_json::Map::len),
+            "files": data["files"].as_object().map(serde_json::Map::len),
+            "stdout_bytes": c.run.stdout.len(),
+        }),
+    );
+
+    log.step("unknown path");
+    let c = run(&["robot-docs", "schema", "nosuch"], 2);
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        json!(["omaddons", "help", "robot-docs", "schema"])
+    );
+    insta::assert_json_snapshot!("robot_docs_schema_unknown", s.stable(&c.envelope));
+    let c = run(&["robot-docs", "schema", "instal"], 2);
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        json!(["omaddons", "robot-docs", "schema", "install"])
+    );
+
+    log.step("the catalog");
+    let c = run(&["robot-docs", "errors"], 0);
+    let data = &c.envelope["data"];
+    let errors = data["error_codes"].as_array().unwrap();
+    let warnings = data["warning_codes"].as_array().unwrap();
+    assert_eq!(errors.len(), ErrorCode::ALL.len());
+    assert_eq!(warnings.len(), omaddons::error::WarningCode::ALL.len());
+    log.json(
+        "counts",
+        &json!({"error_codes": errors.len(), "warning_codes": warnings.len()}),
+    );
+    let mut projection = s.stable(&c.envelope);
+    projection["data"]["error_codes"] = json!(
+        errors
+            .iter()
+            .filter(|row| row["code"] == "network")
+            .collect::<Vec<_>>()
+    );
+    projection["data"]["warning_codes"] = json!(
+        warnings
+            .iter()
+            .filter(|row| row["code"] == "reload_required")
+            .collect::<Vec<_>>()
+    );
+    log.json("projection", &projection);
+    insta::assert_json_snapshot!("robot_docs_errors", projection);
+
+    log.step("catalog usage");
+    let c = run(&["robot-docs", "errors", "extra"], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+    insta::assert_json_snapshot!("robot_docs_errors_usage", s.stable(&c.envelope));
+
+    log.step("bare");
+    let c = run(&["robot-docs"], 0);
+    assert_eq!(c.envelope["command"], "help");
+    assert_eq!(c.envelope["data"]["command"], "robot-docs");
+
+    log.step("usage at the parent");
+    let c = run(&["robot-docs", "--bogus"], 2);
+    assert_eq!(c.envelope["command"], "robot-docs");
+    assert_eq!(c.envelope["error"]["code"], "usage");
+}

@@ -1,0 +1,39 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "robot-docs schema",
+  "commands": [],
+  "data": {
+    "commands": {
+      "config path": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`config path`.",
+        "properties": {
+          "exists": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "exists"
+        ],
+        "title": "config path",
+        "type": "object"
+      }
+    },
+    "envelope": null,
+    "events": null,
+    "files": null
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

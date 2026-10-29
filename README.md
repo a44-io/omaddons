@@ -159,7 +159,8 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | Previews that bind: a `--dry-run` of `install`, `update`, `sync`, `copy`, `remove`, `undo`, `backup restore`, `backup prune` or `errors dismiss` returns a token, and the real run with `--if-match` does exactly what it showed, client by client, or nothing (`plan_stale`) | ✅ Done (milestone 3; `install`, `update`, `sync` and `copy` in milestone 4) |
 | The Omarchy bar widget: `omarchy install` renders it for this binary, validates it, swaps it in atomically and puts it on the bar; `omarchy status` says whether it is current and on the bar, and `status` reports it on every call (an outdated one is warned about and turns read-only); `omarchy remove` takes it away. The button shows a badge for updates (urgent for problems and new Lua errors) and a summary on hover, and right-click checks for updates; its keyboard panel has its frame (summary, Check now, Undo last, the client filter, the view switcher, progress and results, the confirm dialog) and its five views (Updates, Installed, Issues, Backups, Search, with the restore chooser); on its own it follows a game starting and exiting, takes the after-play checkpoint and reads the session's Lua errors, checks for updates when due, and notifies about new errors (and, when asked, new updates); its safety rules are scanned on every gate | ✅ Done (milestone 3) |
 | `completions`: a static completion script for bash, zsh, fish, elvish and PowerShell (commands, subcommands, aliases, flags and fixed values), generated from the command tree; `--json` gives `{shell, script}` | ✅ Done (milestone 4) |
-| `capabilities`, `doctor`, `robot-docs`, stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
+| `robot-docs schema` and `robot-docs errors`: every output's JSON Schema and the error and warning catalog, from the binary | ✅ Done (milestone 4) |
+| `capabilities`, `doctor`, `robot-docs guide`, `apply` for stored plans, the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
 `omaddons outdated` lists what has updates, and `omaddons update` installs them on every client, one transaction per client, all undone by one `omaddons undo`. Two kinds of addon are left alone. A `url:` ref's release is the URL itself, so there is nothing newer to fetch. A pinned addon (by `pin`, or installed with `--version`) stays where it is (`skipped`, reason `pinned`) until `unpin`.
@@ -1815,6 +1816,35 @@ Prints a completion script for `bash`, `zsh`, `fish`, `elvish` or `powershell` o
 
 `data` is `{shell, script}`, where `script` is byte for byte what the human form prints. A shell outside the five is a usage error whose fix is the closest one (`omaddons completions bsh` → `omaddons completions bash`); with no shell, the fix is `omaddons help completions`.
 
+### `robot-docs`
+
+Documentation for programs and agents, generated from the code, so it cannot drift from what the binary does. Both subcommands read no file, need no `HOME`, send no request and change nothing. Bare `omaddons robot-docs` shows this help, as `omaddons help robot-docs` does.
+
+```bash
+omaddons robot-docs schema --json             # every schema: envelope, events, commands, files
+omaddons robot-docs schema install --json     # the data of one command
+omaddons robot-docs schema backup restore     # a nested command, by its path
+omaddons robot-docs errors --json             # every error and warning code
+```
+
+#### `robot-docs schema [COMMAND]`
+
+The JSON Schema (draft 2020-12) of every command's `data`, of the envelope, of every stderr NDJSON event and of every file omaddons writes. `data` is `{envelope, events, commands, files}`: `events` is keyed by event name, `commands` by command path and `files` by file kind (a JSON Lines kind describes one line). Each schema is generated with the serialize contract, so a key a command may leave out is optional, and with a generator of its own, so its `$defs` names depend only on that type.
+
+With a command path (`install`, or `backup restore` as two words or one quoted), `commands` holds that one command's schema and the other three keys are `null`; `.data.commands["install"]` works in both forms. An alias names its command (`add` gives `install`). The `omaddons` and `version` envelopes carry `help`'s data, which `commands["help"]` describes. A path no command has is `usage`, whose fix is the closest path (`robot-docs schema instal` → `omaddons robot-docs schema install`), else the command the path started with, else `omaddons help robot-docs schema`.
+
+The published schemas are open: a key a newer release adds does not break a validator built from them, so such a validator must accept keys it does not know. The human form prints the same data, as pretty JSON.
+
+#### `robot-docs errors`
+
+Every registered error code, in registry order, as `{code, exit, retryable, meaning, details_schema, fix_pattern}`, and every warning code as `{code, meaning, fix_pattern}` (`data` is `{error_codes, warning_codes}`).
+
+- `retryable` is `true`, `false` or `"conditional"`. The last is for `plan_stale`, `http_status`, `hash_mismatch`, `network` and `io`, whose errors decide one by one: each error's own `retryable` says.
+- `details_schema` is the code's typed `details` as a JSON Schema fragment, the same one the error's schema carries.
+- `fix_pattern` says what form the fix takes: `prose: …` when no fix is a command, `none: …` when there is no fix.
+
+The human form is two tables, `-v` adding each code's fix pattern under it.
+
 ### `help [COMMAND]`
 
 ```bash
@@ -1876,6 +1906,8 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 `check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status. On every other failure `commands` is empty, except a panic's, which can offer `undo` (below). Long commands also stream NDJSON `progress` events on stderr with `--progress json` (see [stderr events](#stderr-events)); stdout stays one envelope.
 
 ### Exit codes
+
+`omaddons robot-docs errors --json` lists these codes from the binary, with each one's meaning, retryability, `details` schema and fix pattern, and `omaddons robot-docs schema <command> --json` gives a command's `data` schema.
 
 | Exit | Name | Meaning |
 |---|---|---|
@@ -2685,7 +2717,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 | Capability | State | Planned |
 |---|---|---|
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
-| `capabilities`, `doctor`, `robot-docs`, stored plans, agent skill | ❌ | M4 |
+| `capabilities`, `doctor`, `robot-docs guide`, `apply` for stored plans, agent skill | ❌ | M4 |
 | CurseForge, Wago | ❌ | M5, optional, bring your own key |
 | Packages, man page | ❌ build from source | M5 |
 | Windows, macOS | ❌ | Never (non-goal) |

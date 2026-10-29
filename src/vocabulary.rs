@@ -212,6 +212,7 @@ pub const CLIENT_FREE: &[&str] = &[
     "omarchy",
     "copy",
     "completions",
+    "robot-docs",
 ];
 
 /// Whether a misplaced client may move into -t on the command at `path`.

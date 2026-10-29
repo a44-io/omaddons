@@ -173,6 +173,12 @@ expression: envelope
         "name": "completions"
       },
       {
+        "about": "Documentation for programs and agents: the JSON Schema of every output, and the error catalog",
+        "aliases": [],
+        "group": "setup",
+        "name": "robot-docs"
+      },
+      {
         "about": "Show help for omaddons or one command",
         "aliases": [],
         "group": "setup",

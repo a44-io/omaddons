@@ -1,0 +1,140 @@
+---
+source: tests/contract/matrix.rs
+expression: projection
+---
+{
+  "command": "robot-docs errors",
+  "commands": [],
+  "data": {
+    "error_codes": [
+      {
+        "code": "network",
+        "details_schema": {
+          "properties": {
+            "items": {
+              "items": {
+                "oneOf": [
+                  {
+                    "properties": {
+                      "code": {
+                        "type": "string"
+                      },
+                      "message": {
+                        "type": "string"
+                      },
+                      "request": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "code",
+                      "message",
+                      "request"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "error": {
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "details": {
+                            "additionalProperties": true,
+                            "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                            "type": "object"
+                          },
+                          "fix": {
+                            "type": "string"
+                          },
+                          "fix_argv": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": [
+                              "array",
+                              "null"
+                            ]
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "fix",
+                          "fix_argv",
+                          "message"
+                        ],
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      },
+                      "request": {
+                        "type": "string"
+                      },
+                      "target": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "error",
+                      "request",
+                      "target"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "journal_pending": {
+              "type": "string"
+            },
+            "recovery_error": {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message"
+              ],
+              "type": "object"
+            },
+            "required_by": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "exit": 1,
+        "fix_pattern": "prose: check the network connection, or retry later",
+        "meaning": "A request failed at the network or decoding layer, or a git subprocess timed out or failed outside download; an instance is retryable except after too many redirects or an undecodable encoding.",
+        "retryable": "conditional"
+      }
+    ],
+    "warning_codes": [
+      {
+        "code": "reload_required",
+        "fix_pattern": "prose: `/reload` in game, or restart the game client",
+        "meaning": "The change takes effect in game only after a `/reload`."
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

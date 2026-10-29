@@ -215,6 +215,10 @@ pub enum Command {
     /// Print a shell completion script: bash, zsh, fish, elvish or powershell
     #[command(after_long_help = COMPLETIONS_HELP)]
     Completions(crate::app::completions::CompletionsArgs),
+    /// Documentation for programs and agents: the JSON Schema of every output, and the
+    /// error catalog
+    #[command(after_long_help = ROBOT_DOCS_HELP)]
+    RobotDocs(crate::app::robot_docs::RobotDocsArgs),
 }
 
 /// What every command receives (DEC-2).
@@ -591,6 +595,13 @@ Examples:
 
 The script is static: commands, subcommands, flags and fixed values complete; client
 ids and addon names do not. Generate it again after upgrading omaddons.";
+
+const ROBOT_DOCS_HELP: &str = "\
+Examples:
+  omaddons robot-docs schema --json             every schema: envelope, events, commands, files
+  omaddons robot-docs schema install --json     the data of one command
+  omaddons robot-docs schema backup restore     a nested command, by its path
+  omaddons robot-docs errors --json             every error and warning code";
 
 // ---------------------------------------------------------------------------------------
 // Usage errors.

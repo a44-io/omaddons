@@ -15,6 +15,27 @@ use crate::error::{ErrorBody, ErrorCode, Suggestion, error_variant_value};
 use crate::output::Envelope;
 use crate::state::{desired::DesiredStateSchema, store};
 
+/// One published JSON Schema (draft 2020-12) or schema fragment, as this module generated
+/// it: JSON Schema's own vocabulary, described by the draft 2020-12 meta-schema, not by
+/// omaddons' wire names. Its own schema is structurally open (`contract::OPAQUE`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(transparent)]
+pub struct SchemaDoc(pub Schema);
+
+impl schemars::JsonSchema for SchemaDoc {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "SchemaDoc".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A JSON Schema (draft 2020-12): JSON Schema's own vocabulary, not omaddons' wire names",
+        })
+    }
+}
+
 /// The settings every published schema is generated with (M4-D9).
 pub fn settings() -> SchemaSettings {
     SchemaSettings::draft2020_12().for_serialize()
