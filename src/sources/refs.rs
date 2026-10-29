@@ -254,15 +254,31 @@ pub(crate) fn is_slug(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// `path` against `cwd`, without `.` components (`./Bar.zip` → `<cwd>/Bar.zip`); `..` is
-/// kept, since resolving it lexically would be wrong past a symlink.
-fn absolute(cwd: &Path, path: &Path) -> PathBuf {
+/// `path` against `cwd`, without `.` components (`./Bar.zip` → `<cwd>/Bar.zip`). A `..`
+/// left is resolved through the filesystem, never lexically, which would be wrong past a
+/// symlink: the directory holding the last component is canonicalized, so the path still
+/// names the entry it named, a symlink included. When that directory does not resolve,
+/// the joined path is kept, and whatever reads it fails naming it. Every local path a
+/// command plans with comes from here, as the one a stored plan keeps does
+/// (`AbsPath::resolve`), so a preview's token and the run `apply` makes agree.
+pub(crate) fn absolute(cwd: &Path, path: &Path) -> PathBuf {
     let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
         cwd.join(path)
     };
-    joined.components().collect()
+    let lexical: PathBuf = joined.components().collect();
+    if !lexical
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return lexical;
+    }
+    let resolved = match (lexical.parent(), lexical.file_name()) {
+        (Some(dir), Some(name)) => std::fs::canonicalize(dir).map(|dir| dir.join(name)),
+        _ => std::fs::canonicalize(&lexical),
+    };
+    resolved.unwrap_or(lexical)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -665,6 +681,39 @@ mod tests {
         }
     }
 
+    /// A path without `..` is joined lexically; a `..` resolves through the filesystem,
+    /// keeping the last component (a symlink stays itself); one whose directory does not
+    /// resolve is kept as joined.
+    #[test]
+    fn a_local_path_is_absolute_and_its_dot_dot_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let a = root.join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(root.join("zips")).unwrap();
+        std::fs::write(root.join("zips/foo.zip"), b"zip").unwrap();
+        std::os::unix::fs::symlink(root.join("zips/foo.zip"), root.join("zips/link.zip")).unwrap();
+        for (case, input, expected) in [
+            ("dot", "./Bar.zip", a.join("Bar.zip")),
+            ("plain", "Bar.zip", a.join("Bar.zip")),
+            ("absolute", "/x/./y.zip", PathBuf::from("/x/y.zip")),
+            ("dot dot", "../zips/foo.zip", root.join("zips/foo.zip")),
+            (
+                "dot dot, a symlink kept",
+                "../zips/link.zip",
+                root.join("zips/link.zip"),
+            ),
+            (
+                "dot dot, a missing directory",
+                "../nowhere/x.zip",
+                a.join("../nowhere/x.zip"),
+            ),
+            ("dot dot last", "../zips/..", root.clone()),
+        ] {
+            assert_eq!(absolute(&a, Path::new(input)), expected, "{case}: {input}");
+        }
+    }
+
     fn with_ctx<T>(cwd: &Path, f: impl FnOnce(&RefContext<'_>) -> T) -> T {
         let installed = |name: &str| -> Vec<InstalledMatch> {
             match name.to_ascii_lowercase().as_str() {
@@ -1050,9 +1099,15 @@ mod tests {
                 let r = parse_user_ref(written, ctx).unwrap().r#ref.to_string();
                 assert!(!r.contains("/./"), "{written}: {r}");
             }
-            // `..` stays: resolving it lexically would be wrong past a symlink.
+            // `..` resolves through the filesystem, never lexically (that would be wrong
+            // past a symlink), as the path a stored plan keeps does.
             let up = parse_user_ref("owner/../Addon.zip", ctx).unwrap().r#ref;
-            assert!(up.to_string().ends_with("owner/../Addon.zip"), "{up}");
+            assert_eq!(
+                up,
+                Ref::File {
+                    path: std::fs::canonicalize(dir.path()).unwrap().join("Addon.zip")
+                }
+            );
             let abs = parse_user_ref(&dir.path().join("owner").display().to_string(), ctx).unwrap();
             assert_eq!(abs.matched_by, MatchKind::Path);
             assert_eq!(

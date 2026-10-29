@@ -441,7 +441,11 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         ));
     }
     let cwd = std::env::current_dir().unwrap_or_default();
-    let file = args.file.as_ref().map(|f| cwd.join(f));
+    // The path the stored plan keeps, so the token covers what `apply` will plan.
+    let file = args
+        .file
+        .as_ref()
+        .map(|f| crate::sources::refs::absolute(&cwd, f));
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
     let (catalog, catalog_warnings) = world.catalog(ctx);

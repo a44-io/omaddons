@@ -237,18 +237,12 @@ fn render_plan_line_at(
 pub struct AbsPath(String);
 
 impl AbsPath {
-    /// `input` as an absolute path against `cwd`: a `..` left by the join resolves through
-    /// the filesystem (the input exists at preview; a missing one already failed it).
+    /// `input` as an absolute path against `cwd`, exactly as the command planned it
+    /// (`sources::refs::absolute`): a `..` left by the join resolves through the
+    /// filesystem (the input exists at preview; a missing one already failed it, and one
+    /// whose `..` does not resolve is refused here).
     pub fn resolve(cwd: &Path, input: &Path) -> std::result::Result<Self, String> {
-        let joined = std::path::absolute(cwd.join(input))
-            .map_err(|err| format!("{}: {err}", input.display()))?;
-        let resolved = if joined.components().any(|c| c == Component::ParentDir) {
-            std::fs::canonicalize(&joined).map_err(|err| format!("{}: {err}", joined.display()))?
-        } else {
-            joined
-        };
-        let lexical: PathBuf = resolved.components().collect();
-        let text = lexical
+        let text = crate::sources::refs::absolute(cwd, input)
             .into_os_string()
             .into_string()
             .map_err(|_| "this path cannot be stored in a plan: it is not UTF-8".to_owned())?;
