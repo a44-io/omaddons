@@ -17,15 +17,15 @@ use crate::common::plans::{plan_files, plans_dir, store_listing};
 use crate::common::tlog::{Cmd, Ran, TestLog};
 use crate::common::{self, state};
 
-const NOW: &str = "2026-10-27T12:00:00Z";
+pub(crate) const NOW: &str = "2026-10-27T12:00:00Z";
 const YESTERDAY: &str = "2026-10-26T12:00:00Z";
 const FLAVORS: &[(&str, u32)] = &[("mainline", 120_105), ("mists", 50_504)];
 
-fn strings(args: &[&str]) -> Vec<String> {
+pub(crate) fn strings(args: &[&str]) -> Vec<String> {
     args.iter().map(|arg| (*arg).to_owned()).collect()
 }
 
-fn command<'a>(log: &'a TestLog, home: &Home, args: &[String], json: bool) -> Cmd<'a> {
+pub(crate) fn command<'a>(log: &'a TestLog, home: &Home, args: &[String], json: bool) -> Cmd<'a> {
     let mut argv = args.to_vec();
     if json {
         argv.push("--json".to_owned());
@@ -34,13 +34,13 @@ fn command<'a>(log: &'a TestLog, home: &Home, args: &[String], json: bool) -> Cm
     log.cmd(home, &argv).env("OMADDONS_NOW", NOW)
 }
 
-fn run(log: &TestLog, home: &Home, args: &[String]) -> Ran {
+pub(crate) fn run(log: &TestLog, home: &Home, args: &[String]) -> Ran {
     let ran = command(log, home, args, true).run();
     ran.ok().assert_private();
     ran
 }
 
-fn preview(log: &TestLog, home: &Home, args: &[String]) -> Ran {
+pub(crate) fn preview(log: &TestLog, home: &Home, args: &[String]) -> Ran {
     let mut argv = args.to_vec();
     argv.push("--dry-run".to_owned());
     run(log, home, &argv)
@@ -62,7 +62,7 @@ fn entries(name: &str, version: &str) -> Vec<(String, String)> {
     ]
 }
 
-fn serve(home: &Home, name: &str, version: &str) {
+pub(crate) fn serve(home: &Home, name: &str, version: &str) {
     let entries = entries(name, version);
     let borrowed: Vec<_> = entries
         .iter()
@@ -77,7 +77,7 @@ fn serve(home: &Home, name: &str, version: &str) {
     );
 }
 
-fn zip(home: &Home, name: &str, version: &str) -> PathBuf {
+pub(crate) fn zip(home: &Home, name: &str, version: &str) -> PathBuf {
     let entries = entries(name, version);
     let borrowed: Vec<_> = entries
         .iter()
@@ -88,7 +88,7 @@ fn zip(home: &Home, name: &str, version: &str) -> PathBuf {
     path
 }
 
-fn unmanaged(home: &Home, name: &str) {
+pub(crate) fn unmanaged(home: &Home, name: &str) {
     let entries = entries(name, "1");
     let borrowed: Vec<_> = entries
         .iter()
@@ -97,7 +97,7 @@ fn unmanaged(home: &Home, name: &str) {
     common::addons::unpack(&home.addons("_retail_"), &borrowed);
 }
 
-fn install(log: &TestLog, home: &Home, name: &str, now: &str) -> Ran {
+pub(crate) fn install(log: &TestLog, home: &Home, name: &str, now: &str) -> Ran {
     let args = strings(&[
         "install",
         &format!("gh:o/{}", name.to_ascii_lowercase()),
@@ -184,13 +184,15 @@ fn stored(log: &TestLog, home: &Home, ran: &Ran) -> StoredPlan {
     plan
 }
 
-struct Fixture {
-    home: Home,
-    args: Vec<String>,
-    expected: Vec<String>,
+/// A home seeded for one storable command, the arguments of its change, and the
+/// `display_argv` its stored plan must carry.
+pub(crate) struct Fixture {
+    pub(crate) home: Home,
+    pub(crate) args: Vec<String>,
+    pub(crate) expected: Vec<String>,
 }
 
-fn home_for(log: &TestLog, path: &str) -> Fixture {
+pub(crate) fn home_for(log: &TestLog, path: &str) -> Fixture {
     log.step("prepare home");
     let home = Home::new(&["wow", "wow_classic"]);
     log.env(&home);
