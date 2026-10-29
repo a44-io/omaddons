@@ -1142,6 +1142,188 @@ impl StoredIntent {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Back to arguments: what `apply` hands each command's own `run` (M4-D23).
+
+impl StoredIntent {
+    /// The `-t` an applied run gets: the resolved key (or provisional id) of a one-client
+    /// intent; `None` when it covers every client, and for `copy` and `undo`, which take
+    /// no `-t`; for a scope of several clients, the selector as typed, which the token's
+    /// `targets` part binds to exactly the clients the preview selected.
+    pub fn target_selector(&self) -> Option<String> {
+        let scoped = |scope: &TargetScope| match scope.targets.as_slice() {
+            _ if scope.all => None,
+            [one] => Some(one.target.to_string()),
+            _ => scope.selector.clone(),
+        };
+        match self {
+            Self::Install(i) => Some(i.target.to_string()),
+            Self::Remove(r) => Some(r.target.to_string()),
+            Self::BackupRestore(r) => Some(r.target.to_string()),
+            Self::Update(u) => scoped(&u.scope),
+            Self::Pin(p) | Self::Unpin(p) => scoped(&p.scope),
+            Self::Adopt(a) => scoped(&a.scope),
+            Self::Sync(s) => scoped(&s.scope),
+            Self::BackupPrune(p) => scoped(&p.scope),
+            Self::Copy(_) | Self::Undo(_) => None,
+        }
+    }
+
+    /// The running policy the preview was approved under (`--while-running`); a restore
+    /// records none, since it refuses while the client runs whatever the flag says.
+    pub fn while_running(&self) -> bool {
+        self.approval_flags().while_running
+    }
+}
+
+/// `install`'s arguments for `intent`. Defaulted: `strict` (it changes only the exit code
+/// of a partial result, which `apply` reports through `partial` and its outcomes) and
+/// `refresh` (`apply` revalidates every source). Not arguments: the client (`-t`) and
+/// `--while-running`, which the applied run's context carries.
+impl From<&InstallIntent> for InstallArgs {
+    fn from(i: &InstallIntent) -> Self {
+        Self {
+            refs: i.refs.iter().map(ToString::to_string).collect(),
+            channel: i.channel.map(|c| channel_word(c).to_owned()),
+            version: i.version.clone(),
+            file: i.file.as_ref().map(|f| f.as_path().to_path_buf()),
+            reinstall: i.reinstall,
+            no_deps: i.no_deps,
+            force: i.force,
+            strict: false,
+            refresh: false,
+            any_flavor: i.any_flavor,
+            no_any_flavor: i.no_any_flavor,
+        }
+    }
+}
+
+/// `update`'s arguments for `intent`. Defaulted: `all` (bare `update` is `--all`, and
+/// `--all` with names is a usage error), `strict` and `refresh` (as for `install`).
+impl From<&UpdateIntent> for UpdateArgs {
+    fn from(u: &UpdateIntent) -> Self {
+        Self {
+            addons: u.addons.clone(),
+            all: false,
+            channel: u.channel.map(|c| channel_word(c).to_owned()),
+            refresh: false,
+            strict: false,
+            no_deps: u.no_deps,
+        }
+    }
+}
+
+/// `pin`'s arguments for `intent`; nothing is defaulted.
+impl From<&PinIntent> for PinArgs {
+    fn from(p: &PinIntent) -> Self {
+        Self {
+            addon: p.addon.clone(),
+            version: p.version.clone(),
+        }
+    }
+}
+
+/// `unpin`'s arguments for `intent` (whose `version` is always `None`).
+impl From<&PinIntent> for UnpinArgs {
+    fn from(p: &PinIntent) -> Self {
+        Self {
+            addon: p.addon.clone(),
+        }
+    }
+}
+
+/// `adopt`'s arguments for `intent`. Defaulted: `refresh` (as for `install`).
+impl From<&AdoptIntent> for AdoptArgs {
+    fn from(a: &AdoptIntent) -> Self {
+        Self {
+            folders: a.folders.clone(),
+            apply: a.apply,
+            r#ref: a.r#ref.as_ref().map(ToString::to_string),
+            no_verify: a.no_verify,
+            refresh: false,
+        }
+    }
+}
+
+/// `sync`'s arguments for `intent`: the file it read, or none when it read the default
+/// (the config directory's `addons.toml`, found again the same way). Defaulted: `strict`
+/// (as for `install`).
+impl From<&SyncIntent> for SyncArgs {
+    fn from(s: &SyncIntent) -> Self {
+        Self {
+            file: (!s.default_file).then(|| s.file.as_path().to_path_buf()),
+            strict: false,
+            no_deps: s.no_deps,
+            locked: s.locked,
+            prune: s.prune,
+        }
+    }
+}
+
+/// `copy`'s arguments for `intent`, each side by its key (or provisional id). Defaulted:
+/// `strict` (as for `install`).
+impl From<&CopyIntent> for CopyArgs {
+    fn from(c: &CopyIntent) -> Self {
+        Self {
+            from: c.from.to_string(),
+            to: c.to.to_string(),
+            addons: c.addons.clone(),
+            strict: false,
+            no_deps: c.no_deps,
+        }
+    }
+}
+
+/// `remove`'s arguments for `intent`; nothing is defaulted.
+impl From<&RemoveIntent> for RemoveArgs {
+    fn from(r: &RemoveIntent) -> Self {
+        Self {
+            addons: r.addons.clone(),
+        }
+    }
+}
+
+/// `undo`'s arguments for `intent`: the full transaction or run its preview resolved.
+/// Defaulted: `last_by`, which the preview already resolved into that selection.
+impl From<&UndoIntent> for UndoArgs {
+    fn from(u: &UndoIntent) -> Self {
+        let (tx, run) = match u.selection {
+            UndoSelection::Tx(tx) => (Some(tx.to_string()), None),
+            UndoSelection::Run(run) => (None, Some(run.to_string())),
+        };
+        Self {
+            tx,
+            last_by: None,
+            run,
+            saved_variables: u.saved_variables.map(|p| policy_word(p).to_owned()),
+        }
+    }
+}
+
+/// `backup restore`'s arguments for `intent`, the backup by its full id; nothing is
+/// defaulted.
+impl From<&RestoreIntent> for BackupRestoreArgs {
+    fn from(r: &RestoreIntent) -> Self {
+        Self {
+            id: r.backup.to_string(),
+            addon: r.addons.clone(),
+        }
+    }
+}
+
+/// `backup prune`'s arguments for `intent`: full ids, or `--keep` and the absolute
+/// cutoff the preview meant (an RFC 3339 time, which `--older-than` takes); nothing is
+/// defaulted.
+impl From<&PruneIntent> for BackupPruneArgs {
+    fn from(p: &PruneIntent) -> Self {
+        Self {
+            ids: p.ids.iter().map(ToString::to_string).collect(),
+            keep: p.keep.map(|k| usize::try_from(k).unwrap_or(usize::MAX)),
+            older_than: p.older_than.map(|t| t.to_string()),
+        }
+    }
+}
+
 /// `display_argv`'s flags, in the order they are added.
 #[derive(Default)]
 struct Flags(Vec<String>);
@@ -1391,6 +1573,471 @@ mod tests {
                     "{name}"
                 );
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Back to arguments (M4-D23): each test names every field of the Args, so a field
+    // added to one fails to compile here until it is classified as copied or defaulted.
+
+    #[test]
+    fn install_intent_converts_to_its_args() {
+        let intent = InstallIntent {
+            refs: vec![name("dbm"), NormalizedRef::File(abs("/home/u/Foo.zip"))],
+            target: key(RETAIL),
+            target_id: "retail".into(),
+            channel: Some(Channel::Beta),
+            version: Some("1.2".into()),
+            file: Some(abs("/home/u/dl/foo.zip")),
+            reinstall: true,
+            no_deps: true,
+            force: true,
+            strict: true,
+            refresh: true,
+            any_flavor: true,
+            no_any_flavor: false,
+            while_running: true,
+        };
+        let InstallArgs {
+            refs,
+            channel,
+            version,
+            file,
+            reinstall,
+            no_deps,
+            force,
+            strict,
+            refresh,
+            any_flavor,
+            no_any_flavor,
+        } = InstallArgs::from(&intent);
+        assert_eq!(refs, ["dbm", "file:/home/u/Foo.zip"]);
+        assert_eq!(channel.as_deref(), Some("beta"));
+        assert_eq!(version.as_deref(), Some("1.2"));
+        assert_eq!(file, Some(PathBuf::from("/home/u/dl/foo.zip")));
+        assert_eq!(
+            (reinstall, no_deps, force, any_flavor, no_any_flavor),
+            (true, true, true, true, false),
+            "copied"
+        );
+        assert_eq!((strict, refresh), (false, false), "defaulted");
+    }
+
+    #[test]
+    fn update_intent_converts_to_its_args() {
+        let intent = UpdateIntent {
+            addons: strings(&["DBM", "Plater"]),
+            scope: one("retail", RETAIL),
+            channel: Some(Channel::Alpha),
+            refresh: true,
+            strict: true,
+            no_deps: true,
+            while_running: true,
+        };
+        let UpdateArgs {
+            addons,
+            all,
+            channel,
+            refresh,
+            strict,
+            no_deps,
+        } = UpdateArgs::from(&intent);
+        assert_eq!(addons, ["DBM", "Plater"]);
+        assert_eq!(channel.as_deref(), Some("alpha"));
+        assert!(no_deps, "copied");
+        assert_eq!((all, refresh, strict), (false, false, false), "defaulted");
+    }
+
+    #[test]
+    fn pin_intent_converts_to_its_args() {
+        let intent = PinIntent {
+            addon: "DBM".into(),
+            scope: every(),
+            version: Some("12.1.14".into()),
+            while_running: true,
+        };
+        let PinArgs { addon, version } = PinArgs::from(&intent);
+        assert_eq!(
+            (addon.as_str(), version.as_deref()),
+            ("DBM", Some("12.1.14"))
+        );
+    }
+
+    #[test]
+    fn unpin_intent_converts_to_its_args() {
+        let intent = PinIntent {
+            addon: "DBM".into(),
+            scope: every(),
+            version: None,
+            while_running: false,
+        };
+        let UnpinArgs { addon } = UnpinArgs::from(&intent);
+        assert_eq!(addon, "DBM");
+    }
+
+    #[test]
+    fn adopt_intent_converts_to_its_args() {
+        let intent = AdoptIntent {
+            folders: strings(&["Bagnon"]),
+            apply: false,
+            r#ref: Some(NormalizedRef::Canonical("wowi:25068".into())),
+            scope: one("retail", RETAIL),
+            no_verify: true,
+            refresh: true,
+            while_running: true,
+        };
+        let AdoptArgs {
+            folders,
+            apply,
+            r#ref,
+            no_verify,
+            refresh,
+        } = AdoptArgs::from(&intent);
+        assert_eq!(folders, ["Bagnon"]);
+        assert_eq!(r#ref.as_deref(), Some("wowi:25068"));
+        assert_eq!((apply, no_verify), (false, true), "copied");
+        assert!(!refresh, "defaulted");
+        let applying = AdoptArgs::from(&AdoptIntent {
+            folders: Vec::new(),
+            apply: true,
+            r#ref: None,
+            ..intent
+        });
+        assert!(applying.apply && applying.r#ref.is_none(), "{applying:?}");
+    }
+
+    #[test]
+    fn sync_intent_converts_to_its_args() {
+        let intent = SyncIntent {
+            file: abs("/home/u/dotfiles/addons.toml"),
+            default_file: false,
+            scope: every(),
+            strict: true,
+            no_deps: true,
+            locked: true,
+            prune: true,
+            while_running: true,
+        };
+        let SyncArgs {
+            file,
+            strict,
+            no_deps,
+            locked,
+            prune,
+        } = SyncArgs::from(&intent);
+        assert_eq!(file, Some(PathBuf::from("/home/u/dotfiles/addons.toml")));
+        assert_eq!((no_deps, locked, prune), (true, true, true), "copied");
+        assert!(!strict, "defaulted");
+        let default = SyncArgs::from(&SyncIntent {
+            default_file: true,
+            ..intent
+        });
+        assert_eq!(
+            default.file, None,
+            "the default file is found again, as a direct run finds it"
+        );
+    }
+
+    #[test]
+    fn copy_intent_converts_to_its_args() {
+        let intent = CopyIntent {
+            from: key(ERA),
+            from_id: "era".into(),
+            to: TargetRef::Provisional("anniversary".into()),
+            to_id: "anniversary".into(),
+            addons: strings(&["Questie"]),
+            strict: true,
+            no_deps: true,
+            while_running: true,
+        };
+        let CopyArgs {
+            from,
+            to,
+            addons,
+            strict,
+            no_deps,
+        } = CopyArgs::from(&intent);
+        assert_eq!(
+            (from.as_str(), to.as_str()),
+            (ERA, "anniversary"),
+            "each side by its key, else its provisional id"
+        );
+        assert_eq!(addons, ["Questie"]);
+        assert!(no_deps, "copied");
+        assert!(!strict, "defaulted");
+    }
+
+    #[test]
+    fn remove_intent_converts_to_its_args() {
+        let intent = RemoveIntent {
+            addons: strings(&["DBM", "BigWigs"]),
+            target: key(RETAIL),
+            target_id: "retail".into(),
+            while_running: true,
+        };
+        let RemoveArgs { addons } = RemoveArgs::from(&intent);
+        assert_eq!(addons, ["DBM", "BigWigs"]);
+    }
+
+    #[test]
+    fn undo_intent_converts_to_its_args() {
+        for (name, selection, want_tx, want_run) in [
+            ("tx", UndoSelection::Tx(TX.parse().unwrap()), Some(TX), None),
+            (
+                "run",
+                UndoSelection::Run(RUN.parse().unwrap()),
+                None,
+                Some(RUN),
+            ),
+        ] {
+            let intent = UndoIntent {
+                selection,
+                saved_variables: Some(SvPolicy::Keep),
+                while_running: true,
+            };
+            let UndoArgs {
+                tx,
+                last_by,
+                run,
+                saved_variables,
+            } = UndoArgs::from(&intent);
+            assert_eq!(
+                (tx.as_deref(), run.as_deref()),
+                (want_tx, want_run),
+                "{name}: the full id the preview resolved"
+            );
+            assert_eq!(saved_variables.as_deref(), Some("keep"), "{name}");
+            assert_eq!(last_by, None, "{name}: already resolved into the selection");
+        }
+    }
+
+    #[test]
+    fn backup_restore_intent_converts_to_its_args() {
+        let intent = RestoreIntent {
+            backup: BACKUP.parse().unwrap(),
+            target: key(RETAIL),
+            target_id: "retail".into(),
+            addons: strings(&["WeakAuras"]),
+        };
+        let BackupRestoreArgs { id, addon } = BackupRestoreArgs::from(&intent);
+        assert_eq!(id, BACKUP, "the full id");
+        assert_eq!(addon, ["WeakAuras"]);
+    }
+
+    #[test]
+    fn backup_prune_intent_converts_to_its_args() {
+        let cutoff: Timestamp = "2026-10-01T08:00:00Z".parse().unwrap();
+        let by_rule = PruneIntent {
+            ids: Vec::new(),
+            keep: Some(3),
+            older_than: Some(cutoff),
+            scope: one("retail", RETAIL),
+        };
+        let BackupPruneArgs {
+            ids,
+            keep,
+            older_than,
+        } = BackupPruneArgs::from(&by_rule);
+        assert!(ids.is_empty());
+        assert_eq!(keep, Some(3));
+        assert_eq!(older_than.as_deref(), Some("2026-10-01T08:00:00Z"));
+        assert_eq!(
+            crate::app::history::parse_since(older_than.as_deref().unwrap(), Timestamp::now()),
+            Some(cutoff),
+            "--older-than reads the absolute cutoff back"
+        );
+        let by_id = BackupPruneArgs::from(&PruneIntent {
+            ids: vec![BACKUP.parse().unwrap(), OLD.parse().unwrap()],
+            keep: None,
+            older_than: None,
+            scope: every(),
+        });
+        assert_eq!(by_id.ids, [BACKUP, OLD]);
+        assert_eq!((by_id.keep, by_id.older_than), (None, None));
+    }
+
+    /// A case's name, its intent, and what it gives: the command path, the target
+    /// selector, the running policy and how many inputs.
+    type AccessorCase = (
+        &'static str,
+        StoredIntent,
+        &'static str,
+        Option<&'static str>,
+        bool,
+        usize,
+    );
+
+    #[test]
+    fn intent_accessors() {
+        let several = TargetScope {
+            all: false,
+            selector: Some("mainline".into()),
+            targets: vec![client("ptr", PTR), client("retail", RETAIL)],
+        };
+        let cases: Vec<AccessorCase> = vec![
+            (
+                "install",
+                StoredIntent::Install(InstallIntent {
+                    refs: vec![NormalizedRef::File(abs("/home/u/Foo"))],
+                    target: key(RETAIL),
+                    target_id: "retail".into(),
+                    channel: None,
+                    version: None,
+                    file: Some(abs("/home/u/Foo.zip")),
+                    reinstall: false,
+                    no_deps: false,
+                    force: false,
+                    strict: false,
+                    refresh: false,
+                    any_flavor: false,
+                    no_any_flavor: false,
+                    while_running: true,
+                }),
+                "install",
+                Some(RETAIL),
+                true,
+                2,
+            ),
+            (
+                "update_every_client",
+                StoredIntent::Update(UpdateIntent {
+                    addons: Vec::new(),
+                    scope: every(),
+                    channel: None,
+                    refresh: false,
+                    strict: false,
+                    no_deps: false,
+                    while_running: false,
+                }),
+                "update",
+                None,
+                false,
+                0,
+            ),
+            (
+                "pin_one_client",
+                StoredIntent::Pin(PinIntent {
+                    addon: "DBM".into(),
+                    scope: one("retail", RETAIL),
+                    version: None,
+                    while_running: false,
+                }),
+                "pin",
+                Some(RETAIL),
+                false,
+                0,
+            ),
+            (
+                "unpin_several_clients",
+                StoredIntent::Unpin(PinIntent {
+                    addon: "DBM".into(),
+                    scope: several.clone(),
+                    version: None,
+                    while_running: true,
+                }),
+                "unpin",
+                Some("mainline"),
+                true,
+                0,
+            ),
+            (
+                "sync",
+                StoredIntent::Sync(SyncIntent {
+                    file: abs("/home/u/addons.toml"),
+                    default_file: true,
+                    scope: one("era", ERA),
+                    strict: false,
+                    no_deps: false,
+                    locked: false,
+                    prune: false,
+                    while_running: false,
+                }),
+                "sync",
+                Some(ERA),
+                false,
+                1,
+            ),
+            (
+                "copy_takes_no_target",
+                StoredIntent::Copy(CopyIntent {
+                    from: key(ERA),
+                    from_id: "era".into(),
+                    to: key(ANNIVERSARY),
+                    to_id: "anniversary".into(),
+                    addons: Vec::new(),
+                    strict: false,
+                    no_deps: false,
+                    while_running: true,
+                }),
+                "copy",
+                None,
+                true,
+                0,
+            ),
+            (
+                "remove_on_a_provisional_client",
+                StoredIntent::Remove(RemoveIntent {
+                    addons: strings(&["Foo"]),
+                    target: TargetRef::Provisional("retail".into()),
+                    target_id: "retail".into(),
+                    while_running: false,
+                }),
+                "remove",
+                Some("retail"),
+                false,
+                0,
+            ),
+            (
+                "undo_takes_no_target",
+                StoredIntent::Undo(UndoIntent {
+                    selection: UndoSelection::Tx(TX.parse().unwrap()),
+                    saved_variables: None,
+                    while_running: true,
+                }),
+                "undo",
+                None,
+                true,
+                0,
+            ),
+            (
+                "backup_restore_never_while_running",
+                StoredIntent::BackupRestore(RestoreIntent {
+                    backup: BACKUP.parse().unwrap(),
+                    target: key(RETAIL),
+                    target_id: "retail".into(),
+                    addons: Vec::new(),
+                }),
+                "backup restore",
+                Some(RETAIL),
+                false,
+                0,
+            ),
+            (
+                "backup_prune_several_clients",
+                StoredIntent::BackupPrune(PruneIntent {
+                    ids: Vec::new(),
+                    keep: Some(1),
+                    older_than: None,
+                    scope: several,
+                }),
+                "backup prune",
+                Some("mainline"),
+                false,
+                0,
+            ),
+        ];
+        for (name, intent, command, target, while_running, inputs) in cases {
+            assert_eq!(
+                (
+                    intent.command_path(),
+                    intent.target_selector().as_deref(),
+                    intent.while_running(),
+                    intent.inputs().len()
+                ),
+                (command, target, while_running, inputs),
+                "{name}: {}",
+                serde_json::to_string(&intent).unwrap()
+            );
         }
     }
 

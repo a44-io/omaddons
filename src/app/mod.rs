@@ -2,6 +2,7 @@
 //! rendering happens in `output`.
 
 pub mod adopt;
+pub mod apply;
 pub mod approval;
 pub mod auth;
 pub mod backup;
@@ -481,25 +482,134 @@ impl Out<'_> {
     }
 }
 
-/// `pin`'s and `unpin`'s `-v` lines, then the outcome.
-fn out_pin(
+/// What a dispatch arm logs about an outcome before rendering it: its `-v` debug notes,
+/// then one `lock released` line per transaction the run committed. A direct invocation
+/// and `apply` log them through [`emit_side_events`] alike (M4-D23, one render).
+pub(crate) trait SideEvents {
+    fn notes(&self) -> &[String] {
+        &[]
+    }
+
+    /// Each committed transaction and how long it held the global lock, in order.
+    fn locks(&self) -> Vec<(crate::model::TxId, u64)> {
+        Vec::new()
+    }
+}
+
+/// A storable command's arm: its stored plan's `-v` note, its side events, then the
+/// outcome.
+fn out_storable<O: intent::Storable + SideEvents>(
     ctx: &Context,
     out: &Out<'_>,
-    mut result: crate::error::Result<pin::PinOutcome>,
+    mut result: crate::error::Result<O>,
 ) -> Exit {
     if let Ok(outcome) = &mut result {
         if let Some(note) = intent::offer(ctx, outcome) {
             out.log(output::LogLevel::Debug, &note);
         }
-        for note in &outcome.notes {
-            out.log(output::LogLevel::Debug, note);
-        }
-        for (tx, ms) in &outcome.locks {
-            out.lock_released(Some(*ms), Some(*tx));
-        }
+        emit_side_events(out, outcome);
     }
     out.emit(result)
 }
+
+/// A command's arm that logs only its side events, then the outcome.
+fn out_read<O: output::Outcome + SideEvents>(
+    out: &Out<'_>,
+    result: crate::error::Result<O>,
+) -> Exit {
+    if let Ok(outcome) = &result {
+        emit_side_events(out, outcome);
+    }
+    out.emit(result)
+}
+
+/// `events`' notes, then its lock lines, as `-v` debug events.
+fn emit_side_events(out: &Out<'_>, events: &dyn SideEvents) {
+    for note in events.notes() {
+        out.log(output::LogLevel::Debug, note);
+    }
+    for (tx, ms) in events.locks() {
+        out.lock_released(Some(ms), Some(tx));
+    }
+}
+
+/// The one lock of a single-target command, when it committed and held one.
+fn one_lock(tx: Option<crate::model::TxId>, held: Option<u64>) -> Vec<(crate::model::TxId, u64)> {
+    tx.zip(held).into_iter().collect()
+}
+
+impl SideEvents for install::InstallOutcome {
+    fn notes(&self) -> &[String] {
+        &self.notes
+    }
+
+    fn locks(&self) -> Vec<(crate::model::TxId, u64)> {
+        one_lock(output::Outcome::data(self).tx, self.lock_held_ms)
+    }
+}
+
+/// The commands over several targets: their notes, then each target's lock.
+macro_rules! side_events_of_runs {
+    ($($outcome:ty),+) => {
+        $(impl SideEvents for $outcome {
+            fn notes(&self) -> &[String] {
+                &self.notes
+            }
+
+            fn locks(&self) -> Vec<(crate::model::TxId, u64)> {
+                self.locks.clone()
+            }
+        })+
+    };
+}
+
+side_events_of_runs!(
+    update::UpdateOutcome,
+    pin::PinOutcome,
+    sync::SyncOutcome,
+    copy::CopyOutcome,
+    adopt::AdoptOutcome
+);
+
+impl SideEvents for undo::UndoOutcome {
+    fn locks(&self) -> Vec<(crate::model::TxId, u64)> {
+        self.locks.clone()
+    }
+}
+
+impl SideEvents for remove::RemoveOutcome {
+    fn locks(&self) -> Vec<(crate::model::TxId, u64)> {
+        one_lock(output::Outcome::data(self).tx, self.lock_held_ms)
+    }
+}
+
+impl SideEvents for backup::BackupRestoreOutcome {
+    fn locks(&self) -> Vec<(crate::model::TxId, u64)> {
+        one_lock(output::Outcome::data(self).tx, self.lock_held_ms)
+    }
+}
+
+impl SideEvents for backup::BackupPruneOutcome {}
+
+/// The read commands: their notes only.
+macro_rules! side_events_of_reads {
+    ($($outcome:ty),+) => {
+        $(impl SideEvents for $outcome {
+            fn notes(&self) -> &[String] {
+                &self.notes
+            }
+        })+
+    };
+}
+
+side_events_of_reads!(
+    status::StatusOutcome,
+    info::InfoOutcome,
+    export::ExportOutcome,
+    outdated::OutdatedOutcome,
+    search::SearchOutcome,
+    errors::ErrorsOutcome
+);
 
 /// Runs the parsed command and renders its outcome through `reporter`, the run's one
 /// stderr reporter (also behind `ctx.progress`).
@@ -568,94 +678,18 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
                         if d.written { "yes" } else { "no" }
                     ),
                 );
-                for note in &outcome.notes {
-                    out.log(output::LogLevel::Debug, note);
-                }
+                emit_side_events(out, outcome);
             }
             out.emit(result)
         }
-        Some(Command::Install(args)) => {
-            let mut result = install::run(ctx, args);
-            if let Ok(outcome) = &mut result {
-                if let Some(note) = intent::offer(ctx, outcome) {
-                    out.log(output::LogLevel::Debug, &note);
-                }
-                for note in &outcome.notes {
-                    out.log(output::LogLevel::Debug, note);
-                }
-                out.lock_released(outcome.lock_held_ms, output::Outcome::data(outcome).tx);
-            }
-            out.emit(result)
-        }
-        Some(Command::Update(args)) => {
-            let mut result = update::run(ctx, args);
-            if let Ok(outcome) = &mut result {
-                if let Some(note) = intent::offer(ctx, outcome) {
-                    out.log(output::LogLevel::Debug, &note);
-                }
-                for note in &outcome.notes {
-                    out.log(output::LogLevel::Debug, note);
-                }
-                for (tx, ms) in &outcome.locks {
-                    out.lock_released(Some(*ms), Some(*tx));
-                }
-            }
-            out.emit(result)
-        }
-        Some(Command::Pin(args)) => out_pin(ctx, out, pin::pin(ctx, args)),
-        Some(Command::Unpin(args)) => out_pin(ctx, out, pin::unpin(ctx, args)),
-        Some(Command::Sync(args)) => {
-            let mut result = sync::run(ctx, args);
-            if let Ok(outcome) = &mut result {
-                if let Some(note) = intent::offer(ctx, outcome) {
-                    out.log(output::LogLevel::Debug, &note);
-                }
-                for note in &outcome.notes {
-                    out.log(output::LogLevel::Debug, note);
-                }
-                for (tx, ms) in &outcome.locks {
-                    out.lock_released(Some(*ms), Some(*tx));
-                }
-            }
-            out.emit(result)
-        }
-        Some(Command::Copy(args)) => {
-            let mut result = copy::run(ctx, args);
-            if let Ok(outcome) = &mut result {
-                if let Some(note) = intent::offer(ctx, outcome) {
-                    out.log(output::LogLevel::Debug, &note);
-                }
-                for note in &outcome.notes {
-                    out.log(output::LogLevel::Debug, note);
-                }
-                for (tx, ms) in &outcome.locks {
-                    out.lock_released(Some(*ms), Some(*tx));
-                }
-            }
-            out.emit(result)
-        }
-        Some(Command::Remove(args)) => {
-            let mut result = remove::run(ctx, args);
-            if let Ok(outcome) = &mut result {
-                if let Some(note) = intent::offer(ctx, outcome) {
-                    out.log(output::LogLevel::Debug, &note);
-                }
-                out.lock_released(outcome.lock_held_ms, output::Outcome::data(outcome).tx);
-            }
-            out.emit(result)
-        }
-        Some(Command::Undo(args)) => {
-            let mut result = undo::run(ctx, args);
-            if let Ok(outcome) = &mut result {
-                if let Some(note) = intent::offer(ctx, outcome) {
-                    out.log(output::LogLevel::Debug, &note);
-                }
-                for (tx, ms) in &outcome.locks {
-                    out.lock_released(Some(*ms), Some(*tx));
-                }
-            }
-            out.emit(result)
-        }
+        Some(Command::Install(args)) => out_storable(ctx, out, install::run(ctx, args)),
+        Some(Command::Update(args)) => out_storable(ctx, out, update::run(ctx, args)),
+        Some(Command::Pin(args)) => out_storable(ctx, out, pin::pin(ctx, args)),
+        Some(Command::Unpin(args)) => out_storable(ctx, out, pin::unpin(ctx, args)),
+        Some(Command::Sync(args)) => out_storable(ctx, out, sync::run(ctx, args)),
+        Some(Command::Copy(args)) => out_storable(ctx, out, copy::run(ctx, args)),
+        Some(Command::Remove(args)) => out_storable(ctx, out, remove::run(ctx, args)),
+        Some(Command::Undo(args)) => out_storable(ctx, out, undo::run(ctx, args)),
         Some(Command::Backup(args)) => {
             use backup::BackupAction;
             match &args.action {
@@ -663,92 +697,25 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
                 Some(BackupAction::List(list)) => out.emit(backup::list(ctx, list)),
                 Some(BackupAction::Create(create)) => out.emit(backup::create(ctx, create)),
                 Some(BackupAction::Restore(restore)) => {
-                    let mut result = backup::restore_backup(ctx, restore);
-                    if let Ok(outcome) = &mut result {
-                        if let Some(note) = intent::offer(ctx, outcome) {
-                            out.log(output::LogLevel::Debug, &note);
-                        }
-                        out.lock_released(outcome.lock_held_ms, output::Outcome::data(outcome).tx);
-                    }
-                    out.emit(result)
+                    out_storable(ctx, out, backup::restore_backup(ctx, restore))
                 }
                 Some(BackupAction::Prune(prune)) => {
-                    let mut result = backup::prune_backups(ctx, prune);
-                    if let Ok(outcome) = &mut result
-                        && let Some(note) = intent::offer(ctx, outcome)
-                    {
-                        out.log(output::LogLevel::Debug, &note);
-                    }
-                    out.emit(result)
+                    out_storable(ctx, out, backup::prune_backups(ctx, prune))
                 }
                 Some(BackupAction::Export(export)) => out.emit(backup::export_backup(ctx, export)),
                 Some(BackupAction::Import(import)) => out.emit(backup::import_backup(ctx, import)),
                 Some(BackupAction::Verify(verify)) => out.emit(backup_verify::run(ctx, verify)),
             }
         }
-        Some(Command::Info(args)) => {
-            let result = info::run(ctx, args);
-            if let Ok(outcome) = &result {
-                for note in &outcome.notes {
-                    out.log(output::LogLevel::Debug, note);
-                }
-            }
-            out.emit(result)
-        }
-        Some(Command::Export(args)) => {
-            let result = export::run(ctx, args);
-            if let Ok(outcome) = &result {
-                for note in &outcome.notes {
-                    out.log(output::LogLevel::Debug, note);
-                }
-            }
-            out.emit(result)
-        }
-        Some(Command::Adopt(args)) => {
-            let mut result = adopt::run(ctx, args);
-            if let Ok(outcome) = &mut result {
-                if let Some(note) = intent::offer(ctx, outcome) {
-                    out.log(output::LogLevel::Debug, &note);
-                }
-                for note in &outcome.notes {
-                    out.log(output::LogLevel::Debug, note);
-                }
-                for (tx, ms) in &outcome.locks {
-                    out.lock_released(Some(*ms), Some(*tx));
-                }
-            }
-            out.emit(result)
-        }
-        Some(Command::Outdated(args)) => {
-            let result = outdated::run(ctx, args);
-            if let Ok(outcome) = &result {
-                for note in &outcome.notes {
-                    out.log(output::LogLevel::Debug, note);
-                }
-            }
-            out.emit(result)
-        }
-        Some(Command::Search(args)) => {
-            let result = search::run(ctx, args);
-            if let Ok(outcome) = &result {
-                for note in &outcome.notes {
-                    out.log(output::LogLevel::Debug, note);
-                }
-            }
-            out.emit(result)
-        }
+        Some(Command::Info(args)) => out_read(out, info::run(ctx, args)),
+        Some(Command::Export(args)) => out_read(out, export::run(ctx, args)),
+        Some(Command::Adopt(args)) => out_storable(ctx, out, adopt::run(ctx, args)),
+        Some(Command::Outdated(args)) => out_read(out, outdated::run(ctx, args)),
+        Some(Command::Search(args)) => out_read(out, search::run(ctx, args)),
         Some(Command::NetLog(args)) => out.emit(net_log::run(ctx, args)),
         Some(Command::Errors(args)) => match &args.action {
             Some(errors::ErrorsAction::Dismiss(_)) => out.emit(errors::dismiss(ctx)),
-            None => {
-                let result = errors::run(ctx, args);
-                if let Ok(outcome) = &result {
-                    for note in &outcome.notes {
-                        out.log(output::LogLevel::Debug, note);
-                    }
-                }
-                out.emit(result)
-            }
+            None => out_read(out, errors::run(ctx, args)),
         },
         Some(Command::History(args)) => {
             let result = history::run(ctx, args, cli.global.actor.as_deref());
@@ -807,6 +774,49 @@ mod tests {
 
     use super::*;
     use crate::cli::Cli;
+
+    /// The arms log what [`SideEvents`] says, through the same two impl macros the
+    /// outcomes use (their fields are private to their modules); the commands' own `-v`
+    /// tests hold the lines each command logs.
+    #[test]
+    fn side_events_of_each_outcome() {
+        use crate::model::TxId;
+        let tx = |n: u8| -> TxId { format!("01JB8Q2VC000000000000000{n:02}").parse().unwrap() };
+
+        struct Run {
+            notes: Vec<String>,
+            locks: Vec<(TxId, u64)>,
+        }
+        side_events_of_runs!(Run);
+        let run = Run {
+            notes: vec!["first".into(), "second".into()],
+            locks: vec![(tx(2), 7), (tx(1), 3)],
+        };
+        assert_eq!(run.notes(), ["first", "second"], "notes in order");
+        assert_eq!(run.locks(), [(tx(2), 7), (tx(1), 3)], "locks in order");
+
+        struct Read {
+            notes: Vec<String>,
+        }
+        side_events_of_reads!(Read);
+        let read = Read {
+            notes: vec!["looked".into()],
+        };
+        assert_eq!(
+            (read.notes(), read.locks()),
+            (&["looked".to_owned()][..], Vec::new())
+        );
+
+        // A single-target command logs its lock only when it committed and held one.
+        for (name, committed, held, want) in [
+            ("both", Some(tx(1)), Some(5), vec![(tx(1), 5)]),
+            ("no_tx", None, Some(5), Vec::new()),
+            ("no_hold", Some(tx(1)), None, Vec::new()),
+            ("neither", None, None, Vec::new()),
+        ] {
+            assert_eq!(one_lock(committed, held), want, "{name}");
+        }
+    }
 
     #[test]
     fn canonical_path_names_each_sample_by_its_row() {
