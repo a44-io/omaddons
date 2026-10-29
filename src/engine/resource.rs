@@ -985,6 +985,18 @@ mod tests {
                 vec![conflict(y.clone(), Write, y.clone(), Write)],
             ),
             (
+                "rename_onto_a_path_another_fix_reads",
+                rename_to_y.clone(),
+                set(&[(Read, y.clone())]),
+                vec![conflict(y.clone(), Write, y.clone(), Read)],
+            ),
+            (
+                "rename_onto_a_directory_whose_child_another_fix_writes",
+                rename_to_y.clone(),
+                set(&[(Write, file("/c/AddOns/Y/Y.toc"))]),
+                vec![conflict(y.clone(), Write, file("/c/AddOns/Y/Y.toc"), Write)],
+            ),
+            (
                 "rename_out_of_a_quarantined_directory",
                 rename_out_of_x,
                 set(&[(Write, x.clone())]),
