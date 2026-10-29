@@ -70,10 +70,11 @@ pub struct InfoData {
     pub latest: Option<Latest>,
     pub offline: bool,
     /// `--changelog` only: the notes of the releases newer than the oldest installed one
-    /// (the latest's alone when none records a release), or `null`.
+    /// (the latest's alone when none records a release), or `null`. Omitted without
+    /// `--changelog`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changelog: Option<Option<Changelog>>,
-    /// Why `changelog` is `null`.
+    /// Why `changelog` is `null`; omitted when `changelog` is absent or holds notes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changelog_unavailable: Option<ChangelogUnavailable>,
 }
@@ -82,14 +83,15 @@ pub struct InfoData {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct CatalogInfo {
     pub name: String,
-    /// The variant shown, when the name has several (M3-D16).
+    /// The variant shown, when the name has several (M3-D16). Omitted for an entry
+    /// without a variant.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
     pub aliases: Vec<String>,
     pub families: Vec<Family>,
     pub folders: Vec<FolderName>,
     pub notes: Option<String>,
-    /// The name's other variants, and the families each is for.
+    /// The name's other variants, and the families each is for; omitted when none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<CatalogVariant>,
 }

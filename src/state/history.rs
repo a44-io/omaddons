@@ -103,26 +103,30 @@ pub struct RepairEntry {
     pub op: RepairOp,
     /// The absolute path it acts on.
     pub path: PathBuf,
-    /// A rename's destination.
+    /// A rename's destination; omitted on a write or a chmod.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<PathBuf>,
-    /// The mode it sets, as octal digits (`"0600"`).
+    /// The mode it sets, as octal digits (`"0600"`). Omitted on a rename.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     /// What its paths held before it ran.
     pub pre: RepairEndpoints,
     /// What they hold after it.
     pub post: RepairEndpoints,
-    /// The backup an overwriting write reserved.
+    /// The backup an overwriting write reserved. Omitted on a chmod, a rename and a write
+    /// that creates its file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<PathBuf>,
-    /// The operation that activates the fix.
+    /// The operation that activates the fix. Omitted when false; only an undo's rename
+    /// that reactivates a set-aside journal (M4-D38) sets it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub activation: bool,
-    /// The client whose files it touches.
+    /// The client whose files it touches; omitted when it names none, as a home-side
+    /// operation does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<TargetKey>,
-    /// The AddOns folder its path is or is in.
+    /// The AddOns folder its path is or is in; omitted when it names none, as an
+    /// operation outside every AddOns folder does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<FolderName>,
 }
@@ -153,16 +157,19 @@ pub enum RepairEndpoints {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RepairPredicate {
     pub kind: PredicateKind,
+    /// The entry's identity; omitted when it is not checked, as for an `absent` path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<RepairIdentity>,
+    /// A file's content digest; omitted when it is not checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-    /// The mode, as octal digits.
+    /// The mode, as octal digits; omitted when it is not checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
-    /// A directory's stamp digest (`stamp:sha256:…`).
+    /// A directory's stamp digest (`stamp:sha256:…`); omitted when it is not checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stamp: Option<String>,
+    /// A symlink's target; omitted when it is not checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_target: Option<PathBuf>,
 }
@@ -386,10 +393,12 @@ pub struct HistoryOp {
     /// from one. Absent on every other op.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<BackupId>,
-    /// A `wtf` or `saved_variables` op: where its files came from.
+    /// A `wtf` or `saved_variables` op: where its files came from. Absent on every
+    /// other op.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<WtfSource>,
-    /// A `wtf` or `saved_variables` op: how many files it put back.
+    /// A `wtf` or `saved_variables` op: how many files it put back. Absent on every other
+    /// op, and on an undo's `saved_variables` op.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<u64>,
 }

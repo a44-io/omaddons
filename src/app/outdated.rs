@@ -125,10 +125,11 @@ pub struct OutdatedItem {
 pub struct LatestRelease {
     #[serde(flatten)]
     pub release: ReleaseBrief,
-    /// `--changelog`, `update_available` only: the notes, or `null`.
+    /// `--changelog`, `update_available` only: the notes, or `null`. Omitted without
+    /// `--changelog` and for other statuses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changelog: Option<Option<Changelog>>,
-    /// Why `changelog` is `null`.
+    /// Why `changelog` is `null`; omitted when `changelog` is absent or holds notes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changelog_unavailable: Option<ChangelogUnavailable>,
 }

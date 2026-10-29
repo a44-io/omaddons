@@ -180,7 +180,7 @@ pub struct ItemError {
     /// refused before the engine (`folder`, and `owner`, `class` or `refs`), a rate
     /// limit (`reset_at`), a dependency that failed (`required_by`), and a client that
     /// runs (`game_running`: its `reason`, and `running: "unknown"` when `/proc` could
-    /// not be read).
+    /// not be read). Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }
@@ -314,9 +314,13 @@ pub struct ItemResult {
     pub r#ref: Option<Ref>,
     pub status: ItemStatus,
     pub skip_reason: Option<SkipReason>,
-    /// A duplicate's first request, which it collapsed into.
+    /// A duplicate's first request, which it collapsed into. Omitted on every item but a
+    /// duplicate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duplicate_of: Option<String>,
+    /// Why the addon is installed, from its planned record; `dependency` on a dependency
+    /// that failed to plan. Omitted for a removal and for an unchanged, skipped or other
+    /// failed item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<AddonReason>,
     pub from_version: Option<String>,
@@ -324,6 +328,9 @@ pub struct ItemResult {
     /// Omitted for items that never got a planned record.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folders: Option<FolderSummary>,
+    /// The addons that require it, from its planned record (empty for a removal), or the
+    /// requesters of a dependency that failed to plan. Omitted for an unchanged, skipped
+    /// or other failed item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_by: Option<Vec<String>>,
     #[serde(flatten)]
@@ -336,9 +343,11 @@ pub struct ItemResult {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ItemDeps {
     /// What its other folders (bridges, plugins) work with that is not installed.
+    /// Omitted for an item without a planned record.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge_dependencies: Option<Vec<BridgeDependency>>,
-    /// The required folders nothing was installed for, and why.
+    /// The required folders nothing was installed for, and why. Omitted for an item
+    /// without a planned record.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unresolved: Option<Vec<Unresolved>>,
     /// `-v` only: its needed folders' `OptionalDeps`, never installed.

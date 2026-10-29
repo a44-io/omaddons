@@ -72,7 +72,8 @@ pub struct UndoData {
     pub saved_variables: SavedVariables,
     /// The undo of a whole `WTF/` restore only: the files the play since it changed,
     /// which this undo reverts too and keeps in its own snapshot; `null` when that cannot
-    /// be told (the backup it restored is gone).
+    /// be told (the backup it restored is gone). Omitted unless the first transaction
+    /// undone is a whole `WTF/` restore or the undo of one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_since: Option<Option<u64>>,
     pub reload_required: ReloadRequired,

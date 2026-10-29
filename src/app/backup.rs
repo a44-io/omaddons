@@ -31,7 +31,7 @@ use super::precondition::{
     Precondition, PrunePart, RestoreBinding, RestorePart, check, of_prune, of_restore, preview_argv,
 };
 use super::world::World;
-use crate::backup::auto::{self, AutoResult, AutoRun, Decision};
+use crate::backup::auto::{self, AutoResult, AutoRun, Decision, Skip};
 use crate::backup::create::{self as capture, CreateRequest, Created};
 use crate::backup::export::{self, VerifiedAgainst};
 use crate::backup::fs::CloneHint;
@@ -788,7 +788,8 @@ pub struct BackupCreateTarget {
     /// Why no backup was made although nothing failed; `null` for a manual backup.
     pub skipped: Option<BackupSkip>,
     pub error: Option<ItemError>,
-    /// `--dry-run`: what it would copy.
+    /// `--dry-run`: what it would copy. Omitted without `--dry-run`, and for a client
+    /// `--auto` skips or that failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub would: Option<WouldCopy>,
 }
@@ -796,7 +797,7 @@ pub struct BackupCreateTarget {
 /// Why an automatic backup made none.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct BackupSkip {
-    pub reason: String,
+    pub reason: Skip,
 }
 
 /// What a backup would copy, from a stat walk of `WTF/`.
@@ -894,7 +895,7 @@ impl Outcome for BackupCreateOutcome {
             } else if let Some(error) = &t.error {
                 writeln!(w, "{id}: not backed up: {}", error.message)?;
             } else if let Some(skipped) = &t.skipped {
-                writeln!(w, "{id}: no automatic backup: {}", why(&skipped.reason))?;
+                writeln!(w, "{id}: no automatic backup: {}", why(skipped.reason))?;
             }
         }
         Ok(())
@@ -902,17 +903,16 @@ impl Outcome for BackupCreateOutcome {
 }
 
 /// A skip's reason as human output says it.
-fn why(reason: &str) -> &'static str {
+fn why(reason: Skip) -> &'static str {
     match reason {
-        "off" => "auto_backup is off",
-        "no_wtf" => "there is no WTF/ yet",
-        "running" => "the game is running (it writes WTF/ when it exits)",
-        "done_today" => "today's checkpoint was made",
-        "unchanged" => "WTF/ is unchanged since the last checkpoint",
-        "no_reflink" => "the filesystem cannot clone files (auto_backup = \"daily\")",
-        "space_low" => "too little space, even after pruning old automatic backups",
-        "in_progress" => "another automatic backup of this client is running",
-        _ => "not due",
+        Skip::Off => "auto_backup is off",
+        Skip::NoWtf => "there is no WTF/ yet",
+        Skip::Running => "the game is running (it writes WTF/ when it exits)",
+        Skip::DoneToday => "today's checkpoint was made",
+        Skip::Unchanged => "WTF/ is unchanged since the last checkpoint",
+        Skip::NoReflink => "the filesystem cannot clone files (auto_backup = \"daily\")",
+        Skip::SpaceLow => "too little space, even after pruning old automatic backups",
+        Skip::InProgress => "another automatic backup of this client is running",
     }
 }
 
@@ -1301,9 +1301,7 @@ impl One<'_> {
         match outcome.result {
             AutoResult::Skipped(skip) => {
                 let item = BackupCreateTarget {
-                    skipped: Some(BackupSkip {
-                        reason: skip.wire().to_owned(),
-                    }),
+                    skipped: Some(BackupSkip { reason: skip }),
                     ..empty_item(self.d)
                 };
                 Ok((item, warnings))
@@ -1342,9 +1340,7 @@ impl One<'_> {
         match auto::due(&req, &self.client()) {
             Decision::Skip(skip) => {
                 let item = BackupCreateTarget {
-                    skipped: Some(BackupSkip {
-                        reason: skip.wire().to_owned(),
-                    }),
+                    skipped: Some(BackupSkip { reason: skip }),
                     ..empty_item(self.d)
                 };
                 Ok((item, Vec::new()))

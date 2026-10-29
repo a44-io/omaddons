@@ -105,10 +105,12 @@ pub struct ReleaseBrief {
     #[schemars(with = "Option<String>")]
     pub published_at: Option<Timestamp>,
     pub channel: Channel,
-    /// The release's source revision, when its source has one (WowAce).
+    /// The release's source revision, when its source has one (WowAce). Omitted
+    /// otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<u32>,
-    /// The installed release, at another revision: its tag was moved upstream.
+    /// The installed release, at another revision: its tag was moved upstream. Omitted
+    /// otherwise.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub retagged: bool,
 }

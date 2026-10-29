@@ -31,8 +31,10 @@ use crate::state::config::AutoBackup;
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::store;
 
-/// Why an automatic backup made none: a success, with its reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why an automatic backup made none: a success, with its reason. It serializes as its
+/// [`Skip::wire`] name (`backup create`'s `skipped.reason`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Skip {
     /// `auto_backup = "off"`.
     Off,
@@ -541,6 +543,33 @@ mod tests {
 
     fn at(s: &str) -> Timestamp {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn every_skip_serializes_as_its_wire_name() {
+        for skip in [
+            Skip::Off,
+            Skip::NoWtf,
+            Skip::Running,
+            Skip::DoneToday,
+            Skip::Unchanged,
+            Skip::NoReflink,
+            Skip::SpaceLow,
+            Skip::InProgress,
+        ] {
+            // An exhaustive match makes a new reason join this list.
+            match skip {
+                Skip::Off
+                | Skip::NoWtf
+                | Skip::Running
+                | Skip::DoneToday
+                | Skip::Unchanged
+                | Skip::NoReflink
+                | Skip::SpaceLow
+                | Skip::InProgress => {}
+            }
+            assert_eq!(serde_json::to_value(skip).unwrap(), skip.wire(), "{skip:?}");
+        }
     }
 
     fn backup(kind: BackupKind, trigger: Option<Trigger>, captured: &str) -> BackupRef {

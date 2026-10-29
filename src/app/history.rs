@@ -65,7 +65,8 @@ pub struct HistoryLine {
     /// a repair or the undo of one, which name their clients in `targets`.
     pub target: Option<TargetRef>,
     /// Target-less lines only (a repair, or the undo of one): the clients it touched, by
-    /// their ids now, sorted by id then key; empty when it touched none.
+    /// their ids now, sorted by id then key; empty when it touched none. Omitted on a
+    /// line with a target and on a settings change.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub targets: Option<Vec<TargetRef>>,
     pub actor: Actor,
@@ -77,21 +78,23 @@ pub struct HistoryLine {
     /// `-v`: every folder the transaction touched.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ops: Option<Vec<HistoryOp>>,
-    /// The transaction an undo reverted.
+    /// The transaction an undo reverted. Omitted on every line but an undo.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reverts: Option<TxId>,
     pub result: TxResult,
-    /// The backup a `backup` line published.
+    /// The backup a `backup` line published. Omitted on every other kind.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup: Option<BackupNote>,
-    /// What an `errors dismiss` line acknowledged, as counts.
+    /// What an `errors dismiss` line acknowledged, as counts. Omitted on other kinds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dismissed: Option<Dismissed>,
-    /// Target-less lines only: the doctor run directory it belongs to.
+    /// Target-less lines only: the doctor run directory it belongs to. Omitted on a line
+    /// with a target, on a settings change, and on a target-less line that recorded none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doctor_run_id: Option<String>,
     /// Target-less lines only: its filesystem operations, as the repair recorded them
-    /// (paths cut after a `WTF` component).
+    /// (paths cut after a `WTF` component); empty when it recorded none. Omitted on a
+    /// line with a target and on a settings change.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repairs: Option<Vec<RepairEntry>>,
 }

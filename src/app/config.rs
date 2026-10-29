@@ -63,8 +63,17 @@ impl ConfigAction {
 pub struct Setting {
     pub key: String,
     pub value: serde_json::Value,
-    /// `file` or `default`.
-    pub source: &'static str,
+    pub source: SettingSource,
+}
+
+/// Where a setting's value comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingSource {
+    /// `config.toml` sets it.
+    File,
+    /// Unset: the built-in default.
+    Default,
 }
 
 /// Bare `config`.
@@ -81,7 +90,7 @@ pub struct ConfigData {
 pub struct GetData {
     pub key: String,
     pub value: serde_json::Value,
-    pub source: &'static str,
+    pub source: SettingSource,
     pub default: serde_json::Value,
 }
 
@@ -184,12 +193,12 @@ pub fn list() -> Result<Done<ConfigData>> {
             Some(v) => Setting {
                 key: spec.key.to_owned(),
                 value: json(v),
-                source: "file",
+                source: SettingSource::File,
             },
             None => Setting {
                 key: spec.key.to_owned(),
                 value: default_value(spec.key),
-                source: "default",
+                source: SettingSource::Default,
             },
         })
         .collect();
@@ -207,7 +216,7 @@ pub fn list() -> Result<Done<ConfigData>> {
                     settings.push(Setting {
                         key,
                         value: json(v),
-                        source: "file",
+                        source: SettingSource::File,
                     });
                 }
             }
@@ -235,8 +244,8 @@ pub fn list() -> Result<Done<ConfigData>> {
             )?;
             for s in &data.settings {
                 let note = match s.source {
-                    "default" => "  # default",
-                    _ => "",
+                    SettingSource::Default => "  # default",
+                    SettingSource::File => "",
                 };
                 writeln!(w, "{} = {}{note}", s.key, s.value)?;
             }
@@ -267,8 +276,10 @@ pub fn get(key: &str) -> Result<Done<GetData>> {
     let paths = Paths::from_env()?;
     let (raw, _, warnings, _) = read(&paths)?;
     let default = default_value(key);
-    let (value, source) =
-        lookup(&raw, key).map_or_else(|| (default.clone(), "default"), |v| (json(v), "file"));
+    let (value, source) = lookup(&raw, key).map_or_else(
+        || (default.clone(), SettingSource::Default),
+        |v| (json(v), SettingSource::File),
+    );
     Ok(Done {
         command: "config get",
         data: GetData {

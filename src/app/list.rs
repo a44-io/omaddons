@@ -55,6 +55,7 @@ pub struct ListTarget {
     pub key: Option<TargetKey>,
     pub version: ClientVersion,
     pub family: Family,
+    /// The target's label (`targets.<id>.label`, else discovery's); omitted when none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// `-v` only.
@@ -150,6 +151,7 @@ pub struct FolderInfo {
     pub verdict: Option<VerdictKind>,
     pub case_duplicate: bool,
     /// A `shared` folder's owners on the clients sharing this AddOns directory.
+    /// Omitted when no other client's record claims the folder.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub owned_on: Vec<OwnedOn>,
 }

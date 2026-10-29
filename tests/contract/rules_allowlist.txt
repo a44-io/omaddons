@@ -1,0 +1,261 @@
+# Contract rule violations that predate the rule test (M4-D55). This list may only shrink:
+# a new shape that breaks a rule is fixed, never added here. H1 empties it before the freeze.
+# Format: <rule> | <scope> | <path>
+r1-instant-name | command backup list | targets[].auto.last.at
+r1-instant-name | command backup | targets[].auto.last.at
+r1-instant-name | command errors | targets[].addons[].errors[].last_seen.at
+r1-instant-name | command errors | targets[].addons[].last_seen.at
+r1-instant-name | command history | entries[].at
+r1-instant-name | command net-log | entries[].time
+r1-instant-name | command status | last_change.at
+r1-instant-name | command status | targets[].backups.auto.last.at
+r1-instant-name | command undo | reverted.at
+r3-array-plural | command adopt | approval.scope.dependencies_added
+r3-array-plural | command adopt | approval.scope.folders_removed
+r3-array-plural | command adopt | approval.scope.source_changed
+r3-array-plural | command adopt | approval.selection
+r3-array-plural | command adopt | sources_skipped
+r3-array-plural | command adopt | targets[].failed
+r3-array-plural | command adopt | targets[].groups[].evidence
+r3-array-plural | command adopt | targets[].items[].folders.added
+r3-array-plural | command adopt | targets[].items[].folders.recorded
+r3-array-plural | command adopt | targets[].items[].folders.removed
+r3-array-plural | command adopt | targets[].items[].folders.replaced
+r3-array-plural | command adopt | targets[].items[].folders.skipped
+r3-array-plural | command adopt | targets[].items[].required_by
+r3-array-plural | command adopt | targets[].items[].unresolved
+r3-array-plural | command adopt | targets[].target.mode.shared_with
+r3-array-plural | command backup create | targets[].target.mode.shared_with
+r3-array-plural | command backup export | target.mode.shared_with
+r3-array-plural | command backup import | target.mode.shared_with
+r3-array-plural | command backup list | targets[].target.mode.shared_with
+r3-array-plural | command backup prune | approval.scope.dependencies_added
+r3-array-plural | command backup prune | approval.scope.folders_removed
+r3-array-plural | command backup prune | approval.scope.source_changed
+r3-array-plural | command backup prune | approval.selection
+r3-array-plural | command backup prune | targets[].busy
+r3-array-plural | command backup prune | targets[].pruned
+r3-array-plural | command backup prune | targets[].target.mode.shared_with
+r3-array-plural | command backup restore | addons[].not_in_backup
+r3-array-plural | command backup restore | approval.scope.dependencies_added
+r3-array-plural | command backup restore | approval.scope.folders_removed
+r3-array-plural | command backup restore | approval.scope.source_changed
+r3-array-plural | command backup restore | approval.selection
+r3-array-plural | command backup restore | target.mode.shared_with
+r3-array-plural | command backup verify | targets[].target.mode.shared_with
+r3-array-plural | command backup | targets[].target.mode.shared_with
+r3-array-plural | command copy | approval.scope.dependencies_added
+r3-array-plural | command copy | approval.scope.folders_removed
+r3-array-plural | command copy | approval.scope.source_changed
+r3-array-plural | command copy | approval.selection
+r3-array-plural | command copy | targets[].items[].folders.added
+r3-array-plural | command copy | targets[].items[].folders.recorded
+r3-array-plural | command copy | targets[].items[].folders.removed
+r3-array-plural | command copy | targets[].items[].folders.replaced
+r3-array-plural | command copy | targets[].items[].folders.skipped
+r3-array-plural | command copy | targets[].items[].required_by
+r3-array-plural | command copy | targets[].items[].unresolved
+r3-array-plural | command copy | targets[].target.mode.shared_with
+r3-array-plural | command errors dismiss | targets[].acknowledged
+r3-array-plural | command errors dismiss | targets[].skipped
+r3-array-plural | command errors | targets[].addons[].errors[].raw.stack
+r3-array-plural | command errors | targets[].addons[].errors[].stack
+r3-array-plural | command info | installed
+r3-array-plural | command info | installed[].drift.folders[].added
+r3-array-plural | command info | installed[].drift.folders[].deleted
+r3-array-plural | command info | installed[].drift.folders[].modified
+r3-array-plural | command info | installed[].left_out
+r3-array-plural | command info | installed[].required_by
+r3-array-plural | command install | approval.scope.dependencies_added
+r3-array-plural | command install | approval.scope.folders_removed
+r3-array-plural | command install | approval.scope.source_changed
+r3-array-plural | command install | approval.selection
+r3-array-plural | command install | items[].folders.added
+r3-array-plural | command install | items[].folders.recorded
+r3-array-plural | command install | items[].folders.removed
+r3-array-plural | command install | items[].folders.replaced
+r3-array-plural | command install | items[].folders.skipped
+r3-array-plural | command install | items[].required_by
+r3-array-plural | command install | items[].unresolved
+r3-array-plural | command install | target.mode.shared_with
+r3-array-plural | command list | targets[].addons[].drift.folders[].added
+r3-array-plural | command list | targets[].addons[].drift.folders[].deleted
+r3-array-plural | command list | targets[].addons[].drift.folders[].modified
+r3-array-plural | command list | targets[].addons[].folder_tocs[].owned_on
+r3-array-plural | command list | targets[].addons[].left_out
+r3-array-plural | command list | targets[].addons[].required_by
+r3-array-plural | command list | targets[].protected
+r3-array-plural | command list | targets[].unmanaged
+r3-array-plural | command list | targets[].unmanaged[].owned_on
+r3-array-plural | command outdated | targets[].target.mode.shared_with
+r3-array-plural | command pin | approval.scope.dependencies_added
+r3-array-plural | command pin | approval.scope.folders_removed
+r3-array-plural | command pin | approval.scope.source_changed
+r3-array-plural | command pin | approval.selection
+r3-array-plural | command pin | targets[].items[].folders.added
+r3-array-plural | command pin | targets[].items[].folders.recorded
+r3-array-plural | command pin | targets[].items[].folders.removed
+r3-array-plural | command pin | targets[].items[].folders.replaced
+r3-array-plural | command pin | targets[].items[].folders.skipped
+r3-array-plural | command pin | targets[].items[].required_by
+r3-array-plural | command pin | targets[].items[].unresolved
+r3-array-plural | command pin | targets[].target.mode.shared_with
+r3-array-plural | command remove | approval.scope.dependencies_added
+r3-array-plural | command remove | approval.scope.folders_removed
+r3-array-plural | command remove | approval.scope.source_changed
+r3-array-plural | command remove | approval.selection
+r3-array-plural | command search | sources_skipped
+r3-array-plural | command status | summary.running
+r3-array-plural | command status | targets[].any_flavor
+r3-array-plural | command status | targets[].attention
+r3-array-plural | command status | targets[].drift
+r3-array-plural | command status | targets[].drift[].folders[].added
+r3-array-plural | command status | targets[].drift[].folders[].deleted
+r3-array-plural | command status | targets[].drift[].folders[].modified
+r3-array-plural | command status | targets[].errors.top
+r3-array-plural | command sync | approval.scope.dependencies_added
+r3-array-plural | command sync | approval.scope.folders_removed
+r3-array-plural | command sync | approval.scope.source_changed
+r3-array-plural | command sync | approval.selection
+r3-array-plural | command sync | targets[].items[].folders.added
+r3-array-plural | command sync | targets[].items[].folders.recorded
+r3-array-plural | command sync | targets[].items[].folders.removed
+r3-array-plural | command sync | targets[].items[].folders.replaced
+r3-array-plural | command sync | targets[].items[].folders.skipped
+r3-array-plural | command sync | targets[].items[].required_by
+r3-array-plural | command sync | targets[].items[].unresolved
+r3-array-plural | command sync | targets[].target.mode.shared_with
+r3-array-plural | command undo | approval.scope.dependencies_added
+r3-array-plural | command undo | approval.scope.folders_removed
+r3-array-plural | command undo | approval.scope.source_changed
+r3-array-plural | command undo | approval.selection
+r3-array-plural | command undo | folders.removed
+r3-array-plural | command undo | folders.restored
+r3-array-plural | command unpin | approval.scope.dependencies_added
+r3-array-plural | command unpin | approval.scope.folders_removed
+r3-array-plural | command unpin | approval.scope.source_changed
+r3-array-plural | command unpin | approval.selection
+r3-array-plural | command unpin | targets[].items[].folders.added
+r3-array-plural | command unpin | targets[].items[].folders.recorded
+r3-array-plural | command unpin | targets[].items[].folders.removed
+r3-array-plural | command unpin | targets[].items[].folders.replaced
+r3-array-plural | command unpin | targets[].items[].folders.skipped
+r3-array-plural | command unpin | targets[].items[].required_by
+r3-array-plural | command unpin | targets[].items[].unresolved
+r3-array-plural | command unpin | targets[].target.mode.shared_with
+r3-array-plural | command update | approval.scope.dependencies_added
+r3-array-plural | command update | approval.scope.folders_removed
+r3-array-plural | command update | approval.scope.source_changed
+r3-array-plural | command update | approval.selection
+r3-array-plural | command update | targets[].items[].folders.added
+r3-array-plural | command update | targets[].items[].folders.recorded
+r3-array-plural | command update | targets[].items[].folders.removed
+r3-array-plural | command update | targets[].items[].folders.replaced
+r3-array-plural | command update | targets[].items[].folders.skipped
+r3-array-plural | command update | targets[].items[].required_by
+r3-array-plural | command update | targets[].items[].unresolved
+r3-array-plural | command update | targets[].target.mode.shared_with
+r3-array-plural | error archive_too_large | details.required_by
+r3-array-plural | error auth_rejected | details.required_by
+r3-array-plural | error auth_required | details.required_by
+r3-array-plural | error bad_archive | details.required_by
+r3-array-plural | error bad_archive | details.unsupported
+r3-array-plural | error case_collision | details.folders[].existing
+r3-array-plural | error case_collision | details.required_by
+r3-array-plural | error check_failed | details.required_by
+r3-array-plural | error desired_state_invalid | details.required_by
+r3-array-plural | error distribution_disabled | details.required_by
+r3-array-plural | error download_failed | details.required_by
+r3-array-plural | error file_exists | details.required_by
+r3-array-plural | error filesystem_unsupported | details.required_by
+r3-array-plural | error game_running | details.required_by
+r3-array-plural | error hash_mismatch | details.required_by
+r3-array-plural | error hash_mismatch | details.tried
+r3-array-plural | error host_blocked | details.required_by
+r3-array-plural | error http_status | details.required_by
+r3-array-plural | error internal | details.required_by
+r3-array-plural | error io | details.required_by
+r3-array-plural | error locked | details.required_by
+r3-array-plural | error network | details.required_by
+r3-array-plural | error no_compatible_release | details.checked
+r3-array-plural | error no_compatible_release | details.required_by
+r3-array-plural | error no_compatible_release | details.tried
+r3-array-plural | error not_found | details.newest
+r3-array-plural | error not_found | details.required_by
+r3-array-plural | error not_managed | details.required_by
+r3-array-plural | error offline | details.required_by
+r3-array-plural | error ownership_conflict | details.folders[].existing
+r3-array-plural | error ownership_conflict | details.required_by
+r3-array-plural | error plan_not_found | details.required_by
+r3-array-plural | error plan_stale | details.changed
+r3-array-plural | error plan_stale | details.required_by
+r3-array-plural | error protected_folder | details.folders[].existing
+r3-array-plural | error protected_folder | details.required_by
+r3-array-plural | error rate_limited | details.required_by
+r3-array-plural | error ref_ambiguous | details.owned_now
+r3-array-plural | error ref_ambiguous | details.required_by
+r3-array-plural | error ref_invalid | details.required_by
+r3-array-plural | error scope_denied | details.required_by
+r3-array-plural | error source_disabled | details.required_by
+r3-array-plural | error state_corrupt | details.required_by
+r3-array-plural | error state_too_new | details.required_by
+r3-array-plural | error target_ambiguous | details.required_by
+r3-array-plural | error target_not_found | details.required_by
+r3-array-plural | error undo_conflict | details.conflicting
+r3-array-plural | error undo_conflict | details.required_by
+r3-array-plural | error unmanaged_folder | details.folders[].existing
+r3-array-plural | error unmanaged_folder | details.required_by
+r3-array-plural | error unsafe_archive | details.required_by
+r3-array-plural | error usage | details.required_by
+r3-array-plural | error wrong_flavor | details.required_by
+r3-array-plural | error wrong_flavor | details.tried
+r3-key-ulid | command config get | key
+r3-key-ulid | command config set | key
+r3-key-ulid | command config | settings[].key
+r3-key-ulid | error desired_state_invalid | details.key
+r3-key-ulid | error state_corrupt | details.key
+r3-key-ulid | error target_not_found | details.key
+r4-open-enum | command backup create | targets[].backup.reason
+r4-open-enum | command backup export | backup.reason
+r4-open-enum | command backup import | backup.reason
+r4-open-enum | command backup list | targets[].auto.last.result
+r4-open-enum | command backup list | targets[].backups[].reason
+r4-open-enum | command backup | targets[].auto.last.result
+r4-open-enum | command backup | targets[].backups[].reason
+r4-open-enum | command history | entries[].reason
+r4-open-enum | command history | entries[].repairs[].mode
+r4-open-enum | command history | entries[].repairs[].post.mode
+r4-open-enum | command history | entries[].repairs[].post.path.mode
+r4-open-enum | command history | entries[].repairs[].post.to.mode
+r4-open-enum | command history | entries[].repairs[].pre.mode
+r4-open-enum | command history | entries[].repairs[].pre.path.mode
+r4-open-enum | command history | entries[].repairs[].pre.to.mode
+r4-open-enum | command info | installed[].left_out[].reason
+r4-open-enum | command list | targets[].addons[].left_out[].reason
+r4-open-enum | command status | last_change.reason
+r4-open-enum | command status | targets[].backups.auto.last.result
+r4-open-enum | command undo | reverted.reason
+r4-open-enum | error hash_mismatch | details.tried[].reason
+r4-open-enum | error no_compatible_release | details.tried[].reason
+r4-open-enum | error target_not_found | details.mode
+r4-open-enum | error undo_conflict | details.conflicting[].kind
+r4-open-enum | error wrong_flavor | details.tried[].reason
+r4-value-case | command adopt | targets[].items[].folders.skipped[].family
+r4-value-case | command backup import | source.family
+r4-value-case | command backup list | targets[].auto.mode
+r4-value-case | command backup | targets[].auto.mode
+r4-value-case | command copy | targets[].items[].folders.skipped[].family
+r4-value-case | command info | catalog.families[]
+r4-value-case | command info | catalog.variants[].families[]
+r4-value-case | command install | items[].folders.skipped[].family
+r4-value-case | command list | targets[].family
+r4-value-case | command pin | targets[].items[].folders.skipped[].family
+r4-value-case | command status | issues[].severity
+r4-value-case | command status | targets[].backups.auto.mode
+r4-value-case | command status | targets[].family
+r4-value-case | command status | targets[].issues[].severity
+r4-value-case | command sync | targets[].items[].folders.skipped[].family
+r4-value-case | command targets add | targets[].family
+r4-value-case | command targets | targets[].family
+r4-value-case | command unpin | targets[].items[].folders.skipped[].family
+r4-value-case | command update | targets[].items[].folders.skipped[].family

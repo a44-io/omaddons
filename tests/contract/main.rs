@@ -17,6 +17,8 @@ mod matrix;
 mod recommendations;
 #[cfg(test)]
 mod registries;
+#[cfg(test)]
+mod rules;
 mod special;
 #[cfg(test)]
 mod strict;

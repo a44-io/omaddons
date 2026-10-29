@@ -42,7 +42,8 @@ use crate::state::config::SourceConfig;
 pub struct SourceSkipped {
     pub source: SourceId,
     pub reason: SourceSkipReason,
-    /// When a rate limit lifts.
+    /// When a rate limit lifts; omitted unless `reason` is `rate_limited` and the reset
+    /// time is known.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     pub reset_at: Option<jiff::Timestamp>,

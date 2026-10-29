@@ -138,10 +138,11 @@ pub struct InstallItem {
     pub r#ref: Option<Ref>,
     pub name: Option<String>,
     pub status: ItemStatus,
-    /// `skipped` items only: why (`duplicate`).
+    /// `skipped` items only: why (`duplicate`). Omitted on every other item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<SkipReason>,
-    /// A duplicate's first request, which it collapsed into.
+    /// A duplicate's first request, which it collapsed into. Omitted on every item but a
+    /// duplicate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duplicate_of: Option<String>,
     /// The record fields an `edited` item changed, sorted; omitted when empty.

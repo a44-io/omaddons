@@ -78,8 +78,11 @@ pub struct ProgressEvent<'a> {
     event: EventName,
     phase: Phase,
     message: &'a str,
+    /// How many of the phase's items (or files) are done, `0` when it is announced;
+    /// omitted for an event without counts.
     #[serde(skip_serializing_if = "Option::is_none")]
     current: Option<u64>,
+    /// How many the phase expects in all; omitted for an event without counts.
     #[serde(skip_serializing_if = "Option::is_none")]
     total: Option<u64>,
 }

@@ -413,7 +413,7 @@ pub struct ErrorsTarget {
     /// `buggrabber` when Lua errors are captured; `none` without BugGrabber.
     pub capture: CaptureState,
     /// Without BugGrabber, when the catalog knows no build of it for this client (so no
-    /// `install_buggrabber` command is offered): why.
+    /// `install_buggrabber` command is offered): why. Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capture_note: Option<String>,
     /// `truncated` when a bound cut the walk for BugGrabber's files.
@@ -545,7 +545,7 @@ pub struct ErrorInfo {
     pub message_kind: MessageKind,
     /// A recognized template's text; `null` for a custom message.
     pub message: Option<String>,
-    /// A custom message's length in characters.
+    /// A custom message's length in characters; omitted for any other `message_kind`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_chars: Option<usize>,
     pub location: Option<String>,
