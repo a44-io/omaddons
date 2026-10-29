@@ -34,7 +34,9 @@ impl ErrorCode {
             Self::NotManaged => {
                 "`omaddons list -t <id>`, `omaddons install <name>` or `omaddons adopt <folder>`, or prose for a protected or linked one"
             }
-            Self::PlanNotFound => "prose: preview the change again with its command's `--dry-run`",
+            Self::PlanNotFound => {
+                "`omaddons help apply`, or prose: preview the change again with its command's `--dry-run`"
+            }
             Self::NoCompatibleRelease => {
                 "`omaddons install <ref>` (other channel, version or `git:` ref), `omaddons targets`, or prose: pin or use a local file"
             }
