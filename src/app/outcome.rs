@@ -689,16 +689,16 @@ impl TargetsData {
                 })
             })
             .collect();
-        // A binding's refusal under the lock keeps its form: not retryable, with its
-        // `details.changed`, which an item's error keeps neither of.
+        // A target's own error keeps its form, which an item's error keeps none of: a
+        // binding's refusal its retryability and `details.changed`, a stopped journal its
+        // `journal_pending` and `reason`, a lock its `holder`.
         let mut error = match refusal {
             Some(body) => error_of(body),
             None => {
                 let (first_target, first_item) = failed.first()?;
                 match &first_target.error {
-                    // ubs:ignore — comparing error codes, not secrets
-                    Some(body) if body.code == ErrorCode::PlanStale => error_of(body),
-                    _ => first_item.error.as_ref()?.error(),
+                    Some(body) => error_of(body),
+                    None => first_item.error.as_ref()?.error(),
                 }
             }
         };
@@ -1730,7 +1730,7 @@ mod tests {
     }
 
     #[test]
-    fn an_all_failed_target_plan_stale_keeps_its_retryability_and_details() {
+    fn an_all_failed_target_error_keeps_its_retryability_and_details() {
         let preview: Vec<String> = ["omaddons", "pin", "DBM", "--dry-run"]
             .map(str::to_owned)
             .to_vec();
@@ -1776,12 +1776,33 @@ mod tests {
         assert_eq!(replan.details["cause"], "hash_mismatch", "{replan:?}");
         assert_eq!(items(&replan), 1, "{replan:?}");
 
-        // Any other target-level error: exactly today's form.
-        let locked = all_failed_with(Error::new(
-            ErrorCode::Locked,
-            "locked here",
-            Suggestion::text("wait"),
-        ));
+        // Any other target-level error keeps its details too: a journal stopped for
+        // repair names its transaction and why (omad-alz5), a lock its holder.
+        let stopped = all_failed_with(
+            Error::new(
+                ErrorCode::Internal,
+                "journal step 2 matches neither its before nor its after state",
+                Suggestion::command(["omaddons", "status"]),
+            )
+            .details(serde_json::json!({
+                "reason": "step_unrecognized",
+                "journal_pending": "01M6498HYPZBRS6MK9NAN7T5Y9",
+            })),
+        );
+        assert_eq!(stopped.code, ErrorCode::Internal);
+        assert_eq!(
+            stopped.details["reason"], "step_unrecognized",
+            "{stopped:?}"
+        );
+        assert_eq!(
+            stopped.details["journal_pending"], "01M6498HYPZBRS6MK9NAN7T5Y9",
+            "{stopped:?}"
+        );
+        assert_eq!(items(&stopped), 1, "{stopped:?}");
+        let locked = all_failed_with(
+            Error::new(ErrorCode::Locked, "locked here", Suggestion::text("wait"))
+                .details(serde_json::json!({ "holder": { "pid": 7 } })),
+        );
         assert_eq!(locked.code, ErrorCode::Locked);
         assert_eq!(
             locked.retryable,
@@ -1789,7 +1810,7 @@ mod tests {
             "the registry's default"
         );
         let keys: Vec<&String> = locked.details.as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["items"], "{locked:?}");
+        assert_eq!(keys, ["holder", "items"], "{locked:?}");
     }
 
     /// A bound run that changed nothing and that a target's lock refused is that refusal,

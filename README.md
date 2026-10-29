@@ -2767,7 +2767,6 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
 
 - **A forget that no longer applies is reported as `not_managed`** (`omad-z60g`). When every folder of an addon was deleted by hand, `remove` forgets it. If one of those folders is put back in the instant between that plan and the commit lock, the run changes nothing, which is right. It then fails `not_managed`, "Foo is no longer managed in retail", although Foo is still managed and its folder is back. Run `remove` again to remove the folder. A run bound to its preview is refused correctly, as `plan_stale` with `selection`.
-- **A journal stopped for repair loses its details on per-client commands** (`omad-alz5`). Once a journal stops for repair (see [`journal_pending` that does not clear](#journal_pending-that-does-not-clear)), every later change on that client fails with that stop. `install` carries `error.details.journal_pending` and `error.details.reason`. The commands that report per client (`update`, `sync`, `copy`, `pin`, `unpin` and an adopting `adopt`) give the same code and message, but their `details` hold only `items`. `status` still reports the waiting journal.
 
 ---
 

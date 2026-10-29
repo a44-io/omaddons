@@ -527,45 +527,55 @@ fn residual(log: &TestLog, shape: Shape) {
     );
 
     log.step("recover: the next lock-taking commands stop the same way");
+    // Each a real change, so it reaches the stop: the one-client `install`, and the
+    // commands that report per client, whose one error is their target's (omad-alz5).
+    // Delta is published for `sync` to install, and Echo and Fox unpacked, in the
+    // catalog, for `adopt` to record.
+    seeded.s.release("delta", "v1", &[folder("Delta", &[])]);
+    seeded.s.home.write_desired(
+        "schema_version = \"1.0\"\n\n[family.mainline]\naddons = [\"gh:o/delta\"]\n",
+    );
+    let adopt = shapes::adopt(&seeded.s);
     log.tree("addons", &addons);
-    let stop = "journal step 2 ";
-    let next = log.run(
-        &seeded.s,
-        &json_args(&strings(&["pin", seeded.pin, "-t", "retail"])),
-    );
-    let next_error = &next.envelope()["error"];
-    log.json("next", next_error);
-    log.assert_eq(
-        "pin: (exit, code, names the step left for repair)",
-        &(
-            next.run.code,
-            &next_error["code"],
-            next_error["message"].as_str().is_some_and(|m| {
-                m.starts_with(stop) && m.contains("matches neither its before nor its after state")
-            }),
-        ),
-        &(1, &json!("internal"), true),
-    );
-    // A single-target command keeps the stop's details; `pin`, a multi-target command,
-    // drops them (omad-alz5).
-    let install = log.run(&seeded.s, &seeded.s.install_args("gh:o/bar", "bar"));
-    let install_error = &install.envelope()["error"];
-    log.json("install", install_error);
-    log.assert_eq(
-        "install: (exit, code, details.reason, details.journal_pending)",
-        &(
-            install.run.code,
-            &install_error["code"],
-            &install_error["details"]["reason"],
-            &install_error["details"]["journal_pending"],
-        ),
-        &(
-            1,
-            &json!("internal"),
-            &json!("step_unrecognized"),
-            &json!(tx),
-        ),
-    );
+    let mut install = seeded.s.install_args("gh:o/bar", "bar");
+    install.extend(strings(&["--progress", "json"]));
+    let mut commands = vec![
+        install,
+        json_args(&strings(&["pin", seeded.pin, "-t", "retail"])),
+        json_args(&strings(&["sync", "-t", "retail"])),
+        json_args(&adopt[..adopt.len() - 1]),
+    ];
+    if shape == Shape::UpdateOfThree {
+        commands.push(json_args(&strings(&["update", "-t", "retail"])));
+    }
+    for argv in commands {
+        let ran = log.run(&seeded.s, &argv);
+        let error = &ran.envelope()["error"];
+        log.json(&format!("{}: error", argv[0]), error);
+        log.assert_eq(
+            &format!(
+                "{}: (exit, code, names step 2, details.reason, details.journal_pending)",
+                argv[0]
+            ),
+            &(
+                ran.run.code,
+                &error["code"],
+                error["message"].as_str().is_some_and(|m| {
+                    m.starts_with("journal step 2 ")
+                        && m.contains("matches neither its before nor its after state")
+                }),
+                &error["details"]["reason"],
+                &error["details"]["journal_pending"],
+            ),
+            &(
+                1,
+                &json!("internal"),
+                true,
+                &json!("step_unrecognized"),
+                &json!(tx),
+            ),
+        );
+    }
     log.assert_unchanged("addons", &addons);
     log.assert_eq("the journal is kept", &seeded.journal(), &journal);
 }
