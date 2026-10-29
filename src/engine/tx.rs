@@ -935,7 +935,7 @@ pub(super) fn retain(
             key,
             &ClientPaths::new(client_dir),
             &ctx.retention,
-            Timestamp::now(),
+            super::retention::RetentionClock::current(),
             &|| super::retention::pinned_blobs(ctx.paths),
         )?;
         Ok(report.warnings)

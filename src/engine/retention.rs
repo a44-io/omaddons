@@ -14,8 +14,9 @@
 //! remove a dead transaction's snapshots at once; the sweep takes what a crash or a
 //! failed prune left. A client snapshot whose `AddOns/` still holds a folder is never
 //! removed as garbage: it may be the only copy of an addon. Then the blob cache is
-//! evicted LRU to `BLOB_CACHE_MAX_BYTES`, sparing the blobs of installed releases. Every
-//! removal goes through `fsx::prune`.
+//! evicted LRU to `BLOB_CACHE_MAX_BYTES`, sparing installed releases and unexpired stored
+//! plans. Expired plans are swept first, in a bounded batch through the plan store's
+//! own sweep. Every removal goes through `fsx::prune`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,7 @@ use crate::limits::{
 use crate::model::{TargetKey, TxId, TxKind};
 use crate::state::history::{self, HistoryEntry, HistoryFilter};
 use crate::state::paths::{ClientPaths, Paths};
+use crate::state::plans::{self, PlanPins};
 use crate::state::records::load_record;
 use crate::state::registry::load_registry;
 
@@ -93,8 +95,39 @@ pub struct RetentionReport {
     pub cap_exceeded: bool,
     pub orphans_swept: usize,
     pub blobs_evicted: usize,
+    pub plans_swept: usize,
+    pub plan_leases_swept: usize,
+    pub plan_sweep_failed: bool,
+    #[serde(skip)]
+    pub plan_pins: Option<PlanPins>,
     #[serde(skip)]
     pub warnings: Vec<Warning>,
+}
+
+/// Snapshots and orphans use system-clock history and mtimes. Stored plans use the
+/// plan clock, frozen by `OMADDONS_NOW` in debug builds; release builds use real time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetentionClock {
+    pub system: Timestamp,
+    pub plans: Timestamp,
+}
+
+impl RetentionClock {
+    pub fn current() -> Self {
+        Self {
+            system: Timestamp::now(),
+            plans: crate::clock::now(),
+        }
+    }
+}
+
+impl From<Timestamp> for RetentionClock {
+    fn from(now: Timestamp) -> Self {
+        Self {
+            system: now,
+            plans: now,
+        }
+    }
 }
 
 /// The policy over one target's snapshot-bearing transactions (any order) at `now`.
@@ -138,9 +171,13 @@ pub fn run(
     key: TargetKey,
     client: &ClientPaths,
     limits: &RetentionLimits,
-    now: Timestamp,
+    now: impl Into<RetentionClock>,
     pins: &dyn Fn() -> Result<BTreeSet<String>>,
 ) -> Result<RetentionReport> {
+    let clock = now.into();
+    let mut report = RetentionReport::default();
+    sweep_plans(paths, clock.plans, &mut report);
+    let now = clock.system;
     // Read once: the whole history for pending restores (their conflict check spans
     // targets), the target's entries for the policy, the raw text for orphans.
     let text = history::text(paths)?;
@@ -176,12 +213,9 @@ pub fn run(
         })
         .collect();
     let selection = select(&txs, now, limits);
-    let mut report = RetentionReport {
-        pruned_tx: selection.prune.len(),
-        kept_tx: selection.kept,
-        cap_exceeded: selection.cap_exceeded.is_some(),
-        ..RetentionReport::default()
-    };
+    report.pruned_tx = selection.prune.len();
+    report.kept_tx = selection.kept;
+    report.cap_exceeded = selection.cap_exceeded.is_some();
     let victims: Vec<PathBuf> = selection
         .prune
         .iter()
@@ -224,9 +258,34 @@ pub fn run(
         )?;
     }
     report.orphans_swept = orphans.scratch.len() + orphans.snapshots.len();
-    let evicted = BlobCache::new(paths).evict(scopes, pins, limits.blob_cache_max_bytes)?;
+    let seen = std::cell::RefCell::new(None);
+    let with_plans = || -> Result<BTreeSet<String>> {
+        let mut all = pins()?;
+        let found = plans::unexpired_blob_pins(paths, clock.plans);
+        all.extend(found.blobs.iter().cloned());
+        *seen.borrow_mut() = Some(found);
+        Ok(all)
+    };
+    let evicted = BlobCache::new(paths).evict(scopes, &with_plans, limits.blob_cache_max_bytes)?;
     report.blobs_evicted = evicted.evicted.len();
+    report.plan_pins = seen.into_inner();
     Ok(report)
+}
+
+fn sweep_plans(paths: &Paths, now: Timestamp, report: &mut RetentionReport) {
+    // A home that never previewed must not acquire a plan directory or its lock.
+    // ubs:ignore — an io::ErrorKind, not a secret
+    if matches!(std::fs::symlink_metadata(paths.plans_dir()), Err(err) if err.kind() == std::io::ErrorKind::NotFound)
+    {
+        return;
+    }
+    match plans::sweep(paths, now) {
+        Ok(swept) => {
+            report.plans_swept = swept.removed;
+            report.plan_leases_swept = swept.leases_removed;
+        }
+        Err(_) => report.plan_sweep_failed = true,
+    }
 }
 
 /// The blobs installed releases came from, across every registered target.
@@ -443,6 +502,8 @@ mod tests {
     use crate::fsx::{WriteSession, Writer};
     use crate::model::Actor;
     use crate::state::history::{BackupNote, HistoryEntry, TxResult};
+
+    mod plan_tests;
 
     const HOUR: i64 = 3_600;
     const DAY: i64 = 24 * HOUR;

@@ -2225,7 +2225,8 @@ Retention runs after every commit, for the target just changed:
 - A failed prune is only a `retention_failed` warning: the transaction stands.
 - History lines are never pruned.
 - Undo of a pruned transaction fails `not_found`. For folders with no other copy (an unmanaged folder replaced under `--force`, an addon adopted as it was or installed from a local archive or directory), the commit says so with `snapshot_only_copy`, stating these bounds as configured.
-- The download cache is an LRU capped at 1 GiB. Archives of releases installed on any target are pinned, so the cache can exceed the cap.
+- The download cache is an LRU capped at 1 GiB. Archives of releases installed on any target are pinned, and so are archives a stored plan would install until that plan expires, 24 hours after its preview. These pins save downloading the archives again and can keep the cache over its cap. An archive evicted anyway is downloaded and verified again when needed.
+- Expired stored plans are also deleted after every commit, as they are before a preview stores a new one: at most 64 per pass, oldest first. Free leases are collected with their plans or on the following pass. An unexpired plan, a plan being applied, and a file whose expiry cannot be read are never deleted by this sweep; unreadable files stay until the cache is emptied.
 - Orphaned stage directories, in-flight locks and the snapshots of transactions that never committed are swept: a rolled-back or failed transaction's snapshots at once, a dead planner's temporary downloads as soon as its in-flight lock is free, and anything else a crash left once it is an hour old. A snapshot that still holds an addon folder or a `WTF.previous` is never swept.
 - A whole restore's `WTF.previous` (the tree it replaced) is pruned with its transaction by the count and age rules above, and never counts toward the 2 GiB cap, so a few large restores never evict the snapshots undo needs for addons.
 - `WTF/` backups (`.omaddons/backups/`) are never touched by transaction retention. They have their own, below.
@@ -2356,7 +2357,7 @@ label = "my 3.3.5a server"
 | `limits.tx_retention_count` | `10` | Snapshots kept per target within the window |
 | `limits.tx_retention_days` | `7` | The retention window |
 | `limits.snapshot_max_bytes` | `2GiB` | Snapshot total per target beyond 24 hours |
-| `limits.blob_cache_max_bytes` | `1GiB` | Download cache (installed releases are pinned) |
+| `limits.blob_cache_max_bytes` | `1GiB` | Download cache (installed releases and unexpired stored plans are pinned) |
 | `limits.backup_min_free_mb` | `2048` | MiB free beside a client's backups below which `backup create` warns `backup_space_low` (and makes the backup anyway); 0 to 1,048,576, where 0 turns the check off |
 | `limits.backup_copy_max_mb` | `4096` | MiB of a client's automatic byte-copy backups (apparent size), `daily-copy` only: beyond it, older automatic copies are pruned first, or the backup is skipped (`backup_space_low`). 0 to 1,048,576, where 0 turns the budget off |
 | `limits.backup_auto_keep_days` | `7` | Local days of automatic backups that backup retention keeps per target: for each of the newest days holding any, its first pre-change backup (and first stable one), last post-session backup, and every before-restore one (1 to 100) |

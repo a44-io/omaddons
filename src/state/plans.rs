@@ -481,6 +481,88 @@ fn sweep_locked(
 }
 
 // ---------------------------------------------------------------------------------------
+// Blob pins.
+
+/// What bounded pin discovery found. A pin only saves a download, so an unreadable
+/// store or plan never fails its caller (M4-D26).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlanPins {
+    pub blobs: BTreeSet<String>,
+    /// Files opened and their listed sizes.
+    pub read: usize,
+    pub bytes: u64,
+    pub live: usize,
+    pub expired: usize,
+    /// Readable plans dated beyond the next `PLAN_TTL`.
+    pub future: usize,
+    /// Refused by `load`, or too large to open.
+    pub unreadable: usize,
+    /// False when listing failed or a listing/read bound stopped discovery.
+    pub complete: bool,
+}
+
+/// Every well-formed blob digest named by a usable plan expiring in the next day.
+/// Read-only, lock-free and bounded by the store's own quotas.
+pub fn unexpired_blob_pins(paths: &Paths, now: Timestamp) -> PlanPins {
+    pins_within(paths, now, PLANS_MAX_FILES, PLANS_MAX_BYTES)
+}
+
+fn pins_within(paths: &Paths, now: Timestamp, max_files: usize, max_bytes: u64) -> PlanPins {
+    let Ok(listing) = list(paths) else {
+        return PlanPins::default();
+    };
+    let mut found = PlanPins {
+        complete: listing.complete,
+        ..PlanPins::default()
+    };
+    let ttl = SignedDuration::try_from(PLAN_TTL).unwrap_or(SignedDuration::MAX);
+    let latest = now.checked_add(ttl).unwrap_or(Timestamp::MAX);
+    for entry in listing.plans.iter().rev() {
+        if found.read == max_files {
+            found.complete = false;
+            break;
+        }
+        if entry.bytes > PLAN_MAX_BYTES {
+            found.unreadable += 1;
+            continue;
+        }
+        let Some(bytes) = found
+            .bytes
+            .checked_add(entry.bytes)
+            .filter(|bytes| *bytes <= max_bytes)
+        else {
+            found.complete = false;
+            break;
+        };
+        found.read += 1;
+        found.bytes = bytes;
+        let Ok(plan) = load(&entry.path) else {
+            found.unreadable += 1;
+            continue;
+        };
+        if plan.expires_at <= now {
+            found.expired += 1;
+        } else if plan.expires_at > latest {
+            found.future += 1;
+        } else {
+            found.live += 1;
+            found.blobs.extend(
+                plan.releases
+                    .into_iter()
+                    .filter_map(|release| release.blob_sha256)
+                    .filter(|hash| {
+                        hash.len() == 64
+                            && hash
+                                .bytes()
+                                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                    }),
+            );
+        }
+    }
+    found
+}
+
+// ---------------------------------------------------------------------------------------
 // Admission.
 
 /// Whether a preview's plan was kept.
@@ -640,6 +722,11 @@ fn write(scopes: &ScopeTable, paths: &Paths, id: &PlanId, bytes: &[u8]) -> Resul
 }
 
 #[cfg(test)]
+mod pins_tests;
+#[cfg(test)]
+pub(crate) mod test_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
@@ -679,7 +766,7 @@ mod tests {
         format!("{:026}", n + 1).parse().unwrap()
     }
 
-    fn plan_at(n: usize, created_at: Timestamp) -> StoredPlan {
+    pub(super) fn plan_at(n: usize, created_at: Timestamp) -> StoredPlan {
         let intent = StoredIntent::Remove(RemoveIntent {
             addons: vec!["Foo".into()],
             target: crate::model::TargetRef::parse("retail"),
