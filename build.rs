@@ -1,4 +1,4 @@
-//! Two outputs, computed separately:
+//! Three outputs, computed separately:
 //!
 //! - The digest of the widget's runtime files under `omarchy/` (its tests, a generated
 //!   `Build.js` and the manifest aside: the same set as `src/omarchy/assets.rs`), so
@@ -8,6 +8,8 @@
 //! - `OMADDONS_BUILD_ID`, the build's identity (M4-D19): a digest of the explicit input
 //!   manifest in `src/build_info/inputs.rs` and the toolchain. It never covers `skills/`
 //!   (M4-D7).
+//! - `OMADDONS_GUIDE_SHA256`, the committed skill's digest with its stamp line omitted
+//!   (M4-D7), so the binary knows which guide it prints without rendering it.
 
 // Cargo reads its directives from the build script's stdout.
 #![allow(clippy::print_stdout)]
@@ -25,9 +27,45 @@ use sha2::{Digest, Sha256};
 )]
 mod inputs;
 
+// One stamp algorithm for the renderer, install-skill, the doctor and this script: the
+// very same file.
+#[path = "src/contract/guide/stamp.rs"]
+#[allow(
+    dead_code,
+    reason = "the library verifies stamps; the build only computes one digest"
+)]
+mod stamp;
+
+/// The committed skill, which `tests/skill.rs` writes from the rendered guide.
+const SKILL: &str = "skills/omaddons/SKILL.md";
+
 fn main() -> Result<(), Box<dyn Error>> {
     widget_digest()?;
-    build_id()
+    build_id()?;
+    guide_digest();
+    Ok(())
+}
+
+/// `OMADDONS_GUIDE_SHA256`: the digest of the committed skill's content without its stamp
+/// line, never its recorded digits. A missing or unstamped file does not fail the build,
+/// because the binary must build to write it: the value is then 64 zeros, with a warning,
+/// and `tests/skill.rs` fails until the file is regenerated.
+fn guide_digest() {
+    println!("cargo::rerun-if-changed={SKILL}");
+    println!("cargo::rerun-if-changed=src/contract/guide/stamp.rs");
+    let digest = fs::read_to_string(SKILL)
+        .ok()
+        .map(|text| stamp::digest_without_stamp(&text));
+    let hex = match digest {
+        Some(Ok(digest)) => stamp::hex(&digest),
+        _ => {
+            println!(
+                "cargo::warning={SKILL} is missing or unstamped; run OMADDONS_UPDATE_SKILL=1 cargo test --test skill"
+            );
+            "0".repeat(64)
+        }
+    };
+    println!("cargo::rustc-env=OMADDONS_GUIDE_SHA256={hex}");
 }
 
 /// `OMADDONS_BUILD_ID` from the input manifest and the toolchain Cargo describes.

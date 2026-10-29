@@ -14,6 +14,13 @@ pub fn render_guide() -> Result<String, render::RenderError> {
     render::render(TEMPLATE, &render::GuideInputs::live())
 }
 
+/// The digest the committed `skills/omaddons/SKILL.md` carries without its stamp line,
+/// computed by `build.rs` without rendering (M4-D7): 64 lowercase hex digits. The skill
+/// test holds it equal to the stamp of the guide this binary renders; the doctor's
+/// skill-drift check compares installed skills with it. No block reads it: the guide
+/// never depends on its own digest.
+pub const EXPECTED_DIGEST: &str = env!("OMADDONS_GUIDE_SHA256");
+
 #[cfg(test)]
 mod tests {
     use super::render::{Kind, PLACEHOLDERS};
@@ -22,6 +29,30 @@ mod tests {
 
     fn guide() -> String {
         render_guide().unwrap()
+    }
+
+    #[test]
+    fn expected_digest_is_sixty_four_lowercase_hex_digits() {
+        let hex = EXPECTED_DIGEST;
+        assert!(
+            hex.len() == 64
+                && hex
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "EXPECTED_DIGEST is {hex:?}"
+        );
+    }
+
+    #[test]
+    fn expected_digest_is_the_committed_skills_digest() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/omaddons/SKILL.md");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let digest = stamp::hex(&stamp::digest_without_stamp(&text).unwrap());
+        assert!(
+            digest.eq(EXPECTED_DIGEST),
+            "the committed skill's digest is {digest}, EXPECTED_DIGEST is {EXPECTED_DIGEST}: rebuild, build.rs reads the committed file"
+        );
     }
 
     /// The template's lines after its frontmatter.
