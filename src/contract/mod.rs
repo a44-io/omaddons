@@ -10,6 +10,7 @@ pub mod manifest;
 pub mod opaque;
 pub mod schema;
 pub mod volatile;
+pub mod wire;
 
 pub use opaque::{OPAQUE, Opaque};
 pub use volatile::VOLATILE;

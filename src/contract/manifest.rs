@@ -9,10 +9,14 @@
 mod classify;
 pub mod ids;
 mod inputs;
+mod locate;
 mod outputs;
 mod registries;
+mod report;
 
 pub use classify::{Bump, Change, ChangeKind, Changes, KindBump, Label, classify};
+pub use locate::unmatched;
+pub use report::{report, section_counts};
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
