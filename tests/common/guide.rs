@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 
+use clap::Parser as _;
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -158,6 +159,94 @@ pub fn first_difference(committed: &str, rendered: &str) -> Option<Difference> {
             committed: a.get(i).copied().unwrap_or("<end of file>").to_owned(),
             rendered: b.get(i).copied().unwrap_or("<end of file>").to_owned(),
         })
+}
+
+/// A sample for each `<name>` a command in the guide may hold, so the command can be
+/// parsed as an agent would type it. B2 extends it for its recipes.
+pub const SAMPLES: &[(&str, &str)] = &[
+    ("<command>", "install"),
+    ("<target>", "retail"),
+    ("<key>", ULID),
+    ("<id>", ULID),
+    ("<plan_id>", ULID),
+    ("<ref>", "dbm"),
+    // The fix patterns of the common errors.
+    ("<name>", "dbm"),
+    ("<folder>", "DBM-Core"),
+    ("<tx>", ULID),
+    ("<path>", "/games/World of Warcraft"),
+];
+
+const ULID: &str = "01J00000000000000000000000";
+
+/// Every command the guide names that does not parse, with why. Each `<name>` takes its
+/// [`SAMPLES`] value; an elision (`…`) or an unknown `<name>` is reported, and so is
+/// anything clap refuses (its help and version count as parsing).
+pub fn unparsable(text: &str) -> Vec<(String, String)> {
+    commands(text)
+        .into_iter()
+        .filter_map(|span| reason(&span).map(|why| (span, why)))
+        .collect()
+}
+
+/// The commands the guide names: each inline code span, and each line of a fenced block,
+/// that starts with `omaddons `, in the body after the stamp line (the frontmatter's
+/// description is a loading trigger, not a command an agent runs).
+pub fn commands(text: &str) -> Vec<String> {
+    let body = text
+        .split_once(STAMP_PREFIX)
+        .and_then(|(_, rest)| rest.split_once('\n'))
+        .map_or(text, |(_, body)| body);
+    let mut spans = Vec::new();
+    let mut fenced = false;
+    for line in body.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            spans.push(line.trim().to_owned());
+        } else {
+            spans.extend(line.split('`').skip(1).step_by(2).map(str::to_owned));
+        }
+    }
+    spans.retain(|span| span.starts_with("omaddons "));
+    spans
+}
+
+/// Why `span` would not run as typed, if it would not.
+fn reason(span: &str) -> Option<String> {
+    if span.contains('…') {
+        return Some("write the command out in full".to_owned());
+    }
+    let mut filled = span.to_owned();
+    while let Some(open) = filled.find('<') {
+        let close = filled[open..].find('>').map(|i| open + i + 1)?;
+        let name = filled[open..close].to_owned();
+        let Some((_, sample)) = SAMPLES.iter().find(|(n, _)| *n == name) else {
+            return Some(format!("add a sample for {name} in SAMPLES"));
+        };
+        filled.replace_range(open..close, &shell_words::quote(sample));
+    }
+    let words = match shell_words::split(&filled) {
+        Ok(words) => words,
+        Err(e) => return Some(format!("does not split as shell words: {e}")),
+    };
+    match omaddons::cli::Cli::try_parse_from(&words) {
+        Ok(_) => None,
+        Err(e)
+            if matches!(
+                e.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            None
+        }
+        Err(e) => Some(format!(
+            "clap refuses `{filled}`: {}",
+            e.to_string().lines().next().unwrap_or("")
+        )),
+    }
 }
 
 pub fn sha256_hex(text: &str) -> String {

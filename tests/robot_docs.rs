@@ -19,7 +19,9 @@ mod validate;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use common::archives::zip_text;
 use common::env::TestEnv;
+use common::guide;
 use common::home::Home;
 use common::netlog::net_log;
 use common::tlog::{Ran, Runner, TestLog, tlog};
@@ -757,4 +759,317 @@ fn bare_robot_docs_is_its_help_until_the_guide_exists() {
         &(texts[0].contains("schema") && texts[0].contains("errors")),
         &true,
     );
+}
+
+/// A home with one discovered client and one installed addon (`Foo` from a local zip).
+fn managed_home(log: &TestLog) -> Home {
+    let home = Home::new(&["wow"]);
+    let dl = home.env.root().join("dl");
+    let zip = dl.join("foo.zip");
+    let written = std::fs::create_dir_all(&dl).and_then(|()| {
+        std::fs::write(&zip, zip_text(&[("Foo/Foo.toc", "## Interface: 120105\n")]))
+    });
+    assert!(written.is_ok(), "{}: {written:?}", zip.display());
+    let zip = zip.display().to_string();
+    log.run(
+        &home,
+        &[
+            "install", "gh:o/foo", "--file", &zip, "-t", "retail", "--json",
+        ],
+    )
+    .ok();
+    home
+}
+
+/// `ran` printed exactly `baseline`, else the step fails at the first differing line.
+fn same_guide(log: &TestLog, case: &str, baseline: &str, ran: &Ran) {
+    ran.ok();
+    // Any change moves the stamp (line 5), so the content's first difference is reported,
+    // and the stamp's only when nothing else differs.
+    let without_stamp = |text: &str| {
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        if lines.len() > 4 {
+            lines.remove(4);
+        }
+        lines.join("\n")
+    };
+    let difference =
+        guide::first_difference(&without_stamp(baseline), &without_stamp(ran.stdout()))
+            .map(|mut d| {
+                if d.line >= 5 {
+                    d.line += 1;
+                }
+                d
+            })
+            .or_else(|| guide::first_difference(baseline, ran.stdout()));
+    log.assert_eq(
+        &format!("{case}: the first line that differs from the baseline"),
+        &difference.map(|d| {
+            format!(
+                "line {}: {:?} instead of {:?}",
+                d.line, d.rendered, d.committed
+            )
+        }),
+        &None,
+    );
+}
+
+#[test]
+fn guide_bare_robot_docs_is_the_guide() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    log.step("human");
+    let bare = log.run(&env, &["robot-docs"]);
+    let guide_run = log.run(&env, &["robot-docs", "guide"]);
+    same_guide(&log, "bare", guide_run.stdout(), &bare);
+    log.step("JSON");
+    let bare = log.run(&env, &["robot-docs", "--json"]);
+    let guide_run = log.run(&env, &["robot-docs", "guide", "--json"]);
+    for ran in [&bare, &guide_run] {
+        ran.ok();
+        log.assert_eq(
+            "command",
+            &ran.envelope()["command"],
+            &json!("robot-docs guide"),
+        );
+    }
+    log.assert_eq(
+        "the envelopes, meta removed",
+        &(without_meta(&bare) == without_meta(&guide_run)),
+        &true,
+    );
+}
+
+#[test]
+fn guide_human_bytes_are_the_json_content() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    log.step("both forms");
+    let human = log.run(&env, &["robot-docs", "guide"]);
+    let json_run = log.run(&env, &["robot-docs", "guide", "--json"]);
+    human.ok();
+    json_run.ok();
+    let envelope = json_run.envelope();
+    log.assert_eq(
+        "the human bytes are data.content",
+        &(envelope["data"]["content"].as_str() == Some(human.stdout())),
+        &true,
+    );
+    let frame = json!({
+        "format": envelope["data"]["format"],
+        "ok": envelope["ok"],
+        "exit_code": envelope["exit_code"],
+        "warnings": envelope["warnings"],
+        "commands": envelope["commands"],
+        "partial": envelope["partial"],
+    });
+    log.assert_eq(
+        "the frame",
+        &frame,
+        &json!({"format": "markdown", "ok": true, "exit_code": 0, "warnings": [], "commands": [], "partial": false}),
+    );
+    for ran in [&human, &json_run] {
+        log.assert_eq("stderr", &ran.stderr(), &"");
+    }
+}
+
+#[test]
+fn guide_is_the_same_on_every_machine() {
+    let log = tlog!();
+    log.step("baseline");
+    let baseline = guide::rendered(&log, &TestEnv::new());
+    let guide_argv = ["robot-docs", "guide"];
+
+    let case = log.case("broken_config");
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.config().join("omaddons")).unwrap();
+    std::fs::write(env.config().join("omaddons/config.toml"), "limits = [\n").unwrap();
+    same_guide(
+        &case,
+        "broken_config",
+        &baseline,
+        &case.run(&env, &guide_argv),
+    );
+
+    let case = log.case("config_with_overrides");
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.config().join("omaddons")).unwrap();
+    std::fs::write(
+        env.config().join("omaddons/config.toml"),
+        "default_channel = \"beta\"\ncheck_interval_hours = 1\ngit_hosts = [\"git.example.org\"]\n",
+    )
+    .unwrap();
+    // The control: the config is valid, so it is read rather than refused.
+    case.run(&env, &["config", "get", "default_channel", "--json"])
+        .ok();
+    same_guide(
+        &case,
+        "config_with_overrides",
+        &baseline,
+        &case.run(&env, &guide_argv),
+    );
+
+    let case = log.case("managed_home");
+    let home = managed_home(&case);
+    same_guide(
+        &case,
+        "managed_home",
+        &baseline,
+        &case.run(&home, &guide_argv),
+    );
+
+    let case = log.case("relative_home");
+    let env = TestEnv::new();
+    case.cmd(&env, &["status", "--json"])
+        .env("HOME", "relative/home")
+        .run()
+        .fails(2, "usage");
+    let ran = case
+        .cmd(&env, &guide_argv)
+        .env("HOME", "relative/home")
+        .run();
+    same_guide(&case, "relative_home", &baseline, &ran);
+
+    for (name, columns) in [("narrow_terminal", "40"), ("wide_terminal", "200")] {
+        let case = log.case(name);
+        let env = TestEnv::new();
+        let ran = case.cmd(&env, &guide_argv).env("COLUMNS", columns).run();
+        same_guide(&case, name, &baseline, &ran);
+    }
+
+    for (name, flag) in [("verbose", "-v"), ("very_verbose", "-vv")] {
+        let case = log.case(name);
+        let env = TestEnv::new();
+        let ran = case.run(&env, &["robot-docs", "guide", flag]);
+        same_guide(&case, name, &baseline, &ran);
+    }
+
+    let case = log.case("progress_json");
+    let env = TestEnv::new();
+    let ran = case.run(&env, &["robot-docs", "guide", "--progress", "json"]);
+    same_guide(&case, "progress_json", &baseline, &ran);
+    case.assert_eq("stderr", &ran.stderr(), &"");
+
+    let case = log.case("other_working_directory");
+    let env = TestEnv::new();
+    let home_dir = env.root().join("home");
+    std::fs::create_dir_all(&home_dir).unwrap();
+    for dir in [home_dir, env.root().to_path_buf()] {
+        let ran = case.cmd(&env, &guide_argv).cwd(&dir).run();
+        same_guide(&case, "other_working_directory", &baseline, &ran);
+    }
+
+    let case = log.case("target_flag");
+    let env = TestEnv::new();
+    let ran = case.run(&env, &["robot-docs", "guide", "-t", "retail"]);
+    same_guide(&case, "target_flag", &baseline, &ran);
+}
+
+#[test]
+fn guide_reads_and_writes_nothing() {
+    let log = tlog!();
+    log.step("a managed home");
+    let home = managed_home(&log);
+    let root = home.env.root().to_path_buf();
+    log.tree("root", &root);
+    let requests = net_log(&home).entries.len();
+    log.step("every form");
+    for argv in [
+        &["robot-docs", "guide"][..],
+        &["robot-docs", "guide", "--json"],
+        &["robot-docs"],
+        &[
+            "robot-docs",
+            "guide",
+            "--dry-run",
+            "--reason",
+            "x",
+            "--json",
+        ],
+    ] {
+        log.run(&home, argv).ok();
+    }
+    log.assert_unchanged("root", &root);
+    log.assert_eq("net.log entries", &net_log(&home).entries.len(), &requests);
+}
+
+#[test]
+fn guide_repeats_byte_for_byte() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    log.step("human");
+    let (a, b) = (
+        log.run(&env, &["robot-docs", "guide"]),
+        log.run(&env, &["robot-docs", "guide"]),
+    );
+    same_guide(&log, "a human repeat", a.stdout(), &b);
+    log.step("JSON");
+    let (a, b) = (
+        log.run(&env, &["robot-docs", "guide", "--json"]),
+        log.run(&env, &["robot-docs", "guide", "--json"]),
+    );
+    a.ok();
+    b.ok();
+    log.assert_eq(
+        "the bytes, meta removed",
+        &{
+            let (first, second) = (without_meta(&a).to_string(), without_meta(&b).to_string());
+            first == second
+        },
+        &true,
+    );
+}
+
+#[test]
+fn guide_help_paths() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    log.step("help robot-docs");
+    let help = log.run(&env, &["help", "robot-docs"]);
+    help.ok();
+    log.assert_eq("it lists guide", &help.stdout().contains("guide"), &true);
+    log.step("help robot-docs guide");
+    let help = log.run(&env, &["help", "robot-docs", "guide", "--json"]);
+    help.ok();
+    log.assert_eq("command", &help.envelope()["command"], &json!("help"));
+    log.step("the help flags");
+    for argv in [
+        &["robot-docs", "guide", "--help"][..],
+        &["robot-docs", "guide", "-h"],
+    ] {
+        log.run(&env, argv).ok();
+    }
+    let parent = log.run(&env, &["robot-docs", "--help"]);
+    parent.ok();
+    log.assert_eq(
+        "robot-docs --help lists guide",
+        &parent.stdout().contains("guide"),
+        &true,
+    );
+}
+
+#[test]
+fn guide_usage_fix_runs() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    for (argv, fix) in [
+        (&["robot-docs", "guide", "extra", "--json"][..], None),
+        (
+            &["robot-docs", "gide", "--json"],
+            Some(json!(["omaddons", "robot-docs", "guide"])),
+        ),
+    ] {
+        log.step(&argv.join(" "));
+        let ran = log.run(&env, argv);
+        ran.fails(2, "usage");
+        let fix_argv = ran.envelope()["error"]["fix_argv"].clone();
+        if let Some(fix) = fix {
+            log.assert_eq("fix_argv", &fix_argv, &fix);
+        }
+        let Some(words) = fix_argv.as_array() else {
+            continue;
+        };
+        let words: Vec<&str> = words.iter().skip(1).filter_map(Value::as_str).collect();
+        log.run(&env, &words).ok();
+    }
 }

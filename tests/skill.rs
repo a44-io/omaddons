@@ -137,3 +137,159 @@ fn skill_md_opens_with_frontmatter_then_stamp() {
         log.assert_eq("name", &layout.name.as_str(), &"omaddons");
     }
 }
+
+/// Regenerating, rebuilding and regenerating again leaves the bytes and the digest
+/// unchanged: the guide depends only on the template and the registries, the build id
+/// never covers `skills/`, and no block reads the compiled digest.
+#[test]
+fn regeneration_is_a_fixed_point() {
+    use omaddons::build_info::inputs::{BUILD_ID_EXCLUDED, BUILD_ID_INPUTS};
+    use omaddons::contract::guide::render::{GuideInputs, Provenance, render};
+    use omaddons::contract::guide::{EXPECTED_DIGEST, TEMPLATE, render_guide};
+
+    let log = tlog!();
+    let env = TestEnv::new();
+    let with = |version: &str, build_id: &str| {
+        let mut inputs = GuideInputs::live();
+        inputs.provenance = Provenance {
+            tool_version: version.to_owned(),
+            build_id: Some(build_id.to_owned()),
+        };
+        render(TEMPLATE, &inputs).unwrap()
+    };
+
+    log.step("renderer ignores provenance");
+    let (a, b) = (
+        with("0.1.0", "0000000000000000"),
+        with("9.9.9", "ffffffffffffffff"),
+    );
+    log.json(
+        "renders",
+        &json!({"a": guide::summary(Some(&a)), "b": guide::summary(Some(&b))}),
+    );
+    log.assert_eq("the two renders are equal", &(a == b), &true);
+
+    log.step("the binary prints the library's guide");
+    let printed = guide::rendered(&log, &env);
+    log.assert_eq(
+        "the binary's guide is render_guide()'s",
+        &(Ok(printed.clone()) == render_guide()),
+        &true,
+    );
+
+    log.step("the build id excludes skills/");
+    let inputs: Vec<&str> = BUILD_ID_INPUTS.iter().map(|input| input.path()).collect();
+    let excluded: Vec<&str> = BUILD_ID_EXCLUDED.iter().map(|(name, _)| *name).collect();
+    log.json("build id", &json!({"inputs": inputs, "excluded": excluded}));
+    let feeding: Vec<&str> = inputs
+        .iter()
+        .copied()
+        .filter(|path| *path == "skills" || path.starts_with("skills/"))
+        .collect();
+    log.assert_eq("inputs under skills/", &feeding, &Vec::new());
+    log.assert_eq("skills is excluded", &excluded.contains(&"skills"), &true);
+
+    log.step("no build identity in the guide");
+    let build_id = omaddons::build_info::BUILD_ID;
+    log.assert_eq(
+        "the guide holds the build id",
+        &printed.contains(build_id),
+        &false,
+    );
+
+    log.step("the stamp is the compiled digest");
+    let stamps: Vec<Option<String>> = [&printed, &b]
+        .iter()
+        .map(|text| guide::layout(text).ok().map(|layout| layout.stamp_hex))
+        .collect();
+    log.json("stamps", &json!({"printed": stamps[0], "other_provenance": stamps[1], "expected_digest": EXPECTED_DIGEST}));
+    let want = Some(EXPECTED_DIGEST.to_owned());
+    log.assert_eq("stamps", &stamps, &vec![want.clone(), want]);
+}
+
+#[test]
+fn every_command_the_guide_names_parses() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    log.step("extract");
+    let text = guide::rendered(&log, &env);
+    let commands = guide::commands(&text);
+    log.json("commands", &commands);
+    log.assert_eq("the guide names commands", &commands.is_empty(), &false);
+    log.step("fill and parse");
+    let unparsable = guide::unparsable(&text);
+    log.assert_eq("commands that do not parse", &unparsable, &Vec::new());
+}
+
+#[test]
+fn a_planted_unparsable_span_is_reported() {
+    let log = tlog!();
+    log.step("plant");
+    let text = "\
+---
+name: x
+---
+<!-- omaddons guide sha256:0000000000000000000000000000000000000000000000000000000000000000 -->
+Run `omaddons status --json`, `omaddons nosuch`, `omaddons status <nope>` and `omaddons install …`.
+
+```
+omaddons help install
+omaddons frobnicate
+```
+";
+    let reported = guide::unparsable(text);
+    log.json("reported", &reported);
+    let spans: Vec<&str> = reported.iter().map(|(span, _)| span.as_str()).collect();
+    log.assert_eq(
+        "the spans reported",
+        &spans,
+        &vec![
+            "omaddons nosuch",
+            "omaddons status <nope>",
+            "omaddons install …",
+            "omaddons frobnicate",
+        ],
+    );
+    let reason = |span: &str| {
+        reported
+            .iter()
+            .find(|(s, _)| s == span)
+            .map(|(_, why)| why.clone())
+            .unwrap_or_default()
+    };
+    log.assert_eq(
+        "<nope>",
+        &reason("omaddons status <nope>"),
+        &"add a sample for <nope> in SAMPLES".to_owned(),
+    );
+    log.assert_eq(
+        "…",
+        &reason("omaddons install …"),
+        &"write the command out in full".to_owned(),
+    );
+    log.assert_eq(
+        "an unknown command names clap's refusal",
+        &reason("omaddons nosuch").starts_with("clap refuses `omaddons nosuch`: "),
+        &true,
+    );
+}
+
+/// The guide's size beside the budget B2 enforces. A report: it never fails.
+#[test]
+fn guide_size_is_reported() {
+    const LINES_BUDGET: usize = 500;
+    const BYTES_BUDGET: usize = 32 << 10;
+    let log = tlog!();
+    let env = TestEnv::new();
+    log.step("size");
+    let text = guide::rendered(&log, &env);
+    log.json(
+        "size",
+        &json!({
+            "lines": text.lines().count(),
+            "lines_budget": LINES_BUDGET,
+            "bytes": text.len(),
+            "bytes_budget": BYTES_BUDGET,
+        }),
+    );
+}
