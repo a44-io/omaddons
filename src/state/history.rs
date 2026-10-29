@@ -31,9 +31,27 @@ use crate::model::{Actor, BackupId, FolderName, RunId, TargetKey, TxId, TxKind};
 /// The version of the line format.
 pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
 
-/// The schema of one line of `history.jsonl`.
+/// The schema of one line of `history.jsonl`: either shape the reader decodes, with the
+/// `schema_version` every line starts with.
 pub fn line_schema(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    g.root_schema_for::<HistoryEntry>()
+    let version = g.subschema_for::<SchemaVersion>();
+    let mut schema = g.root_schema_for::<HistoryLineSchema>();
+    schema.insert("type".into(), serde_json::json!("object"));
+    schema.insert(
+        "properties".into(),
+        serde_json::json!({ "schema_version": version }),
+    );
+    schema.insert("required".into(), serde_json::json!(["schema_version"]));
+    schema
+}
+
+/// One line of `history.jsonl`, as documentation only: a transaction, or a settings
+/// change (which carries `run` always and no `reverts`).
+#[derive(JsonSchema)]
+#[serde(untagged)]
+pub enum HistoryLineSchema {
+    Transaction(HistoryEntry),
+    Setting(SettingEntry),
 }
 
 /// One transaction.

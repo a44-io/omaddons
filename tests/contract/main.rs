@@ -11,6 +11,8 @@
 mod common;
 
 mod canonical_names;
+#[cfg(test)]
+mod details_report;
 mod exit_sites;
 mod intent_corpus;
 mod matrix;
@@ -19,12 +21,18 @@ mod recommendations;
 mod registries;
 #[cfg(test)]
 mod rules;
+#[cfg(test)]
+mod snapshot_walk;
 mod special;
+#[cfg(test)]
+mod state_files;
 #[cfg(test)]
 mod strict;
 mod usage_fixes;
 #[cfg(test)]
 mod validate;
+#[cfg(test)]
+mod verbose_fields;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -279,6 +287,11 @@ mod support {
                 "{}\n{ctx}",
                 validated.err().unwrap_or_default()
             );
+        }
+
+        // The declared-details report's child run records the `details` paths it sees.
+        if let Some(file) = std::env::var_os("CONTRACT_DETAILS_OBSERVED") {
+            super::validate::record_observed(&envelope, Path::new(&file));
         }
         Checked { run, envelope }
     }

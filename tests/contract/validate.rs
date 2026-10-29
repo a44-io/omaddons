@@ -424,3 +424,94 @@ fn explain_unions(failures: Vec<Failure>, data: &Value) -> Vec<Failure> {
     }
     out
 }
+
+/// The `(code, path)` pairs of every `details` one envelope shows: those of every object
+/// in its `error` or `data` with a registered `code` and an object `details` (the
+/// `error` itself, `TargetResult.error`, an item error a `details.items[]` keeps). Paths
+/// are `DetailSpec::declared_paths`' syntax: `k`, `k.j`, `k[].j`.
+pub fn observed_details(envelope: &Value) -> BTreeSet<(String, String)> {
+    fn errors<'a>(value: &'a Value, out: &mut Vec<&'a Value>) {
+        match value {
+            Value::Object(object) => {
+                let registered = object
+                    .get("code")
+                    .is_some_and(|code| serde_json::from_value::<ErrorCode>(code.clone()).is_ok());
+                if registered && object.get("details").is_some_and(Value::is_object) {
+                    out.push(value);
+                }
+                object.values().for_each(|v| errors(v, out));
+            }
+            Value::Array(items) => items.iter().for_each(|v| errors(v, out)),
+            _ => {}
+        }
+    }
+    fn paths(value: &Value, prefix: &str, out: &mut BTreeSet<String>) {
+        let Some(object) = value.as_object() else {
+            return;
+        };
+        for (key, item) in object {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            out.insert(path.clone());
+            match item {
+                Value::Object(_) => paths(item, &path, out),
+                Value::Array(items) => {
+                    for element in items.iter().filter(|e| e.is_object()) {
+                        paths(element, &format!("{path}[]"), out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // An item error kept inside another error's `details.items[]` shows its own code's.
+    let mut found = Vec::new();
+    for part in ["error", "data"] {
+        if let Some(value) = envelope.get(part) {
+            errors(value, &mut found);
+        }
+    }
+    let mut out = BTreeSet::new();
+    for error in found {
+        let code = error["code"].as_str().unwrap_or_default().to_owned();
+        let mut keys = BTreeSet::new();
+        paths(&error["details"], "", &mut keys);
+        out.extend(keys.into_iter().map(|path| (code.clone(), path)));
+    }
+    out
+}
+
+/// Appends to `file` each pair of `envelope`'s [`observed_details`] this process has not
+/// recorded yet, one JSON line each, in one append. The declared-details report's child
+/// run sets the file through `CONTRACT_DETAILS_OBSERVED`.
+pub fn record_observed(envelope: &Value, file: &std::path::Path) {
+    use std::io::Write;
+    static SEEN: std::sync::Mutex<BTreeSet<(String, String)>> =
+        std::sync::Mutex::new(BTreeSet::new());
+    let mut seen = SEEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut text = String::new();
+    for (code, path) in observed_details(envelope) {
+        if seen.insert((code.clone(), path.clone())) {
+            text.push_str(&serde_json::json!({"code": code, "path": path}).to_string());
+            text.push('\n');
+        }
+    }
+    if text.is_empty() {
+        return;
+    }
+    let appended = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+        .and_then(|mut f| f.write_all(text.as_bytes()));
+    assert!(
+        appended.is_ok(),
+        "recording observed details in {}: {appended:?}",
+        file.display()
+    );
+}
