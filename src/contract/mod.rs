@@ -5,6 +5,7 @@ pub mod commands;
 pub mod env;
 pub mod events;
 pub mod features;
+pub mod guide;
 pub mod manifest;
 pub mod opaque;
 pub mod schema;
