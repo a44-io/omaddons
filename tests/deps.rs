@@ -1786,6 +1786,7 @@ mod engine_api {
             notes: None,
             binding: None,
             auto_backup: None,
+            applying: None,
         };
         omaddons::engine::run(&req, &ctx).unwrap()
     }

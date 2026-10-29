@@ -13,7 +13,7 @@ use crate::engine::retention::RetentionLimits;
 use crate::engine::{Binding, EngineCtx, TxOutcomes, TxRequest, UndoOutcome, UndoRequest};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::limits::EffectiveLimits;
-use crate::model::{Actor, Channel, Target};
+use crate::model::{Actor, Channel, PlanId, Target};
 use crate::net::{Http, NetConfig, NetLog, stack};
 use crate::output::ProgressSink;
 use crate::resolve::cache::{Freshness, ReleaseCache};
@@ -23,6 +23,12 @@ use crate::sources::SourceRegistry;
 use crate::sources::git_hosts::GitRunner;
 use crate::state::config::{AutoBackup, RunningPolicy};
 use crate::state::paths::Paths;
+
+/// The name a run gives the global lock's holder info and the doorbell: `apply` while it
+/// executes a stored plan (as the envelope's `command` is), else the command's own.
+fn engine_command(applying: bool, command: &'static str) -> &'static str {
+    if applying { "apply" } else { command }
+}
 
 /// The engine for one command.
 pub struct Engine {
@@ -35,8 +41,11 @@ pub struct Engine {
     retention: RetentionLimits,
     actor: Actor,
     argv: Vec<String>,
-    /// The command, recorded as the lock holder.
+    /// The command, recorded as the lock holder and the doorbell's: `apply` while it
+    /// executes a stored plan.
     command: &'static str,
+    /// `apply`'s plan, which every history line the engine commits records.
+    applying: Option<PlanId>,
     /// The command's progress, which its engine runs report into.
     progress: ProgressSink,
     /// The run's notes: each committed transaction's undo, should the run then panic.
@@ -86,7 +95,8 @@ impl Engine {
             retention: RetentionLimits::from(&limits),
             actor: ctx.actor,
             argv: ctx.argv.clone(),
-            command,
+            command: engine_command(ctx.applying.is_some(), command),
+            applying: ctx.applying,
             progress: ctx.progress.clone(),
             notes: ctx.notes.clone(),
             // A broken override is the command's own catalog warning, if it loads one.
@@ -140,6 +150,7 @@ impl Engine {
                 mode: self.auto_mode,
                 limits: &self.backup_limits,
             }),
+            applying: self.applying,
         }
     }
 
@@ -267,5 +278,26 @@ pub fn recover_waiting(ctx: &Context, world: &World, command: &'static str) {
     }
     if let Ok(engine) = Engine::new(ctx, world, command) {
         engine.recover_waiting(ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_engine_names_apply_while_applying() {
+        for (name, applying, command, want) in [
+            ("applying", true, "install", "apply"),
+            ("applying_undo", true, "undo", "apply"),
+            ("direct", false, "install", "install"),
+            ("direct_restore", false, "backup restore", "backup restore"),
+        ] {
+            assert_eq!(
+                engine_command(applying, command),
+                want,
+                "{name}: engine_command({applying}, {command:?})"
+            );
+        }
     }
 }

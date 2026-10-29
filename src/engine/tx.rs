@@ -56,8 +56,8 @@ use crate::fsx::{
     SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint,
 };
 use crate::model::{
-    Actor, AddonState, Channel, FolderName, MutableFolderName, Ref, ReloadRequired, RunId, Target,
-    TargetKey, TargetRef, TxId, TxKind,
+    Actor, AddonState, Channel, FolderName, MutableFolderName, PlanId, Ref, ReloadRequired, RunId,
+    Target, TargetKey, TargetRef, TxId, TxKind,
 };
 use crate::net::Http;
 use crate::output::{Phase, ProgressSink};
@@ -187,6 +187,9 @@ pub struct EngineCtx<'a> {
     pub binding: Option<&'a dyn Binding>,
     /// Automatic backups before the day's first change (M3-D31); `None` makes none.
     pub auto_backup: Option<crate::backup::auto::AutoPolicy<'a>>,
+    /// `apply`'s plan (M4-D25): written into each history line this run commits; `None`
+    /// on every other run.
+    pub applying: Option<PlanId>,
 }
 
 /// A run bound to the preview it was confirmed from (`--if-match`, M3-D46): what it plans
@@ -1329,7 +1332,7 @@ fn locked(
         created_addons_dir: creates_addons_dir,
         run: Some(req.run),
         backup: None,
-        plan: None,
+        plan: ctx.applying,
         doctor_run_id: None,
         repairs: Vec::new(),
     };
@@ -2478,6 +2481,138 @@ mod tests {
             (ErrorCode::Locked, 5, true)
         );
         assert_eq!(error.details["holder"]["command"], "someone else");
+    }
+
+    // -----------------------------------------------------------------------------------
+    // A run applied from a stored plan (`apply`, M4-D25).
+
+    const PLAN: &str = "01M9P0000000000000000000PA";
+    const BAR: &[(&str, &str)] = &[("Bar/Bar.toc", "## Interface: 120105\n")];
+
+    fn plan_id() -> crate::model::PlanId {
+        PLAN.parse().unwrap()
+    }
+
+    /// The history file's lines as written.
+    fn raw_history(scene: &TxScene) -> Vec<String> {
+        std::fs::read_to_string(scene.paths.history_file())
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_commit_while_applying_records_the_plan() {
+        let mut scene = with_v1();
+        scene.applying = Some(plan_id());
+        let v2 = scene.zip("v2.zip", V2);
+        let done = scene.run(vec![scene.install("gh:o/foo", &v2)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let lines = history(&scene);
+        let raw = raw_history(&scene);
+        assert_eq!(
+            lines.iter().map(|l| l.plan).collect::<Vec<_>>(),
+            [None, Some(plan_id())],
+            "the install made directly, then the one applied: {raw:#?}"
+        );
+        assert!(!raw[0].contains("\"plan\""), "no key at all: {}", raw[0]);
+        assert!(
+            raw[1].contains(&format!("\"plan\":\"{PLAN}\"")),
+            "{}",
+            raw[1]
+        );
+    }
+
+    #[test]
+    fn an_automatic_backup_line_never_carries_the_plan() {
+        let mut scene = with_v1();
+        std::fs::create_dir_all(scene.client.wtf()).unwrap();
+        std::fs::write(scene.client.wtf().join("Config.wtf"), "SET a \"1\"\n").unwrap();
+        // Byte copies, so the backup does not depend on the scene's filesystem cloning;
+        // the first change since automatic backups were on is the day's first.
+        scene.auto_backup = Some(crate::state::config::AutoBackup::DailyCopy);
+        scene.applying = Some(plan_id());
+        let v2 = scene.zip("v2.zip", V2);
+        let done = scene.run(vec![scene.install("gh:o/foo", &v2)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let lines = history(&scene);
+        let kinds: Vec<(TxKind, Option<crate::model::PlanId>)> =
+            lines.iter().map(|l| (l.kind, l.plan)).collect();
+        // ubs:ignore — comparing transaction kinds, not secrets
+        let backup = lines.iter().position(|l| l.kind == TxKind::Backup);
+        assert!(
+            backup.is_some(),
+            "an automatic backup line: {kinds:?}, warnings {:?}",
+            done.warnings
+        );
+        assert_eq!(
+            kinds[1..],
+            [(TxKind::Backup, None), (lines[2].kind, Some(plan_id()))],
+            "the backup before the change carries no plan; the change does"
+        );
+        assert!(
+            !raw_history(&scene)[1].contains("\"plan\""),
+            "{:?}",
+            raw_history(&scene)
+        );
+    }
+
+    #[test]
+    fn the_doorbell_and_the_holder_name_apply() {
+        let scene = with_v1();
+        let v2 = scene.zip("v2.zip", V2);
+        let req = scene.request(vec![scene.install("gh:o/foo", &v2)], None, TxKind::Install);
+        let done = scene
+            .with_ctx("apply", |ctx| super::run(&req, ctx))
+            .unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let read = |path: PathBuf| -> serde_json::Value {
+            let text = std::fs::read_to_string(&path).unwrap();
+            let value = serde_json::from_str(text.trim());
+            assert!(value.is_ok(), "{path:?}: {value:?}: {text}");
+            value.unwrap()
+        };
+        let bell = read(scene.paths.doorbell_file());
+        assert_eq!(bell["command"], "apply", "{bell}");
+        // The lock file keeps its last holder's line after the lock is released.
+        let holder = read(scene.paths.lock_file());
+        assert_eq!(holder["command"], "apply", "{holder}");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_rolled_forward_commit_keeps_the_plan() {
+        let mut scene = with_v1();
+        scene.applying = Some(plan_id());
+        let v2 = scene.zip("v2.zip", V2);
+        // Swapped, then the in-process roll-forward fails too: the journal waits.
+        let done =
+            failpoint::with_spec("engine.swapped=error,engine.recover.forward=error", || {
+                scene.run(vec![scene.install("gh:o/foo", &v2)])
+            })
+            .unwrap();
+        assert_eq!(done.failures.len(), 1, "{:?}", done.failures);
+        assert_eq!(history(&scene).len(), 1, "nothing appended yet");
+        // The next commit, made directly, recovers it first.
+        scene.applying = None;
+        let bar = scene.zip("bar.zip", BAR);
+        let done = scene.run(vec![scene.install("gh:o/bar", &bar)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let addons = scene.client.addons();
+        assert!(
+            addons.join("Foo/new.lua").is_file() && addons.join("Bar/Bar.toc").is_file(),
+            "Foo rolled forward to v2, then Bar installed: {:?}",
+            scene.addons()
+        );
+        let lines = history(&scene);
+        assert_eq!(
+            lines.iter().map(|l| l.plan).collect::<Vec<_>>(),
+            [None, Some(plan_id()), None],
+            "the recovered line is the one prepared while applying: {:#?}",
+            raw_history(&scene)
+        );
+        assert!(leftovers(&scene).is_empty(), "{:?}", leftovers(&scene));
     }
 
     #[test]

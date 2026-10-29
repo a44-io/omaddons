@@ -587,7 +587,9 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         Freshness::Refresh
     } else {
         Freshness::Revalidate
-    };
+    }
+    // `apply` revalidates every source it touches (M4-D20).
+    .forced(ctx.force_revalidate);
     let cache = engine.cache(freshness);
     // What both engine runs learned by downloading candidates.
     let mut facts = Vec::new();

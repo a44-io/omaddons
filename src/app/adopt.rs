@@ -511,7 +511,9 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
         Freshness::Refresh
     } else {
         Freshness::Window(SOURCE_RECHECK_MIN_INTERVAL)
-    };
+    }
+    // `apply` revalidates every source it touches (M4-D20).
+    .forced(ctx.force_revalidate);
     let cache = engine.cache(freshness);
 
     // Lookups. A source that is off, or a list that cannot be had, is said and skipped.
@@ -570,8 +572,17 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
     let mut works: Vec<TargetWork<'_>> = Vec::new();
     for d in &targets {
         let record = records.get(&d.target.id);
-        let shared = world.sibling_records(&d.target)?;
-        let inv = inventory_shared(&d.target, record, &shared, &world.table, Depth::Full)?;
+        let inventory = world.sibling_records(&d.target).and_then(|shared| {
+            inventory_shared(&d.target, record, &shared, &world.table, Depth::Full)
+        });
+        let inv = match inventory {
+            Ok(inv) => inv,
+            Err(error) => {
+                // The Tukui list fetched above is still worth remembering (M4-D20).
+                cache.remember(&[]);
+                return Err(error);
+            }
+        };
         let candidates: Vec<CandidateFolder> = inv
             .folders
             .iter()
@@ -631,7 +642,15 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
     let verified = if args.no_verify {
         Verified::default()
     } else {
-        checks.verify(&mut works)?
+        match checks.verify(&mut works) {
+            Ok(verified) => verified,
+            Err(error) => {
+                // What the checks probed before they failed is still worth remembering,
+                // so a re-preview after a stale `apply` sees it (M4-D20).
+                cache.remember(&[]);
+                return Err(error);
+            }
+        }
     };
     notes.extend(verified.notes);
     warnings.extend(verified.warnings);

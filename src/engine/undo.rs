@@ -489,7 +489,7 @@ fn commit(
         created_addons_dir: false,
         run: Some(req.run),
         backup: None,
-        plan: None,
+        plan: ctx.applying,
         doctor_run_id: None,
         repairs: Vec::new(),
     };
@@ -2751,6 +2751,25 @@ mod tests {
             }
         }
         found
+    }
+
+    /// An undo `apply` runs (M4-D25) records the plan; the install it reverts does not.
+    #[test]
+    fn an_undo_while_applying_records_the_plan() {
+        let mut scene = TxScene::new();
+        let t1 = install(&scene, "v1.zip", V1);
+        let plan_id: crate::model::PlanId = "01M9P0000000000000000000PA".parse().unwrap();
+        scene.applying = Some(plan_id);
+        let done = scene.undo(UndoSelector::Latest, SvPolicy::Auto).unwrap();
+        assert_eq!(done.undoes, t1);
+        let lines = history(&scene);
+        let found: Vec<(TxKind, Option<crate::model::PlanId>)> =
+            lines.iter().map(|l| (l.kind, l.plan)).collect();
+        assert_eq!(
+            found,
+            [(TxKind::Install, None), (TxKind::Undo, Some(plan_id))],
+            "{lines:#?}"
+        );
     }
 
     #[test]

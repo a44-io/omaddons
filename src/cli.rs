@@ -19,7 +19,7 @@ use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 
 use crate::error::{Error, ErrorCode, Exit, Suggestion};
 use crate::limits::REASON_MAX_CHARS;
-use crate::model::Actor;
+use crate::model::{Actor, PlanId};
 use crate::output::{self, OutputConfig, OutputFlags, Reporter, TermEnv};
 use crate::vocabulary::{self, TargetVocabulary};
 
@@ -248,6 +248,14 @@ pub struct Context {
     pub notes: crate::output::RunNotes,
     /// Standard input is a terminal: a command that reads a secret from it refuses.
     pub stdin_is_tty: bool,
+    /// `apply` (M4-D20): every source the run touches is probed whatever its command's
+    /// memo window; `--offline` still answers from the memo. `false` everywhere else.
+    pub force_revalidate: bool,
+    /// `apply <plan_id>`: the plan this run executes. The engine writes it into every
+    /// history line it commits (`plan`) and names `apply` as the lock holder and the
+    /// doorbell's command; a storable dry run stores no plan of its own. `None`
+    /// everywhere else.
+    pub applying: Option<PlanId>,
 }
 
 impl Context {
@@ -296,7 +304,9 @@ impl Context {
             actor,
             reason: global.reason.clone(),
             argv: argv.to_vec(),
+            // ubs:ignore — an environment flag's value, not a secret
             offline: global.offline || env("OMADDONS_OFFLINE").as_deref() == Some("1"),
+            // ubs:ignore — an environment flag's value, not a secret
             offline_by_env: env("OMADDONS_OFFLINE").as_deref() == Some("1"),
             dry_run: global.dry_run,
             while_running: global.while_running,
@@ -306,6 +316,9 @@ impl Context {
             progress: crate::output::ProgressSink::none(),
             notes: crate::output::RunNotes::default(),
             stdin_is_tty,
+            // Only `apply`'s derived context sets these; no flag or variable does.
+            force_revalidate: false,
+            applying: None,
         })
     }
 }
@@ -403,6 +416,7 @@ fn run_with(
     };
     let output = output::resolve(&cli.global.output_flags(), term);
     let command = crate::app::command_name(cli.command.as_ref());
+    // ubs:ignore — an environment flag's value, not a secret
     let offline = cli.global.offline || env("OMADDONS_OFFLINE").as_deref() == Some("1");
     set_panic_state(output, command, &argv, started, offline);
     if let Err(err) = crate::fsx::failpoint::hit("cli.panic") {
@@ -2189,6 +2203,39 @@ mod tests {
             argv(&["--progress", "json"]),
             "the corrected token survives even when it is a presentation flag"
         );
+    }
+
+    #[test]
+    fn context_new_leaves_apply_fields_off() {
+        // Every flag and variable that could look related: none of them sets the fields
+        // only `apply`'s derived context sets.
+        let env = |name: &str| match name {
+            "OMADDONS_OFFLINE" => Some("1".to_owned()),
+            "OMADDONS_ACTOR" => Some("agent".to_owned()),
+            _ => None,
+        };
+        for args in [
+            &[][..],
+            &["--dry-run"],
+            &["--while-running"],
+            &["--offline", "--reason", "apply plan"],
+        ] {
+            let ctx = Context::new(
+                &global(args),
+                OutputConfig::machine(),
+                "install",
+                &argv(args),
+                &env,
+                false,
+                Instant::now(),
+            )
+            .unwrap();
+            assert_eq!(
+                (ctx.force_revalidate, ctx.applying),
+                (false, None),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

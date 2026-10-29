@@ -41,6 +41,18 @@ pub enum Freshness {
     OfflineOnly,
 }
 
+impl Freshness {
+    /// What `force_revalidate` (`apply`, M4-D20) makes of a command's own choice: a memo
+    /// window becomes `Revalidate`; `Revalidate`, `Refresh` and `OfflineOnly` stand.
+    #[must_use]
+    pub fn forced(self, force_revalidate: bool) -> Self {
+        match self {
+            Self::Window(_) if force_revalidate => Self::Revalidate,
+            other => other,
+        }
+    }
+}
+
 /// Where an answer came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -539,6 +551,57 @@ mod tests {
     use crate::error::{Error, ErrorCode};
     use crate::model::Release;
     use crate::sources::Source;
+
+    #[test]
+    fn forced_turns_only_a_window_into_revalidate() {
+        let window = Freshness::Window(SOURCE_RECHECK_MIN_INTERVAL);
+        for (name, choice, force, want) in [
+            ("unforced/window", window, false, window),
+            (
+                "unforced/revalidate",
+                Freshness::Revalidate,
+                false,
+                Freshness::Revalidate,
+            ),
+            (
+                "unforced/refresh",
+                Freshness::Refresh,
+                false,
+                Freshness::Refresh,
+            ),
+            (
+                "unforced/offline_only",
+                Freshness::OfflineOnly,
+                false,
+                Freshness::OfflineOnly,
+            ),
+            ("forced/window", window, true, Freshness::Revalidate),
+            (
+                "forced/revalidate",
+                Freshness::Revalidate,
+                true,
+                Freshness::Revalidate,
+            ),
+            (
+                "forced/refresh",
+                Freshness::Refresh,
+                true,
+                Freshness::Refresh,
+            ),
+            (
+                "forced/offline_only",
+                Freshness::OfflineOnly,
+                true,
+                Freshness::OfflineOnly,
+            ),
+        ] {
+            assert_eq!(
+                choice.forced(force),
+                want,
+                "{name}: {choice:?}.forced({force})"
+            );
+        }
+    }
 
     /// What a test source's probe answers.
     #[derive(Clone, Copy)]

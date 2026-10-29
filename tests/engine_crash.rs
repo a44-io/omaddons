@@ -2289,6 +2289,7 @@ mod restore_support {
             notes: None,
             binding: None,
             auto_backup: None,
+            applying: None,
         };
         let spec = std::env::var("OMADDONS_RESTORE_FAILPOINTS").unwrap_or_default();
         let armed = |engine: &mut dyn FnMut() -> Result<Value>| -> Value {

@@ -307,7 +307,9 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
         Freshness::OfflineOnly
     } else {
         Freshness::Revalidate
-    };
+    }
+    // `apply` revalidates every source it touches (M4-D20).
+    .forced(ctx.force_revalidate);
     let cache = engine.cache(freshness);
     // The token covers the source client too: its key and generation here, and the
     // folders copied from it in the witness.

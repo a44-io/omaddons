@@ -717,7 +717,9 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
             Freshness::OfflineOnly
         } else {
             Freshness::Window(SOURCE_RECHECK_MIN_INTERVAL)
-        };
+        }
+        // `apply` revalidates every source it touches (M4-D20).
+        .forced(ctx.force_revalidate);
         let cache = engine.cache(freshness);
         let req = TxRequest {
             targets: targets

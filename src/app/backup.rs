@@ -3034,6 +3034,8 @@ mod tests {
             progress: ProgressSink::none(),
             notes: crate::output::RunNotes::default(),
             stdin_is_tty: false,
+            force_revalidate: false,
+            applying: None,
         };
         for (case, args, expected_ids, expected_cutoff) in [
             (

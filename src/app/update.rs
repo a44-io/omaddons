@@ -211,7 +211,9 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
         Freshness::Refresh
     } else {
         Freshness::Window(SOURCE_RECHECK_MIN_INTERVAL)
-    };
+    }
+    // `apply` revalidates every source it touches (M4-D20).
+    .forced(ctx.force_revalidate);
     let cache = engine.cache(freshness);
 
     // A named addon switched to another channel skips the evaluator: the user asked for
@@ -383,7 +385,15 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
                 generation: records.get(&d.target.id).map_or(0, |r| r.generation),
             })
             .collect();
-        let token = precondition::check_noop(ctx, "update", &idle, &extras)?;
+        let token = match precondition::check_noop(ctx, "update", &idle, &extras) {
+            Ok(token) => token,
+            Err(error) => {
+                // What the statuses fetched is still worth remembering, so a re-preview
+                // after a stale run sees it (M4-D20).
+                cache.remember(&[]);
+                return Err(error);
+            }
+        };
         recover_waiting(ctx, &world, "update");
         (None, token, None)
     } else {

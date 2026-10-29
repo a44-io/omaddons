@@ -133,6 +133,7 @@ mod support {
                 notes: None,
                 binding: None,
                 auto_backup: None,
+                applying: None,
             }
         }
 

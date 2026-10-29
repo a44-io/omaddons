@@ -99,6 +99,11 @@ fn offer_with_paths<O: Storable>(
     paths: impl FnOnce() -> Result<Paths>,
 ) -> Option<String> {
     let preview = outcome.take_preview()?;
+    // `apply --dry-run` writes nothing, not even a plan of its own (M4-D23): the plan it
+    // previews is the stored one. The outcome keeps its approval.
+    if ctx.applying.is_some() {
+        return Some("plan store: nothing stored while applying a stored plan".into());
+    }
     if !preview.changes {
         return Some("plan store: nothing to store".into());
     }
@@ -1269,6 +1274,8 @@ mod tests {
             progress: crate::output::ProgressSink::none(),
             notes: crate::output::RunNotes::default(),
             stdin_is_tty: false,
+            force_revalidate: false,
+            applying: None,
         }
     }
 
@@ -1385,6 +1392,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_dry_run_while_applying_stores_nothing() {
+        let approval = serde_json::to_value(Approval::nothing(&ApprovalFlags::default())).unwrap();
+        let with_approval = || {
+            let mut outcome = offered(true);
+            outcome.data["approval"] = approval.clone();
+            outcome
+        };
+        // An ordinary dry run of the same preview stores it.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = offer_paths(dir.path());
+        let mut ordinary = with_approval();
+        offer_with_paths(&ctx(false), &mut ordinary, || Ok(paths.clone()));
+        assert!(ordinary.data["plan_id"].is_string(), "{:?}", ordinary.data);
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = offer_paths(dir.path());
+        let mut applying = ctx(false);
+        applying.applying = Some(PlanId::new());
+        let mut outcome = with_approval();
+        let before = outcome.data.clone();
+        let note = offer_with_paths(&applying, &mut outcome, || Ok(paths.clone()));
+        assert_eq!(
+            note.as_deref(),
+            Some("plan store: nothing stored while applying a stored plan")
+        );
+        assert_eq!(
+            outcome.data, before,
+            "no plan_id, no expiry; the approval stands"
+        );
+        assert_eq!(outcome.data["approval"], ordinary.data["approval"]);
+        assert!(outcome.preview.is_none(), "the preview was taken");
+        assert!(
+            !paths.plans_dir().exists(),
+            "no plan file and no .lock: {:?}",
+            std::fs::read_dir(dir.path()).map(|d| d.count())
+        );
+        assert!(
+            applying.notes.snapshot().0.is_empty(),
+            "no plan_not_stored warning: {:?}",
+            applying.notes
+        );
     }
 
     #[test]

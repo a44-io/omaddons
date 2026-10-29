@@ -1060,7 +1060,7 @@ impl Window<'_> {
             created_addons_dir: false,
             run: Some(self.run),
             backup: None,
-            plan: None,
+            plan: self.ctx.applying,
             doctor_run_id: None,
             repairs: Vec::new(),
         }
@@ -1377,6 +1377,71 @@ mod tests {
             fs::read_to_string(snapshot.join("WTF").join(respelled)).unwrap(),
             "Foo = 10\n",
             "the replaced one"
+        );
+    }
+
+    /// A restore `apply` runs (M4-D25) records the plan on the line it appends.
+    #[test]
+    fn a_partial_restore_while_applying_records_the_plan() {
+        let mut scene = TxScene::new();
+        let wtf = scene.client.wtf();
+        let file = "Account/FAKEACCT/SavedVariables/Foo.lua";
+        write(&wtf, file, "Foo = 1\n");
+        let backup = backed_up(&mut scene);
+        write(&wtf, file, "Foo = 2\n");
+        let plan_id: crate::model::PlanId = "01M9P0000000000000000000PA".parse().unwrap();
+        scene.applying = Some(plan_id);
+
+        let addons = [AddonSv {
+            addon: "Foo".into(),
+            folders: vec![foo()],
+        }];
+        let discovered = scene.current_target();
+        let planned = plan(&scene.paths, &discovered.target, &backup, &addons).unwrap();
+        let reservation = reserve(&backup).unwrap();
+        let tx = TxId::new();
+        let inflight = InflightLock::create(&scene.paths, &tx).unwrap();
+        let scopes = ScopeTable::new(
+            &scene.paths,
+            std::slice::from_ref(&discovered.target.client_dir),
+            None,
+        )
+        .unwrap();
+        let probe_dir = scene.client.stage_wtf(&tx).join("probe");
+        let probe = Probe {
+            scopes: &scopes,
+            dir: &probe_dir,
+        };
+        let topology = preflight(&scene.client, &backup.wtf(), Some(probe)).unwrap();
+        scene
+            .with_ctx("backup restore", |ctx| {
+                restore(
+                    ctx,
+                    AddonsRequest {
+                        target: &discovered,
+                        backup: &backup,
+                        reservation,
+                        topology,
+                        tx,
+                        inflight,
+                        plan: &planned,
+                        addons: &addons,
+                        reason: None,
+                        run: RunId::new(),
+                    },
+                )
+            })
+            .unwrap();
+        assert_eq!(fs::read_to_string(wtf.join(file)).unwrap(), "Foo = 1\n");
+        let lines = crate::state::history::read(&scene.paths, &Default::default())
+            .unwrap()
+            .entries;
+        // ubs:ignore — comparing transaction ids, not secrets
+        let line = lines.iter().find(|l| l.tx == tx);
+        assert_eq!(
+            line.map(|l| (l.kind, l.plan)),
+            Some((TxKind::Restore, Some(plan_id))),
+            "the line of {tx}: {lines:#?}"
         );
     }
 }

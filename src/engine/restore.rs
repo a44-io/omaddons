@@ -1026,7 +1026,7 @@ impl Window<'_> {
             created_addons_dir: false,
             run: Some(self.run),
             backup: None,
-            plan: None,
+            plan: self.ctx.applying,
             doctor_run_id: None,
             repairs: Vec::new(),
         })
@@ -1794,6 +1794,24 @@ mod tests {
         assert_eq!(done.files.restored, 5_004);
         assert!(done.lock_held_ms < 2_000, "{} ms", done.lock_held_ms);
         assert_eq!(r.live(), r.before);
+    }
+
+    /// A restore `apply` runs (M4-D25) records the plan on the line it appends.
+    #[test]
+    fn a_restore_while_applying_records_the_plan() {
+        let mut r = Restorable::new(false);
+        let plan_id: crate::model::PlanId = "01M9P0000000000000000000PA".parse().unwrap();
+        r.scene.applying = Some(plan_id);
+        let tx = r.restore().unwrap().tx;
+        assert_eq!(r.live(), r.before);
+        let lines = r.history();
+        // ubs:ignore — comparing transaction ids, not secrets
+        let line = lines.iter().find(|l| l.tx == tx);
+        assert_eq!(
+            line.map(|l| (l.kind, l.plan)),
+            Some((TxKind::Restore, Some(plan_id))),
+            "the line of {tx}: {lines:#?}"
+        );
     }
 
     #[test]

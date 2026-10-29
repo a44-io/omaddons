@@ -112,6 +112,7 @@ impl Scene {
         ] {
             std::fs::create_dir_all(&dir).unwrap();
             for file in files {
+                // ubs:ignore — a fixture file's content, not a secret
                 std::fs::write(dir.join(file), format!("-- {file}\n")).unwrap();
             }
         }
@@ -344,6 +345,12 @@ pub struct TxScene {
     pub retention: super::retention::RetentionLimits,
     /// What a git checkout may hold (`limits.download_max_bytes`).
     pub git_download_max_bytes: u64,
+    /// The stored plan the next transaction is applied from (`apply`).
+    pub applying: Option<crate::model::PlanId>,
+    /// `auto_backup` for the next transaction; `None` makes no automatic backup.
+    pub auto_backup: Option<crate::state::config::AutoBackup>,
+    /// The limits automatic backups keep: the defaults, with no free-space floor.
+    pub backup_limits: crate::limits::EffectiveLimits,
 }
 
 impl TxScene {
@@ -373,6 +380,12 @@ impl TxScene {
             with_git: false,
             retention: super::retention::RetentionLimits::default(),
             git_download_max_bytes: crate::limits::DOWNLOAD_MAX_BYTES,
+            applying: None,
+            auto_backup: None,
+            backup_limits: crate::limits::EffectiveLimits {
+                backup_min_free: 0,
+                ..crate::limits::EffectiveLimits::default()
+            },
         }
     }
 
@@ -447,7 +460,13 @@ impl TxScene {
             indexes: None,
             notes: None,
             binding,
-            auto_backup: None,
+            auto_backup: self
+                .auto_backup
+                .map(|mode| crate::backup::auto::AutoPolicy {
+                    mode,
+                    limits: &self.backup_limits,
+                }),
+            applying: self.applying,
         };
         f(&ctx)
     }
