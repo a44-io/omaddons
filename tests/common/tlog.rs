@@ -2049,6 +2049,14 @@ impl Running {
         ran
     }
 
+    /// Kills the run at once with `SIGKILL` (no unwinding, as a crash or an OOM kill
+    /// ends it), records it and returns it.
+    #[track_caller]
+    pub fn kill(mut self) -> Ran {
+        let finished = self.finish(true);
+        self.record(finished)
+    }
+
     /// Waits for the child (killing it at its deadline, or at once with `kill_now`) and
     /// collects its output.
     fn finish(&mut self, kill_now: bool) -> Finished {
