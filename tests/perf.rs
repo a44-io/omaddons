@@ -10,6 +10,11 @@
 //! Also here: `argc bench`'s home generator (ignored, and a no-op without `BENCH_HOME`),
 //! and the request-economy assertions the other suites do not make, which run in the
 //! normal gate because they count `net.log` lines, never time.
+//!
+//! The approval checked under the commit lock (D8) logs through the test log:
+//! `the_approval_check_under_the_lock_costs` reports its cost on the realistic home in
+//! release, and a gate test proves that home and the cost note's numbers, never a time.
+//! e2e suite: the under-lock approval check on the realistic home, reported in release and proven in the gate.
 
 mod common;
 
@@ -1247,4 +1252,234 @@ fn lua_resource_child() {
         peak_rss(),
         ms.as_millis()
     ));
+}
+
+// ---- the approval checked under the commit lock (D8): its cost on the realistic home -------
+
+/// One `-v` cost note of a checked window: `<target>: approval checked under the lock in
+/// <us> us: folders <n>, entries <n>, rehashed <n>, files <n>, bytes <n>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CostNote {
+    us: u64,
+    folders: u64,
+    entries: u64,
+    rehashed: u64,
+    files: u64,
+    bytes: u64,
+}
+
+/// The note in `message`, if it is one.
+fn cost_note(message: &str) -> Option<CostNote> {
+    let (_, rest) = message.split_once(": approval checked under the lock in ")?;
+    let (us, rest) = rest.split_once(" us: ")?;
+    let mut counts = std::collections::BTreeMap::new();
+    for part in rest.split(", ") {
+        let (name, value) = part.split_once(' ')?;
+        counts.insert(name, value.parse::<u64>().ok()?);
+    }
+    Some(CostNote {
+        us: us.parse().ok()?,
+        folders: *counts.get("folders")?,
+        entries: *counts.get("entries")?,
+        rehashed: *counts.get("rehashed")?,
+        files: *counts.get("files")?,
+        bytes: *counts.get("bytes")?,
+    })
+}
+
+/// One commit window, from its run's `-v` stderr: how long it held the lock, its cost
+/// notes, and how many `lock released` lines it logged.
+struct Window {
+    held_ms: u64,
+    notes: Vec<CostNote>,
+    released: usize,
+}
+
+/// `args` with `-v --json`, which must succeed, as one measured window.
+fn window(log: &common::tlog::TestLog, home: &Home, args: &[String]) -> Window {
+    let mut argv = args.to_vec();
+    argv.extend(["-v", "--json"].map(str::to_owned));
+    let ran = log.run(home, &argv);
+    ran.ok();
+    let messages: Vec<String> = ran
+        .events()
+        .iter()
+        .filter(|e| e["event"] == "log")
+        .filter_map(|e| e["message"].as_str().map(str::to_owned))
+        .collect();
+    let notes: Vec<CostNote> = messages.iter().filter_map(|m| cost_note(m)).collect();
+    for note in &notes {
+        log.json(
+            "note",
+            &serde_json::json!({
+                "us": note.us, "folders": note.folders, "entries": note.entries,
+                "rehashed": note.rehashed, "files": note.files, "bytes": note.bytes,
+            }),
+        );
+    }
+    Window {
+        held_ms: lock_held_ms(&ran.to_run()).unwrap_or_default(),
+        notes,
+        released: messages
+            .iter()
+            .filter(|m| m.starts_with("lock released: "))
+            .count(),
+    }
+}
+
+/// Addon `n` on `target` updated to `tag` bound to its preview: the dry run's token, then
+/// the bound run as a measured window.
+fn bound_window(
+    log: &common::tlog::TestLog,
+    realistic: &common::realistic::Realistic,
+    n: usize,
+    tag: &str,
+    target: &str,
+) -> Window {
+    let args = realistic.install_args(n, tag, target);
+    let mut preview = args.clone();
+    preview.extend(["--dry-run", "--json"].map(str::to_owned));
+    let dry = log.run(&realistic.home, &preview);
+    let token = dry.ok().data()["precondition"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let mut bound = args;
+    bound.extend(["--if-match".to_owned(), token]);
+    window(log, &realistic.home, &bound)
+}
+
+/// What makes a bound window's numbers trustworthy: one cost note for its two folders and
+/// their 170 entries (84 files and the folder itself, each), and one `lock released`
+/// line.
+fn assert_bound_window(log: &common::tlog::TestLog, w: &Window) {
+    log.assert_eq(
+        "(cost notes, lock released lines, note folders, note entries)",
+        &(
+            w.notes.len(),
+            w.released,
+            w.notes.first().map(|n| n.folders),
+            w.notes.first().map(|n| n.entries),
+        ),
+        &(1, 1, Some(2), Some(170)),
+    );
+}
+
+/// The median of `values` (the upper one of an even count); 0 when empty.
+fn median(values: &[u64]) -> u64 {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted.get(sorted.len() / 2).copied().unwrap_or_default()
+}
+
+/// The realistic home builds offline, and a run bound to its preview logs one cost note
+/// for the two folders it replaces. Shape and counts only, never a time: the report is
+/// `the_approval_check_under_the_lock_costs`.
+#[test]
+fn realistic_home_builds_and_one_bound_update_logs_its_cost() {
+    let log = common::tlog::tlog!();
+    log.step("build the realistic home");
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let realistic = common::realistic::realistic_home(&dir.path().join("home"));
+    log.env(&realistic.home);
+    log.note("30 records and 5,040 managed files, asserted by the builder");
+    log.step("one bound update on retail");
+    let w = bound_window(&log, &realistic, 0, "v2", "retail");
+    assert_bound_window(&log, &w);
+    log.step("an unbound update logs no note");
+    let w = window(
+        &log,
+        &realistic.home,
+        &realistic.install_args(1, "v2", "retail"),
+    );
+    log.assert_eq(
+        "(cost notes, lock released lines)",
+        &(w.notes.len(), w.released),
+        &(0, 1),
+    );
+}
+
+/// D8's cost on the realistic home (M4-D60: "D8 reports what it adds to `lock_held_ms`
+/// on the realistic home"; risk #20): three rounds in which every addon on every client is
+/// updated twice, once bound to its preview and once not, so each round's bound windows
+/// check all 5,040 files. Prints, per client and in total, the check's time from the
+/// notes and the bound and unbound windows' lock holds. A report, not a budget: it
+/// asserts only what makes the numbers trustworthy.
+#[test]
+#[ignore = "a release-build report: cargo test --release --test perf -- --ignored"]
+fn the_approval_check_under_the_lock_costs() {
+    use common::realistic::{ADDONS, REALISTIC_TARGETS, realistic_home};
+    const ROUNDS: usize = 3;
+    let log = common::tlog::tlog!();
+    log.step("build the realistic home");
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let realistic = realistic_home(&dir.path().join("home"));
+    log.env(&realistic.home);
+
+    // Per target: each round's summed check time, and every window's numbers.
+    let mut report = Vec::new();
+    let (mut total_us, mut total_entries) = (0, 0);
+    for target in REALISTIC_TARGETS {
+        let mut round_us = Vec::new();
+        let (mut check_us, mut bound_ms, mut unbound_ms) = (Vec::new(), Vec::new(), Vec::new());
+        let mut counts = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for round in 0..ROUNDS {
+            log.step(&format!("round {round} {target}"));
+            let (bound_tag, unbound_tag) =
+                (format!("v{}", 2 * round + 2), format!("v{}", 2 * round + 3));
+            let mut summed = [0u64; 5];
+            for n in 0..ADDONS {
+                let w = bound_window(&log, &realistic, n, &bound_tag, target);
+                assert_bound_window(&log, &w);
+                let note = w.notes[0];
+                check_us.push(note.us);
+                bound_ms.push(w.held_ms);
+                for (sum, value) in summed.iter_mut().zip([
+                    note.us,
+                    note.entries,
+                    note.rehashed,
+                    note.files,
+                    note.bytes,
+                ]) {
+                    *sum += value;
+                }
+                let args = realistic.install_args(n, &unbound_tag, target);
+                let w = window(&log, &realistic.home, &args);
+                log.assert_eq(
+                    "unbound: (cost notes, lock released lines)",
+                    &(w.notes.len(), w.released),
+                    &(0, 1),
+                );
+                unbound_ms.push(w.held_ms);
+            }
+            round_us.push(summed[0]);
+            for (list, value) in counts.iter_mut().zip(&summed[1..]) {
+                list.push(*value);
+            }
+        }
+        let (bound, unbound) = (median(&bound_ms), median(&unbound_ms));
+        let target_us = median(&round_us);
+        let entries = median(&counts[0]);
+        total_us += target_us;
+        total_entries += entries;
+        let line = format!(
+            "approval-check {target}: {ADDONS} bound windows check_us {target_us} (median of {ROUNDS} rounds), per window {}; lock_held_ms per window bound {bound} unbound {unbound} (+{}); entries {entries}, rehashed {}, files {}, bytes {}",
+            median(&check_us),
+            i128::from(bound) - i128::from(unbound),
+            median(&counts[1]),
+            median(&counts[2]),
+            median(&counts[3]),
+        );
+        measured(format_args!("{line}"));
+        report.push(line);
+    }
+    log.step("report");
+    let total = format!(
+        "approval-check total: check_us {total_us} for {total_entries} entries over {} clients ({} managed files)",
+        REALISTIC_TARGETS.len(),
+        common::realistic::MANAGED_FILES
+    );
+    measured(format_args!("{total}"));
+    report.push(total);
+    log.json("report", &report);
 }
