@@ -29,6 +29,7 @@ pub use mutate::{
     mutate_with, probe_exchange, sha256_from_hex, sync_filesystem,
 };
 pub use op::Op;
+pub(crate) use prune::canonical_lenient;
 pub use prune::{LockUse, PruneReason, PruneReport, prune};
 pub use scope::{Access, OwnedFolders, Refusal, Scope, ScopeMatch, ScopeTable, Side, Writer};
 pub use session::{SnapshotRoots, WriteSession};
