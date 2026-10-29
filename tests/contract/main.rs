@@ -32,7 +32,7 @@ use common::archives::zip_text;
 use common::home::{Home, Run};
 use common::http::{Asset, gh_release};
 use omaddons::error::ErrorCode;
-use serde_json::Value;
+use serde_json::{Value, json};
 use support::Scene;
 
 #[cfg(test)]
@@ -47,7 +47,7 @@ mod support {
     const VARIES: &[Action] = &[];
 
     /// The envelope's keys in wire order.
-    const ORDER: &[&str] = &[
+    pub const ORDER: &[&str] = &[
         "ok",
         "schema_version",
         "tool_version",
@@ -268,6 +268,16 @@ mod support {
             usize::from(code != 0),
             "error events on stderr\n{ctx}"
         );
+
+        // Every part against its published schema, strictly (M4-D9, M4-D10).
+        {
+            let validated = super::validate::validate_envelope(&envelope, &run.stderr);
+            assert!(
+                validated.is_ok(),
+                "{}\n{ctx}",
+                validated.err().unwrap_or_default()
+            );
+        }
         Checked { run, envelope }
     }
 
@@ -686,7 +696,8 @@ fn the_harness_rejects_broken_envelopes() {
         );
     };
     let argv = |words: &[&str]| -> Vec<String> { words.iter().map(|w| (*w).to_owned()).collect() };
-    let two = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"help","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    // A bare help's data, so the good envelope below also passes schema validation.
+    let two = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"help","exit_code":0,"data":{"name":"omaddons","version":"x","usage":"omaddons <COMMAND>","commands":[],"global_flags":[],"exit_codes":[]},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
     let doubled = format!("{two}\n{two}");
     rejects(run(&doubled, 0), 0, "exactly one envelope");
     // `info` declares 3, so these fail for their fix, not their exit.
@@ -723,4 +734,213 @@ fn the_harness_rejects_broken_envelopes() {
         recorded.get("help").is_some_and(|exits| exits.contains(&0)),
         "the good envelope was recorded: {recorded:?}"
     );
+}
+
+/// `envelope` as the binary prints it: its top-level keys in wire order (a
+/// `serde_json::Value` would sort them).
+fn wire_text(envelope: &Value) -> String {
+    let fields: Vec<String> = support::ORDER
+        .iter()
+        .filter_map(|key| {
+            envelope
+                .get(*key)
+                .map(|v| format!("{}:{v}", Value::from(*key)))
+        })
+        .collect();
+    format!("{{{}}}", fields.join(","))
+}
+
+/// What `check` panicked with, or "no panic".
+fn check_message(run: Run, code: i32) -> String {
+    match std::panic::catch_unwind(|| support::check(run, code)) {
+        Ok(_) => "no panic".to_owned(),
+        Err(panic) => panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+            .unwrap_or_default(),
+    }
+}
+
+#[test]
+fn the_harness_rejects_schema_violations() {
+    use common::tlog::tlog;
+    let log = tlog!();
+    let s = Scene::new();
+
+    log.step("bases");
+    let status = log.run(&s.home, &["status", "--json"]);
+    let zip = s.zip("foo");
+    let install = log.run(
+        &s.home,
+        &[
+            "install", "gh:o/foo", "--file", &zip, "-t", "retail", "--json",
+        ],
+    );
+    let pin = log.run(&s.home, &["pin", "Foo", "-t", "retail", "--json"]);
+    let missing = log.run(&s.home, &["status", "-t", "nosuch", "--json"]);
+    let mut bases = vec![(status, 0), (install, 0), (pin, 0), (missing, 3)];
+    for (ran, code) in &bases {
+        support::check(ran.to_run(), *code);
+    }
+    let envelope =
+        |index: usize| -> Value { serde_json::from_str(&bases[index].0.run.stdout).unwrap() };
+    let rerun = |index: usize, envelope: &Value, stderr: Option<&str>| Run {
+        argv: bases[index].0.run.argv.clone(),
+        code: bases[index].1,
+        stdout: wire_text(envelope),
+        stderr: stderr.map_or_else(|| bases[index].0.run.stderr.clone(), str::to_owned),
+    };
+    // Failures built by hand; each base passes A9's own check of its details and `check`.
+    let failure = |command: &str, argv: &[&str], code: ErrorCode, details: Value| -> Run {
+        let exit = i32::from(code.exit().code());
+        let envelope = json!({
+            "ok": false, "schema_version": "1.0", "tool_version": env!("CARGO_PKG_VERSION"),
+            "command": command, "exit_code": exit,
+            "error": {
+                "code": code.wire(), "message": "m", "fix": "preview again", "fix_argv": null,
+                "alternatives": [], "retryable": false, "details": details,
+            },
+            "warnings": [], "commands": [], "meta": {"elapsed_ms": 0, "offline": false},
+        });
+        let event = json!({
+            "event": "error", "code": code.wire(), "message": "m", "fix": "preview again",
+            "fix_argv": null, "retryable": false, "exit_code": exit,
+        });
+        Run {
+            argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+            code: exit,
+            stdout: wire_text(&envelope),
+            stderr: event.to_string(),
+        }
+    };
+    let stale = |changed: Value| {
+        failure(
+            "install",
+            &["install", "x", "--json"],
+            ErrorCode::PlanStale,
+            json!({"changed": changed}),
+        )
+    };
+    let unsupported = |reason: &str| {
+        failure(
+            "backup restore",
+            &["backup", "restore", "01M6Q2VA", "-t", "retail", "--json"],
+            ErrorCode::FilesystemUnsupported,
+            json!({"reason": reason, "backup_dir": "<root>/b"}),
+        )
+    };
+    for base in [
+        stale(json!(["selection"])),
+        unsupported("no_rename_exchange"),
+    ] {
+        let error = serde_json::from_str::<Value>(&base.stdout).unwrap()["error"].clone();
+        let code: ErrorCode = serde_json::from_value(error["code"].clone()).unwrap();
+        assert_eq!(
+            code.check_details(&error["details"]),
+            Ok(()),
+            "{code}: base details {}",
+            error["details"]
+        );
+        let exit = base.code;
+        assert_eq!(
+            check_message(base, exit),
+            "no panic",
+            "a hand-built base passes"
+        );
+    }
+
+    let mut planted: Vec<(&str, Run, Vec<&str>)> = Vec::new();
+    let mut status = envelope(0);
+    status["data"]["bogus"] = json!(1);
+    planted.push((
+        "data_key_missing_from_schema",
+        rerun(0, &status, None),
+        vec!["data /:", "unevaluatedProperties", "bogus"],
+    ));
+    let mut pinned = envelope(2);
+    pinned["data"]["targets"][0]["bogus"] = json!(1);
+    planted.push((
+        "nested_data_key",
+        rerun(2, &pinned, None),
+        vec!["data /targets/0:", "bogus"],
+    ));
+    planted.push((
+        "details_wrong_type",
+        stale(json!("selection")),
+        vec!["error /details/changed:", "type"],
+    ));
+    let mut missing = envelope(3);
+    missing["error"]["details"]["extra"] = json!(1);
+    planted.push((
+        "details_undeclared_key",
+        rerun(3, &missing, None),
+        vec!["error /details:", "extra"],
+    ));
+    planted.push((
+        "details_undeclared_reason",
+        unsupported("bogus_reason"),
+        vec!["error /details/reason:", "enum"],
+    ));
+    let mut warned = envelope(0);
+    warned["warnings"] = json!([{"code": "reload_required", "message": "m", "fix": null, "fix_argv": null, "extra": true}]);
+    planted.push((
+        "warning_unknown_key",
+        rerun(0, &warned, None),
+        vec!["frame /warnings/0:", "extra"],
+    ));
+    let mut hinted = envelope(0);
+    hinted["commands"] = json!([{"action": "undo", "command": "omaddons undo", "argv": ["omaddons", "undo"], "destructive": false, "extra": 1}]);
+    planted.push((
+        "command_hint_unknown_key",
+        rerun(0, &hinted, None),
+        vec!["frame /commands/0:", "extra"],
+    ));
+    planted.push((
+        "stderr_event_unknown_field",
+        rerun(
+            0,
+            &envelope(0),
+            Some(r#"{"event":"log","level":"info","message":"m","x":1}"#),
+        ),
+        vec!["stderr line 1 /:", "'x'"],
+    ));
+    let mut target_error = envelope(2);
+    target_error["data"]["targets"][0]["error"] = json!({
+        "code": "plan_stale", "message": "m", "fix": "rerun the dry run", "fix_argv": null,
+        "alternatives": [], "retryable": false, "details": {"changed": "selection"},
+    });
+    planted.push((
+        "target_result_error_bad_details",
+        rerun(2, &target_error, None),
+        vec![
+            "data /targets/0/error/details/changed:",
+            "`plan_stale` error",
+        ],
+    ));
+
+    for (name, run, expected) in planted {
+        log.step(name);
+        let planted: Value = serde_json::from_str(&run.stdout).unwrap();
+        log.json("planted", &planted);
+        log.note(format!("stderr: {}", run.stderr));
+        let code = run.code;
+        let message = check_message(run, code);
+        log.note(&message);
+        assert!(
+            message.starts_with("schema validation failed for "),
+            "case {name}: a schema failure, not an earlier check's:\n{message}"
+        );
+        for phrase in expected {
+            assert!(
+                message.contains(phrase),
+                "case {name}: expected {phrase:?} in:\n{message}"
+            );
+        }
+    }
+
+    log.step("bases_still_pass");
+    for (ran, code) in bases.drain(..) {
+        support::check(ran.to_run(), code);
+    }
 }

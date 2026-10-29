@@ -5,9 +5,13 @@
 //! library, `serde_json` and the validator, so another test binary can include it with
 //! `#[path = "contract/validate.rs"] mod validate;`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::OnceLock;
 
-use omaddons::contract::schema::is_open;
+use omaddons::app;
+use omaddons::contract::schema::{self, is_open};
+use omaddons::error::ErrorCode;
 use serde_json::Value;
 
 /// A schema construct the strict transform does not model.
@@ -171,6 +175,10 @@ pub struct Failure {
 
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The "… and N more" line names no schema position.
+        if self.schema_path.is_empty() {
+            return f.write_str(&self.message);
+        }
         let instance = if self.instance_path.is_empty() {
             "/"
         } else {
@@ -212,26 +220,207 @@ impl Validator {
     /// Every failure, in the validator's order, at most [`MAX_FAILURES`], then one
     /// "… and N more" failure.
     pub fn validate(&self, instance: &Value) -> Vec<Failure> {
-        let mut failures = Vec::new();
-        let mut more = 0usize;
-        for error in self.compiled.iter_errors(instance) {
-            if failures.len() < MAX_FAILURES {
-                failures.push(Failure {
-                    instance_path: error.instance_path().as_str().to_owned(),
-                    schema_path: error.schema_path().as_str().to_owned(),
-                    message: error.to_string(),
-                });
-            } else {
-                more += 1;
-            }
-        }
-        if more > 0 {
-            failures.push(Failure {
-                instance_path: String::new(),
-                schema_path: String::new(),
-                message: format!("… and {more} more"),
-            });
-        }
-        failures
+        cap(self.validate_all(instance))
     }
+
+    /// Every failure, in the validator's order.
+    fn validate_all(&self, instance: &Value) -> Vec<Failure> {
+        self.compiled
+            .iter_errors(instance)
+            .map(|error| Failure {
+                instance_path: error.instance_path().as_str().to_owned(),
+                schema_path: error.schema_path().as_str().to_owned(),
+                message: error.to_string(),
+            })
+            .collect()
+    }
+}
+
+/// The first [`MAX_FAILURES`] failures, then one "… and N more" for the rest.
+fn cap(mut failures: Vec<Failure>) -> Vec<Failure> {
+    if failures.len() > MAX_FAILURES {
+        let more = failures.len() - MAX_FAILURES;
+        failures.truncate(MAX_FAILURES);
+        failures.push(Failure {
+            instance_path: String::new(),
+            schema_path: String::new(),
+            message: format!("… and {more} more"),
+        });
+    }
+    failures
+}
+
+/// Every published schema in strict form, compiled once per process.
+pub struct Schemas {
+    /// Every `data_schema_for` name: the `COMMANDS` paths and the `ENVELOPE_ONLY` names.
+    data: BTreeMap<String, Validator>,
+    /// `error_variant(code)` for every code.
+    errors: BTreeMap<ErrorCode, Validator>,
+    /// `event_schemas()`, by wire name.
+    events: BTreeMap<String, Validator>,
+    /// `envelope_schema()`: the frame, validated without `data` and `error`.
+    envelope: Validator,
+}
+
+/// The compiled schemas. A schema the transform refuses, or the validator cannot
+/// compile, panics once, with its name and the reason.
+pub fn schemas() -> &'static Schemas {
+    static SCHEMAS: OnceLock<Schemas> = OnceLock::new();
+    SCHEMAS.get_or_init(|| {
+        let compiled = |name: &str, schema: Value| match Validator::new(&schema, true) {
+            Ok(validator) => validator,
+            Err(reason) => panic!("the published schema {name} does not compile: {reason}"), // ubs:ignore — a broken published schema stops the suite once, naming it
+        };
+        let names = app::COMMANDS
+            .iter()
+            .map(|entry| entry.name)
+            .chain(app::ENVELOPE_ONLY.iter().map(|entry| entry.name));
+        Schemas {
+            data: names
+                .filter_map(|name| {
+                    let schema = schema::data_schema_for(name)?.to_value();
+                    Some((name.to_owned(), compiled(&format!("`{name}` data"), schema)))
+                })
+                .collect(),
+            errors: ErrorCode::ALL
+                .iter()
+                .map(|code| {
+                    let schema = schema::error_variant(*code).to_value();
+                    (*code, compiled(&format!("`{code}` error"), schema))
+                })
+                .collect(),
+            events: schema::event_schemas()
+                .into_iter()
+                .map(|(name, schema)| {
+                    let validator = compiled(&format!("`{name}` event"), schema.to_value());
+                    (name.to_owned(), validator)
+                })
+                .collect(),
+            envelope: compiled("envelope", schema::envelope_schema().to_value()),
+        }
+    })
+}
+
+/// Validates one envelope and its stderr, strictly, in four parts: `data` against its
+/// command's schema, `error` against its code's variant (so `details` against that code's
+/// typed specification), the frame (the rest: `partial`, `warnings`, `commands`, `meta`)
+/// against the envelope's schema, and each stderr line against its event's. `Err` holds
+/// every failure, formatted.
+pub fn validate_envelope(envelope: &Value, stderr: &str) -> Result<(), String> {
+    let schemas = schemas();
+    let command = envelope["command"].as_str().unwrap_or_default();
+    let mut lines = Vec::new();
+    let mut part = |name: &str, failures: Vec<Failure>| {
+        lines.extend(
+            cap(failures)
+                .iter()
+                .map(|failure| format!("  {name} {failure}")),
+        );
+    };
+    if let Some(data) = envelope.get("data") {
+        match schemas.data.get(command) {
+            Some(validator) => part("data", explain_unions(validator.validate_all(data), data)),
+            None => part(
+                "data",
+                vec![note(format!(
+                    "no schema for command `{command}`: add its COMMANDS row"
+                ))],
+            ),
+        }
+    }
+    if let Some(error) = envelope.get("error") {
+        let code = serde_json::from_value::<ErrorCode>(error["code"].clone()).ok();
+        match code.and_then(|code| schemas.errors.get(&code)) {
+            Some(validator) => part("error", validator.validate_all(error)),
+            None => part(
+                "error",
+                vec![note(format!("no variant for code {}", error["code"]))],
+            ),
+        }
+    }
+    let mut frame = envelope.clone();
+    if let Some(object) = frame.as_object_mut() {
+        object.remove("data");
+        object.remove("error");
+    }
+    part("frame", schemas.envelope.validate_all(&frame));
+    for (index, line) in stderr.lines().enumerate() {
+        let name = format!("stderr line {}", index + 1);
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            part(&name, vec![note(format!("not JSON: {line}"))]);
+            continue;
+        };
+        let kind = event["event"].as_str().unwrap_or_default();
+        match schemas.events.get(kind) {
+            Some(validator) => part(&name, validator.validate_all(&event)),
+            None => part(&name, vec![note(format!("no schema for event {kind:?}"))]),
+        }
+    }
+    if lines.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "schema validation failed for `{command}` (exit {}):\n{}",
+        envelope["exit_code"],
+        lines.join("\n")
+    ))
+}
+
+/// A failure that names no schema position.
+fn note(message: String) -> Failure {
+    Failure {
+        instance_path: String::new(),
+        schema_path: String::new(),
+        message,
+    }
+}
+
+/// Re-explains each failed union inside `data`: where a value that fails a `oneOf` or an
+/// `anyOf` is an embedded error (an object whose `code` is a registered code, such as
+/// `TargetResult.error`), its failures there are replaced by its failures against that
+/// code's own variant, prefixed with its instance path. A union failure alone says only
+/// that no branch matched.
+fn explain_unions(failures: Vec<Failure>, data: &Value) -> Vec<Failure> {
+    let schemas = schemas();
+    let mut explained: BTreeMap<String, Vec<Failure>> = BTreeMap::new();
+    for failure in &failures {
+        if explained.contains_key(&failure.instance_path)
+            || !(failure.schema_path.ends_with("/oneOf") || failure.schema_path.ends_with("/anyOf"))
+        {
+            continue;
+        }
+        let Some(value) = data.pointer(&failure.instance_path) else {
+            continue;
+        };
+        let Ok(code) = serde_json::from_value::<ErrorCode>(value["code"].clone()) else {
+            continue;
+        };
+        let Some(validator) = schemas.errors.get(&code) else {
+            continue;
+        };
+        let inner: Vec<Failure> = validator
+            .validate_all(value)
+            .into_iter()
+            .map(|inner| Failure {
+                instance_path: format!("{}{}", failure.instance_path, inner.instance_path),
+                schema_path: format!("`{code}` error {}", inner.schema_path),
+                message: inner.message,
+            })
+            .collect();
+        if !inner.is_empty() {
+            explained.insert(failure.instance_path.clone(), inner);
+        }
+    }
+    // Every failure at an explained value (the union's, and the unevaluated keys its
+    // failure leaves) gives way to the explanation, emitted once, where the first stood.
+    let explained_paths: BTreeSet<String> = explained.keys().cloned().collect();
+    let mut out = Vec::new();
+    for failure in failures {
+        match explained.remove(&failure.instance_path) {
+            Some(inner) => out.extend(inner),
+            None if explained_paths.contains(&failure.instance_path) => {}
+            None => out.push(failure),
+        }
+    }
+    out
 }
