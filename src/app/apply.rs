@@ -32,6 +32,7 @@ use super::remove::{self, RemoveArgs, RemoveData, RemoveOutcome, RemoveStatus};
 use super::sync::{self, SyncArgs, SyncOutcome};
 use super::undo::{self, UndoArgs, UndoData, UndoOutcome, UndoTxStatus};
 use super::update::{self, UpdateArgs, UpdateOutcome};
+use super::world::World;
 use crate::cli::Context;
 use crate::contract::actions::Action;
 use crate::error::{CommandHint, Error, ErrorCode, PlanStaleSource, Result, Suggestion, Warning};
@@ -735,7 +736,7 @@ fn resolve(ctx: &Context, paths: &Paths, given: &str) -> Result<PathBuf> {
         Some(Found::None { cut }) => cut,
         None => false,
     };
-    if let Some(hint) = folder_hint(ctx, given)? {
+    if let Some(hint) = folder_hint(ctx, given) {
         return Err(hint);
     }
     if found.is_none() {
@@ -761,10 +762,28 @@ fn resolve(ctx: &Context, paths: &Paths, given: &str) -> Result<PathBuf> {
     .details(json!({ "prefix": given })))
 }
 
-/// What `apply <word>` meant when `word` names no plan (M4-D27): `None` until the hints
-/// subtask (omad-m4-agent-surface-doctor-c6cm.4.5.5) fills it in.
-fn folder_hint(_ctx: &Context, _given: &str) -> Result<Option<Error>> {
-    Ok(None)
+/// What `apply <word>` meant when `word` names no plan (M4-D27): an addon folder on a
+/// client that omaddons did not install, to adopt where it is. `not_found`, with the help
+/// first (adopting changes something) and one `adopt` per client holding the folder.
+/// `None` when no client holds one, or when the clients cannot be read: the plan id is
+/// unknown either way, and the caller's own refusal stands. Discovery writes nothing
+/// under `<state>`.
+fn folder_hint(ctx: &Context, given: &str) -> Option<Error> {
+    let world = World::load(ctx).ok()?;
+    let targets = world.select_many(ctx).ok()?;
+    let records = world.records().ok()?;
+    let fixes = adopt::hints::adopt_fixes(&world, &records, &targets, given);
+    if fixes.is_empty() {
+        return None;
+    }
+    let error = Error::new(
+        ErrorCode::NotFound,
+        format!(
+            "{given} is no stored plan; it is an addon folder omaddons did not install: adopt it, or give a plan id from a --dry-run"
+        ),
+        Suggestion::command(["omaddons", "help", "apply"]),
+    );
+    Some(fixes.into_iter().fold(error, Error::alternative))
 }
 
 /// Several plans start with `given`: the first's dry run is the fix, each an alternative.

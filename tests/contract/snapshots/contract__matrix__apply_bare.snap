@@ -1,0 +1,35 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "apply",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "adopt",
+          "--apply"
+        ],
+        "display": "omaddons adopt --apply"
+      }
+    ],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons help apply",
+    "fix_argv": [
+      "omaddons",
+      "help",
+      "apply"
+    ],
+    "message": "the following required arguments were not provided: <PLAN_ID>",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

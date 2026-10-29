@@ -1071,6 +1071,70 @@ mod tests {
         }
     }
 
+    /// `adopt apply` is `adopt --apply` (M4-D27), the user's verb and every other argument
+    /// kept; a folder really named `apply` is adopted with `--ref`, and beside other
+    /// folders it is one of them.
+    #[test]
+    fn adopt_apply_is_adopt_dash_dash_apply() {
+        let mode = |words: &[&str]| -> std::result::Result<&'static str, Option<Vec<String>>> {
+            let raw = argv(&[&["omaddons"], words].concat());
+            let cli = <crate::cli::Cli as clap::Parser>::try_parse_from(&raw).unwrap();
+            let Some(crate::cli::Command::Adopt(args)) = cli.command else {
+                panic!("{raw:?} is no adopt"); // ubs:ignore — a table case's own failure
+            };
+            let ctx = Context::new(
+                &cli.global,
+                crate::output::OutputConfig::machine(),
+                "adopt",
+                &raw,
+                &|_| None,
+                false,
+                std::time::Instant::now(),
+            )
+            .unwrap();
+            match Mode::of(&ctx, &args) {
+                Ok(Mode::Report) => Ok("report"),
+                Ok(Mode::Apply) => Ok("apply"),
+                Ok(Mode::Folders(_)) => Ok("folders"),
+                Ok(Mode::Ref { .. }) => Ok("ref"),
+                Err(error) => {
+                    assert_eq!(error.usage_fix, UsageFix::UserVerb, "{raw:?}");
+                    let body = ErrorBody::from(error);
+                    assert_eq!(body.code, ErrorCode::Usage, "{raw:?}: {body:?}");
+                    Err(body.fix_argv)
+                }
+            }
+        };
+        for (case, words, expected) in [
+            (
+                "the word",
+                &["adopt", "apply"][..],
+                Err(Some(argv(&["omaddons", "adopt", "--apply"]))),
+            ),
+            (
+                "any case, -t kept",
+                &["adopt", "Apply", "-t", "retail"],
+                Err(Some(argv(&[
+                    "omaddons", "adopt", "--apply", "-t", "retail",
+                ]))),
+            ),
+            (
+                "a folder named apply, with --ref",
+                &["adopt", "--ref", "gh:o/r", "apply"],
+                Ok("ref"),
+            ),
+            (
+                "beside another folder",
+                &["adopt", "apply", "Foo"],
+                Ok("folders"),
+            ),
+            ("the flag", &["adopt", "--apply"], Ok("apply")),
+            ("another folder", &["adopt", "applies"], Ok("folders")),
+        ] {
+            assert_eq!(mode(words), expected, "{case}: {words:?}");
+        }
+    }
+
     fn work(discovered: &DiscoveredTarget) -> TargetWork<'_> {
         TargetWork {
             discovered,

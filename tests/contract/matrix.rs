@@ -553,6 +553,13 @@ fn adopt() {
     assert_eq!(c.envelope["error"]["code"], "usage");
     let c = s.json(&["adopt", "--ref", "gh:o/foo"], 2);
     assert_eq!(c.envelope["error"]["code"], "usage");
+    // `adopt apply` is the flag the user meant (M4-D27), not a folder named `apply`.
+    let c = s.json(&["adopt", "apply", "-t", "retail"], 2);
+    assert_eq!(
+        support::strings(&c.envelope["error"]["fix_argv"]),
+        ["omaddons", "adopt", "--apply", "-t", "retail"]
+    );
+    insta::assert_json_snapshot!("adopt_apply_as_folder", s.stable(&c.envelope));
     // A folder nothing identifies: the fix is the --ref text.
     std::fs::create_dir_all(addons.join("Mystery")).unwrap();
     std::fs::write(addons.join("Mystery/Mystery.toc"), "## Interface: 120105\n").unwrap();
@@ -1038,6 +1045,110 @@ fn apply() {
     assert_eq!(c.envelope["data"]["applied"]["command"], "update");
     assert_eq!(c.envelope["data"]["outcomes"][0]["status"], "committed");
     assert_eq!(validate::validate_envelope(&c.envelope, ""), Ok(()));
+}
+
+/// What `apply` is mistaken for (M4-D27): bare `apply` and a folder's name point at
+/// `adopt`, help first; a word that is neither a plan nor such a folder keeps `apply`'s
+/// own refusal; and none of them, nor `adopt apply` or `aply`, changes anything.
+#[test]
+fn apply_hints() {
+    let log = common::tlog::tlog!();
+    let s = Scene::new();
+    // Foo unpacked by hand into retail: a folder omaddons did not install.
+    let addons = s.home.addons("_retail_");
+    std::fs::create_dir_all(addons.join("Foo")).unwrap();
+    std::fs::write(
+        addons.join("Foo/Foo.toc"),
+        "## Interface: 120105\n## Version: 1\n",
+    )
+    .unwrap();
+    let trees = [
+        ("state", s.home.env.state()),
+        ("plans", s.home.env.cache().join("omaddons/plans")),
+        ("retail", s.home.client("_retail_")),
+        ("classic", s.home.client("_classic_")),
+    ];
+    for (label, root) in &trees {
+        log.tree(label, root);
+    }
+    let fix_and_alternatives = |c: &support::Checked| {
+        let error = &c.envelope["error"];
+        let alternatives: Vec<Vec<String>> = error["alternatives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| support::strings(&a["argv"]))
+            .collect();
+        (
+            error["code"].as_str().unwrap().to_owned(),
+            support::strings(&error["fix_argv"]),
+            alternatives,
+        )
+    };
+    let words = |w: &[&str]| -> Vec<String> { w.iter().map(|a| (*a).to_owned()).collect() };
+    let help = words(&["omaddons", "help", "apply"]);
+    let adopt_foo = words(&["omaddons", "adopt", "Foo", "-t", "retail"]);
+
+    log.step("bare apply: the help, then adopt --apply");
+    let c = s.json(&["apply"], 2);
+    log.assert_eq(
+        "bare apply",
+        &fix_and_alternatives(&c),
+        &(
+            "usage".to_owned(),
+            help.clone(),
+            vec![words(&["omaddons", "adopt", "--apply"])],
+        ),
+    );
+    insta::assert_json_snapshot!("apply_bare", s.stable(&c.envelope));
+
+    log.step("apply <an unmanaged folder>, in any case: adopt it where it is");
+    let c = s.json(&["apply", "Foo"], 3);
+    log.assert_eq(
+        "apply Foo",
+        &fix_and_alternatives(&c),
+        &(
+            "not_found".to_owned(),
+            help.clone(),
+            vec![adopt_foo.clone()],
+        ),
+    );
+    insta::assert_json_snapshot!("apply_folder_hint", s.stable(&c.envelope));
+    let c = s.json(&["apply", "foo"], 3);
+    log.assert_eq(
+        "apply foo",
+        &fix_and_alternatives(&c),
+        &("not_found".to_owned(), help.clone(), vec![adopt_foo]),
+    );
+
+    log.step("a word that is no plan and no folder: apply's own refusal");
+    let c = s.json(&["apply", "Nothing"], 2);
+    log.assert_eq(
+        "short word",
+        &fix_and_alternatives(&c).0,
+        &"usage".to_owned(),
+    );
+    let c = s.json(&["apply", "NoSuchFolder"], 3);
+    log.assert_eq(
+        "long word",
+        &fix_and_alternatives(&c).0,
+        &"plan_not_found".to_owned(),
+    );
+
+    log.step("adopt apply and aply: their fixes, nothing run");
+    let c = s.json(&["adopt", "apply"], 2);
+    log.assert_eq(
+        "adopt apply",
+        &fix_and_alternatives(&c).1,
+        &words(&["omaddons", "adopt", "--apply"]),
+    );
+    let c = s.json(&["aply", "01M8Q2VA"], 2);
+    log.assert_eq("aply", &fix_and_alternatives(&c).1, &help);
+
+    log.step("no wrong invocation changed a tree");
+    for (label, root) in &trees {
+        log.assert_unchanged(label, root);
+    }
 }
 
 #[cfg(test)]

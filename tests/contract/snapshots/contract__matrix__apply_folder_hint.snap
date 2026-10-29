@@ -1,0 +1,37 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "apply",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "adopt",
+          "Foo",
+          "-t",
+          "retail"
+        ],
+        "display": "omaddons adopt Foo -t retail"
+      }
+    ],
+    "code": "not_found",
+    "details": {},
+    "fix": "omaddons help apply",
+    "fix_argv": [
+      "omaddons",
+      "help",
+      "apply"
+    ],
+    "message": "Foo is no stored plan; it is an addon folder omaddons did not install: adopt it, or give a plan id from a --dry-run",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

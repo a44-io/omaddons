@@ -821,7 +821,11 @@ pub fn usage_error_with(
                 value_fix(argv, &path, &arg, &bad, &valid)
             })
             .unwrap_or_else(help_fix),
-        _ => help_fix(),
+        _ => {
+            let (fix, mut alternatives) = help_fix();
+            alternatives.extend(apply_without_plan_id(err, &path));
+            (fix, alternatives)
+        }
     };
     // Every suggestion parses, and none is the failing command itself.
     let failing = fix_argv(argv);
@@ -840,6 +844,14 @@ pub fn usage_error_with(
         }
     }
     error
+}
+
+/// `omaddons apply` with no plan id (M4-D27): after the help, `adopt --apply`, the command
+/// a user mixing up the two names meant; it changes something, so it is never the fix.
+fn apply_without_plan_id(err: &clap::Error, path: &[String]) -> Option<Suggestion> {
+    // ubs:ignore — comparing a clap error kind, not a secret
+    (err.kind() == ErrorKind::MissingRequiredArgument && path == ["apply"])
+        .then(|| Suggestion::command(["omaddons", "adopt", "--apply"]))
 }
 
 /// The client words and the addon test the misplaced-client hooks read. The words load
@@ -1752,6 +1764,34 @@ mod tests {
         let raw = argv(&["help", "--frobnicate"]);
         let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
         assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help", "help"]);
+    }
+
+    /// `apply` without a plan id (M4-D27): the help, then `adopt --apply`, which changes
+    /// something and so is never the fix; any other refusal of `apply` offers no adopt.
+    #[test]
+    fn bare_apply_offers_adopt_apply() {
+        let help = argv(&["help", "apply"]);
+        let adopt = vec![argv(&["adopt", "--apply"])];
+        for (case, args, alternatives) in [
+            ("bare", &["apply"][..], adopt.clone()),
+            ("a global flag first", &["--json", "apply"], adopt.clone()),
+            ("a flag after", &["apply", "--dry-run"], adopt.clone()),
+            ("a bad flag", &["apply", "01M8Q2VA", "--bogus"], Vec::new()),
+        ] {
+            let raw = argv(args);
+            let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+            let actual: Vec<Vec<String>> = err
+                .alternatives
+                .iter()
+                .filter_map(|a| a.argv().map(<[String]>::to_vec))
+                .collect();
+            assert_eq!(
+                (err.code, err.fix.argv().map(<[String]>::to_vec), actual),
+                (ErrorCode::Usage, Some(help.clone()), alternatives),
+                "{case}: {raw:?}, {}",
+                err.message
+            );
+        }
     }
 
     /// `update --version`: the install that pins, and `pin` when it can take the
