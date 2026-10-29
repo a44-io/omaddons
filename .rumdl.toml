@@ -1,0 +1,14 @@
+# rumdl, the Markdown linter and formatter. A project config replaces the user's rather
+# than merging with it, so [global] keeps the settings this repository was formatted with.
+[global]
+flavor = "obsidian"
+line-length = 200
+# MD040 (fenced-code-language) would stamp ```text onto every unlabelled fence.
+disable = ["MD040"]
+
+# The agent guide is byte-exact (M4-D7): its stamp is the line right after the
+# frontmatter, and the committed skill is the rendered guide byte for byte, so MD071's
+# blank line after the frontmatter would misplace the stamp in both.
+[per-file-ignores]
+"src/contract/guide/guide.md" = ["MD071"]
+"skills/omaddons/SKILL.md" = ["MD071"]

@@ -86,6 +86,10 @@ pub const BUILD_ID_EXCLUDED: &[(&str, &str)] = &[
         "deny.toml",
         "licence and advisory policy: whether the gate passes, never the binary's bytes",
     ),
+    (
+        ".rumdl.toml",
+        "Markdown lint and format policy: how prose is committed, never the binary's bytes",
+    ),
     (".gitignore", "the repository's ignore list"),
     (".claude", "agent settings"),
     (".rumdl_cache", "a Markdown linter's cache"),
