@@ -979,8 +979,7 @@ mod tests {
                 status: VersionStatus::Current,
             })),
             records: Some(LayerState::Available(Records::default())),
-            world: None,
-            failures: Vec::new(),
+            ..Preloaded::default()
         };
         let paths = crate::doctor::tests::fixture_paths();
         let failure = |fm: &'static str, file: &str, reason: &'static str| LayerFailure {

@@ -21,6 +21,7 @@ use super::finding::{
     Confidence, Evidence, Finding, FindingTarget, Observation, Severity, Subject,
 };
 use super::registry::{self, Layer, ids};
+use super::selection::SkippedTarget;
 use crate::app::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
@@ -308,10 +309,106 @@ impl DoctorView {
     pub fn failure_findings(&self) -> Vec<Finding> {
         self.failures()
             .iter()
-            .filter_map(|failure| {
-                Some(registry::row(failure.fm)?.finding(self.observation(failure)))
-            })
+            .filter_map(|failure| self.failure_finding(failure))
             .collect()
+    }
+
+    /// One failure as its failure mode's finding.
+    pub(crate) fn failure_finding(&self, failure: &LayerFailure) -> Option<Finding> {
+        Some(registry::row(failure.fm)?.finding(self.observation(failure)))
+    }
+
+    /// Whether `layer` is available, loading it (and what it is built from) if it was not;
+    /// when it is not, the layer whose failure made it so. Inventories are per client:
+    /// the layer is available when what they are built from is, and a client whose own
+    /// one fails is in [`DoctorView::unavailable_targets`].
+    pub fn availability(&self, layer: Layer) -> Availability {
+        let available = match layer {
+            Layer::Config => self.config().is_some(),
+            Layer::Registry => self.registry().is_some(),
+            Layer::Discovery => self.world().is_some(),
+            Layer::Records => self.records().is_some(),
+            Layer::Inventory => {
+                return layer
+                    .depends_on()
+                    .iter()
+                    .map(|&from| self.availability(from))
+                    .find(|a| *a != Availability::Available)
+                    .unwrap_or(Availability::Available);
+            }
+            Layer::Journals => self.journals().is_some(),
+            Layer::Lock => self.lock().is_some(),
+            Layer::History => self.history().is_some(),
+            Layer::Caches => self.caches().is_some(),
+            Layer::Widget => self.widget().is_some(),
+            Layer::Skill => self.skill().is_some(),
+            Layer::Credentials => self.credentials().is_some(),
+        };
+        if available {
+            return Availability::Available;
+        }
+        let cause = match layer {
+            Layer::Config => cause_of(&self.config, layer),
+            Layer::Registry => cause_of(&self.registry, layer),
+            Layer::Discovery => cause_of(&self.discovered, layer),
+            Layer::Records => cause_of(&self.records, layer),
+            Layer::Journals => cause_of(&self.journals, layer),
+            Layer::Lock => cause_of(&self.lock, layer),
+            Layer::History => cause_of(&self.history, layer),
+            Layer::Caches => cause_of(&self.caches, layer),
+            Layer::Widget => cause_of(&self.widget, layer),
+            Layer::Skill => cause_of(&self.skill, layer),
+            Layer::Credentials => cause_of(&self.credentials, layer),
+            Layer::Inventory => layer,
+        };
+        Availability::Unavailable { cause }
+    }
+
+    /// The clients whose part of a per-client layer (`Records`, `Inventory`) could not be
+    /// read so far, with the cause; none for any other layer. Inventories count once
+    /// built: a detector's ask builds them.
+    pub fn unavailable_targets(&self, layer: Layer) -> Vec<(SkippedTarget, Layer)> {
+        let keyed = |key: TargetKey| SkippedTarget {
+            id: self.target_ref(key).id,
+            key: Some(key),
+        };
+        match layer {
+            Layer::Records => self
+                .records()
+                .map(|records| {
+                    records
+                        .unavailable()
+                        .map(|key| (keyed(*key), Layer::Records))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Layer::Inventory => {
+                let Some(LayerState::Available(discovered)) = self.discovered.get() else {
+                    return Vec::new();
+                };
+                discovered
+                    .world
+                    .resolved
+                    .targets
+                    .iter()
+                    .zip(&discovered.inventories)
+                    .filter_map(|(d, cell)| match cell.get() {
+                        Some(LayerState::Unavailable(unavailable)) => {
+                            let target = d.target.key.map_or_else(
+                                || SkippedTarget {
+                                    id: d.target.id.clone(),
+                                    key: None,
+                                },
+                                keyed,
+                            );
+                            Some((target, unavailable.cause))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// The failures of one failure mode, as its detector reports them.
@@ -829,6 +926,38 @@ struct Discovered {
     inventories: Vec<OnceCell<LayerState<Inventory>>>,
 }
 
+/// Whether a layer could be read; when not, the layer whose failure made it so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Availability {
+    Available,
+    Unavailable { cause: Layer },
+}
+
+/// The view's failures and the detectors' findings as one list: one finding per instance
+/// (the first, so pass the view's failures first, and a row that reports a view failure
+/// again never doubles it), by severity, failure mode, target id (none first) and
+/// instance.
+pub fn merge_findings(view: Vec<Finding>, detected: Vec<Finding>) -> Vec<Finding> {
+    let mut seen = BTreeSet::new();
+    let mut merged: Vec<Finding> = view
+        .into_iter()
+        .chain(detected)
+        .filter(|finding| seen.insert(finding.instance.clone()))
+        .collect();
+    merged.sort_by(|a, b| {
+        let order = |f: &Finding| {
+            (
+                f.severity,
+                f.id,
+                f.target.as_ref().map(|t| t.id.clone()),
+                f.instance.clone(),
+            )
+        };
+        order(a).cmp(&order(b))
+    });
+    merged
+}
+
 /// A layer as the view loaded it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayerState<T> {
@@ -870,6 +999,12 @@ impl Records {
         self.by_key
             .iter()
             .filter_map(|(key, state)| Some((key, state.available()?)))
+    }
+
+    /// Whether the layer looked for `key`'s record: the registry names it, or
+    /// `<state>/targets/` holds it (read or not).
+    pub fn contains(&self, key: &TargetKey) -> bool {
+        self.by_key.contains_key(key)
     }
 
     /// The keys whose record could not be read.
@@ -1324,6 +1459,13 @@ pub(crate) struct Preloaded {
     pub records: Option<LayerState<Records>>,
     /// The Discovery layer, each client's inventory still to build.
     pub world: Option<LayerState<World>>,
+    pub journals: Option<LayerState<Journals>>,
+    pub lock: Option<LayerState<LockState>>,
+    pub history: Option<LayerState<HistoryRead>>,
+    pub caches: Option<LayerState<Caches>>,
+    pub widget: Option<LayerState<WidgetLayer>>,
+    pub skill: Option<LayerState<Vec<SkillFile>>>,
+    pub credentials: Option<LayerState<Credentials>>,
     pub failures: Vec<LayerFailure>,
 }
 
@@ -1359,6 +1501,13 @@ impl DoctorView {
             registry,
             records,
             discovered,
+            journals: cell(&mut loaded, Layer::Journals, preloaded.journals),
+            lock: cell(&mut loaded, Layer::Lock, preloaded.lock),
+            history: cell(&mut loaded, Layer::History, preloaded.history),
+            caches: cell(&mut loaded, Layer::Caches, preloaded.caches),
+            widget: cell(&mut loaded, Layer::Widget, preloaded.widget),
+            skill: cell(&mut loaded, Layer::Skill, preloaded.skill),
+            credentials: cell(&mut loaded, Layer::Credentials, preloaded.credentials),
             failures: RefCell::new(preloaded.failures),
             loaded: RefCell::new(loaded),
             ..Self::load_at(paths, ViewOptions::default())
@@ -1367,7 +1516,7 @@ impl DoctorView {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
@@ -1376,20 +1525,20 @@ mod tests {
     use crate::state::registry::{Origin, RegistryEntry};
 
     /// Planted in every broken file: no failure may show it.
-    const MARKER: &str = "PLANTED-CONTENT-7f3a";
-    const K: &str = "01M5ZQ7Y3KJ8V9W2X4C6B0N1RT";
-    const K2: &str = "01M7A1B2C3D4E5F6G7H8J9K0MN";
+    pub(crate) const MARKER: &str = "PLANTED-CONTENT-7f3a";
+    pub(crate) const K: &str = "01M5ZQ7Y3KJ8V9W2X4C6B0N1RT";
+    pub(crate) const K2: &str = "01M7A1B2C3D4E5F6G7H8J9K0MN";
 
-    fn key(text: &str) -> TargetKey {
+    pub(crate) fn key(text: &str) -> TargetKey {
         text.parse().unwrap()
     }
 
     /// The doctor's default view of `paths`.
-    fn view_at(paths: Paths) -> DoctorView {
+    pub(crate) fn view_at(paths: Paths) -> DoctorView {
         DoctorView::load_at(paths, ViewOptions::default())
     }
 
-    fn home() -> (tempfile::TempDir, Paths) {
+    pub(crate) fn home() -> (tempfile::TempDir, Paths) {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         let paths = Paths::with_roots(
@@ -1401,12 +1550,12 @@ mod tests {
         (dir, paths)
     }
 
-    fn is_root() -> bool {
+    pub(crate) fn is_root() -> bool {
         rustix::process::geteuid().is_root()
     }
 
     /// How a test leaves one file.
-    enum Plant {
+    pub(crate) enum Plant {
         Absent,
         Bytes(Vec<u8>),
         Dir,
@@ -1417,7 +1566,7 @@ mod tests {
         TooLarge,
     }
 
-    fn plant(path: &Path, plant: &Plant) {
+    pub(crate) fn plant(path: &Path, plant: &Plant) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         match plant {
             Plant::Absent => {}
@@ -1452,7 +1601,7 @@ mod tests {
         }
     }
 
-    fn registry_bytes(entries: &[(&str, &str)]) -> Vec<u8> {
+    pub(crate) fn registry_bytes(entries: &[(&str, &str)]) -> Vec<u8> {
         store::encode(&Registry {
             targets: entries.iter().map(|(k, id)| entry(k, id)).collect(),
             default: None,
@@ -1460,7 +1609,7 @@ mod tests {
         .unwrap()
     }
 
-    fn record_bytes(key_text: &str, generation: u64) -> Vec<u8> {
+    pub(crate) fn record_bytes(key_text: &str, generation: u64) -> Vec<u8> {
         store::encode(&TargetRecord {
             generation,
             ..TargetRecord::empty(key(key_text))
@@ -2379,7 +2528,7 @@ mod tests {
     }
 
     /// A registered retail-like client at `client_dir`, as discovery finds it.
-    fn client(id: &str, client_dir: &Path, key_text: Option<&str>) -> DiscoveredTarget {
+    pub(crate) fn client(id: &str, client_dir: &Path, key_text: Option<&str>) -> DiscoveredTarget {
         let mut target = crate::engine::testing::target(client_dir);
         target.id = id.to_owned();
         target.key = key_text.map(key);
@@ -2392,7 +2541,7 @@ mod tests {
     }
 
     /// A world holding `targets`, as the view's Discovery layer.
-    fn world_of(paths: &Paths, targets: Vec<DiscoveredTarget>) -> World {
+    pub(crate) fn world_of(paths: &Paths, targets: Vec<DiscoveredTarget>) -> World {
         let mut world = World::assemble(
             paths.clone(),
             LoadedConfig::default(),
@@ -2409,7 +2558,7 @@ mod tests {
         world
     }
 
-    fn records_of(states: Vec<(&str, bool)>) -> Records {
+    pub(crate) fn records_of(states: Vec<(&str, bool)>) -> Records {
         let by_key = states
             .into_iter()
             .map(|(k, readable)| {
@@ -2695,7 +2844,7 @@ mod tests {
             .collect()
     }
 
-    fn set_mode(path: &Path, mode: u32) {
+    pub(crate) fn set_mode(path: &Path, mode: u32) {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
@@ -3120,6 +3269,41 @@ mod tests {
         ];
         expected.sort();
         assert_eq!(paths_found, expected);
+    }
+
+    #[test]
+    fn merge_keeps_one_finding_per_instance() {
+        let (_dir, paths) = home();
+        plant(&paths.config_file(), &Plant::Bytes(b"a = [\n".to_vec()));
+        plant(&paths.registry_file(), &Plant::Bytes(b"{".to_vec()));
+        let view = view_at(paths);
+        view.config();
+        view.registry();
+        let from_view = view.failure_findings();
+        assert_eq!(from_view.len(), 2);
+        // A detector that reports the registry's failure again, under another title.
+        let mut again = from_view[0].clone();
+        again.title = "reported twice".to_owned();
+        let merged = merge_findings(from_view.clone(), vec![again]);
+        let got: Vec<(&str, Severity, &str)> = merged
+            .iter()
+            .map(|f| (f.id, f.severity, f.title.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (ids::STATE_CORRUPT, Severity::P0, "registry.json is corrupt"),
+                (
+                    ids::CONFIG_PARSE_ERROR,
+                    Severity::P1,
+                    from_view[1].title.as_str()
+                ),
+            ],
+            "one per instance, the view's first, by severity"
+        );
+        // Order does not depend on the input's.
+        let reversed = merge_findings(Vec::new(), from_view.into_iter().rev().collect());
+        assert_eq!(reversed, merged);
     }
 
     #[test]
