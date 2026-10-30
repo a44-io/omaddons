@@ -1,10 +1,13 @@
 // The widget's security scans (F7, pipeline step 2): text lints over every runtime file
 // under omarchy/ (tests aside) that fail when a code path goes around a mechanism that
 // keeps the widget safe. The mechanisms are the guarantees (PlainLabel, Model.buildArgv,
-// Model.cliArgv with its classifier, the stamped context, the preview flow); the scans
-// only catch an accidental way around them, so each one also runs over an in-memory
-// copy with one planted violation, which it must report. The plugin-id literal (check 8)
-// is scanned again, over the embedded assets, in tests/omarchy_widget.rs.
+// Model.cliArgv with its classifier, the stamped context, the preview flow, a plan's
+// apply only from Model.planFrom); the scans only catch an accidental way around them,
+// so each one also runs over an in-memory copy with one planted violation, which it
+// must report. Checks 3b, 9 and 10 (M4-D28, M4-D48) hold the plan runner: an apply argv
+// only from the preview the widget just ran, no decision from a warning's text, and no
+// issue matched by its id. The plugin-id literal (check 8) is scanned again, over the
+// embedded assets, in tests/omarchy_widget.rs.
 
 const { describe, expect, test } = require("bun:test")
 const fs = require("fs")
@@ -44,6 +47,15 @@ function plant(files, name, anchor, insertion) {
   const at = text.indexOf(anchor)
   if (at < 0) throw new Error(name + " has no " + JSON.stringify(anchor) + " to plant after")
   return Object.assign({}, files, { [name]: text.slice(0, at + anchor.length) + insertion + text.slice(at + anchor.length) })
+}
+
+// `files` with the first `removal` after the first `anchor` in `name` taken out.
+function unplant(files, name, anchor, removal) {
+  const text = files[name]
+  const at = text.indexOf(anchor)
+  const cut = at < 0 ? -1 : text.indexOf(removal, at)
+  if (cut < 0) throw new Error(name + " has no " + JSON.stringify(removal) + " after " + JSON.stringify(anchor))
+  return Object.assign({}, files, { [name]: text.slice(0, cut) + text.slice(cut + removal.length) })
 }
 
 // The lines of a file without its comments (the widget writes only whole-line `//`
@@ -269,6 +281,102 @@ function checkProvenance(files) {
   return out
 }
 
+// The functions of Model.js where the literal "apply" belongs: the classifier's rule
+// (classifyCliArgv, cliArgv), the one place an apply argv is read from a preview
+// (planFrom), and the two that read an envelope's `command` (applyResult,
+// needsPreviewAgain).
+const APPLY_FUNCTIONS = ["planFrom", "classifyCliArgv", "cliArgv", "applyResult", "needsPreviewAgain"]
+// The values a request's or the dialog's "plan" may take in Service.qml, each with
+// where it comes from.
+const PLAN_VALUES = {
+  "null": "no plan: a request's default, and M3's confirmation (targets rm), which stores none",
+  "plan": "runPlan's parameter, called only with a decision's or the pending confirmation's plan",
+  "decision.plan": "the dialog's pending plan, from Model.previewDecision",
+  "r.plan || null": "argvOf's options, the request's own plan"
+}
+
+// The first and last line of `name`'s body in Model.js's text.
+function bodyLines(text, name) {
+  const fn = functionBody(text, name)
+  return fn ? [fn.line, fn.line + fn.body.split("\n").length - 1] : null
+}
+
+// 3b. A plan's apply (M4-D28): an apply argv comes only from the preview the widget
+// just ran. The literal "apply" lives only in Model.js's CLI_PATHS and APPLY_FUNCTIONS,
+// never in QML and never in an array literal; every plan Service.qml runs is the one
+// Model.previewDecision took from Model.planFrom.
+function checkApplyProvenance(files) {
+  const out = []
+  const message = "an apply argv outside Model.planFrom"
+  for (const name of Object.keys(files)) {
+    const code = codeOf(files[name])
+    const allowed = []
+    if (name === "Model.js") {
+      const raw = files[name]
+      const begin = raw.indexOf("// BEGIN CLI_PATHS")
+      const end = raw.indexOf("// END CLI_PATHS")
+      if (begin >= 0 && end > begin) allowed.push([lineAt(raw, begin), lineAt(raw, end)])
+      for (const fn of APPLY_FUNCTIONS) {
+        const range = bodyLines(raw, fn)
+        if (range) allowed.push(range)
+      }
+    }
+    const literal = /["'`]apply["'`]/g
+    let m
+    while ((m = literal.exec(code))) {
+      const line = lineAt(code, m.index)
+      if (name.endsWith(".qml") || !allowed.some((r) => line >= r[0] && line <= r[1])) out.push(violation(name, line, message))
+    }
+    for (const l of lines(files[name])) {
+      if (/\[[^\]\n]*["'`]apply["'`]/.test(l.text)) out.push(violation(name, l.n, message + " (an array literal)"))
+    }
+  }
+  const service = codeOf(files["Service.qml"] || "")
+  const notFromPlan = "a plan not from Model.planFrom"
+  const enclosing = (index) => {
+    const start = service.lastIndexOf("function ", index)
+    const open = service.indexOf("{", start)
+    return { head: service.slice(start, open), body: balanced(service, open) }
+  }
+  const values = /"plan":\s*([^,}\n]+)/g
+  let v
+  while ((v = values.exec(service))) {
+    const value = v[1].trim()
+    const line = lineAt(service, v.index)
+    if (!PLAN_VALUES.hasOwnProperty(value)) {
+      out.push(violation("Service.qml", line, notFromPlan + ": " + value))
+      continue
+    }
+    const fn = enclosing(v.index)
+    if (value === "plan" && !/\(plan\b/.test(fn.head) && !/var plan = Model\.planFrom\(/.test(fn.body)) {
+      out.push(violation("Service.qml", line, notFromPlan + ": plan is neither a parameter nor Model.planFrom's"))
+    }
+    if (value === "decision.plan" && !/var decision = Model\.previewDecision\(/.test(fn.body)) {
+      out.push(violation("Service.qml", line, notFromPlan + ": decision is not Model.previewDecision's"))
+    }
+  }
+  // runPlan applies only a decision's plan or the pending confirmation's.
+  for (const c of calls({ "Service.qml": files["Service.qml"] || "" }, /(?<!function )\brunPlan\(/)) {
+    const from = c.args.match(/^\((decision|pending)\.plan,/)
+    if (!from) out.push(violation("Service.qml", c.line, notFromPlan + ": runPlan" + c.args.slice(0, 40)))
+    else if (from[1] === "decision" && !/var decision = Model\.previewDecision\(/.test(enclosing(lineIndex(service, c.line)).body)) {
+      out.push(violation("Service.qml", c.line, notFromPlan + ": decision is not Model.previewDecision's"))
+    }
+  }
+  const argvOf = service.slice(service.indexOf("function argvOf("))
+  if (!/"plan": r\.plan \|\| null/.test(balanced(argvOf, argvOf.indexOf("{")))) {
+    out.push(violation("Service.qml", lineAt(service, service.indexOf("function argvOf(")), "argvOf passes no request's plan"))
+  }
+  return out
+}
+
+// The character index where `line` (from 1) starts in `text`.
+function lineIndex(text, line) {
+  let at = 0
+  for (let n = 1; n < line && at >= 0; n++) at = text.indexOf("\n", at) + 1
+  return at
+}
+
 // 4. Files and URLs (M3-D3): the widget writes no file and opens only safe URLs.
 function checkFiles(files) {
   const out = []
@@ -316,12 +424,41 @@ function needsPreview(name) {
   return !!t && (!!t.preview || M.CLI_PATHS[M.templateShape(name, M.COMMANDS).path].destructive === true)
 }
 
-// 6. Previews (M3-D9, M3-D46): a destructive action reaches a lane only through the
-// preview flow. Views reach the service through run, runBound, runCliArgv and
-// confirmYes, which route destructive work to previewOf; nothing names a destructive
-// template in a direct mutation.
+// The plan-storing paths (M4-D22), from Model.js's text.
+function planPathsOf(model) {
+  const m = model.match(/^var PLAN_PATHS = (\[[^\n]*\])\n\/\/ END PLAN_PATHS/m)
+  return m ? JSON.parse(m[1]) : null
+}
+
+// Templates on a plan-storing path that run directly: they change only the record's
+// pin flag (no --version, which would install a release) and are undoable (M3-D9).
+const RECORD_ONLY = ["pin", "unpin"]
+
+// 6. Previews (M3-D9, M3-D46, M4-D28): a destructive action, and every template that
+// changes addons on a plan-storing path, reaches a lane only through the preview flow.
+// Views reach the service through run, runBound, runCliArgv and confirmYes, which route
+// that work to previewOf; nothing names such a template in a direct mutation; a match
+// preview alone runs under the network deadline.
 function checkPreviews(files) {
   const out = []
+  const model = files["Model.js"] || ""
+  const table = tableOf(model)
+  const planPaths = planPathsOf(model)
+  if (!table || !planPaths) return [violation("Model.js", 1, "no COMMANDS table or PLAN_PATHS list")]
+  const start = model.search(/^var COMMANDS = \{/m)
+  for (const [name, t] of Object.entries(table)) {
+    const line = lineAt(model, model.indexOf('"' + name + '":', start))
+    const path = M.templateShape(name, table).path
+    if (t.confirm !== undefined) out.push(violation("Model.js", line, name + " keeps the old confirm key"))
+    const changesAddons = t.mutates === true && planPaths.includes(path)
+    const previews = t.preview === "match" || t.preview === "confirm"
+    if (changesAddons && (RECORD_ONLY.includes(name) ? t.argv.includes("--version") : !previews)) {
+      out.push(violation("Model.js", line, name + " changes addons without a preview"))
+    }
+    if (M.CLI_PATHS[path] && M.CLI_PATHS[path].destructive && t.preview !== "confirm") {
+      out.push(violation("Model.js", line, name + " is destructive without preview: confirm"))
+    }
+  }
   for (const name of Object.keys(files).filter((n) => n !== "Service.qml")) {
     for (const l of lines(files[name])) {
       if (/\b(mutation|previewOf|request|laneNamed|argvOf|pump)\(/.test(l.text)) out.push(violation(name, l.n, "reaches the service's lanes around run, runBound and runCliArgv"))
@@ -341,6 +478,71 @@ function checkPreviews(files) {
     const at = service.indexOf(head)
     if (at < 0 || !route.test(balanced(service.slice(at), service.slice(at).indexOf("{")))) {
       out.push(violation("Service.qml", at < 0 ? 1 : lineAt(service, at), head.slice(9) + ") does not route destructive work to its preview"))
+    }
+  }
+  const previewAt = service.indexOf("function previewOf(")
+  const previewBody = previewAt < 0 ? "" : balanced(service.slice(previewAt), service.slice(previewAt).indexOf("{"))
+  if (!/if \(spec\.mode === "match"\) \{[^}]*deadlineMs = networkDeadlineMs/.test(previewBody)
+      || (previewBody.match(/networkDeadlineMs/g) || []).length !== 1) {
+    out.push(violation("Service.qml", previewAt < 0 ? 1 : lineAt(service, previewAt), "previewOf gives the network deadline to more than a match preview"))
+  }
+  return out
+}
+
+// Model.js functions whose body mentions warnings and reads a `.message` that decides
+// nothing, each with what it reads.
+const MESSAGE_READERS = {
+  "warningsOf": "a warning's message, to show it beside its fix",
+  "warningMessages": "the messages of the warnings of one code, to show them",
+  "reduceStatus": "a failed status's error.message, for the bar's tooltip",
+  "issueSections": "each warning warningsOf reduced, as its row's title"
+}
+// The plan runner's decisions (M4-D28): typed fields only.
+const DECISIONS = ["planFrom", "approvalOf", "requestedItems", "selectionMatches", "previewDecision", "reasonText", "changeLines"]
+const COMPARISON = /===|!==|==|indexOf\(|\.test\(|\.match\(|includes\(|some\(|find\(|filter\(|startsWith\(/
+
+// 9. Warnings decide nothing (M4-D28): a warning's text is shown, never tested; the
+// plan runner's decisions read no warning at all.
+function checkWarnings(files) {
+  const out = []
+  const model = files["Model.js"] || ""
+  const code = codeOf(model)
+  const heads = /^function (\w+)\(/gm
+  let m
+  while ((m = heads.exec(code))) {
+    const fn = functionBody(model, m[1])
+    if (fn && /\bwarnings\b/.test(fn.body) && /\.message\b/.test(fn.body) && !MESSAGE_READERS.hasOwnProperty(m[1])) {
+      out.push(violation("Model.js", fn.line, m[1] + " reads a warning's message"))
+    }
+  }
+  for (const name of DECISIONS) {
+    const fn = functionBody(model, name)
+    if (!fn) out.push(violation("Model.js", 1, name + " is missing"))
+    else if (/\bwarnings\b|\.message\b/.test(fn.body)) out.push(violation("Model.js", fn.line, name + " reads warnings"))
+  }
+  for (const name of Object.keys(files)) {
+    for (const l of lines(files[name])) {
+      if (/warningMessages\(/.test(l.text) && COMPARISON.test(l.text)) out.push(violation(name, l.n, "a warning's text decides something"))
+    }
+  }
+  for (const name of qmlNames(files)) {
+    for (const l of lines(files[name])) {
+      if (/\.message\b/.test(l.text) && /warning/i.test(l.text) && COMPARISON.test(l.text)) {
+        out.push(violation(name, l.n, "a view decides from a warning's text"))
+      }
+    }
+  }
+  return out
+}
+
+// 10. No issue by its id (M4-D48): the widget lists `issues[]` as the CLI reports them,
+// so a failure-mode id the CLI narrows or splits changes nothing the widget decides.
+function checkIssueIds(files) {
+  const out = []
+  for (const name of Object.keys(files)) {
+    for (const l of lines(files[name])) {
+      if (/["'`]fm-[a-z]/.test(l.text)) out.push(violation(name, l.n, "a literal failure-mode id (the widget lists issues generically, M4-D48)"))
+      if (/\b(issue|row|mi|i)\.id\s*[!=]==?\s*["'`]/.test(l.text)) out.push(violation(name, l.n, "an issue matched by its id"))
     }
   }
   return out
@@ -407,11 +609,14 @@ const CHECKS = [
   ["1. rendering", checkRendering],
   ["2. process launching", checkLaunching],
   ["3. argv provenance", checkProvenance],
+  ["3b. apply from its plan", checkApplyProvenance],
   ["4. files and URLs", checkFiles],
   ["5. slots", checkSlots],
   ["6. previews", checkPreviews],
   ["7. notifications", checkNotifications],
   ["8. the plugin id", checkPluginId],
+  ["9. warnings decide nothing", checkWarnings],
+  ["10. no issue id by name", checkIssueIds],
 ]
 
 // ------------------------------------------------------------------ the tests
@@ -463,6 +668,33 @@ const PLANTED = [
     plant(REAL, "Model.js", "function errorToastArgv(facts, pluginId) {\n", "  var leak = facts.message\n"), /errorToastArgv reads message/],
   ["8. the plugin id", checkPluginId, "a literal id in serviceFor",
     plant(REAL, "BarWidget.qml", "  ipcTarget: Build.PLUGIN_ID\n", '  readonly property var planted: shell.serviceFor("' + ID + '")\n'), /literal plugin id|serviceFor takes Build\.PLUGIN_ID/],
+  ["3b. apply from its plan", checkApplyProvenance, "a hand-built apply argv",
+    plant(REAL, "Service.qml", "  function afterStatus() {\n", '    mutation({ "resource": "x", "cli": ["omaddons", "apply", "01M8Q2ZZZZZZZZZZZZZZZZZZZZ"], "label": "x" })\n'),
+    /apply argv outside Model\.planFrom/],
+  ["3b. apply from its plan", checkApplyProvenance, "a plan from a literal",
+    plant(REAL, "Service.qml", "  function afterStatus() {\n", '    mutation({ "resource": "x", "plan": { "argv": ["omaddons"] }, "label": "x" })\n'),
+    /plan not from Model\.planFrom/],
+  ["3b. apply from its plan", checkApplyProvenance, "a fix that offers apply",
+    plant(REAL, "Model.js", "function fixButtons(env) {\n", '  var sneaky = ["omaddons", "apply"]\n'), /apply argv outside Model\.planFrom/],
+  ["6. previews", checkPreviews, "update_addon without its preview",
+    unplant(REAL, "Model.js", '"update_addon":', ', "preview": "match"'), /update_addon changes addons without a preview/],
+  ["6. previews", checkPreviews, "a pin with a version and no preview",
+    plant(REAL, "Model.js", '"pin":            { "argv": ["pin", "-t", "{target}"', ', "--version", "1"'), /pin changes addons without a preview/],
+  ["6. previews", checkPreviews, "the old confirm key",
+    plant(REAL, "Model.js", '"remove":         { "argv": ["remove", "-t", "{target}", "--", "{addon}"],        "mutates": true', ', "confirm": true'),
+    /keeps the old confirm key/],
+  ["9. warnings decide nothing", checkWarnings, "the routine rule reading a warning",
+    plant(REAL, "Model.js", "function previewDecision(spec, env) {\n", "  if (env.warnings && env.warnings[0] && env.warnings[0].message) return null\n"),
+    /previewDecision reads warnings/],
+  ["9. warnings decide nothing", checkWarnings, "a helper testing a warning's text",
+    plant(REAL, "Model.js", "// -------------------------------------------------------------- the reducers\n",
+      'function sneaky(env) { return env.warnings[0].message.indexOf("dependency") >= 0 }\n'), /sneaky reads a warning's message/],
+  ["9. warnings decide nothing", checkWarnings, "a service deciding from warning text",
+    plant(REAL, "Service.qml", "  function afterStatus() {\n", '    if (Model.warningMessages(env, "x")[0] === "y") refresh()\n'), /a warning's text decides something/],
+  ["10. no issue id by name", checkIssueIds, "an id literal in the Issues view",
+    plant(REAL, "views/IssuesView.qml", "Item {\n",
+      '  readonly property bool planted: !!svc && svc.targets.some(function(t) { return t.issues.some(function(i) { return i.id === "fm-concurrency_primitives-journal-pending" }) })\n'),
+    /literal failure-mode id|issue matched by its id/],
 ]
 
 describe("each scan catches its planted violation", () => {
@@ -494,6 +726,39 @@ describe("the mechanisms behind the scans", () => {
       if (!row.destructive) continue
       expect(() => M.cliArgv(["omaddons"].concat(cliPath.split(" ")).concat(["-t", "retail"]), opts)).toThrow(/destructive_without_preview/)
     }
+  })
+
+  // A dry run that stored plan `id`, offering exactly its apply.
+  const PLAN_ID = "01M8Q2ZZZZZZZZZZZZZZZZZZZZ"
+  const previewWith = (id) => ({ ok: true, schema_version: "1.0", tool_version: "0.1.0", command: "update", exit_code: 0, partial: false,
+    data: { plan_id: id, plan_expires_at: "2100-01-02T00:00:00Z", approval: { routine: true, reasons: [], selection: [], scope: {} } },
+    warnings: [], commands: [{ action: "apply", command: "omaddons apply " + id, argv: ["omaddons", "apply", id], destructive: false }] })
+
+  test("apply runs only from its plan", () => {
+    const argv = ["omaddons", "apply", PLAN_ID]
+    expect(M.classifyCliArgv(argv).reason).toBe("apply_outside_plan")
+    expect(() => M.cliArgv(argv, opts)).toThrow(/apply_outside_plan/)
+    const plan = M.planFrom(previewWith(PLAN_ID))
+    expect(M.cliArgv(argv, Object.assign({ plan: plan }, opts)).argv.slice(-2)).toEqual(["apply", PLAN_ID])
+    const other = M.planFrom(previewWith("01M8Q2YYYYYYYYYYYYYYYYYYYY"))
+    expect(() => M.cliArgv(argv, Object.assign({ plan: other }, opts))).toThrow(/apply_outside_plan/)
+  })
+
+  test("a remediation, a fix, an alternative and a commands[] entry offering apply never become buttons", () => {
+    const argv = ["omaddons", "apply", PLAN_ID]
+    const offered = "omaddons apply " + PLAN_ID
+    const status = { ok: true, schema_version: "1.0", tool_version: "0.1.0", command: "status", exit_code: 0, partial: false,
+      data: { targets: [{ id: "retail", issues: [{ id: "x", severity: "P2", title: "t", remediation: { command: offered, argv: argv, destructive: false } }] }] },
+      warnings: [{ code: "w", message: "m", fix: offered, fix_argv: argv }],
+      commands: [{ action: "apply", command: offered, argv: argv, destructive: false }] }
+    const reduced = M.reduceStatus(status)
+    expect(reduced.targets[0].issues[0].remediation.runnable).toBe(false)
+    expect(reduced.commands.map((c) => c.runnable)).toEqual([false])
+    expect(reduced.warnings[0].fix).toBeNull()
+    const failure = { ok: false, schema_version: "1.0", tool_version: "0.1.0", command: "update", exit_code: 1, warnings: [], commands: [],
+      error: { code: "x", message: "y", fix: offered, fix_argv: argv, alternatives: [{ display: offered, argv: argv }], retryable: false, details: {} } }
+    expect(M.fixButtons(failure)).toEqual([])
+    expect(M.resultUndo({ commands: [{ action: "undo", argv: argv, runnable: false }] })).toBeNull()
   })
 
   test("every built argv runs under the stamped context", () => {

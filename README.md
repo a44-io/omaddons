@@ -1823,6 +1823,7 @@ The widget keeps a few rules, and every gate checks them:
 - It writes no file.
 - It shows the CLI's strings as plain text, and decides nothing from a warning's text.
 - An update, an install, a reinstall or a destructive action runs only after its preview, and only as that preview's `apply`.
+- It lists `status`'s issues as the CLI reports them and matches none by its id, so a failure-mode id the CLI narrows or splits changes nothing it decides.
 - A notification carries names and counts only.
 
 `omarchy/tests/security.test.js` scans the widget's source for code that goes around any of these, and each scan must also catch a violation planted in a copy of the source.
