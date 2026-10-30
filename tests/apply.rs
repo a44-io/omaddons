@@ -6,6 +6,10 @@ mod applying;
 #[path = "apply/commands.rs"]
 mod commands;
 mod common;
+#[path = "apply/drift.rs"]
+mod drift;
+#[path = "apply/drift_support.rs"]
+mod drift_support;
 #[path = "apply/witness.rs"]
 mod witness;
 
