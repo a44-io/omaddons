@@ -179,6 +179,227 @@ pub fn check_envelope(stdout: &str, stderr: &str, code: i32) -> Value {
     envelope
 }
 
+/// The seven failure modes `status` publishes, planted on a [`Home`] whose products are
+/// among `wow` (`retail`), `wow_classic` (`classic`) and `wow_classic_era` (`era`),
+/// through the binary where a change command makes the state and on disk otherwise. Each helper asserts that what it ran
+/// succeeded, and is deterministic. Order matters twice: `state_version_newer` after every
+/// change on its client (a newer record refuses changes), and `journal_pending` last (any
+/// later change command recovers its journal first).
+pub mod plant {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use serde_json::{Value, json};
+
+    use crate::common::archives::zip_text;
+    use crate::common::home::{Home, Run};
+    use crate::common::http::{Asset, gh_release};
+
+    /// Every addon here loads on all three clients.
+    const FLAVORS: &[(&str, u32)] = &[
+        ("mainline", 120_105),
+        ("mists", 50_504),
+        ("classic", 11_509),
+    ];
+    const TOC: &str = "## Interface: 120105, 50504, 11509\n## Version: v1\n";
+    /// Each addon's one Lua file, as its release ships it.
+    pub const LUA: &str = "local loaded = true\n";
+
+    /// A target id's client folder.
+    pub fn client_folder(target: &str) -> &'static str {
+        match target {
+            "classic" => "_classic_",
+            "era" => "_classic_era_",
+            _ => "_retail_",
+        }
+    }
+
+    /// `foo` → `Foo`: an addon's one folder.
+    pub fn folder(addon: &str) -> String {
+        let mut chars = addon.chars();
+        chars
+            .next()
+            .map(|first| first.to_ascii_uppercase().to_string() + chars.as_str())
+            .unwrap_or_default()
+    }
+
+    /// `omaddons <args> --json`, which must exit 0.
+    fn must(home: &Home, args: &[&str]) -> Run {
+        let run = home.run(args);
+        assert_eq!(run.code, 0, "planting: {args:?}\n{}", run.context());
+        run
+    }
+
+    /// Serves release v1 of `gh:o/<addon>`: one folder `<Addon>` holding its TOC and
+    /// [`LUA`].
+    pub fn serve(home: &Home, addon: &str) {
+        let name = folder(addon);
+        let (zip, toc, lua) = (
+            format!("{name}.zip"),
+            format!("{name}/{name}.toc"),
+            format!("{name}/{name}.lua"),
+        );
+        let assets: [Asset<'_>; 1] = [(&zip, FLAVORS, vec![(&toc, TOC), (&lua, LUA)])];
+        gh_release(
+            &home.http,
+            &format!("https://github.com/o/{addon}"),
+            "v1",
+            &assets,
+        );
+    }
+
+    /// `gh:o/<addon>` served and installed on `target`.
+    pub fn install(home: &Home, addon: &str, target: &str) {
+        serve(home, addon);
+        must(home, &["install", &format!("gh:o/{addon}"), "-t", target]);
+    }
+
+    /// The Lua file of `addon` on `target`.
+    pub fn lua_file(home: &Home, target: &str, addon: &str) -> PathBuf {
+        let name = folder(addon);
+        home.addons(client_folder(target))
+            .join(&name)
+            .join(format!("{name}.lua"))
+    }
+
+    /// `fm-external_artifacts-managed-files-modified` (P2, `addon=<addon>` on `target`):
+    /// `addon` installed, then its Lua file edited by hand (evidence: its counts).
+    pub fn managed_files_modified(home: &Home, target: &str, addon: &str) {
+        install(home, addon, target);
+        fs::write(lua_file(home, target, addon), "local loaded = false\n").unwrap();
+    }
+
+    /// Puts back the bytes [`managed_files_modified`] replaced: the finding is resolved.
+    pub fn restore_file(home: &Home, target: &str, addon: &str) {
+        fs::write(lua_file(home, target, addon), LUA).unwrap();
+    }
+
+    /// `fm-state_files-record-folder-missing` (P1, `addon=<addon>` on `target`): `addon`
+    /// installed, then its folder deleted.
+    pub fn record_folder_missing(home: &Home, target: &str, addon: &str) {
+        install(home, addon, target);
+        fs::remove_dir_all(home.addons(client_folder(target)).join(folder(addon))).unwrap();
+    }
+
+    /// `fm-external_artifacts-ownership-transferred` (P2, on `target`): `gh:o/foo`
+    /// installed, then `gh:o/bar` from an archive that also ships `Foo/`, with `--force`:
+    /// Foo is degraded.
+    pub fn ownership_transferred(home: &Home, target: &str) {
+        install(home, "foo", target);
+        let zip = home.env.root().join("barfoo.zip");
+        fs::write(
+            &zip,
+            zip_text(&[("Bar/Bar.toc", TOC), ("Foo/Foo.toc", TOC)]),
+        )
+        .unwrap();
+        let zip = zip.display().to_string();
+        must(
+            home,
+            &[
+                "install", "gh:o/bar", "--file", &zip, "-t", target, "--force",
+            ],
+        );
+    }
+
+    /// `fm-userland_state-target-vanished` (P2, on `target`): `target` registered by an
+    /// install, then its client directory moved away; returns its id.
+    pub fn target_vanished(home: &Home, target: &str) -> String {
+        install(home, "gone", target);
+        fs::rename(
+            home.client(client_folder(target)),
+            home.env.root().join(format!("unplugged-{target}")),
+        )
+        .unwrap();
+        target.to_owned()
+    }
+
+    /// The key `target` is registered under.
+    pub fn target_key(home: &Home, target: &str) -> String {
+        let registry: Value =
+            serde_json::from_slice(&fs::read(home.state().join("registry.json")).unwrap()).unwrap();
+        registry["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == target)
+            .and_then(|entry| entry["key"].as_str())
+            .unwrap()
+            .to_owned()
+    }
+
+    /// `fm-schemas-state-version-newer` (P0, `path=<record>` on `target`): an addon
+    /// installed, then the client's record stamped as a newer omaddons would write it (it
+    /// still decodes). After every change on `target`: a newer record refuses them.
+    pub fn state_version_newer(home: &Home, target: &str) {
+        install(home, "newer", target);
+        let record = home
+            .state()
+            .join("targets")
+            .join(format!("{}.json", target_key(home, target)));
+        let mut doc: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        doc["schema_version"] = json!("1.99");
+        fs::write(&record, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+    }
+
+    /// Where a run finds Omarchy's shell: give every run `OMARCHY_PATH` set to it, so the
+    /// test does not depend on the machine's own Omarchy.
+    pub fn omarchy_path(home: &Home) -> PathBuf {
+        home.env.root().join("omarchy")
+    }
+
+    /// `fm-plugins-widget-version-drift` (P3, about the machine): Omarchy present (with
+    /// [`omarchy_path`]) and a bar widget installed without its `Build.js`, which no build
+    /// renders: outdated.
+    pub fn widget_version_drift(home: &Home) {
+        fs::create_dir_all(omarchy_path(home).join("shell")).unwrap();
+        let plugin = home.env.config().join("omarchy/plugins/omaddons");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(
+            plugin.join("manifest.json"),
+            r#"{"id": "a44.omaddons", "version": "0.0.9"}"#,
+        )
+        .unwrap();
+    }
+
+    /// `fm-concurrency_primitives-journal-pending` (P0, `tx=<tx>` on `target`): an install
+    /// killed after its journal's `prepared` line (`engine.journal.prepared=abort`).
+    /// Last: any later change command recovers it first.
+    pub fn journal_pending(home: &Home, target: &str) {
+        serve(home, "stuck");
+        let args = ["install", "gh:o/stuck", "-t", target, "--json"].map(str::to_owned);
+        let crashed = home.exec_with(
+            &args,
+            &[("OMADDONS_FAILPOINTS", "engine.journal.prepared=abort")],
+        );
+        assert_eq!(
+            crashed.code,
+            -1,
+            "planting a journal\n{}",
+            crashed.context()
+        );
+    }
+
+    /// The published run directories' names, sorted; never a stage (`.<id>.tmp`).
+    pub fn runs(home: &Home) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(home.state().join("doctor/runs"))
+            .map(|listing| {
+                listing
+                    .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                    .filter(|name| !name.starts_with('.'))
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// The run `latest` names, when it is there.
+    pub fn latest(home: &Home) -> Option<String> {
+        let target = fs::read_link(home.state().join("doctor/latest")).ok()?;
+        target.file_name()?.to_str().map(str::to_owned)
+    }
+}
+
 /// The doctor envelope in the general shape, its report under `data` (when it has one),
 /// so the general validator checks each part against its schema.
 pub fn as_general(envelope: &Value) -> Value {

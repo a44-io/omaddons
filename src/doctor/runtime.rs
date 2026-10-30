@@ -20,7 +20,9 @@ use serde::Serialize;
 use ulid::Ulid;
 
 use super::budget::{self, Budget};
-use super::finding::{Confidence, Detected, Evidence, Finding, Incomplete, Observation, Subject};
+use super::finding::{
+    Confidence, Detected, Evidence, Finding, Incomplete, IncompleteLimit, Observation, Subject,
+};
 use super::registry::{self, DetectFn, FailureMode, Tier, ids};
 use super::selection::{Selection, Skipped, partition, target_skips, visible_failures};
 use super::view::{DoctorView, merge_findings};
@@ -253,12 +255,15 @@ impl<'a> Runtime<'a> {
                 continue;
             };
             checks_run += 1;
+            // Under a run's `--budget`, the check's share of it, as planned.
+            let mut share = None;
             let mut budget = match budgets {
                 Budgets::TierDefaults => Budget::for_tier(row.tier),
                 Budgets::Run(total) => {
                     let left = total.saturating_sub(clock.elapsed());
-                    let share = shares.get(at).copied().unwrap_or(left);
-                    Budget::new(share.min(left), DOCTOR_SCAN_MAX_ENTRIES)
+                    let planned = shares.get(at).copied().unwrap_or(left);
+                    share = Some(planned);
+                    Budget::new(planned.min(left), DOCTOR_SCAN_MAX_ENTRIES)
                 }
                 Budgets::Each {
                     deadline,
@@ -268,7 +273,13 @@ impl<'a> Runtime<'a> {
             match run_check(row, detect, view, selection, &mut budget) {
                 Checked::Ran { findings, cut } => {
                     detected.extend(findings);
-                    if let Some(cut) = cut {
+                    if let Some(mut cut) = cut {
+                        // The share, never what was left of it when the check started:
+                        // two runs over one state record the same deadline.
+                        if let (Some(share), IncompleteLimit::Deadline) = (share, cut.limit) {
+                            cut.deadline_ms =
+                                Some(u64::try_from(share.as_millis()).unwrap_or(u64::MAX));
+                        }
                         incomplete += 1;
                         detected.extend(runtime_finding(ids::CHECK_INCOMPLETE, |subject| {
                             incomplete_observation(subject, row, cut)
