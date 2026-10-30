@@ -288,7 +288,7 @@ impl fmt::Display for StateDigest {
 /// describe `path`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ActionRecord {
-    /// 1-based within a transaction; 0 in untracked sessions.
+    /// 1-based within a transaction or a logged untracked session; 0 in an untracked one.
     pub seq: u64,
     pub path: String,
     pub to: Option<String>,
@@ -375,27 +375,67 @@ pub fn mutate_with(
     )?;
     failpoint::hit("fsx.mutate.checked").map_err(io_err(&target))?;
 
-    let SessionKind::Tx(state) = &mut s.kind else {
-        let executed = execute(
-            &target,
-            to.as_deref(),
-            op,
-            (opts.durability, opts.expect.as_ref()),
-        )?;
-        return Ok(ActionRecord {
-            seq: 0,
-            path: target.to_string_lossy().into_owned(),
-            to: to.map(|to| to.to_string_lossy().into_owned()),
-            op: wire.to_owned(),
-            before_hash: None,
-            after_hash: None,
-            backup: None,
-            started_at_ns,
-            finished_at_ns: now_ns(),
-            tx: None,
-            ok: true,
-            clone: executed.clone,
-        });
+    let state = match &mut s.kind {
+        SessionKind::Tx(state) => state,
+        SessionKind::Untracked { .. } => {
+            let executed = execute(
+                &target,
+                to.as_deref(),
+                op,
+                (opts.durability, opts.expect.as_ref()),
+            )?;
+            return Ok(ActionRecord {
+                seq: 0,
+                path: target.to_string_lossy().into_owned(),
+                to: to.map(|to| to.to_string_lossy().into_owned()),
+                op: wire.to_owned(),
+                before_hash: None,
+                after_hash: None,
+                backup: None,
+                started_at_ns,
+                finished_at_ns: now_ns(),
+                tx: None,
+                ok: true,
+                clone: executed.clone,
+            });
+        }
+        // As untracked, then the line, written for a failed execution too.
+        SessionKind::UntrackedLogged { log, .. } => {
+            let exchange = matches!(
+                op,
+                Op::Rename {
+                    mode: RenameMode::Exchange,
+                    ..
+                }
+            );
+            let executed = execute(
+                &target,
+                to.as_deref(),
+                op,
+                (opts.durability, opts.expect.as_ref()),
+            );
+            let record = ActionRecord {
+                seq: log.next_seq(),
+                path: target.to_string_lossy().into_owned(),
+                to: to.as_ref().map(|to| to.to_string_lossy().into_owned()),
+                op: wire.to_owned(),
+                before_hash: None,
+                after_hash: None,
+                backup: None,
+                started_at_ns,
+                finished_at_ns: now_ns(),
+                tx: None,
+                ok: executed.is_ok(),
+                clone: executed.as_ref().ok().and_then(|e| e.clone),
+            };
+            let moved = to
+                .as_deref()
+                .filter(|_| executed.is_ok())
+                .map(|to| (target.as_path(), to, exchange));
+            log.record(record.clone(), moved)?;
+            executed?;
+            return Ok(record);
+        }
     };
     // The table's roots are canonical, while these two are built from `Paths` as given:
     // compared resolved, so a symlinked `~/.local` (or state home) is still inside.
@@ -2102,5 +2142,268 @@ mod tests {
                 failpoint::with_spec("fsx.renameat2.einval", || probe_exchange(&mut s, &again));
             assert!(!unsupported.unwrap(), "EINVAL is unsupported, not an error");
         }
+    }
+
+    // ---- logged untracked sessions: the doctor runtime's `runtime.jsonl` ----
+
+    /// `<state>/doctor/runs/`, the state dir made as the runtime finds it.
+    fn runs_of(f: &Fixture) -> PathBuf {
+        fs::create_dir_all(f.paths.state_dir()).unwrap();
+        f.paths.doctor_runs_dir()
+    }
+
+    fn logged<'a>(f: &'a Fixture, log: &Path) -> WriteSession<'a> {
+        WriteSession::untracked_logged(Writer::Doctor, &f.scopes, "doctor runtime", log.into())
+    }
+
+    /// The log's lines, and its text for failure messages.
+    fn lines_of(log: &Path) -> (Vec<ActionRecord>, String) {
+        let text = fs::read_to_string(log).unwrap_or_default();
+        let lines = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        (lines, text)
+    }
+
+    fn create_dir(s: &mut WriteSession<'_>, path: &Path) {
+        mutate(s, path, Op::CreateDir).unwrap();
+    }
+
+    #[test]
+    fn logged_session_writes_one_line_per_mutate() {
+        let f = Fixture::new();
+        let runs = runs_of(&f);
+        let run = runs.join("x");
+        let log = run.join("runtime.jsonl");
+        let mut s = logged(&f, &log);
+        assert_eq!(
+            (s.untracked_reason(), s.tx_id(), s.actions_log()),
+            (Some("doctor runtime"), None, None)
+        );
+        for dir in [runs.parent().unwrap(), &runs, &run] {
+            create_dir(&mut s, dir);
+        }
+        let report = mutate(&mut s, &run.join("report.json"), write(b"{}")).unwrap();
+        assert_eq!((report.seq, report.tx), (4, None), "{report:?}");
+
+        let (lines, text) = lines_of(&log);
+        let ops: Vec<(u64, &str)> = lines.iter().map(|l| (l.seq, l.op.as_str())).collect();
+        assert_eq!(
+            ops,
+            [
+                (1, "create_dir"),
+                (2, "create_dir"),
+                (3, "create_dir"),
+                (4, "write_file")
+            ],
+            "{text}"
+        );
+        for line in &lines {
+            assert_eq!(
+                (
+                    &line.tx,
+                    &line.before_hash,
+                    &line.after_hash,
+                    &line.backup,
+                    line.ok
+                ),
+                (&None, &None, &None, &None, true),
+                "no transaction, digests or backups: {text}"
+            );
+        }
+        assert_eq!(lines[3].path, run.join("report.json").to_string_lossy());
+        assert_eq!(s.logged_seq(), 4);
+    }
+
+    #[test]
+    fn lines_wait_until_the_log_directory_exists() {
+        let f = Fixture::new();
+        let runs = runs_of(&f);
+        let run = runs.join("x");
+        let log = run.join("runtime.jsonl");
+        let mut s = logged(&f, &log);
+        create_dir(&mut s, runs.parent().unwrap());
+        create_dir(&mut s, &runs);
+        assert!(!log.exists(), "no directory, no log yet");
+        assert_eq!(s.logged_seq(), 2, "both lines wait");
+        create_dir(&mut s, &run);
+        let (lines, text) = lines_of(&log);
+        let seqs: Vec<u64> = lines.iter().map(|l| l.seq).collect();
+        assert_eq!(seqs, [1, 2, 3], "written in order once it exists: {text}");
+    }
+
+    #[test]
+    fn the_log_follows_a_rename_of_its_parent() {
+        let f = Fixture::new();
+        let runs = runs_of(&f);
+        fs::create_dir_all(&runs).unwrap();
+        let staged = runs.join(".x.tmp");
+        let run = runs.join("x");
+        let mut s = logged(&f, &staged.join("runtime.jsonl"));
+        create_dir(&mut s, &staged);
+        mutate(
+            &mut s,
+            &staged,
+            Op::Rename {
+                to: &run,
+                mode: RenameMode::NoReplace,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.log_path(), Some(run.join("runtime.jsonl").as_path()));
+        mutate(&mut s, &run.join("report.json"), write(b"{}")).unwrap();
+        assert!(!staged.exists(), "the staged name is gone");
+        let (lines, text) = lines_of(&run.join("runtime.jsonl"));
+        let ops: Vec<&str> = lines.iter().map(|l| l.op.as_str()).collect();
+        assert_eq!(
+            ops,
+            ["create_dir", "rename_noreplace", "write_file"],
+            "{text}"
+        );
+        assert_eq!(
+            lines[1].to.as_deref(),
+            Some(run.to_string_lossy().as_ref()),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn appends_survive_chmod_0400() {
+        if rustix::process::geteuid().is_root() {
+            return; // root writes a 0400 file anyway, so there is nothing to show
+        }
+        let f = Fixture::new();
+        let runs = runs_of(&f);
+        let run = runs.join("x");
+        fs::create_dir_all(&run).unwrap();
+        let log = run.join("runtime.jsonl");
+        let report = run.join("report.json");
+        let mut s = logged(&f, &log);
+        mutate(&mut s, &report, write(b"{}")).unwrap();
+        mutate(&mut s, &log, Op::Chmod { mode: 0o400 }).unwrap();
+        mutate(&mut s, &report, Op::Chmod { mode: 0o400 }).unwrap();
+        let (lines, text) = lines_of(&log);
+        let ops: Vec<(&str, &str)> = lines
+            .iter()
+            .map(|l| (l.op.as_str(), l.path.rsplit('/').next().unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            ops,
+            [
+                ("write_file", "report.json"),
+                ("chmod", "runtime.jsonl"),
+                ("chmod", "report.json")
+            ],
+            "its own chmod and the next line, through the open descriptor: {text}"
+        );
+        let mode = fs::metadata(&log).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o400);
+    }
+
+    #[test]
+    fn a_refused_op_is_not_logged() {
+        let f = Fixture::new();
+        let runs = runs_of(&f);
+        let run = runs.join("x");
+        fs::create_dir_all(&run).unwrap();
+        fs::create_dir_all(runs.join("y")).unwrap();
+        let log = run.join("runtime.jsonl");
+        let mut s = logged(&f, &log);
+        mutate(&mut s, &run.join("report.json"), write(b"{}")).unwrap();
+        let outside = f.client.parent().unwrap().join("elsewhere.txt");
+        let cases: [(&str, &Path, Op<'_>); 2] = [
+            ("outside every scope", &outside, write(b"x")),
+            (
+                "onto an existing destination",
+                &run,
+                Op::Rename {
+                    to: &runs.join("y"),
+                    mode: RenameMode::NoReplace,
+                },
+            ),
+        ];
+        for (case, path, op) in cases {
+            let refused = mutate(&mut s, path, op);
+            assert!(
+                matches!(
+                    refused,
+                    Err(FsxError::ScopeDenied(_) | FsxError::Precondition(_))
+                ),
+                "{case}: {refused:?}"
+            );
+            let (lines, text) = lines_of(&log);
+            assert_eq!(
+                (s.logged_seq(), lines.len()),
+                (1, 1),
+                "{case}: no line: {text}"
+            );
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_logged_session_logs_a_failed_execution_with_ok_false() {
+        let f = Fixture::new();
+        let runs = runs_of(&f);
+        let run = runs.join("x");
+        fs::create_dir_all(&run).unwrap();
+        let log = run.join("runtime.jsonl");
+        let mut s = logged(&f, &log);
+        let failed = failpoint::with_spec("fsx.write_atomic.before=error", || {
+            mutate(&mut s, &run.join("report.json"), write(b"{}"))
+        });
+        assert!(matches!(failed, Err(FsxError::Io { .. })), "{failed:?}");
+        let (lines, text) = lines_of(&log);
+        let logged: Vec<(u64, &str, bool)> =
+            lines.iter().map(|l| (l.seq, l.op.as_str(), l.ok)).collect();
+        assert_eq!(logged, [(1, "write_file", false)], "{text}");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_line_that_cannot_be_written_fails_its_mutate() {
+        let f = Fixture::new();
+        let runs = runs_of(&f);
+        let run = runs.join("x");
+        fs::create_dir_all(&run).unwrap();
+        let log = run.join("runtime.jsonl");
+        let report = run.join("report.json");
+        let mut s = logged(&f, &log);
+        let failed = failpoint::with_spec("fsx.log_line.before=error", || {
+            mutate(&mut s, &report, write(b"{}"))
+        });
+        let named = match &failed {
+            Err(FsxError::Io { path, .. }) => Some(path.as_path()),
+            _ => None,
+        };
+        assert_eq!(
+            named,
+            Some(log.as_path()),
+            "an I/O error naming the log: {failed:?}"
+        );
+        assert_eq!(
+            fs::read(&report).unwrap(),
+            b"{}",
+            "the operation itself ran"
+        );
+        // The line waits, and goes out with the next one.
+        mutate(&mut s, &report, Op::Chmod { mode: 0o600 }).unwrap();
+        let (lines, text) = lines_of(&log);
+        let seqs: Vec<u64> = lines.iter().map(|l| l.seq).collect();
+        assert_eq!(seqs, [1, 2], "{text}");
+    }
+
+    #[test]
+    fn the_log_is_created_0600() {
+        let f = Fixture::new();
+        let runs = runs_of(&f);
+        let run = runs.join("x");
+        fs::create_dir_all(&run).unwrap();
+        let log = run.join("runtime.jsonl");
+        let mut s = logged(&f, &log);
+        mutate(&mut s, &run.join("report.json"), write(b"{}")).unwrap();
+        let mode = fs::metadata(&log).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
     }
 }

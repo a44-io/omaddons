@@ -216,6 +216,34 @@ pub(crate) fn append_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Opens `path` for appending, creating it with `mode` when it is missing (and then
+/// fsyncing its directory), for a log written through one descriptor
+/// ([`append_durable_to`]). The descriptor keeps naming the file after the file or its
+/// directory is renamed, and after it is made read-only: permissions are checked at
+/// open, not at write.
+pub(crate) fn open_log(path: &Path, mode: u32) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let existed = fs::symlink_metadata(path).is_ok();
+    let file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(mode)
+        .open(path)?;
+    if !existed {
+        fsync_dir(parent_dir(path)?)?;
+    }
+    Ok(file)
+}
+
+/// [`append_durable`] through a log [`open_log`] opened: one write of `bytes`, then
+/// fsync.
+pub(crate) fn append_durable_to(file: &File, bytes: &[u8]) -> io::Result<()> {
+    failpoint::hit("fsx.log_line.before")?;
+    let mut writer = file;
+    writer.write_all(bytes)?;
+    fsync(file)
+}
+
 /// The id of the mount `path` is on (`statx` `STATX_MNT_ID`, Linux 5.8 and later), the
 /// final component not followed. Two paths a rename can join share it; a device number
 /// cannot tell (two bind mounts of one filesystem have the same device, and a rename
