@@ -21,11 +21,73 @@ fn never_another_mutating_command(argv: &[String], typed: Option<&str>, ctx: &st
         return;
     }
     let path = command_path(argv).join(" ");
-    let reads = path.is_empty() || !omaddons::app::mutates(&path);
     assert!(
-        reads || Some(path.as_str()) == typed,
+        only_reads(argv) || Some(path.as_str()) == typed,
         "{argv:?} runs {path}, which changes something, for a typo of {typed:?}\n{ctx}"
     );
+}
+
+/// Whether `argv` changes nothing: a command that only reads, or a preview (`--dry-run`
+/// leaves the state untouched, `special::a_dry_run_leaves_the_state_directory_as_it_was`).
+fn only_reads(argv: &[String]) -> bool {
+    let path = command_path(argv).join(" ");
+    path.is_empty() || !omaddons::app::mutates(&path) || argv.iter().any(|a| a == "--dry-run")
+}
+
+#[test]
+fn a_preview_only_reads() {
+    assert!(only_reads(&owned(&[
+        "omaddons",
+        "remove",
+        "dbm",
+        "--dry-run"
+    ])));
+    assert!(!only_reads(&owned(&["omaddons", "remove", "dbm"])));
+    assert!(only_reads(&owned(&["omaddons", "status"])));
+}
+
+/// The doctor contract's `--fix` and `--explain` are commands here (§6.11): their hints
+/// run, and a typo of `doctor` with mutating flags never gets a runnable fix.
+#[test]
+fn doctor_intent_hints_run_and_never_hand_over_a_change() {
+    let s = Scene::new();
+    let cases: [(&[&str], i32, &[&str]); 3] = [
+        (&["doctor", "--fix"], 64, &["omaddons", "help", "doctor"]),
+        (
+            &[
+                "doctor",
+                "--explain",
+                "fm-schemas-state-version-newer",
+                "-t",
+                "retail",
+            ],
+            64,
+            &[
+                "omaddons",
+                "doctor",
+                "explain",
+                "fm-schemas-state-version-newer",
+                "-t",
+                "retail",
+            ],
+        ),
+        (
+            &["doctr", "--fix", "--force", "--yes"],
+            2,
+            &["omaddons", "help"],
+        ),
+    ];
+    for (argv, code, fix) in cases {
+        let checked = s.json(argv, code);
+        let ctx = checked.run.context();
+        let all = suggestions(&checked.envelope);
+        assert_eq!(all[0], owned(fix), "{ctx}");
+        for suggestion in &all {
+            never_another_mutating_command(suggestion, None, &ctx);
+        }
+        let ran = s.home.run(&fix[1..]);
+        assert_eq!(ran.code, 0, "the fix runs: {fix:?}\n{}", ran.context());
+    }
 }
 
 /// Every suggestion of an envelope's error.

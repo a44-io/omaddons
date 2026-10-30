@@ -81,13 +81,13 @@ const EXCEPTIONS: &[Exception] = &[
     Exception {
         rule: "r4-open-enum",
         scope: "command doctor *",
-        path: "findings[].evidence.mode",
+        path: "**.evidence.mode",
         reason: "a POSIX permission mode, four octal digits checked by a pattern: no enumeration",
     },
     Exception {
         rule: "r4-value-case",
         scope: "command doctor *",
-        path: "findings[].severity",
+        path: "**.severity",
         reason: DOCTOR_CONTRACT,
     },
     Exception {

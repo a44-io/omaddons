@@ -759,6 +759,14 @@ pub fn usage_error_with(
             error
         };
     }
+    if matches!(err.kind(), ErrorKind::UnknownArgument)
+        && let Some(bad) = invalid(ContextKind::InvalidArg)
+        && let Some(error) = doctor_intent_hint(argv, &path, &bad, &|command| {
+            crate::app::command_entry(command).is_some()
+        })
+    {
+        return error;
+    }
     let words = UsageWords::new(vocabulary, names_an_addon);
     if let Some(error) =
         misplaced_before_verb(err, argv, &words).or_else(|| misplaced_after_verb(err, argv, &words))
@@ -867,6 +875,101 @@ pub fn usage_error_with(
         }
     }
     error
+}
+
+/// The doctor contract's `--fix` and `--explain <id>` (§6.11), which are commands here and
+/// not flags: typed on `doctor` or `doctor diagnose`, a usage error whose fix is that
+/// command. `--fix` gives `doctor fix --dry-run` with the selection kept (never `--force`
+/// or `--yes`) once `has_command` knows `doctor fix`, its help until then; `--explain`
+/// gives `doctor explain <id>` with `-t` kept, its help without an id.
+fn doctor_intent_hint(
+    argv: &[String],
+    path: &[String],
+    bad: &str,
+    has_command: &dyn Fn(&str) -> bool,
+) -> Option<Error> {
+    let path: Vec<&str> = path.iter().map(String::as_str).collect();
+    if !matches!(path.as_slice(), ["doctor"] | ["doctor", "diagnose"]) {
+        return None;
+    }
+    let flag = bad.split_once('=').map_or(bad, |(flag, _)| flag);
+    let help =
+        |words: &[&str]| Suggestion::command(["omaddons", "help"].iter().chain(words).copied());
+    match flag {
+        "--fix" => {
+            let message = "doctor has no --fix flag; fixing is its own command";
+            if !has_command("doctor fix") {
+                return Some(Error::new(ErrorCode::Usage, message, help(&["doctor"])));
+            }
+            let mut fix: Vec<String> = ["omaddons", "doctor", "fix", "--dry-run"]
+                .map(str::to_owned)
+                .into();
+            fix.extend(kept_flags(argv, DOCTOR_SELECTION));
+            Some(Error::new(ErrorCode::Usage, message, Suggestion::command(fix)).user_verb())
+        }
+        "--explain" => {
+            let message = "doctor has no --explain flag; explaining is its own command";
+            // `--explain <id>` or `--explain=<id>` (clap names the flag alone).
+            // ubs:ignore — comparing flag names, not secrets
+            let at = argv.iter().skip(1).position(|a| flag_name(a) == flag)? + 1;
+            let id = match argv.get(at)?.split_once('=') {
+                Some((_, value)) => Some(value.to_owned()),
+                None => argv
+                    .get(at + 1)
+                    .filter(|next| !next.starts_with('-'))
+                    .cloned(),
+            };
+            let Some(id) = id.filter(|id| !id.is_empty()) else {
+                return Some(Error::new(
+                    ErrorCode::Usage,
+                    message,
+                    help(&["doctor", "explain"]),
+                ));
+            };
+            let mut fix: Vec<String> = ["omaddons", "doctor", "explain"].map(str::to_owned).into();
+            fix.push(id);
+            fix.extend(kept_flags(argv, DOCTOR_TARGET));
+            Some(Error::new(ErrorCode::Usage, message, Suggestion::command(fix)).user_verb())
+        }
+        _ => None,
+    }
+}
+
+/// The flags `-t` is spelled with, each taking a value.
+const DOCTOR_TARGET: &[(&str, bool)] = &[("-t", true), ("--target", true), ("--flavor", true)];
+
+/// The doctor's selection: `-t` and the flags that choose checks, with whether each takes
+/// a value.
+const DOCTOR_SELECTION: &[(&str, bool)] = &[
+    ("-t", true),
+    ("--target", true),
+    ("--flavor", true),
+    ("--only", true),
+    ("--skip", true),
+    ("--severity", true),
+    ("--quick", false),
+    ("--include-deep", false),
+    ("--online", false),
+];
+
+/// The arguments of `argv` that are one of `flags` (`--only X` or `--only=X`), with their
+/// values, in order.
+fn kept_flags(argv: &[String], flags: &[(&str, bool)]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut args = argv.iter().skip(1);
+    while let Some(arg) = args.next() {
+        let name = flag_name(arg);
+        // ubs:ignore — comparing flag names, not secrets
+        let Some((_, takes_value)) = flags.iter().find(|(flag, _)| *flag == name) else {
+            continue;
+        };
+        out.push(arg.clone());
+        // Its value apart (`--only X`), not inline (`--only=X`).
+        if *takes_value && !arg.contains('=') {
+            out.extend(args.next().cloned());
+        }
+    }
+    out
 }
 
 /// `omaddons apply` with no plan id (M4-D27): after the help, `adopt --apply`, the command
@@ -1803,6 +1906,117 @@ mod tests {
             .chain(args.iter().copied())
             .map(str::to_owned)
             .collect()
+    }
+
+    /// A hint case: its name, the arguments, whether a command path is registered, then
+    /// the fix (without `omaddons`) and whether it is marked as the user's verb.
+    type HintCase<'a> = (
+        &'a str,
+        &'a [&'a str],
+        &'a dyn Fn(&str) -> bool,
+        Option<&'a [&'a str]>,
+        bool,
+    );
+
+    /// The doctor contract's `--fix` and `--explain`, with and without `doctor fix`
+    /// registered: the fix, and whether it is marked as the user's verb.
+    #[test]
+    fn doctor_intent_hint_cases() {
+        let without_fix = |_: &str| false;
+        let with_fix = |command: &str| matches!(command, "doctor fix");
+        let cases: [HintCase; 9] = [
+            (
+                "fix_before_e6",
+                &["doctor", "--fix"],
+                &without_fix,
+                Some(&["help", "doctor"]),
+                false,
+            ),
+            (
+                "fix_with_selection_before_e6",
+                &[
+                    "doctor", "--fix", "--only", "fm-x", "-t", "retail", "--force", "--yes",
+                ],
+                &without_fix,
+                Some(&["help", "doctor"]),
+                false,
+            ),
+            (
+                "fix_after_e6_keeps_the_selection_never_force",
+                &[
+                    "doctor", "--fix", "--only", "fm-x", "-t", "retail", "--force", "--yes",
+                    "--json",
+                ],
+                &with_fix,
+                Some(&[
+                    "doctor",
+                    "fix",
+                    "--dry-run",
+                    "--only",
+                    "fm-x",
+                    "-t",
+                    "retail",
+                ]),
+                true,
+            ),
+            (
+                "diagnose_fix_is_doctor_fix",
+                &["doctor", "diagnose", "--fix", "--severity=P1", "--quick"],
+                &with_fix,
+                Some(&["doctor", "fix", "--dry-run", "--severity=P1", "--quick"]),
+                true,
+            ),
+            (
+                "explain_keeps_t",
+                &["doctor", "--explain", "fm-x", "-t", "retail", "--quick"],
+                &without_fix,
+                Some(&["doctor", "explain", "fm-x", "-t", "retail"]),
+                true,
+            ),
+            (
+                "explain_inline",
+                &["doctor", "--explain=fm-x"],
+                &without_fix,
+                Some(&["doctor", "explain", "fm-x"]),
+                true,
+            ),
+            (
+                "explain_without_a_value",
+                &["doctor", "--explain"],
+                &without_fix,
+                Some(&["help", "doctor", "explain"]),
+                false,
+            ),
+            ("another_flag", &["doctor", "--fxi"], &with_fix, None, false),
+            (
+                "not_the_doctor",
+                &["status", "--fix"],
+                &with_fix,
+                None,
+                false,
+            ),
+        ];
+        for (case, args, has_command, want, kept) in cases {
+            let line = argv(args);
+            let path = command_path(&line);
+            let bad = args
+                .iter()
+                .find(|a| a.starts_with("--fix") || a.starts_with("--explain") || **a == "--fxi")
+                .copied()
+                .unwrap_or_default();
+            let hint = doctor_intent_hint(&line, &path, bad, has_command);
+            let want = want.map(argv);
+            assert_eq!(
+                hint.as_ref()
+                    .and_then(|e| e.fix.argv().map(<[String]>::to_vec)),
+                want,
+                "{case}"
+            );
+            if let Some(error) = hint {
+                let marked = matches!(error.usage_fix, crate::error::UsageFix::UserVerb);
+                assert_eq!(marked, kept, "{case}: user verb");
+            }
+        }
     }
 
     /// An option's value is replaced where it is, never an argument spelled the same.

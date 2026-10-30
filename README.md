@@ -161,8 +161,8 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | `completions`: a static completion script for bash, zsh, fish, elvish and PowerShell (commands, subcommands, aliases, flags and fixed values), generated from the command tree; `--json` gives `{shell, script}` | ✅ Done (milestone 4) |
 | `robot-docs guide`, `robot-docs schema` and `robot-docs errors`: the agent guide, every output's JSON Schema and the error and warning catalog, from the binary | ✅ Done (milestone 4) |
 | `apply <plan_id>`: a stored preview run exactly, by one applier at a time, every source checked again, each client reported (`committed`, `unchanged`, `stale`, `failed`) | ✅ Done (milestone 4) |
-| `doctor` and `doctor diagnose`: what is broken, with evidence and the exact remediation, each check under a budget and isolated from the others, in a run directory of its own, with the doctor's own exit codes; `--since` compares with an earlier run | ✅ Done (milestone 4) |
-| `capabilities`, `doctor explain`, `doctor fix` and its undo, installing the agent skill, the first tag | 🗓️ Milestone 4 |
+| `doctor` and `doctor diagnose`: what is broken, with evidence and the exact remediation, each check under a budget and isolated from the others, in a run directory of its own, with the doctor's own exit codes; `--since` compares with an earlier run; `doctor explain` shows one failure mode in full with its live instances | ✅ Done (milestone 4) |
+| `capabilities`, `doctor fix` and its undo, installing the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
 `omaddons outdated` lists what has updates, and `omaddons update` installs them on every client, one transaction per client, all undone by one `omaddons undo`. Two kinds of addon are left alone. A `url:` ref's release is the URL itself, so there is nothing newer to fetch. A pinned addon (by `pin`, or installed with `--version`) stays where it is (`skipped`, reason `pinned`) until `unpin`.
@@ -1782,7 +1782,7 @@ The JSON is the [doctor envelope](#the-doctor-envelope), and its report keys are
 - `findings`, by severity, failure mode, client and instance;
 - `skipped`: `{id, reason, target}` each;
 - `since`, with `--since`;
-- `next_steps`.
+- `next_steps`: one `omaddons doctor explain <fm> [-t <client>]` per failure mode found (`-t` when all its instances are on one client), the same commands `commands[]` carries as `doctor_explain`.
 
 It exits 0 when `DONE_OK` and 1 when `DONE_FINDINGS`. `run_id`, `run_dir`, `started_at`, `finished_at` and `summary.duration_ms` change with every run; the rest of two runs over one state is the same.
 
@@ -1803,6 +1803,47 @@ It exits 0 when `DONE_OK` and 1 when `DONE_FINDINGS`. `run_id`, `run_dir`, `star
 | `fm-state_files-check-incomplete` | P3 | runtime | A check could not finish within its limit |
 
 `runtime` rows are raised by the run itself, never selected: naming one in `--only` or `--skip` is a usage error.
+
+The doctor contract's `--fix` and `--explain <id>` are commands here, not flags. Typed on `doctor`, they are usage errors whose fix is the command: `omaddons doctor --explain fm-schemas-state-version-newer -t retail` → `omaddons doctor explain fm-schemas-state-version-newer -t retail`. `omaddons doctor --fix` → `omaddons help doctor`, until `doctor fix` exists.
+
+### `doctor explain`
+
+One failure mode in full, and its instances now. It changes nothing: no run directory, no lock, no request.
+
+```bash
+omaddons doctor explain fm-userland_state-target-vanished          # every instance
+omaddons doctor explain fm-userland_state-target-vanished -t era   # those on one client
+omaddons doctor explain 'fm-concurrency_primitives-journal-pending@01M5ZQ7Y3KJ8V9W2X4C6B0N1RT:tx=01M7A1B2C3D4E5F6G7H8J9K0MN'
+```
+
+The id is a failure-mode id, or one instance's key as a report gives it (`<fm-id>@<target key or machine>[:<kind>=<value>]`), compared exactly; a label never matches. `-t` narrows, and an instance on another client, or one that is gone, gives `instances: []` and exit 0. An unknown id is a usage error (exit 64) whose fix corrects it in place when a registered id is within two edits (`fm-concurrency_primitives-journal-pendng` → `…-pending`), else `omaddons help doctor explain`.
+
+It runs that one check as a diagnose would, with the full detector budget (2 s, 20,000 entries) whatever its tier. A check that panics is `internal` (exit 74): explain has no run to go on with.
+
+```text
+$ omaddons doctor explain fm-configs-config-parse-error
+fm-configs-config-parse-error · P1 · configs · cached
+config.toml cannot be read
+  what: config.toml does not parse, holds a value out of range, is not UTF-8, is too large, or cannot be read.
+  why:  Every change command fails closed with state_corrupt until it is fixed, and the doctor skips every check that depends on the configuration.
+  repair: no automatic repair; edit config.toml where the finding points: the line and column, the key, or the file's encoding, size or permissions (config.toml is yours: omaddons never rewrites one it cannot read)
+1 instance:
+  machine · ~/.config/omaddons/config.toml
+    column: 19
+    line: 1
+    path: ~/.config/omaddons/config.toml
+    reason: parse
+    → fix line 1, column 19 of ~/.config/omaddons/config.toml; omaddons never rewrites a config.toml that does not parse
+```
+
+The JSON is the [doctor envelope](#the-doctor-envelope) with these report keys:
+
+- `failure_mode`: the registry's row: `id`, `subsystem`, `severity`, `title`, `description`, `why` and `tier`, then `fixer` (`{ops, scopes, enabled, needs_force}`, `null` while no fixer repairs it) and `manual` (`{instruction, why}`: what you do and why it is yours to do, `<placeholders>` for your values);
+- `instances`: findings, the same shape as `doctor diagnose`'s;
+- `skipped`: where it could not be checked, as `doctor diagnose` says it (a layer it reads could not be loaded, or the network it needs);
+- `incomplete`: `null`, or `{limit, deadline_ms, max_entries}` when a limit stopped the check, so `instances` may be partial.
+
+Its `commands` is empty: each instance carries its own remediation.
 
 ### `config`
 
@@ -2039,7 +2080,7 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 | `data` | object | the command's result (success, and `check_failed`) |
 | `error` | object | `code`, `message`, `fix` (display string), `fix_argv` (argv array, or `null` when the fix is prose or needs a value only you can supply; such a fix shows the command with each missing value as a `<placeholder>`, as in `omaddons targets add <path>`), `alternatives` (`[{display, argv}]`), `retryable`, `details` (always an object) |
 | `warnings` | array | `{code, message, fix, fix_argv}`. On a partial run, each failed item is mirrored here. On a failure, it holds what the run found before it failed (a `journal_pending`, a `config_unknown_key`), and stderr carries each as a `warning` event before the `error` event |
-| `commands` | array | suggested next steps: `{action, command, argv, destructive}`. The actions: `undo` (`undo <tx>` after a change), `undo_run` (`undo --run <run>` after a change on several clients), `update`, `check_updates`, `adopt`, `adopt_folder` and `adopt_with_ref` (`adopt`'s guesses), `install` (search results, missing or bridge dependencies), `search` (a bridge dependency nothing resolves), `reinstall`, `inspect` (`list -v` for degraded addons), `status` (after `status --cached` with no cache), `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive), `backup_create` (`backup list` and `status`, for a client with no recent qualifying backup), `refresh_backups` (`status`, `backup list -t <id>` when a client's backup inventory is stale), `check_errors` (`omaddons errors`, when `status --cached` finds a client's Lua errors stale or unchecked), `dismiss_errors` and `install_buggrabber` (`errors`), `reinstall_widget` (`status` and `omarchy status`, for an outdated bar widget), `enable_widget` (`omarchy status`, for one that is not on the bar) and `apply` (`apply <plan_id>`: first in every dry run that stored a plan, and after `apply <plan_id> --dry-run` for the plan it checked; as destructive as the plan's command) |
+| `commands` | array | suggested next steps: `{action, command, argv, destructive}`. The actions: `undo` (`undo <tx>` after a change), `undo_run` (`undo --run <run>` after a change on several clients), `update`, `check_updates`, `adopt`, `adopt_folder` and `adopt_with_ref` (`adopt`'s guesses), `install` (search results, missing or bridge dependencies), `search` (a bridge dependency nothing resolves), `reinstall`, `inspect` (`list -v` for degraded addons), `status` (after `status --cached` with no cache), `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive), `backup_create` (`backup list` and `status`, for a client with no recent qualifying backup), `refresh_backups` (`status`, `backup list -t <id>` when a client's backup inventory is stale), `check_errors` (`omaddons errors`, when `status --cached` finds a client's Lua errors stale or unchecked), `dismiss_errors` and `install_buggrabber` (`errors`), `reinstall_widget` (`status` and `omarchy status`, for an outdated bar widget), `enable_widget` (`omarchy status`, for one that is not on the bar), `apply` (`apply <plan_id>`: first in every dry run that stored a plan, and after `apply <plan_id> --dry-run` for the plan it checked; as destructive as the plan's command) and `doctor_explain` (`doctor explain <fm> [-t <client>]`, once per failure mode a `doctor` run found) |
 | `meta` | object | `elapsed_ms`, `offline` (`--offline` or `OMADDONS_OFFLINE=1`, usage errors included) |
 
 `check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status. On every other failure `commands` is empty, except a panic's, which can offer `undo` (below). Long commands also stream NDJSON `progress` events on stderr with `--progress json` (see [stderr events](#stderr-events)); stdout stays one envelope.
@@ -2912,7 +2953,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 | Capability | State | Planned |
 |---|---|---|
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
-| `capabilities`, `doctor explain`, `doctor fix` (repairs), installing the agent skill | ❌ | M4 |
+| `capabilities`, `doctor fix` (repairs), installing the agent skill | ❌ | M4 |
 | CurseForge, Wago | ❌ | M5, optional, bring your own key |
 | Packages, man page | ❌ build from source | M5 |
 | Windows, macOS | ❌ | Never (non-goal) |
@@ -3202,6 +3243,7 @@ Core loop
                                                  # counted as uncertain, never dropped
   omaddons doctor --json                         # what is broken: findings with evidence and
                                                  # remediation.argv (changes nothing but its run)
+  omaddons doctor explain <fm-id | instance> --json   # one failure mode in full (changes nothing)
 
 Refs     catalog name | gh:Owner/Repo | Owner/Repo | wowi:<id> | tukui:<slug> | wowace:<slug>
          | git:https://…#rev | url:https://… | a pasted GitHub, WoWInterface, Tukui or WowAce link

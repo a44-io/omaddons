@@ -21,7 +21,7 @@ use ulid::Ulid;
 
 use super::budget::{self, Budget};
 use super::finding::{Confidence, Detected, Evidence, Finding, Incomplete, Observation, Subject};
-use super::registry::{self, FailureMode, Tier, ids};
+use super::registry::{self, DetectFn, FailureMode, Tier, ids};
 use super::selection::{Selection, Skipped, partition, target_skips, visible_failures};
 use super::view::{DoctorView, merge_findings};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
@@ -265,28 +265,17 @@ impl<'a> Runtime<'a> {
                     max_entries,
                 } => Budget::new(deadline, max_entries),
             };
-            let ran = catch_unwind(AssertUnwindSafe(|| -> std::io::Result<Detected> {
-                fsx::failpoint::hit("doctor.detector.panic")?;
-                // A budget spent before the check starts (a slow failpoint, or a run's
-                // `--budget` used up): never started is incomplete, never a pass.
-                if budget.check().is_err() {
-                    return Ok(Detected::cut_short(Vec::new(), &budget));
-                }
-                Ok(detect(view, selection, &mut budget))
-            }));
-            match ran {
-                Ok(Ok(found)) => {
-                    detected.extend(found.found.into_iter().map(|obs| row.finding(obs)));
-                    if let Some(cut) = found.incomplete {
+            match run_check(row, detect, view, selection, &mut budget) {
+                Checked::Ran { findings, cut } => {
+                    detected.extend(findings);
+                    if let Some(cut) = cut {
                         incomplete += 1;
                         detected.extend(runtime_finding(ids::CHECK_INCOMPLETE, |subject| {
                             incomplete_observation(subject, row, cut)
                         }));
                     }
                 }
-                // A failpoint's injected error, or a panic: the check did not run.
-                Ok(Err(_)) => detected.extend(crashed(row, None)),
-                Err(_) => detected.extend(crashed(row, crate::cli::take_caught_panic())),
+                Checked::Crashed(location) => detected.extend(crashed(row, location)),
             }
         }
         let mut skipped = part.skipped.clone();
@@ -383,6 +372,50 @@ impl<'a> Runtime<'a> {
     }
 }
 
+/// What one check gave.
+#[derive(Debug)]
+pub enum Checked {
+    /// It ran: its findings, and the limit that stopped it short, if one did.
+    Ran {
+        findings: Vec<Finding>,
+        cut: Option<Incomplete>,
+    },
+    /// It panicked, at the place in omaddons' source when the panic hook saw it, or a
+    /// failpoint failed it: it did not run.
+    Crashed(Option<String>),
+}
+
+/// `row`'s check, `detect`, isolated from panics and held to `budget`. A budget spent
+/// before it starts (a slow failpoint, or a run's `--budget` used up) leaves it never
+/// started: incomplete, never a pass.
+pub fn run_check(
+    row: &FailureMode,
+    detect: DetectFn,
+    view: &DoctorView,
+    selection: &Selection,
+    budget: &mut Budget,
+) -> Checked {
+    let ran = catch_unwind(AssertUnwindSafe(|| -> std::io::Result<Detected> {
+        fsx::failpoint::hit("doctor.detector.panic")?;
+        if budget.check().is_err() {
+            return Ok(Detected::cut_short(Vec::new(), budget));
+        }
+        Ok(detect(view, selection, budget))
+    }));
+    match ran {
+        Ok(Ok(found)) => Checked::Ran {
+            findings: found
+                .found
+                .into_iter()
+                .map(|obs| row.finding(obs))
+                .collect(),
+            cut: found.incomplete,
+        },
+        Ok(Err(_)) => Checked::Crashed(None),
+        Err(_) => Checked::Crashed(crate::cli::take_caught_panic()),
+    }
+}
+
 /// The run's directory could not be made: exit 73, naming `path`.
 fn cannot_create(path: &Path, why: &str) -> DoctorFailure {
     DoctorFailure::cannot_create(
@@ -451,7 +484,7 @@ mod tests {
 
     use super::*;
     use crate::doctor::finding::{Remediation, Severity, Subsystem};
-    use crate::doctor::registry::Layer;
+    use crate::doctor::registry::{Layer, Manual};
     use crate::doctor::view::ViewOptions;
     use crate::fsx::ActionRecord;
 
@@ -538,7 +571,11 @@ mod tests {
             requires: &[],
             detect: Some(detect),
             fix: None,
-            manual: Some(manual),
+            manual: Some(Manual {
+                instruction: "look by hand",
+                why: "a test",
+                remediation: manual,
+            }),
         }
     }
 

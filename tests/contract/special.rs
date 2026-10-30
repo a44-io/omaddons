@@ -723,6 +723,7 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             "help" => &["help"],
             "doctor" => &["doctor"],
             "doctor diagnose" => &["doctor", "diagnose"],
+            "doctor explain" => &["doctor", "explain", "fm-userland_state-target-vanished"],
             _ => return None,
         })
     };

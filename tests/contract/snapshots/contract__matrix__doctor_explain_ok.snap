@@ -1,0 +1,30 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "doctor explain",
+  "commands": [],
+  "exit_code": 0,
+  "failure_mode": {
+    "description": "A client in the target registry no longer has its directory on disk.",
+    "fixer": null,
+    "id": "fm-userland_state-target-vanished",
+    "manual": {
+      "instruction": "if the client is gone for good, forget it with omaddons targets rm <client>",
+      "why": "only you know whether the client is gone for good, or only moved or unmounted"
+    },
+    "severity": "P2",
+    "subsystem": "userland_state",
+    "tier": "cached",
+    "title": "a registered client's directory is gone",
+    "why": "Nothing can be installed there; its record and history are kept until the client is forgotten."
+  },
+  "incomplete": null,
+  "instances": [],
+  "ok": true,
+  "schema_version": "1.0",
+  "skipped": [],
+  "tool_version": "<version>",
+  "warnings": []
+}

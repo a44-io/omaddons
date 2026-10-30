@@ -78,6 +78,8 @@ actions! {
     /// Offered by a dry run that stored its plan, and by apply's own dry run; as
     /// destructive as the plan's command.
     Apply = "apply", false, "Run exactly what a dry run stored";
+    /// Offered by doctor diagnose, once per failure mode it found.
+    DoctorExplain = "doctor_explain", false, "Explain one failure mode and its instances";
 }
 
 impl fmt::Display for Action {
@@ -101,7 +103,7 @@ mod tests {
     fn every_action_has_a_unique_snake_case_wire_name() {
         assert_eq!(
             Action::ALL.len(),
-            23,
+            24,
             "registered actions: {:?}",
             Action::ALL
         );
@@ -213,6 +215,7 @@ mod tests {
             (Action::ReinstallWidget, false),
             (Action::EnableWidget, false),
             (Action::Apply, false),
+            (Action::DoctorExplain, false),
         ];
         for action in Action::ALL {
             assert!(

@@ -252,6 +252,19 @@ pub struct FixerSpec {
     pub preconditions: &'static [FixerPrecondition],
 }
 
+/// What a person does about a failure mode, when it is not (only) a fixer's to repair: in
+/// general, and why it is theirs to do (`doctor explain`'s `manual`), then the remediation
+/// of one finding.
+#[derive(Debug, Clone, Copy)]
+pub struct Manual {
+    /// A value only the user has is a `<placeholder>`, so it never reads as a command to
+    /// run as is.
+    pub instruction: &'static str,
+    /// Why it is the user's to do.
+    pub why: &'static str,
+    pub remediation: fn(&Finding) -> Remediation,
+}
+
 /// One failure mode.
 #[derive(Debug, Clone, Copy)]
 pub struct FailureMode {
@@ -271,7 +284,7 @@ pub struct FailureMode {
     pub detect: Option<DetectFn>,
     pub fix: Option<FixerSpec>,
     /// The remediation a person runs, when it is not (only) the fixer.
-    pub manual: Option<fn(&Finding) -> Remediation>,
+    pub manual: Option<Manual>,
 }
 
 impl FailureMode {
@@ -293,7 +306,7 @@ impl FailureMode {
             argv
         };
         let base = match (self.manual, &self.fix) {
-            (Some(manual), _) => manual(f),
+            (Some(manual), _) => (manual.remediation)(f),
             (None, Some(fix)) => {
                 let mut argv =
                     with_target(argv_of(&["omaddons", "doctor", "fix", "--only", self.id]));
@@ -350,7 +363,11 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         requires: &[Layer::Journals, Layer::Lock],
         detect: Some(concurrency::journal_pending),
         fix: None,
-        manual: Some(journal_manual),
+        manual: Some(Manual {
+            instruction: "quit the game, then run any change command on that client: it finishes or rolls back the interrupted change first",
+            why: "only a change command recovers a journal, under the lock and with the game closed; one recovery cannot read needs the repair under Troubleshooting in the README",
+            remediation: journal_manual,
+        }),
     },
     FailureMode {
         id: ids::CONFIG_PARSE_ERROR,
@@ -365,7 +382,11 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         requires: &[],
         detect: Some(configs::config_parse_error),
         fix: None,
-        manual: Some(view_failure_manual),
+        manual: Some(Manual {
+            instruction: "edit config.toml where the finding points: the line and column, the key, or the file's encoding, size or permissions",
+            why: "config.toml is yours: omaddons never rewrites one it cannot read",
+            remediation: view_failure_manual,
+        }),
     },
     FailureMode {
         id: ids::MANAGED_FILES_MODIFIED,
@@ -380,7 +401,11 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         requires: &[Layer::Discovery, Layer::Records],
         detect: Some(external::managed_files_modified),
         fix: None,
-        manual: Some(reinstall_manual),
+        manual: Some(Manual {
+            instruction: "keep the change, or put the release back with omaddons install <addon> -t <client> --reinstall",
+            why: "only you know whether the change was intended, and a reinstall replaces it",
+            remediation: reinstall_manual,
+        }),
     },
     FailureMode {
         id: ids::OWNERSHIP_TRANSFERRED,
@@ -395,7 +420,11 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         requires: &[Layer::Records],
         detect: Some(external::ownership_transferred),
         fix: None,
-        manual: Some(inspect_manual),
+        manual: Some(Manual {
+            instruction: "look at the degraded addons with omaddons list -t <client> -v, then reinstall or remove them",
+            why: "which addon should own the folder is your choice",
+            remediation: inspect_manual,
+        }),
     },
     FailureMode {
         id: ids::WIDGET_VERSION_DRIFT,
@@ -410,7 +439,11 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         requires: &[Layer::Widget],
         detect: Some(plugins::widget_version_drift),
         fix: None,
-        manual: Some(widget_manual),
+        manual: Some(Manual {
+            instruction: "reinstall the bar widget from this build with its omarchy install",
+            why: "the widget lives in your desktop's configuration, which only the omarchy commands change",
+            remediation: widget_manual,
+        }),
     },
     FailureMode {
         id: ids::STATE_CORRUPT,
@@ -425,7 +458,11 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         requires: &[],
         detect: Some(schemas::state_corrupt),
         fix: None,
-        manual: Some(view_failure_manual),
+        manual: Some(Manual {
+            instruction: "restore the file the finding names from a backup of the state directory, or repair what the finding says is wrong with it",
+            why: "omaddons never rewrites a state file it cannot read: what it held may still matter",
+            remediation: view_failure_manual,
+        }),
     },
     FailureMode {
         id: ids::STATE_VERSION_NEWER,
@@ -440,7 +477,11 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         requires: &[Layer::Records],
         detect: Some(schemas::state_version_newer),
         fix: None,
-        manual: Some(upgrade_manual),
+        manual: Some(Manual {
+            instruction: "upgrade omaddons to the build that wrote the file, or a newer one",
+            why: "this build cannot know what a newer one recorded, so it never rewrites the file",
+            remediation: upgrade_manual,
+        }),
     },
     FailureMode {
         id: ids::CHECK_INCOMPLETE,
@@ -455,7 +496,11 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         requires: &[],
         detect: None,
         fix: None,
-        manual: Some(incomplete_manual),
+        manual: Some(Manual {
+            instruction: "run the check alone with a larger budget, omaddons doctor --only <fm-id> --budget <ms>, or narrow it with -t <client>",
+            why: "a check its limit stopped looked at only part of what it covers",
+            remediation: incomplete_manual,
+        }),
     },
     FailureMode {
         id: ids::DETECTOR_CRASHED,
@@ -470,7 +515,11 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         requires: &[],
         detect: None,
         fix: None,
-        manual: Some(crashed_manual),
+        manual: Some(Manual {
+            instruction: "report the check and the location in omaddons' source that the finding names",
+            why: "a check that panics is a bug in omaddons, which no command repairs",
+            remediation: crashed_manual,
+        }),
     },
     FailureMode {
         id: ids::RECORD_FOLDER_MISSING,
@@ -485,7 +534,11 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         requires: &[Layer::Discovery, Layer::Records],
         detect: Some(state_files::record_folder_missing),
         fix: None,
-        manual: Some(reinstall_manual),
+        manual: Some(Manual {
+            instruction: "put the addon back with omaddons install <addon> -t <client> --reinstall, or remove it with omaddons remove <addon> -t <client>",
+            why: "only you know whether the folder was removed on purpose",
+            remediation: reinstall_manual,
+        }),
     },
     FailureMode {
         id: ids::TARGET_VANISHED,
@@ -500,7 +553,11 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         requires: &[Layer::Discovery],
         detect: Some(userland::target_vanished),
         fix: None,
-        manual: Some(forget_manual),
+        manual: Some(Manual {
+            instruction: "if the client is gone for good, forget it with omaddons targets rm <client>",
+            why: "only you know whether the client is gone for good, or only moved or unmounted",
+            remediation: forget_manual,
+        }),
     },
 ];
 
@@ -673,8 +730,13 @@ pub fn invariant_violations(rows: &[FailureMode]) -> Vec<RowViolation> {
         }
         let well_formed =
             |text: &str| !text.is_empty() && text.trim() == text && !text.contains('\n');
+        let manual_texts = row
+            .manual
+            .iter()
+            .flat_map(|manual| [manual.instruction, manual.why]);
         if ![row.title, row.description, row.why]
             .into_iter()
+            .chain(manual_texts)
             .all(well_formed)
         {
             broken(Rule::EmptyText);
@@ -774,7 +836,11 @@ mod tests {
             requires: &[],
             detect: Some(nothing),
             fix: None,
-            manual: Some(manual),
+            manual: Some(Manual {
+                instruction: "do the thing by hand",
+                why: "only you can",
+                remediation: manual,
+            }),
         }
     }
 
@@ -851,6 +917,26 @@ mod tests {
             (
                 "two_line_why",
                 vec![with(|r| r.why = "One.\nTwo.")],
+                vec![Rule::EmptyText],
+            ),
+            (
+                "empty_manual_instruction",
+                vec![with(|r| {
+                    r.manual = r.manual.map(|m| Manual {
+                        instruction: "",
+                        ..m
+                    });
+                })],
+                vec![Rule::EmptyText],
+            ),
+            (
+                "untrimmed_manual_why",
+                vec![with(|r| {
+                    r.manual = r.manual.map(|m| Manual {
+                        why: "only you can ",
+                        ..m
+                    });
+                })],
                 vec![Rule::EmptyText],
             ),
             (

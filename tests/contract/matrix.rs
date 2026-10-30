@@ -1418,6 +1418,14 @@ fn doctor() {
         66,
     );
     insta::assert_json_snapshot!("doctor_diagnose_since_unknown", s.stable(&c.envelope));
+    // `doctor explain`: the failure mode in full and its instances now (none here).
+    let c = s.json(
+        &["doctor", "explain", "fm-userland_state-target-vanished"],
+        0,
+    );
+    insta::assert_json_snapshot!("doctor_explain_ok", s.stable(&c.envelope));
+    let c = s.json(&["doctor", "explain", "fm-nope"], 64);
+    insta::assert_json_snapshot!("doctor_explain_unknown", s.stable(&c.envelope));
 }
 
 #[test]

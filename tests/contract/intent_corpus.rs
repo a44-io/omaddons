@@ -858,6 +858,40 @@ pub const CORPUS: &[Row] = &[
         "a root-level typo uses the general dictionary (exit 2)",
         error(2, "usage", &["omaddons", "doctor"], &[0, 1]),
     ),
+    row(
+        DoctorVerb,
+        &["doctor", "--explain", "fm-schemas-state-version-newer"],
+        &["doctor explain"],
+        "--explain is a subcommand",
+        doctor_usage(
+            &[
+                "omaddons",
+                "doctor",
+                "explain",
+                "fm-schemas-state-version-newer",
+            ],
+            &[0],
+        ),
+    ),
+    row(
+        DoctorVerb,
+        &[
+            "doctor",
+            "explain",
+            "fm-concurrency_primitives-journal-pendng",
+        ],
+        &["doctor explain"],
+        "a failure mode id corrected",
+        doctor_usage(
+            &[
+                "omaddons",
+                "doctor",
+                "explain",
+                "fm-concurrency_primitives-journal-pending",
+            ],
+            &[0],
+        ),
+    ),
 ];
 
 /// A row whose surface another leaf owns and that has not landed yet (common rule 18).
@@ -929,48 +963,6 @@ pub const PENDING: &[Pending] = &[
             ),
         )
         .by_leaf("B3"),
-    ),
-    pending(
-        "E3",
-        &["doctor explain"],
-        row(
-            DoctorVerb,
-            &["doctor", "--explain", "fm-schemas-state-version-newer"],
-            &["doctor explain"],
-            "--explain is a subcommand",
-            doctor_usage(
-                &[
-                    "omaddons",
-                    "doctor",
-                    "explain",
-                    "fm-schemas-state-version-newer",
-                ],
-                &[0],
-            ),
-        ),
-    ),
-    pending(
-        "E3",
-        &["doctor explain"],
-        row(
-            DoctorVerb,
-            &[
-                "doctor",
-                "explain",
-                "fm-concurrency_primitives-journal-pendng",
-            ],
-            &["doctor explain"],
-            "a failure mode id corrected",
-            doctor_usage(
-                &[
-                    "omaddons",
-                    "doctor",
-                    "explain",
-                    "fm-concurrency_primitives-journal-pending",
-                ],
-                &[0],
-            ),
-        ),
     ),
     pending(
         "E6",

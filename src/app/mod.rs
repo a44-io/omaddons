@@ -240,6 +240,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     // Bare `doctor` runs as `doctor diagnose`: this name appears only on usage errors.
     entry("doctor", Look, false, &[0, 1, 4, 6, 64, 66, 73, 74], report_schema::<doctor::DiagnoseOutcome>, Network::Optional).doctor(),
     entry("doctor diagnose", Look, false, &[0, 1, 4, 6, 64, 66, 73, 74], report_schema::<doctor::DiagnoseOutcome>, Network::Optional).doctor(),
+    entry("doctor explain", Look, false, &[0, 64, 66, 74], report_schema::<doctor::ExplainOutcome>, Network::None).doctor(),
     entry("install", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<install::InstallOutcome>, Network::Optional).storing_plan(),
     entry("update", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<update::UpdateOutcome>, Network::Optional).storing_plan(),
     entry("pin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional).storing_plan(),
@@ -694,13 +695,18 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> ProcessE
     // The doctor exits in its own dictionary, and changes nothing a history projection
     // follows.
     if let Some(Command::Doctor(args)) = &cli.command {
-        let result = doctor::run(ctx, args);
-        if let Ok(outcome) = &result {
-            for note in &outcome.notes {
-                out.log(output::LogLevel::Debug, note);
+        return match args.verb() {
+            doctor::Verb::Diagnose(diagnose) => {
+                let result = doctor::run_diagnose(ctx, diagnose);
+                if let Ok(outcome) = &result {
+                    for note in &outcome.notes {
+                        out.log(output::LogLevel::Debug, note);
+                    }
+                }
+                out.emit_doctor(result)
             }
-        }
-        return out.emit_doctor(result);
+            doctor::Verb::Explain(explain) => out.emit_doctor(doctor::run_explain(ctx, explain)),
+        };
     }
     let exit = run_command(cli, ctx, &out);
     // A command that may have appended history (by its full path: `config set`, not

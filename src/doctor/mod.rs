@@ -4,6 +4,7 @@
 pub mod budget;
 mod detectors;
 pub mod exit;
+pub mod explain;
 pub mod facts;
 pub mod finding;
 pub mod plan;

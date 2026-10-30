@@ -10,8 +10,10 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::cli::{Context, fix_argv, fix_argv_with_value};
+use crate::contract::actions::Action;
 use crate::doctor::budget::{self, Budget, parse_budget};
 use crate::doctor::exit::Exit;
+use crate::doctor::explain::{self, ExplainReport};
 use crate::doctor::finding::{Finding, Severity};
 use crate::doctor::plan::{Asked, plan_diagnose};
 use crate::doctor::registry::{FAILURE_MODES, Layer, ids};
@@ -40,6 +42,9 @@ pub enum DoctorAction {
     /// Find what is broken, with evidence and the exact fix (changes nothing outside
     /// its run record)
     Diagnose(DiagnoseArgs),
+    /// One failure mode in full: what it is, why it matters, and its live instances
+    /// (changes nothing)
+    Explain(ExplainArgs),
 }
 
 impl DoctorAction {
@@ -47,6 +52,33 @@ impl DoctorAction {
     pub fn command(&self) -> &'static str {
         match self {
             Self::Diagnose(_) => "doctor diagnose",
+            Self::Explain(_) => "doctor explain",
+        }
+    }
+}
+
+/// `doctor explain`'s argument (`-t` is global).
+#[derive(Debug, Clone, clap::Args)]
+pub struct ExplainArgs {
+    /// A failure-mode id, or one instance's key (<fm-id>@<target key or machine>…)
+    #[arg(value_name = "ID")]
+    pub id: String,
+}
+
+/// What a `doctor` command line asks for.
+#[derive(Debug, Clone, Copy)]
+pub enum Verb<'a> {
+    /// `doctor diagnose`, or bare `doctor`.
+    Diagnose(&'a DiagnoseArgs),
+    Explain(&'a ExplainArgs),
+}
+
+impl DoctorArgs {
+    pub fn verb(&self) -> Verb<'_> {
+        match &self.action {
+            None => Verb::Diagnose(&self.diagnose),
+            Some(DoctorAction::Diagnose(diagnose)) => Verb::Diagnose(diagnose),
+            Some(DoctorAction::Explain(explain)) => Verb::Explain(explain),
         }
     }
 }
@@ -83,7 +115,7 @@ pub struct DiagnoseArgs {
 /// The doctor's long help: its exit dictionary, which every doctor command exits by.
 pub fn doctor_help() -> String {
     let mut out = String::from(
-        "Examples:\n  omaddons doctor                       every check but the deep ones\n  omaddons doctor --quick               the fast checks only\n  omaddons doctor --only fm-userland_state-target-vanished\n  omaddons doctor --since latest        what changed since the last run\n\nThe doctor exits with its own codes:\n",
+        "Examples:\n  omaddons doctor                       every check but the deep ones\n  omaddons doctor --quick               the fast checks only\n  omaddons doctor --only fm-userland_state-target-vanished\n  omaddons doctor --since latest        what changed since the last run\n  omaddons doctor explain fm-userland_state-target-vanished\n\nThe doctor exits with its own codes:\n",
     );
     for exit in Exit::ALL {
         out.push_str(&format!(
@@ -221,15 +253,127 @@ fn findings_phrase(findings: &[Finding]) -> String {
     )
 }
 
-/// `doctor` and its verbs.
-pub fn run(
-    ctx: &Context,
-    args: &DoctorArgs,
-) -> std::result::Result<DiagnoseOutcome, DoctorFailure> {
-    match &args.action {
-        None => run_diagnose(ctx, &args.diagnose),
-        Some(DoctorAction::Diagnose(diagnose)) => run_diagnose(ctx, diagnose),
+/// An explain's result: always exit 0 when it answers.
+#[derive(Debug)]
+pub struct ExplainOutcome {
+    report: ExplainReport,
+    warnings: Vec<Warning>,
+}
+
+impl DoctorOutcome for ExplainOutcome {
+    type Report = ExplainReport;
+
+    fn command(&self) -> &'static str {
+        "doctor explain"
     }
+
+    fn report(&self) -> &ExplainReport {
+        &self.report
+    }
+
+    fn exit(&self) -> Exit {
+        Exit::Healthy
+    }
+
+    fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
+    fn render_human(&self, w: &mut dyn Write, style: &Style) -> std::io::Result<()> {
+        let report = &self.report;
+        let fm = &report.failure_mode;
+        let tier = serde_json::to_value(fm.tier)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        writeln!(
+            w,
+            "{} · {:?} · {} · {tier}",
+            style.bold(fm.id),
+            fm.severity,
+            fm.subsystem.as_str()
+        )?;
+        writeln!(w, "{}", fm.title)?;
+        writeln!(w, "  what: {}", fm.description)?;
+        writeln!(w, "  why:  {}", fm.why)?;
+        let manual = fm
+            .manual
+            .as_ref()
+            .map(|m| format!("{} ({})", m.instruction, m.why));
+        let repair = match (&fm.fixer, manual) {
+            (Some(fixer), manual) => {
+                let fix = if fixer.needs_force {
+                    "doctor fix repairs it with --force"
+                } else if fixer.enabled {
+                    "doctor fix repairs it"
+                } else {
+                    "doctor fix can repair it, when enabled"
+                };
+                manual.map_or_else(|| fix.to_owned(), |manual| format!("{fix}; or {manual}"))
+            }
+            (None, Some(manual)) => format!("no automatic repair; {manual}"),
+            (None, None) => "no repair".to_owned(),
+        };
+        writeln!(w, "  repair: {repair}")?;
+        if report.instances.is_empty() {
+            writeln!(w, "no instance now")?;
+        } else {
+            writeln!(
+                w,
+                "{}:",
+                crate::output::count(report.instances.len(), "instance")
+            )?;
+        }
+        for instance in &report.instances {
+            writeln!(w, "  {}", instance.label)?;
+            if let Ok(serde_json::Value::Object(evidence)) =
+                serde_json::to_value(&instance.evidence)
+            {
+                for (key, value) in evidence {
+                    let value = value
+                        .as_str()
+                        .map_or_else(|| value.to_string(), str::to_owned);
+                    writeln!(w, "    {key}: {value}")?;
+                }
+            }
+            writeln!(w, "    → {}", instance.remediation.command)?;
+        }
+        for skipped in &report.skipped {
+            let reason = serde_json::to_value(skipped.reason)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            let target = skipped
+                .target
+                .as_ref()
+                .map(|t| format!(" on {}", t.id))
+                .unwrap_or_default();
+            writeln!(w, "not checked{target}: {reason}")?;
+        }
+        if let Some(cut) = &report.incomplete {
+            writeln!(
+                w,
+                "this list may be partial: the check stopped at its {} limit",
+                cut.limit.as_str()
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// `doctor explain <ID>`: the failure mode, and its instances found now. Writes nothing.
+pub fn run_explain(
+    ctx: &Context,
+    args: &ExplainArgs,
+) -> std::result::Result<ExplainOutcome, DoctorFailure> {
+    let asked = explain::resolve(&args.id, &ctx.argv)?;
+    let paths = Paths::from_env()?;
+    let view = DoctorView::load_at(paths, ViewOptions::default());
+    let report = explain::explain(&view, &asked, ctx.target.as_deref())?;
+    Ok(ExplainOutcome {
+        report,
+        warnings: view.warnings(),
+    })
 }
 
 /// `doctor diagnose` (and bare `doctor`): refuse what cannot run before anything starts,
@@ -286,15 +430,17 @@ pub fn run_diagnose(
     }
     let since = since_run.map(|(run, old)| report::since(run, &old, &diagnosis.findings));
     let checks_run = diagnosis.checks_run;
-    let mut full = FullReport::new(
+    // One `doctor explain` per failure mode found, as `next_steps` shows them.
+    let commands = report::explain_argvs(&diagnosis.findings)
+        .into_iter()
+        .map(|argv| CommandHint::new(Action::DoctorExplain, argv))
+        .collect();
+    let full = FullReport::new(
         runtime.id().clone(),
         runtime.dir().display().to_string(),
         diagnosis,
         since,
     );
-    // `doctor explain` (s6) gives the explain hints a command that parses; until then
-    // neither commands[] nor next_steps names it.
-    full.next_steps.clear();
     let exit = match full.state {
         RunState::DoneOk => Exit::Healthy,
         RunState::DoneFindings => Exit::FindingsPresent,
@@ -312,7 +458,7 @@ pub fn run_diagnose(
         exit,
         error: None,
         warnings,
-        commands: Vec::new(),
+        commands,
         notes: Vec::new(),
         clients,
         checks_run,

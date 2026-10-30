@@ -230,33 +230,42 @@ fn pick_of(item: &str) -> Option<Pick> {
         .or_else(|| item.parse::<Subsystem>().ok().map(Pick::Subsystem))
 }
 
-/// The registered id or subsystem name closest to `item` (lowercased), within two edits;
-/// also an id whose slug (after `fm-<subsystem>-`) is that close, when `item` does not
-/// start with `fm-`. Ties go to the first in registry order, then subsystem order.
+/// The registered id or subsystem name closest to `item` (lowercased), within two edits
+/// ([`closest_id`], then a subsystem name only when it is closer).
 fn closest(item: &str) -> Option<&'static str> {
     let item = item.to_ascii_lowercase();
+    let mut best = closest_id(&item);
+    for subsystem in Subsystem::ALL {
+        let distance = levenshtein(&item, subsystem.as_str());
+        if distance <= 2 && best.is_none_or(|(least, _)| distance < least) {
+            best = Some((distance, subsystem.as_str()));
+        }
+    }
+    best.map(|(_, names)| names)
+}
+
+/// The registered failure-mode id closest to `item` (lowercased), within two edits, with
+/// its distance; also an id whose slug (after `fm-<subsystem>-`) is that close, when
+/// `item` does not start with `fm-`. Ties go to the first in registry order.
+pub fn closest_id(item: &str) -> Option<(usize, &'static str)> {
+    let item = item.to_ascii_lowercase();
     let slugs = !item.starts_with("fm-");
-    let mut candidates: Vec<(&str, &'static str)> = Vec::new();
+    let mut best: Option<(usize, &'static str)> = None;
     for row in FAILURE_MODES {
-        candidates.push((row.id, row.id));
         let slug = row
             .id
             .strip_prefix("fm-")
             .and_then(|rest| rest.split_once('-'))
-            .map(|(_, slug)| slug);
-        if let Some(slug) = slug.filter(|_| slugs) {
-            candidates.push((slug, row.id));
+            .map(|(_, slug)| slug)
+            .filter(|_| slugs);
+        for word in std::iter::once(row.id).chain(slug) {
+            let distance = levenshtein(&item, word);
+            if distance <= 2 && best.is_none_or(|(least, _)| distance < least) {
+                best = Some((distance, row.id));
+            }
         }
     }
-    candidates.extend(Subsystem::ALL.map(|s| (s.as_str(), s.as_str())));
-    let mut best: Option<(usize, &'static str)> = None;
-    for (word, names) in candidates {
-        let distance = levenshtein(&item, word);
-        if distance <= 2 && best.is_none_or(|(least, _)| distance < least) {
-            best = Some((distance, names));
-        }
-    }
-    best.map(|(_, names)| names)
+    best
 }
 
 /// `argv` with the value of the `occurrence`th `flag` (`--only X` or `--only=X`) set to

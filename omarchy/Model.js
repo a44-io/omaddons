@@ -147,6 +147,7 @@ var CLI_PATHS = {
   "net-log":           { "mutates": false, "destructive": false, "binds": false },
   "doctor":            { "mutates": false, "destructive": false, "binds": false },
   "doctor diagnose":   { "mutates": false, "destructive": false, "binds": false },
+  "doctor explain":    { "mutates": false, "destructive": false, "binds": false },
   "install":           { "mutates": true,  "destructive": false, "binds": true },
   "update":            { "mutates": true,  "destructive": false, "binds": true },
   "pin":               { "mutates": true,  "destructive": false, "binds": true },
